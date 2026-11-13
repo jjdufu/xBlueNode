@@ -1,5 +1,7 @@
 //! Domain types, error definitions, and five-way RRF fusion logic for `AxPoint`.
 
+pub mod enums;
+pub mod platform;
 pub mod ports;
 pub mod topology;
 
@@ -11,27 +13,132 @@ use thiserror::Error;
 use uuid::Uuid;
 
 /// Unified application error type across `AxPoint` crates.
+///
+/// Error codes follow `docs/blueprint/A1-CONVENTIONS-ENUMS-ROUTES.md` §5.
 #[derive(Debug, Error)]
 pub enum AppError {
-    /// Configuration or environment variable error.
+    /// Client sent invalid parameters (`HTTP 400`).
+    #[error("{code}: {message}")]
+    BadRequest {
+        /// Stable machine-readable error code, e.g., `INVALID_ARGUMENT`.
+        code: &'static str,
+        /// Human-readable diagnostic message.
+        message: String,
+    },
+
+    /// Missing or invalid authentication credentials (`HTTP 401`).
+    #[error("{0}")]
+    Unauthorized(&'static str),
+
+    /// Permission or policy check denied (`HTTP 403`).
+    #[error("{0}")]
+    Forbidden(&'static str),
+
+    /// Requested resource does not exist or belongs to another tenant (`HTTP 404`).
+    #[error("{0}")]
+    NotFound(&'static str),
+
+    /// Uniqueness, version, or state conflict (`HTTP 409`).
+    #[error("{0}")]
+    Conflict(&'static str),
+
+    /// Request body exceeds limit or archive compression ratio unsafe (`HTTP 413`).
+    #[error("{0}")]
+    PayloadTooLarge(&'static str),
+
+    /// Unsupported media or file format (`HTTP 415`).
+    #[error("{0}")]
+    Unsupported(&'static str),
+
+    /// Semantically unprocessable payload (`HTTP 422`).
+    #[error("{code}: {message}")]
+    Unprocessable {
+        /// Stable machine-readable error code, e.g., `PARSE_FAILED`.
+        code: &'static str,
+        /// Human-readable diagnostic message.
+        message: String,
+    },
+
+    /// Rate limit exceeded (`HTTP 429`).
+    #[error("rate limited")]
+    RateLimited,
+
+    /// Query or upstream call timed out (`HTTP 504`).
+    #[error("{0}")]
+    Timeout(&'static str),
+
+    /// Configuration or environment variable error (`HTTP 500`).
     #[error("configuration error: {0}")]
     Config(String),
 
-    /// Database persistence or query error.
+    /// Database persistence or query error (`HTTP 500`).
     #[error("database error: {0}")]
     Database(String),
 
-    /// External LLM or embedding service error.
+    /// External LLM or embedding service error (`HTTP 502`).
     #[error("llm error: {0}")]
     Llm(String),
 
-    /// Document parser sidecar error.
+    /// Document parser sidecar error (`HTTP 502`).
     #[error("parser error: {0}")]
     Parser(String),
 
-    /// Invalid client input.
-    #[error("bad request: {0}")]
-    BadRequest(String),
+    /// Other upstream connector, webhook, or MCP error (`HTTP 502`).
+    #[error("upstream error: {0}")]
+    Upstream(String),
+}
+
+impl AppError {
+    /// Constructs [`AppError::BadRequest`] with a canonical error code and message.
+    #[must_use]
+    pub fn bad(code: &'static str, message: impl Into<String>) -> Self {
+        Self::BadRequest {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// Constructs [`AppError::Unprocessable`] with a canonical error code and message.
+    #[must_use]
+    pub fn unprocessable(code: &'static str, message: impl Into<String>) -> Self {
+        Self::Unprocessable {
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// Returns the canonical `error_code` string per `A1` §5.
+    #[must_use]
+    pub const fn error_code(&self) -> &'static str {
+        match self {
+            Self::BadRequest { code, .. }
+            | Self::Unprocessable { code, .. }
+            | Self::Unauthorized(code)
+            | Self::Forbidden(code)
+            | Self::NotFound(code)
+            | Self::Conflict(code)
+            | Self::PayloadTooLarge(code)
+            | Self::Unsupported(code)
+            | Self::Timeout(code) => code,
+            Self::RateLimited => "RATE_LIMITED",
+            Self::Config(_) | Self::Database(_) => "INTERNAL",
+            Self::Llm(_) => "UPSTREAM_LLM",
+            Self::Parser(_) => "UPSTREAM_PARSER",
+            Self::Upstream(_) => "UPSTREAM_CONNECTOR",
+        }
+    }
+
+    /// Returns the public-safe client message (redacting internal 500 details per `01-STEP00` §00.6.1).
+    #[must_use]
+    pub fn client_message(&self) -> String {
+        match self {
+            Self::Config(_) | Self::Database(_) => String::from("internal error"),
+            Self::BadRequest { message, .. } | Self::Unprocessable { message, .. } => {
+                message.clone()
+            }
+            other => other.to_string(),
+        }
+    }
 }
 
 /// Recall channel identifier in the five-way hypergraph retrieval engine.
@@ -107,12 +214,10 @@ pub struct ExtractedTriple {
     pub confidence: f64,
 }
 
-/// Document ingestion request payload.
+/// Document ingestion request payload (tenant resolved strictly from `AuthPrincipal`).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct IngestTextRequest {
-    /// Tenant or subgraph isolation identifier.
-    #[serde(default = "default_tenant")]
-    pub tenant_id: String,
     /// Document title.
     pub title: String,
     /// Original file or source name.
@@ -140,12 +245,10 @@ pub struct IngestResponse {
     pub embedding_dim: usize,
 }
 
-/// Chat / RAG query request payload.
+/// Chat / RAG query request payload (tenant resolved strictly from `AuthPrincipal`).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ChatQueryRequest {
-    /// Tenant or subgraph isolation identifier.
-    #[serde(default = "default_tenant")]
-    pub tenant_id: String,
     /// User natural-language question.
     pub query: String,
     /// Maximum fused chunks to include in synthesis.
@@ -220,10 +323,6 @@ pub struct TopologyGraph {
     pub nodes: Vec<TopologyNode>,
     /// Graph edges.
     pub edges: Vec<TopologyEdge>,
-}
-
-fn default_tenant() -> String {
-    String::from("default")
 }
 
 const fn default_top_k() -> usize {
@@ -347,5 +446,12 @@ mod tests {
         let md = "Title\n\nShort line.\n\nAnother short line.";
         let chunks = split_paragraphs(md, 500);
         assert_eq!(chunks.len(), 1);
+    }
+
+    #[test]
+    fn ingest_request_rejects_tenant_id_field() {
+        let raw = r#"{"tenant_id":"x","title":"t","source_name":"t.md","content":"c"}"#;
+        let res = serde_json::from_str::<IngestTextRequest>(raw);
+        assert!(res.is_err());
     }
 }

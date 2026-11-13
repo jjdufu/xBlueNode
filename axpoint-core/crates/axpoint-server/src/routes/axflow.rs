@@ -4,7 +4,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use uuid::Uuid;
 
-use crate::state::{AppState, HttpError, TenantQuery};
+use crate::state::{AppState, HttpError, TenantQuery, default_tenant};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -27,7 +27,8 @@ async fn create_flow_handler(
     State(state): State<AppState>,
     Json(req): Json<CreateAxFlowRequest>,
 ) -> Result<Json<AxFlowDef>, HttpError> {
-    let flow = state.store.create_ax_flow(req).await?;
+    let tenant_id = default_tenant();
+    let flow = state.store.create_ax_flow(&tenant_id, req).await?;
     Ok(Json(flow))
 }
 

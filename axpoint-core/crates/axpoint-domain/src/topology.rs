@@ -69,10 +69,8 @@ pub struct XBlueSchema {
 
 /// Request payload to save/upsert an `xBlueStudio` schema.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SaveXBlueSchemaRequest {
-    /// Tenant identifier.
-    #[serde(default = "default_tenant")]
-    pub tenant_id: String,
     /// Node types to upsert.
     pub node_types: Vec<BlueNodeTypeInput>,
     /// Edge types to upsert.
@@ -146,10 +144,8 @@ pub struct BlueLink {
 
 /// Request to upsert a runtime `BlueNode` (and optionally link it).
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UpsertBlueNodeRequest {
-    /// Tenant identifier.
-    #[serde(default = "default_tenant")]
-    pub tenant_id: String,
     /// Node type name.
     pub type_name: String,
     /// Business key.
@@ -199,10 +195,8 @@ pub struct AxFlowDef {
 
 /// Request to create an `AxFlow` pipeline.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateAxFlowRequest {
-    /// Tenant identifier.
-    #[serde(default = "default_tenant")]
-    pub tenant_id: String,
     /// Flow name.
     pub name: String,
     /// Description.
@@ -247,16 +241,15 @@ pub struct AxSimAction {
 
 /// Request to create a new isolated `AxSim` sandbox.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CreateAxSandboxRequest {
-    /// Tenant identifier.
-    #[serde(default = "default_tenant")]
-    pub tenant_id: String,
     /// Sandbox name.
     pub name: String,
 }
 
 /// Request to run causal simulation inside `AxSim`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SimulateAxSandboxRequest {
     /// Hypothetical actions to apply.
     pub actions: Vec<AxSimAction>,
@@ -390,10 +383,6 @@ pub fn simulate_causal_propagation(
         impacts,
         affected_count,
     }
-}
-
-fn default_tenant() -> String {
-    String::from("default")
 }
 
 const fn default_pos() -> f64 {

@@ -27,17 +27,19 @@ export type TabKey =
 
 export interface ModuleRouteSpec {
   key: TabKey;
+  path: string;
   label: string;
   icon: typeof LayoutDashboard;
   component: ComponentType;
+  public?: boolean;
 }
 
 export const MODULE_REGISTRY: ModuleRouteSpec[] = [
-  { key: "dashboard", label: "系统概览", icon: LayoutDashboard, component: DashboardPage },
-  { key: "axingest", label: "AxIngest · 知识入库", icon: Database, component: AxIngestPage },
-  { key: "axquery", label: "AxQuery · 五路问答", icon: MessageSquare, component: AxQueryPage },
-  { key: "xbluegraph", label: "xBlueGraph · 拓扑视图", icon: Share2, component: XBlueGraphPage },
-  { key: "xbluestudio", label: "xBlueStudio · 节点建模", icon: Blocks, component: XBlueStudioPage },
-  { key: "axflow", label: "AxFlow · 编排流水线", icon: Workflow, component: AxFlowPage },
-  { key: "axsim", label: "AxSim · 因果推演", icon: GitBranch, component: AxSimPage },
+  { key: "dashboard", path: "/", label: "系统概览", icon: LayoutDashboard, component: DashboardPage },
+  { key: "axingest", path: "/ingest", label: "AxIngest · 知识入库", icon: Database, component: AxIngestPage },
+  { key: "axquery", path: "/query", label: "AxQuery · 智能问答", icon: MessageSquare, component: AxQueryPage },
+  { key: "xbluegraph", path: "/graph", label: "xBlueGraph · 图浏览", icon: Share2, component: XBlueGraphPage },
+  { key: "xbluestudio", path: "/studio", label: "xBlueStudio · 节点建模", icon: Blocks, component: XBlueStudioPage },
+  { key: "axflow", path: "/flow", label: "AxFlow · 编排", icon: Workflow, component: AxFlowPage },
+  { key: "axsim", path: "/sim", label: "AxSim · 因果推演", icon: GitBranch, component: AxSimPage },
 ];
