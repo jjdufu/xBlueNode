@@ -1,7 +1,18 @@
-//! PostgreSQL (`pgvector` + hypergraph) persistence and five-way retrieval store.
+//! PostgreSQL (`pgvector` + hypergraph) persistence, five-way retrieval, and platform ports.
 
+pub mod audit;
+pub mod jobs;
+pub mod outbox;
 pub mod tenant;
+pub mod tokens;
 pub mod topology;
+
+#[cfg(test)]
+mod tests;
+
+pub use jobs::enqueue_job_tx;
+pub use outbox::insert_outbox_tx;
+pub use tenant::begin_tenant_tx;
 
 use axpoint_domain::{
     AppError, ChannelCandidate, ExtractedTriple, RecallChannel, SystemStats, TopologyEdge,
@@ -72,7 +83,9 @@ impl PgStore {
         Self { pool }
     }
 
-    pub(crate) const fn pool(&self) -> &PgPool {
+    /// Returns a reference to the underlying PostgreSQL connection pool.
+    #[must_use]
+    pub const fn pool(&self) -> &PgPool {
         &self.pool
     }
 
@@ -96,11 +109,7 @@ impl PgStore {
         &self,
         payload: DocumentIngestPayload,
     ) -> Result<IngestCommitStats, AppError> {
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|err| AppError::Database(format!("begin tx failed: {err}")))?;
+        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, &payload.tenant_id).await?;
 
         let dim_i32 = i32::try_from(payload.embed_dim).map_err(|err| {
             AppError::bad("INVALID_ARGUMENT", format!("invalid embedding dim: {err}"))
@@ -325,6 +334,7 @@ impl PgStore {
         dim: usize,
         limit: i64,
     ) -> Result<Vec<ChannelCandidate>, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
         let dim_i32 = i32::try_from(dim).map_err(|err| {
             AppError::bad("INVALID_ARGUMENT", format!("invalid embedding dim: {err}"))
         })?;
@@ -345,9 +355,13 @@ impl PgStore {
         .bind(Vector::from(query_vec))
         .bind(dim_i32)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("vector recall failed: {err}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit vector recall tx failed: {err}")))?;
 
         Ok(rows_to_candidates(&rows, RecallChannel::Vector, |r| {
             let sim: f64 = r.try_get("sim").unwrap_or(0.0);
@@ -365,6 +379,7 @@ impl PgStore {
         query_text: &str,
         limit: i64,
     ) -> Result<Vec<ChannelCandidate>, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
         let like_pattern = format!("%{}%", query_text.trim());
         let rows = sqlx::query(
             "SELECT p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,
@@ -380,9 +395,13 @@ impl PgStore {
         .bind(query_text)
         .bind(like_pattern)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("bm25 recall failed: {err}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit bm25 recall tx failed: {err}")))?;
 
         Ok(rows_to_candidates(&rows, RecallChannel::Bm25, |r| {
             let score: f32 = r.try_get("score").unwrap_or(0.0);
@@ -404,6 +423,7 @@ impl PgStore {
             return Ok(Vec::new());
         }
 
+        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
         let rows = sqlx::query(
             "SELECT DISTINCT ON (p.id) p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,
                     ent.name AS matched_entity, ent.occur_count
@@ -419,9 +439,13 @@ impl PgStore {
         .bind(tenant_id)
         .bind(seed_entities)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("entity_link recall failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit entity_link recall tx failed: {err}"))
+        })?;
 
         Ok(rows_to_candidates(&rows, RecallChannel::EntityLink, |r| {
             let name: String = r.try_get("matched_entity").unwrap_or_default();
@@ -443,6 +467,7 @@ impl PgStore {
             return Ok(Vec::new());
         }
 
+        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
         let rows = sqlx::query(
             "SELECT DISTINCT p.id AS para_id, p.doc_id, d.title AS doc_title, p.content
              FROM hg_edges ed
@@ -457,9 +482,13 @@ impl PgStore {
         .bind(tenant_id)
         .bind(seed_para_ids)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("context recall failed: {err}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit context recall tx failed: {err}")))?;
 
         Ok(rows_to_candidates(&rows, RecallChannel::Context, |_| {
             Some(String::from("adjacent_para_context"))
@@ -480,6 +509,7 @@ impl PgStore {
             return Ok(Vec::new());
         }
 
+        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
         let rows = sqlx::query(
             "SELECT DISTINCT ON (p.id) p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,
                     e1.name AS src_name, rel.fact, e2.name AS dst_name
@@ -497,9 +527,13 @@ impl PgStore {
         .bind(tenant_id)
         .bind(seed_entities)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("multi_hop recall failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit multi_hop recall tx failed: {err}"))
+        })?;
 
         Ok(rows_to_candidates(&rows, RecallChannel::MultiHop, |r| {
             let s: String = r.try_get("src_name").unwrap_or_default();
@@ -514,6 +548,7 @@ impl PgStore {
     /// # Errors
     /// Returns [`AppError::Database`] if any aggregation query fails.
     pub async fn get_stats(&self, tenant_id: &str) -> Result<SystemStats, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
         let counts = sqlx::query(
             "SELECT
                 (SELECT COUNT(*) FROM hg_docs WHERE tenant_id = $1) AS doc_count,
@@ -523,7 +558,7 @@ impl PgStore {
                 (SELECT COUNT(*) FROM hg_embeddings WHERE tenant_id = $1) AS embedding_count",
         )
         .bind(tenant_id)
-        .fetch_one(&self.pool)
+        .fetch_one(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("stats query failed: {err}")))?;
 
@@ -531,9 +566,13 @@ impl PgStore {
             "SELECT DISTINCT embedding_dim FROM hg_embeddings WHERE tenant_id = $1 ORDER BY embedding_dim",
         )
         .bind(tenant_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("dim query failed: {err}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit stats tx failed: {err}")))?;
 
         let embedding_dims = dim_rows.iter().map(|r| r.get("embedding_dim")).collect();
 
@@ -557,11 +596,12 @@ impl PgStore {
         tenant_id: &str,
         limit: i64,
     ) -> Result<TopologyGraph, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
         let doc_rows = sqlx::query(
             "SELECT id, title FROM hg_docs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 20",
         )
         .bind(tenant_id)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("topology docs failed: {err}")))?;
 
@@ -570,7 +610,7 @@ impl PgStore {
         )
         .bind(tenant_id)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("topology entities failed: {err}")))?;
 
@@ -581,9 +621,13 @@ impl PgStore {
         )
         .bind(tenant_id)
         .bind(limit)
-        .fetch_all(&self.pool)
+        .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("topology edges failed: {err}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit topology tx failed: {err}")))?;
 
         let mut nodes = Vec::new();
         for r in doc_rows {
