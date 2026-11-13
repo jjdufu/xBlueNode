@@ -247,14 +247,7 @@ def _make_fixed_width_txt(out_dir: Path) -> Path:
         cap = rng.randint(5000, 50000)
         stock = rng.randint(500, cap)
         status = rng.choice(statuses)
-        row = (
-            f"{code:<10}   "
-            f"{wh_name:<14}   "
-            f"{region:<8}   "
-            f"{cap:>10d}   "
-            f"{stock:>10d}   "
-            f"{status:<8}"
-        )
+        row = f"{code:<10}   {wh_name:<14}   {region:<8}   {cap:>10d}   {stock:>10d}   {status:<8}"
         lines.append(row)
     return _write_deterministic(
         out_dir / "fixed_width.txt", ("\n".join(lines) + "\n").encode("utf-8")
@@ -522,7 +515,7 @@ def _inject_smartart_on_slide5(pptx_bytes: bytes) -> bytes:
         '<p:cNvPr id="99" name="SmartArt Diagram 1"/>'
         "<p:cNvGraphicFramePr/><p:nvPr/>"
         "</p:nvGraphicFramePr>"
-        "<p:xfrm><a:off x=\"914400\" y=\"1828800\"/><a:ext cx=\"6400800\" cy=\"2743200\"/></p:xfrm>"
+        '<p:xfrm><a:off x="914400" y="1828800"/><a:ext cx="6400800" cy="2743200"/></p:xfrm>'
         "<a:graphic>"
         '<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram">'
         '<dgm:relIds xmlns:dgm="http://schemas.openxmlformats.org/drawingml/2006/diagram" '
@@ -986,9 +979,7 @@ def _make_billion_laughs_xml(out_dir: Path) -> Path:
         entities.append(f'  <!ENTITY lol{level} "{prev}">')
     xml = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
-        "<!DOCTYPE lolz [\n"
-        + "\n".join(entities)
-        + "\n]>\n<lolz>&lol9;</lolz>\n"
+        "<!DOCTYPE lolz [\n" + "\n".join(entities) + "\n]>\n<lolz>&lol9;</lolz>\n"
     )
     return _write_deterministic(out_dir / "billion_laughs.xml", xml.encode("utf-8"))
 
@@ -1054,12 +1045,8 @@ def _make_app_java_log(out_dir: Path) -> Path:
                 f"Failed to flush staging batch seq={idx}"
             )
             lines.append("java.io.IOException: Upstream socket reset during batch commit")
-            lines.append(
-                "\tat com.axpoint.sync.BatchConnector.flush(BatchConnector.java:142)"
-            )
-            lines.append(
-                "\tat com.axpoint.sync.SyncWorker.runStep(SyncWorker.java:88)"
-            )
+            lines.append("\tat com.axpoint.sync.BatchConnector.flush(BatchConnector.java:142)")
+            lines.append("\tat com.axpoint.sync.SyncWorker.runStep(SyncWorker.java:88)")
             lines.append("Caused by: java.net.SocketException: Connection reset")
             lines.append("\t... 4 more")
         elif idx % 10 == 0:
@@ -1072,9 +1059,7 @@ def _make_app_java_log(out_dir: Path) -> Path:
                 f"{ts_str} INFO  [{thread}] com.axpoint.sync.BatchConnector - "
                 f"Committed batch seq={idx} rows={200 + (idx % 50)}"
             )
-    return _write_deterministic(
-        out_dir / "app_java.log", ("\n".join(lines) + "\n").encode("utf-8")
-    )
+    return _write_deterministic(out_dir / "app_java.log", ("\n".join(lines) + "\n").encode("utf-8"))
 
 
 def _make_syslog(out_dir: Path) -> Path:
@@ -1197,13 +1182,11 @@ def make_models_3d(models_dir: Path = MODELS_DIR) -> list[Path]:
         for vx, vy, vz in verts:
             pos_bytes.extend(struct.pack("<3f", vx, vy, vz))
             norm_bytes.extend(struct.pack("<3f", normal[0], normal[1], normal[2]))
-        idx_bytes.extend(
-            struct.pack("<6H", base, base + 1, base + 2, base, base + 2, base + 3)
-        )
+        idx_bytes.extend(struct.pack("<6H", base, base + 1, base + 2, base, base + 2, base + 3))
 
-    pos_len = len(pos_bytes)    # 288 bytes
+    pos_len = len(pos_bytes)  # 288 bytes
     norm_len = len(norm_bytes)  # 288 bytes
-    idx_len = len(idx_bytes)    # 72 bytes
+    idx_len = len(idx_bytes)  # 72 bytes
     bin_raw = bytes(pos_bytes) + bytes(norm_bytes) + bytes(idx_bytes)
     while len(bin_raw) % 4 != 0:
         bin_raw += b"\x00"

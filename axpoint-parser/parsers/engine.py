@@ -1,92 +1,91 @@
 from __future__ import annotations
 
-import io
+import hashlib
 import os
 import tempfile
+import uuid
 from pathlib import Path
 
-from settings import get_model_path
+from parsers.base import ParseContext
+from parsers.registry import resolve_parser
+from schemas import UnifiedParseResponse
+from security import SidecarError, safe_tenant_dir, validate_tenant_id
+from settings import get_data_root
 
 DEFAULT_MODEL_PATH = os.getenv("AXPOINT_MODEL_PATH", "/var/lib/axpoint/models")
 
 
+def parse_unified(
+    filename: str,
+    content: bytes,
+    *,
+    tenant_id: str = "default",
+    timezone: str = "Asia/Shanghai",
+    options: dict[str, str] | None = None,
+    data_root: Path | None = None,
+) -> UnifiedParseResponse:
+    """Execute full dual-track parsing (Markdown + staged Parquet tables)."""
+    if not content:
+        raise SidecarError(400, "INVALID_ARGUMENT", "Uploaded file is empty")
+
+    valid_tenant = validate_tenant_id(tenant_id)
+    parse_id = str(uuid.uuid4())
+    staging_dir = safe_tenant_dir(
+        valid_tenant,
+        "staging",
+        parse_id,
+        data_root=data_root or get_data_root(),
+        create=True,
+    )
+    sha256_hex = hashlib.sha256(content).hexdigest()
+
+    ctx = ParseContext(
+        tenant_id=valid_tenant,
+        parse_id=parse_id,
+        staging_dir=staging_dir,
+        filename=filename or "document.txt",
+        options=dict(options or {}),
+        timezone=timezone or "Asia/Shanghai",
+        write_staging=True,
+    )
+    parser = resolve_parser(content, ctx)
+    result = parser.parse(content, ctx)
+
+    return UnifiedParseResponse(
+        parse_id=parse_id,
+        title=result.title,
+        source_format=result.source_format,
+        engine=result.engine,
+        sha256=sha256_hex,
+        markdown=result.markdown,
+        tables=result.tables,
+        warnings=ctx.warnings,
+    )
+
+
 def parse_bytes_to_markdown(filename: str, content: bytes) -> tuple[str, str, str]:
-    """Convert uploaded file bytes into (title, markdown, engine_used)."""
-    path = Path(filename)
+    """Convert uploaded file bytes into (title, markdown, engine_used) without staging Parquet."""
+    path = Path(filename or "document.txt")
     suffix = path.suffix.lower()
     title = path.stem or "untitled"
 
-    if suffix in {".md", ".markdown", ".txt", ".csv", ".json"}:
+    # Preserve Step 00 lightweight plain-utf8 behavior for text-like suffixes
+    if suffix in {".md", ".markdown", ".txt", ".csv", ".json"} and not content.startswith(
+        (b"PK\x03\x04", b"%PDF-")
+    ):
         text = content.decode("utf-8", errors="replace").strip()
         return title, text, "plain-utf8"
 
-    # Try Docling + EasyOCR if installed
-    try:
-        markdown = _parse_with_docling(suffix, content)
-        if markdown.strip():
-            return title, markdown, "docling-easyocr"
-    except ImportError:
-        pass
-
-    # Lightweight fallback for text-based PDFs
-    if suffix == ".pdf":
-        markdown = _parse_pdf_pypdf(content)
-        if markdown.strip():
-            return title, markdown, "pypdf-fallback"
-
-    raise RuntimeError(
-        f"Unsupported or unparseable file '{filename}'. "
-        "Install optional `docling` + `easyocr` extras for full OCR/layout support."
-    )
-
-
-def _parse_with_docling(suffix: str, content: bytes) -> str:
-    from docling.datamodel.base_models import InputFormat
-    from docling.datamodel.pipeline_options import EasyOcrOptions, PdfPipelineOptions
-    from docling.document_converter import (
-        DocumentConverter,
-        ImageFormatOption,
-        PdfFormatOption,
-        WordFormatOption,
-    )
-
-    model_root = get_model_path()
-    easyocr_dir = model_root / "easyocr"
-    doc2md_dir = model_root / "doc2md"
-
-    easyocr_options = EasyOcrOptions()
-    if easyocr_dir.is_dir():
-        easyocr_options.model_storage_directory = str(easyocr_dir)
-
-    pdf_options = PdfPipelineOptions(
-        artifacts_path=str(doc2md_dir) if doc2md_dir.is_dir() else None
-    )
-    pdf_options.ocr_options = easyocr_options
-    pdf_options.do_ocr = True
-    pdf_options.do_table_structure = True
-
-    converter = DocumentConverter(
-        format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pdf_options),
-            InputFormat.IMAGE: ImageFormatOption(pipeline_options=pdf_options),
-            InputFormat.DOCX: WordFormatOption(pipeline_options=pdf_options),
-        }
-    )
-
-    with tempfile.NamedTemporaryFile(suffix=suffix, delete=True) as tmp:
-        tmp.write(content)
-        tmp.flush()
-        result = converter.convert(tmp.name)
-        return str(result.document.export_to_markdown())
-
-
-def _parse_pdf_pypdf(content: bytes) -> str:
-    from pypdf import PdfReader
-
-    reader = PdfReader(io.BytesIO(content))
-    pages: list[str] = []
-    for idx, page in enumerate(reader.pages, start=1):
-        txt = (page.extract_text() or "").strip()
-        if txt:
-            pages.append(f"## Page {idx}\n\n{txt}")
-    return "\n\n".join(pages)
+    with tempfile.TemporaryDirectory() as tmp_str:
+        ctx = ParseContext(
+            tenant_id="default",
+            parse_id=str(uuid.uuid4()),
+            staging_dir=Path(tmp_str),
+            filename=filename or "document.txt",
+            options={},
+            timezone="Asia/Shanghai",
+            write_staging=False,
+        )
+        parser = resolve_parser(content, ctx)
+        res = parser.parse(content, ctx)
+        return res.title, res.markdown, res.engine

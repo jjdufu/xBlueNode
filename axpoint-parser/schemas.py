@@ -1,7 +1,6 @@
-"""Shared Pydantic v2 schemas for AxPoint Parser & Connector Sidecar (Steps 01 & 02)."""
-
 from __future__ import annotations
 
+# Shared Pydantic v2 schemas for AxPoint Parser & Connector Sidecar (Steps 01 & 02).
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -95,6 +94,7 @@ QualityRuleKind = Literal[
     "UNIQUE",
     "RANGE",
     "REGEX",
+    "ENUM",
     "ALLOWED_VALUES",
     "ENUM_SET",
     "FRESHNESS",

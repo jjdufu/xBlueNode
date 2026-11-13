@@ -12,9 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REDACTED_VALUE = "***REDACTED***"
 
-_SECRET_KEY_RE = re.compile(
-    r"(?i)(password|passwd|secret|token|authorization|api[_-]?key)"
-)
+_SECRET_KEY_RE = re.compile(r"(?i)(password|passwd|secret|token|authorization|api[_-]?key)")
 _JSON_KV_SECRET_RE = re.compile(
     r"""(?i)(["'](?:[^"']*?(?:password|passwd|secret|token|authorization|api[_-]?key)[^"']*?)["']\s*:\s*["'])([^"']*)(["'])"""
 )
@@ -23,9 +21,7 @@ _ASSIGN_SECRET_RE = re.compile(
 )
 _DSN_SECRET_RE = re.compile(r"(://[^:/@\s]+:)([^@\s]+)(@)")
 
-_STANDARD_LOG_ATTRS = frozenset(
-    logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys()
-)
+_STANDARD_LOG_ATTRS = frozenset(logging.LogRecord("", 0, "", 0, "", (), None).__dict__.keys())
 
 
 def _scrub_text(value: str) -> str:
@@ -104,9 +100,20 @@ class Settings(BaseSettings):
     axpoint_data_root: Path = Path("/var/lib/axpoint")
     axpoint_model_path: Path = Path("/var/lib/axpoint/models")
     axpoint_max_upload_mb: int = 512
+    axpoint_upload_max_bytes: int | None = None
+    axpoint_ocr_enabled: bool = True
+    axpoint_parse_timeout_s: int = 300
+    axpoint_pdf_max_pages: int = 2000
     axpoint_lake_catalog_dsn: str = ""
 
+    def effective_upload_max_bytes(self) -> int:
+        """Return explicit byte limit if configured, otherwise max_upload_mb in bytes."""
+        if self.axpoint_upload_max_bytes is not None and self.axpoint_upload_max_bytes > 0:
+            return self.axpoint_upload_max_bytes
+        return self.axpoint_max_upload_mb * 1024 * 1024
+
     def lake_catalog_libpq(self) -> str:
+        """Convert AXPOINT_LAKE_CATALOG_DSN URI into libpq keyword=value string."""
         u = urlparse(self.axpoint_lake_catalog_dsn)
         parts = [
             f"dbname={u.path.lstrip('/')}",
@@ -131,6 +138,51 @@ def get_model_path() -> Path:
         return settings.axpoint_model_path
     except ValidationError:
         return Path(os.getenv("AXPOINT_MODEL_PATH", "/var/lib/axpoint/models"))
+
+
+def get_data_root() -> Path:
+    """Resolve AXPOINT_DATA_ROOT via Settings, even if token is not yet configured."""
+    try:
+        return settings.axpoint_data_root
+    except ValidationError:
+        return Path(os.getenv("AXPOINT_DATA_ROOT", "/var/lib/axpoint"))
+
+
+def get_upload_max_bytes() -> int:
+    """Resolve upload byte limit from env or Settings safely."""
+    try:
+        return settings.effective_upload_max_bytes()
+    except ValidationError:
+        raw_bytes = os.getenv("AXPOINT_UPLOAD_MAX_BYTES")
+        if raw_bytes and raw_bytes.isdigit() and int(raw_bytes) > 0:
+            return int(raw_bytes)
+        raw_mb = os.getenv("AXPOINT_MAX_UPLOAD_MB", "512")
+        return int(raw_mb) * 1024 * 1024
+
+
+def is_ocr_enabled() -> bool:
+    """Return whether OCR is enabled in runtime settings/env."""
+    try:
+        return settings.axpoint_ocr_enabled
+    except ValidationError:
+        raw = os.getenv("AXPOINT_OCR_ENABLED", "true").strip().lower()
+        return raw not in {"0", "false", "no", "off"}
+
+
+def get_pdf_max_pages() -> int:
+    """Resolve PDF page cap from env or Settings safely."""
+    try:
+        return settings.axpoint_pdf_max_pages
+    except ValidationError:
+        return int(os.getenv("AXPOINT_PDF_MAX_PAGES", "2000"))
+
+
+def get_parse_timeout_s() -> int:
+    """Resolve single-file parse timeout in seconds."""
+    try:
+        return settings.axpoint_parse_timeout_s
+    except ValidationError:
+        return int(os.getenv("AXPOINT_PARSE_TIMEOUT_S", "300"))
 
 
 class _SettingsProxy:

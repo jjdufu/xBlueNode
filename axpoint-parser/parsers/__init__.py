@@ -1,1 +1,1 @@
-"""Document-to-Markdown parsing engines for AxPoint Parser Sidecar."""
+from __future__ import annotations
