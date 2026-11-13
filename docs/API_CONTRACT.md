@@ -86,6 +86,23 @@
 - `POST /api/axhub/webhooks/{tenant_id}/{slug}/ingest`（外部入口，`HMAC_SHA256` 或 `Bearer` 签名校验）：幂等写入 `ds_webhook_buffer`（新投递 `202`，重复 `delivery_id` 返回 `200`）。
 - `GET /api/axhub/catalog/search` / `GET /api/axhub/glossary` / `POST /api/axhub/glossary` / `DELETE /api/axhub/glossary/{id}`（`DATA_READ` / `DATA_ADMIN`）：全文与同义词扩展资产目录检索及业务术语表管理。
 
+### `AxGraph` 存储扩展、时序与图查询（Step 03）
+
+- `GET /api/xblue/nodes`（`DATA_READ`）：支持 `?type_name=&q=&bbox=minLng,minLat,maxLng,maxLat&limit=&cursor=`，返回 `{items, nodes, links, next_cursor}`。
+- `POST /api/xblue/nodes`（`STUDIO_EDIT`）：幂等 upsert 业务节点（支持 `properties`、`metrics_merge: MERGE|REPLACE`、`geo`、乐观锁 `if_row_version`、关联边创建），入队 `EMBED_NODES` 并写 `ax_outbox`。
+- `POST /api/xblue/nodes/bulk`（`STUDIO_EDIT`）：单批最多 5 000 个节点 + 20 000 条关系（`UNNEST` 批量写入，端点支持 `{type_name, node_key}` 解析）。
+- `GET /api/xblue/nodes/{id}` / `PATCH /api/xblue/nodes/{id}` / `DELETE /api/xblue/nodes/{id}`（`DATA_READ` / `STUDIO_EDIT`）：单节点查询、增量更新与级联删除（连同 `xb_links` 与 `xb_metric_series`）。
+- `GET /api/xblue/nodes/search?q=&type_name=&k=20`（`DATA_READ`）：PostgreSQL FTS + `pgvector` HNSW 双通道 RRF（`k=60`）混合检索。
+- `GET /api/xblue/nodes/{id}/documents`（`DATA_READ`）：经 `xb_entity_links` 与 `MENTIONS` 超边查询提及该节点的文档与段落摘录。
+- `GET /api/xblue/links` / `POST /api/xblue/links` / `DELETE /api/xblue/links/{id}`（`DATA_READ` / `STUDIO_EDIT`）：业务关系列表、幂等 upsert（唯一键 `(tenant_id, link_type, src_node_id, dst_node_id)`）与删除。
+- `POST /api/xblue/metrics/write`（`DATA_SYNC`）：批量写入时序原始点（最多 50 000 点），同步更新 `xb_nodes.metrics` 最新值与 `xb_rollup_dirty` 迟到桶，并入队 `ROLLUP`。
+- `GET /api/xblue/nodes/{id}/metrics/{metric}?from=&to=&grain=&agg=`（`DATA_READ`）：自动或显式粒度时序查询（超过 5 000 点自动升粒度）。
+- `POST /api/xblue/metrics/window` / `GET /api/xblue/metrics/catalog`（`DATA_READ`）：滚动/滑动窗口聚合查询与租户指标目录。
+- `GET /api/xblue/graph/neighbors` / `GET /api/xblue/graph/path` / `GET /api/xblue/graph/subgraph`（`DATA_READ`）：防环递归 CTE k 跳邻居、双向 BFS / Dijkstra 最短路径与画布子图。
+- `POST /api/xblue/graph/algorithms/{algo}` / `GET /api/xblue/graph/algorithms/{algo}/results`（`STUDIO_EDIT` / `DATA_READ`）：`PAGERANK`、`DEGREE`、`LABEL_PROPAGATION`、`CONNECTED_COMPONENTS` 图算法运行与分页结果读取。
+- `POST /api/xblue/entities/resolve` / `GET /api/xblue/entities/candidates` / `POST /api/xblue/entities/links/{entity_id}/{node_id}/confirm|reject`（`STUDIO_EDIT`）：超图实体与业务节点归一化自动对齐与人工确认/拒绝。
+- `POST /api/axops/jobs/rollup-now`（`OPS_ADMIN`）：为当前租户立即入队一次 `ROLLUP` 任务并返回 `{job_id}`。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）

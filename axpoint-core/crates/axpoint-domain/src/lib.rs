@@ -1,7 +1,9 @@
 //! Domain types, error definitions, and five-way RRF fusion logic for `AxPoint`.
 
+pub mod algo;
 pub mod axhub;
 pub mod enums;
+pub mod graph;
 pub mod platform;
 pub mod ports;
 pub mod topology;

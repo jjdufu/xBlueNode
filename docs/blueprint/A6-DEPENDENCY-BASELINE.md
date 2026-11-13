@@ -43,6 +43,7 @@
 | 03 | `uuid` 追加 feature `v5` | 1 | 确定性业务节点与超图实体 UUID（`Uuid::new_v5`） |
 | 03 | `petgraph` | 0.8 | 路径、PageRank、社区发现 |
 | 03 | `hyperloglogplus` | 0.4 | 去重计数草图 |
+| 03 | `unicode-normalization` | 0.1 | 实体名称 Unicode NFKC 归一化（§03.5.1，MIT / Apache-2.0） |
 | 04 | `duckdb` | `1.20000`（对应 DuckDB 2.0，feature `bundled`、`parquet`、`json`、`vtab-arrow`、`vscalar`） | OLAP、Arrow 批次流与自定义标量脱敏函数 |
 | 04 | `sqlparser` | 0.64 | AST 白名单（`DuckDbDialect`） |
 | 04 | `lru` | 0.16 | 租户 DuckDB 实例池 |
