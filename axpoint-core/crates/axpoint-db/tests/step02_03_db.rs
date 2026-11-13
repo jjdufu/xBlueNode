@@ -784,7 +784,7 @@ async fn verify_entity_links_and_reject(
     let para_id = Uuid::new_v4();
     let ent_id = Uuid::new_v4();
     sqlx::query(
-        "INSERT INTO hg_docs (id, tenant_id, title, source_name, raw_markdown)
+        "INSERT INTO hg_docs (id, tenant_id, title, source_name, summary)
          VALUES ($1, $2, '仓储制度', 'warehouse.md', '华东仓有限公司负责履约订单 O-1。')",
     )
     .bind(doc_id)
@@ -843,7 +843,7 @@ async fn verify_entity_links_and_reject(
 }
 
 #[tokio::test]
-async fn axgraph_entity_links_traversal_and_algorithms() -> TestResult {
+async fn axgraph_entity_link_and_graph_query_traversal_and_algorithms() -> TestResult {
     let Some((app_pool, owner_pool)) = test_pools().await? else {
         return Ok(());
     };
