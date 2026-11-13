@@ -81,7 +81,7 @@ impl PgStore {
             "SELECT target, keep_days
                FROM ax_retention_policies
               WHERE tenant_id = $1
-                AND target IN ('JOB', 'OUTBOX')",
+                AND target IN ('JOB', 'OUTBOX', 'MESSAGE', 'METRIC_ROLLUP_MINUTE', 'METRIC_SERIES')",
         )
         .bind(tenant_id)
         .fetch_all(&mut *tx)
@@ -90,43 +90,21 @@ impl PgStore {
 
         let mut jobs_deleted: u64 = 0;
         let mut outbox_deleted: u64 = 0;
+        let mut webhook_buffer_deleted: u64 = 0;
+        let mut minute_rollups_deleted: u64 = 0;
+        let mut metric_series_deleted: u64 = 0;
 
         for row in policy_rows {
             let target: String = row.get("target");
             let keep_days: i32 = row.get("keep_days");
+            let affected =
+                delete_expired_target_tx(&mut tx, tenant_id, target.as_str(), keep_days).await?;
             match target.as_str() {
-                "JOB" => {
-                    let res = sqlx::query(
-                        "DELETE FROM ax_jobs
-                          WHERE tenant_id = $1
-                            AND status IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'EXPIRED')
-                            AND updated_at < NOW() - make_interval(days => $2::int)",
-                    )
-                    .bind(tenant_id)
-                    .bind(keep_days)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|err| {
-                        AppError::Database(format!("retention delete ax_jobs failed: {err}"))
-                    })?;
-                    jobs_deleted = res.rows_affected();
-                }
-                "OUTBOX" => {
-                    let res = sqlx::query(
-                        "DELETE FROM ax_outbox
-                          WHERE tenant_id = $1
-                            AND processed_at IS NOT NULL
-                            AND processed_at < NOW() - make_interval(days => $2::int)",
-                    )
-                    .bind(tenant_id)
-                    .bind(keep_days)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|err| {
-                        AppError::Database(format!("retention delete ax_outbox failed: {err}"))
-                    })?;
-                    outbox_deleted = res.rows_affected();
-                }
+                "JOB" => jobs_deleted = affected,
+                "OUTBOX" => outbox_deleted = affected,
+                "MESSAGE" => webhook_buffer_deleted = affected,
+                "METRIC_ROLLUP_MINUTE" => minute_rollups_deleted = affected,
+                "METRIC_SERIES" => metric_series_deleted = affected,
                 _ => {}
             }
         }
@@ -138,8 +116,59 @@ impl PgStore {
         Ok(serde_json::json!({
             "jobs_deleted": jobs_deleted,
             "outbox_deleted": outbox_deleted,
+            "webhook_buffer_deleted": webhook_buffer_deleted,
+            "minute_rollups_deleted": minute_rollups_deleted,
+            "metric_series_deleted": metric_series_deleted,
         }))
     }
+}
+
+async fn delete_expired_target_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    target: &str,
+    keep_days: i32,
+) -> Result<u64, AppError> {
+    let sql: &'static str = match target {
+        "JOB" => {
+            "DELETE FROM ax_jobs
+              WHERE tenant_id = $1
+                AND status IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'EXPIRED')
+                AND updated_at < NOW() - make_interval(days => $2::int)"
+        }
+        "OUTBOX" => {
+            "DELETE FROM ax_outbox
+              WHERE tenant_id = $1
+                AND processed_at IS NOT NULL
+                AND processed_at < NOW() - make_interval(days => $2::int)"
+        }
+        "MESSAGE" => {
+            "DELETE FROM ds_webhook_buffer
+              WHERE tenant_id = $1
+                AND flushed_at IS NOT NULL
+                AND flushed_at < NOW() - make_interval(days => $2::int)"
+        }
+        "METRIC_ROLLUP_MINUTE" => {
+            "DELETE FROM xb_metric_rollups
+              WHERE tenant_id = $1
+                AND grain = 'MINUTE'
+                AND bucket_start < NOW() - make_interval(days => $2::int)"
+        }
+        "METRIC_SERIES" => {
+            "DELETE FROM xb_metric_series
+              WHERE tenant_id = $1
+                AND ts < NOW() - make_interval(days => $2::int)"
+        }
+        _ => return Ok(0),
+    };
+
+    let res = sqlx::query(sql)
+        .bind(tenant_id)
+        .bind(keep_days)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("retention delete {target} failed: {err}")))?;
+    Ok(res.rows_affected())
 }
 
 impl JobQueuePort for PgStore {
