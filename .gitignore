@@ -12,17 +12,23 @@
 venv/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
 
-# Node / Frontend
+# Node / Frontend / Playwright
 **/node_modules/
 **/dist/
 **/*.tsbuildinfo
 .vite/
+xbluenode-web/test-results/
+xbluenode-web/playwright-report/
 
-# Environment & Secrets
+# Environment & Secrets & Gate state
 .env
+.env.test
 .env.local
 .env.*.local
+deploy/.env
+.gate/
 
 # Local runtime data & artifacts
 *.parquet

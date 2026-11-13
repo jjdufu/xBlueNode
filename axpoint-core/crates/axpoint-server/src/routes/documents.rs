@@ -1,39 +1,46 @@
+//! Document ingestion, Sidecar upload forwarding, and five-way hybrid RAG query routes.
+
 use std::time::Instant;
 
 use axpoint_db::{DocumentIngestPayload, ParaIngestInput};
+use axpoint_domain::enums::Permission;
 use axpoint_domain::{
     AppError, ChatQueryRequest, ChatQueryResponse, IngestResponse, IngestTextRequest, rrf_fuse,
     split_paragraphs,
 };
+use axpoint_security::AuthPrincipal;
 use axum::extract::{Multipart, State};
 use axum::routing::post;
 use axum::{Json, Router};
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::state::{AppState, HttpError, ParserSidecarResponse, default_tenant};
+use crate::state::{ApiJson, AppState, HttpError, ParserSidecarResponse};
+use crate::telemetry::outbound_traceparent;
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
-        .route("/api/documents/ingest", post(ingest_text_handler))
-        .route("/api/documents/upload", post(upload_document_handler))
-        .route("/api/chat/query", post(chat_query_handler))
+        .route("/documents/ingest", post(ingest_text_handler))
+        .route("/documents/upload", post(upload_document_handler))
+        .route("/chat/query", post(chat_query_handler))
 }
 
 async fn ingest_text_handler(
     State(state): State<AppState>,
-    Json(req): Json<IngestTextRequest>,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<IngestTextRequest>,
 ) -> Result<Json<IngestResponse>, HttpError> {
-    let tenant_id = default_tenant();
-    let resp = run_ingest_pipeline(&state, &tenant_id, req).await?;
+    principal.require(Permission::DataSync)?;
+    let resp = run_ingest_pipeline(&state, &principal.tenant_id, req).await?;
     Ok(Json(resp))
 }
 
 async fn upload_document_handler(
     State(state): State<AppState>,
+    principal: AuthPrincipal,
     mut multipart: Multipart,
 ) -> Result<Json<IngestResponse>, HttpError> {
-    let tenant_id = default_tenant();
+    principal.require(Permission::DataSync)?;
     let mut file_name = String::from("uploaded.pdf");
     let mut file_bytes: Option<Vec<u8>> = None;
 
@@ -70,10 +77,13 @@ async fn upload_document_handler(
     let part = reqwest::multipart::Part::bytes(raw_bytes).file_name(file_name.clone());
     let form = reqwest::multipart::Form::new().part("file", part);
     let parse_url = format!("{}/parse", state.parser_base_url.trim_end_matches('/'));
+    let traceparent = outbound_traceparent();
 
     let parser_resp = state
         .http
         .post(&parse_url)
+        .header("X-AxPoint-Tenant", &principal.tenant_id)
+        .header("traceparent", traceparent)
         .multipart(form)
         .send()
         .await
@@ -94,7 +104,7 @@ async fn upload_document_handler(
 
     let resp = run_ingest_pipeline(
         &state,
-        &tenant_id,
+        &principal.tenant_id,
         IngestTextRequest {
             title: parsed.title,
             source_name: file_name,
@@ -178,8 +188,10 @@ async fn run_ingest_pipeline(
 
 async fn chat_query_handler(
     State(state): State<AppState>,
-    Json(req): Json<ChatQueryRequest>,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<ChatQueryRequest>,
 ) -> Result<Json<ChatQueryResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
     if req.query.trim().is_empty() {
         return Err(HttpError(AppError::bad(
             "INVALID_ARGUMENT",
@@ -187,7 +199,7 @@ async fn chat_query_handler(
         )));
     }
 
-    let tenant_id = default_tenant();
+    let tenant_id = &principal.tenant_id;
     let started = Instant::now();
 
     let (embed_res, seed_entities) = tokio::join!(
@@ -198,12 +210,15 @@ async fn chat_query_handler(
     let (q_vec, q_dim) = embed_res?;
     let seeds = seed_entities.unwrap_or_default();
 
+    let recall_started = Instant::now();
     let (vec_res, bm25_res, ent_res, hop_res) = tokio::join!(
-        state.store.recall_vector(&tenant_id, q_vec, q_dim, 12),
-        state.store.recall_bm25(&tenant_id, &req.query, 12),
-        state.store.recall_entity_link(&tenant_id, &seeds, 10),
-        state.store.recall_multi_hop(&tenant_id, &seeds, 10)
+        state.store.recall_vector(tenant_id, q_vec, q_dim, 12),
+        state.store.recall_bm25(tenant_id, &req.query, 12),
+        state.store.recall_entity_link(tenant_id, &seeds, 10),
+        state.store.recall_multi_hop(tenant_id, &seeds, 10)
     );
+    metrics::histogram!("axpoint_recall_channel_seconds", "channel" => "parallel")
+        .record(recall_started.elapsed().as_secs_f64());
 
     let mut all_candidates = Vec::new();
     all_candidates.extend(vec_res?);
@@ -214,7 +229,7 @@ async fn chat_query_handler(
     let seed_para_ids: Vec<Uuid> = all_candidates.iter().take(4).map(|c| c.para_id).collect();
     let ctx_res = state
         .store
-        .recall_context(&tenant_id, &seed_para_ids, 6)
+        .recall_context(tenant_id, &seed_para_ids, 6)
         .await?;
     all_candidates.extend(ctx_res);
 

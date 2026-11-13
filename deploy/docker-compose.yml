@@ -1,17 +1,62 @@
+name: xbluenode
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: xbluenode-pgvector
     restart: unless-stopped
     environment:
       POSTGRES_USER: axpoint
-      POSTGRES_PASSWORD: axpoint_secret
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-axpoint_secret}
       POSTGRES_DB: xbluenode
-    ports:
-      - "5432:5432"
+      AXPOINT_APP_DB_PASSWORD: ${AXPOINT_APP_DB_PASSWORD:-axpoint_app_secret}
+      AXPOINT_LAKE_DB_PASSWORD: ${AXPOINT_LAKE_DB_PASSWORD:-axpoint_lake_secret}
+    ports: ["127.0.0.1:5432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./migrations:/docker-entrypoint-initdb.d:ro
+      - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axpoint -d xbluenode"]
+      interval: 5s
+      retries: 20
+    networks: [internal]
+
+  axpoint-parser:
+    image: ${AXPOINT_REGISTRY:-dex2all}/axpoint-parser:${AXPOINT_PARSER_VERSION:-v0.1.0}-${AXPOINT_PARSER_VARIANT:-full}
+    build:
+      context: ..
+      dockerfile: deploy/docker/axpoint-parser.Dockerfile
+      target: ${AXPOINT_PARSER_VARIANT:-full}
+    env_file: .env
+    environment:
+      AXPOINT_LAKE_CATALOG_DSN: postgres://axpoint_lake:${AXPOINT_LAKE_DB_PASSWORD:-axpoint_lake_secret}@postgres:5432/xbluenode
+    volumes:
+      - axpoint_data:/var/lib/axpoint
+    depends_on:
+      postgres: { condition: service_healthy }
+    networks: [internal]
+
+  axpoint-core:
+    image: ${AXPOINT_REGISTRY:-dex2all}/axpoint-core:${AXPOINT_VERSION:-v0.1.0}
+    build:
+      context: ..
+      dockerfile: deploy/docker/axpoint-core.Dockerfile
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://axpoint_app:${AXPOINT_APP_DB_PASSWORD:-axpoint_app_secret}@postgres:5432/xbluenode
+      MIGRATION_DATABASE_URL: postgres://axpoint:${POSTGRES_PASSWORD:-axpoint_secret}@postgres:5432/xbluenode
+      AXPOINT_LAKE_CATALOG_DSN: postgres://axpoint_lake:${AXPOINT_LAKE_DB_PASSWORD:-axpoint_lake_secret}@postgres:5432/xbluenode
+      PARSER_BASE_URL: http://axpoint-parser:8001
+      AXPOINT_MIGRATE_ON_START: "true"
+    ports: ["9995:9995"]
+    volumes:
+      - axpoint_data:/var/lib/axpoint
+    depends_on:
+      postgres: { condition: service_healthy }
+      axpoint-parser: { condition: service_healthy }
+    networks: [internal]
 
 volumes:
   pgdata:
+  axpoint_data:
+
+networks:
+  internal:

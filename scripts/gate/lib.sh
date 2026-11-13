@@ -59,8 +59,16 @@ sql_owner() { psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -Atqc "$1"; }
 
 # sql_app TENANT SQL：以应用角色、指定租户上下文执行（验证 RLS）
 sql_app() {
-  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atq \
-    -c "BEGIN; SELECT set_config('app.tenant_id', '$1', true) \\g /dev/null" -c "$2" -c "COMMIT;" | sed '/^$/d'
+  local tenant="${1//\'/\'\'}"
+  psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -Atq <<SQL | sed '/^$/d'
+\\o /dev/null
+BEGIN;
+SELECT set_config('app.tenant_id', '${tenant}', true);
+\\o
+$2;
+\\o /dev/null
+COMMIT;
+SQL
 }
 
 # wait_until NAME TIMEOUT_S CMD：每秒执行 CMD，直到成功或超时
