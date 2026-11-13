@@ -1,6 +1,6 @@
 //! Step 00 PostgreSQL integration tests for RLS tenant isolation, `ax_jobs`, `ax_outbox`, `sec_audit_logs`, and `sec_api_tokens`.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use axpoint_domain::AppError;
 use axpoint_domain::enums::{AuditAction, JobKind, JobStatus, OutboxTopic, Permission};
@@ -86,10 +86,8 @@ async fn rls_blocks_without_tenant() -> TestResult {
                 type_name: String::from("Warehouse"),
                 node_key: String::from("W-RLS-1"),
                 title: String::from("RLS Test Warehouse"),
-                metrics: HashMap::from([(String::from("inventory"), 100.0)]),
-                link_to_node_id: None,
-                link_type: None,
-                link_weight: None,
+                metrics: BTreeMap::from([(String::from("inventory"), 100.0)]),
+                ..UpsertBlueNodeRequest::default()
             },
         )
         .await?;
@@ -128,10 +126,7 @@ async fn rls_isolates_tenants() -> TestResult {
                 type_name: String::from("Warehouse"),
                 node_key: String::from("W-T1"),
                 title: String::from("Tenant 1 Node"),
-                metrics: HashMap::new(),
-                link_to_node_id: None,
-                link_type: None,
-                link_weight: None,
+                ..UpsertBlueNodeRequest::default()
             },
         )
         .await?;

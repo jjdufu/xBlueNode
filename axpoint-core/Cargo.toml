@@ -52,11 +52,13 @@ cron = "0.17"
 dotenvy = "0.15"
 hex = "0.4"
 hmac = "0.12"
+hyperloglogplus = "0.4"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 opentelemetry = "0.33"
 opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic"] }
 opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
+petgraph = "0.8"
 pgvector = { version = "0.4", features = ["sqlx"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
@@ -72,5 +74,6 @@ tracing = "0.1"
 tracing-opentelemetry = "0.34"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 trait-variant = "0.1"
-uuid = { version = "1", features = ["v4", "serde"] }
+unicode-normalization = "0.1"
+uuid = { version = "1", features = ["v4", "v5", "serde"] }
 zeroize = { version = "1", features = ["derive"] }

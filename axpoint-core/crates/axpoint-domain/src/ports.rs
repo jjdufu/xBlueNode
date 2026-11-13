@@ -16,7 +16,16 @@ use crate::axhub::{
     SyncDatasetResponse, SyncJob, UnifiedParseResponse, UpdateColumnMetaRequest,
     UpdateConnectionInput, UpdateDatasetRequest, UploadRecord, WebhookBufferItem, WebhookConfig,
 };
-use crate::enums::JobKind;
+use crate::enums::{GraphAlgo, JobKind};
+use crate::graph::{
+    AlgoResultsQuery, AlgoResultsResponse, AlgoRunRequest, AlgoRunResponse, BulkNodesRequest,
+    BulkNodesResponse, EntityCandidatesResponse, EntityLink, LinkListQuery, LinkRecord,
+    MetricCatalogEntry, MetricSeriesPoint, NeighborQuery, NodeDocumentsResponse, NodeListQuery,
+    NodeListResponse, NodeMetricSeriesQuery, NodeSearchQuery, NodeSearchResponse, PatchNodeRequest,
+    PathQuery, PathResponse, ResolveEntitiesRequest, ResolveEntitiesResponse, SubgraphQuery,
+    SubgraphResponse, UpsertLinkRequest, WindowQuery, WindowQueryResponse, WriteMetricsRequest,
+    WriteMetricsResponse,
+};
 use crate::platform::{
     ApiTokenRecord, AuditRecord, JobListQuery, JobListResponse, JobRecord, LeasedJob, NewJob,
     OutboxEvent, PrincipalRecord,
@@ -710,4 +719,193 @@ pub trait SidecarPort: Send + Sync {
         tenant_id: &str,
         lake_table: &str,
     ) -> impl Future<Output = Result<(), AppError>> + Send;
+}
+
+/// Persistence port for `AxGraph` business nodes, links, hybrid search, and entity links (Step 03).
+pub trait GraphStorePort: Send + Sync {
+    /// Lists business nodes with optional type, query, geographic `bbox`, and cursor pagination.
+    fn list_nodes(
+        &self,
+        tenant_id: &str,
+        query: NodeListQuery,
+    ) -> impl Future<Output = Result<NodeListResponse, AppError>> + Send;
+
+    /// Fetches a single business node by UUID.
+    fn get_node(
+        &self,
+        tenant_id: &str,
+        node_id: Uuid,
+    ) -> impl Future<Output = Result<Option<BlueNode>, AppError>> + Send;
+
+    /// Upserts a business node with `metrics_merge`, optimistic `if_row_version`, outbox events, and `EMBED_NODES` enqueueing.
+    fn upsert_node(
+        &self,
+        tenant_id: &str,
+        req: UpsertBlueNodeRequest,
+    ) -> impl Future<Output = Result<BlueNode, AppError>> + Send;
+
+    /// Partially updates an existing business node by UUID.
+    fn patch_node(
+        &self,
+        tenant_id: &str,
+        node_id: Uuid,
+        req: PatchNodeRequest,
+    ) -> impl Future<Output = Result<BlueNode, AppError>> + Send;
+
+    /// Deletes a business node, cascading its incident `xb_links` and `xb_metric_series` rows.
+    fn delete_node(
+        &self,
+        tenant_id: &str,
+        node_id: Uuid,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Bulk-upserts up to 5,000 nodes and 20,000 links in a single tenant transaction.
+    fn bulk_upsert(
+        &self,
+        tenant_id: &str,
+        req: BulkNodesRequest,
+    ) -> impl Future<Output = Result<BulkNodesResponse, AppError>> + Send;
+
+    /// Lists `xb_links` filtered by incident `node_id` and/or `link_type`.
+    fn list_links(
+        &self,
+        tenant_id: &str,
+        query: LinkListQuery,
+    ) -> impl Future<Output = Result<Vec<LinkRecord>, AppError>> + Send;
+
+    /// Idempotently upserts a link on `(tenant_id, link_type, src_node_id, dst_node_id)`.
+    fn upsert_link(
+        &self,
+        tenant_id: &str,
+        req: UpsertLinkRequest,
+    ) -> impl Future<Output = Result<LinkRecord, AppError>> + Send;
+
+    /// Deletes a link by UUID.
+    fn delete_link(
+        &self,
+        tenant_id: &str,
+        link_id: Uuid,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Performs RRF hybrid retrieval combining PostgreSQL FTS and `pgvector` HNSW cosine similarity.
+    fn search_nodes(
+        &self,
+        tenant_id: &str,
+        query: NodeSearchQuery,
+        query_embedding: Option<&[f32]>,
+    ) -> impl Future<Output = Result<NodeSearchResponse, AppError>> + Send;
+
+    /// Returns hypergraph documents and paragraph excerpts mentioning a node via confirmed `xb_entity_links`.
+    fn list_node_documents(
+        &self,
+        tenant_id: &str,
+        node_id: Uuid,
+    ) -> impl Future<Output = Result<NodeDocumentsResponse, AppError>> + Send;
+
+    /// Incrementally resolves `hg_entities` ↔ `xb_nodes` links (`EXACT_KEY`, `EXACT_TITLE`, `SYNONYM`, `EMBEDDING`).
+    fn resolve_entity_links(
+        &self,
+        tenant_id: &str,
+        req: ResolveEntitiesRequest,
+    ) -> impl Future<Output = Result<ResolveEntitiesResponse, AppError>> + Send;
+
+    /// Lists unconfirmed, non-rejected `xb_entity_links` candidates (`confidence < 0.9`).
+    fn list_entity_candidates(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<EntityCandidatesResponse, AppError>> + Send;
+
+    /// Marks an `(entity_id, node_id)` link as manually confirmed.
+    fn confirm_entity_link(
+        &self,
+        tenant_id: &str,
+        entity_id: Uuid,
+        node_id: Uuid,
+    ) -> impl Future<Output = Result<EntityLink, AppError>> + Send;
+
+    /// Marks an `(entity_id, node_id)` link as rejected so automatic resolution will not recreate it.
+    fn reject_entity_link(
+        &self,
+        tenant_id: &str,
+        entity_id: Uuid,
+        node_id: Uuid,
+    ) -> impl Future<Output = Result<EntityLink, AppError>> + Send;
+}
+
+/// Persistence port for partitioned `xb_metric_series` ingestion, multi-grain `xb_metric_rollups`, and window queries (Step 03).
+pub trait MetricStorePort: Send + Sync {
+    /// Writes up to 50,000 raw metric points, updates latest `xb_nodes.metrics`, marks dirty minutes, and enqueues `ROLLUP`.
+    fn write_metrics(
+        &self,
+        tenant_id: &str,
+        req: WriteMetricsRequest,
+    ) -> impl Future<Output = Result<WriteMetricsResponse, AppError>> + Send;
+
+    /// Queries time-series points for one node and metric with automatic or explicit grain selection and `> 5,000` promotion.
+    fn query_node_metrics(
+        &self,
+        tenant_id: &str,
+        node_id: Uuid,
+        metric: &str,
+        query: NodeMetricSeriesQuery,
+    ) -> impl Future<Output = Result<Vec<MetricSeriesPoint>, AppError>> + Send;
+
+    /// Evaluates `TUMBLING` or `SLIDING` window aggregations across nodes/types.
+    fn query_window(
+        &self,
+        tenant_id: &str,
+        query: WindowQuery,
+    ) -> impl Future<Output = Result<WindowQueryResponse, AppError>> + Send;
+
+    /// Lists all `(type_name, metric, point_count, min_ts, max_ts)` tuples in the tenant.
+    fn list_metric_catalog(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<MetricCatalogEntry>, AppError>> + Send;
+
+    /// Executes incremental + dirty-bucket `MINUTE` → `HOUR` → `DAY` → `MONTH` rollup computation for a tenant.
+    fn run_rollup_for_tenant(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<u64, AppError>> + Send;
+}
+
+/// Graph traversal (`k`-hop neighbors, shortest path, subgraph) and `petgraph` algorithm port (Step 03).
+pub trait GraphQueryPort: Send + Sync {
+    /// Expands `1..=4` hop neighbors around `query.node_id` using cycle-safe recursive CTEs.
+    fn query_neighbors(
+        &self,
+        tenant_id: &str,
+        query: NeighborQuery,
+    ) -> impl Future<Output = Result<SubgraphResponse, AppError>> + Send;
+
+    /// Computes unweighted (bidirectional BFS) or weighted (`petgraph::algo::dijkstra` with `1 / weight`) shortest path.
+    fn query_shortest_path(
+        &self,
+        tenant_id: &str,
+        query: PathQuery,
+    ) -> impl Future<Output = Result<PathResponse, AppError>> + Send;
+
+    /// Loads an initial canvas subgraph filtered by `type_names` and `link_types`.
+    fn query_subgraph(
+        &self,
+        tenant_id: &str,
+        query: SubgraphQuery,
+    ) -> impl Future<Output = Result<SubgraphResponse, AppError>> + Send;
+
+    /// Executes a `GraphAlgo`, persists `xb_graph_algo_results`, and writes `algo_<name>` metric points.
+    fn run_algorithm(
+        &self,
+        tenant_id: &str,
+        algo: GraphAlgo,
+        req: AlgoRunRequest,
+    ) -> impl Future<Output = Result<AlgoRunResponse, AppError>> + Send;
+
+    /// Reads paginated persisted results from `xb_graph_algo_results`.
+    fn list_algorithm_results(
+        &self,
+        tenant_id: &str,
+        algo: GraphAlgo,
+        query: AlgoResultsQuery,
+    ) -> impl Future<Output = Result<AlgoResultsResponse, AppError>> + Send;
 }

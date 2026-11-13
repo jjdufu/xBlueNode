@@ -1,10 +1,12 @@
 //! `xBlueStudio` node/edge modeling, `AxFlow` pipelines, and `AxSim` causal sandbox domain logic.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::graph::{GeoPoint, MetricsMerge};
 
 /// Property definition on an `xBlueStudio` node type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,8 +125,34 @@ pub struct BlueNode {
     pub node_key: String,
     /// Display title.
     pub title: String,
-    /// Numeric/business metrics map.
-    pub metrics: HashMap<String, f64>,
+    /// Arbitrary JSON static properties.
+    #[serde(default)]
+    pub properties: serde_json::Map<String, serde_json::Value>,
+    /// Numeric/business metrics snapshot map.
+    #[serde(default)]
+    pub metrics: BTreeMap<String, f64>,
+    /// Optional WGS-84 geographic coordinate.
+    #[serde(default)]
+    pub geo: Option<GeoPoint>,
+    /// Optional originating dataset UUID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_dataset_id: Option<Uuid>,
+    /// Optional originating dataset primary key string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_row_key: Option<String>,
+    /// Optimistic concurrency row version (`>= 1`).
+    #[serde(default = "default_row_version")]
+    pub row_version: i64,
+    /// Creation timestamp.
+    #[serde(default = "Utc::now")]
+    pub created_at: DateTime<Utc>,
+    /// Last modification timestamp.
+    #[serde(default = "Utc::now")]
+    pub updated_at: DateTime<Utc>,
+}
+
+const fn default_row_version() -> i64 {
+    1
 }
 
 /// Runtime `xBlueNode` business link instance.
@@ -143,7 +171,7 @@ pub struct BlueLink {
 }
 
 /// Request to upsert a runtime `BlueNode` (and optionally link it).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UpsertBlueNodeRequest {
     /// Node type name.
@@ -152,14 +180,29 @@ pub struct UpsertBlueNodeRequest {
     pub node_key: String,
     /// Display title.
     pub title: String,
-    /// Numeric metrics.
+    /// Static JSON properties.
     #[serde(default)]
-    pub metrics: HashMap<String, f64>,
+    pub properties: serde_json::Map<String, serde_json::Value>,
+    /// Numeric metrics snapshot.
+    #[serde(default)]
+    pub metrics: BTreeMap<String, f64>,
+    /// Merge strategy (`MERGE` by default, or `REPLACE`).
+    #[serde(default)]
+    pub metrics_merge: MetricsMerge,
+    /// Optional WGS-84 coordinate (`{ lng, lat }`).
+    #[serde(default)]
+    pub geo: Option<GeoPoint>,
+    /// Optional optimistic concurrency check (`409 VERSION_CONFLICT` on mismatch).
+    #[serde(default)]
+    pub if_row_version: Option<i64>,
     /// Optional target node ID to link to.
+    #[serde(default)]
     pub link_to_node_id: Option<Uuid>,
-    /// Optional link type name.
+    /// Optional link type name (required when `link_to_node_id` is set).
+    #[serde(default)]
     pub link_type: Option<String>,
-    /// Optional link propagation weight.
+    /// Optional link propagation weight (defaults to `xb_edge_types.impact_weight`).
+    #[serde(default)]
     pub link_weight: Option<f64>,
 }
 
@@ -403,6 +446,7 @@ mod tests {
         let id_b = Uuid::new_v4();
         let id_c = Uuid::new_v4();
 
+        let now = Utc::now();
         let snapshot = AxSimSnapshot {
             nodes: vec![
                 BlueNode {
@@ -410,21 +454,42 @@ mod tests {
                     type_name: String::from("Factory"),
                     node_key: String::from("F-A"),
                     title: String::from("华东晶圆厂"),
-                    metrics: HashMap::from([(String::from("output"), 1000.0)]),
+                    properties: serde_json::Map::new(),
+                    metrics: BTreeMap::from([(String::from("output"), 1000.0)]),
+                    geo: None,
+                    source_dataset_id: None,
+                    source_row_key: None,
+                    row_version: 1,
+                    created_at: now,
+                    updated_at: now,
                 },
                 BlueNode {
                     id: id_b,
                     type_name: String::from("Warehouse"),
                     node_key: String::from("W-B"),
                     title: String::from("中心配送仓"),
-                    metrics: HashMap::from([(String::from("output"), 500.0)]),
+                    properties: serde_json::Map::new(),
+                    metrics: BTreeMap::from([(String::from("output"), 500.0)]),
+                    geo: None,
+                    source_dataset_id: None,
+                    source_row_key: None,
+                    row_version: 1,
+                    created_at: now,
+                    updated_at: now,
                 },
                 BlueNode {
                     id: id_c,
                     type_name: String::from("Order"),
                     node_key: String::from("O-C"),
                     title: String::from("重点客户订单"),
-                    metrics: HashMap::from([(String::from("output"), 200.0)]),
+                    properties: serde_json::Map::new(),
+                    metrics: BTreeMap::from([(String::from("output"), 200.0)]),
+                    geo: None,
+                    source_dataset_id: None,
+                    source_row_key: None,
+                    row_version: 1,
+                    created_at: now,
+                    updated_at: now,
                 },
             ],
             links: vec![
