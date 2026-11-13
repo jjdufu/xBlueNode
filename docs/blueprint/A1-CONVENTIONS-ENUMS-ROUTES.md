@@ -15,12 +15,12 @@
 | **AxGraph** | 存储 | 超图（`hg_*`）+ 业务节点（`xb_*`）+ 时序 + 图查询 | `axpoint-db` |
 | **AxAnalytics** | 分析 | DuckDB / DuckLake OLAP、透视制表、指标语义层、智能问数 | `axpoint-analytics` |
 | **AxQuery** | 问答 | 五路超图召回 + RRF + 意图路由（文档 / 数值 / 混合） | `routes/documents.rs`、`axpoint-analytics::nl2sql` |
-| **xBlueStudio** | 建模 | 节点类型 / 关系类型 / 映射 / 派生与聚合规则 / 模型版本 | `routes/xblue.rs`、`XBlueStudioPage.tsx` |
+| **xBlueStudio** | 建模 | 多子图部门建模 / 本体融合 / 节点与关系类型 / 映射 / 派生与聚合规则 / 领域对象 REST 与动态 GraphQL | `routes/xblue.rs`、`routes/xblue_graphql.rs`、`XBlueStudioPage.tsx` |
 | **xBlueGraph** | 图浏览 | 业务图与超图浏览、邻居展开、路径、图算法结果展示 | `XBlueGraphPage.tsx` |
 | **AxFlow** | 编排 | DAG 流程、持久化任务队列、触发器、规则与告警 | `axpoint-flow` |
 | **AxAgent** | 智能体 | 发布（API / Skill / MCP）、MCP Client、多模型路由、智能体与会话 | `axpoint-agent` |
 | **AxSim** | 推演 | 范围克隆沙盘、写时复制覆盖层、因果传导、方案对比、决策下发 | `axpoint-domain::sim`、`routes/axsim.rs` |
-| **xBlueView** | 可视与出品 | 孪生驾驶舱、图表、分享、全格式出品 | `XBlueViewPage.tsx`、`axpoint-parser/exporters/` |
+| **xBlueView** | 可视与出品 | 孪生驾驶舱、AI 看板生成、3D 孪生场景、页面动作回写、分享、全格式出品 | `XBlueViewPage.tsx`、`axpoint-parser/exporters/` |
 | **AxGuard** | 安全 | 认证、令牌、策略、行级安全、脱敏、审计 | `axpoint-security` |
 | **AxOps** | 运维与交付 | 备份恢复、保留策略、模板包、演示数据、交付追踪 | `routes/axops.rs`、`scripts/` |
 
@@ -36,7 +36,7 @@ Rust Crate 全集（`axpoint-core/crates/`）：`axpoint-domain`、`axpoint-llm`
 | 认证 | `/api/auth/*` | `routes/auth.rs` | `lib/api/auth.ts` | Step 00（开发令牌）/ Step 13（完整） |
 | AxQuery / 文档 | `/api/documents/*`、`/api/chat/*` | `routes/documents.rs` | `lib/api/rag.ts` | 仓库已有 |
 | AxHub | `/api/axhub/*` | `routes/axhub.rs` | `lib/api/axhub.ts` | Step 02 |
-| AxGraph / xBlueStudio | `/api/xblue/*` | `routes/xblue.rs` | `lib/api/xblue.ts` | 仓库已有 |
+| AxGraph / xBlueStudio | `/api/xblue/*` | `routes/xblue.rs`、`routes/xblue_graphql.rs` | `lib/api/xblue.ts` | 仓库已有 / Step 05（领域对象与动态 GraphQL） |
 | AxAnalytics | `/api/analytics/*` | `routes/analytics.rs` | `lib/api/analytics.ts` | Step 04 |
 | AxFlow | `/api/axflow/*` | `routes/axflow.rs` | `lib/api/axflow.ts` | 仓库已有 |
 | AxAgent | `/api/axagent/*` | `routes/axagent.rs` | `lib/api/axagent.ts` | Step 09 |
@@ -48,7 +48,7 @@ Rust Crate 全集（`axpoint-core/crates/`）：`axpoint-domain`、`axpoint-llm`
 | AxOps | `/api/axops/*` | `routes/axops.rs` | `lib/api/axops.ts` | Step 00（任务查询）/ Step 14（完整） |
 | 指标 | `/metrics`（只监听 `AXPOINT_METRICS_ADDR`） | `telemetry.rs` | — | Step 00 |
 
-Sidecar（`axpoint-parser`，端口 `8001`，只在内部网络暴露）：`/health`、`/parse`、`/parse/unified`、`/connectors/*`、`/lake/*`、`/export/*`、`/render/chart`。全量接口见 [A4](./A4-API-CONTRACT-INDEX.md)。
+Sidecar（`axpoint-parser`，端口 `8001`，只在内部网络暴露）：`/health`、`/parse`、`/parse/unified`、`/connectors/*`、`/lake/*`、`/export/*`、`/render/chart`、`/pii/*`。全量接口见 [A4](./A4-API-CONTRACT-INDEX.md)。
 
 路由书写规则：
 
@@ -96,11 +96,14 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `ConnectorType` | 文件类：`FILE_UPLOAD` `S3` `SFTP`；关系库：`POSTGRES` `MYSQL` `MSSQL` `ORACLE` `SQLITE` `CLICKHOUSE` `DAMENG` `KINGBASE` `OPENGAUSS` `OCEANBASE` `TIDB` `DORIS` `STARROCKS` `HIVE`；NoSQL：`MONGODB` `REDIS` `ELASTICSEARCH` `CASSANDRA` `HBASE` `NEO4J`；时序：`INFLUXDB` `TDENGINE` `IOTDB`；消息：`KAFKA` `MQTT` `PULSAR`；接口：`REST_API` `GRAPHQL` `WEBHOOK` | `ds_connections.connector_type` |
 | `SourceKind` | `FILE_TABLE` `SQL_TABLE` `NOSQL_COLLECTION` `TIMESERIES` `STREAM` `API_RESOURCE` `WEBHOOK_STREAM` `DERIVED_VIEW` | `ds_datasets.source_kind` |
 | `SyncMode` | `SNAPSHOT` `APPEND` `UPSERT` | `ds_datasets.sync_mode` |
+| `QualityRuleKind` | `NOT_NULL` `UNIQUE` `RANGE` `REGEX` `ENUM_SET` `FRESHNESS_MINUTES` `ROW_COUNT_MIN` | `ds_quality_rules.rule_kind` |
 | `JobStatus` | `PENDING` `RUNNING` `SUCCEEDED` `FAILED` `CANCELED` `EXPIRED` | `ax_jobs`、`ds_sync_jobs`、`xv_export_jobs` |
 | `JobKind` | `SYNC_DATASET` `PARSE_FILE` `FLOW_STEP` `EXPORT` `RULE_EVAL` `ROLLUP` `LAKE_MAINTENANCE` `RETENTION` `CREDENTIAL_ROTATE` `BACKUP` `EMBED_NODES` `MAP_MATERIALIZE` `GRAPH_AGGREGATE` `KNOWLEDGE_SYNC` | `ax_jobs.kind` |
 | `OutboxTopic` | `dataset.synced` `node.metrics_changed` `node.upserted` `approval.decided` `sim.applied` `alert.opened` `alert.resolved` `export.finished` | `ax_outbox.topic` |
 | `RetentionTarget` | `METRIC_SERIES` `METRIC_ROLLUP_MINUTE` `AUDIT` `EXPORT_FILE` `FLOW_STEP_LOG` `JOB` `OUTBOX` `LAKE_SNAPSHOT` `MESSAGE` `QUERY_HISTORY` `CONVERSATION` | `ax_retention_policies.target` |
 | `Cardinality` | `ONE_TO_ONE` `ONE_TO_MANY` `MANY_TO_ONE` `MANY_TO_MANY`（界面显示 `1:1` `1:N` `N:1` `N:M`） | `xb_edge_types.cardinality` |
+| `SubgraphMergeStrategy` | `REUSE_MAIN` `EXTEND_PROPS` `BRIDGE_LINK` | 子图对齐融合（Step 05） |
+| `GraphAlgo` | `DEGREE` `PAGERANK` `STRONGLY_CONNECTED` `WEAKLY_CONNECTED` `LABEL_PROPAGATION` | `xb_graph_algo_results.algo` |
 | `AggFn` | `SUM` `AVG` `COUNT` `COUNT_DISTINCT` `MIN` `MAX` `MEDIAN` `LAST` | 聚合规则、透视 |
 | `MetricSourceTag` | `SYNC` `AGGREGATION` `DERIVED` `ACTION` `MANUAL` `ALGORITHM` | `xb_metric_series.source_tag` |
 | `RollupGrain` | `MINUTE` `HOUR` `DAY` `MONTH` | `xb_metric_rollups.grain` |
@@ -109,12 +112,15 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `RunStatus` | `PENDING` `RUNNING` `WAITING_APPROVAL` `SUCCEEDED` `FAILED` `CANCELED` | `ax_flow_runs.status` |
 | `StepStatus` | `PENDING` `RUNNING` `WAITING_APPROVAL` `SUCCEEDED` `FAILED` `SKIPPED` | `ax_flow_step_logs.status` |
 | `Environment` | `TEST` `PROD` | 发布端点、流程版本 |
+| `EndpointKind` | `SAVED_QUERY` `METRIC` `FLOW` `AGENT` `OBJECT_TYPE` | `ax_published_endpoints.kind` |
 | `Severity` | `INFO` `WARN` `CRITICAL` | 规则与告警 |
 | `AlertStatus` | `OPEN` `ACK` `RESOLVED` | `ax_alerts.status` |
 | `NotifyKind` | `WEBHOOK` `EMAIL` `WECOM` `DINGTALK` `FEISHU` | `ax_notify_channels.kind` |
 | `InterventionMode` | `RATIO` `ADD` `ABSOLUTE` | `AxSimAction.mode` |
-| `WidgetKind` | `KPI_CARD` `TABLE` `PIVOT_TABLE` `LINE_CHART` `BAR_CHART` `PIE_CHART` `SCATTER` `SANKEY` `HEATMAP` `GAUGE` `RADAR` `GRAPH_TOPOLOGY` `MAP` `FLOOR_PLAN` `ALERT_LIST` `SIM_COMPARE` `MARKDOWN_NOTE` | `xv_widgets.widget_kind` |
+| `WidgetKind` | `KPI_CARD` `TABLE` `PIVOT_TABLE` `LINE_CHART` `BAR_CHART` `PIE_CHART` `SCATTER` `SANKEY` `HEATMAP` `GAUGE` `RADAR` `GRAPH_TOPOLOGY` `MAP` `FLOOR_PLAN` `SCENE_3D` `ALERT_LIST` `SIM_COMPARE` `ACTION_BUTTON` `ACTION_FORM` `MARKDOWN_NOTE` | `xv_widgets.widget_kind` |
+| `AssetKind` | `FLOOR_PLAN_IMAGE` `GEOJSON` `ICON` `MODEL_3D` | `xv_assets.asset_kind` |
 | `ExportFormat` | `XLSX` `CSV` `PDF` `DOCX` `PPTX` `MARKDOWN` | `xv_export_jobs.export_format` |
+| `Sensitivity` | `PUBLIC` `INTERNAL` `CONFIDENTIAL` `SECRET` | 资源 `sensitivity`、用户 `clearance` |
 | `Permission` | `DATA_READ` `DATA_SYNC` `DATA_ADMIN` `STUDIO_EDIT` `STUDIO_PUBLISH` `FLOW_EDIT` `FLOW_RUN` `FLOW_PUBLISH` `APPROVAL_DECIDE` `RULE_EDIT` `ALERT_ACK` `AGENT_EDIT` `AGENT_RUN` `SIM_RUN` `SIM_APPLY` `VIEW_EDIT` `VIEW_SHARE` `EXPORT_DATA` `PII_RAW_READ` `GUARD_ADMIN` `OPS_ADMIN` | `sec_roles.permissions` |
 | `BuiltinRole` | `ADMIN`（全部权限）`ANALYST` `OPERATOR` `VIEWER` | `sec_roles.name` |
 | `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` | `sec_audit_logs.action` |
@@ -262,6 +268,7 @@ where
 | `AXPOINT_PUBLIC_HOST` | 无（生产必填） | 反向代理 / Core | 对外域名，用于证书、分享链接与 OIDC 回调 |
 | `AXPOINT_BACKUP_DIR` | `${AXPOINT_DATA_ROOT}/backups` | `scripts/ops/backup.sh` | 备份输出目录 |
 | `AXPOINT_BACKUP_KEEP_DAYS` | `14` | `scripts/ops/backup.sh` | 备份保留日数 |
+| `AXPOINT_BACKUP_CMD` | 空 | Core（非容器本地开发） | 本地开发触发备份时调用的脚本路径；生产形态由 `axpoint-ops` 消费 `ax_backups(PENDING)` |
 | `AXPOINT_AUDIT_FORCE_KEEP_DAYS` | 空 | `scripts/ops/retention-audit.sh` | 只用于门禁，覆盖审计保留日数 |
 | `AXPOINT_REGISTRY` / `AXPOINT_VERSION` / `AXPOINT_PARSER_VERSION` / `AXPOINT_PARSER_VARIANT` | `dex2all` / `v0.1.0` / `v0.1.0` / `full` | `docker-compose*.yml` | 镜像仓库、版本与 Sidecar 变体（`full` / `lite`） |
 | `LLM_API_BASE` / `LLM_API_KEY` / `LLM_MODEL` | 见 `deploy/.env.example` | Core | 默认大模型 |

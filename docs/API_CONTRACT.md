@@ -10,7 +10,7 @@
 - **租户**：租户只取自令牌对应的主体；请求中出现 `tenant_id` 查询参数或请求体字段时返回 `400 INVALID_ARGUMENT`。外部入口的租户取自路径或令牌（A1 §2 规则 2）。
 - **错误体**：`{"error_code": "...", "message": "...", "trace_id": "..."}`，状态码与 `error_code` 对照见 A1 §5；跨租户访问一律返回 `404`。
 - **分页**：`?limit=50&cursor=<opaque>`，响应 `{items: [...], next_cursor: string | null}`，`limit` 范围 `1..=500`。
-- **序列化**：JSON 字段 `snake_case`，时间为 RFC 3339 UTC，ID 为 UUID 字符串（超图表沿用 `BIGINT`）。
+- **序列化**：JSON 字段 `snake_case`，时间为 RFC 3339 UTC；实体与超图主键（`hg_*`、`xb_*`、`ds_*` 等）统一为 UUID 字符串，仅追加型事件与审计流水表（`sec_audit_logs`、`ax_outbox`、`ax_flow_step_logs`、`ax_action_log`、`ax_alert_events`、`ax_messages`、`ax_work_item_events`）主键为 `BIGINT`。
 
 ---
 
@@ -43,7 +43,7 @@
 权限 `DATA_READ`。返回 xBlueGraph 所需的 `nodes` 与 `edges`。
 
 ### `GET /api/xblue/schema` / `POST /api/xblue/schema`
-权限 `DATA_READ` / `STUDIO_PUBLISH`。读取或写入业务节点类型（`BlueNodeTypeDef`）与关系类型（`BlueEdgeTypeDef`）。Step 05 起同一路径写入经过校验与版本记录，增量编辑走草案 → 发布流程（`/api/xblue/drafts/*`）。
+权限 `DATA_READ` / `STUDIO_PUBLISH`。读取或写入业务节点类型（`BlueNodeTypeDef`）与关系类型（`BlueEdgeTypeDef`）。Step 05 起支持多子图工作空间（`/api/xblue/subgraphs*`），增量编辑走草案 → 发布流程（`/api/xblue/drafts/*`），模型发布后自动暴露领域对象 REST（`/api/xblue/objects*`）与动态 GraphQL（`/api/xblue/graphql*`）。
 
 ### `GET /api/xblue/nodes` / `POST /api/xblue/nodes`
 权限 `DATA_READ` / `STUDIO_EDIT`。查询或写入业务节点（`BlueNode`）与关系（`BlueLink`）。

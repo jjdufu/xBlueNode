@@ -16,11 +16,11 @@
 | **AxHub** | 连接器与同步：关系库、国产库、分析型库、NoSQL、时序库、对象存储、REST / GraphQL / Webhook、Kafka / MQTT / Pulsar，DuckLake 入湖与资产目录 |
 | **AxGraph** | 超图（`hg_*`）+ 业务节点（`xb_*`）+ 时序指标 + 图查询与图算法 |
 | **AxAnalytics / AxQuery** | DuckDB OLAP、透视制表、指标语义层、智能问数；五路召回 + RRF 知识问答 |
-| **xBlueStudio / xBlueGraph** | 可视化建模、模型版本与发布、映射物化、派生与动态聚合；业务图浏览 |
+| **xBlueStudio / xBlueGraph** | 多子图隔离建模、跨部门本体融合、模型版本与发布、映射物化、派生与动态聚合、领域对象 REST / 动态 GraphQL；业务图浏览 |
 | **AxFlow** | DAG 编排、持久化执行、测试 / 正式部署、规则引擎与告警中心 |
-| **AxAgent** | 发布端点（API / Skill / MCP）、MCP Client、多模型路由、智能体与多轮工作台 |
+| **AxAgent** | 发布端点（API / Skill / MCP / 领域对象）、MCP Client、多模型路由、智能体与多轮工作台 |
 | **AxSim** | 范围克隆沙盘、写时复制、因果传导、检查点回放、方案对比、决策下发 |
-| **xBlueView** | 孪生驾驶舱、实时刷新、下钻、地图与平面图、全格式出品、安全分享 |
+| **xBlueView** | 孪生驾驶舱、AI 看板生成、3D 孪生场景、页面动作回写、实时刷新、下钻、地图与平面图、全格式出品、安全分享 |
 | **AxGuard** | 本地与 OIDC 认证、令牌轮换、Cedar ABAC、行级 / 列级策略、PII 识别、审计链 |
 | **AxOps** | 生产部署、备份恢复、保留策略、行业模板包、演示数据、交付追踪 |
 

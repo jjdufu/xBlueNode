@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS sec_login_states (
 ALTER TABLE ds_datasets   ADD COLUMN IF NOT EXISTS owner_dept  TEXT NOT NULL DEFAULT 'default';
 ALTER TABLE ds_datasets   ADD COLUMN IF NOT EXISTS sensitivity TEXT NOT NULL DEFAULT 'INTERNAL'
     CHECK (sensitivity IN ('PUBLIC','INTERNAL','CONFIDENTIAL','SECRET'));
+ALTER TABLE xb_subgraphs  ADD COLUMN IF NOT EXISTS sensitivity TEXT NOT NULL DEFAULT 'INTERNAL'
+    CHECK (sensitivity IN ('PUBLIC','INTERNAL','CONFIDENTIAL','SECRET'));
 ALTER TABLE xb_node_types ADD COLUMN IF NOT EXISTS owner_dept  TEXT NOT NULL DEFAULT 'default';
 ALTER TABLE xb_node_types ADD COLUMN IF NOT EXISTS sensitivity TEXT NOT NULL DEFAULT 'INTERNAL'
     CHECK (sensitivity IN ('PUBLIC','INTERNAL','CONFIDENTIAL','SECRET'));
@@ -156,7 +158,7 @@ CREATE TABLE IF NOT EXISTS sec_column_policies (
 CREATE TABLE IF NOT EXISTS sec_grants (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id     TEXT NOT NULL,
-    resource_kind TEXT NOT NULL CHECK (resource_kind IN ('DATASET','NODE_TYPE','DASHBOARD','AGENT')),
+    resource_kind TEXT NOT NULL CHECK (resource_kind IN ('DATASET','NODE_TYPE','SUBGRAPH','DASHBOARD','AGENT')),
     resource_ref  TEXT NOT NULL,
     grantee_kind  TEXT NOT NULL CHECK (grantee_kind IN ('DEPT','ROLE','USER')),
     grantee_ref   TEXT NOT NULL,
@@ -344,7 +346,7 @@ when { principal.permissions.contains("DATA_ADMIN") && principal.permissions.con
 
 第 3 条使授权成为跨部门访问机密资源的唯一途径：授权由资源属主部门审批（§13.9.1），批准即视为对该主体放开该资源的密级要求；`SECRET` 资源的授权申请额外要求 `GUARD_ADMIN` 审批。
 
-- 租户策略（`sec_policies`）只追加，通常为 `forbid`（例如工作时间外禁止 `EXPORT_DATA`：`forbid (principal, action == Action::"EXPORT_DATA", resource) when { context.hour < 8 || context.hour >= 20 };`）。保存时以模式校验（`Validator::validate`），失败返回 400 `SCHEMA_INVALID` 与错误位置；审计 `POLICY_CHANGE`。
+- 租户策略（`sec_policies`）只追加，通常为 `forbid`（例如工作时间外禁止 `EXPORT_DATA`：`forbid (principal, action == AxPoint::Action::"EXPORT_DATA", resource) when { context.hour < 8 || context.hour >= 20 };`）。保存时以模式校验（`Validator::validate`），失败返回 400 `SCHEMA_INVALID` 与错误位置；审计 `POLICY_CHANGE`。
 - 每租户 `PolicySet` 缓存，`ax_policy_changed` 通知时重建。
 - 调用位置：每个带资源的处理器在 `principal.require(p)` 之后调用 `authz.authorize(&principal, p, &ResourceRef{kind, id})`；拒绝时 403 `POLICY_DENIED`，审计记录命中的策略 ID。列表接口在 SQL 层预过滤：`owner_dept = ANY(可见部门) OR sensitivity <= 1 OR id = ANY(授权资源)`，再对结果逐条 `authorize`（保证与 Cedar 判定一致）。
 - 测试 `tests/cedar.rs`：同部门 / 跨部门 / 各密级 / 有无授权 / 授权过期 / 租户 `forbid` 覆盖 `permit` 的组合矩阵（≥ 40 例）。
@@ -378,7 +380,7 @@ placeholder = "{{" ( "user.id" | "user.username" | "user.dept" | "user.attr." id
 | :--- | :--- |
 | AxAnalytics SQL（手写、透视、指标、问数、驾驶舱、出品、智能体 SQL 工具） | `sql_guard` 在规则 2 解析表引用时，若 `PolicyContext` 对该数据集有行或列策略，把引用替换为 `(SELECT <列清单，脱敏列以 ax_mask_* 包装并保持原列名> FROM lake."tenant_x"."t" WHERE <行条件>) AS <原别名或表名>`；规则 8 的再次解析覆盖改写结果；`SELECT *` 因此也只能拿到脱敏值 |
 | 平台视图 `ax.nodes`、`ax.metric_*` | 同上，以节点类型为目标，条件作用于 `type_name` 与属性（`properties->>'x'`） |
-| 业务节点 REST（`/api/xblue/nodes*`、图查询、指标） | 行条件编译为 PostgreSQL 条件追加到查询；属性脱敏在序列化前按列策略处理 |
+| 业务节点与领域对象接口（`/api/xblue/nodes*`、`/api/xblue/objects*`、`/api/xblue/graphql*`、图查询、指标） | 行条件编译为 PostgreSQL 条件追加到查询；属性脱敏在序列化前按列策略处理 |
 | AxQuery 文档召回 | 段落 `pii_spans` 中的片段按类别脱敏（无 `PII_RAW_READ` 时） |
 | 推演（Step 10） | 克隆范围时按行策略过滤节点；结果中的节点属性脱敏 |
 | 分享与出品 | 以创建者主体取数，自然继承 |
@@ -401,7 +403,7 @@ placeholder = "{{" ( "user.id" | "user.username" | "user.dept" | "user.attr." id
 | `HMAC_HASH` | `hex(HMAC-SHA256(k_tenant, value))` 前 16 位；`k_tenant = HKDF-SHA256(AXPOINT_MASK_KEYS 当前密钥, info = tenant_id)`；同值同输出，便于关联 |
 | `REDACT` | `[REDACTED]` |
 
-- 一份 Rust 实现同时用于 REST 序列化、出品、文档召回与 DuckDB：`session.rs` 以 `duckdb` 的标量函数接口注册 `ax_mask_phone(VARCHAR)` 等 8 个函数（`HMAC_HASH` 的密钥保存在 Rust 闭包中，不出现在任何 SQL 文本或目录中）。
+- 一份 Rust 实现同时用于 REST 序列化、出品、文档召回与 DuckDB：`session.rs` 使用 `duckdb::vscalar::VScalar`（开启 `duckdb` crate 的 `vscalar` 特性）注册 `ax_mask_phone(VARCHAR)` 等 8 个向量化标量函数，`HMAC_HASH` 通过 `register_scalar_function_with_state` 把 `k_tenant` 作为 `VScalar::State` 传入（密钥只驻留 Rust 内存，不出现在任何 SQL 文本或目录中）。
 - 默认规则：列画像 `pii_category ≠ NONE` 且无显式列策略的列，自动套用对应规则（`PHONE → MASK_PHONE`、`ID_CARD → MASK_ID_CARD`、`EMAIL → MASK_EMAIL`、`BANK_CARD → MASK_BANK_CARD`、`NAME → MASK_NAME`、`ADDRESS → MASK_ADDRESS`、`SECRET → REDACT`）；显式 `NONE` 可解除。
 - 默认所有主体都看到脱敏值。具备 `PII_RAW_READ` 或在 `exempt` 中的主体，在请求中显式传 `reveal_pii: true`（`/sql/run`、`/pivot`、节点接口与出品请求均支持该字段）时看原文；不具备资格而传该字段返回 403 `PERMISSION_DENIED`；任何返回原文 PII 的请求在审计 `detail_json.raw_pii = true`。
 - 测试数据 `tests/data/mask_cases.json`：每个规则 ≥ 10 例（含空值、空串、非法格式、全角字符、超长输入），Rust 单测与 DuckDB 函数测试共用。
@@ -469,7 +471,7 @@ placeholder = "{{" ( "user.id" | "user.username" | "user.dept" | "user.attr." id
 
 ## 13.11 验收
 
-`scripts/seed/13-axguard.sh`：生成 JWT 密钥（`gen-jwt-key.sh k1`）；创建部门 `east`、`south`；用户 `analyst_east`（`ANALYST`，部门 `east`，属性 `warehouses=["W-1"]`）、`analyst_south`（`ANALYST`，部门 `south`）、`auditor`（`VIEWER`）与各自口令（写入 `.gate/ids.env`，仅门禁环境）；数据集 `demo_orders` 设 `owner_dept=east`、`sensitivity=CONFIDENTIAL`；行策略 `east_warehouses`：`warehouse_code IN {{user.attr.warehouses}}`，适用角色 `ANALYST`；`phone` 列使用默认 `MASK_PHONE`；查询保存查询 `orders_by_status` 的 ID 输出为 `ORDERS_BY_STATUS_QUERY_ID`。
+`scripts/seed/13-axguard.sh`：生成 JWT 密钥（`gen-jwt-key.sh k1`）；创建部门 `east`、`south`；创建本地用户 `ops_admin`（角色 `ADMIN`，部门 `east`，`clearance='SECRET'`）、`analyst_east`（角色 `ANALYST`，部门 `east`，`clearance='CONFIDENTIAL'`，属性 `warehouses=["W-1"]`）、`analyst_south`（角色 `ANALYST`，部门 `south`，`clearance='CONFIDENTIAL'`）、`auditor`（角色 `VIEWER`，`clearance='INTERNAL'`）与各自口令（写入 `.gate/ids.env` 的 `OPS_ADMIN_PASSWORD`、`EAST_PASSWORD`、`SOUTH_PASSWORD`、`AUDITOR_PASSWORD`，仅门禁环境）；数据集 `demo_orders` 设 `owner_dept=east`、`sensitivity=CONFIDENTIAL`；行策略 `east_warehouses`：`warehouse_code IN {{user.attr.warehouses}}`，适用角色 `ANALYST`；`phone` 列使用默认 `MASK_PHONE`；查询保存查询 `orders_by_status` 的 ID 输出为 `ORDERS_BY_STATUS_QUERY_ID`。
 
 `scripts/gate/step13.sh`：
 

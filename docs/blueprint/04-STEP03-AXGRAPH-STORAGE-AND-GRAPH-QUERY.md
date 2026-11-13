@@ -80,6 +80,8 @@ CREATE INDEX IF NOT EXISTS idx_xb_metric_series_metric_ts ON xb_metric_series (t
 
 -- 默认分区兜底，避免越界写入失败；分区维护任务把落入默认分区的数据迁出
 CREATE TABLE IF NOT EXISTS xb_metric_series_default PARTITION OF xb_metric_series DEFAULT;
+SELECT ax_enable_tenant_rls('xb_metric_series');
+SELECT ax_enable_tenant_rls('xb_metric_series_default');
 
 CREATE OR REPLACE FUNCTION ax_ensure_metric_partitions(p_months_back INT, p_months_ahead INT) RETURNS INT
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
@@ -93,6 +95,7 @@ BEGIN
         IF to_regclass(part) IS NULL THEN
             EXECUTE format('CREATE TABLE %I PARTITION OF xb_metric_series FOR VALUES FROM (%L) TO (%L)',
                            part, m, (m + interval '1 month')::date);
+            PERFORM ax_enable_tenant_rls(part::regclass);
             created := created + 1;
         END IF;
     END LOOP;
@@ -101,6 +104,31 @@ END $$;
 SELECT ax_ensure_metric_partitions(24, 3);
 REVOKE ALL ON FUNCTION ax_ensure_metric_partitions(INT, INT) FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION ax_ensure_metric_partitions(INT, INT) TO axpoint_app;
+
+-- 跨租户安全回收历史月分区：仅当分区结束日早于全体活跃租户的最大保留期时整表 DROP
+CREATE OR REPLACE FUNCTION ax_drop_expired_metric_partitions() RETURNS INT
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+DECLARE
+    max_keep INT; cutoff DATE; r RECORD; dropped INT := 0; part_end DATE;
+BEGIN
+    SELECT COALESCE(MAX(rp.keep_days), 730) INTO max_keep
+      FROM ax_retention_policies rp
+      JOIN sec_tenants st ON st.tenant_id = rp.tenant_id
+     WHERE rp.target = 'METRIC_SERIES' AND st.status = 'ACTIVE';
+    cutoff := date_trunc('month', now() - make_interval(days => max_keep))::date;
+    FOR r IN SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid
+              WHERE i.inhparent = 'xb_metric_series'::regclass
+                AND c.relname ~ '^xb_metric_series_[0-9]{6}$' LOOP
+        part_end := (to_date(substring(r.relname FROM 18 FOR 6), 'YYYYMM') + interval '1 month')::date;
+        IF part_end <= cutoff THEN
+            EXECUTE format('DROP TABLE IF EXISTS %I', r.relname);
+            dropped := dropped + 1;
+        END IF;
+    END LOOP;
+    RETURN dropped;
+END $$;
+REVOKE ALL ON FUNCTION ax_drop_expired_metric_partitions() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION ax_drop_expired_metric_partitions() TO axpoint_app;
 
 -- 多粒度汇总
 CREATE TABLE IF NOT EXISTS xb_metric_rollups (
@@ -170,16 +198,8 @@ CREATE TABLE IF NOT EXISTS xb_graph_algo_results (
 );
 
 SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
-    'xb_metric_series','xb_metric_rollups','xb_rollup_watermarks','xb_rollup_dirty','xb_entity_links','xb_graph_algo_results'
+    'xb_metric_rollups','xb_rollup_watermarks','xb_rollup_dirty','xb_entity_links','xb_graph_algo_results'
 ]::regclass[]) AS t;
--- 分区表的 RLS 由父表控制；子分区同样开启，防止直接访问子分区绕过策略
-DO $$
-DECLARE r RECORD;
-BEGIN
-    FOR r IN SELECT inhrelid::regclass AS part FROM pg_inherits WHERE inhparent = 'xb_metric_series'::regclass LOOP
-        PERFORM ax_enable_tenant_rls(r.part);
-    END LOOP;
-END $$;
 
 -- 跨租户汇总调度
 CREATE OR REPLACE FUNCTION ax_rollup_tenants() RETURNS SETOF TEXT
@@ -189,8 +209,6 @@ $$;
 REVOKE ALL ON FUNCTION ax_rollup_tenants() FROM PUBLIC;
 GRANT EXECUTE ON FUNCTION ax_rollup_tenants() TO axpoint_app;
 ```
-
-`ax_ensure_metric_partitions` 新建分区后同样调用 `ax_enable_tenant_rls`（函数体中 `CREATE TABLE` 之后追加 `PERFORM ax_enable_tenant_rls(part::regclass);`）。
 
 ---
 
@@ -266,7 +284,7 @@ pub struct UpsertBlueNodeRequest {
 2. `HOUR` / `DAY` / `MONTH`：由下一级汇总合并（`cnt` 相加、`sum` 相加、`min/max` 取极值、`last` 取 `last_ts` 最大者、`hll` 合并、`freq` 合并后截断 Top 100），桶完成后推进水位；受脏分钟影响的上级桶同时重算。
 3. 桶边界按租户时区计算 `DAY` / `MONTH`（`date_trunc('day', ts AT TIME ZONE tz) AT TIME ZONE tz`），`MINUTE` / `HOUR` 按 UTC。
 4. HLL：`hyperloglogplus::HyperLogLogPlus<String, RandomState>`，序列化用 `serde_json` 后存 `BYTEA`；合并函数 `merge_hll(a, b)` 在 `axpoint-domain::graph` 中实现并有单测（10 万不同值误差 < 2%）。
-5. 汇总表保留策略：`METRIC_ROLLUP_MINUTE`（默认 `keep_days=30`）只作用于 `MINUTE` 粒度；原始点按 `METRIC_SERIES` 清理（删除整月分区时 `DROP TABLE` 分区，而非逐行删除）。
+5. 汇总表保留策略：`METRIC_ROLLUP_MINUTE`（默认 `keep_days=30`）只作用于 `MINUTE` 粒度；原始点按 `METRIC_SERIES` 清理：先在租户事务内删除早于该租户 `keep_days` 的过期点，再调用 `ax_drop_expired_metric_partitions()` 对早于全体活跃租户最大保留期的历史月分区整表 `DROP TABLE`。
 
 ### 03.3.3 查询
 

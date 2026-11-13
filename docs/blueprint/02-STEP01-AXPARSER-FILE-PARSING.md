@@ -414,7 +414,7 @@ expect_json "xml-records" "$(parse catalog.xml)" '.tables[0].row_count == 100'
 expect_json "log-ts"      "$(parse app_java.log)" '[.tables[0].columns[] | select(.name=="ts") | .data_type][0] == "TIMESTAMP"'
 expect_eq   "xxe-blocked" "$(curl -s -o /dev/null -w '%{http_code}' -H "X-AxPoint-Internal-Token: $AXPOINT_INTERNAL_TOKEN" \
   -H "X-AxPoint-Tenant: default" -F file=@axpoint-parser/tests/fixtures/xxe.xml "$PARSER_BASE_URL/parse/unified")" "422"
-expect_eq   "staging-under-root" "$(parse orders.csv | jq -r '.tables[0].staging_path' | grep -c '^tenants/default/staging/')" "1"
+expect_eq   "staging-under-root" "$(parse orders.csv | jq -r '.tables[0].staging_path' | awk '/^tenants\/default\/staging\//{c++} END{print c+0}')" "1"
 
 gate_pass step01
 ```

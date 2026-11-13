@@ -89,8 +89,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_ax_template_active ON ax_template_installs 
 CREATE TABLE IF NOT EXISTS ax_backups (
     id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     backup_kind  TEXT NOT NULL CHECK (backup_kind IN ('FULL','DATABASE','LAKE')),
-    status       TEXT NOT NULL CHECK (status IN ('RUNNING','SUCCEEDED','FAILED','VERIFIED')),
-    location     TEXT NOT NULL,
+    status       TEXT NOT NULL CHECK (status IN ('PENDING','RUNNING','SUCCEEDED','FAILED','VERIFIED')),
+    location     TEXT NOT NULL DEFAULT '',
     size_bytes   BIGINT,
     manifest     JSONB NOT NULL DEFAULT '{}'::jsonb,  -- 文件清单与 SHA-256、迁移版本、湖快照号
     error_message TEXT,
@@ -122,7 +122,8 @@ SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
 | `caddy` | `caddy:2` | 唯一对外端口 80 / 443，自动 TLS（`AXPOINT_PUBLIC_HOST`）；反向代理到 `axpoint-core:9995`；SSE 路径关闭缓冲（`flush_interval -1`）；安全响应头 `Strict-Transport-Security`、`X-Content-Type-Options: nosniff`、`Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'`（配置瓦片底图时追加瓦片域名） |
 | `postgres` | `pgvector/pgvector:pg16` | 不映射宿主机端口；`shared_buffers=25%` 内存、`wal_level=replica`、`archive_mode=on`、`archive_command` 写入 `/backups/wal/` |
 | `axpoint-parser` | 与 Step 00 相同 | `deploy.replicas: 2`，只在内部网络 |
-| `axpoint-core` | 与 Step 00 相同 | `deploy.replicas: 2`；`AXPOINT_ENV=production`；`AXPOINT_MIGRATE_ON_START=false`（迁移由 `migrate` 一次性服务执行） |
+| `axpoint-core` | 与 Step 00 相同（distroless） | `deploy.replicas: 2`；`AXPOINT_ENV=production`；`AXPOINT_MIGRATE_ON_START=false`（迁移由 `migrate` 一次性服务执行） |
+| `axpoint-ops` | `pgvector/pgvector:pg16`（装有 `rsync` 与 `scripts/ops/`） | 挂载共享数据卷与 `/backups`，执行每日定时备份 / 审计保留，并轮询消费手动触发的 `ax_backups(status='PENDING')` 请求，保持 `axpoint-core` 镜像无 shell 且不持有属主数据库口令 |
 | `migrate` | `axpoint-core` 镜像 | `command: ["axpoint-server", "migrate"]`，`restart: "no"`，Core 依赖其 `service_completed_successfully` |
 
 `deploy/.env.prod.example` 列出生产必须提供的变量：`AXPOINT_PUBLIC_HOST`、`POSTGRES_PASSWORD`、`AXPOINT_APP_DB_PASSWORD`、`AXPOINT_LAKE_DB_PASSWORD`、`AXPOINT_INTERNAL_TOKEN`、`AXPOINT_CREDENTIAL_KEYS`、`AXPOINT_MASK_KEYS`、`AXPOINT_JWT_PRIVATE_KEY_PATH`、`AXPOINT_JWT_PUBLIC_KEYS_DIR`、`LLM_*`、`EMBED_*`，可选 `AXPOINT_OIDC_*`、`AXPOINT_MAP_TILE_URL`、`OTEL_EXPORTER_OTLP_ENDPOINT`。Core 在 `AXPOINT_ENV=production` 时启动自检：上述必填项缺失、口令为示例默认值、`AXPOINT_DEV_TOKEN` 被设置，任一成立即拒绝启动并输出缺失项。
@@ -133,7 +134,7 @@ SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
 - `pdb.yaml`：两者 `minAvailable: 1`。
 - `pvc.yaml`：`axpoint-data`（`ReadWriteMany`，承载暂存、湖数据文件、出品文件、资产、模型）。
 - `postgres-cluster.yaml`：CloudNativePG `Cluster`，3 实例（1 主 2 备，同步复制 `minSyncReplicas: 1`），`pgvector` 镜像，对象存储 WAL 归档与基础备份；应用通过 `-rw` 服务连接。
-- `cronjobs.yaml`：`backup`（每日 02:00 租户时区等价 UTC 时刻执行 `scripts/ops/backup.sh`）、`retention-audit`（每日 03:00 执行 `scripts/ops/retention-audit.sh`）。
+- `cronjobs.yaml`：`backup`（每日 02:00 租户时区等价 UTC 时刻执行 `scripts/ops/backup.sh`）、`retention-audit`（每日 03:00 执行 `scripts/ops/retention-audit.sh`）；手动备份由 `axpoint-ops` Deployment 消费 `ax_backups(PENDING)` 执行。
 - `ingress.yaml`：TLS 终止，`nginx.ingress.kubernetes.io/proxy-buffering: "off"` 用于 SSE 路径，`proxy-body-size` 等于 `AXPOINT_MAX_UPLOAD_MB`。
 
 ### 14.2.3 高可用要点
@@ -153,26 +154,34 @@ SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
 
 ```bash
 #!/usr/bin/env bash
-# 用法：backup.sh [FULL|DATABASE|LAKE]；需要 MIGRATION_DATABASE_URL、AXPOINT_DATA_ROOT、AXPOINT_BACKUP_DIR
+# 用法：backup.sh [FULL|DATABASE|LAKE] [EXISTING_BACKUP_ID]；需要 MIGRATION_DATABASE_URL、AXPOINT_DATA_ROOT、AXPOINT_BACKUP_DIR
 set -euo pipefail
 KIND=${1:-FULL}
+EXISTING_ID=${2:-}
 TS=$(date -u +%Y%m%dT%H%M%SZ)
 DEST="$AXPOINT_BACKUP_DIR/$TS"
-mkdir -p "$DEST"
-ID=$(psql "$MIGRATION_DATABASE_URL" -Atc "INSERT INTO ax_backups (backup_kind, status, location) VALUES ('$KIND','RUNNING','$DEST') RETURNING id")
+mkdir -p "$DEST/files/lake" "$DEST/files/assets" "$AXPOINT_DATA_ROOT/lake" "$AXPOINT_DATA_ROOT/assets"
+if [[ -n "$EXISTING_ID" ]]; then
+  ID="$EXISTING_ID"
+  psql "$MIGRATION_DATABASE_URL" -Atc "UPDATE ax_backups SET status='RUNNING', location='$DEST', started_at=now() WHERE id='$ID'" >/dev/null
+else
+  ID=$(psql "$MIGRATION_DATABASE_URL" -Atc "INSERT INTO ax_backups (backup_kind, status, location) VALUES ('$KIND','RUNNING','$DEST') RETURNING id")
+fi
 trap 'psql "$MIGRATION_DATABASE_URL" -c "UPDATE ax_backups SET status='"'"'FAILED'"'"', finished_at=now(), error_message='"'"'see logs'"'"' WHERE id='"'"'$ID'"'"'"' ERR
 if [[ $KIND != LAKE ]]; then
   pg_dump "$MIGRATION_DATABASE_URL" --format=directory --jobs=4 --file="$DEST/db"
 fi
 if [[ $KIND != DATABASE ]]; then
   # 湖目录在数据库中（lake_catalog 模式），数据文件只追加：复制目录与数据文件即可得到一致快照
-  rsync -a --link-dest="$AXPOINT_BACKUP_DIR/latest/files" "$AXPOINT_DATA_ROOT/lake/" "$DEST/files/lake/"
+  LINK_ARGS=()
+  [[ -d "$AXPOINT_BACKUP_DIR/latest/files/lake" ]] && LINK_ARGS=(--link-dest="$AXPOINT_BACKUP_DIR/latest/files/lake")
+  rsync -a "${LINK_ARGS[@]}" "$AXPOINT_DATA_ROOT/lake/" "$DEST/files/lake/"
   rsync -a "$AXPOINT_DATA_ROOT/assets/" "$DEST/files/assets/"
 fi
 (cd "$DEST" && find . -type f -print0 | sort -z | xargs -0 sha256sum > MANIFEST.sha256)
 MIG=$(psql "$MIGRATION_DATABASE_URL" -Atc "SELECT max(version) FROM _sqlx_migrations")
 SIZE=$(du -sb "$DEST" | cut -f1)
-FILES=$(wc -l < "$DEST/MANIFEST.sha256")
+FILES=$(wc -l < "$DEST/MANIFEST.sha256" | awk '{print $1}')
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "UPDATE ax_backups SET status='SUCCEEDED', finished_at=now(), size_bytes=$SIZE,
   manifest=jsonb_build_object('migration', $MIG, 'files', $FILES) WHERE id='$ID'"
 ln -sfn "$DEST" "$AXPOINT_BACKUP_DIR/latest"
@@ -180,7 +189,7 @@ find "$AXPOINT_BACKUP_DIR" -maxdepth 1 -mindepth 1 -type d -mtime +"${AXPOINT_BA
 echo "backup: $DEST"
 ```
 
-数据库备份先于湖文件复制：湖目录记录的快照引用的文件在复制时一定已存在（只追加），恢复后目录中晚于数据库备份时刻的快照不存在，多出来的文件由 `LAKE_MAINTENANCE` 清理。出品文件不备份（可重新生成）。`BACKUP` 任务（`POST /api/axops/backups`）在 Core 容器内以属主连接调用同一脚本，审计 `BACKUP_RUN`。
+数据库备份先于湖文件复制：湖目录记录的快照引用的文件在复制时一定已存在（只追加），恢复后目录中晚于数据库备份时刻的快照不存在，多出来的文件由 `LAKE_MAINTENANCE` 清理。出品文件不备份（可重新生成）。`POST /api/axops/backups` 插入 `ax_backups(status='PENDING')` 并写审计 `BACKUP_RUN`：生产容器形态由 `axpoint-ops` 认领并调用 `backup.sh <KIND> <ID>`，本地非容器开发形态如配置 `AXPOINT_BACKUP_CMD` 则由 `BACKUP` 任务直接调用。
 
 ### 14.3.2 `scripts/ops/restore-drill.sh`
 
@@ -192,18 +201,19 @@ SRC=${1:?backup dir}
 (cd "$SRC" && sha256sum --quiet -c MANIFEST.sha256)
 docker run -d --rm --name axp-drill-pg -e POSTGRES_USER=axpoint -e POSTGRES_PASSWORD=drill -e POSTGRES_DB=xbluenode \
   -p 127.0.0.1:55432:5432 pgvector/pgvector:pg16 >/dev/null
-trap 'docker rm -f axp-drill-pg >/dev/null 2>&1 || true' EXIT
+DRILL_ROOT=$(mktemp -d)
+trap 'docker rm -f axp-drill-pg >/dev/null 2>&1 || true; rm -rf "$DRILL_ROOT"' EXIT
 until docker exec axp-drill-pg pg_isready -U axpoint -d xbluenode >/dev/null 2>&1; do sleep 1; done
 DRILL_URL=postgres://axpoint:drill@127.0.0.1:55432/xbluenode
 psql "$DRILL_URL" -c "CREATE ROLE axpoint_app LOGIN PASSWORD 'drill'; CREATE ROLE axpoint_lake LOGIN PASSWORD 'drill';"
 pg_restore --dbname="$DRILL_URL" --jobs=4 --no-owner --role=axpoint "$SRC/db"
-DRILL_ROOT=$(mktemp -d); cp -a "$SRC/files/." "$DRILL_ROOT/"
+cp -a "$SRC/files/." "$DRILL_ROOT/"
 # 对账：各表行数与源库一致；湖中每个数据集最新快照可读且行数与 ds_sync_jobs 最近一次成功记录一致
 python3 scripts/ops/drill_reconcile.py --source "$MIGRATION_DATABASE_URL" --target "$DRILL_URL" --lake-root "$DRILL_ROOT"
 echo "restore-drill: OK"
 ```
 
-`scripts/ops/drill_reconcile.py`：比较源库与恢复库的 `sec_*`、`ds_*`、`xb_*`、`ax_*`、`xv_*`、`an_*`、`hg_*` 全部表行数（备份开始之后写入源库的行不参与比较，按 `created_at <= 备份开始时间` 过滤后比较）；以恢复库目录连接 DuckLake 逐个读取数据集最新快照计数；任一不一致退出码 1。演练成功后把对应 `ax_backups.status` 置为 `VERIFIED`。
+`scripts/ops/drill_reconcile.py`：比较源库与恢复库的 `sec_*`、`ds_*`、`xb_*`、`ax_*`、`xv_*`、`an_*`、`hg_*` 全部表行数（备份开始之后写入源库的行不参与比较，按 `created_at <= 备份开始时间` 过滤后比较）；以恢复库目录连接 DuckLake（`ATTACH 'ducklake:postgres:...' AS lake (DATA_PATH '<DRILL_ROOT>/lake/', METADATA_SCHEMA 'lake_catalog', OVERRIDE_DATA_PATH true, READ_ONLY)`，覆盖元数据中记录的原数据根路径）逐个读取数据集最新快照计数；任一不一致退出码 1。演练成功后把对应 `ax_backups.status` 置为 `VERIFIED`。
 
 **恢复目标**：RPO ≤ 24 小时（单机仅每日备份）或 ≤ 60 秒（启用 WAL 归档 / CloudNativePG）；RTO ≤ 30 分钟（100 GB 以内数据）。
 
@@ -217,7 +227,7 @@ echo "restore-drill: OK"
 
 | 目标 | 动作 |
 | :--- | :--- |
-| `METRIC_SERIES` | `DROP` 整月过期分区（`xb_metric_series` 按月分区，Step 03），不足整月的部分 `DELETE` |
+| `METRIC_SERIES` | 当前租户下超期点执行 `DELETE`；调度单例每小时额外调用一次 `SELECT ax_drop_expired_metric_partitions()`（Step 03 `SECURITY DEFINER` 函数，仅当整月分区早于所有租户最大 `keep_days` 时安全卸载） |
 | `METRIC_ROLLUP_MINUTE` | 删除过期 `MINUTE` 粒度汇总 |
 | `AUDIT` | 应用角色无删除权限，由 `scripts/ops/retention-audit.sh` 以属主连接执行（§14.4.2） |
 | `EXPORT_FILE` | 删除过期文件，`xv_export_jobs.status = EXPIRED` |
@@ -409,6 +419,6 @@ echo "ALL GATES PASS"
 
 `scripts/start-services.sh` 与 `scripts/dev-down.sh` 见 [01](./01-STEP00-FOUNDATION-AND-GUARD-SKELETON.md) §00.10。
 
-`e2e/full-journey.spec.ts`（以 `analyst_east` 账号登录）：上传 `supply_chain.xlsx` → 数据集出现 → 在 xBlueStudio 发布模型 → 图浏览器看到节点 → 分析页执行查询 → 推演页运行场景 → 驾驶舱组件渲染 → 导出 XLSX 下载成功 → 退出登录后访问 `/view` 跳转 `/login`。
+`e2e/full-journey.spec.ts`（通过 `/login` 以本地账号 `ops_admin` 登录）：上传 `supply_chain.xlsx` → 数据集出现 → 在 xBlueStudio 发布模型 → 图浏览器看到节点 → 分析页执行查询 → 推演页运行场景 → 驾驶舱组件渲染 → 导出 XLSX 下载成功 → 退出登录后访问 `/view` 跳转 `/login`。
 
 **通过标准**：`all.sh` 输出最后一行 `ALL GATES PASS`；`restore-drill.sh` 输出 `restore-drill: OK`；基准环境中各 Step 的性能断言成立。

@@ -59,11 +59,15 @@
 | `POST /metrics/window`、`GET /metrics/catalog` | `DATA_READ` | 同上 |
 | `GET /graph/neighbors`、`GET /graph/path`、`GET /graph/subgraph` | `DATA_READ` | 同上 |
 | `POST /graph/algorithms/{algo}`、`GET /graph/algorithms/{algo}/results` | `STUDIO_EDIT` / `DATA_READ` | 同上 |
-| `POST /entities/resolve`、`GET /entities/candidates`、`POST /entities/links/{entity_id}/{node_id}/confirm`、`.../reject` | `STUDIO_EDIT` | 同上 |
-| `GET /schema`、`POST /schema`、`POST /schema/validate` | `DATA_READ` / `STUDIO_PUBLISH` / `STUDIO_EDIT` | [06](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §05.6 |
+| `POST /entities/resolve`、`GET /entities/candidates`、`POST /entities/links/{entity_id}/{node_id}/confirm`、`POST /entities/links/{entity_id}/{node_id}/reject` | `STUDIO_EDIT` | 同上 |
+| `GET /subgraphs`、`POST /subgraphs`、`PATCH /subgraphs/{slug}`、`DELETE /subgraphs/{slug}` | `DATA_READ` / `STUDIO_EDIT` | [06](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §05.7 |
+| `POST /subgraphs/{slug}/merge-preview`、`POST /subgraphs/{slug}/merge` | `STUDIO_EDIT` / `STUDIO_PUBLISH` | 同上 |
+| `GET /schema`、`POST /schema`、`POST /schema/validate` | `DATA_READ` / `STUDIO_PUBLISH` / `STUDIO_EDIT` | 同上 |
 | `GET /schema/versions`、`GET /schema/versions/{v}`、`GET /schema/versions/{a}/diff/{b}`、`POST /schema/versions/{v}/restore` | `DATA_READ` / `STUDIO_PUBLISH` | 同上 |
 | `GET /drafts`、`POST /drafts`、`GET /drafts/{id}`、`PUT /drafts/{id}`、`POST /drafts/{id}/discard`、`POST /drafts/ai`、`POST /drafts/{id}/publish` | `STUDIO_EDIT` / `STUDIO_PUBLISH` | 同上 |
 | `GET /mappings`、`GET /mappings/{id}/runs`、`POST /mappings/{id}/run`、`POST /mappings/{id}/preview` | `DATA_READ` / `STUDIO_EDIT` | 同上 |
+| `GET /objects`、`GET /objects/{type_name}`、`GET /objects/{type_name}/{key}` | `DATA_READ` | §05.6、§05.7 |
+| `POST /graphql`、`GET /graphql/sdl` | `DATA_READ` | §05.6、§05.7 |
 | `POST /expr/validate`、`POST /expr/evaluate`、`POST /aggregate/recompute`、`GET /nodes/{id}/explain/{metric}` | `STUDIO_EDIT` / `DATA_READ` | [06](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §06.6 |
 | `GET /knowledge/node-candidates`、`POST /knowledge/node-candidates/{entity_id}/accept` | `STUDIO_EDIT` | 同上 |
 
@@ -100,21 +104,21 @@
 | `GET /channels`、`POST /channels`、`PUT /channels/{id}`、`DELETE /channels/{id}`、`POST /channels/{id}/test` | `DATA_READ` / `RULE_EDIT` | 同上 |
 | `GET /silences`、`POST /silences`、`DELETE /silences/{id}` | `DATA_READ` / `ALERT_ACK` | 同上 |
 
-## 7. AxAgent、已发布端点与 MCP
+## 7. AxAgent、已发布端点与 MCP（完整路径）
 
 | 方法与路径 | 鉴权 | 定义 |
 | :--- | :--- | :--- |
-| `GET /api/axagent/providers`、`POST /providers`、`PUT /providers/{id}`、`DELETE /providers/{id}`、`POST /providers/{id}/test`、`GET /usage` | `AGENT_EDIT` | [08](./08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) §09.9 |
-| `GET /api/axagent/endpoints`、`POST /endpoints`、`PUT /endpoints/{id}`、`DELETE /endpoints/{id}`、`POST /endpoints/{id}/promote` | `DATA_READ` / `STUDIO_PUBLISH` | 同上 |
-| `GET /api/axagent/endpoints/openapi.json`、`GET /endpoints/{id}/skill.json` | `DATA_READ` | 同上 |
+| `GET /api/axagent/providers`、`POST /api/axagent/providers`、`PUT /api/axagent/providers/{id}`、`DELETE /api/axagent/providers/{id}`、`POST /api/axagent/providers/{id}/test`、`GET /api/axagent/usage` | `AGENT_EDIT` | [08](./08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) §09.9 |
+| `GET /api/axagent/endpoints`、`POST /api/axagent/endpoints`、`PUT /api/axagent/endpoints/{id}`、`DELETE /api/axagent/endpoints/{id}`、`POST /api/axagent/endpoints/{id}/promote` | `DATA_READ` / `STUDIO_PUBLISH` | 同上 |
+| `GET /api/axagent/endpoints/openapi.json`、`GET /api/axagent/endpoints/{id}/skill.json` | `DATA_READ` | 同上 |
 | `POST /api/axagent/apps/{endpoint_id}/run` | 端点要求的权限 | 同上 |
 | `POST /api/published/{env}/{tenant_id}/{slug}`、`GET /api/published/{env}/{tenant_id}/{slug}/runs/{run_id}` | `axp_` 个人访问令牌 | 同上 |
 | `POST /api/mcp`、`GET /api/mcp`、`DELETE /api/mcp` | `axp_` 个人访问令牌 | 同上 |
-| `GET /api/axagent/mcp-clients`、`POST /mcp-clients`、`DELETE /mcp-clients/{id}`、`POST /mcp-clients/{id}/sync` | `AGENT_EDIT` | 同上 |
-| `GET /api/axagent/agents`、`POST /agents`、`GET /agents/{id}`、`PUT /agents/{id}`、`DELETE /agents/{id}`、`POST /agents/{id}/publish` | `DATA_READ` / `AGENT_EDIT` | 同上 |
+| `GET /api/axagent/mcp-clients`、`POST /api/axagent/mcp-clients`、`DELETE /api/axagent/mcp-clients/{id}`、`POST /api/axagent/mcp-clients/{id}/sync` | `AGENT_EDIT` | 同上 |
+| `GET /api/axagent/agents`、`POST /api/axagent/agents`、`GET /api/axagent/agents/{id}`、`PUT /api/axagent/agents/{id}`、`DELETE /api/axagent/agents/{id}`、`POST /api/axagent/agents/{id}/publish` | `DATA_READ` / `AGENT_EDIT` | 同上 |
 | `POST /api/axagent/agents/{id}/chat` | `AGENT_RUN` | 同上 |
-| `GET /api/axagent/conversations`、`GET /conversations/{id}/messages`、`DELETE /conversations/{id}` | `AGENT_RUN` | 同上 |
-| `POST /api/axagent/agents/{id}/embeds`、`GET /agents/{id}/embeds`、`DELETE /embeds/{embed_id}` | `VIEW_SHARE` | 同上 |
+| `GET /api/axagent/conversations`、`GET /api/axagent/conversations/{id}/messages`、`DELETE /api/axagent/conversations/{id}` | `AGENT_RUN` | 同上 |
+| `POST /api/axagent/agents/{id}/embeds`、`GET /api/axagent/agents/{id}/embeds`、`DELETE /api/axagent/embeds/{embed_id}` | `VIEW_SHARE` | 同上 |
 | `POST /api/axagent/embed/{token}/chat` | `axe_` 嵌入令牌 | 同上 |
 
 ## 8. AxSim（`/api/axsim`）
@@ -136,11 +140,13 @@
 | 方法与路径 | 鉴权 | 定义 |
 | :--- | :--- | :--- |
 | `GET /dashboards`、`POST /dashboards`、`GET /dashboards/{id}`、`PUT /dashboards/{id}`、`DELETE /dashboards/{id}`、`GET /dashboards/by-slug/{slug}` | `DATA_READ` / `VIEW_EDIT` | [10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.7 |
-| `POST /dashboards/{id}/publish`、`POST /dashboards/{id}/duplicate`、`PUT /dashboards/{id}/layout` | `VIEW_EDIT` | 同上 |
+| `POST /dashboards/ai-generate` | `VIEW_EDIT` | §11.6 |
+| `POST /dashboards/{id}/publish`、`POST /dashboards/{id}/duplicate`、`PUT /dashboards/{id}/layout` | `VIEW_EDIT` | §11.7 |
 | `POST /dashboards/{id}/widgets`、`PUT /widgets/{id}`、`DELETE /widgets/{id}` | `VIEW_EDIT` | 同上 |
 | `POST /widgets/{id}/data`、`POST /widgets/preview` | `DATA_READ` | §11.2 |
+| `POST /widgets/{id}/invoke` | `FLOW_RUN` | §11.6 |
 | `GET /dashboards/{id}/stream`（SSE） | `DATA_READ` | §11.5 |
-| `GET /assets`、`POST /assets`、`GET /assets/{id}/content`、`DELETE /assets/{id}`、`GET /assets/{id}/placements`、`PUT /assets/{id}/placements` | `DATA_READ` / `VIEW_EDIT` | §11.4 |
+| `GET /assets`、`POST /assets`、`GET /assets/{id}/content`、`DELETE /assets/{id}`、`GET /assets/{id}/placements`、`PUT /assets/{id}/placements`、`GET /assets/{id}/bindings3d`、`PUT /assets/{id}/bindings3d` | `DATA_READ` / `VIEW_EDIT` | §11.4 |
 | `POST /exports`、`GET /exports`、`GET /exports/{id}`、`GET /exports/{id}/download`、`DELETE /exports/{id}` | `EXPORT_DATA` | §12.5.1 |
 | `GET /export-templates`、`POST /export-templates`、`DELETE /export-templates/{id}` | `EXPORT_DATA` / `VIEW_EDIT` | §12.4 |
 | `POST /shares`、`GET /shares`、`DELETE /shares/{id}` | `VIEW_SHARE` | §12.5.2 |

@@ -10,12 +10,12 @@
 
 1. **全源接入**：CSV / TSV / TXT / Excel（xlsx、xlsm、xls、xlsb、ods）/ PPT（pptx、ppt）/ Word（docx、doc）/ PDF / 图片 / JSON / JSONL / XML / 日志，关系库（含国产库与数仓）、NoSQL、时序库、消息队列、对象存储 / SFTP、REST / GraphQL / Webhook。
 2. **双轨解析与数据湖**：文本轨进入超图知识库（五路召回 + RRF），表格轨进入 DuckLake 数据湖（快照、追加、按主键合并、时间回溯）。
-3. **业务对象建模**：在 xBlueStudio 画布上定义对象、关系、属性、派生公式、聚合规则、数据映射，AI 从数据、文档或需求描述生成草案，人工确认后发布并留存版本。
+3. **业务对象建模与领域接口**：在 xBlueStudio 画布上定义对象、关系、属性、派生公式、聚合规则、数据映射，支持部门级多子图隔离建模与跨子图对齐合并；AI 从数据、文档或需求描述生成草案，人工确认发布后留存版本，并自动暴露强类型领域对象 REST 与动态 GraphQL 查询接口。
 4. **分析、制表与问数**：DuckDB OLAP 透视制表、指标语义层、受控 SQL、自然语言问数、图查询与图算法、时序窗口聚合。
 5. **编排与自动化**：DAG 流程、持久化任务队列、定时 / 事件 / Webhook 触发、人工审批、对象级“条件 → 动作”规则、告警中心与通知渠道。
-6. **应用化**：流程与已保存查询一键发布为 REST API、Skill、MCP 工具，测试 / 正式环境分开发布；可配置智能体、多轮工作台、MCP Client、多模型路由。
+6. **应用化**：领域对象、流程与已保存查询一键发布为 REST API、Skill、MCP 工具，测试 / 正式环境分开发布；可配置智能体、多轮工作台、MCP Client、多模型路由。
 7. **因果推演**：按业务范围克隆沙盘、写时复制覆盖层、SCC + 阻尼迭代传导、检查点与回放、多方案对比、推演问数、审批后下发生产。
-8. **孪生可视与出品**：对象孪生视图、拖拽驾驶舱、实时刷新、下钻、地图 / 平面图、告警组件，Excel / CSV / PDF / Word / PPT / Markdown 出品与安全分享。
+8. **孪生可视、交互回写与出品**：AI 一句话生成孪生页面、拖拽驾驶舱、实时刷新、下钻、地理地图 / 2D 平面图 / 3D 空间数字孪生场景（glTF/GLB）、页面级实体动作与表单回写组件、告警组件，Excel / CSV / PDF / Word / PPT / Markdown 出品与安全分享。
 9. **安全治理**：本地口令 + OIDC、短期令牌与个人访问令牌、Cedar ABAC + PostgreSQL 行级安全、查询 / LLM / 出品三道脱敏、跨部门授权共享、全链路审计。
 10. **轻量交付**：PostgreSQL + 单二进制 Core + Sidecar 三个必选容器；备份恢复、保留策略、行业模板包、演示数据一键装载。
 
@@ -152,11 +152,11 @@ xBlueNode/
 | [03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md](./03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md) | Step 02：连接器框架、凭证密钥环、DuckLake 同步语义、文件入湖、Webhook、消息流、资产目录 |
 | [04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md](./04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md) | Step 03：业务节点存储扩展、时序与窗口聚合、对象向量、地理字段、实体归一化、图查询与图算法 |
 | [05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md](./05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) | Step 04：DuckDB 安全会话、透视制表、指标语义层、智能问数、AI 数据处理、意图路由 |
-| [06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) | Step 05：建模画布、AI 草案、模型版本；Step 06：表达式引擎、映射物化、派生与动态聚合、知识-节点同步 |
+| [06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) | Step 05：建模画布、多子图隔离与合并、AI 草案、模型版本、动态领域 GraphQL / 对象 API；Step 06：表达式引擎、映射物化、派生与动态聚合、知识-节点同步 |
 | [07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md](./07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md) | Step 07：DAG 引擎、持久化执行、流程版本；Step 08：规则引擎、告警中心、通知渠道 |
-| [08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md](./08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) | Step 09：测试/正式发布、查询即应用、MCP Server/Client、多模型路由、智能体与多轮工作台 |
+| [08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md](./08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) | Step 09：测试/正式发布（流程/查询/领域对象）、查询即应用、MCP Server/Client、多模型路由、智能体与多轮工作台 |
 | [09-STEP10-AXSIM-SIMULATION-AND-DECISION.md](./09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) | Step 10：范围克隆沙盘、写时复制、传导算法、检查点回放、方案对比、推演问数、决策下发 |
-| [10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) | Step 11：孪生驾驶舱、图浏览器、实时刷新、下钻、地图；Step 12：出品引擎、服务端图表、安全分享 |
+| [10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) | Step 11：孪生驾驶舱、AI 生成大屏、页面动作回写、图浏览器、实时刷新、下钻、地图 / 2D / 3D 孪生场景；Step 12：出品引擎、服务端图表、安全分享 |
 | [11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md](./11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) | Step 13：本地 + OIDC 认证、令牌有效期与轮换、Cedar ABAC、行级与列级策略、PII 识别、跨部门授权、审计 |
 | [12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md](./12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) | Step 14：生产部署、高可用、备份恢复、保留策略、模板包、演示场景、交付追踪、全链路总验收 |
 | [A1-CONVENTIONS-ENUMS-ROUTES.md](./A1-CONVENTIONS-ENUMS-ROUTES.md) | 命名词表、路由前缀、页面注册表、公共枚举、错误码、身份约定、环境变量 |
@@ -178,13 +178,13 @@ xBlueNode/
 | **02** | AxHub 连接器、同步与资产目录（02.1～02.9） | 03 | `0003_data_fabric.sql` | `axpoint-parser/connectors`、`axpoint-parser/lake`、`axpoint-db`、`axpoint-server`、web | 01 |
 | **03** | AxGraph 存储扩展与图查询 | 04 | `0004_axgraph_timeseries.sql` | `axpoint-db`、`axpoint-domain`、`axpoint-llm`、web | 00 |
 | **04** | AxAnalytics OLAP 与智能问数 | 05 | `0005_analytics_semantic.sql` | `axpoint-analytics`（创建）、`axpoint-server`、web | 02、03 |
-| **05** | xBlueStudio 建模、AI 草案与模型版本 | 06 | `0006_xbluestudio_modeling.sql` | `axpoint-domain`、`axpoint-db`、`axpoint-llm`、web | 03、04 |
+| **05** | xBlueStudio 建模、多子图、AI 草案与领域接口 | 06 | `0006_xbluestudio_modeling.sql` | `axpoint-domain`、`axpoint-db`、`axpoint-llm`、`axpoint-server`、web | 03、04 |
 | **06** | 映射物化、派生与动态聚合、知识同步 | 06 | 无（使用 0004 / 0006） | `axpoint-domain`、`axpoint-db`、`axpoint-server` | 05 |
 | **07** | AxFlow DAG 与持久化执行 | 07 | `0007_axflow_orchestration.sql` | `axpoint-flow`（创建）、`axpoint-server`、web | 06 |
 | **08** | 规则引擎、告警中心、通知渠道 | 07 | `0008_rules_alerts.sql` | `axpoint-flow`、web | 07 |
 | **09** | 发布、MCP、智能体与多轮工作台 | 08 | `0009_publishing_agents.sql` | `axpoint-agent`（创建）、`axpoint-llm`、web | 07、04 |
 | **10** | AxSim 推演与决策 | 09 | `0010_axsim_scenarios.sql` | `axpoint-domain::sim`、`axpoint-db`、`axpoint-server`、web | 06、07 |
-| **11** | xBlueView 孪生驾驶舱与图浏览 | 10 | `0011_xblueview_dashboards.sql` | `axpoint-server`、web | 04、08、10 |
+| **11** | xBlueView 孪生驾驶舱、AI 大屏与 3D 场景 | 10 | `0011_xblueview_dashboards.sql` | `axpoint-server`、web | 04、08、10 |
 | **12** | 全格式出品与安全分享 | 10 | `0012_export_and_share.sql` | `axpoint-parser/exporters`、`axpoint-parser/charts`、`axpoint-server`、web | 11 |
 | **13** | AxGuard 完整安全治理 | 11 | `0013_axguard_policies.sql` | `axpoint-security`、`axpoint-analytics`、`axpoint-llm`、web | 12、09 |
 | **14** | 运维、模板、演示与总验收 | 12 | `0014_ops_templates_delivery.sql` | `axpoint-server`、scripts、deploy、web | 13 |
@@ -202,7 +202,7 @@ flowchart TD
     S01 --> S02["Step 02 AxHub 连接器与同步"]
     S02 --> S04["Step 04 AxAnalytics OLAP 与问数"]
     S03 --> S04
-    S04 --> S05["Step 05 xBlueStudio 建模与版本"]
+    S04 --> S05["Step 05 xBlueStudio 建模与领域接口"]
     S03 --> S05
     S05 --> S06["Step 06 映射物化与动态聚合"]
     S06 --> S07["Step 07 AxFlow DAG 与持久化执行"]
@@ -211,7 +211,7 @@ flowchart TD
     S04 --> S09
     S06 --> S10["Step 10 AxSim 推演与决策"]
     S07 --> S10
-    S04 --> S11["Step 11 xBlueView 驾驶舱与图浏览"]
+    S04 --> S11["Step 11 xBlueView 驾驶舱与 3D 孪生"]
     S08 --> S11
     S10 --> S11
     S11 --> S12["Step 12 出品与分享"]
@@ -261,23 +261,23 @@ flowchart TD
 # 命名守卫（NAMING_DENYLIST 来自环境变量或本地 .env）
 bash scripts/naming-guard.sh
 
-# Rust
+# Rust（PATH 已含 axpoint-parser/.venv/bin，或由 uv run 执行 Python 检查）
 cd axpoint-core && cargo fmt --all -- --check \
   && cargo clippy --workspace --all-targets -- -D warnings \
   && cargo test --workspace && cd ..
 
 # Python
-cd axpoint-parser && ruff check . && mypy --strict . && pytest -v tests && cd ..
+cd axpoint-parser && uv run ruff check . && uv run mypy --strict . && uv run pytest -v tests && cd ..
 
 # Web
 cd xbluenode-web && npm ci && npm run build && npx playwright test e2e/smoke.spec.ts && cd ..
 
 # 数据库：无待执行迁移
-sqlx migrate info --source deploy/migrations --database-url "$MIGRATION_DATABASE_URL" | grep -c pending | grep -qx 0
+! sqlx migrate info --source deploy/migrations --database-url "$MIGRATION_DATABASE_URL" | grep -q pending
 ```
 
 ---
 
 ## 10. 需求追踪
 
-全部能力项（55 项）与全部数据源类别（26 类）到 Step 与验收用例的映射见 [A7](./A7-REQUIREMENTS-TRACEABILITY.md)。每个能力项都有唯一负责的 Step 与至少一条可执行的验收断言。
+全部能力项（59 项）与全部数据源类别（26 类）到 Step 与验收用例的映射见 [A7](./A7-REQUIREMENTS-TRACEABILITY.md)。每个能力项都有唯一负责的 Step 与至少一条可执行的验收断言。

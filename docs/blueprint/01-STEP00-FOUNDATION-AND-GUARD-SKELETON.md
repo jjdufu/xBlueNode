@@ -14,7 +14,7 @@ Step 00 把仓库从“可演示骨架”变成“每一步都能自动验证、
 
 ## 00.2 前置条件
 
-- 工具：Docker 24+（含 compose 插件）、Rust `1.100.0`（含 clippy、rustfmt）、`sqlx-cli 0.9.x`、Python 3.11、Node 24、`jq`、`psql`（PostgreSQL 客户端 16+）。
+- 工具：Docker 24+（含 compose 插件）、Rust `1.100.0`（含 clippy、rustfmt）、`sqlx-cli 0.9.x`、Python 3.11、`uv 0.5+`、Node 24、`jq`、`openssl`、`psql`（PostgreSQL 客户端 16+）。
 - 仓库处于 [00 §3](./00-MASTER-INDEX.md) 描述的基线状态。
 
 ## 00.3 契约清单
@@ -53,6 +53,7 @@ Step 00 把仓库从“可演示骨架”变成“每一步都能自动验证、
 | 修改 | `axpoint-core/crates/axpoint-server/src/routes/{mod.rs, system.rs, documents.rs, xblue.rs, axflow.rs, axsim.rs}` | 处理器参数改为 `AuthPrincipal`；`/api` JSON 404 回退 |
 | 新建 | `axpoint-core/crates/axpoint-server/src/routes/auth.rs` | `GET /api/auth/me` |
 | 新建 | `axpoint-core/crates/axpoint-server/src/routes/axops.rs` | `GET /api/axops/jobs`、`GET /api/axops/jobs/{id}`（任务查询，门禁脚本 `wait_job` 依赖） |
+| 修改 | `axpoint-parser/pyproject.toml` | `pydantic-settings`、顶层模块声明与子包自动发现 |
 | 新建 | `axpoint-parser/{settings.py, security.py}` | 配置与内部令牌中间件 |
 | 修改 | `axpoint-parser/main.py` | 挂载中间件、统一错误体 |
 | 新建 | `axpoint-parser/tests/fixtures/make_fixtures.py`、`fixtures.sha256` | 样本生成器（规格见 [A5 §1](./A5-TEST-FIXTURES-AND-GATES.md)） |
@@ -63,7 +64,7 @@ Step 00 把仓库从“可演示骨架”变成“每一步都能自动验证、
 | 新建 | `xbluenode-web/src/lib/api/{auth.ts, enums.ts}`、`src/pages/LoginPage.tsx` | 登录与公共枚举 |
 | 新建 | `xbluenode-web/{playwright.config.ts, e2e/smoke.spec.ts}` | 页面冒烟 |
 | 新建 | `scripts/{dev-up.sh, dev-down.sh, start-services.sh, seed-demo.sh}`、`scripts/seed/00-baseline.sh` | 环境、本地服务与演示数据 |
-| 新建 | `scripts/gate/{lib.sh, step00.sh, all.sh}` | 门禁框架 |
+| 新建 | `scripts/gate/{lib.sh, lib_test.sh, step00.sh, all.sh}` | 门禁框架与断言自测 |
 | 修改 | `.github/workflows/ci.yml` | `rust-core` 增加 `services.postgres` 与 `sqlx migrate run`；`web-frontend` 增加 Playwright |
 | 修改 | `.gitignore` | `.gate/`、`.env.test`、`xbluenode-web/test-results/`、`xbluenode-web/playwright-report/` |
 
@@ -318,7 +319,7 @@ GRANT EXECUTE ON FUNCTION ax_lease_jobs(TEXT, TEXT[], INT, INT) TO axpoint_app;
 GRANT EXECUTE ON FUNCTION ax_claim_outbox(TEXT, INT, INT) TO axpoint_app;
 GRANT EXECUTE ON FUNCTION ax_resolve_api_token(TEXT) TO axpoint_app;
 
--- 内置角色（默认租户）
+-- 内置角色与开发静态主体（默认租户）
 INSERT INTO sec_roles (tenant_id, name, permissions, is_builtin) VALUES
  ('default', 'ADMIN', ARRAY['DATA_READ','DATA_SYNC','DATA_ADMIN','STUDIO_EDIT','STUDIO_PUBLISH','FLOW_EDIT','FLOW_RUN',
    'FLOW_PUBLISH','APPROVAL_DECIDE','RULE_EDIT','ALERT_ACK','AGENT_EDIT','AGENT_RUN','SIM_RUN','SIM_APPLY','VIEW_EDIT',
@@ -329,6 +330,15 @@ INSERT INTO sec_roles (tenant_id, name, permissions, is_builtin) VALUES
  ('default', 'VIEWER', ARRAY['DATA_READ'], TRUE)
 ON CONFLICT (tenant_id, name) DO NOTHING;
 
+INSERT INTO sec_users (id, tenant_id, username, display_name, dept_id)
+VALUES ('00000000-0000-0000-0000-000000000000', 'default', 'dev', '开发管理员', 'default')
+ON CONFLICT (tenant_id, username) DO NOTHING;
+
+INSERT INTO sec_user_roles (tenant_id, user_id, role_id)
+SELECT 'default', '00000000-0000-0000-0000-000000000000', id
+  FROM sec_roles WHERE tenant_id = 'default' AND name = 'ADMIN'
+ON CONFLICT DO NOTHING;
+
 INSERT INTO ax_retention_policies (tenant_id, target, keep_days) VALUES
  ('default','METRIC_SERIES',730), ('default','METRIC_ROLLUP_MINUTE',30), ('default','AUDIT',1095),
  ('default','EXPORT_FILE',30), ('default','FLOW_STEP_LOG',180), ('default','JOB',30),
@@ -336,7 +346,8 @@ INSERT INTO ax_retention_policies (tenant_id, target, keep_days) VALUES
  ('default','QUERY_HISTORY',180), ('default','CONVERSATION',365)
 ON CONFLICT DO NOTHING;
 
-GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO axpoint_app;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO axpoint_app;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO axpoint_app;
 ```
 
 ### 00.5.3 `deploy/docker/postgres-init.sh`
@@ -616,6 +627,7 @@ let app = routes::api_router(state)
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -627,6 +639,19 @@ class Settings(BaseSettings):
     axpoint_model_path: Path = Path("/var/lib/axpoint/models")
     axpoint_max_upload_mb: int = 512
     axpoint_lake_catalog_dsn: str = ""
+
+    def lake_catalog_libpq(self) -> str:
+        u = urlparse(self.axpoint_lake_catalog_dsn)
+        parts = [
+            f"dbname={u.path.lstrip('/')}",
+            f"host={u.hostname or '127.0.0.1'}",
+            f"port={u.port or 5432}",
+        ]
+        if u.username:
+            parts.append(f"user={unquote(u.username)}")
+        if u.password:
+            parts.append(f"password={unquote(u.password)}")
+        return " ".join(parts)
 
 
 settings = Settings()  # type: ignore[call-arg]
@@ -659,7 +684,7 @@ class InternalTokenMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 ```
 
-`main.py` 执行 `app.add_middleware(InternalTokenMiddleware)`，并注册统一异常处理器输出三字段错误体。Core 侧 `AppState` 中的 `reqwest::Client` 通过 `default_headers` 带上 `x-axpoint-internal-token`。`pyproject.toml` 依赖追加 `pydantic-settings>=2.4,<3`（同步写入 A6）。
+`main.py` 执行 `app.add_middleware(InternalTokenMiddleware)`，并注册统一异常处理器输出三字段错误体。Core 侧 `AppState` 中的 `reqwest::Client` 通过 `default_headers` 带上 `x-axpoint-internal-token`。`pyproject.toml` 依赖追加 `pydantic-settings>=2.4,<3`（同步写入 A6），并设置 `py-modules = ["main", "schemas", "settings", "security"]` 与 `[tool.setuptools.packages.find] include = ["parsers*", "connectors*", "exporters*", "lake*", "charts*", "pii*"]`，确保后续各 Step 新增子包无需重复维护包列表。
 
 ---
 
@@ -690,12 +715,15 @@ FROM rust:1.100-bookworm AS core
 WORKDIR /src
 COPY axpoint-core/ axpoint-core/
 COPY deploy/migrations/ deploy/migrations/
-RUN cd axpoint-core && cargo build --release -p axpoint-server
+COPY --from=web /src/xbluenode-web/src/ xbluenode-web/src/
+RUN mkdir -p /out/nonroot-home/.duckdb/extensions \
+ && cd axpoint-core && cargo build --release -p axpoint-server
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=core /src/axpoint-core/target/release/axpoint-server /app/axpoint-server
 COPY --from=web /src/xbluenode-web/dist /app/web
-ENV WEB_DIST_DIR=/app/web AXPOINT_BIND_ADDR=0.0.0.0:9995 AXPOINT_DATA_ROOT=/var/lib/axpoint
+COPY --from=core --chown=65532:65532 /out/nonroot-home/ /home/nonroot/
+ENV HOME=/home/nonroot WEB_DIST_DIR=/app/web AXPOINT_BIND_ADDR=0.0.0.0:9995 AXPOINT_DATA_ROOT=/var/lib/axpoint
 EXPOSE 9995
 USER nonroot
 HEALTHCHECK --interval=10s --timeout=3s --retries=6 CMD ["/app/axpoint-server", "healthcheck"]
@@ -705,32 +733,42 @@ ENTRYPOINT ["/app/axpoint-server"]
 ### 00.9.2 `deploy/docker/axpoint-parser.Dockerfile`
 
 ```dockerfile
+FROM node:24-bookworm-slim AS node24
+
 FROM python:3.11-slim-bookworm AS base
-ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
-RUN useradd --uid 10001 --create-home axp
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/home/axp
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libpango-1.0-0 libpangoft2-1.0-0 libharfbuzz-subset0 libgdk-pixbuf-2.0-0 shared-mime-info fonts-noto-cjk \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd --uid 10001 --create-home axp
 WORKDIR /app
 COPY axpoint-parser/pyproject.toml ./
 COPY axpoint-parser/ ./
 
 FROM base AS lite
-RUN pip install --no-cache-dir . \
- && python -c "import duckdb; c=duckdb.connect(); c.execute('INSTALL ducklake'); c.execute('INSTALL postgres')"
+RUN pip install --no-cache-dir .
 USER axp
+RUN python -c "import importlib.util as u; \
+    d = __import__('duckdb').connect() if u.find_spec('duckdb') else None; \
+    [d.execute(f'INSTALL {e}') for e in ('ducklake','postgres')] if d else None"
 EXPOSE 8001
 HEALTHCHECK --interval=10s --timeout=3s --retries=6 CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/health').status==200 else 1)"
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "2"]
 
 FROM lite AS full
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends libreoffice-core libreoffice-writer \
-      libreoffice-calc libreoffice-impress nodejs npm fonts-noto-cjk \
+COPY --from=node24 /usr/local/ /usr/local/
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress \
  && rm -rf /var/lib/apt/lists/* \
- && pip install --no-cache-dir ".[full]" \
- && npm --prefix /app/charts ci --omit=dev
+ && if python -c "import tomllib,sys; d=tomllib.load(open('pyproject.toml','rb')); sys.exit(0 if 'full' in d.get('project',{}).get('optional-dependencies',{}) else 1)"; then \
+      pip install --no-cache-dir ".[full]"; \
+    fi \
+ && if [ -f /app/charts/package.json ]; then npm --prefix /app/charts ci --omit=dev; fi
 USER axp
 ```
 
-DuckDB 扩展在构建期安装到用户目录；运行期 `autoinstall_known_extensions=false`。
+DuckDB 扩展在 `USER axp` 下安装到 `/home/axp/.duckdb/extensions`；运行期设置 `autoinstall_known_extensions=false`。
 
 ### 00.9.3 `deploy/docker-compose.yml`
 
@@ -815,6 +853,12 @@ test -f deploy/.env || cp deploy/.env.example deploy/.env
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env up -d postgres
 until docker compose -f deploy/docker-compose.yml exec -T postgres pg_isready -U axpoint -d xbluenode >/dev/null; do sleep 1; done
 
+mkdir -p .gate/jwt/public
+if [[ ! -f .gate/jwt/private.pem ]]; then
+  openssl genpkey -algorithm ed25519 -out .gate/jwt/private.pem
+  openssl pkey -in .gate/jwt/private.pem -pubout -out .gate/jwt/public/1.pem
+fi
+
 gen() { python3 -c "import secrets;print(secrets.token_urlsafe(32))"; }
 key() { python3 -c "import os,base64;print(base64.b64encode(os.urandom(32)).decode())"; }
 if [[ ! -f .env.test ]]; then
@@ -827,14 +871,22 @@ AXPOINT_DEV_TOKEN=$(gen)
 AXPOINT_INTERNAL_TOKEN=$(gen)
 AXPOINT_CREDENTIAL_KEYS=1:$(key)
 AXPOINT_MASK_KEYS=1:$(key)
+AXPOINT_JWT_PRIVATE_KEY_PATH=$PWD/.gate/jwt/private.pem
+AXPOINT_JWT_PUBLIC_KEYS_DIR=$PWD/.gate/jwt/public
 AXPOINT_DATA_ROOT=$PWD/.gate/data
 AXPOINT_MODEL_PATH=$PWD/.gate/models
+AXPOINT_LLM_CASSETTE=$PWD/tests/cassettes
 PARSER_BASE_URL=http://127.0.0.1:8001
 CORE_BASE_URL=http://127.0.0.1:9995
 ENV
 fi
 set -a; source .env.test; set +a
-mkdir -p "$AXPOINT_DATA_ROOT" "$AXPOINT_MODEL_PATH" .gate
+mkdir -p "$AXPOINT_DATA_ROOT"/{lake,assets,exports,tenants} "$AXPOINT_MODEL_PATH" .gate/seeded
+
+(cd axpoint-parser && uv sync --extra dev \
+  && uv run python -c "import importlib.util as u; d=__import__('duckdb').connect() if u.find_spec('duckdb') else None; [d.execute(f'INSTALL {e}') for e in ('ducklake','postgres','mysql_scanner','sqlite_scanner')] if d else None" \
+  && uv run python tests/fixtures/make_fixtures.py)
+
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "ALTER ROLE axpoint_app PASSWORD 'axpoint_app_secret'" \
   -c "ALTER ROLE axpoint_lake PASSWORD 'axpoint_lake_secret'" 2>/dev/null || true
 sqlx migrate run --source deploy/migrations --database-url "$MIGRATION_DATABASE_URL"
@@ -843,19 +895,20 @@ psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "ALTER ROLE axpoint_app PAS
 echo "dev-up: OK"
 ```
 
-`scripts/dev-down.sh`：结束 `.gate/pids/` 中的进程后执行 `docker compose -f deploy/docker-compose.yml down -v && rm -rf .gate .env.test`。
+`scripts/dev-down.sh`：遍历 `.gate/pids/*` 结束全部后台进程后执行 `docker compose -f deploy/docker-compose.yml down -v && rm -rf .gate .env.test`。
 
 ### 00.10.2 本地运行服务 `scripts/start-services.sh`
 
 ```bash
 #!/usr/bin/env bash
-# 用法：start-services.sh [--restart core|parser]；后台启动 Sidecar 与 Core，PID 写入 .gate/pids/
+# 用法：start-services.sh [--restart core|parser]；后台启动 Sidecar 与 Core，真实进程 PID 写入 .gate/pids/
 set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a; source .env.test; set +a
+export PATH="$PWD/axpoint-parser/.venv/bin:$PATH"
 mkdir -p .gate/pids .gate/logs
 start_parser() { (cd axpoint-parser && nohup uvicorn main:app --host 127.0.0.1 --port 8001 > ../.gate/logs/parser.log 2>&1 & echo $! > ../.gate/pids/parser); }
-start_core()   { (cd axpoint-core && nohup cargo run -q -p axpoint-server > ../.gate/logs/core.log 2>&1 & echo $! > ../.gate/pids/core); }
+start_core()   { (cd axpoint-core && cargo build -q -p axpoint-server && nohup ./target/debug/axpoint-server > ../.gate/logs/core.log 2>&1 & echo $! > ../.gate/pids/core); }
 stop() { [[ -f ".gate/pids/$1" ]] && kill "$(cat ".gate/pids/$1")" 2>/dev/null || true; rm -f ".gate/pids/$1"; }
 wait_http() { for _ in $(seq 1 180); do curl -sf "$1" >/dev/null && return 0; sleep 1; done; echo "timeout: $1" >&2; exit 1; }
 if [[ "${1:-}" == "--restart" ]]; then
@@ -873,7 +926,27 @@ echo "services: OK"
 
 ### 00.10.3 演示数据与 ID 文件
 
-`scripts/seed-demo.sh` 依次执行 `scripts/seed/*.sh`（文件名按 Step 编号排序，每个 Step 追加一个），并把每个脚本输出的 `KEY=VALUE` 行追加到 `.gate/ids.env`。Step 00 的 `scripts/seed/00-baseline.sh`：
+`scripts/seed-demo.sh [MAX_STEP]` 按编号升序扫描 `scripts/seed/[0-9][0-9]-*.sh`（传 `MAX_STEP` 时只执行编号 ≤ `MAX_STEP` 的脚本，不传则执行全部），对尚未存在 `.gate/seeded/<脚本名>` 标记的脚本依次运行，把输出的 `KEY=VALUE` 行追加到 `.gate/ids.env` 并写入标记，从而支持单步执行与 `all.sh` 全量回归重复调用而不重复插入：
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+cd "$(dirname "$0")/.."
+MAX_STEP="${1:-99}"
+mkdir -p .gate/seeded
+touch .gate/ids.env
+for f in scripts/seed/[0-9][0-9]-*.sh; do
+  [[ -e "$f" ]] || continue
+  base="$(basename "$f")"
+  step_num="${base%%-*}"
+  (( 10#$step_num <= 10#$MAX_STEP )) || continue
+  [[ -f ".gate/seeded/$base" ]] && continue
+  bash "$f" >> .gate/ids.env
+  touch ".gate/seeded/$base"
+done
+```
+
+Step 00 的 `scripts/seed/00-baseline.sh`：
 
 ```bash
 #!/usr/bin/env bash
@@ -887,7 +960,7 @@ O2=$(api POST /api/xblue/nodes "{\"type_name\":\"Order\",\"node_key\":\"O-2\",\"
 echo "DOC_ID=$DOC"; echo "WAREHOUSE_NODE_ID=$W1"; echo "ORDER1_NODE_ID=$O1"; echo "ORDER2_NODE_ID=$O2"
 ```
 
-`scripts/gate/lib.sh`（完整函数清单见 [A5 §2](./A5-TEST-FIXTURES-AND-GATES.md)）提供 `api METHOD PATH [JSON]`、`api_noauth`、`expect_eq NAME ACTUAL EXPECTED`、`expect_code NAME CODE METHOD PATH [JSON]`、`expect_json NAME JSON JQ_EXPR`、`sql_owner SQL`、`sql_app TENANT SQL`、`gate_pass STEP`。
+`scripts/gate/lib.sh`（完整函数清单见 [A5 §2](./A5-TEST-FIXTURES-AND-GATES.md)）把 `$ROOT/axpoint-parser/.venv/bin` 前置到 `PATH`，并提供 `api METHOD PATH [JSON]`、`api_noauth`、`expect_eq NAME ACTUAL EXPECTED`、`expect_code NAME CODE METHOD PATH [JSON]`（`METHOD` 支持 `GET_NOAUTH` / `POST_NOAUTH` 无令牌请求）、`expect_json NAME JSON JQ_EXPR`、`sql_owner SQL`、`sql_app TENANT SQL`、`gate_pass STEP`。
 
 ---
 
@@ -908,18 +981,22 @@ echo "DOC_ID=$DOC"; echo "WAREHOUSE_NODE_ID=$W1"; echo "ORDER1_NODE_ID=$O1"; ech
         options: >-
           --health-cmd "pg_isready -U axpoint -d xbluenode" --health-interval 5s --health-retries 20
     env:
-      DATABASE_URL: postgres://axpoint:axpoint_secret@localhost:5432/xbluenode
       MIGRATION_DATABASE_URL: postgres://axpoint:axpoint_secret@localhost:5432/xbluenode
+      DATABASE_URL: postgres://axpoint_app:axpoint_app_secret@localhost:5432/xbluenode
     steps:
       - uses: actions/checkout@v4
       # 工具链安装（dtolnay/rust-toolchain，含 clippy、rustfmt）与 Rust 构建缓存步骤与现有 rust-core 作业相同
       - run: cargo install sqlx-cli --version ^0.9 --no-default-features --features rustls,postgres --locked
-      - run: sqlx migrate run --source deploy/migrations
+      - run: |
+          sqlx migrate run --source deploy/migrations --database-url "$MIGRATION_DATABASE_URL"
+          psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 \
+            -c "ALTER ROLE axpoint_app PASSWORD 'axpoint_app_secret'" \
+            -c "ALTER ROLE axpoint_lake PASSWORD 'axpoint_lake_secret'"
       - working-directory: axpoint-core
         run: cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace
 ```
 
-`detect-changes` 的 `rust` 过滤器增加 `deploy/migrations/**`。`web-frontend` 作业在 `npm run build` 后执行 `npx playwright install --with-deps chromium && npx playwright test e2e/smoke.spec.ts`（使用 `vite preview` 与 Mock 夹具，不依赖后端）。
+`detect-changes` 的 `rust` 过滤器增加 `deploy/migrations/**`；Rust 集成测试统一使用 `DATABASE_URL`（非超级用户 `axpoint_app`）构造业务 `PgPool` 以真实触发 RLS，仅在测试夹具初始化需跨租户预置数据时读取 `MIGRATION_DATABASE_URL`。`web-frontend` 作业在 `npm run build` 后执行 `npx playwright install --with-deps chromium && npx playwright test e2e/smoke.spec.ts`（使用 `vite preview` 与 Mock 夹具，不依赖后端）。
 
 ---
 
@@ -927,7 +1004,7 @@ echo "DOC_ID=$DOC"; echo "WAREHOUSE_NODE_ID=$W1"; echo "ORDER1_NODE_ID=$O1"; ech
 
 | 层 | 测试 | 命令 |
 | :--- | :--- | :--- |
-| Rust | `axpoint-db::tests::rls_blocks_without_tenant`：以 `SET ROLE axpoint_app` 且不设 `app.tenant_id` 查询 `xb_nodes` 返回 0 行 | `cargo test -p axpoint-db rls` |
+| Rust | `axpoint-db::tests::rls_blocks_without_tenant`：以 `axpoint_app` 连接且不设 `app.tenant_id` 查询 `xb_nodes` 返回 0 行 | `cargo test -p axpoint-db rls` |
 | Rust | `axpoint-db::tests::rls_isolates_tenants`：租户 `t1` 写入的节点在 `t2` 上下文不可见，`WITH CHECK` 拒绝向 `t2` 写入 `t1` 数据 | 同上 |
 | Rust | `axpoint-db::tests::jobs_lease_is_exclusive`：两个并发 `lease` 各取 50 条，ID 集合无交集 | `cargo test -p axpoint-db jobs` |
 | Rust | `axpoint-db::tests::jobs_retry_backoff`：`fail` 后 `next_run_at` 递增、超过 `max_attempts` 置 `FAILED` | 同上 |
@@ -949,26 +1026,30 @@ echo "DOC_ID=$DOC"; echo "WAREHOUSE_NODE_ID=$W1"; echo "ORDER1_NODE_ID=$O1"; ech
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
+# 0. 门禁断言函数自测
+bash "$(dirname "$0")/lib_test.sh"
+
 # 1. 迁移无待执行
 expect_eq "migrations-applied" \
-  "$(sqlx migrate info --source deploy/migrations --database-url "$MIGRATION_DATABASE_URL" | grep -c pending || true)" "0"
+  "$(sqlx migrate info --source deploy/migrations --database-url "$MIGRATION_DATABASE_URL" | awk '/pending/{c++} END{print c+0}')" "0"
 
 # 2. 身份边界
-expect_code "health-public" 200 GET /api/health
-expect_eq "stats-requires-token" "$(api_noauth GET /api/stats -o /dev/null -w '%{http_code}')" "401"
+expect_code "health-public" 200 GET_NOAUTH /api/health
+expect_code "stats-requires-token" 401 GET_NOAUTH /api/stats
 expect_code "stats-with-token" 200 GET /api/stats
 expect_json "me-is-dev" "$(api GET /api/auth/me)" '.tenant_id == "default" and (.roles | index("ADMIN") != null)'
-expect_eq "tenant-param-rejected" \
-  "$(api POST /api/documents/ingest '{"tenant_id":"x","title":"t","source_name":"t.md","content":"c"}' -o /dev/null -w '%{http_code}')" "400"
+expect_code "tenant-param-rejected" 400 POST /api/documents/ingest \
+  '{"tenant_id":"x","title":"t","source_name":"t.md","content":"c"}'
 
 # 3. 错误体与回退
 expect_json "api-404-json" "$(api GET /api/does-not-exist)" '.error_code == "ROUTE_NOT_FOUND" and (.trace_id | length > 0)'
 expect_eq "spa-fallback" "$(curl -s -o /dev/null -w '%{http_code}' "$CORE_BASE_URL/graph")" "200"
+ASSET_FILE="$(find xbluenode-web/dist/assets -maxdepth 1 -type f -printf '%f\n' | sed -n '1p')"
 expect_eq "assets-immutable" \
-  "$(curl -sI "$CORE_BASE_URL/assets/$(ls xbluenode-web/dist/assets | head -n1)" | grep -ci 'immutable')" "1"
+  "$(curl -sI "$CORE_BASE_URL/assets/$ASSET_FILE" | awk 'BEGIN{IGNORECASE=1} /^cache-control:.*immutable/{c=1} END{print c+0}')" "1"
 
 # 4. 行级安全
-bash scripts/seed-demo.sh
+bash scripts/seed-demo.sh 00
 expect_eq "rls-no-tenant" "$(sql_app '' 'SELECT count(*) FROM xb_nodes')" "0"
 expect_eq "rls-default" "$(sql_app default 'SELECT count(*) >= 3 FROM xb_nodes')" "t"
 expect_eq "rls-other-tenant" "$(sql_app t_other 'SELECT count(*) FROM xb_nodes')" "0"
@@ -978,7 +1059,7 @@ expect_eq "parser-requires-internal-token" \
   "$(curl -s -o /dev/null -w '%{http_code}' -F file=@axpoint-parser/tests/fixtures/plain.txt "$PARSER_BASE_URL/parse")" "401"
 
 # 6. 指标
-expect_eq "metrics" "$(curl -s http://127.0.0.1:9464/metrics | grep -c '^axpoint_http_requests_total' | awk '{print ($1>0)}')" "1"
+expect_eq "metrics" "$(curl -s http://127.0.0.1:9464/metrics | awk '/^axpoint_http_requests_total/{c=1} END{print c+0}')" "1"
 
 # 7. 单测与冒烟
 (cd axpoint-core && cargo test --workspace -q)

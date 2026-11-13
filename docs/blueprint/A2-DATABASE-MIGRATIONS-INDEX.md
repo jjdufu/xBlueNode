@@ -13,12 +13,12 @@
 | 0003 | `0003_data_fabric.sql` | Step 02 | 凭证、连接、数据集、列画像、同步记录、上传、Webhook、流位点、质量规则、术语、血缘 | [03](./03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md) |
 | 0004 | `0004_axgraph_timeseries.sql` | Step 03 | 节点属性 / 地理 / 全文 / 行版本；关系唯一索引；时序分区表与汇总；实体链接；图算法结果 | [04](./04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md) |
 | 0005 | `0005_analytics_semantic.sql` | Step 04 | 指标、保存查询、查询历史、问数轮次、AI 处理草稿 | [05](./05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) |
-| 0006 | `0006_xbluestudio_modeling.sql` | Step 05 | 节点 / 关系类型扩展、模型头 / 版本 / 草稿、映射与映射运行 | [06](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) |
+| 0006 | `0006_xbluestudio_modeling.sql` | Step 05 | 部门子图注册、节点 / 关系类型扩展、模型头 / 版本 / 草稿、映射与映射运行 | [06](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) |
 | 0007 | `0007_axflow_orchestration.sql` | Step 07 | 流程 DAG 列与链式转换、版本、部署、运行、步骤日志、审批、动作日志、钩子 | [07](./07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md) |
 | 0008 | `0008_rules_alerts.sql` | Step 08 | 通知渠道、规则、告警、告警事件、投递记录、静默 | [07](./07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md) |
 | 0009 | `0009_publishing_agents.sql` | Step 09 | 模型提供方与用量、发布端点、MCP 客户端、智能体与版本、会话与消息、嵌入 | [08](./08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) |
 | 0010 | `0010_axsim_scenarios.sql` | Step 10 | 沙盘范围、基线快照、写时复制覆盖层、场景、影响、检查点、决策 | [09](./09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) §10.1 |
-| 0011 | `0011_xblueview_dashboards.sql` | Step 11 | 驾驶舱、组件、资产、平面图摆放 | [10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.1 |
+| 0011 | `0011_xblueview_dashboards.sql` | Step 11 | 驾驶舱、组件、资产、平面图摆放、3D 孪生场景绑定 | [10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.1 |
 | 0012 | `0012_export_and_share.sql` | Step 12 | 出品模板、出品任务、分享链接 | [10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §12.1 |
 | 0013 | `0013_axguard_policies.sql` | Step 13 | 登录安全、会话、部门与属性、资源归属与密级、Cedar 策略、行列策略、跨部门授权、PII 位置、审计链 | [11](./11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.1 |
 | 0014 | `0014_ops_templates_delivery.sql` | Step 14 | 工作项、模板安装、备份记录、审计链锚点 | [12](./12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.1 |
@@ -51,6 +51,7 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `xb_metric_series`（按月分区，含 `xb_metric_series_default`） | 0004 | — | 03 | 是 |
 | `xb_metric_rollups`、`xb_rollup_watermarks`、`xb_rollup_dirty`、`xb_entity_links`、`xb_graph_algo_results` | 0004 | — | 03 | 是 |
 | `an_metrics`、`an_saved_queries`、`an_query_history`、`an_ask_turns`、`an_transform_drafts` | 0005 | — | 04 | 是 |
+| `xb_subgraphs` | 0006 | 0013（密级） | 05 / 13 | 是 |
 | `xb_schema_heads`、`xb_schema_versions`、`xb_schema_drafts`、`xb_mappings`、`xb_mapping_runs` | 0006 | — | 05 / 06 | 是 |
 | `ax_flow_versions`、`ax_flow_deployments`、`ax_flow_runs`、`ax_flow_step_logs`、`ax_action_log`、`ax_flow_hooks` | 0007 | — | 07 | 是 |
 | `ax_approvals` | 0007 | 0013（`GRANT` 来源） | 07 / 13 | 是 |
@@ -60,7 +61,7 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `ax_agents` | 0009 | 0013（归属、密级） | 09 / 13 | 是 |
 | `ax_sim_base_nodes`、`ax_sim_base_links`、`ax_sim_overlay_nodes`、`ax_sim_overlay_links`、`ax_sim_scenarios`、`ax_sim_impacts`、`ax_sim_checkpoints`、`ax_sim_decisions` | 0010 | — | 10 | 是 |
 | `xv_dashboards` | 0011 | 0013（归属、密级） | 11 / 13 | 是 |
-| `xv_widgets`、`xv_assets`、`xv_floor_placements` | 0011 | — | 11 | 是 |
+| `xv_widgets`、`xv_assets`、`xv_floor_placements`、`xv_scene3d_bindings` | 0011 | — | 11 | 是 |
 | `xv_export_templates`、`xv_export_jobs`、`xv_share_links` | 0012 | — | 12 | 是 |
 | `sec_departments`、`sec_user_attributes`、`sec_sessions`、`sec_policies`、`sec_row_policies`、`sec_row_policy_defaults`、`sec_column_policies`、`sec_grants` | 0013 | — | 13 | 是 |
 | `sec_audit_chain_heads` | 0013 | 0014（锚点） | 13 / 14 | 是 |
@@ -85,7 +86,8 @@ DuckLake 目录表位于 `lake_catalog` 模式，属主为 `axpoint_lake`，由 
 | `ax_resolve_api_token(hash)` | 0002 | 个人访问令牌定位 |
 | `ax_resolve_webhook(tenant, slug)` | 0003 | Webhook 接收 |
 | `ax_scheduled_datasets()` | 0003 | 同步调度扫描 |
-| `ax_ensure_metric_partitions(months_back, months_ahead)` | 0004 | 时序分区预建 |
+| `ax_ensure_metric_partitions(months_back, months_ahead)` | 0004 | 时序分区预建与分区级 RLS 开启 |
+| `ax_drop_expired_metric_partitions()` | 0004 | 卸载早于全部租户保留期的整月时序分区 |
 | `ax_rollup_tenants()` | 0004 | 汇总任务扫描 |
 | `ax_scheduled_flows()` | 0007 | Cron 触发扫描 |
 | `ax_event_flows(topic)` | 0007 | 事件触发匹配 |
@@ -104,7 +106,7 @@ DuckLake 目录表位于 `lake_catalog` 模式，属主为 `axpoint_lake`，由 
 
 ```bash
 # 迁移全部执行、无待执行
-sqlx migrate info --source deploy/migrations --database-url "$MIGRATION_DATABASE_URL"
+! sqlx migrate info --source deploy/migrations --database-url "$MIGRATION_DATABASE_URL" | grep -q pending
 
 # 列出未启用 RLS 的业务表（期望只有 sec_tenants、sec_login_states、ax_backups、_sqlx_migrations）
 psql "$MIGRATION_DATABASE_URL" -Atc "SELECT relname FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace

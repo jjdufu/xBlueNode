@@ -1,6 +1,6 @@
 # 10 · Step 11–12：xBlueView 孪生驾驶舱、图浏览与全格式出品
 
-Step 11 交付可配置的孪生驾驶舱（17 种组件、全局筛选与联动、逐层下钻、地图与平面图、大屏模式）、基于事件的实时刷新与 WebGL 图浏览器。Step 12 交付全格式出品引擎（XLSX / CSV / PDF / DOCX / PPTX / Markdown，含服务端图表渲染与模板）与带期限、次数、口令和锁定筛选的安全分享。
+Step 11 交付可配置的孪生驾驶舱（20 种组件、AI 一句话生成看板、全局筛选与联动、逐层下钻、地图、平面图与 3D 空间孪生场景、页面级动作按钮与表单回写闭环、大屏模式）、基于事件的实时刷新与 WebGL 图浏览器。Step 12 交付全格式出品引擎（XLSX / CSV / PDF / DOCX / PPTX / Markdown，含服务端图表渲染与模板）与带期限、次数、口令和锁定筛选的安全分享。
 
 ---
 
@@ -8,22 +8,22 @@ Step 11 交付可配置的孪生驾驶舱（17 种组件、全局筛选与联动
 
 ## 11.0 目标、前置与契约
 
-- **目标**：驾驶舱增删改查与发布；组件数据统一执行入口（经 Step 04 安全护栏与 Step 13 策略）；缓存与基于事件的失效；SSE 实时推送（多实例一致）；下钻与联动；地图、平面图；大屏模式；图浏览器（sigma.js，万级节点）。
+- **目标**：驾驶舱增删改查与发布；AI 一句话生成驾驶舱草稿；组件数据统一执行入口（经 Step 04 安全护栏与 Step 13 策略）；页面级交互式实体动作与表单回写（打通“感知 → 分析 → 推演 → 执行 → 实时反馈”闭环）；缓存与基于事件的失效；SSE 实时推送（多实例一致）；下钻与联动；地图、平面图与 3D 空间数字孪生场景（glTF 2.0 `.glb`）；大屏模式；图浏览器（sigma.js，万级节点）。
 - **前置**：Step 04、Step 08、Step 10 通过。
-- **契约清单**：`0011_xblueview_dashboards.sql`；`WidgetKind`（A1 §4）；`WidgetDataSource`、`WidgetDataResponse`、`ViewEvent`；`/api/xblueview/*`；`lib/api/xblueview.ts`；页面键 `xblueview`（`/view`）。
+- **契约清单**：`0011_xblueview_dashboards.sql`；`WidgetKind`（A1 §4，20 种）；`AssetKind`（含 `MODEL_3D`）；`WidgetDataSource`、`WidgetDataResponse`、`ViewEvent`；`/api/xblueview/*`；`lib/api/xblueview.ts`；页面键 `xblueview`（`/view`）。
 
 ### 文件变更清单
 
 | 动作 | 路径 | 内容 |
 | :--- | :--- | :--- |
 | 新建 | `deploy/migrations/0011_xblueview_dashboards.sql` | §11.1 |
-| 新建 | `axpoint-core/crates/axpoint-db/src/view_repo.rs` | 驾驶舱、组件、资产、摆放 |
-| 新建 | `axpoint-core/crates/axpoint-server/src/view/{mod.rs, data.rs, cache.rs, deps.rs, events.rs}` | 数据执行、缓存、依赖、事件推送 |
+| 新建 | `axpoint-core/crates/axpoint-db/src/view_repo.rs` | 驾驶舱、组件、资产、平面图摆放、3D 场景网格绑定 |
+| 新建 | `axpoint-core/crates/axpoint-server/src/view/{mod.rs, data.rs, cache.rs, deps.rs, events.rs, ai_gen.rs, action.rs}` | 数据执行、缓存、依赖、事件推送、AI 看板生成、组件动作回写 |
 | 新建 | `axpoint-core/crates/axpoint-server/src/routes/xblueview.rs` | §11.7 路由 |
 | 修改 | `axpoint-core/crates/axpoint-server/src/routes/mod.rs` | `.merge(xblueview::router())` |
 | 修改 | `axpoint-core/crates/axpoint-server/src/background.rs` | 注册 `ViewEventSubscriber` |
 | 新建 | `xbluenode-web/src/pages/XBlueViewPage.tsx` | 驾驶舱列表、编辑、查看、大屏 |
-| 新建 | `xbluenode-web/src/components/xblueview/{DashboardGrid.tsx, WidgetFrame.tsx, WidgetEditor.tsx, FilterBar.tsx, DrillBreadcrumb.tsx, NodeDrawer.tsx, widgets/*.tsx, MapWidget.tsx, FloorPlanWidget.tsx, BigScreen.tsx}` | 组件 |
+| 新建 | `xbluenode-web/src/components/xblueview/{DashboardGrid.tsx, WidgetFrame.tsx, WidgetEditor.tsx, AiDashboardWizard.tsx, FilterBar.tsx, DrillBreadcrumb.tsx, NodeDrawer.tsx, widgets/*.tsx, MapWidget.tsx, FloorPlanWidget.tsx, Scene3dWidget.tsx, ActionWidget.tsx, BigScreen.tsx}` | 组件与交互控件 |
 | 修改 | `xbluenode-web/src/pages/XBlueGraphPage.tsx`；新建 `src/components/graph/{SigmaCanvas.tsx, GraphToolbar.tsx, PathPanel.tsx, AlgoLegend.tsx}` | 图浏览器 |
 | 新建 | `xbluenode-web/src/lib/api/xblueview.ts`、`src/lib/sse.ts` | API 与 SSE 客户端 |
 | 修改 | `xbluenode-web/src/modules/registry.ts` | 注册 `xblueview` |
@@ -34,7 +34,7 @@ Step 11 交付可配置的孪生驾驶舱（17 种组件、全局筛选与联动
 ## 11.1 迁移 `deploy/migrations/0011_xblueview_dashboards.sql`
 
 ```sql
--- 0011_xblueview_dashboards.sql：驾驶舱、组件、资产、平面图摆放
+-- 0011_xblueview_dashboards.sql：驾驶舱、组件、资产、平面图摆放、3D 孪生场景绑定
 
 CREATE TABLE IF NOT EXISTS xv_dashboards (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -59,7 +59,8 @@ CREATE TABLE IF NOT EXISTS xv_widgets (
     dashboard_id  UUID NOT NULL REFERENCES xv_dashboards(id) ON DELETE CASCADE,
     widget_kind   TEXT NOT NULL CHECK (widget_kind IN (
         'KPI_CARD','TABLE','PIVOT_TABLE','LINE_CHART','BAR_CHART','PIE_CHART','SCATTER','SANKEY','HEATMAP',
-        'GAUGE','RADAR','GRAPH_TOPOLOGY','MAP','FLOOR_PLAN','ALERT_LIST','SIM_COMPARE','MARKDOWN_NOTE')),
+        'GAUGE','RADAR','GRAPH_TOPOLOGY','MAP','FLOOR_PLAN','SCENE_3D','ALERT_LIST','SIM_COMPARE',
+        'ACTION_BUTTON','ACTION_FORM','MARKDOWN_NOTE')),
     title         TEXT NOT NULL DEFAULT '',
     position      JSONB NOT NULL,                         -- {x, y, w, h}
     data_source   JSONB NOT NULL DEFAULT '{"kind":"STATIC"}'::jsonb,
@@ -78,7 +79,7 @@ CREATE INDEX IF NOT EXISTS idx_xv_widgets_deps ON xv_widgets USING GIN (deps);
 CREATE TABLE IF NOT EXISTS xv_assets (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id   TEXT NOT NULL,
-    asset_kind  TEXT NOT NULL CHECK (asset_kind IN ('FLOOR_PLAN_IMAGE','GEOJSON','ICON')),
+    asset_kind  TEXT NOT NULL CHECK (asset_kind IN ('FLOOR_PLAN_IMAGE','GEOJSON','ICON','MODEL_3D')),
     name        TEXT NOT NULL,
     file_path   TEXT NOT NULL,                            -- ${AXPOINT_DATA_ROOT}/assets/<tenant>/<id>.<ext>
     mime_type   TEXT NOT NULL,
@@ -98,8 +99,20 @@ CREATE TABLE IF NOT EXISTS xv_floor_placements (
     PRIMARY KEY (asset_id, node_id)
 );
 
+CREATE TABLE IF NOT EXISTS xv_scene3d_bindings (
+    tenant_id  TEXT NOT NULL,
+    asset_id   UUID NOT NULL REFERENCES xv_assets(id) ON DELETE CASCADE,
+    node_id    UUID NOT NULL REFERENCES xb_nodes(id) ON DELETE CASCADE,
+    mesh_name  TEXT NOT NULL DEFAULT '',                  -- glTF 命名网格/节点名；为空时按坐标绘制实体桩点
+    pos_x      DOUBLE PRECISION NOT NULL DEFAULT 0,
+    pos_y      DOUBLE PRECISION NOT NULL DEFAULT 0,
+    pos_z      DOUBLE PRECISION NOT NULL DEFAULT 0,
+    scale      DOUBLE PRECISION NOT NULL DEFAULT 1 CHECK (scale > 0),
+    PRIMARY KEY (asset_id, node_id)
+);
+
 SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
-    'xv_dashboards','xv_widgets','xv_assets','xv_floor_placements'
+    'xv_dashboards','xv_widgets','xv_assets','xv_floor_placements','xv_scene3d_bindings'
 ]::regclass[]) AS t;
 ```
 
@@ -120,6 +133,9 @@ SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
 {"kind": "SIM_SCENARIOS", "scenario_ids": ["…","…"], "metrics": ["fulfillment"]}
 {"kind": "NODES_GEO", "type_names": ["Factory","Warehouse"], "color_metric": "inventory"}
 {"kind": "FLOOR_PLAN", "asset_id": "…", "color_metric": "temperature"}
+{"kind": "SCENE_3D", "asset_id": "…", "color_metric": "inventory"}
+{"kind": "ACTION", "action_type": "RUN_FLOW", "flow_id": "…", "input_schema": {"type": "object", "properties": {}}, "confirm_text": "确认启动补货流程？"}
+{"kind": "ACTION", "action_type": "WRITE_NODE", "node_id": "…", "target_kind": "METRIC", "key": "inventory", "input_schema": {"type": "object", "required": ["value"], "properties": {"value": {"type": "number"}}}}
 {"kind": "STATIC", "rows": []}
 ```
 
@@ -131,7 +147,9 @@ SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
 | `ALERTS` | `ax_alerts` 查询 | `alerts=true` |
 | `SIM_SCENARIOS` | Step 10 对比接口 | `scenario_ids` |
 | `NODES_GEO` | `xb_nodes` 带 `geo_lng/geo_lat` 的节点 | `type_names` |
-| `FLOOR_PLAN` | `xv_floor_placements` 联接节点指标 | `type_names`（摆放节点的类型） |
+| `FLOOR_PLAN` | `xv_floor_placements` 联接节点指标 | `type_names`（摆放节点的类型）、`metrics` |
+| `SCENE_3D` | `xv_scene3d_bindings` 联接 `xb_nodes` 指标与活动告警计数（输出列 `node_id, type_name, node_key, title, mesh_name, pos_x, pos_y, pos_z, scale, metric_value, open_alerts`） | `type_names`（绑定节点的类型）、`metrics`、`alerts=true` |
+| `ACTION` | `POST /widgets/{id}/data` 返回该动作组件最近 10 条执行记录（`ax_action_log` / `ax_flow_runs`）；触发执行走 `POST /widgets/{id}/invoke`（§11.6.2） | 无 |
 | `STATIC` | 直接返回 | 无 |
 
 `deps` 在保存组件时由 `view/deps.rs` 计算（SQL 用 `sqlparser` 解析表名；`METRIC` 由语义层展开为 SQL 后解析）。
@@ -169,8 +187,11 @@ SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
 | `GRAPH_TOPOLOGY` | `GRAPH` 数据源 | ECharts graph（≤ 2 000 节点；更大规模进入图浏览器） |
 | `MAP` | `NODES_GEO` 或含 `lng`、`lat` 列的结果 | §11.4 |
 | `FLOOR_PLAN` | `FLOOR_PLAN` 数据源 | §11.4 |
+| `SCENE_3D` | `SCENE_3D` 数据源 | §11.4（`three` WebGL 三维孪生场景） |
 | `ALERT_LIST` | `ALERTS` 数据源 | 列表，可确认告警（需 `ALERT_ACK`） |
 | `SIM_COMPARE` | `SIM_SCENARIOS` 数据源 | 分组柱图 + 差异表 |
+| `ACTION_BUTTON` | `ACTION` 数据源 | 单击（可选二次确认）触发绑定 `PROD` 流程或预设节点回写，徽标展示最近执行状态 |
+| `ACTION_FORM` | `ACTION` 数据源 | 按 `input_schema` 渲染受控参数表单（支持绑定当前全局筛选或选中节点），提交执行流程或写回实体属性/指标 |
 | `MARKDOWN_NOTE` | 无 | Markdown（`react-markdown`，禁用原始 HTML） |
 
 ---
@@ -179,15 +200,19 @@ SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
 
 - **全局筛选** `FilterDef`：`{key, label, kind: "SELECT"|"MULTI_SELECT"|"DATE_RANGE"|"NUMBER_RANGE"|"TEXT", field_map: {<widget_id>: "<列名>"}, options_source?: WidgetDataSource, default?}`；未出现在 `field_map` 中的组件不受该筛选影响。
 - **联动**：组件 `options.cross_filter = {field, target_filter_key}`，点击图元把值写入对应全局筛选并刷新受影响组件。
-- **下钻** `DrillLevel[]`：`[{field: "region"}, {field: "warehouse_code"}, {field: "order_id", node_type: "Order", node_key_field: "order_id"}]`。点击图元 → `drill_path` 追加 `{field, value}` 并以下一层 `field` 作为分组列重新请求（数据源为 `METRIC` 时替换维度；为 `SQL` 时要求原 SQL 输出包含全部下钻字段，组件在外层 `GROUP BY` 下一层字段并对 `encoding.y` 求和）；面包屑可回退任意层。最后一层带 `node_type` 时点击打开 `NodeDrawer`：节点属性、指标曲线（Step 03 指标接口）、关联文档、相关告警、“在图浏览器中打开”、“以此节点建沙盘”。
+- **下钻** `DrillLevel[]`：`[{field: "region"}, {field: "warehouse_code"}, {field: "order_id", node_type: "Order", node_key_field: "order_id"}]`。点击图元 → `drill_path` 追加 `{field, value}` 并以下一层 `field` 作为分组列重新请求（数据源为 `METRIC` 时替换维度；为 `SQL` 时要求原 SQL 输出包含全部下钻字段，组件在外层 `GROUP BY` 下一层字段并对 `encoding.y` 求和）；面包屑可回退任意层。最后一层带 `node_type` 时点击打开 `NodeDrawer`：节点属性、指标曲线（Step 03 指标接口）、关联文档、相关告警、绑定业务动作按钮、“在图浏览器中打开”、“以此节点建沙盘”。
 
 ---
 
-## 11.4 地图与平面图
+## 11.4 地图、平面图与 3D 空间孪生场景
 
 - **地图**：ECharts `geo` 组件 + `scatter` / `effectScatter` 系列。底图为 `GEOJSON` 资产（管理员通过 `POST /api/xblueview/assets` 上传，例如省市边界）；未上传底图时以经纬度直角坐标绘制并显示坐标网格。配置 `AXPOINT_MAP_TILE_URL`（XYZ 瓦片模板）时改用 `maplibre-gl` 渲染瓦片底图与节点圆点图层。节点颜色按 `color_metric` 与 `options.thresholds` 着色，关系（`SUPPLIES` 等）可选绘制为飞线（`lines` 系列）。
 - **平面图**：上传 `FLOOR_PLAN_IMAGE`（PNG / JPEG / SVG，SVG 在服务端按白名单清洗：删除 `script`、事件属性与外部引用）；编辑模式拖拽节点到图上写 `xv_floor_placements`（坐标存比例，适配任意尺寸）；查看模式按指标阈值着色并显示数值徽标，告警中的节点闪烁。
-- 资产上传限制：单文件 ≤ 20 MB，GeoJSON 顶层必须是 `FeatureCollection`。
+- **3D 空间孪生场景**（`Scene3dWidget.tsx`）：
+  - 上传 `MODEL_3D` 资产（二进制 glTF 2.0 `.glb`，服务端校验前 12 字节头魔数 `0x46546C67` `"glTF"`、版本 `2` 且文件总长与头部声明一致，单文件 ≤ 50 MB）；
+  - 空间绑定：`GET / PUT /api/xblueview/assets/{id}/bindings3d` 读写 `xv_scene3d_bindings`；编辑模式自动解析 `.glb` 中的命名 Mesh 供下拉绑定到业务节点，或点击场景表面拾取三维坐标 `(pos_x, pos_y, pos_z)` 放置实体桩点；
+  - 实时渲染：前端使用 `three`（`GLTFLoader` + `OrbitControls`）渲染园区 / 厂房 / 仓位三维模型，按 `metric_value` 与 `options.thresholds` 动态设置绑定 Mesh 的发光材质（`emissive`），`open_alerts > 0` 的设备/仓位脉冲高亮并悬浮指标铭牌；点击三维对象触发全局 `cross_filter` 联动或打开 `NodeDrawer`（查看实时曲线、执行快捷动作或一键进入沙盘推演）；组件卸载时显式 `dispose()` 几何体、材质与渲染上下文。
+- 资产上传限制：`FLOOR_PLAN_IMAGE` / `GEOJSON` / `ICON` 单文件 ≤ 20 MB（GeoJSON 顶层必须是 `FeatureCollection`），`MODEL_3D` 单文件 ≤ 50 MB。
 
 ---
 
@@ -201,10 +226,21 @@ SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
 
 ---
 
-## 11.6 驾驶舱页面与大屏
+## 11.6 驾驶舱页面、AI 生成、交互式动作闭环与大屏
 
-- `XBlueViewPage`：驾驶舱列表（搜索、复制、删除）→ 编辑模式（`react-grid-layout` 拖拽缩放，24 列栅格；右侧 `WidgetEditor` 选择类型、数据源、编码、样式、阈值、下钻；实时预览）→ 查看模式（筛选栏、联动、下钻、导出与分享按钮）。
+- `XBlueViewPage`：驾驶舱列表（搜索、新建、AI 一句话生成、复制、删除）→ 编辑模式（`react-grid-layout` 拖拽缩放，24 列栅格；右侧 `WidgetEditor` 选择类型、数据源、编码、样式、阈值、下钻、动作配置；实时预览）→ 查看模式（筛选栏、联动、下钻、动作执行、导出与分享按钮）。
 - 发布：`POST /dashboards/{id}/publish`（`VIEW_EDIT`），`version + 1`，`status = PUBLISHED`；查看者（只有 `DATA_READ`）只能看到已发布驾驶舱。
+- **AI 一句话生成驾驶舱**（`view/ai_gen.rs`、`AiDashboardWizard.tsx`）：
+  - `POST /api/xblueview/dashboards/ai-generate {prompt, title?, slug?, theme?}`（`VIEW_EDIT`）；
+  - 收集当前租户主图已发布 `SchemaDoc`（节点类型、属性、指标、关系）、语义层指标 `an_metrics`、就绪数据集 `ds_datasets`（名称与列）、已部署 `PROD` 的流程及三维/平面资产摘要作为提示上下文；
+  - 经 `LlmRouter`（`Purpose::Extract`，门禁环境走 `AXPOINT_LLM_CASSETTE` 录制回放）按严格 JSON Schema 生成 `{name, slug, theme, filters: FilterDef[], widgets: [...]}`；
+  - 服务端校验：24 列栅格坐标合法且不越界、引用的指标 / 湖表 / 节点类型 / 流程 / 资产均存在、SQL 数据源通过 `sql_guard` 校验；存在校验问题时附带问题列表自动让模型修正 1 次；
+  - 在租户事务中创建 `DRAFT` 驾驶舱与全部组件（计算 `deps`），返回完整驾驶舱详情，前端直接进入画布微调或一键发布。
+- **页面级交互式动作与回写闭环**（`view/action.rs`、`ActionWidget.tsx`、`NodeDrawer`）：
+  - `POST /api/xblueview/widgets/{id}/invoke {inputs: {...}, target_node_id?, idempotency_key?}`（需 `FLOW_RUN`；公开分享页 `ShareContext` 一律拒绝访问并返回 403，保证外部分享严格只读）；
+  - 入参按组件 `data_source.input_schema`（JSON Schema）校验，不通过返回 400 `SCHEMA_INVALID`；
+  - `action_type = "RUN_FLOW"`：以调用者身份启动目标流程的 `PROD` 部署（`trigger_source = 'API'`，载荷合并 `inputs` 与 `target_node_id`），返回 `{mode: "FLOW", run_id, status}`；
+  - `action_type = "WRITE_NODE"`：校验目标节点（`target_node_id` 或组件预设 `node_id`）通过当前主体部门 ABAC 校验，且目标属性或指标已在主图 `NodeTypeSpec` 中声明、数据类型一致；在同一租户事务中更新 `xb_nodes`（属性写 `properties` 或指标写 `metrics` 与 `xb_metric_series(source_tag='ACTION')`）、记录 `ax_action_log(source_kind='VIEW', action_kind='WRITE_NODE_PROPERTY'|'WRITE_NODE_METRIC', status='DONE')`、外发 `node.upserted` / `node.metrics_changed`；`ViewEventSubscriber` 自动失效相关缓存并通过 SSE `invalidate` 推送，驾驶舱同页 KPI、图表与 3D 场景即时刷新，形成“感知 → 分析 → 决策 → 执行 → 反馈”闭环。
 - 运行页问数：查看模式右上角“问一问”调用 `POST /api/analytics/ask`，请求附带 `context: {dashboard_id, dataset_ids, filters, drill_path}`（`dataset_ids` 取本驾驶舱各组件 `deps.dataset_ids` 的并集），问数管线据此限定候选数据集并把筛选与下钻条件作为附加约束写入提示（Step 04 §04.6.7）；回答以表格与推荐图表展示，可一键“添加为组件”。
 - 大屏：`/view/{slug}?screen=1`，按 `canvas.screen_width × screen_height` 设计尺寸等比缩放到窗口（CSS `transform: scale`），深色主题，隐藏侧栏，全屏 API。
 - 图浏览器（`XBlueGraphPage`）：
@@ -221,19 +257,22 @@ SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
 | 方法与路径 | 权限 |
 | :--- | :--- |
 | `GET /dashboards`、`POST /dashboards`、`GET /dashboards/{id}`、`PUT /dashboards/{id}`、`DELETE /dashboards/{id}` | `DATA_READ` / `VIEW_EDIT` |
+| `POST /dashboards/ai-generate` | `VIEW_EDIT` |
 | `POST /dashboards/{id}/publish`、`POST /dashboards/{id}/duplicate` | `VIEW_EDIT` |
 | `GET /dashboards/by-slug/{slug}` | `DATA_READ` |
 | `POST /dashboards/{id}/widgets`、`PUT /widgets/{id}`、`DELETE /widgets/{id}`、`PUT /dashboards/{id}/layout` | `VIEW_EDIT` |
 | `POST /widgets/{id}/data`、`POST /widgets/preview` | `DATA_READ` |
+| `POST /widgets/{id}/invoke` | `FLOW_RUN` |
 | `GET /dashboards/{id}/stream` | `DATA_READ` |
 | `GET /assets`、`POST /assets`（multipart）、`GET /assets/{id}/content`、`DELETE /assets/{id}` | `DATA_READ` / `VIEW_EDIT` |
 | `GET /assets/{id}/placements`、`PUT /assets/{id}/placements` | `DATA_READ` / `VIEW_EDIT` |
+| `GET /assets/{id}/bindings3d`、`PUT /assets/{id}/bindings3d` | `DATA_READ` / `VIEW_EDIT` |
 
 ---
 
 ## 11.8 验收
 
-`scripts/seed/11-xblueview.sh`：创建驾驶舱 `supply-overview`（`KPI_CARD` 已支付金额（`METRIC paid_amount`）、`BAR_CHART` 按状态金额（`SQL`，下钻 `status → warehouse_code`）、`LINE_CHART` 仓库库存（`NODE_METRIC`）、`MAP`（`NODES_GEO`）、`ALERT_LIST`、`SIM_COMPARE`（Step 10 场景 s1、s2））并发布；输出 `DASHBOARD_ID`、`KPI_WIDGET_ID`、`BAR_WIDGET_ID`。
+`scripts/seed/11-xblueview.sh`：上传三维模型资产 `tests/data/models/warehouse_twin.glb`（`MODEL_3D`）并将 `W-1` 绑定到网格 `Rack_A`（`PUT /api/xblueview/assets/$MODEL3D_ASSET_ID/bindings3d`）；创建驾驶舱 `supply-overview`（`KPI_CARD` 已支付金额（`METRIC paid_amount`）、`BAR_CHART` 按状态金额（`SQL`，下钻 `status → warehouse_code`）、`LINE_CHART` 仓库库存（`NODE_METRIC`）、`MAP`（`NODES_GEO`）、`SCENE_3D` 仓库三维孪生（`MODEL_3D`，`color_metric="inventory"`）、`ALERT_LIST`、`SIM_COMPARE`（Step 10 场景 `SIM_S1_ID`、`SIM_S2_ID`）、`ACTION_FORM` 库存盘点回写（`WRITE_NODE`，目标 `W-1.inventory`））并发布；输出 `DASHBOARD_ID`、`KPI_WIDGET_ID`、`BAR_WIDGET_ID`、`SCENE3D_WIDGET_ID`、`ACTION_WIDGET_ID`、`MODEL3D_ASSET_ID`。
 
 `scripts/gate/step11.sh`：
 
@@ -246,14 +285,21 @@ source "$(dirname "$0")/lib.sh"
 (cd xbluenode-web && npm run test -- xblueview)
 
 # 数据正确：已支付金额 = 独立 SQL 计算
-EXPECTED=$(sql_owner "SELECT sum(amount) FROM demo_src.orders WHERE status='PAID'")
-expect_json "kpi" "$(api POST /api/xblueview/widgets/$KPI_WIDGET_ID/data '{}')" ".rows[0][0] | tonumber == $EXPECTED"
+EXPECTED=$(sql_owner "SELECT sum(amount) FROM demo_src.orders WHERE status='PAID'" | awk '{printf "%.2f", $1}')
+ACTUAL=$(api POST /api/xblueview/widgets/$KPI_WIDGET_ID/data '{}' | jq -r '.rows[0][0]' | awk '{printf "%.2f", $1}')
+expect_eq "kpi" "$ACTUAL" "$EXPECTED"
 
-# 下钻
+# 下钻与 3D 孪生场景数据绑定
 expect_json "drill" "$(api POST /api/xblueview/widgets/$BAR_WIDGET_ID/data '{"drill_path":[{"field":"status","value":"PAID"}]}')" \
   '.drill_level == 1 and ([.columns[].name] | index("warehouse_code")) != null'
+expect_json "scene-3d" "$(api POST /api/xblueview/widgets/$SCENE3D_WIDGET_ID/data '{}')" \
+  '(.rows | length) == 1 and (.rows[0][4] == "Rack_A")'
 
-# 实时刷新：订阅 SSE，触发同步，10 秒内收到 invalidate
+# AI 一句话生成驾驶舱（录制响应）
+AI_DB=$(api POST /api/xblueview/dashboards/ai-generate '{"prompt":"生成华东供应链库存与已支付订单监控看板"}' | jq -r .id)
+expect_json "ai-dashboard" "$(api GET /api/xblueview/dashboards/$AI_DB)" '.status == "DRAFT" and (.widgets | length) >= 2'
+
+# 实时刷新：订阅 SSE，触发同步，30 秒内收到 invalidate
 SSE_LOG=$(mktemp)
 curl -sN -H "Authorization: Bearer $AXPOINT_DEV_TOKEN" -H "Accept: text/event-stream" \
   "$CORE_BASE_URL/api/xblueview/dashboards/$DASHBOARD_ID/stream" > "$SSE_LOG" &
@@ -261,15 +307,22 @@ SSE_PID=$!
 sleep 1
 api POST /api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/sync '{}' >/dev/null
 wait_until "sse-invalidate" 30 "grep -q '^event: invalidate' $SSE_LOG"
-kill $SSE_PID
+kill $SSE_PID || true
 
-# 缓存失效后数据反映新值
-sql_owner "UPDATE demo_src.orders SET status='PAID' WHERE id=2" >/dev/null
-api POST /api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/sync '{}' >/dev/null
-wait_dataset_idle "$DEMO_ORDERS_DATASET_ID"
-EXPECTED2=$(sql_owner "SELECT sum(amount) FROM demo_src.orders WHERE status='PAID'")
-wait_until "kpi-refreshed" 30 "api POST /api/xblueview/widgets/$KPI_WIDGET_ID/data '{}' | jq -e '.rows[0][0] | tonumber == $EXPECTED2'"
-sql_owner "UPDATE demo_src.orders SET status='CANCELED' WHERE id=2" >/dev/null
+# 页面级动作组件回写 → 审计落库 + 缓存失效自动反馈到 3D 场景组件
+api POST /api/xblueview/widgets/$ACTION_WIDGET_ID/invoke '{"inputs":{"value":620},"idempotency_key":"gate-view-act-1"}' >/dev/null
+wait_until "widget-action-loop" 30 "api POST /api/xblueview/widgets/$SCENE3D_WIDGET_ID/data '{}' | jq -e '(.rows[0][9] | tonumber) == 620'"
+expect_eq "widget-action-log" "$(sql_app default "SELECT count(*) FROM ax_action_log WHERE source_kind='VIEW' AND idempotency_key='gate-view-act-1'")" "1"
+api POST /api/xblueview/widgets/$ACTION_WIDGET_ID/invoke '{"inputs":{"value":500},"idempotency_key":"gate-view-act-2"}' >/dev/null
+
+# 缓存失效后数据反映新值，并在恢复源表后同步回一致性基线
+sql_owner "UPDATE demo_src.orders SET status='PAID', updated_at=now() WHERE id=2" >/dev/null
+wait_job "$(api POST /api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/sync '{}' | jq -r .job_id)"
+EXPECTED2=$(sql_owner "SELECT sum(amount) FROM demo_src.orders WHERE status='PAID'" | awk '{printf "%.2f", $1}')
+wait_until "kpi-refreshed" 30 "[[ \"\$(api POST /api/xblueview/widgets/$KPI_WIDGET_ID/data '{}' | jq -r '.rows[0][0]' | awk '{printf \"%.2f\", \$1}')\" == \"$EXPECTED2\" ]]"
+sql_owner "UPDATE demo_src.orders SET status='CANCELED', updated_at=now() WHERE id=2" >/dev/null
+wait_job "$(api POST /api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/sync '{}' | jq -r .job_id)"
+wait_mapping_idle "$ORDER_MAPPING_ID"; wait_aggregate_idle
 
 # 跨租户隔离
 expect_eq "rls-xv" "$(sql_app other "SELECT count(*) FROM xv_dashboards")" "0"
@@ -278,7 +331,7 @@ expect_eq "rls-xv" "$(sql_app other "SELECT count(*) FROM xv_dashboards")" "0"
 gate_pass step11
 ```
 
-`e2e/xblueview.spec.ts`：打开 `/view/supply-overview`，断言 6 个组件渲染完成；点击柱图 `PAID` 柱后面包屑出现“PAID”；切换 `?screen=1` 后画布按比例缩放。
+`e2e/xblueview.spec.ts`：打开 `/view/supply-overview`，断言 8 个组件（含 3D 孪生画布与盘点回写表单）渲染完成；点击柱图 `PAID` 柱后面包屑出现“PAID”；切换 `?screen=1` 后画布按比例缩放。
 
 **通过标准**：最后一行 `GATE step11 PASS`。
 
@@ -441,14 +494,15 @@ class ExportDocument(BaseModel):
 
 | `kind` | 内容 |
 | :--- | :--- |
-| `DASHBOARD` | `{dashboard_id, filters}`：按组件顺序（`position.y, position.x`）生成：KPI → `ExportKpi`；图表 → `ExportChart`（含数据表）；表格 / 透视 → `ExportTable`；Markdown → `ExportText`；地图 / 平面图 / 图拓扑 → 前端截图不在服务端执行，改为 `ExportChart`（ECharts 散点或关系图选项） |
+| `DASHBOARD` | `{dashboard_id, filters}`：按组件顺序（`position.y, position.x`）生成：KPI → `ExportKpi`；图表 → `ExportChart`（含数据表）；表格 / 透视 → `ExportTable`；Markdown → `ExportText`；地图 / 平面图 / 图拓扑 → 前端截图不在服务端执行，改为 `ExportChart`（ECharts 散点或关系图选项）；`SCENE_3D` → 绑定实体的指标与告警状态 `ExportTable`；`ACTION_BUTTON` / `ACTION_FORM` 为交互式控件，静态报告中跳过 |
 | `WIDGET` | `{widget_id, filters, drill_path}` |
 | `SAVED_QUERY` | `{saved_query_id}`：单表，CSV / XLSX 行数上限 1 000 000（XLSX 单表超过 1 048 575 行时自动分表） |
 | `PIVOT` | `{spec}`：XLSX 保留小计 / 合计行样式与合并单元格 |
 | `SCENARIO` | `{scenario_ids}`：KPI 对比、影响表、对比图 |
 | `CONVERSATION` | `{conversation_id}`：问答记录（问题、回答、SQL、结果表） |
 
-数据一律以**创建者**身份在执行时取数（`load_principal(created_by)`，行列策略生效），确保出品内容不超出创建者权限。
+- `options.watermark` 取值：`true` 时 Core 自动生成 `"{principal.username} {generated_at YYYY-MM-DD HH:MM}"`；非空字符串时原样作为水印文本；`false` 或缺省时 `watermark = None`（Step 13 启用安全策略后若数据集策略强制水印则不可关闭）。
+- 数据一律以**创建者**身份在执行时取数（`load_principal(created_by)`，行列策略生效），确保出品内容不超出创建者权限。
 
 ---
 

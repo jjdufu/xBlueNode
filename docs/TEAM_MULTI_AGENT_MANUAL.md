@@ -10,13 +10,13 @@
 
 | 角色 | 独占写入范围 | 负责的 Step |
 | :--- | :--- | :--- |
-| **Orchestrator（总控与契约官）** | `IRON_RULES.md`、`docs/`、`axpoint-core/Cargo.toml`、`axpoint-domain/src/{ports.rs, enums.rs}`、`axpoint-server/src/{main.rs, state.rs, routes/mod.rs}`、`deploy/migrations/`、`xbluenode-web/src/modules/registry.ts`、`scripts/gate/{lib.sh, all.sh}` | 每个 Step 的契约 PR、集成挂载、门禁与合入审查；Step 00 |
+| **Orchestrator（总控与契约官）** | `IRON_RULES.md`、`docs/`、`axpoint-core/Cargo.toml`、`axpoint-domain/src/{ports.rs, enums.rs}`、`axpoint-db/src/lib.rs`、`axpoint-server/src/{main.rs, state.rs, routes/mod.rs}`、`deploy/migrations/`、`xbluenode-web/src/modules/registry.ts`、`scripts/gate/{lib.sh, all.sh}` | 每个 Step 的契约 PR、集成挂载、门禁与合入审查；Step 00 |
 | **Agent A（Python 数据与出品）** | `axpoint-parser/{parsers, connectors, lake, exporters, charts, pii, schemas.py, main.py, pyproject.toml, tests}/`、`deploy/docker/axpoint-parser.Dockerfile`、`deploy/docker-compose.test.yml` | Step 01、02（Sidecar 部分）、12（出品器与服务端图表）、13（PII 识别） |
-| **Agent B（Rust 存储、分析与安全）** | `axpoint-core/crates/{axpoint-db, axpoint-analytics, axpoint-security}/` | Step 02（Core 部分）、03、04、13 |
-| **Agent C（Rust 领域、编排、智能体与推演）** | `axpoint-core/crates/{axpoint-llm, axpoint-flow, axpoint-agent}/`、`axpoint-domain/src/{expr, rollup, sim, graph}/`、`axpoint-server/src/routes/<module>.rs` | Step 05、06、07、08、09、10、11（Core 部分）、14（Core 部分） |
+| **Agent B（Rust 存储、分析与安全）** | `axpoint-core/crates/{axpoint-analytics, axpoint-security}/`、`axpoint-db/src/{hub_repo, graph_repo, analytics_repo, rules_repo, guard_repo}.rs` | Step 02（Core 部分）、03、04、08（规则仓储与求值）、13 |
+| **Agent C（Rust 领域、编排、智能体与推演）** | `axpoint-core/crates/{axpoint-llm, axpoint-flow, axpoint-agent}/`、`axpoint-domain/src/{expr, rollup, sim, graph}/`、`axpoint-db/src/{studio_repo, flow_repo, agent_repo, sim_repo, view_repo, ops_repo}.rs`、`axpoint-server/src/routes/<module>.rs` | Step 05、06、07、08（告警路由）、09、10、11（Core 部分）、14（Core 部分） |
 | **Agent D（React 前端）** | `xbluenode-web/src/{lib/api/<module>.ts, pages/, components/<module>/}`、`xbluenode-web/e2e/` | 全部 Step 的前端部分 |
 
-每个 Step 文件的“文件变更清单”是写入范围的最终依据；清单中的公共入口文件（`Cargo.toml`、`main.rs`、`routes/mod.rs`、`registry.ts`、迁移目录）只由总控修改。
+每个 Step 文件的“文件变更清单”是写入范围的最终依据；清单中的公共入口文件（`Cargo.toml`、`axpoint-db/src/lib.rs`、`main.rs`、`state.rs`、`routes/mod.rs`、`registry.ts`、迁移目录）只由总控修改。
 
 ---
 
@@ -59,14 +59,14 @@ git worktree add ../wt-a-parser -b feat/axhub-step02 main
 | L1 | 01、03 | `schemas.py` 统一契约；`0004_axgraph_timeseries.sql`、图查询 DTO、`lib/api/xblue.ts` 扩展 | A：Step 01；B：Step 03；D：解析预览页、图浏览页 | `step01.sh`、`step03.sh` |
 | L2 | 02 | `0003_data_fabric.sql`、连接器协议、`lib/api/axhub.ts` | A：Sidecar 连接器与入湖；B：Core 路由、密钥环、调度；D：AxHub 页面 | `step02.sh` |
 | L3 | 04 | `0005_analytics_semantic.sql`、创建 `axpoint-analytics` 成员 | B：DuckDB 会话、守卫、透视、语义层、问数；D：AxQuery 页面 | `step04.sh` |
-| L4 | 05 | `0006_xbluestudio_modeling.sql`、模型文档类型 | C：校验、发布、差异、AI 草案；D：建模画布 | `step05.sh` |
+| L4 | 05 | `0006_xbluestudio_modeling.sql`、多子图与模型文档类型 | C：子图建模与融合、校验、发布、差异、AI 草案、动态 GraphQL；D：建模与融合画布 | `step05.sh` |
 | L5 | 06 | 表达式 AST 与求值报告类型 | C：表达式引擎、映射物化、动态聚合 | `step06.sh` |
 | L6 | 07 | `0007_axflow_orchestration.sql`、创建 `axpoint-flow` 成员、算子注册表 trait | C：DAG 引擎与算子；D：编排画布 | `step07.sh` |
-| L7 | 08、09、10 | `0008`、`0009`（创建 `axpoint-agent`）、`0010` 依次合入 | C：Step 09、10；B：Step 08 规则求值与通知；D：告警中心、智能体工作台、推演沙盘 | `step08.sh`、`step09.sh`、`step10.sh` |
-| L8 | 11 | `0011_xblueview_dashboards.sql`、组件数据源类型 | C：组件执行、缓存、SSE；D：驾驶舱、地图、大屏 | `step11.sh` |
+| L7 | 08、09、10 | `0008`、`0009`（创建 `axpoint-agent` 与 `SimExecutionPort` 解耦端口）、`0010` 依次合入 | B：Step 08 规则求值与通知；C：Step 09、10（按独立路由文件隔离并行）；D：告警中心、智能体工作台、推演沙盘 | `step08.sh`、`step09.sh`、`step10.sh` |
+| L8 | 11 | `0011_xblueview_dashboards.sql`、组件数据源与 3D 场景绑定类型 | C：组件执行、AI 看板生成、动作回写、缓存、SSE；D：驾驶舱、3D 孪生场景、地图、大屏 | `step11.sh` |
 | L9 | 12 | `0012_export_and_share.sql`、`ExportDocument` | A：出品器与服务端图表；C：出品任务与分享；D：出品中心 | `step12.sh` |
 | L10 | 13 | `0013_axguard_policies.sql`、策略与授权类型 | B：认证、令牌、Cedar、行列策略、审计；A：PII 引擎；D：登录与治理页面 | `step13.sh` |
-| L11 | 14 | `0014_ops_templates_delivery.sql` | C：模板安装、工作项、运维接口；总控：部署、备份、总验收；D：运维面板 | `step14.sh`、`all.sh` |
+| L11 | 14 | `0014_ops_templates_delivery.sql` | C：模板安装、工作项、运维接口；总控：部署、`axpoint-ops` 备份恢复执行器、总验收；D：运维面板 | `step14.sh`、`all.sh` |
 
 ---
 

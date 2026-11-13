@@ -8,7 +8,7 @@ AxSim 在与生产隔离的沙盘中回答“如果……会怎样”：按范�
 
 - **目标**：范围克隆沙盘；节点 / 关系 / 指标的写时复制编辑；稳态与分步两种传导模式；三种干预方式；不确定性抽样；检查点回放；方案对比；推演问数；决策下发（审批、冲突检测、原子写入、触发流程）。
 - **前置**：Step 06、Step 07 通过。
-- **契约清单**：`0010_axsim_scenarios.sql`；`axpoint-domain::sim`（`SimGraph`、`AxSimAction`、`PropagationSpec`、`SimParams`、`SimResult`、`ImpactRow`、`Checkpoint`）；端口 `SimRepository`；`docs/API_CONTRACT.md` 的 `/api/axsim/*`；`lib/api/axsim.ts`。
+- **契约清单**：`0010_axsim_scenarios.sql`；`axpoint-domain::sim`（`SimGraph`、`AxSimAction`、`PropagationSpec`、`SimParams`、`SimResult`、`ImpactRow`、`Checkpoint`）；端口 `SimRepository` 与 `SimExecutionPort`；`docs/API_CONTRACT.md` 的 `/api/axsim/*`；`lib/api/axsim.ts`。
 
 ### 文件变更清单
 
@@ -18,10 +18,10 @@ AxSim 在与生产隔离的沙盘中回答“如果……会怎样”：按范�
 | 新建 | `axpoint-core/crates/axpoint-domain/src/sim/{mod.rs, graph.rs, action.rs, scc.rs, steady.rs, stepped.rs, uncertainty.rs, explain.rs}` | 推演内核 |
 | 修改 | `axpoint-core/crates/axpoint-domain/src/topology.rs` | `AxSimAction` 改为 §10.3 结构（保留 `delta_ratio` 简写）；`simulate_causal_propagation` 改为调用 `sim::steady::solve`，删除缺失指标时的默认基值 |
 | 新建 | `axpoint-core/crates/axpoint-db/src/sim_repo.rs` | 克隆、覆盖层、场景、检查点、决策 |
-| 修改 | `axpoint-core/crates/axpoint-server/src/routes/axsim.rs` | §10.9 路由 |
+| 修改 | `axpoint-core/crates/axpoint-server/src/routes/axsim.rs` | §10.9 路由与 `SimExecutionPort` 实现 |
 | 新建 | `axpoint-core/crates/axpoint-server/src/sim_ask.rs` | 推演问数 |
-| 修改 | `axpoint-core/crates/axpoint-flow/src/operators/causal_sim.rs` | 切换为完整推演端口 |
-| 修改 | `axpoint-core/crates/axpoint-agent/src/builtin_tools.rs` | 注册 `run_simulation` |
+| 修改 | `axpoint-core/crates/axpoint-flow/src/operators/causal_sim.rs` | 切换为 `SimExecutionPort` 完整推演端口 |
+| 修改 | `axpoint-core/crates/axpoint-server/src/state.rs` | 在应用状态装配中注入 `Some(sim_port)`，激活智能体内置工具 `run_simulation`（无需修改 `axpoint-agent`） |
 | 修改 | `xbluenode-web/src/pages/AxSimPage.tsx`；新建 `src/components/axsim/{SandboxWizard.tsx, OverlayEditor.tsx, ActionList.tsx, ImpactTable.tsx, ImpactGraph.tsx, ReplayTimeline.tsx, ScenarioCompare.tsx, SimAsk.tsx, DecisionPanel.tsx}` | 推演工作台 |
 | 新建 | `axpoint-core/crates/axpoint-domain/tests/sim.rs`、`scripts/bench/sim-bench.sh` | 测试与基准 |
 | 新建 | `scripts/seed/10-axsim.sh` | 演示沙盘与场景 |
@@ -379,7 +379,7 @@ Playwright：`e2e/axsim.spec.ts` 创建沙盘、添加干预 `F-1.output −30%`
 
 ## 10.12 验收
 
-`scripts/seed/10-axsim.sh`：为 `SUPPLIES` 关系类型设置传导规则（`output → inventory`，`RATIO`，系数 `null` 即取关系权重）、`FULFILLS`（`inventory → fulfillment`）；为工厂写 `output`，为订单写 `fulfillment = 1`；创建沙盘 `gate_sandbox`（根 `F-1`，深度 3）。输出 `SANDBOX_ID`。
+`scripts/seed/10-axsim.sh`：为 `SUPPLIES` 关系类型设置传导规则（`output → inventory`，`RATIO`，系数 `null` 即取关系权重）、`FULFILLS`（`inventory → fulfillment`）；为工厂写 `output`，为订单写 `fulfillment = 1`；创建沙盘 `gate_sandbox`（根 `F-1`，深度 3）及两个演示对比场景 `demo_cut_20`、`demo_cut_40`。输出 `SANDBOX_ID`、`SIM_S1_ID`、`SIM_S2_ID`。
 
 `scripts/gate/step10.sh`：
 

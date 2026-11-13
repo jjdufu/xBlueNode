@@ -1,20 +1,21 @@
 # 08 · Step 09：AxAgent 发布、查询即应用、MCP、多模型路由、智能体与多轮工作台
 
-AxAgent 把平台能力以三种形态对外：**发布端点**（保存查询、指标、流程、智能体以 REST 接口发布到测试 / 正式环境，附 OpenAPI 文档与 Skill 清单）、**MCP Server**（以 Streamable HTTP 暴露为 MCP 工具），以及**智能体**（可调用内置工具、发布端点与外部 MCP 工具的对话式代理，支持多轮会话、多智能体协作与嵌入分享）。底层的大模型调用经过统一的多模型路由。
+AxAgent 把平台能力以三种形态对外：**发布端点**（保存查询、指标、业务对象类型、流程、智能体以 REST 接口发布到测试 / 正式环境，附 OpenAPI 文档与 Skill 清单）、**MCP Server**（以 Streamable HTTP 暴露为 MCP 工具），以及**智能体**（可调用内置工具、发布端点与外部 MCP 工具的对话式代理，支持多轮会话、多智能体协作与嵌入分享）。底层的大模型调用经过统一的多模型路由。
 
 ---
 
 ## 09.0 目标、前置与契约
 
-- **目标**：多模型提供方注册、按用途路由与故障切换、用量统计；四类发布端点的测试 / 正式发布与版本固定、入参校验、限流、缓存、OpenAPI；查询即应用卡片；MCP Server 与 MCP Client；智能体定义、版本、工具调用循环、流式输出、人工确认、多智能体协作；多轮工作台；嵌入链接；`AGENT_TASK` 流程算子；个人访问令牌管理。
+- **目标**：多模型提供方注册、按用途路由与故障切换、用量统计；五类发布端点（含主图业务对象类型 `OBJECT_TYPE`）的测试 / 正式发布与版本固定、入参校验、限流、缓存、OpenAPI；查询即应用卡片；MCP Server 与 MCP Client；智能体定义、版本、工具调用循环、流式输出、人工确认、多智能体协作；多轮工作台；嵌入链接；`AGENT_TASK` 流程算子；个人访问令牌管理。
 - **前置**：Step 07、Step 04 通过。
-- **契约清单**：`0009_publishing_agents.sql`；`axpoint-agent` 公开类型（`EndpointSpec`、`AgentSpec`、`ToolRef`、`AgentEvent`、`ConversationRecord`）；`axpoint-llm::router`（`LlmRouter`、`Purpose`）；`docs/API_CONTRACT.md` 的 `/api/axagent/*`、`/api/published/*`、`/api/mcp`、`/api/auth/tokens*`；`lib/api/axagent.ts`。
+- **契约清单**：`0009_publishing_agents.sql`；`axpoint-agent` 公开类型（`EndpointSpec`、`AgentSpec`、`ToolRef`、`AgentEvent`、`ConversationRecord`）；`axpoint-domain::ports::SimExecutionPort`（供 `BuiltinToolRegistry` 按 `Option<Arc<dyn SimExecutionPort>>` 注入，避免与 Step 10 改动同一文件）；`axpoint-llm::router`（`LlmRouter`、`Purpose`）；`docs/API_CONTRACT.md` 的 `/api/axagent/*`、`/api/published/*`、`/api/mcp`、`/api/auth/tokens*`；`lib/api/axagent.ts`。
 
 ### 文件变更清单
 
 | 动作 | 路径 | 内容 |
 | :--- | :--- | :--- |
 | 新建 | `deploy/migrations/0009_publishing_agents.sql` | §09.1 |
+| 修改 | `axpoint-core/crates/axpoint-domain/src/ports.rs` | 契约阶段声明 `SimExecutionPort` trait（L7 并行前合入） |
 | 新建 | `axpoint-core/crates/axpoint-llm/src/{router.rs, tools.rs, stream.rs, cassette.rs}` | 多模型路由、函数调用、SSE 流解析、录制回放 |
 | 新建 | `axpoint-core/crates/axpoint-agent/{Cargo.toml, src/lib.rs}` | Crate 入口 |
 | 新建 | `axpoint-core/crates/axpoint-agent/src/{publish.rs, openapi.rs, mcp_server.rs, mcp_client.rs, runtime.rs, builtin_tools.rs, multi_agent.rs, embed.rs}` | 发布、MCP、智能体运行时 |
@@ -73,10 +74,10 @@ CREATE TABLE IF NOT EXISTS ax_published_endpoints (
     tenant_id       TEXT NOT NULL,
     slug            TEXT NOT NULL CHECK (slug ~ '^[a-z0-9-]{3,64}$'),
     environment     TEXT NOT NULL CHECK (environment IN ('TEST','PROD')),
-    kind            TEXT NOT NULL CHECK (kind IN ('SAVED_QUERY','METRIC','FLOW','AGENT')),
-    target_id       TEXT NOT NULL,                   -- saved_query id / metric name / flow id / agent id
+    kind            TEXT NOT NULL CHECK (kind IN ('SAVED_QUERY','METRIC','FLOW','AGENT','OBJECT_TYPE')),
+    target_id       TEXT NOT NULL,                   -- saved_query id / metric name / flow id / agent id / 主图已发布 NodeType.name
     target_version  INT,                             -- PROD 固定版本；TEST 为空表示跟随最新
-    target_snapshot JSONB,                           -- PROD 发布时目标定义的快照（保存查询 spec / 指标定义）
+    target_snapshot JSONB,                           -- PROD 发布时目标定义的快照（保存查询 spec / 指标定义 / NodeTypeSpec）
     title           TEXT NOT NULL,
     description     TEXT NOT NULL DEFAULT '',
     input_schema    JSONB NOT NULL,                  -- JSON Schema（draft 2020-12）
@@ -237,8 +238,8 @@ impl LlmRouter {
  "title": "已支付金额（按状态）", "input_schema": null, "rate_limit_rpm": 60, "cache_ttl_s": 30, "expose_mcp": true}
 ```
 
-- `input_schema` 为空时自动生成：`SAVED_QUERY` → 由 `an_saved_queries.parameters` 生成；`METRIC` → `{dimensions: enum[...], filters: array, time_range: {from, to}, grain: enum}`；`FLOW` → `{payload: object}`；`AGENT` → `{message: string, conversation_id?: string}`。
-- `environment=PROD` 时固定目标版本：保存查询与指标把发布时刻的完整定义写入 `target_snapshot`（指标同时记录 `an_metrics.version` 到 `target_version`），调用时按快照执行；流程固定为发布时的 `PROD` 部署版本号；智能体固定为最新发布版本号。`TEST` 端点不固定，始终使用目标的当前定义。
+- `input_schema` 为空时自动生成：`SAVED_QUERY` → 由 `an_saved_queries.parameters` 生成；`METRIC` → `{dimensions: enum[...], filters: array, time_range: {from, to}, grain: enum}`；`OBJECT_TYPE` → 由主图当前已发布 `NodeTypeSpec` 的属性与指标生成 `{q?: string, keys?: [string], properties?: object, metrics_min?: object, include_links?: [string], limit?: integer(1..200, default 50), cursor?: string}`；`FLOW` → `{payload: object}`；`AGENT` → `{message: string, conversation_id?: string}`。
+- `environment=PROD` 时固定目标版本：保存查询、指标与业务对象类型把发布时刻的完整定义写入 `target_snapshot`（指标记录 `an_metrics.version` 到 `target_version`，`OBJECT_TYPE` 记录主图 `xb_schema_versions.version` 到 `target_version` 并快照该 `NodeTypeSpec`），调用时按快照列与字段输出；流程固定为发布时的 `PROD` 部署版本号；智能体固定为最新发布版本号。`TEST` 端点不固定，始终使用目标的当前定义。
 - “提升”：`POST /api/axagent/endpoints/{id}/promote` 把 `TEST` 端点复制为 `PROD`（同 slug），固定当前版本。
 
 ### 09.3.2 调用 `POST /api/published/{env}/{tenant_id}/{slug}`
@@ -247,8 +248,8 @@ impl LlmRouter {
 2. 限流：`(endpoint_id, token_id)` 维度令牌桶，超限 429。
 3. 入参校验：`jsonschema` 校验请求体，失败 400 `SCHEMA_INVALID`（附错误路径）。
 4. 缓存：`cache_ttl_s > 0` 时以 `(endpoint_id, target_version, 规范化入参, 令牌用户)` 为键，进程内 `moka` 缓存。
-5. 执行：`SAVED_QUERY` / `METRIC` → `AnalyticsQueryPort`（以令牌用户为主体，列级脱敏照常生效）；`FLOW` → `start_run(trigger_source=API, environment=env)`，响应 `202 {run_id}`，可用 `GET /api/published/{env}/{tenant_id}/{slug}/runs/{run_id}` 查询状态；`AGENT` → 智能体一次对话（`channel=API`），`Accept: text/event-stream` 时流式返回。
-6. 审计：`MCP_CALL` 之外的发布调用写 `QUERY_SQL` / `FLOW_RUN` / `AGENT_CHAT`，`detail_json.endpoint_slug` 记录端点。
+5. 执行：`SAVED_QUERY` / `METRIC` → `AnalyticsQueryPort`（以令牌用户为主体，列级脱敏照常生效）；`OBJECT_TYPE` → 以令牌用户为主体查询 `xb_nodes`（`type_name = target_id`，受 RLS、Step 13 部门 ABAC 与属性级 `masking` 约束，按 `target_snapshot` 投影属性与指标并可选展开 `include_links` 指定的 1 跳关联对象），返回 `{items, next_cursor}`；`FLOW` → `start_run(trigger_source=API, environment=env)`，响应 `202 {run_id}`，可用 `GET /api/published/{env}/{tenant_id}/{slug}/runs/{run_id}` 查询状态；`AGENT` → 智能体一次对话（`channel=API`），`Accept: text/event-stream` 时流式返回。
+6. 审计：`MCP_CALL` 之外的发布调用写 `QUERY_SQL`（`SAVED_QUERY` / `METRIC` / `OBJECT_TYPE`）/ `FLOW_RUN` / `AGENT_CHAT`，`detail_json.endpoint_slug` 记录端点。
 
 ### 09.3.3 OpenAPI 与 Skill 清单
 
@@ -268,9 +269,9 @@ impl LlmRouter {
 - 传输：Streamable HTTP（`POST /api/mcp` JSON-RPC，支持 `Accept: text/event-stream` 流式响应；会话以 `Mcp-Session-Id` 请求头标识，会话状态保存在进程内并在 30 分钟无活动后清理）。
 - 鉴权：`Authorization: Bearer axp_...`；租户与权限来自令牌。
 - 工具列表（`tools/list`）：
-  - 该租户 `environment=PROD`、`expose_mcp=true`、令牌权限满足 `required_scope` 的发布端点，工具名为 slug 中 `-` 替换为 `_`，`inputSchema` 为端点 `input_schema`；
-  - 内置只读工具（令牌具备 `DATA_READ` 时）：`search_knowledge`（AxQuery 文档召回）、`ask_data`（智能问数）、`list_datasets`、`describe_dataset`、`graph_neighbors`、`get_node`。
-- 资源（`resources/list`）：`axpoint://datasets/{name}`（数据集元数据与列）；`resources/read` 返回 JSON。
+  - 该租户 `environment=PROD`、`expose_mcp=true`、令牌权限满足 `required_scope` 的发布端点（含 `OBJECT_TYPE` 领域对象端点），工具名为 slug 中 `-` 替换为 `_`，`inputSchema` 为端点 `input_schema`；
+  - 内置只读工具（令牌具备 `DATA_READ` 时）：`search_knowledge`（AxQuery 文档召回）、`ask_data`（智能问数）、`list_datasets`、`describe_dataset`、`query_objects`（按主图已发布类型、属性与指标查询业务对象及 1 跳关联）、`graph_neighbors`、`get_node`。
+- 资源（`resources/list`）：`axpoint://datasets/{name}`（数据集元数据与列）；`axpoint://objects/{type_name}`（主图已发布对象类型定义与示例）；`resources/read` 返回 JSON。
 - 每次 `tools/call` 写审计 `MCP_CALL`（工具名、参数摘要、状态）。
 
 ### 09.4.2 MCP Client
@@ -314,8 +315,9 @@ impl LlmRouter {
 | `ask_data` | `DATA_READ` | Step 04 问数，`knowledge_scope.dataset_names` 限定模式链接范围 |
 | `run_sql` | `DATA_READ` | 守卫后执行，最多 200 行 |
 | `query_metric` | `DATA_READ` | 指标查询 |
+| `query_objects` | `DATA_READ` | 按主图已发布对象类型、属性与指标过滤查询业务对象及 1 跳关联 |
 | `get_node`、`graph_neighbors`、`node_metric_series` | `DATA_READ` | AxGraph 查询 |
-| `run_simulation` | `SIM_RUN` | Step 10 推演（Step 10 交付前不出现在工具清单） |
+| `run_simulation` | `SIM_RUN` | `BuiltinToolRegistry` 持有 `Option<Arc<dyn SimExecutionPort>>`：注入实现（Step 10 在 `axpoint-server` 装配）时出现在工具清单并调用推演端口，为 `None` 时自动隐藏 |
 | `start_flow` | `FLOW_RUN` | 启动流程 `TEST` 或 `PROD` 部署 |
 | `list_alerts` | `DATA_READ` | 告警查询 |
 
@@ -379,7 +381,7 @@ for step in 1..=max_steps:
 | `POST /api/auth/tokens` | `{name, scopes: [Permission], expires_in_days?: 1..=365}`；`scopes` 必须是当前用户权限子集；返回一次明文 `axp_<prefix8>_<secret32>`；审计 `TOKEN_ISSUE` |
 | `DELETE /api/auth/tokens/{id}` | 吊销；审计 `TOKEN_REVOKE` |
 
-开发静态主体的 `user_id` 为全零 UUID；`scripts/seed/09-agents.sh` 以属主连接在默认租户插入该 ID 的 `sec_users` 记录（`username='dev'`、无口令）并绑定 `ADMIN` 角色，使开发令牌可以创建个人访问令牌。该插入只存在于种子脚本，不在迁移中。
+开发静态主体的 `user_id` 为全零 UUID（已在 `0002_platform_foundation.sql` 中作为默认租户 `dev` 用户写入 `sec_users` 并绑定 `ADMIN` 角色），可直接通过 `POST /api/auth/tokens` 签发个人访问令牌。
 
 ---
 
@@ -420,7 +422,7 @@ Playwright：`e2e/axagent.spec.ts` 在工作台向演示智能体提问，消息
 
 ## 09.11 验收
 
-`scripts/seed/09-agents.sh`：插入开发用户（§09.8）；创建个人访问令牌 `gate`（全部权限）写入 `.gate/ids.env` 的 `GATE_PAT`；（门禁环境不注册提供方，路由回落到环境变量默认提供方，并由 `AXPOINT_LLM_CASSETTE` 回放录制响应）；发布端点 `paid-amount-by-status`（`METRIC`，`TEST` 并提升到 `PROD`，`expose_mcp=true`）；创建并发布智能体 `ops_supervisor`、`data_analyst`、`knowledge_expert`；输出 `PAID_ENDPOINT_SLUG`、`SUPERVISOR_AGENT_ID`。
+`scripts/seed/09-agents.sh`：创建个人访问令牌 `gate`（全部权限）写入 `.gate/ids.env` 的 `GATE_PAT`；（门禁环境不注册提供方，路由回落到环境变量默认提供方，并由 `AXPOINT_LLM_CASSETTE` 回放录制响应）；发布端点 `paid-amount-by-status`（`METRIC`，`TEST` 并提升到 `PROD`，`expose_mcp=true`）与 `warehouse-objects`（`OBJECT_TYPE`，`target_id="Warehouse"`，`TEST` 并提升到 `PROD`，`expose_mcp=true`）；创建并发布智能体 `ops_supervisor`、`data_analyst`、`knowledge_expert`；输出 `PAID_ENDPOINT_SLUG`、`OBJECT_ENDPOINT_SLUG`、`SUPERVISOR_AGENT_ID`。
 
 `scripts/gate/step09.sh`：
 
@@ -432,13 +434,15 @@ source "$(dirname "$0")/lib.sh"
 (cd axpoint-core && cargo test -p axpoint-agent && cargo test -p axpoint-llm router cassette)
 
 PUB="$CORE_BASE_URL/api/published/prod/default/$PAID_ENDPOINT_SLUG"
+OBJ_PUB="$CORE_BASE_URL/api/published/prod/default/$OBJECT_ENDPOINT_SLUG"
 pat() { curl -s -H "Authorization: Bearer $GATE_PAT" -H "Content-Type: application/json" "$@"; }
 
-# 发布端点：令牌鉴权、入参校验、结果
+# 发布端点：令牌鉴权、入参校验、指标与业务对象结果
 expect_eq   "pub-noauth" "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$PUB" -d '{}')" "401"
 expect_json "pub-invalid" "$(pat -X POST "$PUB" -d '{"grain":"WEEKLY"}')" '.error_code == "SCHEMA_INVALID"'
 expect_json "pub-ok"      "$(pat -X POST "$PUB" -d '{"dimensions":["status"],"grain":"MONTH"}')" '(.rows | length) >= 1'
-expect_json "openapi"     "$(api GET '/api/axagent/endpoints/openapi.json?environment=PROD')" '.paths | keys | map(test("paid-amount-by-status")) | any'
+expect_json "published-object" "$(pat -X POST "$OBJ_PUB" -d '{"keys":["W-1"],"include_links":["FULFILLS"]}')" '(.items | length) == 1 and .items[0].node_key == "W-1"'
+expect_json "openapi"     "$(api GET '/api/axagent/endpoints/openapi.json?environment=PROD')" '.paths | keys | (any(test("paid-amount-by-status")) and any(test("warehouse-objects")))'
 
 # PROD 固定版本：修改指标后 PROD 结果不变，TEST 跟随
 BEFORE=$(pat -X POST "$PUB" -d '{"dimensions":[],"grain":"MONTH"}' | jq -c .rows)
@@ -449,10 +453,10 @@ api PATCH /api/analytics/metrics/paid_amount '{"filter_sql":"status = '\''PAID'\
 # MCP：初始化、工具列表、调用
 INIT=$(pat -X POST "$CORE_BASE_URL/api/mcp" -H "Accept: application/json, text/event-stream" -D .gate/mcp.h \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"gate","version":"1"}}}')
-SID=$(grep -i '^mcp-session-id:' .gate/mcp.h | awk '{print $2}' | tr -d '\r')
+SID=$(awk 'tolower($1)=="mcp-session-id:" {gsub(/\r/,"",$2); print $2}' .gate/mcp.h)
 mcp() { pat -X POST "$CORE_BASE_URL/api/mcp" -H "Accept: application/json, text/event-stream" -H "Mcp-Session-Id: $SID" -d "$1" | sed -n 's/^data: //p;/^{/p' | tail -1; }
 mcp '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null || true
-expect_json "mcp-tools" "$(mcp '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')" '[.result.tools[].name] | index("paid_amount_by_status") != null'
+expect_json "mcp-tools" "$(mcp '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')" '[.result.tools[].name] | (index("paid_amount_by_status") != null and index("warehouse_objects") != null and index("query_objects") != null)'
 expect_json "mcp-call"  "$(mcp '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"paid_amount_by_status","arguments":{"dimensions":["status"],"grain":"MONTH"}}}')" '.result.isError != true'
 expect_eq "mcp-audit" "$(sql_app default "SELECT count(*) > 0 FROM sec_audit_logs WHERE action='MCP_CALL'")" "t"
 

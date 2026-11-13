@@ -40,15 +40,17 @@
 | 02 | `zeroize` | 1 | 解密后的秘密内存清零 |
 | 02 | `cron` | 0.17 | 数据集定时同步；Step 07 流程调度复用 |
 | 02 | `tower_governor` | 0.8 | Webhook 接收限流；Step 13 登录与分享接口复用 |
+| 03 | `uuid` 追加 feature `v5` | 1 | 确定性业务节点与超图实体 UUID（`Uuid::new_v5`） |
 | 03 | `petgraph` | 0.8 | 路径、PageRank、社区发现 |
 | 03 | `hyperloglogplus` | 0.4 | 去重计数草图 |
-| 04 | `duckdb` | `1.20000`（对应 DuckDB 2.0，feature `bundled`、`parquet`、`json`） | OLAP |
+| 04 | `duckdb` | `1.20000`（对应 DuckDB 2.0，feature `bundled`、`parquet`、`json`、`vtab-arrow`、`vscalar`） | OLAP、Arrow 批次流与自定义标量脱敏函数 |
 | 04 | `sqlparser` | 0.64 | AST 白名单（`DuckDbDialect`） |
 | 04 | `lru` | 0.16 | 租户 DuckDB 实例池 |
 | 04 | `arrow` | 与 `duckdb` crate 依赖的大版本一致 | 结果转换 |
+| 05 | `async-graphql` / `async-graphql-axum` | 7.2（`dynamic`） / 7.2 | 发布本体时动态生成领域对象 GraphQL Schema 与内省端点 |
 | 07 | `jsonschema` | 0.61 | 算子配置校验；Step 09 发布端点入参校验复用 |
 | 08 | `lettre` | 0.11（`tokio1-rustls-tls`、`smtp-transport`、`builder`） | 邮件通知 |
-| 09 | `rmcp` | 3.10（启用 server、client 与 Streamable HTTP 传输相关 feature，feature 名以该版本文档为准） | MCP Server / Client |
+| 09 | `rmcp` | 3.10（feature `server`、`client`、`transport-streamable-http-server`、`transport-streamable-http-client-reqwest`） | MCP Server / Client |
 | 09 | `eventsource-stream` | 0.2 | 智能体 SSE |
 | 09 | `moka` | 0.12（`future`） | 发布端点结果缓存 |
 | 09 | `futures` | 0.3 | 流式响应组合 |
@@ -56,12 +58,14 @@
 | 10 | `rayon` | 1 | 抽样并行 |
 | 10 | `petgraph`（Step 03 已引入） | 0.8 | 强连通分量分解 |
 | 11 | `moka`（Step 09 已引入） | 0.12 | 组件结果缓存 |
+| 12 | `tokio-util` | 0.7（`io`） | 出品产物文件流式响应（`ReaderStream`） |
 | 13 | `jsonwebtoken` | 11 | EdDSA 访问令牌 |
 | 13 | `openidconnect` | 4.1 | OIDC 授权码 + PKCE |
 | 13 | `cedar-policy` | 4.14 | ABAC 策略求值 |
 | 13 | `hkdf` | 0.12 | 按租户派生脱敏密钥 |
 | 测试 | `testcontainers` / `testcontainers-modules` | 0.28 | Kafka、MinIO 等外部服务集成测试 |
 | 测试 | `insta` | 1 | 快照测试 |
+| 测试 | `proptest` | 1 | 表达式 AST 格式化与重解析往返属性测试（Step 06） |
 
 ## 3. Python（`axpoint-parser/pyproject.toml`）
 
@@ -98,7 +102,7 @@ full = [
 dev = ["pytest>=8", "pytest-asyncio>=0.24", "testcontainers>=4.8", "ruff>=0.8", "mypy>=1.13", "reportlab>=4.2", "syrupy>=4.8", "respx>=0.21"]
 ```
 
-`lite` 镜像只安装 `dependencies`；`full` 镜像安装 `dependencies + full`，并内置 LibreOffice（早期 Office 格式转换、公式重算）。
+`lite` 镜像安装 `dependencies`；`full` 镜像安装 `dependencies + full`，并内置 LibreOffice（早期 Office 格式转换、公式重算）。
 
 ## 4. Web（`xbluenode-web/package.json`）
 
@@ -120,15 +124,16 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24", "testcontainers>=4.8", "ruff>=0.8", 
 | 11 | `@microsoft/fetch-event-source` | 2 | 携带 `Authorization` 头的 SSE |
 | 11 | `maplibre-gl` | 5 | 瓦片底图（设置 `AXPOINT_MAP_TILE_URL` 时） |
 | 11 | `react-markdown` | 10 | Markdown 组件（禁用原始 HTML） |
+| 11 | `three` / `@types/three` | 0.187 / 0.187 | 3D 空间数字孪生组件（`SCENE_3D`，glTF / `.glb` 加载与网格指标着色） |
 
-Sidecar 服务端图表（`axpoint-parser/charts/package.json`，Step 12，仅 full 镜像）：`echarts` 6.1（与 Web 同版本）、`@resvg/resvg-js` 2.6。
+Sidecar 服务端图表（`axpoint-parser/charts/package.json`，Step 12，`lite` 与 `full` 镜像均内置）：`echarts` 6.1（与 Web 同版本）、`@resvg/resvg-js` 2.6。
 
 ## 5. 容器镜像
 
 | 镜像 | 基础 | 说明 |
 | :--- | :--- | :--- |
 | `axpoint-core` | 构建：`rust:1.100-bookworm` + `node:24-bookworm`；运行：`gcr.io/distroless/cc-debian12:nonroot` | 单二进制 + `dist/` |
-| `axpoint-parser:<tag>-lite` | `python:3.11-slim-bookworm` | 结构化解析、连接器、出品 |
-| `axpoint-parser:<tag>-full` | `python:3.11-slim-bookworm` + LibreOffice + Node 24（ECharts SSR） | 全量 |
+| `axpoint-parser:<tag>-lite` | `python:3.11-slim-bookworm` + Node 24（ECharts SSR） | 结构化解析、连接器、服务端图表与全格式出品 |
+| `axpoint-parser:<tag>-full` | `python:3.11-slim-bookworm` + LibreOffice + Node 24（ECharts SSR） | 全量（含早期 Office 转换、公式重算、Docling / EasyOCR 与重型数据库驱动） |
 | `postgres` | `pgvector/pgvector:pg16` | 元数据、超图、DuckLake 目录 |
 | 测试辅助 | `redpandadata/redpanda`、`eclipse-mosquitto:2`、`minio/minio`、`mongo:8`、`redis:8`、`mysql:8.4`、`clickhouse/clickhouse-server:25`、`influxdb:3-core`、`tdengine/tdengine:3`、`apache/iotdb:2`、`atmoz/sftp`、`docker.elastic.co/elasticsearch/elasticsearch`（9.x，与 Python 客户端同一大版本）、`apachepulsar/pulsar:3.3`；`heavy` 测试另用的镜像见 A3 各卡片 | 只用于集成测试，不进入可分发镜像 |

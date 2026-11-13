@@ -10,11 +10,11 @@
    - **AxHub / AxParser**：全源数据接入、连接器与双轨解析引擎
    - **AxGraph / AxAnalytics**：超图 + 业务节点时序双擎底座与 OLAP 制表引擎
    - **AxQuery**：五路融合检索与智能问数
-   - **xBlueStudio / xBlueGraph**：可视化节点关系建模与拓扑浏览器
+   - **xBlueStudio / xBlueGraph**：多子图隔离建模、本体对齐融合、领域对象接口与拓扑浏览器
    - **AxFlow**：DAG 编排、持久化执行、规则与告警
    - **AxAgent**：API / Skill / MCP 发布、多模型路由与智能体
    - **AxSim**：写时复制（CoW）因果策略推演沙盘
-   - **xBlueView**：业务孪生驾驶舱与全格式出品中心
+   - **xBlueView**：业务孪生驾驶舱、3D 孪生场景、页面动作回写与全格式出品中心
    - **AxGuard**：企业级权限、动态脱敏与审计底座
    - **AxOps**：部署、备份恢复、保留策略、模板与交付追踪
 2. **严禁外部品牌污染**：严禁在仓库任何位置出现外部竞品名称、相关公司名称及其衍生命名。禁用词正则只保存在仓库变量 `vars.NAMING_DENYLIST` 与本地环境变量 `NAMING_DENYLIST` 中，由 `scripts/naming-guard.sh` 在 CI 与本地执行，正则本身不得写入仓库。

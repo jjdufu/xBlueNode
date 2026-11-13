@@ -1,6 +1,6 @@
 # A7 · 需求追踪矩阵
 
-本附录把全部能力项（55 项，按 A 底座、B 设计、C 构建、D 智能、E 推演、F 可视、G 系统分组，能力范围参照对标产品官网公开的功能说明整理）与全部数据源类别（26 类）映射到负责的 Step、实现小节与可执行的验收用例。“验收”列中带引号的名称是该 Step 门禁脚本 `scripts/gate/stepNN.sh` 中的断言名；其余为测试文件或端到端用例。每一项都有唯一负责的 Step。
+本附录把全部能力项（59 项，按 A 底座、B 设计、C 构建、D 智能、E 推演、F 可视、G 系统分组，能力范围参照对标产品官网公开的功能说明整理）与全部数据源类别（26 类）映射到负责的 Step、实现小节与可执行的验收用例。“验收”列中带引号的名称是该 Step 门禁脚本 `scripts/gate/stepNN.sh` 中的断言名；其余为测试文件或端到端用例。每一项都有唯一负责的 Step。
 
 ---
 
@@ -32,10 +32,11 @@
 
 | # | 能力 | Step | 实现 | 验收 |
 | :--- | :--- | :--- | :--- | :--- |
-| C18 | 一张图设计对象、关系、属性 | 05 | §05.7 | `e2e/studio.spec.ts`；step05 “publish-1” |
+| C18 | 一张图设计对象、关系、属性 | 05 | §05.7 | `e2e/xbluestudio.spec.ts`；step05 “publish-1” |
 | C19 | 草稿确认后发布 | 05 | §05.4 | step05 “publish-1”、“publish-2-conflict” |
 | C20 | AI 从需求描述与数据生成模型草稿 | 05 | §05.5 | step05 “ai-draft”；`schema_draft_eval.rs` |
 | C21 | 模型版本与变更影响分析 | 05 | §05.4 | step05 “diff”、“breaking” |
+| C56 | 多子图部门独立建模与跨部门本体对齐融合 | 05 | §05.1、§05.4.3 | step05 “subgraph-publish”、“subgraph-isolated”、“subgraph-preview”、“subgraph-merge”、“subgraph-merged-main” |
 
 ### C 构建
 
@@ -53,6 +54,7 @@
 | C31 | 交付过程可追溯 | 14 | [12](./12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.7 | step14 “work-item” |
 | C32 | 接入主流大模型（多厂商、按任务路由、回退、计量） | 09 | §09.2 | `axpoint-llm/tests/router.rs`（回退与用量记录） |
 | C33 | 外部 MCP 与插件工具接入 | 09 | §09.4 | `axpoint-agent/tests/mcp_client.rs`（同步外部工具清单并调用） |
+| C57 | 业务对象自动生成领域 REST / 动态 GraphQL 接口与 MCP 暴露 | 05 / 09 | §05.6、[08](./08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) §09.3～§09.4 | step05 “domain-graphql”、“domain-objects”；step09 “published-object”、“mcp-tools” |
 
 ### D 智能
 
@@ -80,12 +82,14 @@
 | # | 能力 | Step | 实现 | 验收 |
 | :--- | :--- | :--- | :--- | :--- |
 | C45 | 按业务对象的孪生视图 | 11 | [10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.3（`NodeDrawer`） | `e2e/xblueview.spec.ts` |
-| C46 | 拖拽驾驶舱（指标、趋势、告警、图表、场景视图） | 11 | §11.2、§11.6 | step11 “kpi”；`e2e/xblueview.spec.ts` 6 个组件渲染 |
+| C46 | 拖拽驾驶舱（指标、趋势、告警、图表、场景视图） | 11 | §11.2、§11.6 | step11 “kpi”；`e2e/xblueview.spec.ts` 8 个组件渲染 |
 | C47 | 组件绑定查询，数据变化即时反映 | 11 | §11.5 | step11 “sse-invalidate”、“kpi-refreshed” |
 | C48 | 运行页问数与下钻 | 11 | §11.3、§11.6 | step11 “drill”；`e2e/xblueview.spec.ts` 面包屑 |
 | C49 | 一键发布独立页面与嵌入 | 12 | §12.5.2 | step12 “share-view-1”、“share-max-views”、“share-revoked” |
 | C50 | 汇报与验收出品（Excel、Word、PPT、PDF 等） | 12 | §12.2～§12.4 | step12 六种格式 `verify_export.py`、“chart-png”、“audit-export” |
 | C51 | 图可视化（筛选、属性、沿关系展开、检索） | 03 / 11 | §03.8、§11.6 | step03 “neighbors”；`graph-render-bench.mjs` |
+| C58 | AI 一句话生成孪生看板与页面级动作回写闭环 | 11 | §11.2、§11.6 | step11 “ai-dashboard”、“widget-action-loop”、“widget-action-log” |
+| C59 | 3D 空间数字孪生场景与实时指标驱动着色 | 11 | §11.1、§11.4 | step11 “scene-3d”；`e2e/xblueview.spec.ts` |
 
 ### G 系统
 
@@ -135,7 +139,7 @@
 
 ```bash
 # 每个能力项与数据源类别都在本表出现且只出现一次
-grep -cE '^\| C[0-9]{2} ' docs/blueprint/A7-REQUIREMENTS-TRACEABILITY.md   # 55
+grep -cE '^\| C[0-9]{2} ' docs/blueprint/A7-REQUIREMENTS-TRACEABILITY.md   # 59
 grep -cE '^\| D[0-9]{2} ' docs/blueprint/A7-REQUIREMENTS-TRACEABILITY.md   # 26
 
 # 表中引用的门禁断言名都存在于对应门禁脚本（输出缺失项，期望为空）

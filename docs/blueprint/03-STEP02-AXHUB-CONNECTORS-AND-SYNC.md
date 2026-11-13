@@ -34,7 +34,7 @@ AxHub 把文件、关系库、国产库、分析型库、NoSQL、时序库、消
 | 新建 | `axpoint-core/crates/axpoint-server/src/routes/axhub.rs` | `/api/axhub/*`（§02.9.5） |
 | 新建 | `axpoint-core/crates/axpoint-server/src/workers/sync_worker.rs` | `SYNC_DATASET`、`LAKE_MAINTENANCE`、`CREDENTIAL_ROTATE` 任务处理 |
 | 新建 | `axpoint-core/crates/axpoint-server/src/workers/scheduler.rs` | 数据集定时同步（`cron` crate） |
-| 新建 | `axpoint-parser/connectors/{__init__.py, base.py, registry.py, typemap.py, sql_family.py, domestic.py, analytic.py, nosql.py, timeseries.py, files_remote.py, rest_api.py, graphql_api.py, streams.py}` | 连接器（§02.3～02.8） |
+| 新建 | `axpoint-parser/connectors/{__init__.py, base.py, registry.py, typemap.py, sql_family.py, domestic.py, analytic.py, nosql.py, timeseries.py, object_store.py, rest_api.py, graphql_api.py, streams.py, webhook.py}` | 连接器（§02.3～02.8，规格卡见 A3） |
 | 新建 | `axpoint-parser/lake/{__init__.py, catalog.py, writer.py, evolve.py, quality.py, maintenance.py}` | DuckLake 写入、Schema 演进、质量校验、维护 |
 | 修改 | `axpoint-parser/main.py` | `/connectors/*`、`/lake/*` 路由 |
 | 新建 | `axpoint-parser/tests/{test_connectors_sql.py, test_connectors_nosql.py, test_connectors_ts.py, test_connectors_api.py, test_streams.py, test_lake_sync.py, test_evolve.py, test_quality.py}` | 测试 |
@@ -298,14 +298,25 @@ import duckdb
 from settings import settings
 
 
+def _sql_quote(val: str) -> str:
+    return "'" + val.replace("'", "''") + "'"
+
+
 def lake_connection() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(config={"allow_unsigned_extensions": "false", "autoinstall_known_extensions": "false"})
     con.execute("LOAD ducklake; LOAD postgres;")      # 扩展在镜像构建阶段预装（见 01 §00.9）
+    root = settings.axpoint_data_root.resolve()
+    lake_dir = f"{root}/lake"
+    tenants_dir = f"{root}/tenants"
+    dsn = f"ducklake:postgres:{settings.lake_catalog_libpq()}"
     con.execute(
-        "ATTACH ? AS lake (DATA_PATH ?, METADATA_SCHEMA 'lake_catalog')",
-        [f"ducklake:postgres:{settings.lake_catalog_libpq()}", f"{settings.data_root}/lake/"],
+        f"ATTACH {_sql_quote(dsn)} AS lake (DATA_PATH {_sql_quote(lake_dir + '/')}, METADATA_SCHEMA 'lake_catalog')"
     )
-    con.execute("SET threads = 4; SET memory_limit = '2GB'; SET enable_external_access = false;")
+    con.execute(
+        f"SET allowed_directories = [{_sql_quote(lake_dir)}, {_sql_quote(tenants_dir)}]; "
+        "SET threads = 4; SET memory_limit = '2GB'; "
+        "SET enable_external_access = false; SET lock_configuration = true;"
+    )
     return con
 
 
@@ -313,8 +324,8 @@ def tenant_schema(tenant_id: str) -> str:
     return f'"tenant_{tenant_id}"'                   # tenant_id 已按 ^[a-z0-9_-]{1,64}$ 校验
 ```
 
-- `settings.lake_catalog_libpq()` 把 `AXPOINT_LAKE_CATALOG_DSN` 转为 libpq 关键字串（`host=... port=... dbname=... user=axpoint_lake password=...`）。
-- `enable_external_access = false` 在 ATTACH 之后设置：之后的 SQL 无法再访问本地文件与网络，写入只走湖目录（Core 侧 DuckDB 会话采用同样顺序，见 Step 04 §04.1）。
+- `settings.lake_catalog_libpq()`（01 §00.7）把 `AXPOINT_LAKE_CATALOG_DSN` 转为 libpq 关键字串（`dbname=... host=... port=... user=axpoint_lake password=...`）。
+- `ATTACH` 语句不支持预处理参数占位符，所有连接串与目录均经 `_sql_quote` 转义；`allowed_directories` 限定为 `<data_root>/lake`（DuckLake 数据文件）与 `<data_root>/tenants`（暂存 Parquet），随后执行 `enable_external_access = false` 与 `lock_configuration = true`，阻断对其他任何路径或网络的访问（Core 侧只读会话采用同样顺序，见 Step 04 §04.2）。
 - 每张湖表含系统列：`_ax_batch_id UUID`、`_ax_synced_at TIMESTAMP`；流与 Webhook 数据集额外含 `_ax_msg_id VARCHAR`。
 - 每个租户首次写入时执行 `CREATE SCHEMA IF NOT EXISTS lake."tenant_<id>"`。
 

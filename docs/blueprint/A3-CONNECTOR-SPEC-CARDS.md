@@ -568,7 +568,7 @@
 
 ```bash
 # 32 个类型均已注册，且 lite / full 可用性与卡片一致
-curl -s -H "X-AxPoint-Internal-Token: $AXPOINT_INTERNAL_TOKEN" "$PARSER_BASE_URL/connectors/types" | jq 'length'   # 32
+curl -s -H "X-AxPoint-Internal-Token: $AXPOINT_INTERNAL_TOKEN" -H "X-AxPoint-Tenant: default" "$PARSER_BASE_URL/connectors/types" | jq 'length'   # 32
 cd axpoint-parser && uv run pytest tests/test_typemap.py tests/test_connectors_sql.py tests/test_connectors_nosql.py tests/test_connectors_ts.py tests/test_connectors_api.py tests/test_streams.py -m 'not heavy' -q
 cd axpoint-parser && uv run pytest -m heavy -q   # nightly
 ```

@@ -157,7 +157,7 @@ CREATE TABLE IF NOT EXISTS ax_action_log (
     tenant_id   TEXT NOT NULL,
     run_id      UUID,
     node_id     TEXT,
-    source_kind TEXT NOT NULL CHECK (source_kind IN ('FLOW','SIM_APPLY','AGENT','RULE')),
+    source_kind TEXT NOT NULL CHECK (source_kind IN ('FLOW','SIM_APPLY','AGENT','RULE','VIEW')),
     action_kind TEXT NOT NULL CHECK (action_kind IN ('WRITE_NODE_METRIC','WRITE_NODE_PROPERTY','HTTP','NOTIFY','WORK_ITEM')),
     target      TEXT NOT NULL,
     payload     JSONB NOT NULL,
@@ -689,7 +689,7 @@ Playwright：`e2e/axalerts.spec.ts` 打开 `/alerts`，看到演示告警，点�
 
 ## 08.7 Step 08 验收
 
-`scripts/seed/08-rules.sh`：启动 `python3 scripts/gate/tools/webhook_sink.py --port 18900 --out .gate/webhook.jsonl`（后台）；创建渠道 `gate_sink`（`WEBHOOK`，`url=http://127.0.0.1:18900/hook`，`allow_private_network=true`）；创建规则 `low_inventory`（`METRIC`，`Warehouse.inventory`，`THRESHOLD LT 50`，`resolve_after_minutes=0`，`cooldown_minutes=0`，渠道 `gate_sink`，触发流程 `daily_supply_refresh`）。输出 `LOW_INV_RULE_ID`、`SINK_FILE`。
+`scripts/seed/08-rules.sh`：若 `.gate/pids/webhook_sink` 存在则先终止旧进程，启动 `python3 scripts/gate/tools/webhook_sink.py --port 18900 --out .gate/webhook.jsonl`（后台）并将 `$!` 写入 `.gate/pids/webhook_sink`（供 `dev-down.sh` 统一回收）；创建渠道 `gate_sink`（`WEBHOOK`，`url=http://127.0.0.1:18900/hook`，`allow_private_network=true`）；创建规则 `low_inventory`（`METRIC`，`Warehouse.inventory`，`THRESHOLD LT 50`，`resolve_after_minutes=0`，`cooldown_minutes=0`，渠道 `gate_sink`，触发流程 `daily_supply_refresh`）。输出 `LOW_INV_RULE_ID`、`SINK_FILE`、`SINK_SECRET`。
 
 `scripts/gate/step08.sh`：
 
@@ -703,8 +703,8 @@ source "$(dirname "$0")/lib.sh"
 # 触发：库存写为 10 → 告警 OPEN、通知送达、流程启动
 api POST /api/xblue/metrics/write "{\"points\":[{\"node_id\":\"$WAREHOUSE_NODE_ID\",\"metric\":\"inventory\",\"ts\":\"$(date -u +%FT%TZ)\",\"value\":10}],\"source_tag\":\"MANUAL\"}" >/dev/null
 wait_until "alert-open" 60 "api GET '/api/axflow/alerts?rule_id=$LOW_INV_RULE_ID&status=OPEN' | jq -e '.items | length == 1'"
-wait_until "notified"   60 "grep -c '\"event\":\"OPENED\"' $SINK_FILE | grep -qx 1"
-expect_eq "signature" "$(python3 scripts/gate/tools/webhook_sink.py --verify $SINK_FILE --secret "$SINK_SECRET")" "OK"
+wait_until "notified"   60 "[[ -f $SINK_FILE ]] && awk '/\"event\":\"OPENED\"/{c++} END{exit !(c==1)}' $SINK_FILE"
+expect_eq "signature" "$(python3 scripts/gate/tools/webhook_sink.py --verify "$SINK_FILE" --secret "$SINK_SECRET")" "OK"
 ALERT=$(api GET "/api/axflow/alerts?rule_id=$LOW_INV_RULE_ID&status=OPEN" | jq -r '.items[0].id')
 expect_json "flow-started" "$(api GET /api/axflow/alerts/$ALERT/events)" '[.items[].event] | index("FLOW_STARTED") != null'
 
@@ -717,7 +717,7 @@ expect_eq "dedup" "$(sql_app default "SELECT count(*) FROM ax_alerts WHERE rule_
 expect_code "ack" 200 POST /api/axflow/alerts/$ALERT/ack
 api POST /api/xblue/metrics/write "{\"points\":[{\"node_id\":\"$WAREHOUSE_NODE_ID\",\"metric\":\"inventory\",\"ts\":\"$(date -u +%FT%TZ)\",\"value\":500}],\"source_tag\":\"MANUAL\"}" >/dev/null
 wait_until "auto-resolve" 90 "api GET /api/axflow/alerts/$ALERT | jq -e '.status == \"RESOLVED\" and .resolve_reason == \"AUTO\"'"
-wait_until "resolved-notified" 60 "grep -c '\"event\":\"RESOLVED\"' $SINK_FILE | grep -qx 1"
+wait_until "resolved-notified" 60 "[[ -f $SINK_FILE ]] && awk '/\"event\":\"RESOLVED\"/{c++} END{exit !(c==1)}' $SINK_FILE"
 
 gate_pass step08
 ```

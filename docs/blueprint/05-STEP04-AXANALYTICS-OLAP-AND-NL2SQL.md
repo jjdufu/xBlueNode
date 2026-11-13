@@ -25,7 +25,7 @@ AxAnalytics 在 Core 内以 `duckdb` crate 读取 DuckLake 中的数据集，并
 | 新建 | `axpoint-core/crates/axpoint-analytics/src/transform.rs` | AI 数据处理（§04.7） |
 | 新建 | `axpoint-core/crates/axpoint-analytics/tests/{guard.rs, pivot.rs, semantic.rs, nl2sql_eval.rs}`、`tests/nl2sql_eval/cases.yaml`、`tests/nl2sql_eval/cassette.jsonl` | 测试与评测集 |
 | 修改 | `axpoint-core/Cargo.toml` | 成员 `axpoint-analytics`；依赖见 A6 Step 04 |
-| 修改 | `deploy/docker/axpoint-core.Dockerfile` | 构建阶段用与 `duckdb` crate 同版本的 DuckDB CLI 执行 `INSTALL ducklake; INSTALL postgres; INSTALL mysql_scanner; INSTALL sqlite_scanner;`，把 `~/.duckdb/extensions` 复制到运行镜像 `/home/nonroot/.duckdb/extensions` |
+| 修改 | `deploy/docker/axpoint-core.Dockerfile` | 构建阶段用与 `duckdb` crate 同版本的 DuckDB CLI 将 `ducklake`、`postgres`、`mysql_scanner`、`sqlite_scanner` 预装到 `/out/nonroot-home/.duckdb/extensions`（随 `--chown=65532:65532` 复制进运行镜像 `/home/nonroot/.duckdb/extensions`） |
 | 新建 | `axpoint-core/crates/axpoint-server/src/routes/analytics.rs` | `/api/analytics/*` |
 | 修改 | `axpoint-core/crates/axpoint-server/src/routes/documents.rs` | `/api/chat/query` 意图路由（§04.8） |
 | 修改 | `axpoint-parser/lake/writer.py`、`axpoint-parser/main.py` | `POST /lake/materialize` |
@@ -150,12 +150,12 @@ pub struct SessionPool {
     cfg: AnalyticsConfig,
 }
 
-/// 已加固的租户实例。
+/// 已加固的租户实例。`duckdb::Connection` 为 `!Sync`，以 `std::sync::Mutex` 包装后使 `Arc<TenantDb>` 满足 `Send + Sync`。
 pub struct TenantDb {
-    db: duckdb::Connection,          // 根连接，仅用于 try_clone()
+    db: std::sync::Mutex<duckdb::Connection>, // 根连接，仅短暂加锁调用 try_clone()
     tenant_id: String,
     built_at: std::time::Instant,
-    catalog: TenantCatalog,          // 数据集名 → 湖表、列与 PII 信息；直连连接别名
+    catalog: TenantCatalog,                   // 数据集名 → 湖表、列与 PII 信息；直连连接别名
 }
 ```
 
@@ -175,12 +175,12 @@ pub struct TenantDb {
 | `ax.metric_rollups` | `SELECT node_id, metric, grain, bucket_start, cnt, sum_v, min_v, max_v, last_v FROM ax_pg.public.xb_metric_rollups` |
 
 6. 直连：租户内 `config.live_query = true` 的 `POSTGRES` / `MYSQL` / `SQLITE` 连接，以 `ATTACH ... AS live_<连接名> (TYPE postgres|mysql|sqlite, READ_ONLY)` 挂载（凭证在 Core 内解密）。
-7. 加固：`SET enable_external_access = false; SET threads = 4; SET memory_limit = '<AXPOINT_DUCKDB_MEMORY>'; SET max_temp_directory_size = '10GB'; SET lock_configuration = true;`。
+7. 加固（`allowed_directories` 必须在 `enable_external_access = false` 之前设置，保证 DuckLake 仍可只读扫描 `<data_root>/lake` 下的 Parquet 文件而阻断其余全部宿主机路径）：`SET allowed_directories = ['<data_root>/lake']; SET enable_external_access = false; SET threads = 4; SET memory_limit = '<AXPOINT_DUCKDB_MEMORY>'; SET max_temp_directory_size = '10GB'; SET lock_configuration = true;`。
 8. 构建 `TenantCatalog`：读 `ds_datasets`（`status='READY'` 或已有快照）与 `ds_column_meta`。
 
 **失效**：订阅 `dataset.synced` 外发事件只刷新 `TenantCatalog`；连接增删改、`live_query` 变化、`AXPOINT_LAKE_CATALOG_DSN` 变化时从池中移除该租户实例（下次查询重建）。
 
-**执行**：每次查询 `db.try_clone()` 得到新连接，在 `tokio::task::spawn_blocking` 中执行；超时（默认 30 秒，`QueryRequest.timeout_ms` 上限 120 000）时调用 `InterruptHandle::interrupt()` 并返回 504 `QUERY_TIMEOUT`。
+**执行**：每次查询短暂锁定 `db.lock()` 调用 `try_clone()` 得到独立子连接后立即释放锁，在 `tokio::task::spawn_blocking` 中并发执行；超时（默认 30 秒，`QueryRequest.timeout_ms` 上限 120 000）时调用 `InterruptHandle::interrupt()` 并返回 504 `QUERY_TIMEOUT`。
 
 ---
 
@@ -225,7 +225,7 @@ pub struct GuardedSql {
 **结果处理**（`result.rs`）：
 
 - Arrow → JSON 按 A1 §7（`DECIMAL` 与超大整数为字符串，时间为 RFC 3339）。
-- 列来源追踪：守卫记录每个输出列的来源 `(dataset, column)`（直接引用时可追踪；表达式列标记为派生）。来源列 `pii_category ≠ NONE` 且主体无 `PII_RAW_READ` 时按 A1 `MaskRule` 脱敏；派生自 PII 列的表达式列整体 `REDACT`。完整的列级策略在 Step 13 接入同一入口。
+- 列来源追踪：守卫记录每个输出列的来源 `(dataset, column)`（直接引用时可追踪；表达式列标记为派生）。默认对**所有主体（含 `ADMIN`）**启用安全展示：凡来源列 `pii_category ≠ NONE`，默认按 A1 `MaskRule` 脱敏，派生自 PII 列的表达式列整体 `REDACT`；仅当请求显式携带 `reveal_pii = true` 且主体具备 `PII_RAW_READ`（并在 Step 13 通过列级策略判定）时才返回明文并在审计 `detail_json` 中标记 `reveal_pii=true`。完整的列级策略与下推脱敏在 Step 13 接入同一入口。
 - 每次执行写 `an_query_history` 与审计 `QUERY_SQL`（SQL 文本截断 4 000 字符）。
 
 ---
@@ -413,7 +413,7 @@ GROUP BY ALL ORDER BY period
 | 方法与路径 | 权限 |
 | :--- | :--- |
 | `GET /catalog`（数据集、列、平台视图、直连对象树） | `DATA_READ` |
-| `POST /sql/run`（`{sql, params?, max_rows?, timeout_ms?, allow_live?}`） | `DATA_READ` |
+| `POST /sql/run`（`{sql, params?, max_rows?, timeout_ms?, allow_live?, reveal_pii?}`） | `DATA_READ` |
 | `POST /sql/explain` | `DATA_READ` |
 | `POST /pivot` | `DATA_READ` |
 | `GET /metrics`、`POST /metrics`、`GET /metrics/{name}`、`PATCH /metrics/{name}`、`DELETE /metrics/{name}` | `DATA_READ` / `STUDIO_EDIT` |
@@ -480,12 +480,12 @@ expect_json "truncate" "$(api POST /api/analytics/sql/run '{"sql":"SELECT * FROM
 # 透视小计与总计
 expect_json "pivot-total" "$(api POST /api/analytics/pivot '{"dataset":"demo_orders","rows":[{"field":"status"}],"columns":[],"values":[{"field":"amount","agg":"SUM","alias":"amt"}],"filters":[],"sort":[],"subtotals":true,"grand_total":true,"row_limit":100,"column_limit":50}')" '(.row_kinds | index("GRAND_TOTAL")) != null'
 
-# 指标与数据库对账
-EXPECTED=$(sql_owner "SELECT round(sum(amount)::numeric, 2) FROM demo_src.orders WHERE status='PAID'")
-ACTUAL=$(api POST "/api/analytics/metrics/$PAID_METRIC_NAME/query" '{"dimensions":[],"filters":[],"grain":"MONTH"}' | jq -r '[.rows[].value | tonumber] | add | . * 100 | round / 100')
+# 指标与数据库对账（统一格式化为两位小数，避免 3517.50 与 3517.5 尾零差异）
+EXPECTED=$(sql_owner "SELECT sum(amount) FROM demo_src.orders WHERE status='PAID'" | awk '{printf "%.2f", $1}')
+ACTUAL=$(api POST "/api/analytics/metrics/$PAID_METRIC_NAME/query" '{"dimensions":[],"filters":[],"grain":"MONTH"}' | jq -r '[.rows[].value | tonumber] | add' | awk '{printf "%.2f", $1}')
 expect_eq "metric-reconcile" "$ACTUAL" "$EXPECTED"
 
-# PII 脱敏（演示表 phone 列）
+# PII 脱敏（演示表 phone 列，默认对包括 ADMIN 在内的全部主体脱敏）
 expect_json "pii-mask" "$(api POST /api/analytics/sql/run '{"sql":"SELECT phone FROM demo_orders LIMIT 1"}')" '.rows[0].phone | test("^1[3-9][0-9]\\*{4}[0-9]{4}$")'
 
 # 问数（门禁环境使用录制响应：AXPOINT_LLM_CASSETTE 指向评测录制文件）

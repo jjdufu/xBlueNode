@@ -50,6 +50,12 @@ Step 12 出品模板样本（`axpoint-parser/tests/data/templates/`，由同一�
 | `report_template.docx` | 页眉 `{{title}}`、正文 `{{subtitle}}`、`{{generated_at}}`、独占一段的 `{{sections}}`；定义表格样式 `AxTable` |
 | `deck_template.pptx` | 母版含“标题”与“标题和内容”版式，标题占位符 `{{title}}` |
 
+Step 11 3D 数字孪生模型样本（`axpoint-parser/tests/data/models/`，由同一生成器的 `make_models_3d()` 产出并记入 `fixtures.sha256`）：
+
+| 文件 | 规格 |
+| :--- | :--- |
+| `warehouse_twin.glb` | 最小合法 glTF 2.0 二进制模型（`.glb`），包含单个命名网格节点 `"Rack_A"`（单位立方体几何体 + PBR 材质），逐字节确定性生成；供 [10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.4 与 Step 11 门禁 `scene-3d` 使用 |
+
 ---
 
 ## 2. 门禁函数库 `scripts/gate/lib.sh`
@@ -59,6 +65,7 @@ Step 12 出品模板样本（`axpoint-parser/tests/data/templates/`，由同一�
 # 门禁公共函数。所有 scripts/gate/stepNN.sh 与 scripts/seed/*.sh 以 source 方式引入。
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+[[ -d "$ROOT/axpoint-parser/.venv/bin" ]] && export PATH="$ROOT/axpoint-parser/.venv/bin:$PATH"
 set -a
 # shellcheck disable=SC1091
 source "$ROOT/.env.test"
@@ -181,12 +188,12 @@ gate_pass() { echo "GATE $1 PASS"; }
 | 02 | `02-axhub.sh` | `DEMO_PG_CONN_ID`、`DEMO_ORDERS_DATASET_ID`、`SUPPLY_UPLOAD_ID`、`WEBHOOK_SLUG`、`WEBHOOK_SECRET` |
 | 03 | `03-axgraph.sh` | `FACTORY1_NODE_ID`、`ORDER20_NODE_ID`、`SEED_DAY1`、`SEED_DAY2` 等 |
 | 04 | `04-analytics.sh` | `PAID_METRIC_NAME` |
-| 05 | `05-studio.sh` | 映射 ID 与模型版本（见 [06](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §05.8；Step 06 无种子脚本） |
-| 07 / 08 | `07-axflow.sh`、`08-rules.sh` | `FLOW_ID`、`CYCLIC_FLOW_ID`、`SINK_SECRET` 等（见 [07](./07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md)） |
-| 09 | `09-agents.sh` | `GATE_PAT`、`PAID_ENDPOINT_SLUG`、`SUPERVISOR_AGENT_ID` |
-| 10 | `10-axsim.sh` | `SANDBOX_ID` |
-| 11 | `11-xblueview.sh` | `DASHBOARD_ID`、`KPI_WIDGET_ID`、`BAR_WIDGET_ID` |
-| 13 | `13-axguard.sh` | `EAST_PASSWORD`、`SOUTH_PASSWORD`、`AUDITOR_PASSWORD`、`ORDERS_BY_STATUS_QUERY_ID` |
+| 05 | `05-studio.sh` | `ORDER_MAPPING_ID` 等映射 ID 与模型版本（见 [06](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §05.8；Step 06 无种子脚本） |
+| 07 / 08 | `07-axflow.sh`、`08-rules.sh` | `FLOW_ID`、`CYCLIC_FLOW_ID`、`LOW_INV_RULE_ID`、`SINK_SECRET`、`SINK_FILE`（见 [07](./07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md)） |
+| 09 | `09-agents.sh` | `GATE_PAT`、`PAID_ENDPOINT_SLUG`、`OBJECT_ENDPOINT_SLUG`、`SUPERVISOR_AGENT_ID` |
+| 10 | `10-axsim.sh` | `SANDBOX_ID`、`SIM_S1_ID`、`SIM_S2_ID` |
+| 11 | `11-xblueview.sh` | `DASHBOARD_ID`、`KPI_WIDGET_ID`、`BAR_WIDGET_ID`、`MODEL3D_ASSET_ID`、`SCENE3D_WIDGET_ID`、`ACTION_WIDGET_ID` |
+| 13 | `13-axguard.sh` | `EAST_PASSWORD`、`SOUTH_PASSWORD`、`AUDITOR_PASSWORD`、`OPS_ADMIN_PASSWORD`、`ORDERS_BY_STATUS_QUERY_ID` |
 
 种子脚本只通过公开 API（以及 `sql_owner` 建立外部演示源库）写数据，重复执行幂等（按名称查找已存在对象并复用）。
 
@@ -200,6 +207,7 @@ gate_pass() { echo "GATE $1 PASS"; }
 | 模型草案 | `axpoint-llm/tests/schema_draft_eval.rs` | 供应链 3 个数据集 → 节点类型、关系、映射 | 录制回放 | 生成 Factory / Warehouse / Order 及两类关系，映射列全部存在 |
 | 智能体 | `axpoint-agent/tests/agent_eval/` | 20 条任务：工具选择、参数正确、多智能体委派、拒绝越权工具 | 录制回放 | 工具调用序列匹配 ≥ 90% |
 | 推演问数 | `axpoint-server/tests/sim_ask_eval/` | 15 条“如果……”问题 → 干预解析 | 录制回放 | 目标节点与指标、方式、数值全部正确 ≥ 90% |
+| AI 驾驶舱生成 | `axpoint-server/tests/dashboard_gen_eval/` | 10 条业务场景一句话描述 → 驾驶舱栅格布局与组件绑定草案 | 录制回放 | 组件 `widget_kind` 合法、引用的数据集 / 指标 / 节点类型全部存在 ≥ 90% |
 
 录制与回放：`AXPOINT_EVAL_RECORD=1` 时连接真实模型并把 `(提示 SHA-256 → 响应)` 追加写入 cassette；`AXPOINT_LLM_CASSETTE=<文件>` 时 `axpoint-llm` 只从 cassette 读取，未命中直接返回 `UPSTREAM_LLM` 错误（保证 CI 不出网）；`AXPOINT_EVAL_LIVE=1` 连接真实模型并打印准确率，不作为 CI 门槛。
 
