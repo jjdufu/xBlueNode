@@ -1,5 +1,6 @@
 # Generated deterministic test fixtures & templates
 /tests/fixtures/*
+!/tests/fixtures/__init__.py
 !/tests/fixtures/make_fixtures.py
 !/tests/fixtures/fixtures.sha256
 /tests/data/

@@ -252,9 +252,13 @@ define_str_enum! {
         Range => "RANGE",
         /// String values must match regular expression.
         Regex => "REGEX",
-        /// Values must belong to an allowed set.
+        /// Values must belong to an allowed set (`03-STEP02` canonical name).
+        AllowedValues => "ALLOWED_VALUES",
+        /// Values must belong to an allowed set (`A1` alias).
         EnumSet => "ENUM_SET",
-        /// Latest timestamp must be within freshness threshold.
+        /// Latest timestamp must be within freshness threshold (`03-STEP02` canonical name).
+        Freshness => "FRESHNESS",
+        /// Latest timestamp must be within freshness threshold (`A1` alias).
         FreshnessMinutes => "FRESHNESS_MINUTES",
         /// Table must contain at least minimum rows.
         RowCountMin => "ROW_COUNT_MIN",

@@ -89,7 +89,9 @@ export type QualityRuleKind =
   | "UNIQUE"
   | "RANGE"
   | "REGEX"
+  | "ALLOWED_VALUES"
   | "ENUM_SET"
+  | "FRESHNESS"
   | "FRESHNESS_MINUTES"
   | "ROW_COUNT_MIN";
 
@@ -156,6 +158,7 @@ export type GraphAlgo =
   | "PAGERANK"
   | "STRONGLY_CONNECTED"
   | "WEAKLY_CONNECTED"
+  | "CONNECTED_COMPONENTS"
   | "LABEL_PROPAGATION";
 
 export type AggFn =
