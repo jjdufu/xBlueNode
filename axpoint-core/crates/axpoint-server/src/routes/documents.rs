@@ -24,7 +24,8 @@ async fn ingest_text_handler(
     State(state): State<AppState>,
     Json(req): Json<IngestTextRequest>,
 ) -> Result<Json<IngestResponse>, HttpError> {
-    let resp = run_ingest_pipeline(&state, req).await?;
+    let tenant_id = default_tenant();
+    let resp = run_ingest_pipeline(&state, &tenant_id, req).await?;
     Ok(Json(resp))
 }
 
@@ -32,33 +33,39 @@ async fn upload_document_handler(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> Result<Json<IngestResponse>, HttpError> {
-    let mut tenant_id = default_tenant();
+    let tenant_id = default_tenant();
     let mut file_name = String::from("uploaded.pdf");
     let mut file_bytes: Option<Vec<u8>> = None;
 
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|err| HttpError(AppError::BadRequest(format!("multipart error: {err}"))))?
-    {
+    while let Some(field) = multipart.next_field().await.map_err(|err| {
+        HttpError(AppError::bad(
+            "INVALID_ARGUMENT",
+            format!("multipart error: {err}"),
+        ))
+    })? {
         let name = field.name().unwrap_or_default().to_owned();
         if name == "tenant_id" {
-            tenant_id = field.text().await.map_err(|err| {
-                HttpError(AppError::BadRequest(format!("invalid tenant_id: {err}")))
-            })?;
-        } else if name == "file" {
+            return Err(HttpError(AppError::bad(
+                "INVALID_ARGUMENT",
+                "tenant_id parameter is forbidden",
+            )));
+        }
+        if name == "file" {
             if let Some(orig) = field.file_name() {
                 file_name = orig.to_owned();
             }
             let bytes = field.bytes().await.map_err(|err| {
-                HttpError(AppError::BadRequest(format!("read file failed: {err}")))
+                HttpError(AppError::bad(
+                    "INVALID_ARGUMENT",
+                    format!("read file failed: {err}"),
+                ))
             })?;
             file_bytes = Some(bytes.to_vec());
         }
     }
 
     let raw_bytes = file_bytes
-        .ok_or_else(|| HttpError(AppError::BadRequest(String::from("missing 'file' field"))))?;
+        .ok_or_else(|| HttpError(AppError::bad("INVALID_ARGUMENT", "missing 'file' field")))?;
 
     let part = reqwest::multipart::Part::bytes(raw_bytes).file_name(file_name.clone());
     let form = reqwest::multipart::Form::new().part("file", part);
@@ -87,8 +94,8 @@ async fn upload_document_handler(
 
     let resp = run_ingest_pipeline(
         &state,
+        &tenant_id,
         IngestTextRequest {
-            tenant_id,
             title: parsed.title,
             source_name: file_name,
             content: parsed.markdown,
@@ -101,19 +108,22 @@ async fn upload_document_handler(
 
 async fn run_ingest_pipeline(
     state: &AppState,
+    tenant_id: &str,
     req: IngestTextRequest,
 ) -> Result<IngestResponse, AppError> {
     if req.content.trim().is_empty() {
-        return Err(AppError::BadRequest(String::from(
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
             "document content is empty",
-        )));
+        ));
     }
 
     let chunks = split_paragraphs(&req.content, 900);
     if chunks.is_empty() {
-        return Err(AppError::BadRequest(String::from(
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
             "no valid paragraphs found",
-        )));
+        ));
     }
 
     let (vectors, embed_dim) = state.ai.embed_batch(&chunks).await?;
@@ -144,7 +154,7 @@ async fn run_ingest_pipeline(
     let commit_res = state
         .store
         .ingest_document(DocumentIngestPayload {
-            tenant_id: req.tenant_id,
+            tenant_id: tenant_id.to_owned(),
             title: req.title,
             source_name: req.source_name,
             summary,
@@ -171,11 +181,13 @@ async fn chat_query_handler(
     Json(req): Json<ChatQueryRequest>,
 ) -> Result<Json<ChatQueryResponse>, HttpError> {
     if req.query.trim().is_empty() {
-        return Err(HttpError(AppError::BadRequest(String::from(
+        return Err(HttpError(AppError::bad(
+            "INVALID_ARGUMENT",
             "query cannot be empty",
-        ))));
+        )));
     }
 
+    let tenant_id = default_tenant();
     let started = Instant::now();
 
     let (embed_res, seed_entities) = tokio::join!(
@@ -187,10 +199,10 @@ async fn chat_query_handler(
     let seeds = seed_entities.unwrap_or_default();
 
     let (vec_res, bm25_res, ent_res, hop_res) = tokio::join!(
-        state.store.recall_vector(&req.tenant_id, q_vec, q_dim, 12),
-        state.store.recall_bm25(&req.tenant_id, &req.query, 12),
-        state.store.recall_entity_link(&req.tenant_id, &seeds, 10),
-        state.store.recall_multi_hop(&req.tenant_id, &seeds, 10)
+        state.store.recall_vector(&tenant_id, q_vec, q_dim, 12),
+        state.store.recall_bm25(&tenant_id, &req.query, 12),
+        state.store.recall_entity_link(&tenant_id, &seeds, 10),
+        state.store.recall_multi_hop(&tenant_id, &seeds, 10)
     );
 
     let mut all_candidates = Vec::new();
@@ -202,7 +214,7 @@ async fn chat_query_handler(
     let seed_para_ids: Vec<Uuid> = all_candidates.iter().take(4).map(|c| c.para_id).collect();
     let ctx_res = state
         .store
-        .recall_context(&req.tenant_id, &seed_para_ids, 6)
+        .recall_context(&tenant_id, &seed_para_ids, 6)
         .await?;
     all_candidates.extend(ctx_res);
 

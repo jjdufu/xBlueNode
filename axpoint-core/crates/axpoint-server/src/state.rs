@@ -44,12 +44,31 @@ impl From<AppError> for HttpError {
 
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
-        let status = match self.0 {
-            AppError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            AppError::Config(_) | AppError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            AppError::Llm(_) | AppError::Parser(_) => StatusCode::BAD_GATEWAY,
+        let status = match &self.0 {
+            AppError::BadRequest { .. } => StatusCode::BAD_REQUEST,
+            AppError::Unauthorized(_) => StatusCode::UNAUTHORIZED,
+            AppError::Forbidden(_) => StatusCode::FORBIDDEN,
+            AppError::NotFound(_) => StatusCode::NOT_FOUND,
+            AppError::Conflict(_) => StatusCode::CONFLICT,
+            AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
+            AppError::Unsupported(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            AppError::Unprocessable { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            AppError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            AppError::Config(raw) | AppError::Database(raw) => {
+                tracing::error!(error = %raw, "internal server error");
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+            AppError::Llm(_) | AppError::Parser(_) | AppError::Upstream(_) => {
+                StatusCode::BAD_GATEWAY
+            }
+            AppError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
         };
-        let body = serde_json::json!({ "error": self.0.to_string() });
+        let trace_id = uuid::Uuid::new_v4().simple().to_string();
+        let body = serde_json::json!({
+            "error_code": self.0.error_code(),
+            "message": self.0.client_message(),
+            "trace_id": trace_id,
+        });
         (status, Json(body)).into_response()
     }
 }

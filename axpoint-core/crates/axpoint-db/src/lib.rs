@@ -1,5 +1,6 @@
 //! PostgreSQL (`pgvector` + hypergraph) persistence and five-way retrieval store.
 
+pub mod tenant;
 pub mod topology;
 
 use axpoint_domain::{
@@ -101,8 +102,9 @@ impl PgStore {
             .await
             .map_err(|err| AppError::Database(format!("begin tx failed: {err}")))?;
 
-        let dim_i32 = i32::try_from(payload.embed_dim)
-            .map_err(|err| AppError::BadRequest(format!("invalid embedding dim: {err}")))?;
+        let dim_i32 = i32::try_from(payload.embed_dim).map_err(|err| {
+            AppError::bad("INVALID_ARGUMENT", format!("invalid embedding dim: {err}"))
+        })?;
 
         let doc_row = sqlx::query(
             "INSERT INTO hg_docs (tenant_id, title, source_name, summary)
@@ -323,8 +325,9 @@ impl PgStore {
         dim: usize,
         limit: i64,
     ) -> Result<Vec<ChannelCandidate>, AppError> {
-        let dim_i32 = i32::try_from(dim)
-            .map_err(|err| AppError::BadRequest(format!("invalid embedding dim: {err}")))?;
+        let dim_i32 = i32::try_from(dim).map_err(|err| {
+            AppError::bad("INVALID_ARGUMENT", format!("invalid embedding dim: {err}"))
+        })?;
 
         let rows = sqlx::query(
             "SELECT p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,

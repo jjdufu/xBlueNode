@@ -5,7 +5,7 @@ use axum::extract::{Query, State};
 use axum::routing::get;
 use axum::{Json, Router};
 
-use crate::state::{AppState, HttpError, TenantQuery};
+use crate::state::{AppState, HttpError, TenantQuery, default_tenant};
 
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
@@ -31,7 +31,8 @@ async fn save_schema_handler(
     State(state): State<AppState>,
     Json(req): Json<SaveXBlueSchemaRequest>,
 ) -> Result<Json<XBlueSchema>, HttpError> {
-    let schema = state.store.save_xblue_schema(req).await?;
+    let tenant_id = default_tenant();
+    let schema = state.store.save_xblue_schema(&tenant_id, req).await?;
     Ok(Json(schema))
 }
 
@@ -47,6 +48,7 @@ async fn upsert_node_handler(
     State(state): State<AppState>,
     Json(req): Json<UpsertBlueNodeRequest>,
 ) -> Result<Json<BlueNode>, HttpError> {
-    let node = state.store.upsert_blue_node(req).await?;
+    let tenant_id = default_tenant();
+    let node = state.store.upsert_blue_node(&tenant_id, req).await?;
     Ok(Json(node))
 }

@@ -80,6 +80,7 @@ impl PgStore {
     /// Returns [`AppError::Database`] if any upsert or commit fails.
     pub async fn save_xblue_schema(
         &self,
+        tenant_id: &str,
         req: SaveXBlueSchemaRequest,
     ) -> Result<XBlueSchema, AppError> {
         let mut tx = self
@@ -89,10 +90,12 @@ impl PgStore {
             .map_err(|err| AppError::Database(format!("begin schema tx failed: {err}")))?;
 
         for nt in req.node_types {
-            let props_json = serde_json::to_value(&nt.properties)
-                .map_err(|err| AppError::BadRequest(format!("invalid properties: {err}")))?;
-            let rules_json = serde_json::to_value(&nt.agg_rules)
-                .map_err(|err| AppError::BadRequest(format!("invalid agg_rules: {err}")))?;
+            let props_json = serde_json::to_value(&nt.properties).map_err(|err| {
+                AppError::bad("INVALID_ARGUMENT", format!("invalid properties: {err}"))
+            })?;
+            let rules_json = serde_json::to_value(&nt.agg_rules).map_err(|err| {
+                AppError::bad("INVALID_ARGUMENT", format!("invalid agg_rules: {err}"))
+            })?;
 
             sqlx::query(
                 "INSERT INTO xb_node_types (tenant_id, name, display_name, properties, agg_rules, pos_x, pos_y)
@@ -104,7 +107,7 @@ impl PgStore {
                     pos_x = EXCLUDED.pos_x,
                     pos_y = EXCLUDED.pos_y",
             )
-            .bind(&req.tenant_id)
+            .bind(tenant_id)
             .bind(nt.name.trim())
             .bind(nt.display_name.trim())
             .bind(props_json)
@@ -123,7 +126,7 @@ impl PgStore {
                  ON CONFLICT (tenant_id, name, src_type_name, dst_type_name) DO UPDATE SET
                     impact_weight = EXCLUDED.impact_weight",
             )
-            .bind(&req.tenant_id)
+            .bind(tenant_id)
             .bind(et.name.trim())
             .bind(et.src_type_name.trim())
             .bind(et.dst_type_name.trim())
@@ -137,7 +140,7 @@ impl PgStore {
             .await
             .map_err(|err| AppError::Database(format!("commit schema tx failed: {err}")))?;
 
-        self.get_xblue_schema(&req.tenant_id).await
+        self.get_xblue_schema(tenant_id).await
     }
 
     /// Lists runtime `BlueNode`s and `BlueLink`s for a tenant.
@@ -197,9 +200,13 @@ impl PgStore {
     ///
     /// # Errors
     /// Returns [`AppError::Database`] if the upsert or link creation fails.
-    pub async fn upsert_blue_node(&self, req: UpsertBlueNodeRequest) -> Result<BlueNode, AppError> {
+    pub async fn upsert_blue_node(
+        &self,
+        tenant_id: &str,
+        req: UpsertBlueNodeRequest,
+    ) -> Result<BlueNode, AppError> {
         let metrics_json = serde_json::to_value(&req.metrics)
-            .map_err(|err| AppError::BadRequest(format!("invalid metrics: {err}")))?;
+            .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid metrics: {err}")))?;
 
         let row = sqlx::query(
             "INSERT INTO xb_nodes (tenant_id, type_name, node_key, title, metrics)
@@ -210,7 +217,7 @@ impl PgStore {
                 updated_at = NOW()
              RETURNING id",
         )
-        .bind(&req.tenant_id)
+        .bind(tenant_id)
         .bind(req.type_name.trim())
         .bind(req.node_key.trim())
         .bind(req.title.trim())
@@ -228,7 +235,7 @@ impl PgStore {
                 "INSERT INTO xb_links (tenant_id, link_type, src_node_id, dst_node_id, weight)
                  VALUES ($1, $2, $3, $4, $5)",
             )
-            .bind(&req.tenant_id)
+            .bind(tenant_id)
             .bind(ltype)
             .bind(node_id)
             .bind(target_id)
@@ -282,16 +289,20 @@ impl PgStore {
     ///
     /// # Errors
     /// Returns [`AppError::Database`] if inserting the flow fails.
-    pub async fn create_ax_flow(&self, req: CreateAxFlowRequest) -> Result<AxFlowDef, AppError> {
+    pub async fn create_ax_flow(
+        &self,
+        tenant_id: &str,
+        req: CreateAxFlowRequest,
+    ) -> Result<AxFlowDef, AppError> {
         let steps_json = serde_json::to_value(&req.steps)
-            .map_err(|err| AppError::BadRequest(format!("invalid steps: {err}")))?;
+            .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid steps: {err}")))?;
 
         let row = sqlx::query(
             "INSERT INTO ax_flows (tenant_id, name, description, steps, status)
              VALUES ($1, $2, $3, $4, 'PUBLISHED')
              RETURNING id",
         )
-        .bind(&req.tenant_id)
+        .bind(tenant_id)
         .bind(req.name.trim())
         .bind(req.description.trim())
         .bind(steps_json)
@@ -312,7 +323,7 @@ impl PgStore {
     /// Executes an `AxFlow` pipeline and updates `last_run_at`.
     ///
     /// # Errors
-    /// Returns [`AppError::Database`] or [`AppError::BadRequest`] if the flow is missing.
+    /// Returns [`AppError::Database`] or [`AppError::NotFound`] if the flow is missing.
     pub async fn run_ax_flow(
         &self,
         tenant_id: &str,
@@ -328,7 +339,7 @@ impl PgStore {
         .fetch_optional(self.pool())
         .await
         .map_err(|err| AppError::Database(format!("run ax_flow query failed: {err}")))?
-        .ok_or_else(|| AppError::BadRequest(String::from("flow not found")))?;
+        .ok_or(AppError::NotFound("FLOW_NOT_FOUND"))?;
 
         let steps_val: serde_json::Value = row.get("steps");
         let steps: Vec<AxFlowStep> = serde_json::from_value(steps_val).unwrap_or_default();
@@ -396,20 +407,25 @@ impl PgStore {
     /// Returns [`AppError::Database`] if snapshotting or inserting fails.
     pub async fn create_ax_sandbox(
         &self,
+        tenant_id: &str,
         req: CreateAxSandboxRequest,
     ) -> Result<AxSandboxRecord, AppError> {
-        let snap = self.get_runtime_snapshot(&req.tenant_id).await?;
+        let snap = self.get_runtime_snapshot(tenant_id).await?;
         let node_count = snap.nodes.len();
         let link_count = snap.links.len();
-        let snap_json = serde_json::to_value(&snap)
-            .map_err(|err| AppError::BadRequest(format!("snapshot serialize failed: {err}")))?;
+        let snap_json = serde_json::to_value(&snap).map_err(|err| {
+            AppError::bad(
+                "INVALID_ARGUMENT",
+                format!("snapshot serialize failed: {err}"),
+            )
+        })?;
 
         let row = sqlx::query(
             "INSERT INTO ax_sandboxes (tenant_id, name, base_snapshot)
              VALUES ($1, $2, $3)
              RETURNING id, created_at",
         )
-        .bind(&req.tenant_id)
+        .bind(tenant_id)
         .bind(req.name.trim())
         .bind(snap_json)
         .fetch_one(self.pool())
@@ -430,7 +446,7 @@ impl PgStore {
     /// Runs causal propagation on an `AxSim` sandbox's cloned snapshot.
     ///
     /// # Errors
-    /// Returns [`AppError::Database`] or [`AppError::BadRequest`] if the sandbox is missing.
+    /// Returns [`AppError::Database`] or [`AppError::NotFound`] if the sandbox is missing.
     pub async fn simulate_ax_sandbox(
         &self,
         tenant_id: &str,
@@ -444,7 +460,7 @@ impl PgStore {
                 .fetch_optional(self.pool())
                 .await
                 .map_err(|err| AppError::Database(format!("load ax_sandbox failed: {err}")))?
-                .ok_or_else(|| AppError::BadRequest(String::from("sandbox not found")))?;
+                .ok_or(AppError::NotFound("SANDBOX_NOT_FOUND"))?;
 
         let snap_val: serde_json::Value = row.get("base_snapshot");
         let snap: AxSimSnapshot = serde_json::from_value(snap_val)
@@ -452,9 +468,10 @@ impl PgStore {
 
         let sim_res = simulate_causal_propagation(&snap, &actions);
         let actions_json = serde_json::to_value(&actions)
-            .map_err(|err| AppError::BadRequest(format!("invalid actions: {err}")))?;
-        let res_json = serde_json::to_value(&sim_res)
-            .map_err(|err| AppError::BadRequest(format!("invalid sim result: {err}")))?;
+            .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid actions: {err}")))?;
+        let res_json = serde_json::to_value(&sim_res).map_err(|err| {
+            AppError::bad("INVALID_ARGUMENT", format!("invalid sim result: {err}"))
+        })?;
 
         sqlx::query(
             "UPDATE ax_sandboxes SET actions = $1, sim_result = $2 WHERE id = $3 AND tenant_id = $4",
@@ -478,25 +495,34 @@ impl axpoint_domain::ports::TopologyRepository for PgStore {
 
     async fn save_xblue_schema(
         &self,
+        tenant_id: &str,
         req: SaveXBlueSchemaRequest,
     ) -> Result<XBlueSchema, AppError> {
-        Self::save_xblue_schema(self, req).await
+        Self::save_xblue_schema(self, tenant_id, req).await
     }
 
     async fn get_runtime_snapshot(&self, tenant_id: &str) -> Result<AxSimSnapshot, AppError> {
         Self::get_runtime_snapshot(self, tenant_id).await
     }
 
-    async fn upsert_blue_node(&self, req: UpsertBlueNodeRequest) -> Result<BlueNode, AppError> {
-        Self::upsert_blue_node(self, req).await
+    async fn upsert_blue_node(
+        &self,
+        tenant_id: &str,
+        req: UpsertBlueNodeRequest,
+    ) -> Result<BlueNode, AppError> {
+        Self::upsert_blue_node(self, tenant_id, req).await
     }
 
     async fn list_ax_flows(&self, tenant_id: &str) -> Result<Vec<AxFlowDef>, AppError> {
         Self::list_ax_flows(self, tenant_id).await
     }
 
-    async fn create_ax_flow(&self, req: CreateAxFlowRequest) -> Result<AxFlowDef, AppError> {
-        Self::create_ax_flow(self, req).await
+    async fn create_ax_flow(
+        &self,
+        tenant_id: &str,
+        req: CreateAxFlowRequest,
+    ) -> Result<AxFlowDef, AppError> {
+        Self::create_ax_flow(self, tenant_id, req).await
     }
 
     async fn run_ax_flow(
@@ -513,9 +539,10 @@ impl axpoint_domain::ports::TopologyRepository for PgStore {
 
     async fn create_ax_sandbox(
         &self,
+        tenant_id: &str,
         req: CreateAxSandboxRequest,
     ) -> Result<AxSandboxRecord, AppError> {
-        Self::create_ax_sandbox(self, req).await
+        Self::create_ax_sandbox(self, tenant_id, req).await
     }
 
     async fn simulate_ax_sandbox(
