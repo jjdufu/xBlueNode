@@ -1,11 +1,12 @@
 //! Shared application state, uniform three-field `HttpError`, and strict request extractors.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use axpoint_db::PgStore;
 use axpoint_domain::AppError;
 use axpoint_llm::AiGateway;
-use axpoint_security::{AuditWriter, Authenticator};
+use axpoint_security::{AuditWriter, Authenticator, CredentialKeyring};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{FromRequest, FromRequestParts, Path, Query, Request};
@@ -15,6 +16,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::sidecar::HttpSidecarClient;
 use crate::telemetry::current_trace_id;
 
 /// Shared `AxPoint` Core application state injected into Axum handlers.
@@ -24,6 +26,9 @@ pub(crate) struct AppState {
     pub(crate) ai: AiGateway,
     pub(crate) authenticator: Arc<Authenticator<PgStore>>,
     pub(crate) audit: AuditWriter,
+    pub(crate) keyring: Arc<CredentialKeyring>,
+    pub(crate) sidecar: Arc<HttpSidecarClient>,
+    pub(crate) data_root: PathBuf,
     pub(crate) parser_base_url: String,
     pub(crate) http: reqwest::Client,
 }

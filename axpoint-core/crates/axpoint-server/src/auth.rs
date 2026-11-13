@@ -15,6 +15,18 @@ impl FromRequestParts<AppState> for AuthPrincipal {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
+        if let Some(raw_query) = parts.uri.query() {
+            for pair in raw_query.split('&') {
+                let key = pair.split('=').next().unwrap_or_default();
+                if key == "tenant_id" {
+                    return Err(HttpError(AppError::bad(
+                        "INVALID_ARGUMENT",
+                        "tenant_id query parameter is forbidden",
+                    )));
+                }
+            }
+        }
+
         let auth_header = match parts.headers.get(AUTHORIZATION) {
             Some(raw) => {
                 let s = raw

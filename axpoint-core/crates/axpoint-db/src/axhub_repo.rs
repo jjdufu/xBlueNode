@@ -2668,13 +2668,16 @@ async fn apply_sync_job_and_dataset_stats_tx(
     let prev_schema_ver: i32 = ds_row.get("schema_version");
     let prev_schema_json: serde_json::Value = ds_row.get("schema_json");
 
-    let new_row_count = match sync_mode {
-        SyncMode::Snapshot => result.rows_written.max(0),
-        SyncMode::Append | SyncMode::Upsert => prev_row_count
-            .saturating_add(result.rows_written)
-            .saturating_sub(result.rows_deleted)
-            .max(0),
-    };
+    let new_row_count = result.total_rows.map_or_else(
+        || match sync_mode {
+            SyncMode::Snapshot => result.rows_written.max(0),
+            SyncMode::Append | SyncMode::Upsert => prev_row_count
+                .saturating_add(result.rows_written)
+                .saturating_sub(result.rows_deleted)
+                .max(0),
+        },
+        |n| n.max(0),
+    );
     let new_cursor = result.cursor_to.clone().or(prev_cursor);
     let schema_changed =
         (prev_schema_ver == 0 && !result.schema.is_empty()) || result.schema_change.has_changes();

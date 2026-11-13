@@ -146,9 +146,14 @@ export function XBlueGraphPage() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const sub = await xblueApi
-        .querySubgraph({ limit: 200 })
+      let sub = await xblueApi
+        .querySubgraph({ type_names: "Factory,Warehouse", limit: 200 })
         .catch(() => ({ nodes: [], links: [], truncated: false }));
+      if (!Array.isArray(sub?.nodes) || sub.nodes.length === 0) {
+        sub = await xblueApi
+          .querySubgraph({ limit: 200 })
+          .catch(() => ({ nodes: [], links: [], truncated: false }));
+      }
       const subNodes = Array.isArray(sub?.nodes) ? sub.nodes : [];
       const subLinks = Array.isArray(sub?.links) ? sub.links : [];
 

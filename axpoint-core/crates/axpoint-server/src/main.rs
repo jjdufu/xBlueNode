@@ -3,25 +3,29 @@
 mod auth;
 mod background;
 mod routes;
+mod sidecar;
 mod spa;
 mod state;
 mod telemetry;
+mod workers;
 
 use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axpoint_db::PgStore;
 use axpoint_domain::AppError;
 use axpoint_llm::{AiGateway, EmbeddingConfig, LlmConfig};
-use axpoint_security::{AuditWriter, Authenticator};
+use axpoint_security::{AuditWriter, Authenticator, CredentialKeyring};
 use reqwest::header::{HeaderMap, HeaderValue};
 use sqlx::Connection as _;
 use sqlx::PgConnection;
 use sqlx::postgres::PgPoolOptions;
 use tracing::info;
 
+use crate::sidecar::HttpSidecarClient;
 use crate::state::AppState;
 
 /// Default maximum multipart upload body limit in megabytes (`AXPOINT_MAX_UPLOAD_MB`).
@@ -49,12 +53,17 @@ async fn main() -> Result<(), AppError> {
         env::var("PARSER_BASE_URL").unwrap_or_else(|_| String::from("http://127.0.0.1:8001"));
     let web_dist_dir =
         env::var("WEB_DIST_DIR").unwrap_or_else(|_| String::from("../xbluenode-web/dist"));
+    let data_root = PathBuf::from(
+        env::var("AXPOINT_DATA_ROOT").unwrap_or_else(|_| String::from("/var/lib/axpoint")),
+    );
 
     maybe_run_migrations_on_start().await?;
 
     let max_upload_bytes = parse_max_upload_bytes()?;
     let http = build_sidecar_http_client()?;
     let (llm_cfg, embed_cfg) = load_ai_configs()?;
+    let keyring = Arc::new(CredentialKeyring::from_env()?);
+    let sidecar = Arc::new(HttpSidecarClient::new(&parser_base_url, http.clone()));
 
     let pool = PgPoolOptions::new()
         .max_connections(16)
@@ -63,19 +72,25 @@ async fn main() -> Result<(), AppError> {
         .map_err(|err| AppError::Database(format!("postgres connection failed: {err}")))?;
 
     let store = PgStore::new(pool);
+    if let Err(err) = store.ensure_metric_partitions(24, 3).await {
+        tracing::warn!(error = %err, "startup ensure_metric_partitions skipped");
+    }
+
     let authenticator = Arc::new(Authenticator::from_env(store.clone())?);
     let audit = AuditWriter::new(store.clone());
-
-    background::spawn_background_workers(store.clone());
 
     let state = AppState {
         store,
         ai: AiGateway::new(llm_cfg, embed_cfg),
         authenticator,
         audit,
+        keyring,
+        sidecar,
+        data_root,
         parser_base_url,
         http,
     };
+    background::spawn_background_workers(&state);
     let shutdown_audit = state.audit.clone();
 
     let app = spa::build_app(state, &web_dist_dir, max_upload_bytes);
@@ -241,10 +256,11 @@ mod tests {
     use axpoint_db::PgStore;
     use axpoint_domain::AppError;
     use axpoint_llm::{AiGateway, EmbeddingConfig, LlmConfig};
-    use axpoint_security::{AuditWriter, Authenticator};
+    use axpoint_security::{AuditWriter, Authenticator, CredentialKeyring};
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
+    use crate::sidecar::HttpSidecarClient;
     use crate::spa::build_app;
     use crate::state::AppState;
 
@@ -274,13 +290,20 @@ mod tests {
                 configured_dim: Some(64),
             },
         );
+        let http = reqwest::Client::new();
+        let parser_base_url = String::from("http://127.0.0.1:8001");
+        let keyring = Arc::new(CredentialKeyring::ephemeral()?);
+        let sidecar = Arc::new(HttpSidecarClient::new(&parser_base_url, http.clone()));
         Ok(AppState {
             store,
             ai,
             authenticator,
             audit,
-            parser_base_url: String::from("http://127.0.0.1:8001"),
-            http: reqwest::Client::new(),
+            keyring,
+            sidecar,
+            data_root: std::env::temp_dir(),
+            parser_base_url,
+            http,
         })
     }
 

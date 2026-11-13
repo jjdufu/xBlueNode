@@ -121,6 +121,16 @@ async fn run_ingest_pipeline(
     tenant_id: &str,
     req: IngestTextRequest,
 ) -> Result<IngestResponse, AppError> {
+    ingest_text_with_deps(&state.store, &state.ai, tenant_id, req).await
+}
+
+/// Runs the hypergraph text ingestion pipeline (`split_paragraphs` -> `embed_batch` -> `extract_triples` -> `ingest_document`).
+pub(crate) async fn ingest_text_with_deps(
+    store: &axpoint_db::PgStore,
+    ai: &axpoint_llm::AiGateway,
+    tenant_id: &str,
+    req: IngestTextRequest,
+) -> Result<IngestResponse, AppError> {
     if req.content.trim().is_empty() {
         return Err(AppError::bad(
             "INVALID_ARGUMENT",
@@ -136,11 +146,11 @@ async fn run_ingest_pipeline(
         ));
     }
 
-    let (vectors, embed_dim) = state.ai.embed_batch(&chunks).await?;
+    let (vectors, embed_dim) = ai.embed_batch(&chunks).await?;
     let mut para_inputs = Vec::with_capacity(chunks.len());
 
     for (idx, (chunk, vec)) in chunks.into_iter().zip(vectors).enumerate() {
-        let triples = match state.ai.extract_triples(&chunk).await {
+        let triples = match ai.extract_triples(&chunk).await {
             Ok(t) => t,
             Err(err) => {
                 warn!("triple extraction skipped for chunk {idx}: {err}");
@@ -161,19 +171,25 @@ async fn run_ingest_pipeline(
         .map_or_default(|p| p.content.chars().take(200).collect::<String>());
 
     let title_clone = req.title.clone();
-    let commit_res = state
-        .store
+    let commit_res = store
         .ingest_document(DocumentIngestPayload {
             tenant_id: tenant_id.to_owned(),
             title: req.title,
             source_name: req.source_name,
             summary,
             doc_embedding: None,
-            embed_model: state.ai.embedding_model_name().to_owned(),
+            embed_model: ai.embedding_model_name().to_owned(),
             embed_dim,
             paras: para_inputs,
         })
         .await?;
+
+    let _ = axpoint_domain::ports::GraphStorePort::resolve_entity_links(
+        store,
+        tenant_id,
+        axpoint_domain::graph::ResolveEntitiesRequest::default(),
+    )
+    .await;
 
     Ok(IngestResponse {
         doc_id: commit_res.doc_id,
@@ -181,7 +197,7 @@ async fn run_ingest_pipeline(
         para_count: commit_res.para_count,
         entity_count: commit_res.entity_count,
         edge_count: commit_res.edge_count,
-        embedding_model: state.ai.embedding_model_name().to_owned(),
+        embedding_model: ai.embedding_model_name().to_owned(),
         embedding_dim: embed_dim,
     })
 }

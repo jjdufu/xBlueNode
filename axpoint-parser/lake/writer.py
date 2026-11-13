@@ -418,6 +418,8 @@ def _write_df_to_ducklake(
             raise
 
         snap_id = _current_snapshot_id(con)
+        total_cnt_row = con.execute(f"SELECT count(*) FROM {full_tbl}").fetchone()
+        total_rows = int(total_cnt_row[0]) if total_cnt_row else 0
 
         # Re-compute user column profiles on latest committed data (up to 100k sample)
         if resolved_schema:
@@ -451,6 +453,7 @@ def _write_df_to_ducklake(
             rows_read=rows_read,
             rows_written=rows_written,
             rows_deleted=rows_deleted,
+            total_rows=total_rows,
             cursor_to=final_cursor_to,
             stream_offsets=stream_offsets,
             snapshot_id=snap_id,

@@ -312,6 +312,7 @@ class SyncResult(BaseModel):
     rows_read: int
     rows_written: int
     rows_deleted: int
+    total_rows: int | None = None
     cursor_to: str | None = None
     stream_offsets: dict[str, str] = Field(default_factory=dict)
     snapshot_id: int
