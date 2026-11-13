@@ -1,19 +1,17 @@
-"""Document-to-Markdown parsing engine for AxPoint Parser Sidecar."""
-
 from __future__ import annotations
 
+import io
 import os
 import tempfile
 from pathlib import Path
-from typing import Tuple
+
+from settings import get_model_path
 
 DEFAULT_MODEL_PATH = os.getenv("AXPOINT_MODEL_PATH", "/var/lib/axpoint/models")
 
 
-def parse_bytes_to_markdown(filename: str, content: bytes) -> Tuple[str, str, str]:
-    """
-    Convert uploaded file bytes into (title, markdown, engine_used).
-    """
+def parse_bytes_to_markdown(filename: str, content: bytes) -> tuple[str, str, str]:
+    """Convert uploaded file bytes into (title, markdown, engine_used)."""
     path = Path(filename)
     suffix = path.suffix.lower()
     title = path.stem or "untitled"
@@ -52,15 +50,16 @@ def _parse_with_docling(suffix: str, content: bytes) -> str:
         WordFormatOption,
     )
 
-    easyocr_dir = os.path.join(DEFAULT_MODEL_PATH, "easyocr")
-    doc2md_dir = os.path.join(DEFAULT_MODEL_PATH, "doc2md")
+    model_root = get_model_path()
+    easyocr_dir = model_root / "easyocr"
+    doc2md_dir = model_root / "doc2md"
 
     easyocr_options = EasyOcrOptions()
-    if os.path.isdir(easyocr_dir):
-        easyocr_options.model_storage_directory = easyocr_dir
+    if easyocr_dir.is_dir():
+        easyocr_options.model_storage_directory = str(easyocr_dir)
 
     pdf_options = PdfPipelineOptions(
-        artifacts_path=doc2md_dir if os.path.isdir(doc2md_dir) else None
+        artifacts_path=str(doc2md_dir) if doc2md_dir.is_dir() else None
     )
     pdf_options.ocr_options = easyocr_options
     pdf_options.do_ocr = True
@@ -78,15 +77,14 @@ def _parse_with_docling(suffix: str, content: bytes) -> str:
         tmp.write(content)
         tmp.flush()
         result = converter.convert(tmp.name)
-        return result.document.export_to_markdown()
+        return str(result.document.export_to_markdown())
 
 
 def _parse_pdf_pypdf(content: bytes) -> str:
-    import io
     from pypdf import PdfReader
 
     reader = PdfReader(io.BytesIO(content))
-    pages = []
+    pages: list[str] = []
     for idx, page in enumerate(reader.pages, start=1):
         txt = (page.extract_text() or "").strip()
         if txt:
