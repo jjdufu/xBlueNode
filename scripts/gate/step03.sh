@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-(cd axpoint-core && cargo test -p axpoint-domain algo graph && cargo test -p axpoint-db nodes metrics rollup graph_query entity_link)
+(cd "$ROOT/axpoint-core" && for f in algo graph; do cargo test -p axpoint-domain "$f"; done && for f in nodes metrics rollup graph_query entity_link; do cargo test -p axpoint-db "$f"; done)
 
 # 幂等写入：重复写同一关系不产生重复
 api POST /api/xblue/links "{\"link_type\":\"FULFILLS\",\"src_node_id\":\"$WAREHOUSE_NODE_ID\",\"dst_node_id\":\"$ORDER1_NODE_ID\",\"weight\":0.8}" >/dev/null

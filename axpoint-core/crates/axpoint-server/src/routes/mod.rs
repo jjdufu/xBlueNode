@@ -2,11 +2,15 @@
 
 mod auth;
 mod axflow;
+mod axhub;
 mod axops;
 mod axsim;
 mod documents;
 mod system;
 mod xblue;
+
+pub(crate) use axhub::{open_secret_map, sanitize_dataset_prefix, to_six_field_cron};
+pub(crate) use documents::ingest_text_with_deps;
 
 use axpoint_domain::AppError;
 use axum::Router;
@@ -18,6 +22,7 @@ pub(crate) fn api_router(state: AppState) -> Router {
         .merge(system::router())
         .merge(auth::router())
         .merge(documents::router())
+        .merge(axhub::router())
         .merge(xblue::router())
         .merge(axflow::router())
         .merge(axsim::router())

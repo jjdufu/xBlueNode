@@ -231,6 +231,7 @@ async fn verify_axhub_sync_and_catalog(store: &PgStore, t1: &str, ds_id: Uuid) -
         rows_read: 100,
         rows_written: 100,
         rows_deleted: 0,
+        total_rows: None,
         cursor_to: Some(String::from("2026-01-01T00:00:00Z")),
         stream_offsets: BTreeMap::new(),
         snapshot_id: 1,

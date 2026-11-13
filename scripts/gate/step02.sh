@@ -10,7 +10,7 @@ source "$(dirname "$0")/lib.sh"
 # 连接与秘密不回显
 expect_json "conn-ok"        "$(api POST /api/axhub/connections/$DEMO_PG_CONN_ID/test)" '.ok == true'
 expect_json "secret-hidden"  "$(api GET /api/axhub/connections/$DEMO_PG_CONN_ID)" '(.config | has("password") | not) and (.secret_fields_set | index("password") != null)'
-expect_eq   "cipher-at-rest" "$(sql_owner "SELECT count(*) FROM ds_credentials WHERE convert_from(ciphertext,'LATIN1') LIKE '%axpoint%'")" "0"
+expect_eq   "cipher-at-rest" "$(sql_owner "SELECT count(*) FROM ds_credentials WHERE position('axpoint'::bytea in ciphertext) > 0")" "0"
 
 # 同步与幂等
 JOB=$(api POST /api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/sync | jq -r .job_id)

@@ -1130,6 +1130,9 @@ pub struct SidecarSyncResult {
     pub rows_written: i64,
     /// Rows deleted in lake.
     pub rows_deleted: i64,
+    /// Exact total live row count in the committed `DuckLake` table, when reported.
+    #[serde(default)]
+    pub total_rows: Option<i64>,
     /// Maximum cursor value observed.
     pub cursor_to: Option<String>,
     /// Updated stream offsets.

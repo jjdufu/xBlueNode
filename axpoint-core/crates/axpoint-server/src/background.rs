@@ -25,7 +25,13 @@ const JOB_LEASE_SECS: u32 = 60;
 const JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
 
 /// Poll interval when no `ax_jobs` work was found on the previous iteration.
-const JOB_IDLE_POLL: Duration = Duration::from_secs(2);
+const JOB_IDLE_POLL: Duration = Duration::from_millis(250);
+
+/// Extended lease duration in seconds for long-running `SYNC_DATASET` / `PARSE_FILE` jobs (`03-STEP02` §02.5).
+const SYNC_JOB_LEASE_SECS: u32 = 3600;
+
+/// Heartbeat interval for long-running sync jobs (`60s` < `3600s` lease).
+const SYNC_JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Outbox fallback polling interval alongside `LISTEN ax_outbox`.
 const OUTBOX_POLL_INTERVAL: Duration = Duration::from_secs(5);
@@ -78,8 +84,9 @@ impl JobHandler for RetentionJobHandler {
     }
 }
 
-/// Spawns `JobWorker` tasks (`AXPOINT_WORKERS`, default `4`), `OutboxDispatcher`, and the singleton retention scheduler.
-pub(crate) fn spawn_background_workers(store: PgStore) {
+/// Spawns `JobWorker` tasks (`AXPOINT_WORKERS`, default `4`), `OutboxDispatcher`, and singleton schedulers.
+pub(crate) fn spawn_background_workers(state: &crate::state::AppState) {
+    let store = state.store.clone();
     let worker_count = env::var("AXPOINT_WORKERS")
         .ok()
         .and_then(|s| s.trim().parse::<usize>().ok())
@@ -91,6 +98,50 @@ pub(crate) fn spawn_background_workers(store: PgStore) {
         JobKind::Retention,
         Arc::new(RetentionJobHandler {
             store: store.clone(),
+        }),
+    );
+    registry.register(
+        JobKind::SyncDataset,
+        Arc::new(crate::workers::SyncDatasetHandler {
+            store: store.clone(),
+            keyring: Arc::clone(&state.keyring),
+            sidecar: Arc::clone(&state.sidecar),
+        }),
+    );
+    registry.register(
+        JobKind::ParseFile,
+        Arc::new(crate::workers::ParseFileHandler {
+            store: store.clone(),
+            ai: state.ai.clone(),
+            sidecar: Arc::clone(&state.sidecar),
+            data_root: state.data_root.clone(),
+        }),
+    );
+    registry.register(
+        JobKind::CredentialRotate,
+        Arc::new(crate::workers::CredentialRotateHandler {
+            store: store.clone(),
+            keyring: Arc::clone(&state.keyring),
+        }),
+    );
+    registry.register(
+        JobKind::LakeMaintenance,
+        Arc::new(crate::workers::LakeMaintenanceHandler {
+            store: store.clone(),
+            sidecar: Arc::clone(&state.sidecar),
+        }),
+    );
+    registry.register(
+        JobKind::Rollup,
+        Arc::new(crate::workers::RollupJobHandler {
+            store: store.clone(),
+        }),
+    );
+    registry.register(
+        JobKind::EmbedNodes,
+        Arc::new(crate::workers::EmbedNodesHandler {
+            store: store.clone(),
+            ai: state.ai.clone(),
         }),
     );
     let registry = Arc::new(registry);
@@ -110,6 +161,21 @@ pub(crate) fn spawn_background_workers(store: PgStore) {
     let subscribers: Arc<Vec<Arc<dyn OutboxSubscriber>>> = Arc::new(Vec::new());
     tokio::spawn(async move {
         run_outbox_dispatcher(outbox_worker_id, outbox_store, subscribers).await;
+    });
+
+    let cron_store = store.clone();
+    tokio::spawn(async move {
+        crate::workers::run_cron_scheduler(cron_store).await;
+    });
+
+    let rollup_store = store.clone();
+    tokio::spawn(async move {
+        crate::workers::run_rollup_scheduler(rollup_store).await;
+    });
+
+    let part_store = store.clone();
+    tokio::spawn(async move {
+        crate::workers::run_partition_worker(part_store).await;
     });
 
     tokio::spawn(async move {
@@ -150,16 +216,23 @@ async fn execute_leased_job(store: &PgStore, registry: &JobHandlerRegistry, job:
         return;
     };
 
+    let is_long_sync = matches!(job.kind, JobKind::SyncDataset | JobKind::ParseFile);
+    let (lease_secs, hb_interval) = if is_long_sync {
+        let _ = store.heartbeat(job, SYNC_JOB_LEASE_SECS).await;
+        (SYNC_JOB_LEASE_SECS, SYNC_JOB_HEARTBEAT_INTERVAL)
+    } else {
+        (JOB_LEASE_SECS, JOB_HEARTBEAT_INTERVAL)
+    };
+
     let hb_store = store.clone();
     let hb_job = job.clone();
     let hb_handle = tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(JOB_HEARTBEAT_INTERVAL);
+        let mut ticker = tokio::time::interval(hb_interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
-        // Consume immediate initial tick so first heartbeat occurs after 20s.
         ticker.tick().await;
         loop {
             ticker.tick().await;
-            if let Err(err) = hb_store.heartbeat(&hb_job, JOB_LEASE_SECS).await {
+            if let Err(err) = hb_store.heartbeat(&hb_job, lease_secs).await {
                 tracing::warn!(job_id = %hb_job.id, error = %err, "job heartbeat failed");
             }
         }
