@@ -1,9 +1,21 @@
 //! Pure port traits decoupling domain consumers from concrete storage and AI adapters.
 
+use std::collections::BTreeMap;
 use std::future::Future;
 
 use uuid::Uuid;
 
+use crate::axhub::{
+    CatalogSearchHit, ColumnMeta, CommitStagingRequest, Connection, ConnectionStatus,
+    ConnectionTestResult, ConnectorSpecDto, CreateDatasetRequest, CreateGlossaryTermRequest,
+    CreateQualityRuleRequest, CreateWebhookRequest, Dataset, DatasetListQuery, DiscoveredObject,
+    GlossaryTerm, LakeMaintenanceRequest, LakeMaintenanceResult, LakePreviewRequest,
+    LakeSnapshotInfo, LineageEdge, NewConnectionInput, NewUploadInput, PaginatedList,
+    PreviewResponse, QualityRule, ResolvedWebhook, ScheduledDataset, SealedCredential,
+    SidecarConnectorRequest, SidecarPreviewRequest, SidecarSyncRequest, SidecarSyncResult,
+    SyncDatasetResponse, SyncJob, UnifiedParseResponse, UpdateColumnMetaRequest,
+    UpdateConnectionInput, UpdateDatasetRequest, UploadRecord, WebhookBufferItem, WebhookConfig,
+};
 use crate::enums::JobKind;
 use crate::platform::{
     ApiTokenRecord, AuditRecord, JobListQuery, JobListResponse, JobRecord, LeasedJob, NewJob,
@@ -247,4 +259,455 @@ pub trait CredentialStore: Send + Sync {
         tenant_id: &str,
         user_id: Uuid,
     ) -> impl Future<Output = Result<Option<PrincipalRecord>, AppError>> + Send;
+}
+
+/// Persistence port for `AxHub` connections and sealed `ds_credentials` (`03-STEP02`).
+pub trait ConnectionRepository: Send + Sync {
+    /// Lists all connections in `tenant_id` paired with their optional sealed credentials.
+    fn list_connections(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<(Connection, Option<SealedCredential>)>, AppError>> + Send;
+
+    /// Loads a single connection and its optional sealed credential in `tenant_id`.
+    fn get_connection(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+    ) -> impl Future<Output = Result<Option<(Connection, Option<SealedCredential>)>, AppError>> + Send;
+
+    /// Creates a connection (and inserts `ds_credentials` if `input.credential` is `Some`).
+    fn create_connection(
+        &self,
+        tenant_id: &str,
+        input: NewConnectionInput,
+    ) -> impl Future<Output = Result<Connection, AppError>> + Send;
+
+    /// Updates a connection (`input.credential`: `None` = unchanged, `Some(None)` = clear, `Some(Some(c))` = upsert).
+    fn update_connection(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+        input: UpdateConnectionInput,
+    ) -> impl Future<Output = Result<Option<Connection>, AppError>> + Send;
+
+    /// Deletes a connection; returns `AppError::Conflict("CONNECTION_IN_USE")` if referenced by datasets.
+    fn delete_connection(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Records the result of `POST /api/axhub/connections/{id}/test`.
+    fn update_test_status(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+        status: ConnectionStatus,
+        message: &str,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Loads a sealed credential row by ID within `tenant_id`.
+    fn get_credential(
+        &self,
+        tenant_id: &str,
+        credential_id: Uuid,
+    ) -> impl Future<Output = Result<Option<SealedCredential>, AppError>> + Send;
+
+    /// Lists all sealed credentials in `tenant_id` for `CREDENTIAL_ROTATE`.
+    fn list_credentials(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<SealedCredential>, AppError>> + Send;
+
+    /// Re-encrypts and updates a credential row (`key_version`, `nonce`, `ciphertext`, `rotated_at`).
+    fn update_rotated_credential(
+        &self,
+        tenant_id: &str,
+        credential: SealedCredential,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+}
+
+/// Persistence port for `AxHub` datasets, sync jobs, uploads, webhooks, lineage, and catalog (`03-STEP02`).
+pub trait DatasetRepository: Send + Sync {
+    /// Lists datasets in `tenant_id` with optional filters and pagination.
+    fn list_datasets(
+        &self,
+        tenant_id: &str,
+        query: DatasetListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<Dataset>, AppError>> + Send;
+
+    /// Loads a dataset by UUID within `tenant_id`.
+    fn get_dataset(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+    ) -> impl Future<Output = Result<Option<Dataset>, AppError>> + Send;
+
+    /// Loads a dataset by unique machine name within `tenant_id`.
+    fn get_dataset_by_name(
+        &self,
+        tenant_id: &str,
+        name: &str,
+    ) -> impl Future<Output = Result<Option<Dataset>, AppError>> + Send;
+
+    /// Creates a new dataset in `tenant_id`.
+    fn create_dataset(
+        &self,
+        tenant_id: &str,
+        owner_user_id: Option<Uuid>,
+        req: CreateDatasetRequest,
+    ) -> impl Future<Output = Result<Dataset, AppError>> + Send;
+
+    /// Updates mutable fields of a dataset in `tenant_id`.
+    fn update_dataset(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+        req: UpdateDatasetRequest,
+    ) -> impl Future<Output = Result<Option<Dataset>, AppError>> + Send;
+
+    /// Deletes a dataset in `tenant_id`, returning the deleted record if found.
+    fn delete_dataset(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+    ) -> impl Future<Output = Result<Option<Dataset>, AppError>> + Send;
+
+    /// Enqueues a single-flight `SYNC_DATASET` job (`existing = true` on `uq_ax_jobs_sync_dataset` conflict).
+    fn enqueue_sync_job(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+    ) -> impl Future<Output = Result<SyncDatasetResponse, AppError>> + Send;
+
+    /// Starts or resumes a `ds_sync_jobs` row (`RUNNING`) for `job_id`, reusing `batch_id` on retry.
+    fn start_sync_execution(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+        job_id: Uuid,
+    ) -> impl Future<Output = Result<SyncJob, AppError>> + Send;
+
+    /// Commits sync metrics, dataset `cursor`/`schema`/`row_count`, column meta, stream offsets, outbox, and audit.
+    fn complete_sync_execution(
+        &self,
+        tenant_id: &str,
+        sync_job_id: Uuid,
+        dataset_id: Uuid,
+        result: &SidecarSyncResult,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Records a failed sync execution (`terminal = true` also marks `ds_datasets.status = FAILED`).
+    fn fail_sync_execution(
+        &self,
+        tenant_id: &str,
+        sync_job_id: Uuid,
+        dataset_id: Uuid,
+        error_code: &str,
+        error_message: &str,
+        terminal: bool,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Lists synchronization history for a dataset.
+    fn list_sync_jobs(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> impl Future<Output = Result<PaginatedList<SyncJob>, AppError>> + Send;
+
+    /// Loads current stream partition offsets for a dataset.
+    fn get_stream_offsets(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+    ) -> impl Future<Output = Result<BTreeMap<String, String>, AppError>> + Send;
+
+    /// Lists column metadata for a dataset.
+    fn list_columns(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<ColumnMeta>, AppError>> + Send;
+
+    /// Updates user-editable column metadata (`description`, `business_term`, `unit`, `pii_*`).
+    fn update_column_meta(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+        column_name: &str,
+        req: UpdateColumnMetaRequest,
+    ) -> impl Future<Output = Result<Option<ColumnMeta>, AppError>> + Send;
+
+    /// Lists quality assertion rules for a dataset.
+    fn list_quality_rules(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<QualityRule>, AppError>> + Send;
+
+    /// Creates a quality assertion rule on a dataset.
+    fn create_quality_rule(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+        req: CreateQualityRuleRequest,
+    ) -> impl Future<Output = Result<QualityRule, AppError>> + Send;
+
+    /// Deletes a quality rule by UUID within `tenant_id`.
+    fn delete_quality_rule(
+        &self,
+        tenant_id: &str,
+        rule_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Finds an already `COMMITTED` upload with matching SHA-256 in `tenant_id`.
+    fn find_committed_upload_by_sha(
+        &self,
+        tenant_id: &str,
+        sha256: &str,
+    ) -> impl Future<Output = Result<Option<UploadRecord>, AppError>> + Send;
+
+    /// Inserts a `PENDING` upload record.
+    fn create_upload(
+        &self,
+        tenant_id: &str,
+        input: NewUploadInput,
+    ) -> impl Future<Output = Result<UploadRecord, AppError>> + Send;
+
+    /// Loads an upload record by UUID within `tenant_id`.
+    fn get_upload(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+    ) -> impl Future<Output = Result<Option<UploadRecord>, AppError>> + Send;
+
+    /// Marks an upload `COMMITTED`, links `hg_docs.upload_id`, records lineage, and emits audit/outbox.
+    fn complete_upload(
+        &self,
+        tenant_id: &str,
+        upload_id: Uuid,
+        parse_id: Uuid,
+        doc_id: Option<Uuid>,
+        dataset_ids: &[Uuid],
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Marks an upload `FAILED`.
+    fn fail_upload(
+        &self,
+        tenant_id: &str,
+        upload_id: Uuid,
+        error_code: &str,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Creates a `WEBHOOK_STREAM` dataset, sealed secret credential, and `ds_webhooks` row.
+    fn create_webhook(
+        &self,
+        tenant_id: &str,
+        owner_user_id: Option<Uuid>,
+        req: &CreateWebhookRequest,
+        credential: SealedCredential,
+    ) -> impl Future<Output = Result<(WebhookConfig, Dataset), AppError>> + Send;
+
+    /// Lists webhooks in `tenant_id`.
+    fn list_webhooks(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<WebhookConfig>, AppError>> + Send;
+
+    /// Deletes a webhook by UUID in `tenant_id`.
+    fn delete_webhook(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Resolves `(tenant_id, slug)` via `SECURITY DEFINER` function `ax_resolve_webhook`.
+    fn resolve_webhook(
+        &self,
+        tenant_id: &str,
+        slug: &str,
+    ) -> impl Future<Output = Result<Option<ResolvedWebhook>, AppError>> + Send;
+
+    /// Finds the webhook backing a `WEBHOOK_STREAM` dataset.
+    fn get_webhook_by_dataset(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+    ) -> impl Future<Output = Result<Option<WebhookConfig>, AppError>> + Send;
+
+    /// Buffers an inbound webhook event (`Ok(true)` = newly inserted, `Ok(false)` = duplicate `delivery_id`).
+    fn ingest_webhook_event(
+        &self,
+        tenant_id: &str,
+        webhook_id: Uuid,
+        delivery_id: &str,
+        payload: serde_json::Value,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists unflushed `ds_webhook_buffer` items for a webhook.
+    fn list_pending_webhook_events(
+        &self,
+        tenant_id: &str,
+        webhook_id: Uuid,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<WebhookBufferItem>, AppError>> + Send;
+
+    /// Marks `ds_webhook_buffer` rows as flushed.
+    fn mark_webhook_events_flushed(
+        &self,
+        tenant_id: &str,
+        ids: &[i64],
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Upserts a directed edge in `ds_lineage`.
+    fn upsert_lineage(
+        &self,
+        tenant_id: &str,
+        src_kind: &str,
+        src_id: &str,
+        dst_kind: &str,
+        dst_id: &str,
+        via: &str,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Traverses upstream and downstream lineage edges around `dataset_id` up to `depth` hops.
+    fn get_dataset_lineage(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+        depth: u32,
+    ) -> impl Future<Output = Result<Vec<LineageEdge>, AppError>> + Send;
+
+    /// Searches the data catalog across `ds_datasets.fts`, `ds_column_meta`, and `ds_glossary_terms` synonyms.
+    fn search_catalog(
+        &self,
+        tenant_id: &str,
+        query: &str,
+        limit: u32,
+    ) -> impl Future<Output = Result<PaginatedList<CatalogSearchHit>, AppError>> + Send;
+
+    /// Lists glossary terms in `tenant_id`.
+    fn list_glossary(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<GlossaryTerm>, AppError>> + Send;
+
+    /// Creates or upserts a glossary term in `tenant_id`.
+    fn create_glossary_term(
+        &self,
+        tenant_id: &str,
+        req: CreateGlossaryTermRequest,
+    ) -> impl Future<Output = Result<GlossaryTerm, AppError>> + Send;
+
+    /// Deletes a glossary term in `tenant_id`.
+    fn delete_glossary_term(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Scans cron-enabled datasets across tenants via `ax_scheduled_datasets()`.
+    fn list_scheduled_datasets(
+        &self,
+    ) -> impl Future<Output = Result<Vec<ScheduledDataset>, AppError>> + Send;
+
+    /// Reads `sec_tenants.timezone` for `tenant_id` (defaults to `"Asia/Shanghai"`).
+    fn get_tenant_timezone(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<String, AppError>> + Send;
+
+    /// Reads `LAKE_SNAPSHOT` retention days for `tenant_id` (defaults to `30`).
+    fn get_lake_snapshot_keep_days(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<i32, AppError>> + Send;
+}
+
+/// Internal HTTP port to the `axpoint-parser` Sidecar (`02-STEP01` & `03-STEP02`).
+pub trait SidecarPort: Send + Sync {
+    /// Invokes `POST /parse/unified` on the Sidecar.
+    fn parse_unified(
+        &self,
+        tenant_id: &str,
+        timezone: &str,
+        filename: &str,
+        bytes: Vec<u8>,
+        options: &BTreeMap<String, String>,
+    ) -> impl Future<Output = Result<UnifiedParseResponse, AppError>> + Send;
+
+    /// Invokes `GET /connectors/types`.
+    fn list_connector_types(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<ConnectorSpecDto>, AppError>> + Send;
+
+    /// Invokes `POST /connectors/test`.
+    fn test_connector(
+        &self,
+        tenant_id: &str,
+        req: &SidecarConnectorRequest,
+    ) -> impl Future<Output = Result<ConnectionTestResult, AppError>> + Send;
+
+    /// Invokes `POST /connectors/discover`.
+    fn discover_connector(
+        &self,
+        tenant_id: &str,
+        req: &SidecarConnectorRequest,
+    ) -> impl Future<Output = Result<Vec<DiscoveredObject>, AppError>> + Send;
+
+    /// Invokes `POST /connectors/preview`.
+    fn preview_connector(
+        &self,
+        tenant_id: &str,
+        req: &SidecarPreviewRequest,
+    ) -> impl Future<Output = Result<PreviewResponse, AppError>> + Send;
+
+    /// Invokes `POST /connectors/sync` with explicit timeout.
+    fn sync_dataset(
+        &self,
+        tenant_id: &str,
+        timezone: &str,
+        req: &SidecarSyncRequest,
+        timeout_secs: u64,
+    ) -> impl Future<Output = Result<SidecarSyncResult, AppError>> + Send;
+
+    /// Invokes `POST /lake/commit_staging`.
+    fn commit_staging(
+        &self,
+        tenant_id: &str,
+        timezone: &str,
+        req: &CommitStagingRequest,
+    ) -> impl Future<Output = Result<Vec<SidecarSyncResult>, AppError>> + Send;
+
+    /// Invokes `POST /lake/preview`.
+    fn preview_lake(
+        &self,
+        tenant_id: &str,
+        req: &LakePreviewRequest,
+    ) -> impl Future<Output = Result<PreviewResponse, AppError>> + Send;
+
+    /// Invokes `GET /lake/snapshots`.
+    fn list_snapshots(
+        &self,
+        tenant_id: &str,
+        lake_table: &str,
+    ) -> impl Future<Output = Result<Vec<LakeSnapshotInfo>, AppError>> + Send;
+
+    /// Invokes `POST /lake/maintenance`.
+    fn run_maintenance(
+        &self,
+        tenant_id: &str,
+        req: &LakeMaintenanceRequest,
+    ) -> impl Future<Output = Result<LakeMaintenanceResult, AppError>> + Send;
+
+    /// Drops a `DuckLake` table when a dataset is deleted.
+    fn drop_lake_table(
+        &self,
+        tenant_id: &str,
+        lake_table: &str,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
 }

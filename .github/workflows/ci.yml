@@ -26,6 +26,7 @@ jobs:
               - '.github/workflows/ci.yml'
             python:
               - 'axpoint-parser/**'
+              - 'deploy/migrations/**'
               - '.github/workflows/ci.yml'
             web:
               - 'xbluenode-web/**'
@@ -74,22 +75,46 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.python == 'true'
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: axpoint
+          POSTGRES_PASSWORD: axpoint_secret
+          POSTGRES_DB: xbluenode
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U axpoint -d xbluenode" --health-interval 5s --health-retries 20
+    env:
+      MIGRATION_DATABASE_URL: postgres://axpoint:axpoint_secret@localhost:5432/xbluenode
+      DATABASE_URL: postgres://axpoint_app:axpoint_app_secret@localhost:5432/xbluenode
+      AXPOINT_LAKE_CATALOG_DSN: postgres://axpoint_lake:axpoint_lake_secret@localhost:5432/xbluenode
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Install Dependencies
+      - name: Initialize PostgreSQL Roles & Schemas
+        run: |
+          for f in deploy/migrations/*.sql; do
+            psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -f "$f"
+          done
+          psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 \
+            -c "ALTER ROLE axpoint_app PASSWORD 'axpoint_app_secret'" \
+            -c "ALTER ROLE axpoint_lake PASSWORD 'axpoint_lake_secret'"
+      - name: Install Dependencies & DuckDB Extensions
         working-directory: axpoint-parser
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+          python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL ducklake; INSTALL postgres;')"
       - name: Lint, Typecheck & Tests
         working-directory: axpoint-parser
         run: |
           ruff check .
           mypy --strict .
-          pytest -v tests
+          pytest -v -m "not heavy" tests
 
   web-frontend:
     needs: detect-changes

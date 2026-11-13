@@ -66,21 +66,47 @@
 ### `GET /api/axops/jobs` / `GET /api/axops/jobs/{id}`
 权限 `DATA_READ`。后台任务列表与详情（`JobStatus`：`PENDING` `RUNNING` `SUCCEEDED` `FAILED` `CANCELED` `EXPIRED`）。
 
+### `AxHub` 数据接入、同步与资产目录（`/api/axhub/*`，Step 02）
+
+- `GET /api/axhub/connector-types`（`DATA_READ`）：返回 32 种 `ConnectorType` 规格卡片（含 `available`、`config_schema`、`secret_fields`、`supports_modes`）。
+- `GET /api/axhub/connections` / `POST /api/axhub/connections`（`DATA_READ` / `DATA_ADMIN`）：列表或创建连接；秘密字段拆分加密存入 `ds_credentials`，响应仅返回 `secret_fields_set`（永不回显秘密）。
+- `GET /api/axhub/connections/{id}` / `PATCH /api/axhub/connections/{id}` / `DELETE /api/axhub/connections/{id}`（`DATA_READ` / `DATA_ADMIN`）：读取、增量更新或删除连接（存在关联数据集时返回 `409`）。
+- `POST /api/axhub/connections/{id}/test` / `GET /api/axhub/connections/{id}/discover`（`DATA_ADMIN`）：连接测试（返回 `{ok, message, latency_ms}`）与远端对象发现（返回 `DiscoveredObject[]`）。
+- `POST /api/axhub/connections/{id}/preview`（`DATA_READ`）：远端对象样本预览（`{ref, limit}`）。
+- `POST /api/axhub/credentials/rotate`（`DATA_ADMIN`）：入队 `CREDENTIAL_ROTATE` 任务，使用当前最大版本密钥重新加密 `ds_credentials`。
+- `GET /api/axhub/datasets` / `POST /api/axhub/datasets`（`DATA_READ` / `DATA_SYNC`）：查询或创建数据集（支持 `?q=&tag=&source_kind=&limit=&cursor=`）。
+- `GET /api/axhub/datasets/{id}` / `PATCH /api/axhub/datasets/{id}` / `DELETE /api/axhub/datasets/{id}`（`DATA_READ` / `DATA_SYNC` / `DATA_ADMIN`）：数据集详情、更新与删除（同时清理 DuckLake 表）。
+- `POST /api/axhub/datasets/{id}/sync`（`DATA_SYNC`）：单飞入队 `SYNC_DATASET`（新建返回 `202 {job_id}`，已有待执行/运行中任务返回 `200 {job_id, existing: true}`）。
+- `GET /api/axhub/datasets/{id}/sync-jobs` / `GET /api/axhub/datasets/{id}/preview` / `GET /api/axhub/datasets/{id}/snapshots`（`DATA_READ`）：同步历史、湖表预览（支持 `?snapshot_id=`）与快照列表。
+- `GET /api/axhub/datasets/{id}/columns` / `PUT /api/axhub/datasets/{id}/columns/{column}`（`DATA_READ` / `DATA_ADMIN`）：列级目录元数据与人工 PII 确认。
+- `GET /api/axhub/datasets/{id}/quality-rules` / `POST /api/axhub/datasets/{id}/quality-rules` / `DELETE /api/axhub/quality-rules/{rule_id}`（`DATA_READ` / `DATA_ADMIN`）：数据质量规则管理。
+- `GET /api/axhub/datasets/{id}/lineage`（`DATA_READ`）：上下游资产血缘图（`?depth=3`）。
+- `POST /api/axhub/uploads` / `GET /api/axhub/uploads/{id}`（`DATA_SYNC` / `DATA_READ`）：统一文件上传（SHA-256 去重、`PARSE_FILE` 双轨入知识库与入湖）。
+- `POST /api/axhub/webhooks` / `GET /api/axhub/webhooks` / `DELETE /api/axhub/webhooks/{id}`（`DATA_ADMIN`）：Webhook 创建（一次性返回随机秘密）、列表与删除。
+- `POST /api/axhub/webhooks/{tenant_id}/{slug}/ingest`（外部入口，`HMAC_SHA256` 或 `Bearer` 签名校验）：幂等写入 `ds_webhook_buffer`（新投递 `202`，重复 `delivery_id` 返回 `200`）。
+- `GET /api/axhub/catalog/search` / `GET /api/axhub/glossary` / `POST /api/axhub/glossary` / `DELETE /api/axhub/glossary/{id}`（`DATA_READ` / `DATA_ADMIN`）：全文与同义词扩展资产目录检索及业务术语表管理。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）
 
-除 `GET /health` 外，所有请求携带 `X-AxPoint-Internal-Token: $AXPOINT_INTERNAL_TOKEN` 与 `X-AxPoint-Tenant`，否则返回 `401`。
+除 `GET /health` 外，所有请求携带 `X-AxPoint-Internal-Token: $AXPOINT_INTERNAL_TOKEN` 与 `X-AxPoint-Tenant`（可选 `X-AxPoint-Timezone`、`traceparent`），否则返回 `401`。
 
 ### `GET /health`
 返回解析引擎与模型目录（`${AXPOINT_MODEL_PATH:-/var/lib/axpoint/models}`）就绪状态。
 
 ### `POST /parse`
-`multipart/form-data`（字段 `file`），返回：
+`multipart/form-data`（字段 `file`），仅返回文本轨轻量结果 `ParseResponse {title, markdown, engine}`（不写 Parquet 暂存文件）。
 
-```json
-{ "title": "文档标题", "markdown": "解析后的结构化 Markdown", "engine": "docling-easyocr | pypdf-fallback | plain-utf8" }
-```
+### `POST /parse/unified`（Step 01）
+`multipart/form-data`（`file`、`log_format?`、`json_explode?`、`ocr?`），返回 `UnifiedParseResponse {parse_id, title, source_format, engine, sha256, markdown, tables, warnings}`，表格轨 Parquet 暂存文件写入 `${AXPOINT_DATA_ROOT}/tenants/<tenant_id>/staging/<parse_id>/`。
 
-### `POST /parse/unified`
-Step 01 交付的双轨解析接口（文本轨 Markdown + 表格轨数据表），请求与响应定义见 [blueprint/02-STEP01-AXPARSER-FILE-PARSING.md](./blueprint/02-STEP01-AXPARSER-FILE-PARSING.md) §01.2。
+### 连接器与 DuckLake 内部接口（Step 02）
+
+- `GET /connectors/types`：返回 32 个 `ConnectorSpecModel[]`。
+- `POST /connectors/test`：测试连接并返回 `TestResult {ok, message, latency_ms}`。
+- `POST /connectors/discover`：发现远端对象并返回 `DiscoveredObject[]`。
+- `POST /connectors/preview`：抽样预览远端对象（PII 样例脱敏）。
+- `POST /connectors/sync`：按 `SNAPSHOT` / `APPEND` / `UPSERT` 同步源数据入 DuckLake，执行质量规则与 Schema 演进，返回 `SyncResult`。
+- `POST /lake/commit_staging`：把 `/parse/unified` 生成的暂存 Parquet 原子提交入 DuckLake。
+- `POST /lake/preview` / `GET /lake/snapshots` / `POST /lake/maintenance` / `POST /lake/drop_table`：湖表快照预览、历史快照列表、小文件合并与快照清理、删表。

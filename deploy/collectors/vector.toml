@@ -1,0 +1,30 @@
+# Continuous log collection reference configuration: Vector -> AxHub Webhook (§02.7.4)
+
+[sources.app_logs]
+type = "file"
+include = ["/var/log/app/*.log"]
+multiline.start_pattern = '^(\d{4}-\d{2}-\d{2}|\[\d{4}-|\w{3} +\d{1,2} \d{2}:\d{2}:\d{2}|\{)'
+multiline.mode = "halt_before"
+multiline.condition_pattern = '^(\d{4}-\d{2}-\d{2}|\[\d{4}-|\w{3} +\d{1,2} \d{2}:\d{2}:\d{2}|\{)'
+multiline.timeout_ms = 1000
+
+[transforms.parse]
+type = "remap"
+inputs = ["app_logs"]
+source = '''
+.raw = string!(.message)
+.ts = now()
+.level = "INFO"
+.service = "app"
+.host = get_hostname() ?? "unknown"
+.trace_id = ""
+'''
+
+[sinks.axpoint]
+type = "http"
+inputs = ["parse"]
+uri = "https://axpoint.example.com/api/axhub/webhooks/default/app-logs/ingest"
+encoding.codec = "json"
+batch.max_events = 500
+auth.strategy = "bearer"
+auth.token = "${AXPOINT_WEBHOOK_SECRET}"

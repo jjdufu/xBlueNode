@@ -1,26 +1,9 @@
-# Integration test auxiliary services (used starting Step 02).
-# Reference: docs/blueprint/A6-DEPENDENCY-BASELINE.md §5
+# Integration test auxiliary services for Step 02 connectors.
+# Reference: docs/blueprint/03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md §02.1.3
 name: xbluenode-test
 services:
-  minio:
-    image: minio/minio:latest
-    profiles: ["connectors"]
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: axpoint
-      MINIO_ROOT_PASSWORD: axpoint_minio_secret
-    ports:
-      - "127.0.0.1:19000:9000"
-
-  redis:
-    image: redis:8
-    profiles: ["connectors"]
-    ports:
-      - "127.0.0.1:16379:6379"
-
   redpanda:
-    image: redpandadata/redpanda:latest
-    profiles: ["connectors"]
+    image: redpandadata/redpanda:v24.2.10
     command:
       - redpanda
       - start
@@ -34,6 +17,69 @@ services:
 
   mosquitto:
     image: eclipse-mosquitto:2
-    profiles: ["connectors"]
+    command: ["sh", "-c", "printf 'listener 1883\\nallow_anonymous true\\n' > /tmp/m.conf && mosquitto -c /tmp/m.conf"]
     ports:
       - "127.0.0.1:11883:1883"
+
+  pulsar:
+    image: apachepulsar/pulsar:3.3.2
+    command: ["bin/pulsar", "standalone"]
+    ports:
+      - "127.0.0.1:16650:6650"
+
+  minio:
+    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: axpoint
+      MINIO_ROOT_PASSWORD: axpoint_minio_secret
+    ports:
+      - "127.0.0.1:19000:9000"
+
+  sftp:
+    image: atmoz/sftp:alpine
+    command: "axpoint:axpoint_sftp_secret:1001:100:upload"
+    ports:
+      - "127.0.0.1:12222:22"
+
+  mongo:
+    image: mongo:8
+    ports:
+      - "127.0.0.1:27018:27017"
+
+  redis:
+    image: redis:8
+    ports:
+      - "127.0.0.1:16379:6379"
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.0.0
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms512m -Xmx512m"
+    ports:
+      - "127.0.0.1:19200:9200"
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: axpoint_mysql_secret
+      MYSQL_DATABASE: demo_src
+    ports:
+      - "127.0.0.1:13306:3306"
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:25
+    environment:
+      CLICKHOUSE_DB: demo_src
+      CLICKHOUSE_USER: axpoint
+      CLICKHOUSE_PASSWORD: axpoint_ch_secret
+    ports:
+      - "127.0.0.1:18123:8123"
+
+  influxdb:
+    image: influxdb:3-core
+    command: ["influxdb3", "serve", "--node-id=node0", "--object-store=memory"]
+    ports:
+      - "127.0.0.1:18181:8181"
