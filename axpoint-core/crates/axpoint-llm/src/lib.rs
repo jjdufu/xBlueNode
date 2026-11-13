@@ -3,17 +3,35 @@
 pub mod cassette;
 
 use std::fmt::Write as _;
+use std::future::Future;
 use std::path::Path;
-use std::sync::Arc;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::task::{Context, Poll, Waker};
+use std::time::Duration;
 
 use axpoint_domain::{AppError, ExtractedTriple, FusedHit};
 pub use cassette::{
     CASSETTE_ENV_VAR, Cassette, CassetteEntry, CassetteMode, DEFAULT_OFFLINE_EMBED_DIM,
     EVAL_RECORD_ENV_VAR, compute_prompt_sha256, deterministic_embedding, sha256_hex,
 };
-use reqwest::Client;
+use reqwest::header::{HeaderMap, RETRY_AFTER};
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
+use tracing::warn;
+
+/// Maximum number of texts sent in a single `/embeddings` HTTP request (`04-STEP03` §03.0).
+pub const EMBED_BATCH_CHUNK_SIZE: usize = 64;
+
+/// Default maximum retry attempts for transient HTTP `429` / `503` embedding responses.
+pub const DEFAULT_EMBED_MAX_RETRIES: u32 = 3;
+
+/// Default initial exponential backoff duration in milliseconds (`200ms * 2^attempt`).
+pub const DEFAULT_EMBED_BASE_BACKOFF_MS: u64 = 200;
+
+/// Upper cap in seconds honored from an upstream `Retry-After` HTTP header.
+const MAX_RETRY_AFTER_SECS: f64 = 5.0;
 
 /// Configuration for an OpenAI-compatible chat/reasoning model.
 #[derive(Debug, Clone)]
@@ -47,6 +65,8 @@ pub struct AiGateway {
     embed: EmbeddingConfig,
     detected_dim: Arc<AtomicUsize>,
     cassette: Option<Cassette>,
+    max_retries: u32,
+    base_backoff: Duration,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,7 +110,69 @@ struct EmbedResponse {
 
 #[derive(Debug, Deserialize)]
 struct EmbedItem {
+    #[serde(default)]
+    index: Option<usize>,
     embedding: Vec<f32>,
+}
+
+/// Runtime-agnostic non-blocking delay future used only when backing off from HTTP `429`/`503`.
+struct DelayFuture {
+    duration: Duration,
+    started: bool,
+    state: Arc<Mutex<(bool, Option<Waker>)>>,
+}
+
+impl DelayFuture {
+    fn new(duration: Duration) -> Self {
+        Self {
+            duration,
+            started: false,
+            state: Arc::new(Mutex::new((false, None))),
+        }
+    }
+}
+
+impl Future for DelayFuture {
+    type Output = ();
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+        if this.duration.is_zero() {
+            return Poll::Ready(());
+        }
+
+        let should_spawn = {
+            let mut guard = this.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if guard.0 {
+                return Poll::Ready(());
+            }
+            guard.1 = Some(cx.waker().clone());
+            if this.started {
+                false
+            } else {
+                this.started = true;
+                true
+            }
+        };
+
+        if should_spawn {
+            let state = Arc::clone(&this.state);
+            let sleep_for = this.duration;
+            std::thread::spawn(move || {
+                std::thread::sleep(sleep_for);
+                let waker = {
+                    let mut guard = state.lock().unwrap_or_else(PoisonError::into_inner);
+                    guard.0 = true;
+                    guard.1.take()
+                };
+                if let Some(w) = waker {
+                    w.wake();
+                }
+            });
+        }
+
+        Poll::Pending
+    }
 }
 
 impl AiGateway {
@@ -108,6 +190,8 @@ impl AiGateway {
             embed,
             detected_dim: Arc::new(AtomicUsize::new(initial_dim)),
             cassette,
+            max_retries: DEFAULT_EMBED_MAX_RETRIES,
+            base_backoff: Duration::from_millis(DEFAULT_EMBED_BASE_BACKOFF_MS),
         }
     }
 
@@ -130,7 +214,17 @@ impl AiGateway {
             embed,
             detected_dim: Arc::new(AtomicUsize::new(initial_dim)),
             cassette: Some(cassette),
+            max_retries: DEFAULT_EMBED_MAX_RETRIES,
+            base_backoff: Duration::from_millis(DEFAULT_EMBED_BASE_BACKOFF_MS),
         })
+    }
+
+    /// Configures maximum retry attempts and initial exponential backoff duration for transient HTTP `429`/`503` responses.
+    #[must_use]
+    pub const fn with_retry_policy(mut self, max_retries: u32, base_backoff: Duration) -> Self {
+        self.max_retries = max_retries;
+        self.base_backoff = base_backoff;
+        self
     }
 
     /// Returns the configured embedding model name.
@@ -146,11 +240,13 @@ impl AiGateway {
         if dim == 0 { None } else { Some(dim) }
     }
 
-    /// Generates embeddings for a batch of texts and records the detected dimension.
+    /// Generates embeddings for a batch of texts in chunks of [`EMBED_BATCH_CHUNK_SIZE`] (64)
+    /// with exponential backoff retry on HTTP `429 Too Many Requests` (and `503`), recording
+    /// the detected vector dimension.
     ///
     /// # Errors
-    /// Returns [`AppError::Llm`] if the HTTP request fails, returns a non-success
-    /// status, or yields malformed JSON / empty embeddings.
+    /// Returns [`AppError::Llm`] if any chunk HTTP request fails after retries, returns a
+    /// non-success status, or yields malformed JSON / inconsistent / empty embeddings.
     pub async fn embed_batch(&self, inputs: &[String]) -> Result<(Vec<Vec<f32>>, usize), AppError> {
         if let Some(cassette) = &self.cassette
             && cassette.mode() == CassetteMode::Replay
@@ -182,47 +278,122 @@ impl AiGateway {
         }
 
         let url = format!("{}/embeddings", self.embed.api_base.trim_end_matches('/'));
+        let mut all_vectors: Vec<Vec<f32>> = Vec::with_capacity(inputs.len());
+        let mut batch_dim: Option<usize> = None;
+
+        for chunk in inputs.chunks(EMBED_BATCH_CHUNK_SIZE) {
+            let chunk_vectors = self.embed_chunk_with_retry(&url, chunk).await?;
+            if chunk_vectors.len() != chunk.len() {
+                return Err(AppError::Llm(format!(
+                    "embedding API returned {} vectors for chunk of {} inputs",
+                    chunk_vectors.len(),
+                    chunk.len()
+                )));
+            }
+
+            for vec in chunk_vectors {
+                let vec_dim = vec.len();
+                if vec_dim == 0 {
+                    return Err(AppError::Llm(String::from(
+                        "embedding API returned zero-dimension vector",
+                    )));
+                }
+                if let Some(expected_dim) = batch_dim {
+                    if vec_dim != expected_dim {
+                        return Err(AppError::Llm(format!(
+                            "inconsistent embedding dimensions across batch: expected {expected_dim}, got {vec_dim}"
+                        )));
+                    }
+                } else {
+                    batch_dim = Some(vec_dim);
+                }
+                all_vectors.push(vec);
+            }
+        }
+
+        let dim = batch_dim
+            .ok_or_else(|| AppError::Llm(String::from("embedding API returned empty list")))?;
+        self.detected_dim.store(dim, Ordering::Relaxed);
+        Ok((all_vectors, dim))
+    }
+
+    async fn embed_chunk_with_retry(
+        &self,
+        url: &str,
+        chunk: &[String],
+    ) -> Result<Vec<Vec<f32>>, AppError> {
         let body = EmbedRequest {
             model: &self.embed.model,
-            input: inputs,
+            input: chunk,
         };
 
-        let resp = self
-            .http
-            .post(&url)
-            .bearer_auth(&self.embed.api_key)
-            .json(&body)
-            .send()
-            .await
-            .map_err(|err| AppError::Llm(format!("embedding request failed: {err}")))?;
+        let mut attempt: u32 = 0;
+        loop {
+            let resp = self
+                .http
+                .post(url)
+                .bearer_auth(&self.embed.api_key)
+                .json(&body)
+                .send()
+                .await
+                .map_err(|err| AppError::Llm(format!("embedding request failed: {err}")))?;
 
-        if !resp.status().is_success() {
             let status = resp.status();
+            if status.is_success() {
+                let mut parsed: EmbedResponse = resp
+                    .json()
+                    .await
+                    .map_err(|err| AppError::Llm(format!("invalid embedding JSON: {err}")))?;
+
+                if parsed.data.iter().all(|item| item.index.is_some()) {
+                    parsed.data.sort_by_key(|item| item.index.unwrap_or(0));
+                }
+
+                let vectors = parsed
+                    .data
+                    .into_iter()
+                    .map(|item| item.embedding)
+                    .collect::<Vec<_>>();
+                return Ok(vectors);
+            }
+
+            let is_retryable = status == StatusCode::TOO_MANY_REQUESTS
+                || status == StatusCode::SERVICE_UNAVAILABLE;
+            if is_retryable && attempt < self.max_retries {
+                let delay = self.compute_backoff_delay(attempt, resp.headers());
+                let _ = resp.bytes().await;
+                warn!(
+                    "embedding chunk returned {status}; retry {}/{} in {delay:?}",
+                    attempt.saturating_add(1),
+                    self.max_retries
+                );
+                DelayFuture::new(delay).await;
+                attempt = attempt.saturating_add(1);
+                continue;
+            }
+
             let text = resp.text().await.unwrap_or_default();
             return Err(AppError::Llm(format!(
                 "embedding API returned {status}: {text}"
             )));
         }
+    }
 
-        let parsed: EmbedResponse = resp
-            .json()
-            .await
-            .map_err(|err| AppError::Llm(format!("invalid embedding JSON: {err}")))?;
+    fn compute_backoff_delay(&self, attempt: u32, headers: &HeaderMap) -> Duration {
+        let factor = 1_u32.checked_shl(attempt).unwrap_or(u32::MAX);
+        let exp_delay = self.base_backoff.saturating_mul(factor);
 
-        let vectors: Vec<Vec<f32>> = parsed.data.into_iter().map(|d| d.embedding).collect();
-        let dim = vectors
-            .first()
-            .map(Vec::len)
-            .ok_or_else(|| AppError::Llm(String::from("embedding API returned empty list")))?;
+        let retry_after_delay = headers
+            .get(RETRY_AFTER)
+            .and_then(|val| val.to_str().ok())
+            .and_then(|raw| raw.trim().parse::<f64>().ok())
+            .filter(|secs| secs.is_finite() && *secs >= 0.0)
+            .and_then(|secs| Duration::try_from_secs_f64(secs.min(MAX_RETRY_AFTER_SECS)).ok());
 
-        if dim == 0 {
-            return Err(AppError::Llm(String::from(
-                "embedding API returned zero-dimension vector",
-            )));
+        match retry_after_delay {
+            Some(header_dur) => exp_delay.max(header_dur),
+            None => exp_delay,
         }
-
-        self.detected_dim.store(dim, Ordering::Relaxed);
-        Ok((vectors, dim))
     }
 
     /// Generates an embedding vector for a single string.
@@ -408,7 +579,7 @@ mod tests {
 
     use axpoint_domain::split_paragraphs;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-    use tokio::net::TcpListener;
+    use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
 
@@ -426,6 +597,72 @@ mod tests {
                 configured_dim,
             },
         )
+    }
+
+    fn live_embed_gateway(addr: std::net::SocketAddr) -> AiGateway {
+        let (llm_dead, _) = dead_configs(None);
+        let embed_live = EmbeddingConfig {
+            api_base: format!("http://{addr}"),
+            api_key: String::from("test-embed-key"),
+            model: String::from("test-embed-v4"),
+            configured_dim: None,
+        };
+        AiGateway {
+            http: Client::new(),
+            llm: llm_dead,
+            embed: embed_live,
+            detected_dim: Arc::new(AtomicUsize::new(0)),
+            cassette: None,
+            max_retries: DEFAULT_EMBED_MAX_RETRIES,
+            base_backoff: Duration::from_millis(5),
+        }
+    }
+
+    async fn read_http_json_body(socket: &mut TcpStream) -> Result<serde_json::Value, AppError> {
+        let mut buf: Vec<u8> = Vec::with_capacity(4096);
+        let mut chunk = [0_u8; 2048];
+        let mut header_end: Option<usize> = None;
+        let mut content_length: usize = 0;
+
+        loop {
+            let n = socket
+                .read(&mut chunk)
+                .await
+                .map_err(|e| AppError::Llm(e.to_string()))?;
+            if n == 0 {
+                break;
+            }
+            if let Some(read_slice) = chunk.get(..n) {
+                buf.extend_from_slice(read_slice);
+            }
+
+            if header_end.is_none()
+                && let Some(pos) = buf.windows(4).position(|w| w == b"\r\n\r\n")
+            {
+                let body_start = pos.saturating_add(4);
+                header_end = Some(body_start);
+                let header_text = String::from_utf8_lossy(buf.get(..pos).unwrap_or_default());
+                for line in header_text.lines() {
+                    if let Some((name, val)) = line.split_once(':')
+                        && name.trim().eq_ignore_ascii_case("content-length")
+                    {
+                        content_length = val.trim().parse::<usize>().unwrap_or(0);
+                    }
+                }
+            }
+
+            if let Some(start) = header_end
+                && buf.len() >= start.saturating_add(content_length)
+            {
+                let body_bytes = buf
+                    .get(start..start.saturating_add(content_length))
+                    .unwrap_or_default();
+                return serde_json::from_slice(body_bytes)
+                    .map_err(|e| AppError::Llm(e.to_string()));
+            }
+        }
+
+        Err(AppError::Llm(String::from("incomplete HTTP request")))
     }
 
     fn repo_cassettes_dir() -> PathBuf {
@@ -667,6 +904,172 @@ mod tests {
         assert_eq!(offline_ans, "recorded-answer");
 
         let _ = fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn live_embed_batch_chunks_150_inputs_into_three_64_item_requests() -> Result<(), AppError>
+    {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| AppError::Llm(e.to_string()))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|e| AppError::Llm(e.to_string()))?;
+
+        let server = tokio::spawn(async move {
+            let mut observed_sizes: Vec<usize> = Vec::new();
+            for _ in 0..3 {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                let Ok(req_json) = read_http_json_body(&mut socket).await else {
+                    break;
+                };
+                let items = req_json
+                    .get("input")
+                    .and_then(serde_json::Value::as_array)
+                    .cloned()
+                    .unwrap_or_default();
+                observed_sizes.push(items.len());
+
+                // Encode the original global item number parsed from `"item_<idx>"` into the vector
+                // so the caller can assert exact 0..150 order preservation across chunks.
+                let mut data_entries = Vec::with_capacity(items.len());
+                for (local_idx, item_val) in items.iter().enumerate() {
+                    let s = item_val.as_str().unwrap_or_default();
+                    let seq_num = s
+                        .strip_prefix("item_")
+                        .and_then(|num| num.parse::<u16>().ok())
+                        .unwrap_or(0);
+                    let marker = f32::from(seq_num);
+                    data_entries.push(serde_json::json!({
+                        "index": local_idx,
+                        "embedding": [marker, marker + 0.5_f32, 1.0_f32, 0.0_f32]
+                    }));
+                }
+
+                let payload = serde_json::json!({ "data": data_entries }).to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                    payload.len()
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+            }
+            observed_sizes
+        });
+
+        let gateway = live_embed_gateway(addr);
+        let inputs: Vec<String> = (0..150_u16).map(|i| format!("item_{i}")).collect();
+        let (vectors, dim) = gateway.embed_batch(&inputs).await?;
+
+        let observed_sizes = server.await.map_err(|e| AppError::Llm(e.to_string()))?;
+        assert_eq!(observed_sizes, vec![64, 64, 22]);
+        assert_eq!(dim, 4);
+        assert_eq!(gateway.current_embedding_dim(), Some(4));
+        assert_eq!(vectors.len(), 150);
+
+        for (idx, vec) in vectors.iter().enumerate() {
+            let expected_marker = u16::try_from(idx).map_or(-1.0_f32, f32::from);
+            let first = vec.first().copied().unwrap_or(-1.0_f32);
+            assert!(
+                (first - expected_marker).abs() < 1e-5_f32,
+                "vector {idx} out of order: got {first}, expected {expected_marker}"
+            );
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn live_embed_batch_retries_http_429_and_errors_after_max_retries() -> Result<(), AppError>
+    {
+        // Subcase 1: first 2 attempts return HTTP 429, 3rd attempt returns 200 OK -> succeeds.
+        let listener_ok = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| AppError::Llm(e.to_string()))?;
+        let addr_ok = listener_ok
+            .local_addr()
+            .map_err(|e| AppError::Llm(e.to_string()))?;
+
+        let server_ok = tokio::spawn(async move {
+            let mut calls: usize = 0;
+            for attempt in 0..3_usize {
+                let Ok((mut socket, _)) = listener_ok.accept().await else {
+                    break;
+                };
+                let _ = read_http_json_body(&mut socket).await;
+                calls = calls.saturating_add(1);
+
+                if attempt < 2 {
+                    let body = r#"{"error":"rate limit exceeded"}"#;
+                    let resp = format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0.005\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                } else {
+                    let body = r#"{"data":[{"index":0,"embedding":[0.25,0.75,0.5]}]}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                }
+            }
+            calls
+        });
+
+        let gateway_ok = live_embed_gateway(addr_ok).with_retry_policy(3, Duration::from_millis(5));
+        let (vecs, dim) = gateway_ok
+            .embed_batch(&[String::from("retry-target")])
+            .await?;
+        let total_calls_ok = server_ok.await.map_err(|e| AppError::Llm(e.to_string()))?;
+        assert_eq!(total_calls_ok, 3);
+        assert_eq!(dim, 3);
+        assert_eq!(vecs.len(), 1);
+
+        // Subcase 2: all 4 attempts (1 initial + 3 retries) return HTTP 429 -> returns Err(AppError::Llm).
+        let listener_fail = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| AppError::Llm(e.to_string()))?;
+        let addr_fail = listener_fail
+            .local_addr()
+            .map_err(|e| AppError::Llm(e.to_string()))?;
+
+        let server_fail = tokio::spawn(async move {
+            let mut calls: usize = 0;
+            for _ in 0..4_usize {
+                let Ok((mut socket, _)) = listener_fail.accept().await else {
+                    break;
+                };
+                let _ = read_http_json_body(&mut socket).await;
+                calls = calls.saturating_add(1);
+                let body = r#"{"error":"persistent 429"}"#;
+                let resp = format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+            }
+            calls
+        });
+
+        let gateway_fail =
+            live_embed_gateway(addr_fail).with_retry_policy(3, Duration::from_millis(2));
+        let result_fail = gateway_fail
+            .embed_batch(&[String::from("exhaust-retries")])
+            .await;
+        let total_calls_fail = server_fail
+            .await
+            .map_err(|e| AppError::Llm(e.to_string()))?;
+        assert_eq!(total_calls_fail, 4);
+        assert!(matches!(result_fail, Err(AppError::Llm(_))));
+        if let Err(err) = result_fail {
+            assert_eq!(err.error_code(), "UPSTREAM_LLM");
+            assert!(err.to_string().contains("429"));
+        }
+
         Ok(())
     }
 }
