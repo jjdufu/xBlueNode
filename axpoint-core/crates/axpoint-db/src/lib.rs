@@ -1,8 +1,14 @@
 //! PostgreSQL (`pgvector` + hypergraph) persistence, five-way retrieval, and platform ports.
 
 pub mod audit;
+pub mod axhub_repo;
+pub mod entity_link;
+pub mod graph_query;
 pub mod jobs;
+pub mod metrics;
+pub mod nodes;
 pub mod outbox;
+pub mod rollup;
 pub mod tenant;
 pub mod tokens;
 pub mod topology;
@@ -302,18 +308,22 @@ impl PgStore {
         entity_type: &str,
         confidence: f64,
     ) -> Result<Uuid, AppError> {
+        let trimmed_name = name.trim();
+        let name_norm = axpoint_domain::graph::normalize_name(trimmed_name);
         let row = sqlx::query(
-            "INSERT INTO hg_entities (tenant_id, name, entity_type, occur_count, confidence)
-             VALUES ($1, $2, $3, 1, $4)
+            "INSERT INTO hg_entities (tenant_id, name, name_norm, entity_type, occur_count, confidence)
+             VALUES ($1, $2, $3, $4, 1, $5)
              ON CONFLICT (tenant_id, name, entity_type)
              DO UPDATE SET
+                name_norm = EXCLUDED.name_norm,
                 occur_count = hg_entities.occur_count + 1,
                 confidence = GREATEST(hg_entities.confidence, EXCLUDED.confidence),
                 updated_at = NOW()
              RETURNING id",
         )
         .bind(tenant_id)
-        .bind(name.trim())
+        .bind(trimmed_name)
+        .bind(name_norm)
         .bind(entity_type.trim())
         .bind(confidence)
         .fetch_one(&mut **tx)

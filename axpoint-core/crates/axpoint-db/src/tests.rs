@@ -6,7 +6,7 @@ use axpoint_domain::AppError;
 use axpoint_domain::enums::{AuditAction, JobKind, JobStatus, OutboxTopic, Permission};
 use axpoint_domain::platform::{AuditRecord, JobListQuery, NewJob, NewOutboxEvent};
 use axpoint_domain::ports::{AuditSink, CredentialStore, JobQueuePort, OutboxPort};
-use axpoint_domain::topology::UpsertBlueNodeRequest;
+use axpoint_domain::topology::{BlueNodeTypeInput, SaveXBlueSchemaRequest, UpsertBlueNodeRequest};
 use chrono::Utc;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::{PgPool, Row};
@@ -80,6 +80,22 @@ async fn rls_blocks_without_tenant() -> TestResult {
 
     let store = PgStore::new(app_pool.clone());
     store
+        .save_xblue_schema(
+            &tenant,
+            SaveXBlueSchemaRequest {
+                node_types: vec![BlueNodeTypeInput {
+                    name: String::from("Warehouse"),
+                    display_name: String::from("仓库"),
+                    properties: Vec::new(),
+                    agg_rules: Vec::new(),
+                    pos_x: 0.0,
+                    pos_y: 0.0,
+                }],
+                edge_types: Vec::new(),
+            },
+        )
+        .await?;
+    store
         .upsert_blue_node(
             &tenant,
             UpsertBlueNodeRequest {
@@ -99,10 +115,14 @@ async fn rls_blocks_without_tenant() -> TestResult {
     let count: i64 = row.get("cnt");
     assert_eq!(count, 0);
 
-    sqlx::query("DELETE FROM xb_nodes WHERE tenant_id = $1")
-        .bind(&tenant)
-        .execute(&owner_pool)
-        .await?;
+    for sql in [
+        "DELETE FROM xb_nodes WHERE tenant_id = $1",
+        "DELETE FROM xb_node_types WHERE tenant_id = $1",
+        "DELETE FROM ax_jobs WHERE tenant_id = $1",
+        "DELETE FROM ax_outbox WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql).bind(&tenant).execute(&owner_pool).await?;
+    }
 
     Ok(())
 }
@@ -119,6 +139,22 @@ async fn rls_isolates_tenants() -> TestResult {
     ensure_tenant(&owner_pool, &t2).await?;
 
     let store = PgStore::new(app_pool.clone());
+    store
+        .save_xblue_schema(
+            &t1,
+            SaveXBlueSchemaRequest {
+                node_types: vec![BlueNodeTypeInput {
+                    name: String::from("Warehouse"),
+                    display_name: String::from("仓库"),
+                    properties: Vec::new(),
+                    agg_rules: Vec::new(),
+                    pos_x: 0.0,
+                    pos_y: 0.0,
+                }],
+                edge_types: Vec::new(),
+            },
+        )
+        .await?;
     let created = store
         .upsert_blue_node(
             &t1,
@@ -154,10 +190,15 @@ async fn rls_isolates_tenants() -> TestResult {
     );
     drop(tx_t2);
 
-    sqlx::query("DELETE FROM xb_nodes WHERE tenant_id = ANY($1)")
-        .bind(vec![t1, t2])
-        .execute(&owner_pool)
-        .await?;
+    let tenants = vec![t1, t2];
+    for sql in [
+        "DELETE FROM xb_nodes WHERE tenant_id = ANY($1)",
+        "DELETE FROM xb_node_types WHERE tenant_id = ANY($1)",
+        "DELETE FROM ax_jobs WHERE tenant_id = ANY($1)",
+        "DELETE FROM ax_outbox WHERE tenant_id = ANY($1)",
+    ] {
+        sqlx::query(sql).bind(&tenants).execute(&owner_pool).await?;
+    }
 
     Ok(())
 }

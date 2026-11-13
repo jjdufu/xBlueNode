@@ -238,109 +238,17 @@ impl PgStore {
         Ok(AxSimSnapshot { nodes, links })
     }
 
-    /// Upserts a runtime `BlueNode` and optionally creates a causal `BlueLink`.
+    /// Upserts a runtime `BlueNode` and optionally creates a causal `BlueLink`
+    /// by delegating to [`axpoint_domain::ports::GraphStorePort::upsert_node`].
     ///
     /// # Errors
-    /// Returns [`AppError::Database`] if the upsert or link creation fails.
+    /// Returns [`AppError::BadRequest`], [`AppError::NotFound`], [`AppError::Conflict`], or [`AppError::Database`] if validation or persistence fails.
     pub async fn upsert_blue_node(
         &self,
         tenant_id: &str,
         req: UpsertBlueNodeRequest,
     ) -> Result<BlueNode, AppError> {
-        if let Some(geo) = req.geo {
-            geo.validate()?;
-        }
-        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
-        let props_json = serde_json::Value::Object(req.properties.clone());
-        let metrics_json = serde_json::to_value(&req.metrics)
-            .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid metrics: {err}")))?;
-        let geo_lng = req.geo.map(|g| g.lng);
-        let geo_lat = req.geo.map(|g| g.lat);
-
-        let row = sqlx::query(
-            "INSERT INTO xb_nodes (tenant_id, type_name, node_key, title, properties, metrics, geo_lng, geo_lat)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (tenant_id, type_name, node_key) DO UPDATE SET
-                title = EXCLUDED.title,
-                properties = EXCLUDED.properties,
-                metrics = xb_nodes.metrics || EXCLUDED.metrics,
-                geo_lng = COALESCE(EXCLUDED.geo_lng, xb_nodes.geo_lng),
-                geo_lat = COALESCE(EXCLUDED.geo_lat, xb_nodes.geo_lat),
-                row_version = xb_nodes.row_version + 1,
-                updated_at = NOW()
-             RETURNING id, properties, metrics, geo_lng, geo_lat, source_dataset_id, source_row_key, row_version, created_at, updated_at",
-        )
-        .bind(tenant_id)
-        .bind(req.type_name.trim())
-        .bind(req.node_key.trim())
-        .bind(req.title.trim())
-        .bind(props_json)
-        .bind(metrics_json)
-        .bind(geo_lng)
-        .bind(geo_lat)
-        .fetch_one(&mut *tx)
-        .await
-        .map_err(|err| AppError::Database(format!("upsert xb_node failed: {err}")))?;
-
-        let node_id: Uuid = row.get("id");
-
-        if let Some(target_id) = req.link_to_node_id {
-            let ltype = req.link_type.unwrap_or_else(|| String::from("IMPACTS"));
-            let weight = req.link_weight.unwrap_or(0.6);
-            sqlx::query(
-                "INSERT INTO xb_links (tenant_id, link_type, src_node_id, dst_node_id, weight)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (tenant_id, link_type, src_node_id, dst_node_id) DO UPDATE SET
-                    weight = EXCLUDED.weight,
-                    updated_at = NOW()",
-            )
-            .bind(tenant_id)
-            .bind(ltype)
-            .bind(node_id)
-            .bind(target_id)
-            .bind(weight)
-            .execute(&mut *tx)
-            .await
-            .map_err(|err| AppError::Database(format!("insert xb_link failed: {err}")))?;
-        }
-
-        let p_val: serde_json::Value = row.get("properties");
-        let properties = match p_val {
-            serde_json::Value::Object(map) => map,
-            _ => serde_json::Map::new(),
-        };
-        let m_val: serde_json::Value = row.get("metrics");
-        let metrics: BTreeMap<String, f64> = serde_json::from_value(m_val).unwrap_or_default();
-        let r_lng: Option<f64> = row.get("geo_lng");
-        let r_lat: Option<f64> = row.get("geo_lat");
-        let geo = match (r_lng, r_lat) {
-            (Some(lng), Some(lat)) => Some(GeoPoint { lng, lat }),
-            _ => None,
-        };
-        let row_version: i64 = row.get("row_version");
-        let created_at: DateTime<Utc> = row.get("created_at");
-        let updated_at: DateTime<Utc> = row.get("updated_at");
-        let source_dataset_id: Option<Uuid> = row.get("source_dataset_id");
-        let source_row_key: Option<String> = row.get("source_row_key");
-
-        tx.commit().await.map_err(|err| {
-            AppError::Database(format!("commit upsert_blue_node tx failed: {err}"))
-        })?;
-
-        Ok(BlueNode {
-            id: node_id,
-            type_name: req.type_name,
-            node_key: req.node_key,
-            title: req.title,
-            properties,
-            metrics,
-            geo,
-            source_dataset_id,
-            source_row_key,
-            row_version,
-            created_at,
-            updated_at,
-        })
+        <Self as axpoint_domain::ports::GraphStorePort>::upsert_node(self, tenant_id, req).await
     }
 
     /// Lists `AxFlow` pipelines for a tenant.

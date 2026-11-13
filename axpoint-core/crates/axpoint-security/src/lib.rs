@@ -2,10 +2,12 @@
 
 pub mod audit;
 pub mod authenticator;
+pub mod keyring;
 pub mod principal;
 
 pub use audit::AuditWriter;
 pub use authenticator::{Authenticator, sha256_hex};
+pub use keyring::{CREDENTIAL_KEYS_ENV_VAR, CredentialKeyring, Keyring};
 pub use principal::{AuthPrincipal, TokenKind};
 
 #[cfg(test)]
