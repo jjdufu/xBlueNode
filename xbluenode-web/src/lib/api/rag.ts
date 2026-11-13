@@ -1,4 +1,4 @@
-import { requestJson } from "./client";
+import { requestJson, requestMultipart } from "./client";
 
 export type RecallChannel =
   | "vector"
@@ -71,14 +71,18 @@ export interface TopologyGraph {
   edges: TopologyEdge[];
 }
 
+/** Uploads a document via `POST /api/documents/upload` with Bearer authorization. */
+export async function uploadDocument(file: File): Promise<IngestResponse> {
+  const form = new FormData();
+  form.append("file", file);
+  return requestMultipart<IngestResponse>("/api/documents/upload", form);
+}
+
 export const api = {
   health: () => requestJson<HealthInfo>("/api/health"),
-  stats: (tenantId = "default") =>
-    requestJson<SystemStats>(`/api/stats?tenant_id=${encodeURIComponent(tenantId)}`),
-  topology: (tenantId = "default") =>
-    requestJson<TopologyGraph>(`/api/graph/topology?tenant_id=${encodeURIComponent(tenantId)}`),
+  stats: () => requestJson<SystemStats>("/api/stats"),
+  topology: () => requestJson<TopologyGraph>("/api/graph/topology"),
   ingestText: (payload: {
-    tenant_id?: string;
     title: string;
     source_name: string;
     content: string;
@@ -88,16 +92,9 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  uploadFile: async (file: File, tenantId = "default"): Promise<IngestResponse> => {
-    const form = new FormData();
-    form.append("tenant_id", tenantId);
-    form.append("file", file);
-    return requestJson<IngestResponse>("/api/documents/upload", {
-      method: "POST",
-      body: form,
-    });
-  },
-  chatQuery: (payload: { tenant_id?: string; query: string; top_k?: number }) =>
+  uploadFile: (file: File): Promise<IngestResponse> => uploadDocument(file),
+  uploadDocument: (file: File): Promise<IngestResponse> => uploadDocument(file),
+  chatQuery: (payload: { query: string; top_k?: number }) =>
     requestJson<ChatQueryResponse>("/api/chat/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

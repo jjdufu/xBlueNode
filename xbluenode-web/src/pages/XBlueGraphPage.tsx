@@ -95,8 +95,14 @@ export function XBlueGraphPage() {
                   >
                     <circle
                       r={isEntity ? 10 : 12}
-                      fill={isSelected ? "#2563eb" : isEntity ? "#ffffff" : "#09090b"}
-                      stroke={isSelected ? "#2563eb" : "#09090b"}
+                      fill={
+                        isSelected
+                          ? "var(--xblue)"
+                          : isEntity
+                            ? "var(--background)"
+                            : "var(--foreground)"
+                      }
+                      stroke={isSelected ? "var(--xblue)" : "var(--foreground)"}
                       strokeWidth={1.5}
                     />
                     <text

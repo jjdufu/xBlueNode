@@ -103,22 +103,33 @@ export interface AxSandboxRecord {
 }
 
 export const xblueApi = {
-  getSchema: (tenantId = "default") =>
-    requestJson<XBlueSchema>(`/api/xblue/schema?tenant_id=${encodeURIComponent(tenantId)}`),
+  getSchema: () => requestJson<XBlueSchema>("/api/xblue/schema"),
   saveSchema: (payload: {
-    tenant_id?: string;
     node_types: Omit<BlueNodeTypeDef, "id">[];
     edge_types: Omit<BlueEdgeTypeDef, "id">[];
   }) =>
     requestJson<XBlueSchema>("/api/xblue/schema", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        node_types: payload.node_types.map((nt) => ({
+          name: nt.name,
+          display_name: nt.display_name,
+          properties: nt.properties,
+          agg_rules: nt.agg_rules,
+          pos_x: nt.pos_x,
+          pos_y: nt.pos_y,
+        })),
+        edge_types: payload.edge_types.map((et) => ({
+          name: et.name,
+          src_type_name: et.src_type_name,
+          dst_type_name: et.dst_type_name,
+          impact_weight: et.impact_weight,
+        })),
+      }),
     }),
-  getNodes: (tenantId = "default") =>
-    requestJson<AxSimSnapshot>(`/api/xblue/nodes?tenant_id=${encodeURIComponent(tenantId)}`),
+  getNodes: () => requestJson<AxSimSnapshot>("/api/xblue/nodes"),
   upsertNode: (payload: {
-    tenant_id?: string;
     type_name: string;
     node_key: string;
     title: string;
@@ -132,10 +143,8 @@ export const xblueApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  listFlows: (tenantId = "default") =>
-    requestJson<AxFlowDef[]>(`/api/axflow/flows?tenant_id=${encodeURIComponent(tenantId)}`),
+  listFlows: () => requestJson<AxFlowDef[]>("/api/axflow/flows"),
   createFlow: (payload: {
-    tenant_id?: string;
     name: string;
     description: string;
     steps: AxFlowStep[];
@@ -145,14 +154,13 @@ export const xblueApi = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     }),
-  runFlow: (id: string, tenantId = "default") =>
+  runFlow: (id: string) =>
     requestJson<AxFlowRunResult>(
-      `/api/axflow/flows/${id}/run?tenant_id=${encodeURIComponent(tenantId)}`,
+      `/api/axflow/flows/${encodeURIComponent(id)}/run`,
       { method: "POST" }
     ),
-  listSandboxes: (tenantId = "default") =>
-    requestJson<AxSandboxRecord[]>(`/api/axsim/sandboxes?tenant_id=${encodeURIComponent(tenantId)}`),
-  createSandbox: (payload: { tenant_id?: string; name: string }) =>
+  listSandboxes: () => requestJson<AxSandboxRecord[]>("/api/axsim/sandboxes"),
+  createSandbox: (payload: { name: string }) =>
     requestJson<AxSandboxRecord>("/api/axsim/sandboxes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -160,11 +168,10 @@ export const xblueApi = {
     }),
   simulateSandbox: (
     id: string,
-    actions: { target_node_id: string; metric_key: string; delta_ratio: number }[],
-    tenantId = "default"
+    actions: { target_node_id: string; metric_key: string; delta_ratio: number }[]
   ) =>
     requestJson<AxSimResult>(
-      `/api/axsim/sandboxes/${id}/simulate?tenant_id=${encodeURIComponent(tenantId)}`,
+      `/api/axsim/sandboxes/${encodeURIComponent(id)}/simulate`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },

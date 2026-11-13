@@ -1,11 +1,30 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Moon, Sun } from "lucide-react";
-import { MODULE_REGISTRY, type TabKey } from "@/modules/registry";
+import {
+  createBrowserRouter,
+  Navigate,
+  NavLink,
+  Outlet,
+  RouterProvider,
+  useLocation,
+} from "react-router";
+import { getAccessToken, setUnauthorizedHandler } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { MODULE_REGISTRY } from "@/modules/registry";
+import { LoginPage } from "@/pages/LoginPage";
 
-export function App() {
-  const [tab, setTab] = useState<TabKey>("dashboard");
-  const [dark, setDark] = useState(false);
+function ShellLayout() {
+  const location = useLocation();
+  const [dark, setDark] = useState(
+    () =>
+      typeof document !== "undefined" &&
+      document.documentElement.classList.contains("dark")
+  );
+
+  const token = getAccessToken();
+  if (!token) {
+    return <Navigate to="/login" replace />;
+  }
 
   const toggleTheme = () => {
     const next = !dark;
@@ -13,8 +32,7 @@ export function App() {
     document.documentElement.classList.toggle("dark", next);
   };
 
-  const activeModule = MODULE_REGISTRY.find((m) => m.key === tab) ?? MODULE_REGISTRY[0];
-  const ActivePage = activeModule.component;
+  const navItems = MODULE_REGISTRY.filter((m) => !m.public);
 
   return (
     <div className="min-h-screen flex bg-background text-foreground">
@@ -33,14 +51,18 @@ export function App() {
           </div>
 
           <nav className="space-y-1">
-            {MODULE_REGISTRY.map((item) => {
+            {navItems.map((item) => {
               const Icon = item.icon;
-              const active = tab === item.key;
+              const active =
+                item.path === "/"
+                  ? location.pathname === "/"
+                  : location.pathname === item.path ||
+                    location.pathname.startsWith(`${item.path}/`);
               return (
-                <button
+                <NavLink
                   key={item.key}
-                  type="button"
-                  onClick={() => setTab(item.key)}
+                  to={item.path}
+                  end={item.path === "/"}
                   className={cn(
                     "w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-xs font-medium transition-colors cursor-pointer",
                     active
@@ -50,7 +72,7 @@ export function App() {
                 >
                   <Icon className={cn("h-3.5 w-3.5", active && "text-xblue")} />
                   {item.label}
-                </button>
+                </NavLink>
               );
             })}
           </nav>
@@ -67,8 +89,44 @@ export function App() {
       </aside>
 
       <main className="flex-1 p-6 md:p-8 max-w-6xl mx-auto w-full">
-        <ActivePage />
+        <Outlet />
       </main>
     </div>
   );
+}
+
+const router = createBrowserRouter([
+  {
+    path: "/login",
+    element: <LoginPage />,
+  },
+  {
+    element: <ShellLayout />,
+    children: [
+      ...MODULE_REGISTRY.filter((m) => !m.public).map((m) => {
+        const PageComponent = m.component;
+        return {
+          path: m.path,
+          element: <PageComponent />,
+        };
+      }),
+      {
+        path: "*",
+        element: <Navigate to="/" replace />,
+      },
+    ],
+  },
+]);
+
+export function App() {
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      void router.navigate("/login", { replace: true });
+    });
+    return () => {
+      setUnauthorizedHandler(null);
+    };
+  }, []);
+
+  return <RouterProvider router={router} />;
 }

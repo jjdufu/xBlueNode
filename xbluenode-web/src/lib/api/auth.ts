@@ -1,5 +1,5 @@
 import type { Permission, TokenKind } from "./enums";
-import { requestJson } from "./client";
+import { ApiError, requestJson } from "./client";
 
 /** Authenticated principal returned by `GET /api/auth/me`. */
 export interface MeResponse {
@@ -34,9 +34,19 @@ export function clearAccessToken(): void {
 /** Validates the current or candidate token via `GET /api/auth/me`. */
 export async function fetchMe(candidateToken?: string): Promise<MeResponse> {
   const headers: Record<string, string> = {};
-  const tok = candidateToken?.trim() ?? memoryToken;
-  if (tok) {
-    headers.Authorization = `Bearer ${tok}`;
+  if (candidateToken !== undefined) {
+    const trimmed = candidateToken.trim();
+    if (trimmed.length === 0) {
+      throw new ApiError({
+        status: 401,
+        errorCode: "TOKEN_MISSING",
+        message: "访问令牌不能为空",
+        traceId: "",
+      });
+    }
+    headers.Authorization = `Bearer ${trimmed}`;
+  } else if (memoryToken) {
+    headers.Authorization = `Bearer ${memoryToken}`;
   }
   return requestJson<MeResponse>("/api/auth/me", { headers });
 }

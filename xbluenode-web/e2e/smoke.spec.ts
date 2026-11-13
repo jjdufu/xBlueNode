@@ -1,0 +1,317 @@
+import { expect, type Page, type Route, test } from "@playwright/test";
+
+interface SmokeRouteAssertion {
+  readonly path: string;
+  readonly sidebarLabel: string;
+  readonly heading: string;
+}
+
+const SHELL_SMOKE_ROUTES: readonly SmokeRouteAssertion[] = [
+  { path: "/", sidebarLabel: "系统概览", heading: "系统概览" },
+  {
+    path: "/ingest",
+    sidebarLabel: "AxIngest · 知识入库",
+    heading: "AxIngest · 知识解析入库",
+  },
+  {
+    path: "/query",
+    sidebarLabel: "AxQuery · 智能问答",
+    heading: "AxQuery · 五路融合问答",
+  },
+  {
+    path: "/graph",
+    sidebarLabel: "xBlueGraph · 图浏览",
+    heading: "xBlueGraph · 拓扑浏览器",
+  },
+  {
+    path: "/studio",
+    sidebarLabel: "xBlueStudio · 节点建模",
+    heading: "xBlueStudio · 节点与关系建模",
+  },
+  {
+    path: "/flow",
+    sidebarLabel: "AxFlow · 编排",
+    heading: "AxFlow · 智能编排流水线",
+  },
+  {
+    path: "/sim",
+    sidebarLabel: "AxSim · 因果推演",
+    heading: "AxSim · 因果推演沙盘",
+  },
+];
+
+async function installDeterministicApiMocks(
+  page: Page,
+  leakedTenantUrls: string[],
+  missingAuthUrls: string[]
+): Promise<void> {
+  await page.route("**/favicon.ico", async (route: Route) => {
+    await route.fulfill({ status: 204, body: "" });
+  });
+
+  await page.route("**/api/**", async (route: Route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const { pathname, searchParams } = url;
+
+    if (searchParams.has("tenant_id")) {
+      leakedTenantUrls.push(request.url());
+      await route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error_code: "INVALID_ARGUMENT",
+          message: "tenant_id query parameter is forbidden",
+          trace_id: "smoke-trace-400",
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/health") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          status: "ok",
+          service: "axpoint-core",
+          embedding_model: "bge-m3",
+          embedding_dim: 1024,
+        }),
+      });
+      return;
+    }
+
+    const authHeader = request.headers()["authorization"] ?? "";
+    if (!authHeader.startsWith("Bearer ") || authHeader.slice(7).trim().length === 0) {
+      missingAuthUrls.push(request.url());
+      await route.fulfill({
+        status: 401,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error_code: "TOKEN_MISSING",
+          message: "Authorization Bearer token required",
+          trace_id: "smoke-trace-401",
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/auth/me") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          user_id: "00000000-0000-0000-0000-000000000000",
+          tenant_id: "default",
+          username: "dev",
+          dept_id: "default",
+          roles: ["ADMIN"],
+          permissions: [
+            "DATA_READ",
+            "DATA_SYNC",
+            "STUDIO_EDIT",
+            "STUDIO_PUBLISH",
+            "FLOW_EDIT",
+            "FLOW_RUN",
+            "SIM_RUN",
+          ],
+          token_kind: "DEV_STATIC",
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/stats") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          doc_count: 3,
+          para_count: 18,
+          entity_count: 12,
+          edge_count: 24,
+          embedding_count: 18,
+          embedding_dims: [1024],
+          timestamp: "2026-01-31T08:00:00Z",
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/graph/topology") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          nodes: [
+            {
+              id: "00000000-0000-0000-0000-000000000001",
+              node_type: "DOC",
+              label: "供应链制度",
+              weight: 3,
+            },
+            {
+              id: "00000000-0000-0000-0000-000000000002",
+              node_type: "ENTITY",
+              label: "华东仓",
+              weight: 2,
+            },
+          ],
+          edges: [
+            {
+              id: "00000000-0000-0000-0000-000000000003",
+              source: "00000000-0000-0000-0000-000000000001",
+              target: "00000000-0000-0000-0000-000000000002",
+              rel_type: "MENTIONS",
+              fact: "华东仓负责履约订单",
+            },
+          ],
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/xblue/schema") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          node_types: [
+            {
+              id: "00000000-0000-0000-0000-000000000011",
+              name: "Warehouse",
+              display_name: "仓库",
+              properties: [{ name: "inventory", data_type: "number" }],
+              agg_rules: [{ target_metric: "inventory", op: "SUM" }],
+              pos_x: 120,
+              pos_y: 120,
+            },
+          ],
+          edge_types: [
+            {
+              id: "00000000-0000-0000-0000-000000000012",
+              name: "FULFILLS",
+              src_type_name: "Warehouse",
+              dst_type_name: "Order",
+              impact_weight: 0.8,
+            },
+          ],
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/xblue/nodes") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          nodes: [
+            {
+              id: "00000000-0000-0000-0000-000000000021",
+              type_name: "Warehouse",
+              node_key: "W-1",
+              title: "华东仓",
+              metrics: { inventory: 500, output: 500 },
+            },
+          ],
+          links: [],
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/axflow/flows") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: "00000000-0000-0000-0000-000000000031",
+            name: "供应链日度产能同步",
+            description: "多源数据摄取与业务节点映射",
+            steps: [
+              { id: "s1", kind: "INGEST", label: "多源数据摄取", config: {} },
+            ],
+            status: "PUBLISHED",
+            last_run_at: null,
+          },
+        ]),
+      });
+      return;
+    }
+
+    if (pathname === "/api/axsim/sandboxes") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: "00000000-0000-0000-0000-000000000041",
+            name: "华东应急推演",
+            node_count: 1,
+            link_count: 0,
+            sim_result: null,
+            created_at: "2026-01-31T08:00:00Z",
+          },
+        ]),
+      });
+      return;
+    }
+
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({}),
+    });
+  });
+}
+
+test("all registered routes and /login render cleanly with Bearer auth and zero console errors", async ({
+  page,
+}) => {
+  const consoleErrors: string[] = [];
+  const pageErrors: string[] = [];
+  const leakedTenantUrls: string[] = [];
+  const missingAuthUrls: string[] = [];
+
+  page.on("console", (msg) => {
+    if (msg.type() === "error") {
+      consoleErrors.push(msg.text());
+    }
+  });
+  page.on("pageerror", (err) => {
+    pageErrors.push(err.message);
+  });
+
+  await installDeterministicApiMocks(page, leakedTenantUrls, missingAuthUrls);
+
+  for (const routeSpec of SHELL_SMOKE_ROUTES) {
+    await page.goto(routeSpec.path);
+    await expect(page.locator("aside")).toContainText("xBlueNode");
+    await expect(
+      page.getByRole("link", { name: routeSpec.sidebarLabel })
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { level: 1, name: routeSpec.heading })
+    ).toBeVisible();
+  }
+
+  await page.goto("/login");
+  await expect(
+    page.getByRole("heading", { level: 1, name: "AxGuard · 访问令牌认证" })
+  ).toBeVisible();
+
+  await page.locator("#access-token-input").fill("smoke-candidate-token-0000000000000000");
+  await page.getByRole("button", { name: "验证并进入工作台" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(
+    page.getByRole("heading", { level: 1, name: "系统概览" })
+  ).toBeVisible();
+
+  expect(leakedTenantUrls).toEqual([]);
+  expect(missingAuthUrls).toEqual([]);
+  expect(pageErrors).toEqual([]);
+  expect(consoleErrors).toEqual([]);
+});
