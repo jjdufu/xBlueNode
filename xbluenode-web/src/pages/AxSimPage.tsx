@@ -16,6 +16,7 @@ export function AxSimPage() {
   const [targetNode, setTargetNode] = useState<string>("");
   const [deltaRatio, setDeltaRatio] = useState<string>("-0.5");
   const [simResult, setSimResult] = useState<AxSimResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
     try {
@@ -38,21 +39,31 @@ export function AxSimPage() {
 
   const createSandbox = async () => {
     if (!sbName.trim()) return;
-    const created = await xblueApi.createSandbox({ name: sbName.trim() });
-    setSbName("");
-    setSelectedSb(created.id);
-    await load();
+    setError(null);
+    try {
+      const created = await xblueApi.createSandbox({ name: sbName.trim() });
+      setSbName("");
+      setSelectedSb(created.id);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const runSimulation = async () => {
     if (!selectedSb || !targetNode) return;
     const ratio = Number.parseFloat(deltaRatio);
     if (Number.isNaN(ratio)) return;
-    const res = await xblueApi.simulateSandbox(selectedSb, [
-      { target_node_id: targetNode, metric_key: "output", delta_ratio: ratio },
-    ]);
-    setSimResult(res);
-    await load();
+    setError(null);
+    try {
+      const res = await xblueApi.simulateSandbox(selectedSb, [
+        { target_node_id: targetNode, metric_key: "output", delta_ratio: ratio },
+      ]);
+      setSimResult(res);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   return (
@@ -63,6 +74,13 @@ export function AxSimPage() {
           基于写时复制（CoW）克隆生产节点快照，在隔离分支试算 What-If 因果传导，不污染正式数据
         </p>
       </div>
+
+      {error && (
+        <Card className="p-3.5 border-foreground/30 bg-muted/40 text-xs">
+          <span className="font-mono-tech font-semibold">推演提示：</span>
+          {error}
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card className="p-4 space-y-3">

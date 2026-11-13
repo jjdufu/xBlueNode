@@ -25,8 +25,24 @@ export function XBlueStudioPage() {
         xblueApi.getSchema(),
         xblueApi.getNodes(),
       ]);
-      setNodeTypes(schema.node_types);
-      setEdgeTypes(schema.edge_types);
+      setNodeTypes(
+        schema.node_types.map((nt) => ({
+          name: nt.name,
+          display_name: nt.display_name,
+          properties: nt.properties,
+          agg_rules: nt.agg_rules,
+          pos_x: nt.pos_x,
+          pos_y: nt.pos_y,
+        }))
+      );
+      setEdgeTypes(
+        schema.edge_types.map((et) => ({
+          name: et.name,
+          src_type_name: et.src_type_name,
+          dst_type_name: et.dst_type_name,
+          impact_weight: et.impact_weight,
+        }))
+      );
       setRuntimeNodes(snap.nodes);
     } catch {
       // ignore initial offline state

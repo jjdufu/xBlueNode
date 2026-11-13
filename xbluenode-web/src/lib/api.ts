@@ -1,3 +1,5 @@
 export * from "./api/client";
+export * from "./api/enums";
+export * from "./api/auth";
 export * from "./api/rag";
 export * from "./api/xblue";

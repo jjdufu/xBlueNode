@@ -8,6 +8,7 @@ export function AxFlowPage() {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [runLog, setRunLog] = useState<AxFlowRunResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const load = async () => {
     try {
@@ -23,25 +24,35 @@ export function AxFlowPage() {
 
   const create = async () => {
     if (!name.trim()) return;
-    await xblueApi.createFlow({
-      name: name.trim(),
-      description: desc.trim() || "数据摄取 → AI 清洗 → 节点映射 → 规则触发",
-      steps: [
-        { id: "s1", kind: "INGEST", label: "多源数据摄取", config: {} },
-        { id: "s2", kind: "TRANSFORM", label: "AI 清洗与标准化", config: {} },
-        { id: "s3", kind: "NODE_MAP", label: "写入 xBlueNode 节点库", config: {} },
-        { id: "s4", kind: "ACTION", label: "发布 API / MCP Skill", config: {} },
-      ],
-    });
-    setName("");
-    setDesc("");
-    await load();
+    setError(null);
+    try {
+      await xblueApi.createFlow({
+        name: name.trim(),
+        description: desc.trim() || "数据摄取 → AI 清洗 → 节点映射 → 规则触发",
+        steps: [
+          { id: "s1", kind: "INGEST", label: "多源数据摄取", config: {} },
+          { id: "s2", kind: "TRANSFORM", label: "AI 清洗与标准化", config: {} },
+          { id: "s3", kind: "NODE_MAP", label: "写入 xBlueNode 节点库", config: {} },
+          { id: "s4", kind: "ACTION", label: "发布 API / MCP Skill", config: {} },
+        ],
+      });
+      setName("");
+      setDesc("");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const run = async (id: string) => {
-    const res = await xblueApi.runFlow(id);
-    setRunLog(res);
-    await load();
+    setError(null);
+    try {
+      const res = await xblueApi.runFlow(id);
+      setRunLog(res);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   return (
@@ -52,6 +63,13 @@ export function AxFlowPage() {
           一个流水线 = 一个可运行的业务应用，串联多源摄取、节点映射与自动行动
         </p>
       </div>
+
+      {error && (
+        <Card className="p-3.5 border-foreground/30 bg-muted/40 text-xs">
+          <span className="font-mono-tech font-semibold">操作失败：</span>
+          {error}
+        </Card>
+      )}
 
       <Card className="p-4 flex flex-col md:flex-row gap-2">
         <Input
