@@ -1,0 +1,38 @@
+# Rust / Cargo
+/axpoint-core/target/
+**/target/
+**/*.rs.bk
+
+# Python
+**/__pycache__/
+**/*.py[cod]
+**/*$py.class
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node / Frontend
+**/node_modules/
+**/dist/
+**/*.tsbuildinfo
+.vite/
+
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+
+# Local runtime data & artifacts
+*.parquet
+*.log
+/var/lib/axpoint/
+/tmp/
+
+# OS & Editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

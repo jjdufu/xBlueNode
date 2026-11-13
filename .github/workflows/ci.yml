@@ -1,0 +1,99 @@
+name: xBlueNode-AxPoint CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      python: ${{ steps.filter.outputs.python }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'axpoint-core/**'
+              - '.github/workflows/ci.yml'
+            python:
+              - 'axpoint-parser/**'
+              - '.github/workflows/ci.yml'
+            web:
+              - 'xbluenode-web/**'
+              - '.github/workflows/ci.yml'
+
+  rust-core:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: axpoint-core
+      - name: Format Check
+        working-directory: axpoint-core
+        run: cargo fmt --all -- --check
+      - name: Clippy Strict Lint
+        working-directory: axpoint-core
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Unit Tests
+        working-directory: axpoint-core
+        run: cargo test --workspace
+
+  python-parser:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Dependencies
+        working-directory: axpoint-parser
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e . pytest
+      - name: Run Parser Tests
+        working-directory: axpoint-parser
+        run: pytest -v tests
+
+  web-frontend:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.web == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: xbluenode-web/package-lock.json
+      - name: Install & Build
+        working-directory: xbluenode-web
+        run: |
+          npm ci
+          npm run build
+
+  naming-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify Autonomous Naming Policy
+        run: |
+          PATTERN='t[h]utmose|a[b]ution|onto(graph|studio|flow|os|x)|pala[n]tir'
+          if grep -rn -iE "$PATTERN" --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=__pycache__ .; then
+            echo "Disallowed external brand reference detected."
+            exit 1
+          fi

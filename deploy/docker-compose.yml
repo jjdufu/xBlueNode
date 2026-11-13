@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: xbluenode-pgvector
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: axpoint
+      POSTGRES_PASSWORD: axpoint_secret
+      POSTGRES_DB: xbluenode
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./migrations:/docker-entrypoint-initdb.d:ro
+
+volumes:
+  pgdata:

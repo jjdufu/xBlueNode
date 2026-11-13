@@ -1,0 +1,25 @@
+[package]
+name = "axpoint-server"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axpoint-db = { path = "../axpoint-db" }
+axpoint-domain = { path = "../axpoint-domain" }
+axpoint-llm = { path = "../axpoint-llm" }
+axum = { workspace = true }
+dotenvy = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tower-http = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }

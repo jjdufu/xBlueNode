@@ -1,0 +1,58 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/axpoint-domain",
+    "crates/axpoint-llm",
+    "crates/axpoint-db",
+    "crates/axpoint-server",
+]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.100.0"
+version = "0.1.0"
+license = "Apache-2.0"
+
+[workspace.lints.rust]
+warnings = "deny"
+unsafe_code = "forbid"
+unused_imports = "deny"
+unused_variables = "deny"
+dead_code = "deny"
+unused_must_use = "deny"
+unused_mut = "deny"
+missing_docs = "deny"
+elided_lifetimes_in_paths = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+allow_attributes = "deny"
+blanket_clippy_restriction_lints = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+panic = "deny"
+unreachable = "deny"
+as_conversions = "deny"
+indexing_slicing = "deny"
+clone_on_copy = "deny"
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+
+[workspace.dependencies]
+axum = { version = "0.8", features = ["multipart"] }
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+pgvector = { version = "0.4", features = ["sqlx"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "chrono", "json"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+uuid = { version = "1", features = ["v4", "serde"] }

@@ -1,0 +1,21 @@
+# xBlueNode / AxPoint Monorepo Code Owners
+
+# 全局规范与蓝图
+/IRON_RULES.md                      @xbluenode/maintainers
+/docs/                              @xbluenode/maintainers
+/deploy/                            @xbluenode/infra
+
+# Rust 核心引擎按 Crate 分模块负责
+/axpoint-core/Cargo.toml            @xbluenode/core-architects
+/axpoint-core/crates/axpoint-domain/ @xbluenode/core-architects
+/axpoint-core/crates/axpoint-llm/   @xbluenode/ai-team
+/axpoint-core/crates/axpoint-db/    @xbluenode/graph-team
+/axpoint-core/crates/axpoint-server/ @xbluenode/core-architects
+
+# Python 解析、连接器与出品服务
+/axpoint-parser/parsers/            @xbluenode/data-team
+/axpoint-parser/connectors/         @xbluenode/data-team
+/axpoint-parser/exporters/          @xbluenode/export-team
+
+# React 前端工作台
+/xbluenode-web/                     @xbluenode/web-team
