@@ -1,4 +1,4 @@
-name: xBlueNode-AxPoint CI
+name: xBlueNode CI
 
 on:
   pull_request:
@@ -91,9 +91,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify Autonomous Naming Policy
-        run: |
-          PATTERN='t[h]utmose|a[b]ution|onto(graph|studio|flow|os|x)|pala[n]tir'
-          if grep -rn -iE "$PATTERN" --exclude-dir=.git --exclude-dir=target --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=__pycache__ .; then
-            echo "Disallowed external brand reference detected."
-            exit 1
-          fi
+        env:
+          NAMING_DENYLIST: ${{ vars.NAMING_DENYLIST }}
+        run: bash scripts/naming-guard.sh

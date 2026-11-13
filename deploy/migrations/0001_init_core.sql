@@ -1,5 +1,5 @@
 -- xBlueNode / AxPoint 动态超图与多维度向量存储 Schema
--- 适用数据库: PostgreSQL 15+ (需启用 pgvector 扩展)
+-- 适用数据库: PostgreSQL 16+ (需启用 pgvector 扩展)
 
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;

@@ -27,7 +27,7 @@ export function App() {
                 xBlueNode
               </div>
               <div className="text-[11px] font-mono-tech text-muted-foreground">
-                AxPoint Core v0.2
+                AxPoint Core v{__APP_VERSION__}
               </div>
             </div>
           </div>

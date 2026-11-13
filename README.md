@@ -1,89 +1,83 @@
 # xBlueNode / AxPoint — 节点智能与动态超图平台
 
-> **xBlueNode**（网络、动态图谱与业务节点拓扑工作台）× **AxPoint**（AI + x + Point，Rust 高性能算法、编排与推演底座）
+> **xBlueNode**（业务节点建模、决策交互与出品工作台）× **AxPoint**（Rust 核心服务 + Python Sidecar 引擎底座）
 
-本项目已完成 **Phase 1–3 核心全栈架构**搭建，采用 **Rust `1.100.0` (`edition = "2024"`) + PostgreSQL (`pgvector`) + Python FastAPI Sidecar (`AxParser`) + Vite/React (`shadcn/ui` 新瑞士极简风)** 架构。
+技术栈：Rust `1.100.0`（`edition = "2024"`）+ PostgreSQL 16（`pgvector`）+ DuckDB / DuckLake + Python 3.11 FastAPI Sidecar（AxParser / AxHub）+ Vite / React 19。
+
+完整的落地方案见 **[docs/blueprint/00-MASTER-INDEX.md](./docs/blueprint/00-MASTER-INDEX.md)**：Step 00～14 按依赖层逐步实施，每个 Step 给出目标、前置条件、迁移、文件清单、代码骨架、命令与可执行门禁。
 
 ---
 
-## 一、核心模块体系
+## 一、模块体系
 
-- **xBlueNode 前端工作台 (`xbluenode-web`)**：
-  - **系统概览**：平台实时指标（`Doc / Para / Entity / Edge / Embedding`）与多维度兼容状态。
-  - **AxIngest · 知识入库**：上传 PDF/Word/Markdown/图像或粘贴文本，构建三级超图。
-  - **AxQuery · 五路问答**：并行触发 `Vector / BM25 / EntityLink / Context / MultiHop` 五路召回与 RRF 融合回答。
-  - **xBlueGraph · 拓扑视图**：超图实体与文档关系网络浏览器。
-  - **xBlueStudio · 节点建模**：定义业务节点类型（`BlueNodeType`）、因果关系（`BlueEdgeType`）与聚合规则。
-  - **AxFlow · 编排流水线**：串联 `INGEST → TRANSFORM → NODE_MAP → ACTION` 的可运行业务流水线。
-  - **AxSim · 因果推演**：基于写时复制（CoW）克隆生产节点快照，在隔离分支试算 What-If 因果传导。
+| 模块 | 职责 |
+| :--- | :--- |
+| **AxParser** | 文件双轨解析：CSV / TXT / Excel / PPT / Word / PDF / 图片 / JSON / XML / 日志 → 结构化 Markdown + 数据表 |
+| **AxHub** | 连接器与同步：关系库、国产库、分析型库、NoSQL、时序库、对象存储、REST / GraphQL / Webhook、Kafka / MQTT / Pulsar，DuckLake 入湖与资产目录 |
+| **AxGraph** | 超图（`hg_*`）+ 业务节点（`xb_*`）+ 时序指标 + 图查询与图算法 |
+| **AxAnalytics / AxQuery** | DuckDB OLAP、透视制表、指标语义层、智能问数；五路召回 + RRF 知识问答 |
+| **xBlueStudio / xBlueGraph** | 可视化建模、模型版本与发布、映射物化、派生与动态聚合；业务图浏览 |
+| **AxFlow** | DAG 编排、持久化执行、测试 / 正式部署、规则引擎与告警中心 |
+| **AxAgent** | 发布端点（API / Skill / MCP）、MCP Client、多模型路由、智能体与多轮工作台 |
+| **AxSim** | 范围克隆沙盘、写时复制、因果传导、检查点回放、方案对比、决策下发 |
+| **xBlueView** | 孪生驾驶舱、实时刷新、下钻、地图与平面图、全格式出品、安全分享 |
+| **AxGuard** | 本地与 OIDC 认证、令牌轮换、Cedar ABAC、行级 / 列级策略、PII 识别、审计链 |
+| **AxOps** | 生产部署、备份恢复、保留策略、行业模板包、演示数据、交付追踪 |
 
 ---
 
 ## 二、目录结构
 
 ```text
-xBlueNode-AxPoint/
-├── IRON_RULES.md          # Monorepo 分模块并行开发与自主命名铁律（必读）
-├── .github/               # CODEOWNERS、PR 模板与按路径触发的 CI 工作流
-├── axpoint-core/          # Rust 1.100.0 Cargo Workspace（严格 clippy::pedantic / forbid(unsafe_code)）
-│   └── crates/
-│       ├── axpoint-domain # 领域模型、端口 Trait（ports）、切分/RRF 融合与因果推演引擎
-│       ├── axpoint-llm    # OpenAI 兼容 LLM、EmbeddingAdapter 与 AiPort 实现
-│       ├── axpoint-db     # PostgreSQL 三级超图、xb_*/ax_* 持久化及 Repository 实现
-│       └── axpoint-server # Axum HTTP 服务（按业务域拆分 routes/{system,documents,xblue,axflow,axsim}）
-├── axpoint-parser/        # AxParser: Python FastAPI 无状态解析与连接器微服务
-│   ├── parsers/           # 文档解析引擎（Docling / pypdf 等）
-│   ├── connectors/        # 异构数据源连接器（SQL/NoSQL/API 等）
-│   ├── exporters/         # 结果导出器（CSV/XLSX/PDF/Markdown 等）
-│   └── tests/             # Sidecar 单元测试
-├── xbluenode-web/         # Vite + React + TypeScript + Tailwind CSS（Geist 黑白灰极简工作台）
-│   └── src/
-│       ├── lib/api/       # 按后端路由域拆分的强类型 API 客户端（client/rag/xblue）
-│       └── modules/       # 导航与模块注册表（registry.ts）
-├── deploy/                # docker-compose.yml、.env.example 与数据库增量迁移
-│   └── migrations/        # 增量 SQL 迁移脚本（001_init_core.sql 起步，只增不改）
-└── docs/                  # API_CONTRACT.md、TEAM_MULTI_AGENT_MANUAL.md 与 blueprint/ 详尽落地实践蓝图
+xBlueNode/
+├── IRON_RULES.md          # 工程铁律（必读）
+├── .github/               # CODEOWNERS、PR 模板、按路径触发的 CI（含命名守卫）
+├── axpoint-core/          # Rust Workspace（clippy::pedantic、forbid(unsafe_code)）
+│   └── crates/            # axpoint-domain / -llm / -db / -server，以及按 Step 创建的 -security / -analytics / -flow / -agent
+├── axpoint-parser/        # Python FastAPI Sidecar：parsers/、connectors/、lake/、exporters/、charts/
+├── xbluenode-web/         # Vite + React + TypeScript + Tailwind CSS 工作台
+├── deploy/                # docker-compose、.env.example、migrations/（sqlx 格式 NNNN_<module>.sql）
+├── scripts/               # naming-guard.sh，以及按 Step 增加的环境、种子、门禁、运维脚本
+└── docs/                  # API_CONTRACT.md、TEAM_MULTI_AGENT_MANUAL.md、blueprint/
 ```
 
 ---
 
-## 三、快速启动指南
+## 三、当前代码基线的本地运行
 
-### 1. 启动 PostgreSQL (`pgvector`)
+### 1. PostgreSQL（`pgvector`）
+
 ```bash
 cd deploy
-cp .env.example .env
-# 编辑 .env 填入你的 LLM_API_KEY / EMBED_API_KEY（支持阿里云百炼、DeepSeek 或本地 Ollama/vLLM）
-docker compose up -d
+cp .env.example .env      # 填入 LLM_API_KEY / EMBED_API_KEY（兼容 OpenAI 协议的任意服务或本地 Ollama / vLLM）
+docker compose up -d      # 首次建库时执行 deploy/migrations/0001_init_core.sql
 ```
 
-### 2. 启动 Python 文档解析 Sidecar (`axpoint-parser`)
+### 2. Sidecar（`axpoint-parser`）
+
 ```bash
 cd axpoint-parser
-source .venv/bin/activate
-# 如需启用完整 Docling + EasyOCR 版面/表格/公式识别，可执行：
-# uv pip install -e ".[docling]"
-uvicorn main:app --host 0.0.0.0 --port 8001
+python3.11 -m venv .venv && source .venv/bin/activate
+pip install -e .           # 完整 Docling + OCR：pip install -e ".[docling]"
+uvicorn main:app --host 127.0.0.1 --port 8001
 ```
 
-### 3. 启动 Rust 核心服务 (`axpoint-core`)
-```bash
-cd axpoint-core
-# 使用本地已安装的 Rust 1.100.0 工具链运行（自带托管 xbluenode-web/dist 静态资源）
-cargo run -p axpoint-server
-```
-启动后直接访问：`http://localhost:9995/` 即可打开 **xBlueNode** 极简工作台！
+### 3. Core（`axpoint-core`）
 
-### 4. 前端开发模式（可选）
 ```bash
-cd xbluenode-web
-npm run dev
+cd xbluenode-web && npm ci && npm run build && cd ..
+cd axpoint-core && cargo run -p axpoint-server
 ```
+
+浏览器访问 `http://localhost:9995/`。前端开发模式：`cd xbluenode-web && npm run dev`。
+
+Step 00 落地后，本地环境统一由 `scripts/dev-up.sh` + `scripts/start-services.sh` 启动，门禁由 `scripts/gate/stepNN.sh` 执行（见蓝图 Step 00 §00.10）。
 
 ---
 
-## 四、核心特性说明
+## 四、核心特性
 
-1. **多维度 Embedding 兼容层**：`hg_embeddings` 表采用不锁死维度的 `vector` 类型，同时为 `768`/`1024`/`1536` 维建立条件部分 HNSW 索引；`EmbeddingAdapter` 自动探测维度，可随时切换本地 `bge-m3`（1024 维）或云端 `text-embedding-v4`（1536 维）而无需迁移数据库。
-2. **五路并行召回 + RRF 融合**：每次提问并发触发 `Vector`、`BM25`、`EntityLink`、`Context (NEXT_PARA)`、`MultiHop (RELATES)` 五路召回，并在前端右侧抽屉完整展示溯源证据与推理路径。
-3. **最高级别 Rust 代码规范**：全 Workspace 启用 `unsafe_code = "forbid"`、`clippy::pedantic = "deny"`、`unwrap_used = "deny"`、`expect_used = "deny"`、`as_conversions = "deny"`、`indexing_slicing = "deny"` 与 `missing_docs = "deny"`。
+1. **多维度 Embedding**：`hg_embeddings.embedding` 为不定维 `vector`，按 `768` / `1024` / `1536` 维建立条件部分 HNSW 索引；`EmbeddingAdapter` 自动探测维度，切换模型无需迁移数据库。
+2. **五路并行召回 + RRF 融合**：`Vector`、`BM25`、`EntityLink`、`Context (NEXT_PARA)`、`MultiHop (RELATES)` 并发召回，前端抽屉展示溯源证据与推理路径。
+3. **严格的 Rust 规范**：全 Workspace 启用 `unsafe_code = "forbid"`、`clippy::pedantic = "deny"`、`unwrap_used` / `expect_used` / `as_conversions` / `indexing_slicing` / `missing_docs` 均为 `deny`。
+4. **命名守卫**：CI 的 `naming-guard` 作业从仓库变量 `vars.NAMING_DENYLIST` 读取禁用词正则并扫描全仓；变量未设置时作业失败。

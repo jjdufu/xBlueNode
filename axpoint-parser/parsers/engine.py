@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 from typing import Tuple
 
-DEFAULT_MODEL_PATH = os.getenv("AXPOINT_MODEL_PATH", "/home/antigravity/models")
+DEFAULT_MODEL_PATH = os.getenv("AXPOINT_MODEL_PATH", "/var/lib/axpoint/models")
 
 
 def parse_bytes_to_markdown(filename: str, content: bytes) -> Tuple[str, str, str]:
