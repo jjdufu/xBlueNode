@@ -21,12 +21,24 @@ impl PgStore {
     /// # Errors
     /// Returns [`AppError::Database`] if querying schema tables fails.
     pub async fn get_xblue_schema(&self, tenant_id: &str) -> Result<XBlueSchema, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
+        let schema = Self::load_xblue_schema_tx(&mut tx, tenant_id).await?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit get_xblue_schema tx failed: {err}"))
+        })?;
+        Ok(schema)
+    }
+
+    async fn load_xblue_schema_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: &str,
+    ) -> Result<XBlueSchema, AppError> {
         let node_rows = sqlx::query(
             "SELECT id, name, display_name, properties, agg_rules, pos_x, pos_y
              FROM xb_node_types WHERE tenant_id = $1 ORDER BY created_at",
         )
         .bind(tenant_id)
-        .fetch_all(self.pool())
+        .fetch_all(&mut **tx)
         .await
         .map_err(|err| AppError::Database(format!("query xb_node_types failed: {err}")))?;
 
@@ -53,7 +65,7 @@ impl PgStore {
              FROM xb_edge_types WHERE tenant_id = $1 ORDER BY created_at",
         )
         .bind(tenant_id)
-        .fetch_all(self.pool())
+        .fetch_all(&mut **tx)
         .await
         .map_err(|err| AppError::Database(format!("query xb_edge_types failed: {err}")))?;
 
@@ -83,11 +95,7 @@ impl PgStore {
         tenant_id: &str,
         req: SaveXBlueSchemaRequest,
     ) -> Result<XBlueSchema, AppError> {
-        let mut tx = self
-            .pool()
-            .begin()
-            .await
-            .map_err(|err| AppError::Database(format!("begin schema tx failed: {err}")))?;
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
 
         for nt in req.node_types {
             let props_json = serde_json::to_value(&nt.properties).map_err(|err| {
@@ -136,11 +144,12 @@ impl PgStore {
             .map_err(|err| AppError::Database(format!("upsert xb_edge_type failed: {err}")))?;
         }
 
+        let schema = Self::load_xblue_schema_tx(&mut tx, tenant_id).await?;
         tx.commit()
             .await
             .map_err(|err| AppError::Database(format!("commit schema tx failed: {err}")))?;
 
-        self.get_xblue_schema(tenant_id).await
+        Ok(schema)
     }
 
     /// Lists runtime `BlueNode`s and `BlueLink`s for a tenant.
@@ -148,12 +157,24 @@ impl PgStore {
     /// # Errors
     /// Returns [`AppError::Database`] if querying runtime tables fails.
     pub async fn get_runtime_snapshot(&self, tenant_id: &str) -> Result<AxSimSnapshot, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
+        let snap = Self::load_runtime_snapshot_tx(&mut tx, tenant_id).await?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit get_runtime_snapshot tx failed: {err}"))
+        })?;
+        Ok(snap)
+    }
+
+    async fn load_runtime_snapshot_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: &str,
+    ) -> Result<AxSimSnapshot, AppError> {
         let node_rows = sqlx::query(
             "SELECT id, type_name, node_key, title, metrics
              FROM xb_nodes WHERE tenant_id = $1 ORDER BY updated_at DESC",
         )
         .bind(tenant_id)
-        .fetch_all(self.pool())
+        .fetch_all(&mut **tx)
         .await
         .map_err(|err| AppError::Database(format!("query xb_nodes failed: {err}")))?;
 
@@ -178,7 +199,7 @@ impl PgStore {
              FROM xb_links WHERE tenant_id = $1",
         )
         .bind(tenant_id)
-        .fetch_all(self.pool())
+        .fetch_all(&mut **tx)
         .await
         .map_err(|err| AppError::Database(format!("query xb_links failed: {err}")))?;
 
@@ -205,6 +226,7 @@ impl PgStore {
         tenant_id: &str,
         req: UpsertBlueNodeRequest,
     ) -> Result<BlueNode, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
         let metrics_json = serde_json::to_value(&req.metrics)
             .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid metrics: {err}")))?;
 
@@ -222,7 +244,7 @@ impl PgStore {
         .bind(req.node_key.trim())
         .bind(req.title.trim())
         .bind(metrics_json)
-        .fetch_one(self.pool())
+        .fetch_one(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("upsert xb_node failed: {err}")))?;
 
@@ -240,10 +262,14 @@ impl PgStore {
             .bind(node_id)
             .bind(target_id)
             .bind(weight)
-            .execute(self.pool())
+            .execute(&mut *tx)
             .await
             .map_err(|err| AppError::Database(format!("insert xb_link failed: {err}")))?;
         }
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit upsert_blue_node tx failed: {err}"))
+        })?;
 
         Ok(BlueNode {
             id: node_id,
@@ -259,14 +285,19 @@ impl PgStore {
     /// # Errors
     /// Returns [`AppError::Database`] if querying flows fails.
     pub async fn list_ax_flows(&self, tenant_id: &str) -> Result<Vec<AxFlowDef>, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
         let rows = sqlx::query(
             "SELECT id, name, description, steps, status, last_run_at
              FROM ax_flows WHERE tenant_id = $1 ORDER BY created_at DESC",
         )
         .bind(tenant_id)
-        .fetch_all(self.pool())
+        .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("query ax_flows failed: {err}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit list_ax_flows tx failed: {err}")))?;
 
         Ok(rows
             .into_iter()
@@ -294,6 +325,7 @@ impl PgStore {
         tenant_id: &str,
         req: CreateAxFlowRequest,
     ) -> Result<AxFlowDef, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
         let steps_json = serde_json::to_value(&req.steps)
             .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid steps: {err}")))?;
 
@@ -306,12 +338,17 @@ impl PgStore {
         .bind(req.name.trim())
         .bind(req.description.trim())
         .bind(steps_json)
-        .fetch_one(self.pool())
+        .fetch_one(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("insert ax_flow failed: {err}")))?;
 
+        let flow_id: Uuid = row.get("id");
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit create_ax_flow tx failed: {err}")))?;
+
         Ok(AxFlowDef {
-            id: row.get("id"),
+            id: flow_id,
             name: req.name,
             description: req.description,
             steps: req.steps,
@@ -329,6 +366,7 @@ impl PgStore {
         tenant_id: &str,
         flow_id: Uuid,
     ) -> Result<AxFlowRunResult, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
         let row = sqlx::query(
             "UPDATE ax_flows SET last_run_at = NOW()
              WHERE id = $1 AND tenant_id = $2
@@ -336,12 +374,16 @@ impl PgStore {
         )
         .bind(flow_id)
         .bind(tenant_id)
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("run ax_flow query failed: {err}")))?
         .ok_or(AppError::NotFound("FLOW_NOT_FOUND"))?;
 
         let steps_val: serde_json::Value = row.get("steps");
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit run_ax_flow tx failed: {err}")))?;
+
         let steps: Vec<AxFlowStep> = serde_json::from_value(steps_val).unwrap_or_default();
         let mut logs = Vec::with_capacity(steps.len());
         for (idx, step) in steps.iter().enumerate() {
@@ -365,14 +407,19 @@ impl PgStore {
         &self,
         tenant_id: &str,
     ) -> Result<Vec<AxSandboxRecord>, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
         let rows = sqlx::query(
             "SELECT id, name, base_snapshot, actions, sim_result, created_at
              FROM ax_sandboxes WHERE tenant_id = $1 ORDER BY created_at DESC",
         )
         .bind(tenant_id)
-        .fetch_all(self.pool())
+        .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("query ax_sandboxes failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit list_ax_sandboxes tx failed: {err}"))
+        })?;
 
         Ok(rows
             .into_iter()
@@ -410,7 +457,8 @@ impl PgStore {
         tenant_id: &str,
         req: CreateAxSandboxRequest,
     ) -> Result<AxSandboxRecord, AppError> {
-        let snap = self.get_runtime_snapshot(tenant_id).await?;
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
+        let snap = Self::load_runtime_snapshot_tx(&mut tx, tenant_id).await?;
         let node_count = snap.nodes.len();
         let link_count = snap.links.len();
         let snap_json = serde_json::to_value(&snap).map_err(|err| {
@@ -428,18 +476,24 @@ impl PgStore {
         .bind(tenant_id)
         .bind(req.name.trim())
         .bind(snap_json)
-        .fetch_one(self.pool())
+        .fetch_one(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("insert ax_sandbox failed: {err}")))?;
 
+        let sandbox_id: Uuid = row.get("id");
+        let created_at: DateTime<Utc> = row.get("created_at");
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit create_ax_sandbox tx failed: {err}"))
+        })?;
+
         Ok(AxSandboxRecord {
-            id: row.get("id"),
+            id: sandbox_id,
             name: req.name,
             node_count,
             link_count,
             actions: Vec::new(),
             sim_result: None,
-            created_at: row.get("created_at"),
+            created_at,
         })
     }
 
@@ -453,11 +507,12 @@ impl PgStore {
         sandbox_id: Uuid,
         actions: Vec<AxSimAction>,
     ) -> Result<AxSimResult, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
         let row =
             sqlx::query("SELECT base_snapshot FROM ax_sandboxes WHERE id = $1 AND tenant_id = $2")
                 .bind(sandbox_id)
                 .bind(tenant_id)
-                .fetch_optional(self.pool())
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(|err| AppError::Database(format!("load ax_sandbox failed: {err}")))?
                 .ok_or(AppError::NotFound("SANDBOX_NOT_FOUND"))?;
@@ -480,9 +535,13 @@ impl PgStore {
         .bind(res_json)
         .bind(sandbox_id)
         .bind(tenant_id)
-        .execute(self.pool())
+        .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("save ax_sandbox simulation failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit simulate_ax_sandbox tx failed: {err}"))
+        })?;
 
         Ok(sim_res)
     }
