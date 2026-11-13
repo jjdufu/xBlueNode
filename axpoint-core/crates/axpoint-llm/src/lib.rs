@@ -569,6 +569,10 @@ impl axpoint_domain::ports::AiPort for AiGateway {
     async fn synthesize_answer(&self, query: &str, hits: &[FusedHit]) -> Result<String, AppError> {
         Self::synthesize_answer(self, query, hits).await
     }
+
+    async fn chat(&self, system_prompt: &str, user_prompt: &str) -> Result<String, AppError> {
+        Self::chat(self, system_prompt, user_prompt).await
+    }
 }
 
 #[cfg(test)]

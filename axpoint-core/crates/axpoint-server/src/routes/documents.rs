@@ -251,11 +251,29 @@ async fn chat_query_handler(
 
     let hits = rrf_fuse(all_candidates, req.top_k);
     let answer = state.ai.synthesize_answer(&req.query, &hits).await?;
+    let citations = hits
+        .iter()
+        .map(|h| axpoint_domain::analytics::AskCitation {
+            para_id: h.para_id,
+            doc_id: h.doc_id,
+            doc_title: h.doc_title.clone(),
+            snippet: h.content.chars().take(240).collect(),
+        })
+        .collect();
 
     Ok(Json(ChatQueryResponse {
         answer,
         hits,
         seed_entities: seeds,
         elapsed_ms: started.elapsed().as_millis(),
+        intent: axpoint_domain::analytics::AskIntent::Doc,
+        session_id: req.session_id,
+        turn_id: None,
+        citations,
+        sql: None,
+        columns: Vec::new(),
+        rows: Vec::new(),
+        chart: None,
+        related_nodes: Vec::new(),
     }))
 }

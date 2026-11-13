@@ -1,6 +1,7 @@
 //! Domain types, error definitions, and five-way RRF fusion logic for `AxPoint`.
 
 pub mod algo;
+pub mod analytics;
 pub mod axhub;
 pub mod enums;
 pub mod graph;
@@ -248,7 +249,7 @@ pub struct IngestResponse {
     pub embedding_dim: usize,
 }
 
-/// Chat / RAG query request payload (tenant resolved strictly from `AuthPrincipal`).
+/// Chat / RAG / Hybrid query request payload (`05-STEP04` §04.8; tenant resolved strictly from `AuthPrincipal`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChatQueryRequest {
@@ -257,9 +258,15 @@ pub struct ChatQueryRequest {
     /// Maximum fused chunks to include in synthesis.
     #[serde(default = "default_top_k")]
     pub top_k: usize,
+    /// Optional multi-turn conversation session UUID (`05-STEP04` §04.8).
+    #[serde(default)]
+    pub session_id: Option<Uuid>,
+    /// Explicit intent routing mode (`AUTO` | `DOC` | `DATA`, default `AUTO`).
+    #[serde(default)]
+    pub mode: analytics::ChatQueryMode,
 }
 
-/// Chat / RAG query response with full five-way provenance.
+/// Chat / RAG / Hybrid query response with five-way provenance and structured NL2SQL results (`05-STEP04` §04.8).
 #[derive(Debug, Clone, Serialize)]
 pub struct ChatQueryResponse {
     /// Synthesized answer from the LLM.
@@ -270,6 +277,32 @@ pub struct ChatQueryResponse {
     pub seed_entities: Vec<String>,
     /// Elapsed milliseconds for retrieval and synthesis.
     pub elapsed_ms: u128,
+    /// Classified intent (`DOC` | `DATA` | `HYBRID` | `CHITCHAT`).
+    pub intent: analytics::AskIntent,
+    /// Active session UUID when turn tracking is enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<Uuid>,
+    /// Persisted `an_ask_turns.id` when `DATA` or `HYBRID` executed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<Uuid>,
+    /// Paragraph citations (`[文n]`).
+    #[serde(default)]
+    pub citations: Vec<analytics::AskCitation>,
+    /// Executed `DuckDB` SQL (`DATA` or `HYBRID`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sql: Option<String>,
+    /// Structured result columns (`DATA` or `HYBRID`).
+    #[serde(default)]
+    pub columns: Vec<analytics::QueryColumn>,
+    /// Structured result rows (`DATA` or `HYBRID`).
+    #[serde(default)]
+    pub rows: Vec<serde_json::Map<String, serde_json::Value>>,
+    /// Recommended chart specification (`DATA` or `HYBRID`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chart: Option<analytics::ChartSuggestion>,
+    /// Linked `BlueNode` records associated with recalled hypergraph entities (`§04.8`).
+    #[serde(default)]
+    pub related_nodes: Vec<analytics::RelatedNodeSummary>,
 }
 
 /// System-wide hypergraph statistics for the `xBlueNode` dashboard.

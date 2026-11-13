@@ -378,3 +378,13 @@ class DropLakeTableRequest(BaseModel):
 
     tenant_id: str
     lake_table: str
+
+
+class MaterializeRequest(BaseModel):
+    """Request body for POST /lake/materialize (Step 04 DERIVED_VIEW)."""
+
+    tenant_id: str
+    dataset_id: str = ""
+    lake_table: str
+    sql: str
+    batch_id: str

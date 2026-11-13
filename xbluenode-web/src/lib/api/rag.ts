@@ -44,11 +44,29 @@ export interface FusedHit {
   traces: string[];
 }
 
+import type {
+  AskCitation,
+  AskIntent,
+  ChartSuggestion,
+  ChatQueryMode,
+  QueryColumn,
+  RelatedNodeSummary,
+} from "./analytics";
+
 export interface ChatQueryResponse {
   answer: string;
   hits: FusedHit[];
   seed_entities: string[];
   elapsed_ms: number;
+  intent?: AskIntent;
+  session_id?: string;
+  turn_id?: string;
+  citations?: AskCitation[];
+  sql?: string;
+  columns?: QueryColumn[];
+  rows?: Record<string, unknown>[];
+  chart?: ChartSuggestion | null;
+  related_nodes?: RelatedNodeSummary[];
 }
 
 export interface TopologyNode {
@@ -94,7 +112,12 @@ export const api = {
     }),
   uploadFile: (file: File): Promise<IngestResponse> => uploadDocument(file),
   uploadDocument: (file: File): Promise<IngestResponse> => uploadDocument(file),
-  chatQuery: (payload: { query: string; top_k?: number }) =>
+  chatQuery: (payload: {
+    query: string;
+    top_k?: number;
+    session_id?: string;
+    mode?: ChatQueryMode;
+  }) =>
     requestJson<ChatQueryResponse>("/api/chat/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

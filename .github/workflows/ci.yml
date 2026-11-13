@@ -50,6 +50,7 @@ jobs:
     env:
       MIGRATION_DATABASE_URL: postgres://axpoint:axpoint_secret@localhost:5432/xbluenode
       DATABASE_URL: postgres://axpoint_app:axpoint_app_secret@localhost:5432/xbluenode
+      AXPOINT_LAKE_CATALOG_DSN: postgres://axpoint_lake:axpoint_lake_secret@localhost:5432/xbluenode
       AXPOINT_REQUIRE_DB_TESTS: "1"
     steps:
       - uses: actions/checkout@v4
@@ -59,6 +60,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: axpoint-core
+      - uses: actions/cache@v4
+        with:
+          path: ~/.duckdb/extensions
+          key: duckdb-ext-v2.0.0-linux-amd64
+      - name: Install DuckDB v2.0.0 Extensions
+        run: |
+          if [ ! -f "$HOME/.duckdb/extensions/v2.0.0/linux_amd64/ducklake.duckdb_extension" ] && [ ! -f "$HOME/.duckdb/extensions/v2.0.0/linux_amd64_gcc4/ducklake.duckdb_extension" ]; then
+            python3 -m venv /tmp/ddb-ext
+            /tmp/ddb-ext/bin/pip install --quiet "duckdb==2.0.*"
+            /tmp/ddb-ext/bin/python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL ducklake; INSTALL postgres; INSTALL mysql_scanner; INSTALL sqlite_scanner;')"
+          fi
       - name: Install sqlx-cli
         run: cargo install sqlx-cli --version ^0.9 --no-default-features --features rustls,postgres --locked
       - name: Run Database Migrations
@@ -108,7 +120,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
-          python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL ducklake; INSTALL postgres;')"
+          python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL ducklake; INSTALL postgres; INSTALL mysql_scanner; INSTALL sqlite_scanner;')"
       - name: Lint, Typecheck & Tests
         working-directory: axpoint-parser
         run: |

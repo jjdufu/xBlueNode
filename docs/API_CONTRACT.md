@@ -103,6 +103,19 @@
 - `POST /api/xblue/entities/resolve` / `GET /api/xblue/entities/candidates` / `POST /api/xblue/entities/links/{entity_id}/{node_id}/confirm|reject`（`STUDIO_EDIT`）：超图实体与业务节点归一化自动对齐与人工确认/拒绝。
 - `POST /api/axops/jobs/rollup-now`（`OPS_ADMIN`）：为当前租户立即入队一次 `ROLLUP` 任务并返回 `{job_id}`。
 
+### `AxAnalytics` OLAP、透视制表、指标语义层与智能问数（`/api/analytics/*` 与 `/api/chat/query` 扩展，Step 04）
+
+- `GET /api/analytics/catalog`（`DATA_READ`）：返回当前租户在湖中的数据集与列目录（含 PII 与业务术语）、`ax.*` 平台联邦视图及 `live_*` 直连对象树。
+- `POST /api/analytics/sql/run` / `POST /api/analytics/sql/explain`（`DATA_READ`）：经 `sql_guard` AST 白名单与租户表改写后执行或解释只读 `DuckDB` SQL；默认对所有主体动态脱敏 PII 列（除非 `reveal_pii=true` 且具备 `PII_RAW_READ`），并记录 `an_query_history` 与 `QUERY_SQL` 审计。
+- `POST /api/analytics/pivot`（`DATA_READ`）：拖拽式透视制表编译与交叉矩阵化（支持 `GROUPING SETS` 小计/总计、列组合频次上限与非可加聚合截断提示）。
+- `GET /api/analytics/metrics` / `POST /api/analytics/metrics` / `GET /api/analytics/metrics/{name}` / `PATCH /api/analytics/metrics/{name}` / `DELETE /api/analytics/metrics/{name}`（`DATA_READ` / `STUDIO_EDIT`，`certified=true` 需 `STUDIO_PUBLISH`）：指标语义层管理、聚合表达式校验、破坏性 Schema 检测（`broken=true`）与血缘记录。
+- `POST /api/analytics/metrics/{name}/query` / `POST /api/analytics/metrics/query-multi`（`DATA_READ`）：单指标或多指标按维度、时间粒度与同比/环比（`PREVIOUS_PERIOD` / `SAME_PERIOD_LAST_YEAR`）编译查询。
+- `GET /api/analytics/saved-queries` / `POST /api/analytics/saved-queries` / `GET /api/analytics/saved-queries/{id}` / `PATCH /api/analytics/saved-queries/{id}` / `DELETE /api/analytics/saved-queries/{id}` / `POST /api/analytics/saved-queries/{id}/run`（`DATA_READ` / `VIEW_EDIT`）：参数化保存查询管理与运行。
+- `POST /api/analytics/ask` / `POST /api/analytics/ask/{turn_id}/feedback` / `GET /api/analytics/ask/sessions/{session_id}`（`DATA_READ`）：智能问数管线（意图路由、FTS+向量模式链接、`sql_guard` + `EXPLAIN` 自修复、数值逐字核验摘要、图表建议、多轮会话与点赞/修正少样本反馈）。
+- `POST /api/analytics/transform/draft` / `PATCH /api/analytics/transform/{id}` / `POST /api/analytics/transform/{id}/apply` / `POST /api/analytics/transform/{id}/discard`（`DATA_SYNC`）：自然语言 → `SELECT` 变换草案 → 100 行脱敏预览 → 确认物化为 `DERIVED_VIEW` 派生数据集并级联同步。
+- `GET /api/analytics/history`（`DATA_READ` 看本人，`DATA_ADMIN` 看全租户）：SQL/透视/指标/问数/变换执行历史分页查询。
+- `POST /api/chat/query`（`DATA_READ`，扩展）：新增 `session_id?` 与 `mode?: "AUTO"|"DOC"|"DATA"`，支持 `DOC`、`DATA`、`HYBRID`（`[文n]` + `[表]` 混合合成）与 `related_nodes` 业务节点关联返回。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）
@@ -118,7 +131,7 @@
 ### `POST /parse/unified`（Step 01）
 `multipart/form-data`（`file`、`log_format?`、`json_explode?`、`ocr?`），返回 `UnifiedParseResponse {parse_id, title, source_format, engine, sha256, markdown, tables, warnings}`，表格轨 Parquet 暂存文件写入 `${AXPOINT_DATA_ROOT}/tenants/<tenant_id>/staging/<parse_id>/`。
 
-### 连接器与 DuckLake 内部接口（Step 02）
+### 连接器与 DuckLake 内部接口（Step 02 & Step 04）
 
 - `GET /connectors/types`：返回 32 个 `ConnectorSpecModel[]`。
 - `POST /connectors/test`：测试连接并返回 `TestResult {ok, message, latency_ms}`。
@@ -127,3 +140,4 @@
 - `POST /connectors/sync`：按 `SNAPSHOT` / `APPEND` / `UPSERT` 同步源数据入 DuckLake，执行质量规则与 Schema 演进，返回 `SyncResult`。
 - `POST /lake/commit_staging`：把 `/parse/unified` 生成的暂存 Parquet 原子提交入 DuckLake。
 - `POST /lake/preview` / `GET /lake/snapshots` / `POST /lake/maintenance` / `POST /lake/drop_table`：湖表快照预览、历史快照列表、小文件合并与快照清理、删表。
+- `POST /lake/materialize`（Step 04）：经 `sqlglot` 二次校验 SQL 仅引用 `lake."tenant_<id>".*` 且 `enable_external_access=false` 后，在写连接事务内执行 `CREATE OR REPLACE TABLE lake."tenant_<id>".<t> AS <sql>` 并返回 `SyncResult`。

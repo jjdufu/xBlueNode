@@ -5,6 +5,14 @@ use std::future::Future;
 
 use uuid::Uuid;
 
+use crate::analytics::{
+    AnalyticsPrincipal, AskFeedbackKind, AskTurnRecord, CreateMetricRequest,
+    CreateSavedQueryRequest, FewShotTurn, MaterializeRequest, MetricDef, MetricQuery,
+    MetricQueryResult, NewAskTurnInput, NewQueryHistoryEntry, NewTransformDraftInput, PivotResult,
+    PivotSpec, QueryHistoryEntry, QueryHistoryListQuery, QueryRequest, QueryResult, SavedQuery,
+    SchemaRecallBundle, TransformDraft, TransformPreview, UpdateMetricRequest,
+    UpdateSavedQueryRequest,
+};
 use crate::axhub::{
     CatalogSearchHit, ColumnMeta, CommitStagingRequest, Connection, ConnectionStatus,
     ConnectionTestResult, ConnectorSpecDto, CreateDatasetRequest, CreateGlossaryTermRequest,
@@ -163,6 +171,13 @@ pub trait AiPort: Send + Sync {
         &self,
         query: &str,
         hits: &[FusedHit],
+    ) -> impl Future<Output = Result<String, AppError>> + Send;
+
+    /// Executes a general system + user chat completion (with cassette replay/record support).
+    fn chat(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
     ) -> impl Future<Output = Result<String, AppError>> + Send;
 }
 
@@ -719,6 +734,14 @@ pub trait SidecarPort: Send + Sync {
         tenant_id: &str,
         lake_table: &str,
     ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Invokes `POST /lake/materialize` to materialize a `DERIVED_VIEW` SQL query into `DuckLake` (`05-STEP04` §04.7).
+    fn materialize_derived_view(
+        &self,
+        tenant_id: &str,
+        timezone: &str,
+        req: &MaterializeRequest,
+    ) -> impl Future<Output = Result<SidecarSyncResult, AppError>> + Send;
 }
 
 /// Persistence port for `AxGraph` business nodes, links, hybrid search, and entity links (Step 03).
@@ -908,4 +931,240 @@ pub trait GraphQueryPort: Send + Sync {
         algo: GraphAlgo,
         query: AlgoResultsQuery,
     ) -> impl Future<Output = Result<AlgoResultsResponse, AppError>> + Send;
+}
+
+/// Persistence port for `AxAnalytics` semantic metrics, saved queries, history, ask turns, and transform drafts (`05-STEP04`).
+pub trait AnalyticsRepository: Send + Sync {
+    /// Lists all semantic metrics in `tenant_id`, computing `broken = true` when referenced columns are missing from current dataset schema.
+    fn list_metrics(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<MetricDef>, AppError>> + Send;
+
+    /// Loads a semantic metric by unique `name` in `tenant_id`.
+    fn get_metric_by_name(
+        &self,
+        tenant_id: &str,
+        name: &str,
+    ) -> impl Future<Output = Result<Option<MetricDef>, AppError>> + Send;
+
+    /// Creates a semantic metric in `an_metrics`, records `ds_lineage(DATASET -> METRIC)`, and enqueues `EMBED_NODES`.
+    fn create_metric(
+        &self,
+        tenant_id: &str,
+        owner_user_id: Option<Uuid>,
+        schema_version: i32,
+        req: CreateMetricRequest,
+    ) -> impl Future<Output = Result<MetricDef, AppError>> + Send;
+
+    /// Updates a semantic metric by `name`, incrementing `version` when definition fields change.
+    fn update_metric(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        schema_version: i32,
+        req: UpdateMetricRequest,
+    ) -> impl Future<Output = Result<Option<MetricDef>, AppError>> + Send;
+
+    /// Deletes a semantic metric by `name` in `tenant_id`, cleaning up its `AN_METRIC` embeddings and lineage.
+    fn delete_metric(
+        &self,
+        tenant_id: &str,
+        name: &str,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists saved queries visible to `viewer_user_id` (`shared = true` OR `owner_user_id = viewer_user_id`, or all when `include_all = true`).
+    fn list_saved_queries(
+        &self,
+        tenant_id: &str,
+        viewer_user_id: Uuid,
+        include_all: bool,
+    ) -> impl Future<Output = Result<Vec<SavedQuery>, AppError>> + Send;
+
+    /// Loads a single saved query by UUID in `tenant_id`.
+    fn get_saved_query(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+    ) -> impl Future<Output = Result<Option<SavedQuery>, AppError>> + Send;
+
+    /// Creates a saved query in `an_saved_queries`.
+    fn create_saved_query(
+        &self,
+        tenant_id: &str,
+        owner_user_id: Option<Uuid>,
+        req: CreateSavedQueryRequest,
+    ) -> impl Future<Output = Result<SavedQuery, AppError>> + Send;
+
+    /// Updates a saved query in `an_saved_queries`.
+    fn update_saved_query(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+        req: UpdateSavedQueryRequest,
+    ) -> impl Future<Output = Result<Option<SavedQuery>, AppError>> + Send;
+
+    /// Deletes a saved query by UUID in `tenant_id`.
+    fn delete_saved_query(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Appends an execution record to `an_query_history` (truncating `sql_text` to 4,000 characters).
+    fn record_query_history(
+        &self,
+        tenant_id: &str,
+        entry: NewQueryHistoryEntry,
+    ) -> impl Future<Output = Result<i64, AppError>> + Send;
+
+    /// Lists query execution history (`only_user_id = Some(uid)` restricts to caller; `None` returns whole tenant for `DATA_ADMIN`).
+    fn list_query_history(
+        &self,
+        tenant_id: &str,
+        only_user_id: Option<Uuid>,
+        query: QueryHistoryListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<QueryHistoryEntry>, AppError>> + Send;
+
+    /// Inserts a conversation turn into `an_ask_turns`.
+    fn insert_ask_turn(
+        &self,
+        tenant_id: &str,
+        turn: NewAskTurnInput,
+    ) -> impl Future<Output = Result<AskTurnRecord, AppError>> + Send;
+
+    /// Fetches a single `an_ask_turns` row by UUID.
+    fn get_ask_turn(
+        &self,
+        tenant_id: &str,
+        turn_id: Uuid,
+    ) -> impl Future<Output = Result<Option<AskTurnRecord>, AppError>> + Send;
+
+    /// Records `UP`/`DOWN` feedback and optional guarded `corrected_sql` on an `an_ask_turns` row.
+    fn update_ask_feedback(
+        &self,
+        tenant_id: &str,
+        turn_id: Uuid,
+        feedback: AskFeedbackKind,
+        corrected_sql: Option<&str>,
+    ) -> impl Future<Output = Result<Option<AskTurnRecord>, AppError>> + Send;
+
+    /// Lists all turns in `session_id` ordered chronologically (`created_at ASC`).
+    fn list_session_turns(
+        &self,
+        tenant_id: &str,
+        session_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<AskTurnRecord>, AppError>> + Send;
+
+    /// Searches up to `limit` positive-feedback (`feedback = 'UP'` or `corrected_sql IS NOT NULL`) turns by FTS similarity.
+    fn search_few_shot_turns(
+        &self,
+        tenant_id: &str,
+        question: &str,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<FewShotTurn>, AppError>> + Send;
+
+    /// Recalls candidate columns, semantic metrics, and business nodes for NL2SQL schema linking (`§04.6.3`).
+    fn recall_schema_candidates(
+        &self,
+        tenant_id: &str,
+        question: &str,
+        query_embedding: Option<&[f32]>,
+        restrict_datasets: &[Uuid],
+    ) -> impl Future<Output = Result<SchemaRecallBundle, AppError>> + Send;
+
+    /// Lists `(node_type, node_id, text)` items (`DS_COLUMN` and `AN_METRIC`) missing embeddings for `model_name`.
+    fn list_unembedded_analytics_items(
+        &self,
+        tenant_id: &str,
+        model_name: &str,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<(String, Uuid, String)>, AppError>> + Send;
+
+    /// Upserts `DS_COLUMN` and `AN_METRIC` vectors into `hg_embeddings`.
+    fn upsert_analytics_embeddings(
+        &self,
+        tenant_id: &str,
+        model_name: &str,
+        dim: usize,
+        items: &[(String, Uuid, Vec<f32>)],
+    ) -> impl Future<Output = Result<usize, AppError>> + Send;
+
+    /// Creates a `DRAFT` row in `an_transform_drafts`.
+    fn create_transform_draft(
+        &self,
+        tenant_id: &str,
+        input: NewTransformDraftInput,
+    ) -> impl Future<Output = Result<TransformDraft, AppError>> + Send;
+
+    /// Loads a transform draft by UUID in `tenant_id`.
+    fn get_transform_draft(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+    ) -> impl Future<Output = Result<Option<TransformDraft>, AppError>> + Send;
+
+    /// Updates `sql_text` and `preview` on an editable (`DRAFT`) transform draft.
+    fn update_transform_draft(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+        sql_text: &str,
+        preview: &TransformPreview,
+    ) -> impl Future<Output = Result<Option<TransformDraft>, AppError>> + Send;
+
+    /// Marks a transform draft `APPLIED` and links the created `dataset_id`.
+    fn mark_transform_applied(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+        dataset_id: Uuid,
+    ) -> impl Future<Output = Result<Option<TransformDraft>, AppError>> + Send;
+
+    /// Marks a transform draft `DISCARDED`.
+    fn mark_transform_discarded(
+        &self,
+        tenant_id: &str,
+        id: Uuid,
+    ) -> impl Future<Output = Result<Option<TransformDraft>, AppError>> + Send;
+
+    /// Returns `DERIVED_VIEW` datasets in `tenant_id` whose `source_ref.depends_on` includes `upstream_dataset_id`, ordered topologically.
+    fn list_dependent_derived_datasets(
+        &self,
+        tenant_id: &str,
+        upstream_dataset_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<Dataset>, AppError>> + Send;
+}
+
+/// Domain query execution port exposed by `AxAnalytics` to `AxFlow` (Step 07), `AxAgent` (Step 09), and `xBlueView` (Step 11) (`05-STEP04` §04.9).
+pub trait AnalyticsQueryPort: Send + Sync {
+    /// Executes a guarded parameterized SQL query under `principal`.
+    fn run_sql(
+        &self,
+        principal: &AnalyticsPrincipal,
+        req: QueryRequest,
+    ) -> impl Future<Output = Result<QueryResult, AppError>> + Send;
+
+    /// Executes a saved query (`SQL`, `PIVOT`, `METRIC`, or `ASK`) by UUID with runtime `:params`.
+    fn run_saved(
+        &self,
+        principal: &AnalyticsPrincipal,
+        id: Uuid,
+        params: BTreeMap<String, serde_json::Value>,
+    ) -> impl Future<Output = Result<serde_json::Value, AppError>> + Send;
+
+    /// Compiles and executes a semantic metric query by metric `name`.
+    fn run_metric(
+        &self,
+        principal: &AnalyticsPrincipal,
+        name: &str,
+        query: MetricQuery,
+    ) -> impl Future<Output = Result<MetricQueryResult, AppError>> + Send;
+
+    /// Compiles, executes, and cross-tabulates a pivot specification.
+    fn run_pivot(
+        &self,
+        principal: &AnalyticsPrincipal,
+        spec: PivotSpec,
+    ) -> impl Future<Output = Result<PivotResult, AppError>> + Send;
 }

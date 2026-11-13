@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use axpoint_domain::AppError;
+use axpoint_domain::analytics::MaterializeRequest;
 use axpoint_domain::axhub::{
     CommitStagingRequest, ConnectionTestResult, ConnectorSpecDto, DiscoveredObject,
     LakeMaintenanceRequest, LakeMaintenanceResult, LakePreviewRequest, LakeSnapshotInfo,
@@ -337,5 +338,25 @@ impl SidecarPort for HttpSidecarClient {
 
         let _: serde_json::Value = Self::decode_response(resp).await?;
         Ok(())
+    }
+
+    async fn materialize_derived_view(
+        &self,
+        tenant_id: &str,
+        timezone: &str,
+        req: &MaterializeRequest,
+    ) -> Result<SidecarSyncResult, AppError> {
+        let resp = self
+            .http
+            .post(self.endpoint("/lake/materialize"))
+            .header("X-AxPoint-Tenant", tenant_id)
+            .header("X-AxPoint-Timezone", timezone)
+            .header("traceparent", outbound_traceparent())
+            .json(req)
+            .send()
+            .await
+            .map_err(|err| AppError::Parser(format!("sidecar /lake/materialize failed: {err}")))?;
+
+        Self::decode_response(resp).await
     }
 }
