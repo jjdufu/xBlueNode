@@ -1,1 +1,1 @@
-"""Test suite for axpoint-parser."""
+from __future__ import annotations
