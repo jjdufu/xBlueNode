@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import {
   LayoutDashboard,
   Cable,
+  BarChart3,
   Database,
   MessageSquare,
   Share2,
@@ -11,6 +12,7 @@ import {
 } from "lucide-react";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { AxHubPage } from "@/pages/AxHubPage";
+import { AnalyticsStudioPage } from "@/pages/AnalyticsStudioPage";
 import { AxIngestPage } from "@/pages/AxIngestPage";
 import { AxQueryPage } from "@/pages/AxQueryPage";
 import { XBlueGraphPage } from "@/pages/XBlueGraphPage";
@@ -21,6 +23,7 @@ import { AxSimPage } from "@/pages/AxSimPage";
 export type TabKey =
   | "dashboard"
   | "axhub"
+  | "axanalytics"
   | "axingest"
   | "axquery"
   | "xbluegraph"
@@ -40,6 +43,7 @@ export interface ModuleRouteSpec {
 export const MODULE_REGISTRY: ModuleRouteSpec[] = [
   { key: "dashboard", path: "/", label: "系统概览", icon: LayoutDashboard, component: DashboardPage },
   { key: "axhub", path: "/hub", label: "AxHub · 数据接入与目录", icon: Cable, component: AxHubPage },
+  { key: "axanalytics", path: "/analytics", label: "AxAnalytics · 分析与问数", icon: BarChart3, component: AnalyticsStudioPage },
   { key: "axingest", path: "/ingest", label: "AxIngest · 知识入库", icon: Database, component: AxIngestPage },
   { key: "axquery", path: "/query", label: "AxQuery · 智能问答", icon: MessageSquare, component: AxQueryPage },
   { key: "xbluegraph", path: "/graph", label: "xBlueGraph · 图浏览", icon: Share2, component: XBlueGraphPage },
