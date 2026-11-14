@@ -7,6 +7,7 @@ pub mod enums;
 pub mod graph;
 pub mod platform;
 pub mod ports;
+pub mod studio;
 pub mod topology;
 
 use std::collections::HashMap;

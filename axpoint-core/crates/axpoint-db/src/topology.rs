@@ -36,7 +36,7 @@ impl PgStore {
     ) -> Result<XBlueSchema, AppError> {
         let node_rows = sqlx::query(
             "SELECT id, name, display_name, properties, agg_rules, pos_x, pos_y
-             FROM xb_node_types WHERE tenant_id = $1 ORDER BY created_at",
+             FROM xb_node_types WHERE tenant_id = $1 AND subgraph_slug = 'main' ORDER BY created_at",
         )
         .bind(tenant_id)
         .fetch_all(&mut **tx)
@@ -63,7 +63,7 @@ impl PgStore {
 
         let edge_rows = sqlx::query(
             "SELECT id, name, src_type_name, dst_type_name, impact_weight
-             FROM xb_edge_types WHERE tenant_id = $1 ORDER BY created_at",
+             FROM xb_edge_types WHERE tenant_id = $1 AND subgraph_slug = 'main' ORDER BY created_at",
         )
         .bind(tenant_id)
         .fetch_all(&mut **tx)
@@ -87,7 +87,7 @@ impl PgStore {
         })
     }
 
-    /// Upserts `xBlueStudio` node types and edge types transactionally.
+    /// Upserts `xBlueStudio` node types and edge types transactionally on enterprise `main` subgraph.
     ///
     /// # Errors
     /// Returns [`AppError::Database`] if any upsert or commit fails.
@@ -98,6 +98,16 @@ impl PgStore {
     ) -> Result<XBlueSchema, AppError> {
         let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
 
+        sqlx::query(
+            "INSERT INTO xb_subgraphs (tenant_id, slug, display_name, is_main)
+             VALUES ($1, 'main', '企业主图', TRUE)
+             ON CONFLICT (tenant_id, slug) DO NOTHING",
+        )
+        .bind(tenant_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("ensure main subgraph failed: {err}")))?;
+
         for nt in req.node_types {
             let props_json = serde_json::to_value(&nt.properties).map_err(|err| {
                 AppError::bad("INVALID_ARGUMENT", format!("invalid properties: {err}"))
@@ -107,14 +117,15 @@ impl PgStore {
             })?;
 
             sqlx::query(
-                "INSERT INTO xb_node_types (tenant_id, name, display_name, properties, agg_rules, pos_x, pos_y)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7)
-                 ON CONFLICT (tenant_id, name) DO UPDATE SET
+                "INSERT INTO xb_node_types (tenant_id, subgraph_slug, name, display_name, properties, agg_rules, pos_x, pos_y)
+                 VALUES ($1, 'main', $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT (tenant_id, subgraph_slug, name) DO UPDATE SET
                     display_name = EXCLUDED.display_name,
                     properties = EXCLUDED.properties,
                     agg_rules = EXCLUDED.agg_rules,
                     pos_x = EXCLUDED.pos_x,
-                    pos_y = EXCLUDED.pos_y",
+                    pos_y = EXCLUDED.pos_y,
+                    updated_at = NOW()",
             )
             .bind(tenant_id)
             .bind(nt.name.trim())
@@ -130,10 +141,11 @@ impl PgStore {
 
         for et in req.edge_types {
             sqlx::query(
-                "INSERT INTO xb_edge_types (tenant_id, name, src_type_name, dst_type_name, impact_weight)
-                 VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (tenant_id, name, src_type_name, dst_type_name) DO UPDATE SET
-                    impact_weight = EXCLUDED.impact_weight",
+                "INSERT INTO xb_edge_types (tenant_id, subgraph_slug, name, src_type_name, dst_type_name, impact_weight)
+                 VALUES ($1, 'main', $2, $3, $4, $5)
+                 ON CONFLICT (tenant_id, subgraph_slug, name, src_type_name, dst_type_name) DO UPDATE SET
+                    impact_weight = EXCLUDED.impact_weight,
+                    updated_at = NOW()",
             )
             .bind(tenant_id)
             .bind(et.name.trim())
@@ -145,12 +157,83 @@ impl PgStore {
             .map_err(|err| AppError::Database(format!("upsert xb_edge_type failed: {err}")))?;
         }
 
+        Self::record_main_schema_version_tx(&mut tx, tenant_id).await?;
+
         let schema = Self::load_xblue_schema_tx(&mut tx, tenant_id).await?;
         tx.commit()
             .await
             .map_err(|err| AppError::Database(format!("commit schema tx failed: {err}")))?;
 
         Ok(schema)
+    }
+
+    async fn record_main_schema_version_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: &str,
+    ) -> Result<(), AppError> {
+        let head_row = sqlx::query(
+            "INSERT INTO xb_schema_heads (tenant_id, subgraph_slug, current_version, updated_at)
+             VALUES ($1, 'main', 1, NOW())
+             ON CONFLICT (tenant_id, subgraph_slug) DO UPDATE SET
+                current_version = xb_schema_heads.current_version + 1,
+                updated_at = NOW()
+             RETURNING current_version",
+        )
+        .bind(tenant_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("bump xb_schema_heads failed: {err}")))?;
+        let next_ver: i32 = head_row.get("current_version");
+
+        sqlx::query(
+            "INSERT INTO xb_schema_versions (tenant_id, subgraph_slug, version, schema_doc, change_summary)
+             VALUES (
+                 $1,
+                 'main',
+                 $2,
+                 jsonb_build_object(
+                     'node_types', COALESCE((
+                         SELECT jsonb_agg(jsonb_build_object(
+                             'name', n.name,
+                             'display_name', n.display_name,
+                             'description', n.description,
+                             'icon', n.icon,
+                             'color', n.color,
+                             'title_template', n.title_template,
+                             'properties', n.properties,
+                             'agg_rules', n.agg_rules,
+                             'derived_rules', n.derived_rules,
+                             'sync_to_knowledge', n.sync_to_knowledge,
+                             'pos_x', n.pos_x,
+                             'pos_y', n.pos_y
+                         ) ORDER BY n.created_at)
+                         FROM xb_node_types n WHERE n.tenant_id = $1 AND n.subgraph_slug = 'main'
+                     ), '[]'::jsonb),
+                     'edge_types', COALESCE((
+                         SELECT jsonb_agg(jsonb_build_object(
+                             'name', e.name,
+                             'src_type_name', e.src_type_name,
+                             'dst_type_name', e.dst_type_name,
+                             'impact_weight', e.impact_weight,
+                             'cardinality', e.cardinality,
+                             'description', e.description,
+                             'properties', e.properties,
+                             'propagation', e.propagation
+                         ) ORDER BY e.created_at)
+                         FROM xb_edge_types e WHERE e.tenant_id = $1 AND e.subgraph_slug = 'main'
+                     ), '[]'::jsonb),
+                     'mappings', '[]'::jsonb
+                 ),
+                 'save_xblue_schema'
+             )",
+        )
+        .bind(tenant_id)
+        .bind(next_ver)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("insert xb_schema_versions failed: {err}")))?;
+
+        Ok(())
     }
 
     /// Lists runtime `BlueNode`s and `BlueLink`s for a tenant.

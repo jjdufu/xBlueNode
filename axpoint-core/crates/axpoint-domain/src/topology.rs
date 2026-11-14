@@ -6,24 +6,69 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::enums::PiiCategory;
 use crate::graph::{GeoPoint, MetricsMerge};
+use crate::studio::{LinkDirection, PropertyKind};
 
-/// Property definition on an `xBlueStudio` node type.
+/// Property definition on an `xBlueStudio` node type (`06-STEP05-06` §05.2.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PropertyDef {
     /// Property key, e.g., `output`.
     pub name: String,
-    /// Data type (`number`, `string`, `boolean`).
+    /// Optional human-readable display label.
+    #[serde(default)]
+    pub display_name: String,
+    /// Optional property description.
+    #[serde(default)]
+    pub description: String,
+    /// Optional measurement unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// Data type (`FLOAT64` / `STRING` / `BOOLEAN` or legacy `number` / `string` / `boolean`).
     pub data_type: String,
+    /// Storage kind (`ATTRIBUTE` or `METRIC`).
+    #[serde(default)]
+    pub kind: PropertyKind,
+    /// Whether missing values reject rows during dataset mapping.
+    #[serde(default)]
+    pub required: bool,
+    /// Sensitive PII classification.
+    #[serde(default = "default_pii_none")]
+    pub pii_category: PiiCategory,
+    /// Optional enumerated allowed values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_values: Option<Vec<String>>,
 }
 
-/// Dynamic aggregation rule attached to an `xBlueStudio` node type.
+const fn default_pii_none() -> PiiCategory {
+    PiiCategory::None
+}
+
+/// Dynamic aggregation rule attached to an `xBlueStudio` node type (`06-STEP05-06` §05.2.3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AggRuleDef {
     /// Target metric field name.
     pub target_metric: String,
-    /// Aggregation operator (`SUM`, `AVG`, `MAX`, `COUNT`).
+    /// Aggregation operator (`SUM`, `AVG`, `MAX`, `COUNT`, etc.).
     pub op: String,
+    /// Traversed relationship type name.
+    #[serde(default)]
+    pub via_link_type: String,
+    /// Relationship traversal direction (`OUT` or `IN`).
+    #[serde(default)]
+    pub direction: LinkDirection,
+    /// Neighbor node type name providing `source_metric`.
+    #[serde(default)]
+    pub source_type_name: String,
+    /// Neighbor metric field name.
+    #[serde(default)]
+    pub source_metric: String,
+    /// Optional Step 06 filter expression evaluated on neighbor nodes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    /// Whether `SUM` / `AVG` weights neighbor values by link weight.
+    #[serde(default)]
+    pub weight_by_link: bool,
 }
 
 /// `xBlueStudio` node type definition.
