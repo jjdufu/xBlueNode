@@ -1,10 +1,12 @@
 //! `AxAnalytics` OLAP session pool, SQL AST guard, pivot engine, semantic layer, NL2SQL, and AI transforms (`05-STEP04`).
 
+pub mod nl2sql;
 pub mod pivot;
 pub mod result;
 pub mod semantic;
 pub mod session;
 pub mod sql_guard;
+pub mod transform;
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
@@ -36,6 +38,10 @@ use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
+pub use nl2sql::{
+    AskPipelineInput, AskPipelineOutput, MAX_REPAIR_ROUNDS, MAX_SUMMARY_ROWS, NL2SQL_MAX_ROWS,
+    run_ask_pipeline, run_ask_pipeline_conn, validate_corrected_sql,
+};
 pub use pivot::{
     CompiledPivot, DEFAULT_PIVOT_COLUMN_LIMIT, DEFAULT_PIVOT_ROW_LIMIT, MAX_PIVOT_COL_DIMS,
     MAX_PIVOT_COLUMN_LIMIT, MAX_PIVOT_ROW_DIMS, MAX_PIVOT_ROW_LIMIT, MAX_PIVOT_VALUES,
@@ -60,6 +66,11 @@ pub use sql_guard::{
     CatalogDatasetEntry, DEFAULT_MAX_ROWS, GuardOptions, GuardedQuery, GuardedSql, HARD_MAX_ROWS,
     MAX_RESULT_ROWS, MAX_SQL_BYTES, OutputColumnOrigin, TenantCatalog, guard, guard_and_rewrite,
     guard_for_materialize, inspect_sql_expression, json_value_to_sql_expr,
+};
+pub use transform::{
+    TRANSFORM_PREVIEW_MAX_ROWS, TRANSFORM_SYSTEM_PROMPT, ValidatedTransformPlan,
+    ensure_no_dependency_cycle, generate_transform_sql, preview_transform_sql,
+    preview_transform_sql_conn, topological_downstream_dependents, validate_target_dataset_name,
 };
 
 /// Runtime configuration for `AxAnalytics` `SessionPool` (`05-STEP04` §04.2).

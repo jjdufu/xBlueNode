@@ -333,6 +333,38 @@ impl TenantDb {
         })
     }
 
+    /// Executes `EXPLAIN <guarded.sql>` on an already-validated [`GuardedSql`] (`05-STEP04` §04.6.5, §04.7).
+    ///
+    /// # Errors
+    /// Returns `QUERY_TIMEOUT` (`504`), `SQL_REJECTED` (on `DuckDB` binder/planner errors), or `Database`.
+    pub async fn explain_guarded(
+        &self,
+        guarded: &GuardedSql,
+        timeout_ms: Option<u64>,
+    ) -> Result<ExplainResult, AppError> {
+        let started = Instant::now();
+        let budget = resolve_timeout_duration(timeout_ms);
+        let _gate = tokio::time::timeout(budget, self.exec_gate.lock())
+            .await
+            .map_err(|_| AppError::Timeout("QUERY_TIMEOUT"))?;
+
+        let remaining = budget.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            return Err(AppError::Timeout("QUERY_TIMEOUT"));
+        }
+
+        let explain_stmt = format!("EXPLAIN {}", guarded.sql);
+        let (_, batches) = self.run_arrow_with_timeout(explain_stmt, remaining).await?;
+        let plan = format_explain_batches(&batches)?;
+
+        Ok(ExplainResult {
+            sql: guarded.sql.clone(),
+            plan,
+            referenced_datasets: guarded.referenced_datasets.clone(),
+            uses_platform_views: guarded.uses_platform_views,
+        })
+    }
+
     async fn run_arrow_with_timeout(
         &self,
         sql: String,
