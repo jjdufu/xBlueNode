@@ -493,9 +493,9 @@ async fn pivot_executes_via_session_pool_with_time_bucket() -> Result<(), AppErr
              ATTACH 'ducklake:{}' AS lake_seed (DATA_PATH '{}/');
              CREATE SCHEMA IF NOT EXISTS lake_seed.\"tenant_default\";
              CREATE TABLE lake_seed.\"tenant_default\".\"events\" AS
-                 SELECT DATE '2026-01-10' AS dt, 'A' AS grp, 1200.5 AS v
+                 SELECT TIMESTAMPTZ '2026-01-10 08:00:00+00' AS dt, 'A' AS grp, 1200.5 AS v
                  UNION ALL
-                 SELECT DATE '2026-02-15' AS dt, 'A' AS grp, 800.0 AS v;
+                 SELECT TIMESTAMPTZ '2026-02-15 12:30:00+00' AS dt, 'A' AS grp, 800.0 AS v;
              DETACH lake_seed;",
             catalog_file.to_string_lossy(),
             lake_dir.to_string_lossy()
@@ -508,7 +508,7 @@ async fn pivot_executes_via_session_pool_with_time_bucket() -> Result<(), AppErr
     let mut ds = CatalogDatasetEntry::simple(ds_id, "events", "events");
     ds.columns.insert(
         String::from("dt"),
-        col_meta(ds_id, "dt", DataType::Date, PiiCategory::None, 0),
+        col_meta(ds_id, "dt", DataType::Timestamp, PiiCategory::None, 0),
     );
     ds.columns.insert(
         String::from("grp"),

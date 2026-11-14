@@ -553,3 +553,104 @@ async fn semantic_schema_breaking_change_returns_409_and_session_pool_runs_metri
     let _ = execute_metric_query;
     Ok(())
 }
+
+#[tokio::test]
+async fn metric_query_handles_timestamptz_in_hardened_session_without_icu() -> Result<(), AppError>
+{
+    let dir = std::env::temp_dir().join(format!("axpoint-semantic-tstz-{}", Uuid::new_v4()));
+    let lake_dir = dir.join("lake");
+    std::fs::create_dir_all(&lake_dir).map_err(|e| AppError::Config(e.to_string()))?;
+    let catalog_file = dir.join("lake_catalog.ducklake");
+
+    {
+        let seed =
+            duckdb::Connection::open_in_memory().map_err(|e| AppError::Config(e.to_string()))?;
+        let sql = format!(
+            "LOAD ducklake;
+             ATTACH 'ducklake:{}' AS lake_seed (DATA_PATH '{}/');
+             CREATE SCHEMA IF NOT EXISTS lake_seed.\"tenant_default\";
+             CREATE TABLE lake_seed.\"tenant_default\".\"demo_orders\" AS
+                 SELECT TIMESTAMPTZ '2026-01-10 08:30:00+00' AS updated_at, 'PAID' AS status, 120.0 AS amount
+                 UNION ALL
+                 SELECT TIMESTAMPTZ '2026-02-15 14:00:00+00' AS updated_at, 'PAID' AS status, 80.0 AS amount
+                 UNION ALL
+                 SELECT TIMESTAMPTZ '2026-02-18 10:00:00+00' AS updated_at, 'PENDING' AS status, 999.0 AS amount;
+             DETACH lake_seed;",
+            catalog_file.to_string_lossy(),
+            lake_dir.to_string_lossy()
+        );
+        seed.execute_batch(&sql)
+            .map_err(|e| AppError::Database(e.to_string()))?;
+    }
+
+    let ds_id = Uuid::new_v4();
+    let mut ds = CatalogDatasetEntry::simple(ds_id, "demo_orders", "demo_orders");
+    ds.columns.insert(
+        String::from("updated_at"),
+        col_meta(ds_id, "updated_at", DataType::Timestamp, 0),
+    );
+    ds.columns.insert(
+        String::from("status"),
+        col_meta(ds_id, "status", DataType::String, 1),
+    );
+    ds.columns.insert(
+        String::from("amount"),
+        col_meta(ds_id, "amount", DataType::Float64, 2),
+    );
+    let catalog = TenantCatalog::new("default").with_dataset(ds);
+
+    let pool = SessionPool::new(AnalyticsConfig {
+        data_root: dir.clone(),
+        lake_catalog_dsn: None,
+        app_database_url: None,
+        tenant_cache_capacity: 2,
+        memory_limit: String::from("256MB"),
+        threads: 2,
+        keyring: None,
+    });
+    let session = pool
+        .get_or_try_init("default", catalog.clone(), &[])
+        .await?;
+
+    let mut metric = sample_metric(
+        ds_id,
+        "paid_amount",
+        "SUM(amount)",
+        "status = 'PAID'",
+        Some("updated_at"),
+    );
+    metric.dimensions = Vec::new();
+    let q = MetricQuery {
+        dimensions: Vec::new(),
+        filters: Vec::new(),
+        time_range: Some(MetricTimeRange {
+            from: Utc
+                .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)
+                .single()
+                .ok_or_else(|| AppError::Config(String::from("bad date")))?,
+            to: Utc
+                .with_ymd_and_hms(2026, 3, 1, 0, 0, 0)
+                .single()
+                .ok_or_else(|| AppError::Config(String::from("bad date")))?,
+        }),
+        grain: Some(RollupGrain::Month),
+        compare: None,
+    };
+    let res = execute_metric_query(
+        &session,
+        &catalog,
+        &metric,
+        &q,
+        MetricExecuteOptions::default(),
+    )
+    .await?;
+    assert_eq!(res.rows.len(), 2);
+    let total: f64 = res
+        .rows
+        .iter()
+        .filter_map(|r| r.get("value").and_then(serde_json::Value::as_f64))
+        .sum();
+    assert!((total - 200.0).abs() < 1e-6);
+    let _ = std::fs::remove_dir_all(dir);
+    Ok(())
+}
