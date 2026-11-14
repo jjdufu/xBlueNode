@@ -1,6 +1,13 @@
 //! `AxAnalytics` OLAP session pool, SQL AST guard, pivot engine, semantic layer, NL2SQL, and AI transforms (`05-STEP04`).
 
-use std::collections::BTreeMap;
+pub mod nl2sql;
+pub mod pivot;
+pub mod result;
+pub mod semantic;
+pub mod session;
+pub mod sql_guard;
+pub mod transform;
+
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
 
@@ -20,7 +27,6 @@ pub use axpoint_domain::analytics::{
     TimeBucket, TransformDraft, TransformDraftStatus, TransformPreview, UpdateMetricRequest,
     UpdateSavedQueryRequest, UpdateTransformDraftRequest, ValueSpec, ds_column_embedding_id,
 };
-use axpoint_domain::axhub::ColumnMeta;
 use axpoint_domain::enums::ConnectorType;
 use axpoint_security::Keyring;
 use chrono::Utc;
@@ -31,6 +37,41 @@ use sqlparser::parser::Parser;
 use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
+
+pub use nl2sql::{
+    AskPipelineInput, AskPipelineOutput, MAX_REPAIR_ROUNDS, MAX_SUMMARY_ROWS, NL2SQL_MAX_ROWS,
+    run_ask_pipeline, run_ask_pipeline_conn, validate_corrected_sql,
+};
+pub use pivot::{
+    CompiledPivot, DEFAULT_PIVOT_COLUMN_LIMIT, DEFAULT_PIVOT_ROW_LIMIT, MAX_PIVOT_COL_DIMS,
+    MAX_PIVOT_COLUMN_LIMIT, MAX_PIVOT_ROW_DIMS, MAX_PIVOT_ROW_LIMIT, MAX_PIVOT_VALUES,
+    PivotExecuteOptions, compile_pivot, execute_pivot, execute_pivot_conn,
+};
+pub use result::{
+    ResultSerializeOptions, SerializedQueryOutput, batches_to_query_result, map_arrow_data_type,
+    mask_pii_str,
+};
+pub use semantic::{
+    CompiledMetricQuery, MAX_MULTI_METRICS, MetricExecuteOptions, check_metric_compatibility,
+    compile_metric_query, execute_metric_query, execute_metric_query_conn,
+    execute_multi_metric_query, execute_multi_metric_query_conn, is_aggregate_function_name,
+    is_metric_broken, is_metric_broken_for_dataset, validate_create_metric_request,
+    validate_metric_def,
+};
+pub use session::{
+    DEFAULT_QUERY_TIMEOUT_MS, LiveConnectionSpec, MAX_QUERY_TIMEOUT_MS, SessionPool, TenantDb,
+    TenantSession, postgres_dsn_to_libpq,
+};
+pub use sql_guard::{
+    CatalogDatasetEntry, DEFAULT_MAX_ROWS, GuardOptions, GuardedQuery, GuardedSql, HARD_MAX_ROWS,
+    MAX_RESULT_ROWS, MAX_SQL_BYTES, OutputColumnOrigin, TenantCatalog, guard, guard_and_rewrite,
+    guard_for_materialize, inspect_sql_expression, json_value_to_sql_expr,
+};
+pub use transform::{
+    TRANSFORM_PREVIEW_MAX_ROWS, TRANSFORM_SYSTEM_PROMPT, ValidatedTransformPlan,
+    ensure_no_dependency_cycle, generate_transform_sql, preview_transform_sql,
+    preview_transform_sql_conn, topological_downstream_dependents, validate_target_dataset_name,
+};
 
 /// Runtime configuration for `AxAnalytics` `SessionPool` (`05-STEP04` §04.2).
 #[derive(Debug, Clone)]
@@ -65,22 +106,7 @@ impl Default for AnalyticsConfig {
     }
 }
 
-/// Dataset entry cached inside [`TenantCatalog`] for `sql_guard` resolution and PII masking.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CatalogDatasetEntry {
-    /// Dataset UUID.
-    pub id: Uuid,
-    /// Dataset SQL name.
-    pub name: String,
-    /// Backing `DuckLake` table name.
-    pub lake_table: String,
-    /// Current schema version.
-    pub schema_version: i32,
-    /// Column metadata indexed by lowercase column name.
-    pub columns: BTreeMap<String, ColumnMeta>,
-}
-
-/// Live-attached relational connection metadata cached in [`TenantCatalog`].
+/// Live-attached relational connection metadata cached for `SessionPool`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CatalogLiveEntry {
     /// Connection UUID.
@@ -89,51 +115,6 @@ pub struct CatalogLiveEntry {
     pub name: String,
     /// Connector type (`POSTGRES`, `MYSQL`, `SQLITE`).
     pub connector_type: ConnectorType,
-}
-
-/// Per-tenant catalog snapshot consumed by `sql_guard`, `pivot`, `semantic`, and `result` (`§04.2`, `§04.3`).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct TenantCatalog {
-    /// Active tenant identifier (`lake."tenant_<id>"`).
-    pub tenant_id: String,
-    /// Datasets keyed by lowercase dataset SQL name.
-    pub datasets: BTreeMap<String, CatalogDatasetEntry>,
-    /// Live relational connections keyed by lowercase alias (`live_<name>`).
-    pub live_connections: BTreeMap<String, CatalogLiveEntry>,
-}
-
-/// Options passed into `sql_guard::guard` (`05-STEP04` §04.3).
-#[derive(Debug, Clone)]
-pub struct GuardOptions {
-    /// Maximum rows before truncation (`default = 10_000`, `cap = 100_000`).
-    pub max_rows: u32,
-    /// Whether `live_<conn>.<schema>.<table>` references are allowed.
-    pub allow_live: bool,
-    /// Named `:param` values substituted as typed SQL literals.
-    pub params: BTreeMap<String, serde_json::Value>,
-}
-
-impl Default for GuardOptions {
-    fn default() -> Self {
-        Self {
-            max_rows: 10_000,
-            allow_live: false,
-            params: BTreeMap::new(),
-        }
-    }
-}
-
-/// Validated and rewritten SQL output produced by `sql_guard::guard` (`05-STEP04` §04.3).
-#[derive(Debug, Clone)]
-pub struct GuardedSql {
-    /// Rewritten SQL wrapped with `SELECT * FROM (...) AS q LIMIT <max_rows + 1>`.
-    pub sql: String,
-    /// Referenced dataset UUIDs.
-    pub referenced_datasets: Vec<Uuid>,
-    /// Referenced `(dataset_id, column_name)` pairs.
-    pub referenced_columns: Vec<(Uuid, String)>,
-    /// Whether any `ax.*` platform view was referenced.
-    pub uses_platform_views: bool,
 }
 
 /// Verifies bundled `DuckDB`, `DuckDbDialect` parser, and LRU cache readiness (replaced/expanded in Stage 2).

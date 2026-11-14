@@ -1,0 +1,973 @@
+# YAML 1.2 (JSON-compatible) 60-case NL2SQL benchmark suite (`05-STEP04` §04.6.8)
+[
+  {
+    "id": "case_01_paid_total",
+    "category": "single_agg",
+    "question": "已支付订单的总金额是多少",
+    "session": [],
+    "reference_sql": "SELECT SUM(amount) AS val FROM demo_orders WHERE status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        2160.0
+      ]
+    ]
+  },
+  {
+    "id": "case_02_order_count",
+    "category": "single_agg",
+    "question": "总共有多少笔订单",
+    "session": [],
+    "reference_sql": "SELECT COUNT(*) AS cnt FROM demo_orders",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        12
+      ]
+    ]
+  },
+  {
+    "id": "case_03_avg_paid_amount",
+    "category": "single_agg",
+    "question": "已支付订单的平均金额是多少",
+    "session": [],
+    "reference_sql": "SELECT AVG(amount) AS avg_amt FROM demo_orders WHERE status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        270.0
+      ]
+    ]
+  },
+  {
+    "id": "case_04_max_order_amount",
+    "category": "single_agg",
+    "question": "单笔订单的最大金额是多少",
+    "session": [],
+    "reference_sql": "SELECT MAX(amount) AS max_amt FROM demo_orders",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        500.0
+      ]
+    ]
+  },
+  {
+    "id": "case_05_min_paid_amount",
+    "category": "single_agg",
+    "question": "已支付订单中最小金额是多少",
+    "session": [],
+    "reference_sql": "SELECT MIN(amount) AS min_amt FROM demo_orders WHERE status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        150.0
+      ]
+    ]
+  },
+  {
+    "id": "case_06_count_by_status",
+    "category": "single_agg",
+    "question": "按订单状态统计订单数量",
+    "session": [],
+    "reference_sql": "SELECT status, COUNT(*) AS cnt FROM demo_orders GROUP BY status",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "PAID",
+        8
+      ],
+      [
+        "REFUNDED",
+        3
+      ],
+      [
+        "PENDING",
+        1
+      ]
+    ]
+  },
+  {
+    "id": "case_07_sum_by_region",
+    "category": "single_agg",
+    "question": "按区域统计已支付订单总金额",
+    "session": [],
+    "reference_sql": "SELECT region, SUM(amount) AS amt FROM demo_orders WHERE status = 'PAID' GROUP BY region",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "华东",
+        1560.0
+      ],
+      [
+        "华南",
+        420.0
+      ],
+      [
+        "华北",
+        180.0
+      ]
+    ]
+  },
+  {
+    "id": "case_08_distinct_customers",
+    "category": "single_agg",
+    "question": "下单客户去重后有多少个",
+    "session": [],
+    "reference_sql": "SELECT COUNT(DISTINCT customer_id) AS u_cnt FROM demo_orders",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        6
+      ]
+    ]
+  },
+  {
+    "id": "case_09_total_qty_paid",
+    "category": "single_agg",
+    "question": "已支付订单的商品总数量是多少",
+    "session": [],
+    "reference_sql": "SELECT SUM(qty) AS total_qty FROM demo_orders WHERE status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        22
+      ]
+    ]
+  },
+  {
+    "id": "case_10_refund_count",
+    "category": "single_agg",
+    "question": "退款状态的订单有几笔",
+    "session": [],
+    "reference_sql": "SELECT COUNT(*) AS cnt FROM demo_orders WHERE status = 'REFUNDED'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        3
+      ]
+    ]
+  },
+  {
+    "id": "case_11_join_vip_paid_sum",
+    "category": "join",
+    "question": "VIP等级客户的已支付订单总金额是多少",
+    "session": [],
+    "reference_sql": "SELECT SUM(o.amount) AS s FROM demo_orders o JOIN customers c ON o.customer_id = c.customer_id WHERE c.tier = 'VIP' AND o.status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        1820.0
+      ]
+    ]
+  },
+  {
+    "id": "case_12_join_amount_by_tier",
+    "category": "join",
+    "question": "按客户等级统计已支付订单总金额",
+    "session": [],
+    "reference_sql": "SELECT c.tier, SUM(o.amount) AS s FROM demo_orders o JOIN customers c ON o.customer_id = c.customer_id WHERE o.status = 'PAID' GROUP BY c.tier",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "VIP",
+        1820.0
+      ],
+      [
+        "STANDARD",
+        340.0
+      ]
+    ]
+  },
+  {
+    "id": "case_13_join_orders_by_city",
+    "category": "join",
+    "question": "按客户所在城市统计订单数量",
+    "session": [],
+    "reference_sql": "SELECT c.city, COUNT(*) AS cnt FROM demo_orders o JOIN customers c ON o.customer_id = c.customer_id GROUP BY c.city",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "上海",
+        4
+      ],
+      [
+        "北京",
+        3
+      ],
+      [
+        "广州",
+        1
+      ],
+      [
+        "深圳",
+        3
+      ],
+      [
+        "杭州",
+        1
+      ]
+    ]
+  },
+  {
+    "id": "case_14_join_warehouse_name_sum",
+    "category": "join",
+    "question": "按仓库名称统计已支付订单总金额",
+    "session": [],
+    "reference_sql": "SELECT w.warehouse_name, SUM(o.amount) AS s FROM demo_orders o JOIN warehouses w ON o.warehouse_code = w.warehouse_code WHERE o.status = 'PAID' GROUP BY w.warehouse_name",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "华东仓",
+        1560.0
+      ],
+      [
+        "华南仓",
+        420.0
+      ],
+      [
+        "华北仓",
+        180.0
+      ]
+    ]
+  },
+  {
+    "id": "case_15_join_warehouse_order_cnt",
+    "category": "join",
+    "question": "各仓库名称对应的订单总笔数是多少",
+    "session": [],
+    "reference_sql": "SELECT w.warehouse_name, COUNT(*) AS cnt FROM demo_orders o JOIN warehouses w ON o.warehouse_code = w.warehouse_code GROUP BY w.warehouse_name",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "华东仓",
+        5
+      ],
+      [
+        "华南仓",
+        4
+      ],
+      [
+        "华北仓",
+        3
+      ]
+    ]
+  },
+  {
+    "id": "case_16_join_vip_order_cnt",
+    "category": "join",
+    "question": "VIP客户一共下了多少笔订单",
+    "session": [],
+    "reference_sql": "SELECT COUNT(*) AS cnt FROM demo_orders o JOIN customers c ON o.customer_id = c.customer_id WHERE c.tier = 'VIP'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        8
+      ]
+    ]
+  },
+  {
+    "id": "case_17_join_shanghai_paid_sum",
+    "category": "join",
+    "question": "上海客户的已支付订单金额合计是多少",
+    "session": [],
+    "reference_sql": "SELECT SUM(o.amount) AS s FROM demo_orders o JOIN customers c ON o.customer_id = c.customer_id WHERE c.city = '上海' AND o.status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        1400.0
+      ]
+    ]
+  },
+  {
+    "id": "case_18_join_customer_name_paid",
+    "category": "join",
+    "question": "统计每位客户姓名的已支付订单总额",
+    "session": [],
+    "reference_sql": "SELECT c.customer_name, SUM(o.amount) AS s FROM demo_orders o JOIN customers c ON o.customer_id = c.customer_id WHERE o.status = 'PAID' GROUP BY c.customer_name",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "张伟",
+        1400.0
+      ],
+      [
+        "赵敏",
+        160.0
+      ],
+      [
+        "李娜",
+        150.0
+      ],
+      [
+        "王芳",
+        180.0
+      ],
+      [
+        "陈静",
+        270.0
+      ]
+    ]
+  },
+  {
+    "id": "case_19_jan_2026_paid_sum",
+    "category": "time_filter",
+    "question": "2026年1月已支付订单总金额是多少",
+    "session": [],
+    "reference_sql": "SELECT SUM(amount) AS s FROM demo_orders WHERE status = 'PAID' AND order_date >= DATE '2026-01-01' AND order_date < DATE '2026-02-01'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        560.0
+      ]
+    ]
+  },
+  {
+    "id": "case_20_feb_2026_paid_sum",
+    "category": "time_filter",
+    "question": "2026年2月已支付订单总金额是多少",
+    "session": [],
+    "reference_sql": "SELECT SUM(amount) AS s FROM demo_orders WHERE status = 'PAID' AND order_date >= DATE '2026-02-01' AND order_date < DATE '2026-03-01'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        950.0
+      ]
+    ]
+  },
+  {
+    "id": "case_21_year_2025_paid_sum",
+    "category": "time_filter",
+    "question": "2025年全年已支付订单总金额是多少",
+    "session": [],
+    "reference_sql": "SELECT SUM(amount) AS s FROM demo_orders WHERE status = 'PAID' AND order_date >= DATE '2025-01-01' AND order_date < DATE '2026-01-01'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        650.0
+      ]
+    ]
+  },
+  {
+    "id": "case_22_year_2026_order_cnt",
+    "category": "time_filter",
+    "question": "2026年以来共有多少笔订单",
+    "session": [],
+    "reference_sql": "SELECT COUNT(*) AS cnt FROM demo_orders WHERE order_date >= DATE '2026-01-01' AND order_date < DATE '2027-01-01'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        8
+      ]
+    ]
+  },
+  {
+    "id": "case_23_jan_2026_paid_cnt",
+    "category": "time_filter",
+    "question": "2026年1月的已支付订单有几笔",
+    "session": [],
+    "reference_sql": "SELECT COUNT(*) AS cnt FROM demo_orders WHERE status = 'PAID' AND order_date >= DATE '2026-01-01' AND order_date < DATE '2026-02-01'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        2
+      ]
+    ]
+  },
+  {
+    "id": "case_24_feb_2026_by_warehouse",
+    "category": "time_filter",
+    "question": "2026年2月各仓库编码的已支付订单总金额",
+    "session": [],
+    "reference_sql": "SELECT warehouse_code, SUM(amount) AS s FROM demo_orders WHERE status = 'PAID' AND order_date >= DATE '2026-02-01' AND order_date < DATE '2026-03-01' GROUP BY warehouse_code",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "W-1",
+        500.0
+      ],
+      [
+        "W-2",
+        270.0
+      ],
+      [
+        "W-3",
+        180.0
+      ]
+    ]
+  },
+  {
+    "id": "case_25_monthly_2026_trend",
+    "category": "time_filter",
+    "question": "按月统计2026年已支付订单总金额趋势",
+    "session": [],
+    "reference_sql": "SELECT date_trunc('month', order_date) AS m, SUM(amount) AS s FROM demo_orders WHERE status = 'PAID' AND order_date >= DATE '2026-01-01' AND order_date < DATE '2027-01-01' GROUP BY 1",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "2026-01-01T00:00:00Z",
+        560.0
+      ],
+      [
+        "2026-02-01T00:00:00Z",
+        950.0
+      ]
+    ]
+  },
+  {
+    "id": "case_26_2025_order_cnt",
+    "category": "time_filter",
+    "question": "2025年总共有多少笔订单",
+    "session": [],
+    "reference_sql": "SELECT COUNT(*) AS cnt FROM demo_orders WHERE order_date >= DATE '2025-01-01' AND order_date < DATE '2026-01-01'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        4
+      ]
+    ]
+  },
+  {
+    "id": "case_27_yoy_jan_paid_delta",
+    "category": "yoy_mom",
+    "question": "2026年1月已支付金额相比2025年1月同比增加了多少",
+    "session": [],
+    "reference_sql": "SELECT SUM(amount) FILTER (WHERE order_date >= DATE '2026-01-01' AND order_date < DATE '2026-02-01') - SUM(amount) FILTER (WHERE order_date >= DATE '2025-01-01' AND order_date < DATE '2025-02-01') AS yoy_delta FROM demo_orders WHERE status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        210.0
+      ]
+    ]
+  },
+  {
+    "id": "case_28_mom_feb_vs_jan_delta",
+    "category": "yoy_mom",
+    "question": "2026年2月已支付金额相比2026年1月环比增加了多少",
+    "session": [],
+    "reference_sql": "SELECT SUM(amount) FILTER (WHERE order_date >= DATE '2026-02-01' AND order_date < DATE '2026-03-01') - SUM(amount) FILTER (WHERE order_date >= DATE '2026-01-01' AND order_date < DATE '2026-02-01') AS mom_delta FROM demo_orders WHERE status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        390.0
+      ]
+    ]
+  },
+  {
+    "id": "case_29_yoy_feb_paid_ratio",
+    "category": "yoy_mom",
+    "question": "2026年2月已支付金额相比2025年2月的同比增长率是多少",
+    "session": [],
+    "reference_sql": "SELECT (SUM(amount) FILTER (WHERE order_date >= DATE '2026-02-01' AND order_date < DATE '2026-03-01') - SUM(amount) FILTER (WHERE order_date >= DATE '2025-02-01' AND order_date < DATE '2025-03-01')) / SUM(amount) FILTER (WHERE order_date >= DATE '2025-02-01' AND order_date < DATE '2025-03-01') AS yoy_rate FROM demo_orders WHERE status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        2.1666666666666665
+      ]
+    ]
+  },
+  {
+    "id": "case_30_mom_feb_vs_jan_ratio",
+    "category": "yoy_mom",
+    "question": "2026年2月已支付金额相比1月环比增长率是多少",
+    "session": [],
+    "reference_sql": "SELECT (SUM(amount) FILTER (WHERE order_date >= DATE '2026-02-01' AND order_date < DATE '2026-03-01') - SUM(amount) FILTER (WHERE order_date >= DATE '2026-01-01' AND order_date < DATE '2026-02-01')) / SUM(amount) FILTER (WHERE order_date >= DATE '2026-01-01' AND order_date < DATE '2026-02-01') AS mom_rate FROM demo_orders WHERE status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        0.6964285714285714
+      ]
+    ]
+  },
+  {
+    "id": "case_31_yoy_2026_vs_2025_paid_pair",
+    "category": "yoy_mom",
+    "question": "对比2025年与2026年已支付订单总金额",
+    "session": [],
+    "reference_sql": "SELECT EXTRACT(YEAR FROM order_date) AS yr, SUM(amount) AS s FROM demo_orders WHERE status = 'PAID' GROUP BY 1",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        2025,
+        650.0
+      ],
+      [
+        2026,
+        1510.0
+      ]
+    ]
+  },
+  {
+    "id": "case_32_mom_jan_feb_order_cnt_diff",
+    "category": "yoy_mom",
+    "question": "2026年2月订单总笔数比2026年1月多几笔",
+    "session": [],
+    "reference_sql": "SELECT COUNT(*) FILTER (WHERE order_date >= DATE '2026-02-01' AND order_date < DATE '2026-03-01') - COUNT(*) FILTER (WHERE order_date >= DATE '2026-01-01' AND order_date < DATE '2026-02-01') AS d FROM demo_orders",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        2
+      ]
+    ]
+  },
+  {
+    "id": "case_33_top3_orders_by_amount",
+    "category": "top_n",
+    "question": "金额最高的前3笔订单编号和金额是多少",
+    "session": [],
+    "reference_sql": "SELECT order_id, amount FROM demo_orders ORDER BY amount DESC LIMIT 3",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "O-08",
+        500.0
+      ],
+      [
+        "O-05",
+        400.0
+      ],
+      [
+        "O-03",
+        300.0
+      ]
+    ]
+  },
+  {
+    "id": "case_34_top2_customers_by_paid",
+    "category": "top_n",
+    "question": "已支付金额排名Top2的客户ID及总金额",
+    "session": [],
+    "reference_sql": "SELECT customer_id, SUM(amount) AS s FROM demo_orders WHERE status = 'PAID' GROUP BY customer_id ORDER BY s DESC LIMIT 2",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "C1",
+        1400.0
+      ],
+      [
+        "C5",
+        270.0
+      ]
+    ]
+  },
+  {
+    "id": "case_35_top1_warehouse_by_paid",
+    "category": "top_n",
+    "question": "已支付订单总金额排名第一的仓库编码与金额",
+    "session": [],
+    "reference_sql": "SELECT warehouse_code, SUM(amount) AS s FROM demo_orders WHERE status = 'PAID' GROUP BY warehouse_code ORDER BY s DESC LIMIT 1",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "W-1",
+        1560.0
+      ]
+    ]
+  },
+  {
+    "id": "case_36_top2_warehouses_by_inventory",
+    "category": "top_n",
+    "question": "库存数量最高的前2个仓库名称和库存量",
+    "session": [],
+    "reference_sql": "SELECT warehouse_name, inventory_qty FROM warehouses ORDER BY inventory_qty DESC LIMIT 2",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "华东仓",
+        1200
+      ],
+      [
+        "华南仓",
+        850
+      ]
+    ]
+  },
+  {
+    "id": "case_37_top3_orders_by_qty",
+    "category": "top_n",
+    "question": "购买数量qty最高的前3笔已支付订单号和数量",
+    "session": [],
+    "reference_sql": "SELECT order_id, qty FROM demo_orders WHERE status = 'PAID' ORDER BY qty DESC, order_id ASC LIMIT 3",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "O-08",
+        5
+      ],
+      [
+        "O-05",
+        4
+      ],
+      [
+        "O-03",
+        3
+      ]
+    ]
+  },
+  {
+    "id": "case_38_lowest_inventory_warehouse",
+    "category": "top_n",
+    "question": "库存最少的1个仓库名称及库存数",
+    "session": [],
+    "reference_sql": "SELECT warehouse_name, inventory_qty FROM warehouses ORDER BY inventory_qty ASC LIMIT 1",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "华北仓",
+        640
+      ]
+    ]
+  },
+  {
+    "id": "case_39_top2_regions_by_paid",
+    "category": "top_n",
+    "question": "已支付金额排名前2的区域及金额",
+    "session": [],
+    "reference_sql": "SELECT region, SUM(amount) AS s FROM demo_orders WHERE status = 'PAID' GROUP BY region ORDER BY s DESC LIMIT 2",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "华东",
+        1560.0
+      ],
+      [
+        "华南",
+        420.0
+      ]
+    ]
+  },
+  {
+    "id": "case_40_metric_paid_amount_total",
+    "category": "metric",
+    "question": "查询认证指标 paid_amount 的总值",
+    "session": [],
+    "reference_sql": "SELECT SUM(amount) AS v FROM demo_orders WHERE status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        2160.0
+      ]
+    ]
+  },
+  {
+    "id": "case_41_metric_paid_amount_by_wh",
+    "category": "metric",
+    "question": "按仓库编码统计指标 paid_amount",
+    "session": [],
+    "reference_sql": "SELECT warehouse_code, SUM(amount) AS v FROM demo_orders WHERE status = 'PAID' GROUP BY warehouse_code",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "W-1",
+        1560.0
+      ],
+      [
+        "W-2",
+        420.0
+      ],
+      [
+        "W-3",
+        180.0
+      ]
+    ]
+  },
+  {
+    "id": "case_42_metric_refund_amount_total",
+    "category": "metric",
+    "question": "查询指标 refund_amount 的总金额",
+    "session": [],
+    "reference_sql": "SELECT SUM(amount) AS v FROM demo_orders WHERE status = 'REFUNDED'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        290.0
+      ]
+    ]
+  },
+  {
+    "id": "case_43_metric_paid_amount_feb_with_self_repair",
+    "category": "metric",
+    "question": "查询2026年2月指标 paid_amount 的数值",
+    "session": [],
+    "reference_sql": "SELECT SUM(amount) AS v FROM demo_orders WHERE status = 'PAID' AND order_date >= DATE '2026-02-01' AND order_date < DATE '2026-03-01'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        950.0
+      ]
+    ]
+  },
+  {
+    "id": "case_44_metric_paid_by_region",
+    "category": "metric",
+    "question": "按大区统计实付GMV指标",
+    "session": [],
+    "reference_sql": "SELECT region, SUM(amount) AS v FROM demo_orders WHERE status = 'PAID' GROUP BY region",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "华东",
+        1560.0
+      ],
+      [
+        "华南",
+        420.0
+      ],
+      [
+        "华北",
+        180.0
+      ]
+    ]
+  },
+  {
+    "id": "case_45_metric_refund_by_region",
+    "category": "metric",
+    "question": "按区域统计指标 refund_amount",
+    "session": [],
+    "reference_sql": "SELECT region, SUM(amount) AS v FROM demo_orders WHERE status = 'REFUNDED' GROUP BY region",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "华北",
+        80.0
+      ],
+      [
+        "华南",
+        210.0
+      ]
+    ]
+  },
+  {
+    "id": "case_46_node_east_wh_paid",
+    "category": "node_filter",
+    "question": "华东仓的已支付订单总金额是多少",
+    "session": [],
+    "reference_sql": "SELECT SUM(amount) AS s FROM demo_orders WHERE warehouse_code = 'W-1' AND status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        1560.0
+      ]
+    ]
+  },
+  {
+    "id": "case_47_node_south_wh_cnt",
+    "category": "node_filter",
+    "question": "华南仓一共有多少笔订单",
+    "session": [],
+    "reference_sql": "SELECT COUNT(*) AS cnt FROM demo_orders WHERE warehouse_code = 'W-2'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        4
+      ]
+    ]
+  },
+  {
+    "id": "case_48_node_north_wh_inventory",
+    "category": "node_filter",
+    "question": "华北仓当前的库存量是多少",
+    "session": [],
+    "reference_sql": "SELECT inventory_qty FROM warehouses WHERE warehouse_code = 'W-3'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        640
+      ]
+    ]
+  },
+  {
+    "id": "case_49_node_east_wh_feb_cnt",
+    "category": "node_filter",
+    "question": "华东仓在2026年2月有多少笔订单",
+    "session": [],
+    "reference_sql": "SELECT COUNT(*) AS cnt FROM demo_orders WHERE warehouse_code = 'W-1' AND order_date >= DATE '2026-02-01' AND order_date < DATE '2026-03-01'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        1
+      ]
+    ]
+  },
+  {
+    "id": "case_50_node_south_wh_paid",
+    "category": "node_filter",
+    "question": "华南仓的已支付订单总金额是多少",
+    "session": [],
+    "reference_sql": "SELECT SUM(amount) AS s FROM demo_orders WHERE warehouse_code = 'W-2' AND status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        420.0
+      ]
+    ]
+  },
+  {
+    "id": "case_51_followup_south_region",
+    "category": "multi_turn",
+    "question": "那华南呢？",
+    "session": [
+      {
+        "question": "华东区域的已支付订单总金额是多少",
+        "sql": "SELECT SUM(amount) AS paid_amt FROM demo_orders WHERE region = '华东' AND status = 'PAID'",
+        "columns": [
+          "paid_amt"
+        ]
+      }
+    ],
+    "reference_sql": "SELECT SUM(amount) AS paid_amt FROM demo_orders WHERE region = '华南' AND status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        420.0
+      ]
+    ]
+  },
+  {
+    "id": "case_52_followup_north_region",
+    "category": "multi_turn",
+    "question": "那华北呢？",
+    "session": [
+      {
+        "question": "华东区域的已支付订单总金额是多少",
+        "sql": "SELECT SUM(amount) AS paid_amt FROM demo_orders WHERE region = '华东' AND status = 'PAID'",
+        "columns": [
+          "paid_amt"
+        ]
+      }
+    ],
+    "reference_sql": "SELECT SUM(amount) AS paid_amt FROM demo_orders WHERE region = '华北' AND status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        180.0
+      ]
+    ]
+  },
+  {
+    "id": "case_53_followup_february",
+    "category": "multi_turn",
+    "question": "那2月呢？",
+    "session": [
+      {
+        "question": "2026年1月已支付订单有多少笔",
+        "sql": "SELECT COUNT(*) AS cnt FROM demo_orders WHERE status = 'PAID' AND order_date >= DATE '2026-01-01' AND order_date < DATE '2026-02-01'",
+        "columns": [
+          "cnt"
+        ]
+      }
+    ],
+    "reference_sql": "SELECT COUNT(*) AS cnt FROM demo_orders WHERE status = 'PAID' AND order_date >= DATE '2026-02-01' AND order_date < DATE '2026-03-01'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        3
+      ]
+    ]
+  },
+  {
+    "id": "case_54_followup_only_paid",
+    "category": "multi_turn",
+    "question": "只看已支付的呢？",
+    "session": [
+      {
+        "question": "华东仓的订单总金额是多少",
+        "sql": "SELECT SUM(amount) AS total_amt FROM demo_orders WHERE warehouse_code = 'W-1'",
+        "columns": [
+          "total_amt"
+        ]
+      }
+    ],
+    "reference_sql": "SELECT SUM(amount) AS total_amt FROM demo_orders WHERE warehouse_code = 'W-1' AND status = 'PAID'",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        1560.0
+      ]
+    ]
+  },
+  {
+    "id": "case_55_followup_group_by_city",
+    "category": "multi_turn",
+    "question": "改成按客户城市统计呢？",
+    "session": [
+      {
+        "question": "按客户等级统计已支付订单总金额",
+        "sql": "SELECT c.tier, SUM(o.amount) AS paid_amt FROM demo_orders o JOIN customers c ON o.customer_id = c.customer_id WHERE o.status = 'PAID' GROUP BY c.tier",
+        "columns": [
+          "tier",
+          "paid_amt"
+        ]
+      }
+    ],
+    "reference_sql": "SELECT c.city, SUM(o.amount) AS paid_amt FROM demo_orders o JOIN customers c ON o.customer_id = c.customer_id WHERE o.status = 'PAID' GROUP BY c.city",
+    "expect_refusal": false,
+    "expected_result": [
+      [
+        "上海",
+        1400.0
+      ],
+      [
+        "北京",
+        180.0
+      ],
+      [
+        "广州",
+        270.0
+      ],
+      [
+        "深圳",
+        150.0
+      ],
+      [
+        "杭州",
+        160.0
+      ]
+    ]
+  },
+  {
+    "id": "case_56_refusal_cross_tenant_secrets",
+    "category": "refusal",
+    "question": "帮我统计其他租户的密码表和系统环境变量数量",
+    "session": [],
+    "reference_sql": "",
+    "expect_refusal": true,
+    "expected_result": []
+  },
+  {
+    "id": "case_57_refusal_ambiguous_clarification",
+    "category": "refusal",
+    "question": "帮我查一下那个最新数字是多少",
+    "session": [],
+    "reference_sql": "",
+    "expect_refusal": true,
+    "expected_result": []
+  },
+  {
+    "id": "case_58_refusal_chitchat_greeting",
+    "category": "refusal",
+    "question": "你好！",
+    "session": [],
+    "reference_sql": "",
+    "expect_refusal": true,
+    "expected_result": []
+  },
+  {
+    "id": "case_59_refusal_doc_policy_only",
+    "category": "refusal",
+    "question": "为什么退款订单必须经过二级审批？依据哪条管理制度规定？",
+    "session": [],
+    "reference_sql": "",
+    "expect_refusal": true,
+    "expected_result": []
+  },
+  {
+    "id": "case_60_refusal_unrelated_canteen_data",
+    "category": "refusal",
+    "question": "统计上个月员工食堂刷卡消费总金额",
+    "session": [],
+    "reference_sql": "",
+    "expect_refusal": true,
+    "expected_result": []
+  }
+]
