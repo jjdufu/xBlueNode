@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+axpoint-analytics = { path = "../axpoint-analytics" }
 axpoint-db = { path = "../axpoint-db" }
 axpoint-domain = { path = "../axpoint-domain" }
 axpoint-llm = { path = "../axpoint-llm" }

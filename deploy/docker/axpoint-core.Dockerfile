@@ -11,7 +11,8 @@ COPY axpoint-core/ axpoint-core/
 COPY deploy/migrations/ deploy/migrations/
 COPY --from=web /src/xbluenode-web/src/ xbluenode-web/src/
 RUN mkdir -p /out/nonroot-home/.duckdb/extensions \
- && cd axpoint-core && cargo build --release -p axpoint-server
+ && cd axpoint-core && cargo build --release -p axpoint-server \
+ && HOME=/out/nonroot-home ./target/release/axpoint-server install-duckdb-extensions
 
 FROM gcr.io/distroless/cc-debian12:nonroot
 COPY --from=core /src/axpoint-core/target/release/axpoint-server /app/axpoint-server
