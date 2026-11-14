@@ -1,5 +1,6 @@
 //! `AxAnalytics` OLAP session pool, SQL AST guard, pivot engine, semantic layer, NL2SQL, and AI transforms (`05-STEP04`).
 
+pub mod pivot;
 pub mod result;
 pub mod session;
 pub mod sql_guard;
@@ -34,6 +35,11 @@ use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
+pub use pivot::{
+    CompiledPivot, DEFAULT_PIVOT_COLUMN_LIMIT, DEFAULT_PIVOT_ROW_LIMIT, MAX_PIVOT_COL_DIMS,
+    MAX_PIVOT_COLUMN_LIMIT, MAX_PIVOT_ROW_DIMS, MAX_PIVOT_ROW_LIMIT, MAX_PIVOT_VALUES,
+    PivotExecuteOptions, compile_pivot, execute_pivot, execute_pivot_conn,
+};
 pub use result::{
     ResultSerializeOptions, SerializedQueryOutput, batches_to_query_result, map_arrow_data_type,
     mask_pii_str,
