@@ -18,6 +18,7 @@ from lake.writer import (
     commit_staging,
     drop_lake_table,
     list_snapshots,
+    materialize_derived_view,
     preview_lake,
     sync_dataset,
 )
@@ -33,6 +34,7 @@ from schemas import (
     LakeMaintenanceResult,
     LakePreviewRequest,
     LakeSnapshotInfo,
+    MaterializeRequest,
     ParseResponse,
     PreviewResponse,
     SyncRequest,
@@ -288,6 +290,26 @@ async def post_connector_sync(request: Request, req: SyncRequest) -> SyncResult:
 async def post_lake_commit_staging(request: Request, req: CommitStagingRequest) -> list[SyncResult]:
     tz = _header_timezone(request)
     return commit_staging(req, timezone_str=tz)
+
+
+@app.post(
+    "/lake/materialize",
+    response_model=SyncResult,
+    response_model_by_alias=True,
+)
+async def post_lake_materialize(request: Request, req: MaterializeRequest) -> SyncResult:
+    raw_hdr_tenant = request.headers.get("x-axpoint-tenant", "").strip()
+    body_tenant = validate_tenant_id(req.tenant_id)
+    if raw_hdr_tenant:
+        hdr_tenant = validate_tenant_id(raw_hdr_tenant)
+        if hdr_tenant != body_tenant:
+            raise SidecarError(
+                403,
+                "PERMISSION_DENIED",
+                "x-axpoint-tenant header does not match request tenant_id",
+            )
+    tz = _header_timezone(request)
+    return materialize_derived_view(req, timezone_str=tz)
 
 
 @app.post("/lake/preview", response_model=PreviewResponse)

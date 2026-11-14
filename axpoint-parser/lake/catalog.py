@@ -73,6 +73,7 @@ def lake_connection(
     *,
     data_root: Path | None = None,
     catalog_dsn: str | None = None,
+    lake_only_dirs: bool = False,
 ) -> Iterator[duckdb.DuckDBPyConnection]:
     """Open an isolated, hardened DuckDB session attached to DuckLake under process RLock."""
     root = (data_root or get_data_root()).resolve()
@@ -93,7 +94,9 @@ def lake_connection(
         try:
             con.execute("LOAD ducklake; LOAD postgres;")
 
-            allowed_dirs: list[Path] = [lake_dir, tenants_dir, root]
+            allowed_dirs: list[Path] = (
+                [lake_dir] if lake_only_dirs else [lake_dir, tenants_dir, root]
+            )
             lake_path_sql = _sql_quote_str(f"{lake_dir.as_posix()}/")
 
             if raw_dsn.startswith(("postgres://", "postgresql://")):

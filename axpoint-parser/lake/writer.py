@@ -8,6 +8,8 @@ import duckdb
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
+import sqlglot
+from sqlglot import exp
 
 from connectors.base import arrow_table_to_preview, format_cursor_value
 from connectors.registry import create_connector
@@ -29,9 +31,12 @@ from parsers.profiler import profile_polars_df
 from schemas import (
     ColumnProfile,
     CommitStagingRequest,
+    DataType,
     LakePreviewRequest,
     LakeSnapshotInfo,
+    MaterializeRequest,
     PreviewResponse,
+    QualityReport,
     QualityRule,
     SchemaChange,
     SchemaPolicy,
@@ -710,3 +715,393 @@ def drop_lake_table(
             return False
         con.execute(f"DROP TABLE IF EXISTS lake.{s_q}.{t_q}")
         return True
+
+
+_ALLOWED_TABLE_FUNCTIONS: frozenset[str] = frozenset({"range", "generate_series", "unnest"})
+
+_FORBIDDEN_EXACT_FUNCTIONS: frozenset[str] = frozenset(
+    {
+        "glob",
+        "query",
+        "query_table",
+        "postgres_query",
+        "getenv",
+        "current_setting",
+        "read_text",
+        "read_blob",
+        "load_extension",
+        "sql_auto_complete",
+        "postgres_attach",
+        "sqlite_attach",
+        "mysql_attach",
+    }
+)
+
+_FORBIDDEN_FUNCTION_PREFIXES: tuple[str, ...] = (
+    "read_csv",
+    "read_parquet",
+    "read_json",
+    "read_ndjson",
+    "ducklake_",
+    "iceberg_",
+    "delta_",
+    "pg_",
+    "duckdb_",
+    "pragma_",
+    "__internal",
+)
+
+_FORBIDDEN_AST_NODES: tuple[type[exp.Expr], ...] = (
+    exp.DDL,
+    exp.DML,
+    exp.Command,
+    exp.Pragma,
+    exp.Set,
+    exp.Copy,
+    exp.Use,
+    exp.LoadData,
+    exp.Into,
+    exp.Describe,
+    exp.Show,
+    exp.Summarize,
+)
+
+_DUCKDB_CLIENT_SQL_ERRORS: tuple[type[BaseException], ...] = (
+    duckdb.ProgrammingError,
+    duckdb.DataError,
+    duckdb.PermissionException,
+    duckdb.IntegrityError,
+    duckdb.NotSupportedError,
+)
+
+
+def _extract_func_name(node: exp.Func | exp.Anonymous) -> str:
+    if isinstance(node, exp.Anonymous):
+        return str(node.name).strip().lower()
+    return str(node.sql_name()).strip().lower()
+
+
+def _is_forbidden_function_name(fn_name: str) -> bool:
+    if not fn_name:
+        return True
+    if fn_name in _FORBIDDEN_EXACT_FUNCTIONS:
+        return True
+    if fn_name.endswith("_scan"):
+        return True
+    return fn_name.startswith(_FORBIDDEN_FUNCTION_PREFIXES)
+
+
+def _collect_tables_with_lexical_ctes(
+    node: exp.Expr,
+    active_ctes: frozenset[str],
+) -> list[tuple[exp.Table, frozenset[str]]]:
+    """Walk AST tracking lexically in-scope CTE names at every exp.Table node."""
+    collected: list[tuple[exp.Table, frozenset[str]]] = []
+    local_ctes = set(active_ctes)
+
+    with_clause = node.args.get("with_")
+    if isinstance(with_clause, exp.With):
+        is_recursive = bool(with_clause.args.get("recursive"))
+        if is_recursive:
+            for cte in with_clause.expressions:
+                if isinstance(cte, exp.CTE) and cte.alias:
+                    local_ctes.add(str(cte.alias).lower())
+            for cte in with_clause.expressions:
+                collected.extend(_collect_tables_with_lexical_ctes(cte, frozenset(local_ctes)))
+        else:
+            for cte in with_clause.expressions:
+                collected.extend(_collect_tables_with_lexical_ctes(cte, frozenset(local_ctes)))
+                if isinstance(cte, exp.CTE) and cte.alias:
+                    local_ctes.add(str(cte.alias).lower())
+
+    if isinstance(node, exp.Table):
+        collected.append((node, frozenset(local_ctes)))
+
+    current_scope = frozenset(local_ctes)
+    for key, val in node.args.items():
+        if key == "with_":
+            continue
+        if isinstance(val, exp.Expr):
+            collected.extend(_collect_tables_with_lexical_ctes(val, current_scope))
+        elif isinstance(val, list):
+            for item in val:
+                if isinstance(item, exp.Expr):
+                    collected.extend(_collect_tables_with_lexical_ctes(item, current_scope))
+
+    return collected
+
+
+def _check_allowed_table_func(node: exp.Func | exp.Anonymous) -> None:
+    fn_name = _extract_func_name(node)
+    if fn_name not in _ALLOWED_TABLE_FUNCTIONS:
+        raise SidecarError(
+            400,
+            "SQL_REJECTED",
+            f"table function {fn_name!r} is not permitted",
+        )
+
+
+def _validate_materialize_sql(raw_sql: str, valid_tenant: str) -> str:
+    """Validate derived view SQL AST via sqlglot (DuckDB dialect) before execution."""
+    stripped = raw_sql.strip()
+    if not stripped:
+        raise SidecarError(400, "SQL_REJECTED", "derived SQL query must not be empty")
+
+    try:
+        statements = sqlglot.parse(
+            stripped,
+            read="duckdb",
+            error_level=sqlglot.ErrorLevel.RAISE,
+        )
+    except Exception as exc:
+        raise SidecarError(400, "SQL_REJECTED", f"invalid DuckDB SQL syntax: {exc}") from exc
+
+    if len(statements) != 1 or statements[0] is None:
+        raise SidecarError(
+            400,
+            "SQL_REJECTED",
+            "derived SQL must contain exactly one read-only query statement",
+        )
+
+    stmt = statements[0]
+    if not isinstance(stmt, exp.Query):
+        raise SidecarError(
+            400,
+            "SQL_REJECTED",
+            f"statement root {type(stmt).__name__} is not a read-only query",
+        )
+
+    for node in stmt.walk():
+        if isinstance(node, exp.Subquery) and not isinstance(node.this, exp.Query):
+            raise SidecarError(
+                400,
+                "SQL_REJECTED",
+                "subquery must wrap a read-only query expression",
+            )
+
+        if isinstance(node, _FORBIDDEN_AST_NODES):
+            raise SidecarError(
+                400,
+                "SQL_REJECTED",
+                f"forbidden SQL construct: {type(node).__name__}",
+            )
+
+        if isinstance(node, (exp.From, exp.Join)):
+            src = node.this
+            if isinstance(src, (exp.Func, exp.Anonymous)):
+                _check_allowed_table_func(src)
+            elif isinstance(src, exp.Lateral):
+                lat_inner = src.this
+                if isinstance(lat_inner, (exp.Func, exp.Anonymous)):
+                    _check_allowed_table_func(lat_inner)
+                elif not isinstance(lat_inner, (exp.Subquery, exp.Table)):
+                    raise SidecarError(400, "SQL_REJECTED", "unsupported LATERAL source")
+            elif isinstance(src, exp.TableFromRows):
+                for row_expr in src.expressions:
+                    if isinstance(row_expr, (exp.Func, exp.Anonymous)):
+                        _check_allowed_table_func(row_expr)
+                    elif not isinstance(row_expr, exp.Table):
+                        raise SidecarError(400, "SQL_REJECTED", "unsupported ROWS FROM source")
+            elif not isinstance(src, (exp.Table, exp.Subquery, exp.Values)):
+                raise SidecarError(
+                    400,
+                    "SQL_REJECTED",
+                    f"unsupported table source construct: {type(src).__name__}",
+                )
+
+        if isinstance(node, exp.TableFromRows):
+            for row_expr in node.expressions:
+                if isinstance(row_expr, (exp.Func, exp.Anonymous)):
+                    _check_allowed_table_func(row_expr)
+                elif not isinstance(row_expr, exp.Table):
+                    raise SidecarError(400, "SQL_REJECTED", "unsupported ROWS FROM expression")
+
+        if isinstance(node, (exp.Func, exp.Anonymous)):
+            fn_name = _extract_func_name(node)
+            if _is_forbidden_function_name(fn_name):
+                raise SidecarError(
+                    400,
+                    "SQL_REJECTED",
+                    f"function {fn_name!r} is forbidden in derived queries",
+                )
+
+    # Check all exp.Table nodes with lexical CTE scope resolution
+    expected_db = tenant_schema_name(valid_tenant)
+    for table, active_ctes in _collect_tables_with_lexical_ctes(stmt, frozenset()):
+        if table.args.get("rows_from"):
+            if table.catalog or table.db or table.this is not None:
+                raise SidecarError(400, "SQL_REJECTED", "qualified ROWS FROM is forbidden")
+            continue
+
+        if isinstance(table.this, (exp.Func, exp.Anonymous)):
+            if table.catalog or table.db:
+                raise SidecarError(
+                    400,
+                    "SQL_REJECTED",
+                    "schema-qualified table functions are forbidden",
+                )
+            _check_allowed_table_func(table.this)
+            continue
+
+        tbl_name = str(table.name)
+        if not isinstance(table.this, exp.Identifier) or not tbl_name:
+            raise SidecarError(
+                400,
+                "SQL_REJECTED",
+                f"invalid table reference: {table.sql(dialect='duckdb')}",
+            )
+
+        if not table.catalog and not table.db and tbl_name.lower() in active_ctes:
+            continue
+
+        if str(table.catalog).lower() != "lake" or str(table.db) != expected_db:
+            raise SidecarError(
+                400,
+                "SQL_REJECTED",
+                f"table reference {table.sql(dialect='duckdb')!r} outside lake.{expected_db}",
+            )
+
+        try:
+            validate_lake_table(tbl_name)
+        except SidecarError as exc:
+            raise SidecarError(
+                400,
+                "SQL_REJECTED",
+                f"invalid lake table identifier in SQL: {tbl_name!r}",
+            ) from exc
+
+    clean_sql = stripped[:-1].rstrip() if stripped.endswith(";") else stripped
+    if not clean_sql or clean_sql.endswith(";"):
+        raise SidecarError(400, "SQL_REJECTED", "invalid trailing semicolons in SQL")
+    return clean_sql
+
+
+def materialize_derived_view(
+    req: MaterializeRequest,
+    *,
+    timezone_str: str = "Asia/Shanghai",
+    data_root: Path | None = None,
+    catalog_dsn: str | None = None,
+) -> SyncResult:
+    """Validate and materialize a Step 04 DERIVED_VIEW SQL query into DuckLake atomically."""
+    valid_tenant = validate_tenant_id(req.tenant_id)
+    valid_table = validate_lake_table(req.lake_table)
+    clean_sql = _validate_materialize_sql(req.sql, valid_tenant)
+
+    s_raw = tenant_schema_name(valid_tenant)
+    s_q = tenant_schema(valid_tenant)
+    t_q = quote_lake_table(valid_table)
+    full_tbl = f"lake.{s_q}.{t_q}"
+    safe_bid = "'" + req.batch_id.replace("'", "''") + "'"
+
+    with lake_connection(
+        data_root=data_root,
+        catalog_dsn=catalog_dsn,
+        lake_only_dirs=True,
+    ) as con:
+        con.execute(f"CREATE SCHEMA IF NOT EXISTS lake.{s_q}")
+        try:
+            try:
+                con.execute(f"CREATE TEMP TABLE _ax_mat_tmp AS ({clean_sql})")
+            except _DUCKDB_CLIENT_SQL_ERRORS as exc:
+                msg = str(exc).splitlines()[0] if str(exc) else "derived SQL execution failed"
+                raise SidecarError(400, "SQL_REJECTED", msg) from exc
+
+            desc_rows = con.execute("DESCRIBE _ax_mat_tmp").fetchall()
+            user_col_defs: list[tuple[str, str]] = [
+                (str(r[0]), str(r[1])) for r in desc_rows if not str(r[0]).startswith("_ax_")
+            ]
+            if not user_col_defs:
+                raise SidecarError(
+                    400,
+                    "SQL_REJECTED",
+                    "derived query must produce at least one user column",
+                )
+
+            user_select_exprs: list[str] = []
+            for c_name, c_type in user_col_defs:
+                q_c = quote_lake_col(c_name)
+                if c_type.strip().upper() in {'"NULL"', "NULL", "SQLNULL"}:
+                    user_select_exprs.append(f"CAST({q_c} AS VARCHAR) AS {q_c}")
+                else:
+                    user_select_exprs.append(q_c)
+            user_cols_sql = ", ".join(user_select_exprs)
+
+            exists = _table_exists(con, s_raw, valid_table)
+            prev_profiles: list[ColumnProfile] = []
+            if exists:
+                existing_cols = _get_existing_lake_columns(con, s_raw, valid_table)
+                prev_profiles = [
+                    ColumnProfile(
+                        name=c_name,
+                        ordinal=idx,
+                        data_type=duckdb_type_to_datatype(c_type),
+                        nullable=True,
+                    )
+                    for idx, (c_name, c_type) in enumerate(existing_cols)
+                    if not c_name.startswith("_ax_")
+                ]
+
+            con.execute("BEGIN")
+            try:
+                if exists:
+                    con.execute(f"DROP TABLE {full_tbl}")
+                con.execute(
+                    f"CREATE TABLE {full_tbl} AS "
+                    f"SELECT {user_cols_sql}, "
+                    f'{safe_bid}::VARCHAR AS "_ax_batch_id", '
+                    f'now()::TIMESTAMPTZ AS "_ax_synced_at" '
+                    f"FROM _ax_mat_tmp"
+                )
+                con.execute("COMMIT")
+            except Exception:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+        finally:
+            try:
+                con.execute("DROP TABLE IF EXISTS _ax_mat_tmp")
+            except Exception:
+                pass
+
+        snap_id = _current_snapshot_id(con)
+        total_cnt_row = con.execute(f"SELECT count(*) FROM {full_tbl}").fetchone()
+        total_rows = int(total_cnt_row[0]) if total_cnt_row else 0
+
+        committed_cols = [
+            (c_name, c_type)
+            for c_name, c_type in _get_existing_lake_columns(con, s_raw, valid_table)
+            if not c_name.startswith("_ax_")
+        ]
+        type_map: dict[str, DataType] = {
+            c_name: duckdb_type_to_datatype(c_type) for c_name, c_type in committed_cols
+        }
+        sel_user = ", ".join(quote_lake_col(c_name) for c_name, _ in committed_cols)
+        committed_arrow = (
+            con.cursor().sql(f"SELECT {sel_user} FROM {full_tbl} LIMIT 100000").to_arrow_table()
+        )
+        committed_pl = pl.from_arrow(committed_arrow)
+        assert isinstance(committed_pl, pl.DataFrame)
+        final_profiles = profile_polars_df(
+            committed_pl,
+            timezone_str=timezone_str,
+            type_overrides=type_map,
+        )
+        schema_change, _ = evaluate_schema_evolution(prev_profiles, final_profiles, "EVOLVE")
+
+        return SyncResult(
+            dataset_id=req.dataset_id,
+            rows_read=total_rows,
+            rows_written=total_rows,
+            rows_deleted=0,
+            total_rows=total_rows,
+            cursor_to=None,
+            stream_offsets={},
+            snapshot_id=snap_id,
+            schema=final_profiles,
+            schema_change=schema_change,
+            quality=QualityReport(),
+        )
+
