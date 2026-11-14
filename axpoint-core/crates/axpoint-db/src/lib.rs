@@ -1,5 +1,6 @@
 //! PostgreSQL (`pgvector` + hypergraph) persistence, five-way retrieval, and platform ports.
 
+pub mod analytics_repo;
 pub mod audit;
 pub mod axhub_repo;
 pub mod entity_link;
