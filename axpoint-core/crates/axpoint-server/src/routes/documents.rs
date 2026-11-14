@@ -12,7 +12,7 @@ use axpoint_domain::analytics::{
 };
 use axpoint_domain::enums::{AuditAction, Permission};
 use axpoint_domain::platform::AuditRecord;
-use axpoint_domain::ports::{AiPort as _, AnalyticsRepository as _};
+use axpoint_domain::ports::AnalyticsRepository as _;
 use axpoint_domain::{
     AppError, ChatQueryRequest, ChatQueryResponse, FusedHit, IngestResponse, IngestTextRequest,
     rrf_fuse, split_paragraphs,
@@ -408,6 +408,118 @@ async fn synthesize_hybrid_answer(
     }
 }
 
+async fn handle_doc_chat_query(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    req: &ChatQueryRequest,
+    started: Instant,
+) -> Result<ChatQueryResponse, AppError> {
+    let tenant_id = &principal.tenant_id;
+    let doc = run_doc_rag_pipeline(state, tenant_id, &req.query, req.top_k).await?;
+    let hit_para_ids: Vec<Uuid> = doc.hits.iter().map(|h| h.para_id).collect();
+    let related_nodes = state
+        .store
+        .list_related_nodes(tenant_id, &hit_para_ids, &[])
+        .await?;
+    state.audit.record(AuditRecord {
+        tenant_id: tenant_id.clone(),
+        user_id: Some(principal.user_id),
+        username: principal.username.clone(),
+        action: AuditAction::RagAsk,
+        resource_ref: String::from("chat:doc"),
+        status_code: 200,
+        client_ip: String::from("127.0.0.1"),
+        trace_id: current_trace_id(),
+        detail_json: serde_json::json!({ "hit_count": doc.hits.len() }),
+        created_at: Utc::now(),
+    });
+    Ok(ChatQueryResponse {
+        answer: doc.answer,
+        hits: doc.hits,
+        seed_entities: doc.seeds,
+        elapsed_ms: started.elapsed().as_millis(),
+        intent: AskIntent::Doc,
+        session_id: req.session_id,
+        turn_id: None,
+        citations: doc.citations,
+        sql: None,
+        columns: Vec::new(),
+        rows: Vec::new(),
+        chart: None,
+        related_nodes,
+    })
+}
+
+async fn handle_hybrid_chat_query(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    req: &ChatQueryRequest,
+    started: Instant,
+) -> Result<ChatQueryResponse, AppError> {
+    let tenant_id = &principal.tenant_id;
+    let ask_req = AskRequest {
+        question: req.query.clone(),
+        session_id: req.session_id,
+        context: None,
+    };
+    let (doc_res, data_res) = tokio::join!(
+        run_doc_rag_pipeline(state, tenant_id, &req.query, req.top_k),
+        execute_ask_for_principal(state, principal, ask_req, Some(AskIntent::Data), false)
+    );
+    let doc = doc_res?;
+    let data = data_res?;
+    let answer = synthesize_hybrid_answer(state, &req.query, &doc, &data.answer, &data.rows).await;
+
+    let preview = (!data.sql.is_empty()).then(|| {
+        serde_json::json!({
+            "columns": data.columns,
+            "rows": data.rows,
+            "truncated": data.truncated,
+            "chart": data.chart,
+        })
+    });
+    let turn = state
+        .store
+        .insert_ask_turn(
+            tenant_id,
+            NewAskTurnInput {
+                session_id: data.session_id,
+                user_id: Some(principal.user_id),
+                question: req.query.trim().to_owned(),
+                intent: AskIntent::Hybrid,
+                linked_objects: data.linked_objects.clone(),
+                sql_text: (!data.sql.is_empty()).then(|| data.sql.clone()),
+                result_preview: preview,
+                answer: answer.clone(),
+                citations: doc.citations.clone(),
+                model_name: String::from("axpoint-llm"),
+            },
+        )
+        .await?;
+
+    let hit_para_ids: Vec<Uuid> = doc.hits.iter().map(|h| h.para_id).collect();
+    let related_nodes = state
+        .store
+        .list_related_nodes(tenant_id, &hit_para_ids, &data.linked_objects.nodes)
+        .await?;
+
+    Ok(ChatQueryResponse {
+        answer,
+        hits: doc.hits,
+        seed_entities: doc.seeds,
+        elapsed_ms: started.elapsed().as_millis(),
+        intent: AskIntent::Hybrid,
+        session_id: Some(data.session_id),
+        turn_id: Some(turn.id),
+        citations: doc.citations,
+        sql: (!data.sql.is_empty()).then_some(data.sql),
+        columns: data.columns,
+        rows: data.rows,
+        chart: data.chart,
+        related_nodes,
+    })
+}
+
 async fn chat_query_handler(
     State(state): State<AppState>,
     principal: AuthPrincipal,
@@ -432,43 +544,11 @@ async fn chat_query_handler(
     };
 
     match intent {
-        AskIntent::Doc => {
-            let doc = run_doc_rag_pipeline(&state, tenant_id, &req.query, req.top_k).await?;
-            let hit_para_ids: Vec<Uuid> = doc.hits.iter().map(|h| h.para_id).collect();
-            let related_nodes = state
-                .store
-                .list_related_nodes(tenant_id, &hit_para_ids, &[])
-                .await?;
-            state.audit.record(AuditRecord {
-                tenant_id: tenant_id.clone(),
-                user_id: Some(principal.user_id),
-                username: principal.username.clone(),
-                action: AuditAction::RagAsk,
-                resource_ref: String::from("chat:doc"),
-                status_code: 200,
-                client_ip: String::from("127.0.0.1"),
-                trace_id: current_trace_id(),
-                detail_json: serde_json::json!({ "hit_count": doc.hits.len() }),
-                created_at: Utc::now(),
-            });
-            Ok(Json(ChatQueryResponse {
-                answer: doc.answer,
-                hits: doc.hits,
-                seed_entities: doc.seeds,
-                elapsed_ms: started.elapsed().as_millis(),
-                intent: AskIntent::Doc,
-                session_id: req.session_id,
-                turn_id: None,
-                citations: doc.citations,
-                sql: None,
-                columns: Vec::new(),
-                rows: Vec::new(),
-                chart: None,
-                related_nodes,
-            }))
-        }
+        AskIntent::Doc => Ok(Json(
+            Box::pin(handle_doc_chat_query(&state, &principal, &req, started)).await?,
+        )),
         AskIntent::Data | AskIntent::Chitchat => {
-            let ask_resp = execute_ask_for_principal(
+            let ask_resp = Box::pin(execute_ask_for_principal(
                 &state,
                 &principal,
                 AskRequest {
@@ -478,7 +558,7 @@ async fn chat_query_handler(
                 },
                 Some(intent),
                 true,
-            )
+            ))
             .await?;
             let related_nodes = state
                 .store
@@ -500,75 +580,8 @@ async fn chat_query_handler(
                 related_nodes,
             }))
         }
-        AskIntent::Hybrid => {
-            let ask_req = AskRequest {
-                question: req.query.clone(),
-                session_id: req.session_id,
-                context: None,
-            };
-            let (doc_res, data_res) = tokio::join!(
-                run_doc_rag_pipeline(&state, tenant_id, &req.query, req.top_k),
-                execute_ask_for_principal(
-                    &state,
-                    &principal,
-                    ask_req,
-                    Some(AskIntent::Data),
-                    false,
-                )
-            );
-            let doc = doc_res?;
-            let data = data_res?;
-            let answer =
-                synthesize_hybrid_answer(&state, &req.query, &doc, &data.answer, &data.rows).await;
-
-            let preview = (!data.sql.is_empty()).then(|| {
-                serde_json::json!({
-                    "columns": data.columns,
-                    "rows": data.rows,
-                    "truncated": data.truncated,
-                    "chart": data.chart,
-                })
-            });
-            let turn = state
-                .store
-                .insert_ask_turn(
-                    tenant_id,
-                    NewAskTurnInput {
-                        session_id: data.session_id,
-                        user_id: Some(principal.user_id),
-                        question: req.query.trim().to_owned(),
-                        intent: AskIntent::Hybrid,
-                        linked_objects: data.linked_objects.clone(),
-                        sql_text: (!data.sql.is_empty()).then(|| data.sql.clone()),
-                        result_preview: preview,
-                        answer: answer.clone(),
-                        citations: doc.citations.clone(),
-                        model_name: String::from("axpoint-llm"),
-                    },
-                )
-                .await?;
-
-            let hit_para_ids: Vec<Uuid> = doc.hits.iter().map(|h| h.para_id).collect();
-            let related_nodes = state
-                .store
-                .list_related_nodes(tenant_id, &hit_para_ids, &data.linked_objects.nodes)
-                .await?;
-
-            Ok(Json(ChatQueryResponse {
-                answer,
-                hits: doc.hits,
-                seed_entities: doc.seeds,
-                elapsed_ms: started.elapsed().as_millis(),
-                intent: AskIntent::Hybrid,
-                session_id: Some(data.session_id),
-                turn_id: Some(turn.id),
-                citations: doc.citations,
-                sql: (!data.sql.is_empty()).then_some(data.sql),
-                columns: data.columns,
-                rows: data.rows,
-                chart: data.chart,
-                related_nodes,
-            }))
-        }
+        AskIntent::Hybrid => Ok(Json(
+            Box::pin(handle_hybrid_chat_query(&state, &principal, &req, started)).await?,
+        )),
     }
 }

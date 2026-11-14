@@ -6,7 +6,7 @@ use axpoint_db::PgStore;
 use axpoint_domain::AppError;
 use axpoint_domain::graph::ResolveEntitiesRequest;
 use axpoint_domain::platform::{BoxFuture, JobHandler, LeasedJob};
-use axpoint_domain::ports::{AiPort as _, AnalyticsRepository as _, GraphStorePort as _};
+use axpoint_domain::ports::{AnalyticsRepository as _, GraphStorePort as _};
 use axpoint_llm::AiGateway;
 use serde::Deserialize;
 use uuid::Uuid;

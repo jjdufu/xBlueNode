@@ -3,11 +3,11 @@ set -euo pipefail
 source "$(dirname "$0")/../gate/lib.sh"
 
 # 1. Enrich demo_orders column metadata (confirm PHONE PII masking & business terms)
-api PATCH "/api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/columns/phone" \
+api PUT "/api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/columns/phone" \
   '{"pii_category":"PHONE","description":"客户联系电话"}' >/dev/null
-api PATCH "/api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/columns/amount" \
+api PUT "/api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/columns/amount" \
   '{"description":"订单金额","business_term":"交易金额","unit":"CNY"}' >/dev/null
-api PATCH "/api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/columns/status" \
+api PUT "/api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/columns/status" \
   '{"description":"订单状态(PAID=已支付,SHIPPED=已发货,OPEN=待处理)","business_term":"订单状态"}' >/dev/null
 
 # 2. Create certified semantic metric paid_amount (SUM(amount) WHERE status = 'PAID')

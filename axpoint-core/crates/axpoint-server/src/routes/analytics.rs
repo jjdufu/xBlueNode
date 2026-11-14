@@ -30,8 +30,7 @@ use axpoint_domain::axhub::{
 use axpoint_domain::enums::{AuditAction, DataType, Permission, PiiCategory, SourceKind, SyncMode};
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::{
-    AiPort as _, AnalyticsQueryPort, AnalyticsRepository as _, ConnectionRepository as _,
-    DatasetRepository as _,
+    AnalyticsQueryPort, AnalyticsRepository as _, ConnectionRepository as _, DatasetRepository as _,
 };
 use axpoint_security::AuthPrincipal;
 use axum::extract::State;
@@ -303,20 +302,52 @@ fn classify_history_status(err: &AppError) -> QueryHistoryStatus {
     }
 }
 
+#[derive(Clone, Copy)]
+struct CallerCtx<'a> {
+    tenant_id: &'a str,
+    user_id: Uuid,
+    username: &'a str,
+    has_live: bool,
+    has_pii_raw: bool,
+    has_data_admin: bool,
+}
+
+impl<'a> CallerCtx<'a> {
+    fn from_auth(p: &'a AuthPrincipal) -> Self {
+        Self {
+            tenant_id: &p.tenant_id,
+            user_id: p.user_id,
+            username: &p.username,
+            has_live: p.has(Permission::DataSync),
+            has_pii_raw: p.has(Permission::PiiRawRead),
+            has_data_admin: p.has(Permission::DataAdmin),
+        }
+    }
+
+    fn from_analytics(p: &'a AnalyticsPrincipal) -> Self {
+        Self {
+            tenant_id: &p.tenant_id,
+            user_id: p.user_id,
+            username: &p.username,
+            has_live: p.has_permission(Permission::DataSync),
+            has_pii_raw: p.has_permission(Permission::PiiRawRead),
+            has_data_admin: p.has_permission(Permission::DataAdmin),
+        }
+    }
+}
+
 async fn record_audit_and_flush(
     state: &AppState,
-    tenant_id: &str,
-    user_id: Uuid,
-    username: &str,
+    caller: CallerCtx<'_>,
     action: AuditAction,
     resource_ref: String,
     status_code: i32,
     detail_json: serde_json::Value,
 ) {
     state.audit.record(AuditRecord {
-        tenant_id: String::from(tenant_id),
-        user_id: Some(user_id),
-        username: String::from(username),
+        tenant_id: String::from(caller.tenant_id),
+        user_id: Some(caller.user_id),
+        username: String::from(caller.username),
         action,
         resource_ref,
         status_code,
@@ -359,27 +390,23 @@ async fn get_catalog_handler(
 
 async fn execute_sql_with_telemetry(
     state: &AppState,
-    tenant_id: &str,
-    user_id: Uuid,
-    username: &str,
-    has_live_permission: bool,
-    has_pii_raw_read: bool,
+    caller: CallerCtx<'_>,
     req: QueryRequest,
 ) -> Result<QueryResult, AppError> {
     let started = Instant::now();
-    let (session, _) = acquire_tenant_session(state, tenant_id, has_live_permission).await?;
+    let (session, _) = acquire_tenant_session(state, caller.tenant_id, caller.has_live).await?;
 
     match session
-        .execute_sql(&req, has_live_permission, has_pii_raw_read)
+        .execute_sql(&req, caller.has_live, caller.has_pii_raw)
         .await
     {
         Ok(out) => {
             let _ = state
                 .store
                 .record_query_history(
-                    tenant_id,
+                    caller.tenant_id,
                     NewQueryHistoryEntry {
-                        user_id: Some(user_id),
+                        user_id: Some(caller.user_id),
                         kind: QueryHistoryKind::Sql,
                         sql_text: req.sql.clone(),
                         status: QueryHistoryStatus::Succeeded,
@@ -391,9 +418,7 @@ async fn execute_sql_with_telemetry(
                 .await;
             record_audit_and_flush(
                 state,
-                tenant_id,
-                user_id,
-                username,
+                caller,
                 AuditAction::QuerySql,
                 String::from("analytics:sql"),
                 200,
@@ -411,9 +436,9 @@ async fn execute_sql_with_telemetry(
             let _ = state
                 .store
                 .record_query_history(
-                    tenant_id,
+                    caller.tenant_id,
                     NewQueryHistoryEntry {
-                        user_id: Some(user_id),
+                        user_id: Some(caller.user_id),
                         kind: QueryHistoryKind::Sql,
                         sql_text: req.sql,
                         status: classify_history_status(&err),
@@ -425,9 +450,7 @@ async fn execute_sql_with_telemetry(
                 .await;
             record_audit_and_flush(
                 state,
-                tenant_id,
-                user_id,
-                username,
+                caller,
                 AuditAction::QuerySql,
                 String::from("analytics:sql"),
                 error_http_status_i32(&err),
@@ -445,16 +468,7 @@ async fn run_sql_handler(
     ApiJson(req): ApiJson<QueryRequest>,
 ) -> Result<Json<QueryResult>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let res = execute_sql_with_telemetry(
-        &state,
-        &principal.tenant_id,
-        principal.user_id,
-        &principal.username,
-        principal.has(Permission::DataSync),
-        principal.has(Permission::PiiRawRead),
-        req,
-    )
-    .await?;
+    let res = execute_sql_with_telemetry(&state, CallerCtx::from_auth(&principal), req).await?;
     Ok(Json(res))
 }
 
@@ -864,21 +878,16 @@ async fn delete_saved_query_handler(
 
 async fn run_saved_query_inner(
     state: &AppState,
-    tenant_id: &str,
-    user_id: Uuid,
-    username: &str,
-    has_live_permission: bool,
-    has_pii_raw_read: bool,
-    has_data_admin: bool,
+    caller: CallerCtx<'_>,
     id: Uuid,
     mut params: BTreeMap<String, serde_json::Value>,
 ) -> Result<serde_json::Value, AppError> {
     let sq = state
         .store
-        .get_saved_query(tenant_id, id)
+        .get_saved_query(caller.tenant_id, id)
         .await?
         .ok_or(AppError::NotFound("SAVED_QUERY_NOT_FOUND"))?;
-    if !sq.shared && sq.owner_user_id != Some(user_id) && !has_data_admin {
+    if !sq.shared && sq.owner_user_id != Some(caller.user_id) && !caller.has_data_admin {
         return Err(AppError::NotFound("SAVED_QUERY_NOT_FOUND"));
     }
 
@@ -900,11 +909,7 @@ async fn run_saved_query_inner(
                 .to_owned();
             let qr = execute_sql_with_telemetry(
                 state,
-                tenant_id,
-                user_id,
-                username,
-                has_live_permission,
-                has_pii_raw_read,
+                caller,
                 QueryRequest {
                     sql: sql_text,
                     params,
@@ -922,9 +927,14 @@ async fn run_saved_query_inner(
             let spec: PivotSpec = serde_json::from_value(sq.spec).map_err(|err| {
                 AppError::bad("INVALID_ARGUMENT", format!("invalid pivot spec: {err}"))
             })?;
-            let pr =
-                execute_pivot_with_telemetry(state, tenant_id, user_id, has_pii_raw_read, spec)
-                    .await?;
+            let pr = execute_pivot_with_telemetry(
+                state,
+                caller.tenant_id,
+                caller.user_id,
+                caller.has_pii_raw,
+                spec,
+            )
+            .await?;
             serde_json::to_value(pr)
                 .map_err(|err| AppError::Config(format!("serialize PivotResult failed: {err}")))
         }
@@ -949,9 +959,9 @@ async fn run_saved_query_inner(
                 .unwrap_or_default();
             let mr = execute_single_metric_with_telemetry(
                 state,
-                tenant_id,
-                user_id,
-                has_pii_raw_read,
+                caller.tenant_id,
+                caller.user_id,
+                caller.has_pii_raw,
                 &metric_name,
                 query,
             )
@@ -970,18 +980,8 @@ async fn run_saved_query_handler(
     ApiJson(req): ApiJson<RunSavedQueryRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let val = run_saved_query_inner(
-        &state,
-        &principal.tenant_id,
-        principal.user_id,
-        &principal.username,
-        principal.has(Permission::DataSync),
-        principal.has(Permission::PiiRawRead),
-        principal.has(Permission::DataAdmin),
-        id,
-        req.params,
-    )
-    .await?;
+    let val =
+        run_saved_query_inner(&state, CallerCtx::from_auth(&principal), id, req.params).await?;
     Ok(Json(val))
 }
 
@@ -992,7 +992,7 @@ async fn collect_sample_rows_by_dataset(
 ) -> HashMap<Uuid, Vec<serde_json::Map<String, serde_json::Value>>> {
     let mut out = HashMap::new();
     let mut count = 0_usize;
-    for entry in catalog.datasets() {
+    for entry in catalog.datasets.values() {
         if !restrict_ids.is_empty() && !restrict_ids.contains(&entry.id) {
             continue;
         }
@@ -1019,6 +1019,85 @@ async fn collect_sample_rows_by_dataset(
         }
     }
     out
+}
+
+async fn persist_ask_turn_and_history(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    question: &str,
+    persist_turn: bool,
+    duration_ms: u64,
+    repair_rounds: usize,
+    resp: &mut AskResponse,
+) -> Result<(), AppError> {
+    if persist_turn {
+        let preview = (!resp.sql.is_empty()).then(|| {
+            serde_json::json!({
+                "columns": resp.columns,
+                "rows": resp.rows,
+                "truncated": resp.truncated,
+                "chart": resp.chart,
+            })
+        });
+        let turn_row = state
+            .store
+            .insert_ask_turn(
+                &principal.tenant_id,
+                NewAskTurnInput {
+                    session_id: resp.session_id,
+                    user_id: Some(principal.user_id),
+                    question: question.trim().to_owned(),
+                    intent: resp.intent,
+                    linked_objects: resp.linked_objects.clone(),
+                    sql_text: (!resp.sql.is_empty()).then(|| resp.sql.clone()),
+                    result_preview: preview,
+                    answer: resp.answer.clone(),
+                    citations: resp.citations.clone(),
+                    model_name: String::from("axpoint-llm"),
+                },
+            )
+            .await?;
+        resp.turn_id = turn_row.id;
+    }
+
+    if !resp.sql.is_empty() || resp.status == QueryHistoryStatus::Failed {
+        let _ = state
+            .store
+            .record_query_history(
+                &principal.tenant_id,
+                NewQueryHistoryEntry {
+                    user_id: Some(principal.user_id),
+                    kind: QueryHistoryKind::Ask,
+                    sql_text: if resp.sql.is_empty() {
+                        String::from(question)
+                    } else {
+                        resp.sql.clone()
+                    },
+                    status: resp.status,
+                    row_count: i64::try_from(resp.rows.len()).ok(),
+                    duration_ms: i64::try_from(duration_ms).ok(),
+                    error_code: (resp.status == QueryHistoryStatus::Failed)
+                        .then(|| String::from("SQL_REPAIR_EXHAUSTED")),
+                },
+            )
+            .await;
+    }
+
+    record_audit_and_flush(
+        state,
+        CallerCtx::from_auth(principal),
+        AuditAction::AskData,
+        format!("ask_turn:{}", resp.turn_id),
+        200,
+        serde_json::json!({
+            "session_id": resp.session_id,
+            "intent": resp.intent,
+            "status": resp.status,
+            "repair_rounds": repair_rounds,
+        }),
+    )
+    .await;
+    Ok(())
 }
 
 /// Runs the controlled NL2SQL pipeline for `principal`, persisting `an_ask_turns` (when `persist_turn`
@@ -1102,75 +1181,16 @@ pub(crate) async fn execute_ask_for_principal(
     .await?;
 
     let mut resp = out.response;
-    if persist_turn {
-        let preview = (!resp.sql.is_empty()).then(|| {
-            serde_json::json!({
-                "columns": resp.columns,
-                "rows": resp.rows,
-                "truncated": resp.truncated,
-                "chart": resp.chart,
-            })
-        });
-        let turn_row = state
-            .store
-            .insert_ask_turn(
-                &principal.tenant_id,
-                NewAskTurnInput {
-                    session_id: resp.session_id,
-                    user_id: Some(principal.user_id),
-                    question: req.question.trim().to_owned(),
-                    intent: resp.intent,
-                    linked_objects: resp.linked_objects.clone(),
-                    sql_text: (!resp.sql.is_empty()).then(|| resp.sql.clone()),
-                    result_preview: preview,
-                    answer: resp.answer.clone(),
-                    citations: resp.citations.clone(),
-                    model_name: String::from("axpoint-llm"),
-                },
-            )
-            .await?;
-        resp.turn_id = turn_row.id;
-    }
-
-    if !resp.sql.is_empty() || resp.status == QueryHistoryStatus::Failed {
-        let _ = state
-            .store
-            .record_query_history(
-                &principal.tenant_id,
-                NewQueryHistoryEntry {
-                    user_id: Some(principal.user_id),
-                    kind: QueryHistoryKind::Ask,
-                    sql_text: if resp.sql.is_empty() {
-                        req.question.clone()
-                    } else {
-                        resp.sql.clone()
-                    },
-                    status: resp.status,
-                    row_count: i64::try_from(resp.rows.len()).ok(),
-                    duration_ms: i64::try_from(out.duration_ms).ok(),
-                    error_code: (resp.status == QueryHistoryStatus::Failed)
-                        .then(|| String::from("SQL_REPAIR_EXHAUSTED")),
-                },
-            )
-            .await;
-    }
-
-    record_audit_and_flush(
+    persist_ask_turn_and_history(
         state,
-        &principal.tenant_id,
-        principal.user_id,
-        &principal.username,
-        AuditAction::AskData,
-        format!("ask_turn:{}", resp.turn_id),
-        200,
-        serde_json::json!({
-            "session_id": resp.session_id,
-            "intent": resp.intent,
-            "status": resp.status,
-            "repair_rounds": out.repair_rounds,
-        }),
+        principal,
+        &req.question,
+        persist_turn,
+        out.duration_ms,
+        out.repair_rounds,
+        &mut resp,
     )
-    .await;
+    .await?;
 
     Ok(resp)
 }
@@ -1323,13 +1343,12 @@ fn extract_existing_derived_deps(datasets: &[Dataset]) -> HashMap<Uuid, Vec<Uuid
             .source_ref
             .get("depends_on")
             .and_then(serde_json::Value::as_array)
-            .map(|arr| {
+            .map_or_else(Vec::new, |arr| {
                 arr.iter()
                     .filter_map(serde_json::Value::as_str)
                     .filter_map(|s| Uuid::parse_str(s).ok())
                     .collect()
-            })
-            .unwrap_or_default();
+            });
         map.insert(ds.id, deps);
     }
     map
@@ -1390,7 +1409,7 @@ async fn apply_transform_draft_handler(
                 primary_key: Vec::new(),
                 cursor_column: None,
                 delete_column: None,
-                schema_policy: SchemaPolicy::EvolveCompatible,
+                schema_policy: SchemaPolicy::Evolve,
                 schedule_cron: None,
                 tags: vec![String::from("derived")],
             },
@@ -1472,16 +1491,7 @@ impl AnalyticsQueryPort for AppState {
         if !principal.has_permission(Permission::DataRead) {
             return Err(AppError::Forbidden("PERMISSION_DENIED"));
         }
-        execute_sql_with_telemetry(
-            self,
-            &principal.tenant_id,
-            principal.user_id,
-            &principal.username,
-            principal.has_permission(Permission::DataSync),
-            principal.has_permission(Permission::PiiRawRead),
-            req,
-        )
-        .await
+        execute_sql_with_telemetry(self, CallerCtx::from_analytics(principal), req).await
     }
 
     async fn run_saved(
@@ -1493,18 +1503,7 @@ impl AnalyticsQueryPort for AppState {
         if !principal.has_permission(Permission::DataRead) {
             return Err(AppError::Forbidden("PERMISSION_DENIED"));
         }
-        run_saved_query_inner(
-            self,
-            &principal.tenant_id,
-            principal.user_id,
-            &principal.username,
-            principal.has_permission(Permission::DataSync),
-            principal.has_permission(Permission::PiiRawRead),
-            principal.has_permission(Permission::DataAdmin),
-            id,
-            params,
-        )
-        .await
+        run_saved_query_inner(self, CallerCtx::from_analytics(principal), id, params).await
     }
 
     async fn run_metric(
