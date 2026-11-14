@@ -271,7 +271,7 @@ const REJECTED_CASES: &[(&str, &str)] = &[
 ];
 
 #[test]
-fn table_driven_rejection_suite_covers_all_security_rules() {
+fn guard_table_driven_rejection_suite_covers_all_security_rules() {
     let catalog = demo_catalog();
     let opts = GuardOptions::default();
 
@@ -290,7 +290,7 @@ fn table_driven_rejection_suite_covers_all_security_rules() {
 }
 
 #[test]
-fn bare_dataset_rewrites_to_tenant_lake_schema_and_wraps_limit() -> Result<(), AppError> {
+fn guard_bare_dataset_rewrites_to_tenant_lake_schema_and_wraps_limit() -> Result<(), AppError> {
     let catalog = demo_catalog();
     let res = guard(
         "SELECT count(*) AS n FROM demo_orders;",
@@ -300,7 +300,7 @@ fn bare_dataset_rewrites_to_tenant_lake_schema_and_wraps_limit() -> Result<(), A
 
     assert_eq!(
         res.sql,
-        "SELECT * FROM (SELECT count(*) AS n FROM lake.\"tenant_default\".\"demo_orders\") AS q LIMIT 10001"
+        "SELECT * FROM (SELECT count(*) AS n FROM lake.\"tenant_default\".\"demo_orders\" AS \"demo_orders\") AS q LIMIT 10001"
     );
     assert_eq!(res.effective_max_rows, DEFAULT_MAX_ROWS);
     assert_eq!(
@@ -338,7 +338,7 @@ fn bare_dataset_rewrites_to_tenant_lake_schema_and_wraps_limit() -> Result<(), A
 }
 
 #[test]
-fn whitelisted_table_functions_are_permitted_and_wrapped() -> Result<(), AppError> {
+fn guard_whitelisted_table_functions_are_permitted_and_wrapped() -> Result<(), AppError> {
     let catalog = demo_catalog();
     let opts = GuardOptions {
         max_rows: 10,
@@ -364,7 +364,7 @@ fn whitelisted_table_functions_are_permitted_and_wrapped() -> Result<(), AppErro
 }
 
 #[test]
-fn cte_names_are_preserved_and_shadow_datasets_correctly() -> Result<(), AppError> {
+fn guard_cte_names_are_preserved_and_shadow_datasets_correctly() -> Result<(), AppError> {
     let catalog = demo_catalog();
     let opts = GuardOptions::default();
 
@@ -398,7 +398,8 @@ fn cte_names_are_preserved_and_shadow_datasets_correctly() -> Result<(), AppErro
 }
 
 #[test]
-fn platform_views_are_allowed_and_flagged_while_materialize_forbids_them() -> Result<(), AppError> {
+fn guard_platform_views_are_allowed_and_flagged_while_materialize_forbids_them()
+-> Result<(), AppError> {
     let catalog = demo_catalog();
     let opts = GuardOptions::default();
 
@@ -429,7 +430,7 @@ fn platform_views_are_allowed_and_flagged_while_materialize_forbids_them() -> Re
 }
 
 #[test]
-fn live_federated_connection_enforces_allow_live_permission_and_registration()
+fn guard_live_federated_connection_enforces_allow_live_permission_and_registration()
 -> Result<(), AppError> {
     let base_catalog = demo_catalog(); // has_live_permission = false, live_connections = {"erp"}
 
@@ -469,7 +470,7 @@ fn live_federated_connection_enforces_allow_live_permission_and_registration()
         &opts_live,
     )?;
     assert_eq!(ok.referenced_live_connections, vec![String::from("erp")]);
-    assert!(ok.sql.contains("\"live_erp\".\"public\".\"orders\""));
+    assert!(ok.sql.contains("live_erp.public.orders"));
     assert!(ok.sql.ends_with("LIMIT 101"));
 
     // 4. Unregistered live connection -> SQL_REJECTED even with permission
@@ -483,7 +484,8 @@ fn live_federated_connection_enforces_allow_live_permission_and_registration()
 }
 
 #[test]
-fn named_parameters_payload_size_and_output_pii_lineage_work_accurately() -> Result<(), AppError> {
+fn guard_named_parameters_payload_size_and_output_pii_lineage_work_accurately()
+-> Result<(), AppError> {
     let catalog = demo_catalog();
 
     // Named parameters substituted safely with quote escaping
@@ -499,14 +501,14 @@ fn named_parameters_payload_size_and_output_pii_lineage_work_accurately() -> Res
         params,
     };
     let bound = guard(
-        "SELECT id FROM demo_orders WHERE status = :status AND amount > :min_amt AND :active AND id IN :ids",
+        "SELECT id FROM demo_orders WHERE status = :status AND amount > :min_amt AND :active AND id IN (:ids)",
         &catalog,
         &opts,
     )?;
     assert!(bound.sql.contains("'O''Reilly'"), "sql was: {}", bound.sql);
     assert!(bound.sql.contains("-12.5"), "sql was: {}", bound.sql);
     assert!(bound.sql.contains("true"), "sql was: {}", bound.sql);
-    assert!(bound.sql.contains("(1, 2, 3)"), "sql was: {}", bound.sql);
+    assert!(bound.sql.contains("IN (1, 2, 3)"), "sql was: {}", bound.sql);
 
     // Missing named parameter -> SQL_REJECTED
     assert_sql_rejected(

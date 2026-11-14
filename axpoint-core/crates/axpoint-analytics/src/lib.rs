@@ -1,5 +1,7 @@
 //! `AxAnalytics` OLAP session pool, SQL AST guard, pivot engine, semantic layer, NL2SQL, and AI transforms (`05-STEP04`).
 
+pub mod result;
+pub mod session;
 pub mod sql_guard;
 
 use std::num::NonZeroUsize;
@@ -32,6 +34,14 @@ use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
+pub use result::{
+    ResultSerializeOptions, SerializedQueryOutput, batches_to_query_result, map_arrow_data_type,
+    mask_pii_str,
+};
+pub use session::{
+    DEFAULT_QUERY_TIMEOUT_MS, LiveConnectionSpec, MAX_QUERY_TIMEOUT_MS, SessionPool, TenantDb,
+    TenantSession, postgres_dsn_to_libpq,
+};
 pub use sql_guard::{
     CatalogDatasetEntry, DEFAULT_MAX_ROWS, GuardOptions, GuardedQuery, GuardedSql, HARD_MAX_ROWS,
     MAX_RESULT_ROWS, MAX_SQL_BYTES, OutputColumnOrigin, TenantCatalog, guard, guard_and_rewrite,

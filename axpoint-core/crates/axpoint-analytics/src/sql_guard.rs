@@ -1218,20 +1218,35 @@ impl VisitorMut for GuardVisitor<'_> {
             } => {
                 return break_err(rejected("IN <table> shorthand is forbidden"));
             }
+            Expr::Value(val_span) => {
+                if let Value::Placeholder(raw) = &val_span.value {
+                    let raw_copy = raw.clone();
+                    match self.bind_placeholder(&raw_copy) {
+                        Ok(replacement) => *expr = replacement,
+                        Err(err) => return break_err(err),
+                    }
+                }
+            }
             _ => {}
         }
         ControlFlow::Continue(())
     }
 
     fn post_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<Self::Break> {
-        if let Expr::Value(val_span) = expr
-            && let Value::Placeholder(raw) = &val_span.value
+        if let Expr::In {
+            target: InTarget::List(list),
+            ..
+        } = expr
         {
-            let raw_copy = raw.clone();
-            match self.bind_placeholder(&raw_copy) {
-                Ok(replacement) => *expr = replacement,
-                Err(err) => return break_err(err),
+            let mut flattened = Vec::with_capacity(list.len());
+            for item in std::mem::take(list) {
+                if let Expr::Tuple(elems) = item {
+                    flattened.extend(elems);
+                } else {
+                    flattened.push(item);
+                }
             }
+            *list = flattened;
         }
         ControlFlow::Continue(())
     }
@@ -1310,7 +1325,7 @@ fn verify_rewritten_sql(
         cte_stack: vec![BTreeSet::new()],
         in_allowed_table_func_expr: 0,
     };
-    if let ControlFlow::Break(err) = verify_query_recursive(query, &mut verifier) {
+    if let ControlFlow::Break(err) = query.visit(&mut verifier) {
         return Err(*err);
     }
     Ok(())
@@ -1332,41 +1347,6 @@ impl PostRewriteVerifier<'_> {
     }
 }
 
-fn verify_query_recursive(
-    query: &Query,
-    verifier: &mut PostRewriteVerifier<'_>,
-) -> ControlFlow<Box<AppError>> {
-    let mut scope = verifier.current_ctes();
-    if let Some(ref with_clause) = query.with {
-        if with_clause.recursive {
-            for cte in &with_clause.cte_tables {
-                scope.insert(cte.alias.name.value.to_ascii_lowercase());
-            }
-        }
-        for cte in &with_clause.cte_tables {
-            verifier.cte_stack.push(scope.clone());
-            let res = verify_query_recursive(&cte.query, verifier);
-            verifier.cte_stack.pop();
-            res?;
-            scope.insert(cte.alias.name.value.to_ascii_lowercase());
-        }
-    }
-    verifier.cte_stack.push(scope);
-    let mut res = query.body.visit(verifier);
-    if res.is_continue()
-        && let Some(ref ob) = query.order_by
-    {
-        res = ob.visit(verifier);
-    }
-    if res.is_continue()
-        && let Some(ref lc) = query.limit_clause
-    {
-        res = lc.visit(verifier);
-    }
-    verifier.cte_stack.pop();
-    res
-}
-
 impl Visitor for PostRewriteVerifier<'_> {
     type Break = Box<AppError>;
 
@@ -1374,6 +1354,22 @@ impl Visitor for PostRewriteVerifier<'_> {
         if !matches!(stmt, Statement::Query(_)) {
             return break_err(rejected("post-rewrite check: non-query statement"));
         }
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_query(&mut self, q: &Query) -> ControlFlow<Self::Break> {
+        let mut scope = self.current_ctes();
+        if let Some(ref with_clause) = q.with {
+            for cte in &with_clause.cte_tables {
+                scope.insert(cte.alias.name.value.to_ascii_lowercase());
+            }
+        }
+        self.cte_stack.push(scope);
+        ControlFlow::Continue(())
+    }
+
+    fn post_visit_query(&mut self, _q: &Query) -> ControlFlow<Self::Break> {
+        self.cte_stack.pop();
         ControlFlow::Continue(())
     }
 
