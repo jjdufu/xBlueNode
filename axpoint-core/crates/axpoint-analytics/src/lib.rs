@@ -2,6 +2,7 @@
 
 pub mod pivot;
 pub mod result;
+pub mod semantic;
 pub mod session;
 pub mod sql_guard;
 
@@ -43,6 +44,13 @@ pub use pivot::{
 pub use result::{
     ResultSerializeOptions, SerializedQueryOutput, batches_to_query_result, map_arrow_data_type,
     mask_pii_str,
+};
+pub use semantic::{
+    CompiledMetricQuery, MAX_MULTI_METRICS, MetricExecuteOptions, check_metric_compatibility,
+    compile_metric_query, execute_metric_query, execute_metric_query_conn,
+    execute_multi_metric_query, execute_multi_metric_query_conn, is_aggregate_function_name,
+    is_metric_broken, is_metric_broken_for_dataset, validate_create_metric_request,
+    validate_metric_def,
 };
 pub use session::{
     DEFAULT_QUERY_TIMEOUT_MS, LiveConnectionSpec, MAX_QUERY_TIMEOUT_MS, SessionPool, TenantDb,
