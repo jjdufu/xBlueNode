@@ -525,6 +525,10 @@ async fn create_connection_handler(
             },
         )
         .await?;
+    let _ = state
+        .analytics_pool
+        .invalidate_tenant(&principal.tenant_id)
+        .await;
     Ok(Json(created))
 }
 
@@ -566,6 +570,10 @@ async fn update_connection_handler(
         .update_connection(&principal.tenant_id, id, input)
         .await?
         .ok_or(AppError::NotFound("CONNECTION_NOT_FOUND"))?;
+    let _ = state
+        .analytics_pool
+        .invalidate_tenant(&principal.tenant_id)
+        .await;
     Ok(Json(updated))
 }
 
@@ -582,6 +590,10 @@ async fn delete_connection_handler(
     if !deleted {
         return Err(HttpError(AppError::NotFound("CONNECTION_NOT_FOUND")));
     }
+    let _ = state
+        .analytics_pool
+        .invalidate_tenant(&principal.tenant_id)
+        .await;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -814,6 +826,7 @@ async fn delete_dataset_handler(
         .sidecar
         .drop_lake_table(&principal.tenant_id, &deleted.lake_table)
         .await;
+    crate::routes::analytics::refresh_cached_tenant_catalog(&state, &principal.tenant_id).await;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
@@ -936,6 +949,16 @@ async fn update_column_meta_handler(
         .update_column_meta(&principal.tenant_id, id, &column, req)
         .await?
         .ok_or(AppError::NotFound("COLUMN_NOT_FOUND"))?;
+    crate::routes::analytics::refresh_cached_tenant_catalog(&state, &principal.tenant_id).await;
+    let _ = axpoint_domain::ports::JobQueuePort::enqueue(
+        &state.store,
+        &principal.tenant_id,
+        axpoint_domain::platform::NewJob::new(
+            axpoint_domain::enums::JobKind::EmbedNodes,
+            serde_json::json!({}),
+        ),
+    )
+    .await;
     Ok(Json(updated))
 }
 

@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axpoint_analytics::SessionPool;
 use axpoint_db::PgStore;
 use axpoint_domain::AppError;
 use axpoint_llm::AiGateway;
@@ -28,6 +29,7 @@ pub(crate) struct AppState {
     pub(crate) audit: AuditWriter,
     pub(crate) keyring: Arc<CredentialKeyring>,
     pub(crate) sidecar: Arc<HttpSidecarClient>,
+    pub(crate) analytics_pool: Arc<SessionPool>,
     pub(crate) data_root: PathBuf,
     pub(crate) parser_base_url: String,
     pub(crate) http: reqwest::Client,

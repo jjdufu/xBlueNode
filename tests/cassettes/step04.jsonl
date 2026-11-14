@@ -1,0 +1,2 @@
+{"match_substring":"### 当前问题\n已支付订单的总金额是多少","kind":"chat","response":"{\"sql\":\"SELECT SUM(amount) AS paid_amount FROM demo_orders WHERE status = 'PAID'\",\"explanation\":\"统计状态为 PAID 的已支付订单总金额\",\"used_metrics\":[\"paid_amount\"]}"}
+{"match_substring":"问题: 已支付订单的总金额是多少\n结果列: paid_amount","kind":"chat","response":"已支付订单的总金额为 33239.25 元。"}

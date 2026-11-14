@@ -15,6 +15,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axpoint_analytics::{AnalyticsConfig, SessionPool};
 use axpoint_db::PgStore;
 use axpoint_domain::AppError;
 use axpoint_llm::{AiGateway, EmbeddingConfig, LlmConfig};
@@ -36,8 +37,10 @@ const MIN_INTERNAL_TOKEN_LEN: usize = 32;
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
-    if env::args().nth(1).as_deref() == Some("healthcheck") {
-        return run_cli_healthcheck().await;
+    match env::args().nth(1).as_deref() {
+        Some("healthcheck") => return run_cli_healthcheck().await,
+        Some("install-duckdb-extensions") => return axpoint_analytics::install_duckdb_extensions(),
+        _ => {}
     }
 
     let _ = dotenvy::dotenv();
@@ -64,6 +67,11 @@ async fn main() -> Result<(), AppError> {
     let (llm_cfg, embed_cfg) = load_ai_configs()?;
     let keyring = Arc::new(CredentialKeyring::from_env()?);
     let sidecar = Arc::new(HttpSidecarClient::new(&parser_base_url, http.clone()));
+    let analytics_pool = Arc::new(SessionPool::new(load_analytics_config(
+        &data_root,
+        &database_url,
+        (*keyring).clone(),
+    )?));
 
     let pool = PgPoolOptions::new()
         .max_connections(16)
@@ -86,6 +94,7 @@ async fn main() -> Result<(), AppError> {
         audit,
         keyring,
         sidecar,
+        analytics_pool,
         data_root,
         parser_base_url,
         http,
@@ -244,6 +253,57 @@ fn load_ai_configs() -> Result<(LlmConfig, EmbeddingConfig), AppError> {
     Ok((llm_cfg, embed_cfg))
 }
 
+fn load_analytics_config(
+    data_root: &std::path::Path,
+    database_url: &str,
+    keyring: CredentialKeyring,
+) -> Result<AnalyticsConfig, AppError> {
+    let lake_catalog_dsn = env::var("AXPOINT_LAKE_CATALOG_DSN")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+
+    let tenant_cache_capacity = env::var("AXPOINT_DUCKDB_TENANT_CACHE")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            s.trim().parse::<usize>().map_err(|err| {
+                AppError::Config(format!("invalid AXPOINT_DUCKDB_TENANT_CACHE: {err}"))
+            })
+        })
+        .transpose()?
+        .unwrap_or(32)
+        .max(1);
+
+    let memory_limit = env::var("AXPOINT_DUCKDB_MEMORY")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| String::from("1GB"));
+
+    let threads = env::var("AXPOINT_DUCKDB_THREADS")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| {
+            s.trim()
+                .parse::<u32>()
+                .map_err(|err| AppError::Config(format!("invalid AXPOINT_DUCKDB_THREADS: {err}")))
+        })
+        .transpose()?
+        .unwrap_or(4)
+        .max(1);
+
+    Ok(AnalyticsConfig {
+        data_root: data_root.to_path_buf(),
+        lake_catalog_dsn,
+        app_database_url: Some(String::from(database_url)),
+        tenant_cache_capacity,
+        memory_limit,
+        threads,
+        keyring: Some(keyring),
+    })
+}
+
 async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
@@ -253,6 +313,7 @@ mod tests {
     use std::fs;
     use std::sync::Arc;
 
+    use axpoint_analytics::{AnalyticsConfig, SessionPool};
     use axpoint_db::PgStore;
     use axpoint_domain::AppError;
     use axpoint_llm::{AiGateway, EmbeddingConfig, LlmConfig};
@@ -294,6 +355,7 @@ mod tests {
         let parser_base_url = String::from("http://127.0.0.1:8001");
         let keyring = Arc::new(CredentialKeyring::ephemeral()?);
         let sidecar = Arc::new(HttpSidecarClient::new(&parser_base_url, http.clone()));
+        let analytics_pool = Arc::new(SessionPool::new(AnalyticsConfig::default()));
         Ok(AppState {
             store,
             ai,
@@ -301,6 +363,7 @@ mod tests {
             audit,
             keyring,
             sidecar,
+            analytics_pool,
             data_root: std::env::temp_dir(),
             parser_base_url,
             http,

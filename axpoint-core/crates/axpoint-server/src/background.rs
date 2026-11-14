@@ -84,6 +84,61 @@ impl JobHandler for RetentionJobHandler {
     }
 }
 
+/// Step 04 `dataset.synced` subscriber refreshing `SessionPool` and cascading `DERIVED_VIEW` syncs.
+struct DatasetSyncedSubscriber {
+    store: PgStore,
+    analytics_pool: Arc<axpoint_analytics::SessionPool>,
+}
+
+impl OutboxSubscriber for DatasetSyncedSubscriber {
+    fn on_event<'a>(&'a self, event: &'a OutboxEvent) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if event.topic != axpoint_domain::enums::OutboxTopic::DatasetSynced {
+                return Ok(());
+            }
+            let _ = self
+                .analytics_pool
+                .invalidate_tenant(&event.tenant_id)
+                .await;
+
+            let Some(ds_id) = event
+                .payload
+                .get("dataset_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok())
+            else {
+                return Ok(());
+            };
+
+            let dependents =
+                axpoint_domain::ports::AnalyticsRepository::list_dependent_derived_datasets(
+                    &self.store,
+                    &event.tenant_id,
+                    ds_id,
+                )
+                .await?;
+
+            let ds_id_str = ds_id.to_string();
+            for dep in dependents {
+                let is_direct = dep
+                    .source_ref
+                    .get("depends_on")
+                    .and_then(serde_json::Value::as_array)
+                    .is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some(ds_id_str.as_str())));
+                if is_direct {
+                    let _ = axpoint_domain::ports::DatasetRepository::enqueue_sync_job(
+                        &self.store,
+                        &event.tenant_id,
+                        dep.id,
+                    )
+                    .await?;
+                }
+            }
+            Ok(())
+        })
+    }
+}
+
 /// Spawns `JobWorker` tasks (`AXPOINT_WORKERS`, default `4`), `OutboxDispatcher`, and singleton schedulers.
 pub(crate) fn spawn_background_workers(state: &crate::state::AppState) {
     let store = state.store.clone();
@@ -158,7 +213,11 @@ pub(crate) fn spawn_background_workers(state: &crate::state::AppState) {
 
     let outbox_worker_id = format!("core-{instance_id}-outbox");
     let outbox_store = store.clone();
-    let subscribers: Arc<Vec<Arc<dyn OutboxSubscriber>>> = Arc::new(Vec::new());
+    let subscribers: Arc<Vec<Arc<dyn OutboxSubscriber>>> =
+        Arc::new(vec![Arc::new(DatasetSyncedSubscriber {
+            store: store.clone(),
+            analytics_pool: Arc::clone(&state.analytics_pool),
+        })]);
     tokio::spawn(async move {
         run_outbox_dispatcher(outbox_worker_id, outbox_store, subscribers).await;
     });

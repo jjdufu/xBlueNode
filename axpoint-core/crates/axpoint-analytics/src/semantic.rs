@@ -351,7 +351,7 @@ fn compile_metric_query_with_range(
     let (has_period, effective_grain) = if let Some((ref tc_col, _)) = tc_info {
         let grain = query.grain.unwrap_or(metric.default_grain);
         projections.push(format!(
-            "date_trunc('{}', {}) AS \"period\"",
+            "date_trunc('{}', CAST({} AS TIMESTAMP)) AS \"period\"",
             rollup_grain_sql(grain),
             quote_ident(tc_col)
         ));
@@ -851,41 +851,29 @@ fn resolve_metric_time_col(
 
 fn append_time_range_predicates(
     tc_col: &str,
-    tc_dt: DataType,
+    _tc_dt: DataType,
     tr: &MetricTimeRange,
     where_parts: &mut Vec<String>,
     params: &mut BTreeMap<String, serde_json::Value>,
 ) {
     let tc_q = quote_ident(tc_col);
-    if tc_dt == DataType::Date {
-        let from_naive = tr
-            .from
-            .naive_utc()
-            .format("%Y-%m-%d %H:%M:%S%.f")
-            .to_string();
-        let to_naive = tr.to.naive_utc().format("%Y-%m-%d %H:%M:%S%.f").to_string();
-        params.insert(
-            String::from("__tr_from"),
-            serde_json::Value::String(from_naive),
-        );
-        params.insert(String::from("__tr_to"), serde_json::Value::String(to_naive));
-        where_parts.push(format!(
-            "CAST({tc_q} AS TIMESTAMP) >= CAST(:__tr_from AS TIMESTAMP)"
-        ));
-        where_parts.push(format!(
-            "CAST({tc_q} AS TIMESTAMP) < CAST(:__tr_to AS TIMESTAMP)"
-        ));
-    } else {
-        let from_iso = tr.from.to_rfc3339_opts(SecondsFormat::AutoSi, true);
-        let to_iso = tr.to.to_rfc3339_opts(SecondsFormat::AutoSi, true);
-        params.insert(
-            String::from("__tr_from"),
-            serde_json::Value::String(from_iso),
-        );
-        params.insert(String::from("__tr_to"), serde_json::Value::String(to_iso));
-        where_parts.push(format!("{tc_q} >= :__tr_from"));
-        where_parts.push(format!("{tc_q} < :__tr_to"));
-    }
+    let from_naive = tr
+        .from
+        .naive_utc()
+        .format("%Y-%m-%d %H:%M:%S%.f")
+        .to_string();
+    let to_naive = tr.to.naive_utc().format("%Y-%m-%d %H:%M:%S%.f").to_string();
+    params.insert(
+        String::from("__tr_from"),
+        serde_json::Value::String(from_naive),
+    );
+    params.insert(String::from("__tr_to"), serde_json::Value::String(to_naive));
+    where_parts.push(format!(
+        "CAST({tc_q} AS TIMESTAMP) >= CAST(:__tr_from AS TIMESTAMP)"
+    ));
+    where_parts.push(format!(
+        "CAST({tc_q} AS TIMESTAMP) < CAST(:__tr_to AS TIMESTAMP)"
+    ));
 }
 
 #[derive(Debug, Clone)]
@@ -1428,7 +1416,7 @@ fn build_multi_projections(
     let has_period = if let Some((tc_col, _)) = first_tc {
         let grain = requested_grain.unwrap_or(first.default_grain);
         projections.push(format!(
-            "date_trunc('{}', {}) AS \"period\"",
+            "date_trunc('{}', CAST({} AS TIMESTAMP)) AS \"period\"",
             rollup_grain_sql(grain),
             quote_ident(tc_col)
         ));

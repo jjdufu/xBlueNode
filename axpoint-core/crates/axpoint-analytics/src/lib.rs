@@ -151,6 +151,21 @@ pub async fn probe_analytics_runtime() -> Result<String, AppError> {
     Ok(version)
 }
 
+/// Installs the required `DuckDB` offline extensions (`ducklake`, `postgres`, `mysql_scanner`,
+/// `sqlite_scanner`) into `$HOME/.duckdb/extensions/` during container image build (`05-STEP04` §04.1).
+///
+/// # Errors
+/// Returns [`AppError::Config`] if opening in-memory `DuckDB` or executing `INSTALL` fails.
+pub fn install_duckdb_extensions() -> Result<(), AppError> {
+    let conn = duckdb::Connection::open_in_memory()
+        .map_err(|err| AppError::Config(format!("duckdb open_in_memory failed: {err}")))?;
+    conn.execute_batch(
+        "INSTALL ducklake; INSTALL postgres; INSTALL mysql_scanner; INSTALL sqlite_scanner;",
+    )
+    .map_err(|err| AppError::Config(format!("duckdb extension install failed: {err}")))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

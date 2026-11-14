@@ -40,6 +40,10 @@ pub struct CassetteEntry {
     /// Optional lowercase hex `SHA-256` digest of `"{user_prompt}"` for fallback matching.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_sha256: Option<String>,
+    /// Optional deterministic substring fallback matched against `"{system_prompt}\n---\n{user_prompt}"`
+    /// only after `prompt_sha256` and `user_sha256` both miss.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_substring: Option<String>,
     /// Entry category (defaults to `"chat"`).
     #[serde(default = "default_entry_kind")]
     pub kind: String,
@@ -117,6 +121,7 @@ pub fn deterministic_embedding(text: &str, dim: usize) -> Vec<f32> {
 struct CassetteState {
     by_prompt_sha256: HashMap<String, String>,
     by_user_sha256: HashMap<String, String>,
+    by_substring: Vec<(String, String)>,
     load_error: Option<String>,
 }
 
@@ -138,16 +143,27 @@ impl Cassette {
         let record_target = resolve_record_target(path);
         let mut by_prompt_sha256 = HashMap::new();
         let mut by_user_sha256 = HashMap::new();
+        let mut by_substring = Vec::new();
 
         if path.exists() {
             if path.is_dir() {
                 let mut files = Vec::new();
                 collect_jsonl_files(path, &mut files)?;
                 for file in files {
-                    load_jsonl_file(&file, &mut by_prompt_sha256, &mut by_user_sha256)?;
+                    load_jsonl_file(
+                        &file,
+                        &mut by_prompt_sha256,
+                        &mut by_user_sha256,
+                        &mut by_substring,
+                    )?;
                 }
             } else {
-                load_jsonl_file(path, &mut by_prompt_sha256, &mut by_user_sha256)?;
+                load_jsonl_file(
+                    path,
+                    &mut by_prompt_sha256,
+                    &mut by_user_sha256,
+                    &mut by_substring,
+                )?;
             }
         } else if mode == CassetteMode::Replay {
             return Err(AppError::Llm(format!(
@@ -162,6 +178,7 @@ impl Cassette {
             state: Arc::new(Mutex::new(CassetteState {
                 by_prompt_sha256,
                 by_user_sha256,
+                by_substring,
                 load_error: None,
             })),
         })
@@ -197,6 +214,7 @@ impl Cassette {
                     state: Arc::new(Mutex::new(CassetteState {
                         by_prompt_sha256: HashMap::new(),
                         by_user_sha256: HashMap::new(),
+                        by_substring: Vec::new(),
                         load_error: Some(err.to_string()),
                     })),
                 })
@@ -210,7 +228,8 @@ impl Cassette {
         self.mode
     }
 
-    /// Looks up a recorded chat response by `prompt_sha256` with fallback to `user_sha256`.
+    /// Looks up a recorded chat response by `prompt_sha256` with fallback to `user_sha256`
+    /// and deterministic `match_substring` entries.
     ///
     /// # Errors
     /// Returns [`AppError::Llm`] (`UPSTREAM_LLM`) on cassette miss.
@@ -226,15 +245,23 @@ impl Cassette {
         if let Some(resp) = guard.by_user_sha256.get(&user_sha256) {
             return Ok(resp.clone());
         }
+        if !guard.by_substring.is_empty() {
+            let combined = format!("{system_prompt}\n---\n{user_prompt}");
+            for (pat, resp) in &guard.by_substring {
+                if combined.contains(pat.as_str()) {
+                    return Ok(resp.clone());
+                }
+            }
+        }
 
         if let Some(reason) = &guard.load_error {
             return Err(AppError::Llm(format!(
-                "cassette miss for prompt hash {prompt_sha256} ({reason})"
+                "cassette miss for prompt hash {prompt_sha256} user_sha256={user_sha256} ({reason})"
             )));
         }
 
         Err(AppError::Llm(format!(
-            "cassette miss for prompt hash {prompt_sha256}"
+            "cassette miss for prompt hash {prompt_sha256} user_sha256={user_sha256}"
         )))
     }
 
@@ -254,6 +281,7 @@ impl Cassette {
         let entry = CassetteEntry {
             prompt_sha256: Some(prompt_sha256.clone()),
             user_sha256: Some(user_sha256.clone()),
+            match_substring: None,
             kind: String::from("chat"),
             response: response.to_owned(),
         };
@@ -360,6 +388,7 @@ fn load_jsonl_file(
     file_path: &Path,
     by_prompt_sha256: &mut HashMap<String, String>,
     by_user_sha256: &mut HashMap<String, String>,
+    by_substring: &mut Vec<(String, String)>,
 ) -> Result<(), AppError> {
     let raw = fs::read_to_string(file_path).map_err(|err| {
         AppError::Llm(format!(
@@ -397,10 +426,15 @@ fn load_jsonl_file(
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .map(str::to_ascii_lowercase);
+        let sub_key = entry
+            .match_substring
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
 
-        if prompt_key.is_none() && user_key.is_none() {
+        if prompt_key.is_none() && user_key.is_none() && sub_key.is_none() {
             return Err(AppError::Llm(format!(
-                "cassette entry at {}:{line_no} must specify prompt_sha256 or user_sha256",
+                "cassette entry at {}:{line_no} must specify prompt_sha256, user_sha256, or match_substring",
                 file_path.display()
             )));
         }
@@ -409,7 +443,10 @@ fn load_jsonl_file(
             by_prompt_sha256.insert(pk, entry.response.clone());
         }
         if let Some(uk) = user_key {
-            by_user_sha256.insert(uk, entry.response);
+            by_user_sha256.insert(uk, entry.response.clone());
+        }
+        if let Some(sk) = sub_key {
+            by_substring.push((sk, entry.response));
         }
     }
 

@@ -43,12 +43,18 @@ impl AuthPrincipal {
         }
     }
 
+    /// Returns `true` if this principal holds `permission`.
+    #[must_use]
+    pub fn has(&self, permission: Permission) -> bool {
+        self.permissions.contains(&permission)
+    }
+
     /// Checks whether this principal holds the required [`Permission`].
     ///
     /// # Errors
     /// Returns `AppError::Forbidden("PERMISSION_DENIED")` if the permission is missing.
     pub fn require(&self, permission: Permission) -> Result<(), AppError> {
-        if self.permissions.contains(&permission) {
+        if self.has(permission) {
             Ok(())
         } else {
             Err(AppError::Forbidden("PERMISSION_DENIED"))

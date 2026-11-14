@@ -171,12 +171,67 @@ impl SyncDatasetHandler {
         }))
     }
 
+    async fn run_derived_view_sync(
+        &self,
+        job: &LeasedJob,
+        ds: &axpoint_domain::axhub::Dataset,
+        sj: &axpoint_domain::axhub::SyncJob,
+    ) -> Result<serde_json::Value, AppError> {
+        let mat_sql = ds
+            .source_ref
+            .get("sql")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| {
+                AppError::bad(
+                    "INVALID_ARGUMENT",
+                    "DERIVED_VIEW dataset missing source_ref.sql",
+                )
+            })?;
+        let mat_req = axpoint_domain::analytics::MaterializeRequest {
+            tenant_id: job.tenant_id.clone(),
+            dataset_id: ds.id.to_string(),
+            lake_table: ds.lake_table.clone(),
+            sql: String::from(mat_sql),
+            batch_id: sj.batch_id.to_string(),
+        };
+        let timezone = self.store.get_tenant_timezone(&job.tenant_id).await?;
+        let result = self
+            .sidecar
+            .materialize_derived_view(&job.tenant_id, &timezone, &mat_req)
+            .await?;
+        self.store
+            .complete_sync_execution(&job.tenant_id, sj.id, ds.id, &result)
+            .await?;
+        let _ = axpoint_domain::ports::JobQueuePort::enqueue(
+            &self.store,
+            &job.tenant_id,
+            axpoint_domain::platform::NewJob::new(
+                axpoint_domain::enums::JobKind::EmbedNodes,
+                serde_json::json!({}),
+            ),
+        )
+        .await;
+        let written_u64 = u64::try_from(result.rows_written.max(0)).unwrap_or(0);
+        metrics::counter!(
+            "axpoint_dataset_sync_rows_total",
+            "tenant" => job.tenant_id.clone()
+        )
+        .increment(written_u64);
+        serde_json::to_value(&result)
+            .map_err(|err| AppError::Config(format!("serialize sync result failed: {err}")))
+    }
+
     async fn run_sync_inner(
         &self,
         job: &LeasedJob,
         ds: &axpoint_domain::axhub::Dataset,
         sj: &axpoint_domain::axhub::SyncJob,
     ) -> Result<serde_json::Value, AppError> {
+        if ds.source_kind == SourceKind::DerivedView {
+            return self.run_derived_view_sync(job, ds, sj).await;
+        }
+
         let timezone = self.store.get_tenant_timezone(&job.tenant_id).await?;
         let quality_rules = self.store.list_quality_rules(&job.tenant_id, ds.id).await?;
         let stream_offsets = self.store.get_stream_offsets(&job.tenant_id, ds.id).await?;
@@ -227,6 +282,16 @@ impl SyncDatasetHandler {
         self.store
             .complete_sync_execution(&job.tenant_id, sj.id, ds.id, &result)
             .await?;
+
+        let _ = axpoint_domain::ports::JobQueuePort::enqueue(
+            &self.store,
+            &job.tenant_id,
+            axpoint_domain::platform::NewJob::new(
+                axpoint_domain::enums::JobKind::EmbedNodes,
+                serde_json::json!({}),
+            ),
+        )
+        .await;
 
         if !src.pending_webhook_ids.is_empty() {
             self.store

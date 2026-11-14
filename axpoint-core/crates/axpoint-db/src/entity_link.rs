@@ -588,3 +588,102 @@ async fn count_pending_candidates_tx(
     .map_err(|err| AppError::Database(format!("count pending candidates failed: {err}")))?;
     Ok(usize::try_from(cnt.max(0)).unwrap_or(0))
 }
+
+impl PgStore {
+    /// Resolves distinct confirmed `BlueNode` summaries linked to recalled `hg_paras` (via `MENTIONS -> xb_entity_links`)
+    /// or `type_name:node_key` references from NL2SQL schema linking (`05-STEP04` §04.8).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if querying `xb_entity_links` or `xb_nodes` fails.
+    pub async fn list_related_nodes(
+        &self,
+        tenant_id: &str,
+        para_ids: &[Uuid],
+        linked_node_refs: &[String],
+    ) -> Result<Vec<axpoint_domain::analytics::RelatedNodeSummary>, AppError> {
+        if para_ids.is_empty() && linked_node_refs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut out = Vec::new();
+
+        if !para_ids.is_empty() {
+            let rows = sqlx::query(
+                "SELECT DISTINCT n.id, n.type_name, n.title, n.metrics
+                   FROM hg_edges ed
+                   JOIN xb_entity_links el
+                     ON el.entity_id = ed.dst_id
+                    AND el.confirmed = TRUE
+                    AND el.rejected = FALSE
+                   JOIN xb_nodes n ON n.id = el.node_id
+                  WHERE ed.src_type = 'PARA'
+                    AND ed.dst_type = 'ENTITY'
+                    AND ed.rel_type = 'MENTIONS'
+                    AND ed.src_id = ANY($1)
+                  ORDER BY n.title ASC",
+            )
+            .bind(para_ids)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|err| {
+                AppError::Database(format!("query related_nodes from paras failed: {err}"))
+            })?;
+
+            for r in rows {
+                let id: Uuid = r.get("id");
+                if seen.insert(id) {
+                    out.push(axpoint_domain::analytics::RelatedNodeSummary {
+                        id,
+                        type_name: r.get("type_name"),
+                        title: r.get("title"),
+                        metrics: r.get("metrics"),
+                    });
+                }
+            }
+        }
+
+        for nref in linked_node_refs {
+            let (maybe_type, key) = match nref.split_once(':') {
+                Some((t, k)) => (Some(t.trim()), k.trim()),
+                None => (None, nref.trim()),
+            };
+            if key.is_empty() {
+                continue;
+            }
+            let rows = sqlx::query(
+                "SELECT id, type_name, title, metrics
+                   FROM xb_nodes
+                  WHERE node_key = $1
+                    AND ($2::text IS NULL OR type_name = $2)
+                  ORDER BY title ASC",
+            )
+            .bind(key)
+            .bind(maybe_type)
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|err| {
+                AppError::Database(format!("query related_nodes by node_key failed: {err}"))
+            })?;
+
+            for r in rows {
+                let id: Uuid = r.get("id");
+                if seen.insert(id) {
+                    out.push(axpoint_domain::analytics::RelatedNodeSummary {
+                        id,
+                        type_name: r.get("type_name"),
+                        title: r.get("title"),
+                        metrics: r.get("metrics"),
+                    });
+                }
+            }
+        }
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit list_related_nodes tx failed: {err}"))
+        })?;
+
+        Ok(out)
+    }
+}

@@ -363,7 +363,7 @@ fn resolve_pivot_axes(
             ));
         }
         let expr = format!(
-            "date_trunc('{}', {})",
+            "date_trunc('{}', CAST({} AS TIMESTAMP))",
             rollup_grain_sql(tb_grain),
             quote_ident(tb_col)
         );
@@ -551,7 +551,7 @@ fn resolve_dim_list(
         {
             *tb_matched = true;
             format!(
-                "date_trunc('{}', {})",
+                "date_trunc('{}', CAST({} AS TIMESTAMP))",
                 rollup_grain_sql(*grain),
                 quote_ident(&canon)
             )
