@@ -1,4 +1,5 @@
 //! `AxGuard` authentication, principal verification, and buffered security audit writer.
+#![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
 pub mod audit;
 pub mod authenticator;

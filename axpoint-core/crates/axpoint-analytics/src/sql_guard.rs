@@ -1750,7 +1750,7 @@ fn find_any_pii_in_expr(
         base_datasets,
         detected_pii: None,
     };
-    let _ = expr.visit(&mut collector);
+    let _visit_flow = expr.visit(&mut collector);
     collector.detected_pii
 }
 

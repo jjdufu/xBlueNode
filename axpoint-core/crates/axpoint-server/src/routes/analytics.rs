@@ -356,7 +356,9 @@ async fn record_audit_and_flush(
         detail_json,
         created_at: Utc::now(),
     });
-    let _ = state.audit.flush().await;
+    if let Err(err) = state.audit.flush().await {
+        tracing::warn!(error = %err, "analytics audit flush failed");
+    }
 }
 
 async fn get_catalog_handler(
@@ -401,7 +403,7 @@ async fn execute_sql_with_telemetry(
         .await
     {
         Ok(out) => {
-            let _ = state
+            if let Err(err) = state
                 .store
                 .record_query_history(
                     caller.tenant_id,
@@ -415,7 +417,10 @@ async fn execute_sql_with_telemetry(
                         error_code: None,
                     },
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(error = %err, "record_query_history failed");
+            }
             record_audit_and_flush(
                 state,
                 caller,
@@ -433,7 +438,7 @@ async fn execute_sql_with_telemetry(
         }
         Err(err) => {
             let elapsed_ms = i64::try_from(started.elapsed().as_millis()).ok();
-            let _ = state
+            if let Err(hist_err) = state
                 .store
                 .record_query_history(
                     caller.tenant_id,
@@ -447,7 +452,10 @@ async fn execute_sql_with_telemetry(
                         error_code: Some(String::from(err.error_code())),
                     },
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(error = %hist_err, "record_query_history failed");
+            }
             record_audit_and_flush(
                 state,
                 caller,
@@ -506,7 +514,7 @@ async fn execute_pivot_with_telemetry(
     .await
     {
         Ok(res) => {
-            let _ = state
+            if let Err(err) = state
                 .store
                 .record_query_history(
                     tenant_id,
@@ -520,11 +528,14 @@ async fn execute_pivot_with_telemetry(
                         error_code: None,
                     },
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(error = %err, "record_query_history failed");
+            }
             Ok(res)
         }
         Err(err) => {
-            let _ = state
+            if let Err(hist_err) = state
                 .store
                 .record_query_history(
                     tenant_id,
@@ -538,7 +549,10 @@ async fn execute_pivot_with_telemetry(
                         error_code: Some(String::from(err.error_code())),
                     },
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(error = %hist_err, "record_query_history failed");
+            }
             Err(err)
         }
     }
@@ -705,7 +719,7 @@ async fn execute_single_metric_with_telemetry(
         },
     )
     .await?;
-    let _ = state
+    if let Err(err) = state
         .store
         .record_query_history(
             tenant_id,
@@ -719,7 +733,10 @@ async fn execute_single_metric_with_telemetry(
                 error_code: None,
             },
         )
-        .await;
+        .await
+    {
+        tracing::warn!(error = %err, "record_query_history failed");
+    }
     Ok(res)
 }
 
@@ -762,7 +779,7 @@ async fn query_multi_metrics_handler(
         },
     )
     .await?;
-    let _ = state
+    if let Err(err) = state
         .store
         .record_query_history(
             &principal.tenant_id,
@@ -776,7 +793,10 @@ async fn query_multi_metrics_handler(
                 error_code: None,
             },
         )
-        .await;
+        .await
+    {
+        tracing::warn!(error = %err, "record_query_history failed");
+    }
     Ok(Json(res))
 }
 
@@ -1060,8 +1080,8 @@ async fn persist_ask_turn_and_history(
         resp.turn_id = turn_row.id;
     }
 
-    if !resp.sql.is_empty() || resp.status == QueryHistoryStatus::Failed {
-        let _ = state
+    if (!resp.sql.is_empty() || resp.status == QueryHistoryStatus::Failed)
+        && let Err(err) = state
             .store
             .record_query_history(
                 &principal.tenant_id,
@@ -1080,7 +1100,9 @@ async fn persist_ask_turn_and_history(
                         .then(|| String::from("SQL_REPAIR_EXHAUSTED")),
                 },
             )
-            .await;
+            .await
+    {
+        tracing::warn!(error = %err, "record_query_history failed");
     }
 
     record_audit_and_flush(
@@ -1266,7 +1288,7 @@ async fn create_transform_draft_handler(
     )
     .await?;
 
-    let _ = state
+    if let Err(err) = state
         .store
         .record_query_history(
             &principal.tenant_id,
@@ -1280,7 +1302,10 @@ async fn create_transform_draft_handler(
                 error_code: None,
             },
         )
-        .await;
+        .await
+    {
+        tracing::warn!(error = %err, "record_query_history for transform draft failed");
+    }
 
     let draft = state
         .store
@@ -1418,7 +1443,7 @@ async fn apply_transform_draft_handler(
 
     let via = format!("transform:{id}");
     for dep_id in &plan.depends_on {
-        let _ = state
+        if let Err(err) = state
             .store
             .upsert_lineage(
                 &principal.tenant_id,
@@ -1428,7 +1453,10 @@ async fn apply_transform_draft_handler(
                 &dataset.id.to_string(),
                 &via,
             )
-            .await;
+            .await
+        {
+            tracing::warn!(error = %err, "upsert_lineage for transform failed");
+        }
     }
 
     let sync_res = state

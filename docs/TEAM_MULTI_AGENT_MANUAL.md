@@ -72,14 +72,14 @@ git worktree add ../wt-a-parser -b feat/axhub-step02 main
 
 ## 4. 高发问题与规避
 
-### 4.1 Rust 工具链版本不一致
-`axpoint-core/Cargo.toml` 声明 `edition = "2024"`、`rust-version = "1.100.0"`。所有环境执行 `rustup toolchain install stable --component clippy rustfmt` 并确认 `rustc >= 1.100.0`。禁止修改 `rust-version` 或删除 `[workspace.lints]`；以 CI 的 `rust-core` 作业为准。
+### 4.1 Rust 工具链版本锁定与防绕过守卫
+`axpoint-core/rust-toolchain.toml` 锁定 `channel = "1.100.0"`（`edition = "2024"`、`rust-version = "1.100.0"`），`axpoint-core/clippy.toml` 锁定复杂度与参数阈值。所有环境确保安装 `rustup toolchain install 1.100.0 --component clippy rustfmt` 并通过 `python3 scripts/lint-guard.py`。禁止修改 `rust-toolchain.toml`、`clippy.toml`、`rust-version` 或 `[workspace.lints]`；以 CI 的 `rust-core` 作业为准。
 
 ### 4.2 严格 Lint 阻断编译
-工作区启用 `unsafe_code = "forbid"`、`unwrap_used` / `expect_used` / `panic` / `as_conversions` / `indexing_slicing` / `missing_docs` 均为 `deny`。
-- 集合访问用 `.get(i)`、`.first()` 或迭代器；数值转换用 `TryFrom` / `From`。
-- 所有公开符号写 `///` 文档；返回 `Result` 的公开函数写 `/// # Errors`。
-- 提交前执行 `cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings`。
+工作区启用零豁免守卫：`unsafe_code = "forbid"`，全仓禁止 `#[allow]` / `#[expect]` / `#[warn]` / `#[doc(hidden)]`，`unwrap_used` / `expect_used` / `get_unwrap` / `panic` / `unreachable` / `as_conversions` / `indexing_slicing` / `let_underscore_must_use` / `dbg_macro` / `print_stdout` / `print_stderr` / `infinite_loop` / `significant_drop_in_scrutinee` / `missing_docs` / `rustdoc::all` 均为 `deny`。
+- 集合访问用 `.get(i)`、`.first()` 或迭代器；数值转换用 `TryFrom` / `From`；`Result` 必须显式处理或以 `tracing::warn!` 记录，禁止 `let _ = ...` 丢弃。
+- 所有公开符号写 `///` 文档（标识符加反引号）；返回 `Result` 的公开函数写 `/// # Errors`；新建库 Crate 的 `src/lib.rs` 顶部必须声明 `#![doc(test(attr(deny(warnings), forbid(unsafe_code))))]`。
+- 提交前执行 `python3 scripts/lint-guard.py && (cd axpoint-core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings && RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked)`。
 
 ### 4.3 公共入口合并冲突
 `Cargo.toml` 成员、`routes/mod.rs` 的 `.merge(...)`、`AppState` 字段、`registry.ts` 页面注册只由总控在契约 PR 或集成 PR 中修改。执行者在自己的 `routes/<module>.rs` 中导出 `pub fn router() -> Router<AppState>`，在 PR 描述中写出需要的挂载语句。
@@ -97,7 +97,7 @@ git worktree add ../wt-a-parser -b feat/axhub-step02 main
 外部标识符经白名单正则 `^[A-Za-z_][A-Za-z0-9_]*$` 校验，值一律参数化；连接器只读。凭证只以 Core 密钥环加密存储，Sidecar 只在请求内存中持有明文，响应与日志一律掩码。按 `parsers/`、`connectors/`、`lake/`、`exporters/` 分包注册，依赖写入 `pyproject.toml` 并符合 [A6](./blueprint/A6-DEPENDENCY-BASELINE.md)。
 
 ### 4.8 命名污染与误提交
-注释、样例、文档只使用 [A1](./blueprint/A1-CONVENTIONS-ENUMS-ROUTES.md) §1 的自主命名词表。提交前执行 `bash scripts/naming-guard.sh`（读取本地 `NAMING_DENYLIST`）与 `git status`，确认没有 `target/`、`node_modules/`、`dist/`、`__pycache__/`、`.env`、`.gate/`。
+注释、样例、文档只使用 [A1](./blueprint/A1-CONVENTIONS-ENUMS-ROUTES.md) §1 的自主命名词表。提交前执行 `bash scripts/naming-guard.sh`（读取本地 `NAMING_DENYLIST`）、`python3 scripts/lint-guard.py` 与 `git status`，确认没有 `target/`、`node_modules/`、`dist/`、`__pycache__/`、`.env`、`.gate/`。
 
 ### 4.9 镜像版本错配与静态资源
 `axpoint-server` 通过 `WEB_DIST_DIR` 托管前端 `dist/`，不引入 `rust-embed`。镜像发布为 `${AXPOINT_REGISTRY:-dex2all}/axpoint-core:<tag>` 与 `axpoint-parser:<tag>-{lite,full}`，两者使用同一语义化版本并附 Git SHA 标签，不使用裸 `latest`。
@@ -114,11 +114,11 @@ git worktree add ../wt-a-parser -b feat/axhub-step02 main
 
 只完成 Step {STEP_ID} 的契约 PR，不写业务实现：
 1. 按 Step 文件“迁移”小节创建 `deploy/migrations/{MIGRATION_FILE}`，内容与 A2 条目一致。
-2. 按“契约清单”在 `axpoint-domain` 定义 DTO、枚举与端口；需要的新 Crate 在 `axpoint-core/Cargo.toml` 声明并继承 `[workspace.lints]`。
-3. 写入 `docs/API_CONTRACT.md` 条目、`axpoint-parser/schemas.py`（如涉及 Sidecar）、`xbluenode-web/src/lib/api/{MODULE}.ts` 类型、A6 中该 Step 的依赖。
+2. 按“契约清单”在 `axpoint-domain` 定义 DTO、枚举与端口；需要的新 Crate 在 `axpoint-core/Cargo.toml` 声明、继承 `lints.workspace = true`，并在其 `src/lib.rs` 顶部声明 `#![doc(test(attr(deny(warnings), forbid(unsafe_code))))]`。
+3. 写入 `docs/API_CONTRACT.md` 条目、`axpoint-parser/schemas.py`（如涉及 Sidecar）、`xbluenode-web/src/lib/api/{MODULE}.ts` 类型、A6 中该 Step 实际使用的依赖。
 4. 创建 `scripts/gate/step{STEP_ID}.sh`（内容取自 Step 文件“验收”小节）。
 
-验收：全局门禁（00-MASTER-INDEX §9）全绿；输出可并行派发给 Agent A / B / C / D 的任务清单与写入范围。
+验收：`python3 scripts/lint-guard.py` 与全局门禁（00-MASTER-INDEX §9）全绿；输出可并行派发给 Agent A / B / C / D 的任务清单与写入范围。
 ```
 
 ### 5.2 执行者：实现 PR
@@ -131,13 +131,13 @@ git worktree add ../wt-a-parser -b feat/axhub-step02 main
 交付：Step {STEP_ID} “文件变更清单”中属于 {ROLE} 的全部条目：
 {TASK_DETAILS}
 
-写入范围：只允许修改 `{ALLOWED_PATHS}`。公共入口（`Cargo.toml`、`main.rs`、`routes/mod.rs`、`registry.ts`、`deploy/migrations/`）与 `axpoint-domain/src/ports.rs` 不得修改；需要挂载或契约字段缺失时停止并在汇报中写明。
+写入范围：只允许修改 `{ALLOWED_PATHS}`。公共入口（`Cargo.toml`、`rust-toolchain.toml`、`clippy.toml`、`scripts/lint-guard.py`、`main.rs`、`routes/mod.rs`、`registry.ts`、`deploy/migrations/`）与 `axpoint-domain/src/ports.rs` 不得修改；需要挂载或契约字段缺失时停止并在汇报中写明。
 
-编码约束：Rust 严格 Lint；Python 3.11 类型注解 + Pydantic 2.x，SQL 标识符白名单 + 参数化；TypeScript 严格模式禁用 `any`；只使用自主命名词表。
+编码约束：Rust 零豁免防绕过 Lint（禁止 `#[allow]` / `#[expect]` / `let _ = must_use` / `println!` / 裸 `loop {}`）；Python 3.11 类型注解 + Pydantic 2.x，SQL 标识符白名单 + 参数化；TypeScript 严格模式禁用 `any`；只使用自主命名词表。
 
 提交前贴出实测输出：
 1. `bash scripts/gate/step{STEP_ID}.sh` 最后一行 `GATE step{STEP_ID} PASS`；
-2. 对应栈检查：`cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace`；`cd axpoint-parser && ruff check . && mypy --strict . && pytest -v tests`；`cd xbluenode-web && npm ci && npm run build`；
+2. 对应栈检查：`python3 scripts/lint-guard.py`；`cd axpoint-core && cargo fmt --all -- --check && cargo clippy --workspace --all-targets --all-features --locked -- -D warnings && RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked && cargo test --workspace --locked && cargo test --workspace --doc --all-features --locked`；`cd axpoint-parser && ruff check . && mypy --strict . && pytest -v tests`；`cd xbluenode-web && npm ci && npm run build`；
 3. `git status` 无构建产物与 `.env`。
 ```
 
@@ -146,8 +146,8 @@ git worktree add ../wt-a-parser -b feat/axhub-step02 main
 ```markdown
 审查 PR 分支 `{BRANCH_NAME}`（目标 `main`），逐条核验：
 1. 写入范围：`git diff --name-only origin/main...{BRANCH_NAME}` 全部落在 `{ALLOWED_PATHS}`。
-2. 命名：`bash scripts/naming-guard.sh` 通过。
-3. 质量：Rust / Python / Web 检查与 `scripts/gate/step{STEP_ID}.sh`、`scripts/gate/all.sh` 全部通过。
+2. 命名与防绕过守卫：`bash scripts/naming-guard.sh` 与 `python3 scripts/lint-guard.py` 通过。
+3. 质量：Rust（含 `cargo doc` 与 `--doc` 测试）/ Python / Web 检查与 `scripts/gate/step{STEP_ID}.sh`、`scripts/gate/all.sh` 全部通过。
 4. 安全：连接器参数化 + 白名单；凭证加密且不回显；查询结果、LLM 提示、出品与分享经过统一脱敏；外部入口按蓝图 Step 13 §13.2 鉴权。
 5. 契约：请求 / 响应字段、状态码、错误码与 `docs/API_CONTRACT.md`、A1、A4 一致。
 

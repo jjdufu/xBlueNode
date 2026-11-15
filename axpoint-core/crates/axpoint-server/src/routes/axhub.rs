@@ -634,7 +634,7 @@ async fn test_connection_handler(
             Ok(Json(res))
         }
         Err(err) => {
-            let _ = state
+            if let Err(status_err) = state
                 .store
                 .update_test_status(
                     &principal.tenant_id,
@@ -642,7 +642,10 @@ async fn test_connection_handler(
                     ConnectionStatus::Failed,
                     &err.client_message(),
                 )
-                .await;
+                .await
+            {
+                tracing::warn!(connection_id = %id, error = %status_err, "update_test_status failed");
+            }
             Err(HttpError(err))
         }
     }
@@ -763,8 +766,8 @@ async fn create_dataset_handler(
         .store
         .create_dataset(&principal.tenant_id, Some(principal.user_id), req)
         .await?;
-    if let Some(cid) = conn_id {
-        let _ = state
+    if let Some(cid) = conn_id
+        && let Err(err) = state
             .store
             .upsert_lineage(
                 &principal.tenant_id,
@@ -774,7 +777,9 @@ async fn create_dataset_handler(
                 &ds.id.to_string(),
                 "SYNC",
             )
-            .await;
+            .await
+    {
+        tracing::warn!(dataset_id = %ds.id, error = %err, "connection->dataset lineage upsert failed");
     }
     Ok(Json(ds))
 }
@@ -822,10 +827,13 @@ async fn delete_dataset_handler(
         .delete_dataset(&principal.tenant_id, id)
         .await?
         .ok_or(AppError::NotFound("DATASET_NOT_FOUND"))?;
-    let _ = state
+    if let Err(err) = state
         .sidecar
         .drop_lake_table(&principal.tenant_id, &deleted.lake_table)
-        .await;
+        .await
+    {
+        tracing::warn!(lake_table = %deleted.lake_table, error = %err, "drop_lake_table failed");
+    }
     crate::routes::analytics::refresh_cached_tenant_catalog(&state, &principal.tenant_id).await;
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
@@ -950,15 +958,16 @@ async fn update_column_meta_handler(
         .await?
         .ok_or(AppError::NotFound("COLUMN_NOT_FOUND"))?;
     crate::routes::analytics::refresh_cached_tenant_catalog(&state, &principal.tenant_id).await;
-    let _ = axpoint_domain::ports::JobQueuePort::enqueue(
-        &state.store,
-        &principal.tenant_id,
-        axpoint_domain::platform::NewJob::new(
-            axpoint_domain::enums::JobKind::EmbedNodes,
-            serde_json::json!({}),
-        ),
-    )
-    .await;
+    if let Err(err) = state
+        .store
+        .enqueue(
+            &principal.tenant_id,
+            NewJob::new(JobKind::EmbedNodes, serde_json::json!({})),
+        )
+        .await
+    {
+        tracing::warn!(dataset_id = %id, error = %err, "update_column_meta EmbedNodes enqueue failed");
+    }
     Ok(Json(updated))
 }
 

@@ -1,4 +1,5 @@
 //! PostgreSQL (`pgvector` + hypergraph) persistence, five-way retrieval, and platform ports.
+#![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
 pub mod aggregate_exec;
 pub mod analytics_repo;
@@ -120,7 +121,7 @@ impl PgStore {
         &self,
         payload: DocumentIngestPayload,
     ) -> Result<IngestCommitStats, AppError> {
-        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, &payload.tenant_id).await?;
+        let mut tx = begin_tenant_tx(&self.pool, &payload.tenant_id).await?;
 
         let dim_i32 = i32::try_from(payload.embed_dim).map_err(|err| {
             AppError::bad("INVALID_ARGUMENT", format!("invalid embedding dim: {err}"))
@@ -349,7 +350,7 @@ impl PgStore {
         dim: usize,
         limit: i64,
     ) -> Result<Vec<ChannelCandidate>, AppError> {
-        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         let dim_i32 = i32::try_from(dim).map_err(|err| {
             AppError::bad("INVALID_ARGUMENT", format!("invalid embedding dim: {err}"))
         })?;
@@ -394,7 +395,7 @@ impl PgStore {
         query_text: &str,
         limit: i64,
     ) -> Result<Vec<ChannelCandidate>, AppError> {
-        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         let like_pattern = format!("%{}%", query_text.trim());
         let rows = sqlx::query(
             "SELECT p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,
@@ -438,7 +439,7 @@ impl PgStore {
             return Ok(Vec::new());
         }
 
-        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         let rows = sqlx::query(
             "SELECT DISTINCT ON (p.id) p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,
                     ent.name AS matched_entity, ent.occur_count
@@ -482,7 +483,7 @@ impl PgStore {
             return Ok(Vec::new());
         }
 
-        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         let rows = sqlx::query(
             "SELECT DISTINCT p.id AS para_id, p.doc_id, d.title AS doc_title, p.content
              FROM hg_edges ed
@@ -524,7 +525,7 @@ impl PgStore {
             return Ok(Vec::new());
         }
 
-        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         let rows = sqlx::query(
             "SELECT DISTINCT ON (p.id) p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,
                     e1.name AS src_name, rel.fact, e2.name AS dst_name
@@ -563,7 +564,7 @@ impl PgStore {
     /// # Errors
     /// Returns [`AppError::Database`] if any aggregation query fails.
     pub async fn get_stats(&self, tenant_id: &str) -> Result<SystemStats, AppError> {
-        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         let counts = sqlx::query(
             "SELECT
                 (SELECT COUNT(*) FROM hg_docs WHERE tenant_id = $1) AS doc_count,
@@ -611,7 +612,7 @@ impl PgStore {
         tenant_id: &str,
         limit: i64,
     ) -> Result<TopologyGraph, AppError> {
-        let mut tx = crate::tenant::begin_tenant_tx(&self.pool, tenant_id).await?;
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         let doc_rows = sqlx::query(
             "SELECT id, title FROM hg_docs WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 20",
         )
@@ -724,10 +725,7 @@ impl axpoint_domain::ports::StudioExecutionPort for PgStore {
         payload: &axpoint_domain::rollup::MapMaterializeJobPayload,
         lake: &L,
     ) -> Result<axpoint_domain::studio::MappingRunRecord, AppError> {
-        crate::mapping_exec::execute_mapping_materialize_impl(
-            self, tenant_id, job_id, payload, lake,
-        )
-        .await
+        mapping_exec::execute_mapping_materialize_impl(self, tenant_id, job_id, payload, lake).await
     }
 
     async fn list_enabled_main_mappings_for_dataset(
@@ -735,10 +733,7 @@ impl axpoint_domain::ports::StudioExecutionPort for PgStore {
         tenant_id: &str,
         dataset_id: Uuid,
     ) -> Result<Vec<axpoint_domain::studio::MappingRecord>, AppError> {
-        crate::mapping_exec::list_enabled_main_mappings_for_dataset_impl(
-            self, tenant_id, dataset_id,
-        )
-        .await
+        mapping_exec::list_enabled_main_mappings_for_dataset_impl(self, tenant_id, dataset_id).await
     }
 
     async fn execute_graph_aggregate(
@@ -746,7 +741,7 @@ impl axpoint_domain::ports::StudioExecutionPort for PgStore {
         tenant_id: &str,
         payload: &axpoint_domain::rollup::GraphAggregateJobPayload,
     ) -> Result<serde_json::Value, AppError> {
-        crate::aggregate_exec::execute_graph_aggregate_impl(self, tenant_id, payload).await
+        aggregate_exec::execute_graph_aggregate_impl(self, tenant_id, payload).await
     }
 
     async fn enqueue_graph_aggregate(
@@ -755,13 +750,8 @@ impl axpoint_domain::ports::StudioExecutionPort for PgStore {
         payload: axpoint_domain::rollup::GraphAggregateJobPayload,
         idempotency_key: Option<String>,
     ) -> Result<Uuid, AppError> {
-        crate::aggregate_exec::enqueue_graph_aggregate_impl(
-            self,
-            tenant_id,
-            payload,
-            idempotency_key,
-        )
-        .await
+        aggregate_exec::enqueue_graph_aggregate_impl(self, tenant_id, payload, idempotency_key)
+            .await
     }
 
     async fn explain_node_metric(
@@ -770,7 +760,7 @@ impl axpoint_domain::ports::StudioExecutionPort for PgStore {
         node_id: Uuid,
         metric: &str,
     ) -> Result<axpoint_domain::rollup::MetricExplainResponse, AppError> {
-        crate::aggregate_exec::explain_node_metric_impl(self, tenant_id, node_id, metric).await
+        aggregate_exec::explain_node_metric_impl(self, tenant_id, node_id, metric).await
     }
 
     async fn execute_knowledge_sync<E: axpoint_domain::ports::TextEmbedderPort>(
@@ -779,14 +769,14 @@ impl axpoint_domain::ports::StudioExecutionPort for PgStore {
         payload: &axpoint_domain::rollup::KnowledgeSyncJobPayload,
         embedder: &E,
     ) -> Result<serde_json::Value, AppError> {
-        crate::knowledge_sync::execute_knowledge_sync_impl(self, tenant_id, payload, embedder).await
+        knowledge_sync::execute_knowledge_sync_impl(self, tenant_id, payload, embedder).await
     }
 
     async fn list_knowledge_node_candidates(
         &self,
         tenant_id: &str,
     ) -> Result<axpoint_domain::rollup::KnowledgeNodeCandidatesResponse, AppError> {
-        crate::knowledge_sync::list_knowledge_node_candidates_impl(self, tenant_id).await
+        knowledge_sync::list_knowledge_node_candidates_impl(self, tenant_id).await
     }
 
     async fn accept_knowledge_node_candidate(
@@ -795,7 +785,6 @@ impl axpoint_domain::ports::StudioExecutionPort for PgStore {
         entity_id: Uuid,
         req: axpoint_domain::rollup::AcceptNodeCandidateRequest,
     ) -> Result<axpoint_domain::rollup::AcceptNodeCandidateResponse, AppError> {
-        crate::knowledge_sync::accept_knowledge_node_candidate_impl(self, tenant_id, entity_id, req)
-            .await
+        knowledge_sync::accept_knowledge_node_candidate_impl(self, tenant_id, entity_id, req).await
     }
 }

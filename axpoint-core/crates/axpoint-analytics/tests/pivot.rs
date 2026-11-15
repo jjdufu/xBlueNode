@@ -578,7 +578,7 @@ async fn pivot_executes_via_session_pool_with_time_bucket() -> Result<(), AppErr
         res.cells,
         vec![vec!["800.00"], vec!["1,200.50"], vec!["2,000.50"]]
     );
-    let _ = std::fs::remove_dir_all(dir);
+    std::fs::remove_dir_all(dir).map_err(|e| AppError::Config(e.to_string()))?;
     Ok(())
 }
 

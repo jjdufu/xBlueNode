@@ -104,7 +104,7 @@ pub async fn generate_transform_sql<A: AiPort>(
         };
         append_source_ddl(&mut prompt_buf, entry);
     }
-    let _ = write!(prompt_buf, "\n### 数据处理指令\n{}", instruction.trim());
+    let _fmt_ok = write!(prompt_buf, "\n### 数据处理指令\n{}", instruction.trim());
 
     let raw = ai.chat(TRANSFORM_SYSTEM_PROMPT, &prompt_buf).await?;
     parse_transform_sql_response(&raw)
@@ -322,14 +322,14 @@ pub fn topological_downstream_dependents<S: std::hash::BuildHasher>(
 fn append_source_ddl(out: &mut String, entry: &CatalogDatasetEntry) {
     let mut cols: Vec<_> = entry.columns.values().collect();
     cols.sort_by_key(|c| c.ordinal);
-    let _ = writeln!(out, "CREATE TABLE {} (", entry.name);
+    let _fmt_ok = writeln!(out, "CREATE TABLE {} (", entry.name);
     for (idx, col) in cols.iter().enumerate() {
         let comma = if idx.saturating_add(1) < cols.len() {
             ","
         } else {
             ""
         };
-        let _ = writeln!(out, "  {} {}{comma}", col.column_name, col.data_type);
+        let _fmt_ok = writeln!(out, "  {} {}{comma}", col.column_name, col.data_type);
     }
     out.push_str(");\n");
 }

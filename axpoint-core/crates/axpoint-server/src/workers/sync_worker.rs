@@ -79,7 +79,7 @@ impl SyncDatasetHandler {
             Ok(val) => Ok(val),
             Err(err) => {
                 let terminal = is_non_retryable_sync_error(&err) || job.attempt >= job.max_attempts;
-                let _ = self
+                if let Err(fail_err) = self
                     .store
                     .fail_sync_execution(
                         &job.tenant_id,
@@ -89,7 +89,14 @@ impl SyncDatasetHandler {
                         &err.client_message(),
                         terminal,
                     )
-                    .await;
+                    .await
+                {
+                    tracing::warn!(
+                        sync_job_id = %sj.id,
+                        error = %fail_err,
+                        "fail_sync_execution failed"
+                    );
+                }
                 Err(err)
             }
         }
@@ -203,7 +210,7 @@ impl SyncDatasetHandler {
         self.store
             .complete_sync_execution(&job.tenant_id, sj.id, ds.id, &result)
             .await?;
-        let _ = axpoint_domain::ports::JobQueuePort::enqueue(
+        if let Err(err) = axpoint_domain::ports::JobQueuePort::enqueue(
             &self.store,
             &job.tenant_id,
             axpoint_domain::platform::NewJob::new(
@@ -211,7 +218,10 @@ impl SyncDatasetHandler {
                 serde_json::json!({}),
             ),
         )
-        .await;
+        .await
+        {
+            tracing::warn!(tenant_id = %job.tenant_id, error = %err, "post-derived-sync EmbedNodes enqueue failed");
+        }
         let written_u64 = u64::try_from(result.rows_written.max(0)).unwrap_or(0);
         metrics::counter!(
             "axpoint_dataset_sync_rows_total",
@@ -283,7 +293,7 @@ impl SyncDatasetHandler {
             .complete_sync_execution(&job.tenant_id, sj.id, ds.id, &result)
             .await?;
 
-        let _ = axpoint_domain::ports::JobQueuePort::enqueue(
+        if let Err(err) = axpoint_domain::ports::JobQueuePort::enqueue(
             &self.store,
             &job.tenant_id,
             axpoint_domain::platform::NewJob::new(
@@ -291,7 +301,10 @@ impl SyncDatasetHandler {
                 serde_json::json!({}),
             ),
         )
-        .await;
+        .await
+        {
+            tracing::warn!(tenant_id = %job.tenant_id, error = %err, "post-sync EmbedNodes enqueue failed");
+        }
 
         if !src.pending_webhook_ids.is_empty() {
             self.store
@@ -393,11 +406,13 @@ impl ParseFileHandler {
         let outcome = self.run_parse_inner(job, &payload).await;
         if let Err(ref err) = outcome {
             let terminal = is_non_retryable_sync_error(err) || job.attempt >= job.max_attempts;
-            if terminal {
-                let _ = self
+            if terminal
+                && let Err(fail_err) = self
                     .store
                     .fail_upload(&job.tenant_id, upload_id, err.error_code())
-                    .await;
+                    .await
+            {
+                tracing::warn!(upload_id = %upload_id, error = %fail_err, "fail_upload failed");
             }
         }
         outcome
@@ -507,7 +522,7 @@ impl ParseFileHandler {
             Err(err) => {
                 let terminal = is_non_retryable_sync_error(&err) || job.attempt >= job.max_attempts;
                 for (ds, sj) in &staged_targets {
-                    let _ = self
+                    if let Err(fail_err) = self
                         .store
                         .fail_sync_execution(
                             &job.tenant_id,
@@ -517,7 +532,14 @@ impl ParseFileHandler {
                             &err.client_message(),
                             terminal,
                         )
-                        .await;
+                        .await
+                    {
+                        tracing::warn!(
+                            sync_job_id = %sj.id,
+                            error = %fail_err,
+                            "staged table fail_sync_execution failed"
+                        );
+                    }
                 }
                 Err(err)
             }
@@ -595,7 +617,11 @@ impl ParseFileHandler {
             .join(&job.tenant_id)
             .join("staging")
             .join(&parsed.parse_id);
-        let _ = tokio::fs::remove_dir_all(&staging_dir).await;
+        if staging_dir.exists()
+            && let Err(err) = tokio::fs::remove_dir_all(&staging_dir).await
+        {
+            tracing::warn!(path = %staging_dir.display(), error = %err, "staging dir cleanup failed");
+        }
 
         Ok(serde_json::json!({
             "upload_id": payload.upload_id,

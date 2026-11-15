@@ -43,7 +43,7 @@ async fn main() -> Result<(), AppError> {
         _ => {}
     }
 
-    let _ = dotenvy::dotenv();
+    let _dotenv_loaded = dotenvy::dotenv().is_ok();
     let otel_provider = telemetry::init_telemetry()?;
 
     let database_url = env::var("DATABASE_URL")
@@ -99,7 +99,8 @@ async fn main() -> Result<(), AppError> {
         parser_base_url,
         http,
     };
-    background::spawn_background_workers(&state);
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    background::spawn_background_workers(&state, &shutdown_rx);
     let shutdown_audit = state.audit.clone();
 
     let app = spa::build_app(state, &web_dist_dir, max_upload_bytes);
@@ -110,13 +111,17 @@ async fn main() -> Result<(), AppError> {
         .map_err(|err| AppError::Config(format!("failed to bind {bind_addr}: {err}")))?;
 
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(shutdown_tx))
         .await
         .map_err(|err| AppError::Config(format!("server error: {err}")))?;
 
-    let _ = shutdown_audit.flush().await;
-    if let Some(provider) = otel_provider {
-        let _ = provider.shutdown();
+    if let Err(err) = shutdown_audit.flush().await {
+        tracing::warn!(error = %err, "shutdown audit flush failed");
+    }
+    if let Some(provider) = otel_provider
+        && let Err(err) = provider.shutdown()
+    {
+        tracing::warn!(error = %err, "opentelemetry provider shutdown failed");
     }
 
     Ok(())
@@ -166,7 +171,9 @@ async fn maybe_run_migrations_on_start() -> Result<(), AppError> {
         .await
         .map_err(|err| AppError::Database(format!("startup migration failed: {err}")))?;
 
-    let _ = conn.close().await;
+    if let Err(err) = conn.close().await {
+        tracing::warn!(error = %err, "migration connection close failed");
+    }
     info!("Applied embedded SQL migrations via MIGRATION_DATABASE_URL");
     Ok(())
 }
@@ -304,8 +311,11 @@ fn load_analytics_config(
     })
 }
 
-async fn shutdown_signal() {
-    let _ = tokio::signal::ctrl_c().await;
+async fn shutdown_signal(shutdown_tx: tokio::sync::watch::Sender<bool>) {
+    if let Err(err) = tokio::signal::ctrl_c().await {
+        tracing::warn!(error = %err, "ctrl_c signal wait failed");
+    }
+    let _sent = shutdown_tx.send(true).is_ok();
 }
 
 #[cfg(test)]
@@ -385,7 +395,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let server_task = tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
+            let _served = axum::serve(listener, app).await.is_ok();
         });
 
         let client = reqwest::Client::new();
@@ -429,7 +439,7 @@ mod tests {
         );
 
         server_task.abort();
-        let _ = fs::remove_dir_all(&temp_dir);
+        fs::remove_dir_all(&temp_dir)?;
         Ok(())
     }
 
@@ -449,7 +459,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;
         let server_task = tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
+            let _served = axum::serve(listener, app).await.is_ok();
         });
 
         let client = reqwest::Client::new();
@@ -478,7 +488,7 @@ mod tests {
         assert!(cc.contains("immutable"));
 
         server_task.abort();
-        let _ = fs::remove_dir_all(&temp_dir);
+        fs::remove_dir_all(&temp_dir)?;
         Ok(())
     }
 }

@@ -62,7 +62,7 @@ impl TempDuckLake {
 
 impl Drop for TempDuckLake {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.data_root);
+        let _cleanup_ok = std::fs::remove_dir_all(&self.data_root).is_ok();
     }
 }
 

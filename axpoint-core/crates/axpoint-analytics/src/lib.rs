@@ -1,4 +1,5 @@
 //! `AxAnalytics` OLAP session pool, SQL AST guard, pivot engine, semantic layer, NL2SQL, and AI transforms (`05-STEP04`).
+#![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
 pub mod nl2sql;
 pub mod pivot;

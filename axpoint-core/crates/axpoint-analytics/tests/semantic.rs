@@ -549,7 +549,7 @@ async fn semantic_schema_breaking_change_returns_409_and_session_pool_runs_metri
     let empty_cat = TenantCatalog::new("default");
     let session = pool.get_or_try_init("default", empty_cat, &[]).await?;
     assert_eq!(session.tenant_id(), "default");
-    let _ = std::fs::remove_dir_all(dir);
+    std::fs::remove_dir_all(dir).map_err(|e| AppError::Config(e.to_string()))?;
     let _ = execute_metric_query;
     Ok(())
 }
@@ -651,6 +651,6 @@ async fn metric_query_handles_timestamptz_in_hardened_session_without_icu() -> R
         .filter_map(|r| r.get("value").and_then(serde_json::Value::as_f64))
         .sum();
     assert!((total - 200.0).abs() < 1e-6);
-    let _ = std::fs::remove_dir_all(dir);
+    std::fs::remove_dir_all(dir).map_err(|e| AppError::Config(e.to_string()))?;
     Ok(())
 }

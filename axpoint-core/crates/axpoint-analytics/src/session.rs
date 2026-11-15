@@ -499,7 +499,7 @@ impl TenantDb {
         })
         .await;
 
-        let _ = cancel_tx.send(());
+        let _watchdog_stopped = cancel_tx.send(());
 
         match blocking_res {
             Ok(Ok(pair)) => {
@@ -1501,7 +1501,7 @@ mod tests {
             "DuckDB lock_configuration must block SET changes"
         );
 
-        let _ = std::fs::remove_dir_all(data_root);
+        std::fs::remove_dir_all(data_root).map_err(|e| AppError::Config(e.to_string()))?;
         Ok(())
     }
 
@@ -1578,7 +1578,7 @@ mod tests {
         assert!(pool.invalidate_tenant("default").await);
         assert!(pool.get_cached("default").await.is_none());
 
-        let _ = std::fs::remove_dir_all(data_root);
+        std::fs::remove_dir_all(data_root).map_err(|e| AppError::Config(e.to_string()))?;
         Ok(())
     }
 
@@ -1597,7 +1597,7 @@ mod tests {
             allow_live: false,
             reveal_pii: false,
         };
-        let _ = pool
+        let _warmup_out = pool
             .query("default", catalog.clone(), &[], &warmup, false, false)
             .await?;
 
@@ -1624,7 +1624,7 @@ mod tests {
             .await?;
         assert_eq!(after.result.row_count, 1);
 
-        let _ = std::fs::remove_dir_all(data_root);
+        std::fs::remove_dir_all(data_root).map_err(|e| AppError::Config(e.to_string()))?;
         Ok(())
     }
 }

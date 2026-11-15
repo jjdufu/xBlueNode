@@ -51,13 +51,13 @@
 
 ## 三、代码质量零容忍红线
 
-### 1. Rust 强制红线（与 `axpoint-core/Cargo.toml` 同步）
-- `unsafe_code = "forbid"`（全仓禁止任何 `unsafe`）
-- `clippy::all = "deny"`、`clippy::pedantic = "deny"`
-- `unwrap_used = "deny"`、`expect_used = "deny"`、`panic = "deny"`、`todo = "deny"`、`unimplemented = "deny"`
-- `as_conversions = "deny"`（严禁使用 `as` 强转数值，统一使用 `TryFrom` / `From` / 安全方法）
-- `indexing_slicing = "deny"`（严禁直接 `arr[i]` 下标切片，统一使用 `.get(...)` 或迭代器）
-- `missing_docs = "deny"`、`missing_errors_doc = "deny"`、`missing_panics_doc = "deny"`
+### 1. Rust 强制红线（与 `axpoint-core/{Cargo.toml, rust-toolchain.toml, clippy.toml}` 及 `scripts/lint-guard.py` 同步）
+- **工具链与配置物理锁死**：`axpoint-core/rust-toolchain.toml` 锁定 `1.100.0`（`edition = "2024"`、`rust-version = "1.100.0"`），`axpoint-core/clippy.toml` 锁定复杂度与参数上限，所有成员 Crate 必须继承 `lints.workspace = true`，每个库 Crate 的 `src/lib.rs` 顶部必须声明 `#![doc(test(attr(deny(warnings), forbid(unsafe_code))))]`。
+- **零绕过铁律（由 `python3 scripts/lint-guard.py` 自动审计）**：全仓严禁任何 `#[allow(...)]`、`#![allow(...)]`、`#[expect(...)]`、`#![expect(...)]`、`#[warn(...)]`、`#[doc(hidden)]`，严禁任何 `unsafe` 关键字，严禁在 `Cargo.toml` / `.cargo/config.toml` / `clippy.toml` 中放宽阈值或写入 `"allow"` / `"warn"`。
+- **禁止崩溃、越界与未完成占位**：`unsafe_code = "forbid"`，`clippy::all = "deny"`、`clippy::pedantic = "deny"`，`unwrap_used`、`expect_used`、`get_unwrap`、`panic`、`unreachable`、`todo`、`unimplemented`、`indexing_slicing` 全部 `deny`（集合访问统一使用 `.get(...)` 或迭代器）。
+- **禁止隐式转换、静默吞错与调试残留**：`as_conversions`、`as_underscore`、`trivial_casts`、`lossy_float_literal` 全部 `deny`（统一使用 `TryFrom` / `From`）；`let_underscore_must_use`、`unused_result_ok`、`mem_forget` 全部 `deny`（`Result` 错误必须传播或经 `tracing::warn!` 记录，禁止 `let _ = ...` 静默丢弃）；`dbg_macro`、`print_stdout`、`print_stderr`、`exit` 全部 `deny`。
+- **并发与后台任务健壮性**：`rc_buffer`、`rc_mutex`、`infinite_loop`、`significant_drop_in_scrutinee`、`non_send_fields_in_send_ty` 全部 `deny`（后台常驻 worker 必须接入 `watch::Receiver<bool>` 优雅停机信号）。
+- **文档与文档测试全量覆盖**：`missing_docs`、`missing_errors_doc`、`missing_panics_doc`、`rustdoc::all`（含 `unescaped_backticks`、`missing_crate_level_docs`、`private_doc_tests`）全部 `deny`。
 
 ### 2. Python 强制红线
 - 全量使用 `from __future__ import annotations` 与 Python `3.11+` 类型注解 + Pydantic 2.x 数据契约。
@@ -82,8 +82,9 @@
    - 多模块并发开发时优先使用 `git worktree` 隔离工作目录，避免反复切换分支破坏 Rust 增量编译缓存。
 3. **每步可验证门禁（Verification Gate）**：
    - 任何模块合入前，必须按 [docs/blueprint/00-MASTER-INDEX.md](./docs/blueprint/00-MASTER-INDEX.md) §8～§9 跑通该 Step 的 `scripts/gate/stepNN.sh`（最后一行 `GATE stepNN PASS`）、`scripts/gate/all.sh` 回归与以下全局检查：
-     - `bash scripts/naming-guard.sh`
-     - `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets -- -D warnings`
-     - `cargo test --workspace`
+     - `bash scripts/naming-guard.sh` 与 `python3 scripts/lint-guard.py`
+     - `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+     - `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked`
+     - `cargo test --workspace --locked` 与 `cargo test --workspace --doc --all-features --locked`
      - `cd axpoint-parser && ruff check . && mypy --strict . && pytest -v tests`
      - `cd xbluenode-web && npm run build`

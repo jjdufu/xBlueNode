@@ -246,7 +246,9 @@ async fn record_publish_audit(
         detail_json: detail,
         created_at: Utc::now(),
     });
-    let _ = state.audit.flush().await;
+    if let Err(err) = state.audit.flush().await {
+        tracing::warn!(error = %err, "xblue schema publish audit flush failed");
+    }
 }
 
 // ============================================================================
@@ -713,7 +715,9 @@ async fn build_profiling_bundle(
         datasets.push(ds);
     }
 
-    let _ = acquire_tenant_session(state, tenant_id, false).await;
+    if let Err(err) = acquire_tenant_session(state, tenant_id, false).await {
+        tracing::debug!(tenant_id = %tenant_id, error = %err, "profiling tenant session warmup skipped");
+    }
     if let Ok(bundle) =
         axpoint_analytics::profile_datasets(&state.analytics_pool, tenant_id, &datasets).await
     {
@@ -1139,7 +1143,7 @@ async fn upsert_node_handler(
 ) -> Result<Json<BlueNode>, HttpError> {
     principal.require(Permission::StudioEdit)?;
     let node = state.store.upsert_node(&principal.tenant_id, req).await?;
-    let _ = state
+    if let Err(err) = state
         .store
         .resolve_entity_links(
             &principal.tenant_id,
@@ -1147,7 +1151,10 @@ async fn upsert_node_handler(
                 node_id: Some(node.id),
             },
         )
-        .await;
+        .await
+    {
+        tracing::warn!(node_id = %node.id, error = %err, "resolve_entity_links failed");
+    }
     Ok(Json(node))
 }
 
@@ -1158,11 +1165,13 @@ async fn bulk_upsert_nodes_handler(
 ) -> Result<Json<BulkNodesResponse>, HttpError> {
     principal.require(Permission::StudioEdit)?;
     let resp = state.store.bulk_upsert(&principal.tenant_id, req).await?;
-    if resp.upserted_nodes > 0 {
-        let _ = state
+    if resp.upserted_nodes > 0
+        && let Err(err) = state
             .store
             .resolve_entity_links(&principal.tenant_id, ResolveEntitiesRequest::default())
-            .await;
+            .await
+    {
+        tracing::warn!(error = %err, "resolve_entity_links after bulk_upsert failed");
     }
     Ok(Json(resp))
 }
@@ -1606,7 +1615,9 @@ async fn accept_knowledge_node_candidate_handler(
     {
         let job = NewJob::new(JobKind::KnowledgeSync, payload_json)
             .with_idempotency_key(format!("ksync_accept:{}", resp.node.id));
-        let _ = state.store.enqueue(&principal.tenant_id, job).await;
+        if let Err(err) = state.store.enqueue(&principal.tenant_id, job).await {
+            tracing::warn!(node_id = %resp.node.id, error = %err, "enqueue KnowledgeSync job failed");
+        }
     }
 
     Ok(Json(resp))
