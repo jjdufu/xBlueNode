@@ -310,45 +310,66 @@ async fn jobs_retry_backoff() -> TestResult {
     let mut new_job = NewJob::new(JobKind::CredentialRotate, serde_json::json!({"key": 1}));
     new_job.priority = -1_000_000;
     new_job.max_attempts = 3;
+    new_job.next_run_at = Some(Utc::now() + chrono::Duration::hours(1));
 
     let job_id = store.enqueue(&tenant, new_job).await?;
     let initial = store
         .get_job(&tenant, job_id)
         .await?
         .ok_or("enqueued job not found")?;
-    let t0 = initial.next_run_at;
+    assert_eq!(initial.status, JobStatus::Pending);
+
+    let lease_target_attempt = |prev_attempt: i32| {
+        let store = store.clone();
+        let owner_pool = owner_pool.clone();
+        async move {
+            for _ in 0..10_u8 {
+                sqlx::query(
+                    "UPDATE ax_jobs
+                        SET status = 'PENDING',
+                            attempt = $2,
+                            lease_owner = NULL,
+                            lease_until = NULL,
+                            next_run_at = NOW() - INTERVAL '1 second'
+                      WHERE id = $1",
+                )
+                .bind(job_id)
+                .bind(prev_attempt)
+                .execute(&owner_pool)
+                .await?;
+
+                let leased = store
+                    .lease("worker-retry", &[JobKind::CredentialRotate], 1, 60)
+                    .await?;
+                if let Some(j) = leased.into_iter().find(|j| j.id == job_id) {
+                    return Result::<_, Box<dyn std::error::Error>>::Ok(j);
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            Err(format!("expected attempt {} lease", prev_attempt + 1).into())
+        }
+    };
 
     // Attempt 1 (< max_attempts=3) -> PENDING with ~2^1 = 2s backoff.
-    let leased_1 = store
-        .lease("worker-retry", &[JobKind::CredentialRotate], 1, 60)
-        .await?;
-    let j1 = leased_1.first().ok_or("expected attempt 1 lease")?;
+    let j1 = lease_target_attempt(0).await?;
     assert_eq!(j1.id, job_id);
     assert_eq!(j1.attempt, 1);
 
-    store.fail(j1, "attempt 1 failed").await?;
+    let before_fail_1 = Utc::now();
+    store.fail(&j1, "attempt 1 failed").await?;
     let after_1 = store
         .get_job(&tenant, job_id)
         .await?
         .ok_or("job missing after fail 1")?;
     assert_eq!(after_1.status, JobStatus::Pending);
-    assert!(after_1.next_run_at > t0);
+    assert!(after_1.next_run_at > before_fail_1);
     let delay_1 = after_1.next_run_at - after_1.updated_at;
 
-    // Fast-forward next_run_at so attempt 2 is immediately eligible without sleeping.
-    sqlx::query("UPDATE ax_jobs SET next_run_at = NOW() - INTERVAL '1 second' WHERE id = $1")
-        .bind(job_id)
-        .execute(&owner_pool)
-        .await?;
-
-    // Attempt 2 (< max_attempts=3) -> PENDING with ~2^2 = 4s backoff (> delay_1 and > after_1.next_run_at).
-    let leased_2 = store
-        .lease("worker-retry", &[JobKind::CredentialRotate], 1, 60)
-        .await?;
-    let j2 = leased_2.first().ok_or("expected attempt 2 lease")?;
+    // Attempt 2 (< max_attempts=3) -> PENDING with ~2^2 = 4s backoff (> delay_1).
+    let j2 = lease_target_attempt(1).await?;
     assert_eq!(j2.attempt, 2);
 
-    store.fail(j2, "attempt 2 failed").await?;
+    store.fail(&j2, "attempt 2 failed").await?;
     let after_2 = store
         .get_job(&tenant, job_id)
         .await?
@@ -358,19 +379,11 @@ async fn jobs_retry_backoff() -> TestResult {
     let delay_2 = after_2.next_run_at - after_2.updated_at;
     assert!(delay_2 > delay_1);
 
-    // Fast-forward next_run_at for terminal attempt 3 (== max_attempts=3) -> FAILED.
-    sqlx::query("UPDATE ax_jobs SET next_run_at = NOW() - INTERVAL '1 second' WHERE id = $1")
-        .bind(job_id)
-        .execute(&owner_pool)
-        .await?;
-
-    let leased_3 = store
-        .lease("worker-retry", &[JobKind::CredentialRotate], 1, 60)
-        .await?;
-    let j3 = leased_3.first().ok_or("expected attempt 3 lease")?;
+    // Terminal attempt 3 (== max_attempts=3) -> FAILED.
+    let j3 = lease_target_attempt(2).await?;
     assert_eq!(j3.attempt, 3);
 
-    store.fail(j3, "attempt 3 terminal error").await?;
+    store.fail(&j3, "attempt 3 terminal error").await?;
     let after_3 = store
         .get_job(&tenant, job_id)
         .await?

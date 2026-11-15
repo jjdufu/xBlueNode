@@ -26,7 +26,7 @@ use serde::Deserialize;
 
 use crate::state::{ApiJson, AppState, HttpError};
 
-const MAX_GRAPHQL_DEPTH: usize = 5;
+const MAX_GRAPHQL_DEPTH: usize = 6;
 const MAX_GRAPHQL_COMPLEXITY: usize = 200;
 const MAX_CACHED_SCHEMAS: usize = 64;
 
@@ -170,6 +170,29 @@ pub(crate) async fn graphql_handler(
     let gql_req = gql_req.data(req_ctx).data(loader);
     let resp = schema.execute(gql_req).await;
     Ok(GraphQLResponse::from(resp))
+}
+
+/// Axum handler for `GET /api/xblue/graphql/sdl`.
+pub(crate) async fn graphql_sdl_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+) -> Result<axum::Json<serde_json::Value>, HttpError> {
+    principal.require(Permission::DataRead)?;
+
+    let published = axpoint_domain::ports::StudioRepository::get_published_schema(
+        &state.store,
+        &principal.tenant_id,
+        "main",
+    )
+    .await?;
+
+    let schema =
+        get_or_build_cached_schema(&principal.tenant_id, published.version, &published.doc)?;
+
+    Ok(axum::Json(serde_json::json!({
+        "version": published.version,
+        "sdl": schema.sdl(),
+    })))
 }
 
 #[derive(Clone)]
@@ -788,11 +811,11 @@ mod tests {
         let ok_ver = schema.execute(GqlRequest::new("{ _schemaVersion }")).await;
         assert_eq!(ok_ver.errors.len(), 0);
 
-        let too_deep = "{ warehouse(nodeKey: \"W-1\") { fulfillsOrders { in_fulfillsWarehouses { fulfillsOrders { in_fulfillsWarehouses { fulfillsOrders { nodeKey } } } } } } }";
+        let too_deep = "{ warehouse(nodeKey: \"W-1\") { fulfillsOrders { in_fulfillsWarehouses { fulfillsOrders { in_fulfillsWarehouses { fulfillsOrders { in_fulfillsWarehouses { nodeKey } } } } } } } }";
         let deep_resp = schema.execute(GqlRequest::new(too_deep)).await;
         assert!(
             !deep_resp.errors.is_empty(),
-            "expected query exceeding depth 5 to be rejected"
+            "expected query exceeding depth 6 to be rejected"
         );
         Ok(())
     }
