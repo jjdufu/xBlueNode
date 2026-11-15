@@ -12,6 +12,14 @@ use crate::expr::EvalWarningCode;
 use crate::studio::{AggRuleSpec, MappingMode, SchemaDoc};
 use crate::topology::BlueNode;
 
+/// Metric dependency DAG construction, Kahn layered topological sort, and dirty-instance propagation planning.
+pub mod plan;
+
+pub use plan::{
+    PlannedLayerTask, RuntimeLinkEdge, build_dependency_plan, compute_rule_layers,
+    plan_dirty_propagation,
+};
+
 /// Payload for `JobKind::MapMaterialize` (`06-STEP05-06` §06.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MapMaterializeJobPayload {
@@ -164,8 +172,23 @@ pub struct MetricDependencyPlan {
 impl MetricDependencyPlan {
     /// Builds a [`MetricDependencyPlan`] from the published `main` [`SchemaDoc`].
     #[must_use]
-    pub fn from_schema(_doc: &SchemaDoc) -> Self {
-        Self::default()
+    pub fn from_schema(doc: &SchemaDoc) -> Self {
+        plan::build_dependency_plan(doc)
+    }
+
+    /// Groups `self.steps` into topological execution layers so steps within the same layer have no mutual dependencies.
+    #[must_use]
+    pub fn layers(&self) -> Vec<Vec<MetricRuleStep>> {
+        plan::compute_rule_layers(self)
+    }
+
+    /// Looks up the rule step producing `(type_name, metric)`, if any.
+    #[must_use]
+    pub fn rule_for_target(&self, type_name: &str, metric: &str) -> Option<&MetricRuleStep> {
+        self.steps.iter().find(|s| {
+            let tv = s.target_vertex();
+            tv.type_name == type_name && tv.metric == metric
+        })
     }
 }
 

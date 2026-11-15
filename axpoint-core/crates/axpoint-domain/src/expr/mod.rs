@@ -9,6 +9,17 @@ use uuid::Uuid;
 use crate::enums::DataType;
 use crate::studio::{NodeTypeSpec, PropertyKind};
 
+/// Deterministic, panic-free expression evaluator.
+pub mod eval;
+/// Lexical analyzer with 1-based column span diagnostics.
+pub mod lexer;
+/// Pratt expression parser.
+pub mod parser;
+/// Static type checker and identifier reference collector.
+pub mod typecheck;
+
+pub use typecheck::{CheckedExprInfo, collect_references, typecheck_detailed};
+
 /// Maximum expression character length (`06-STEP05-06` §06.1.2).
 pub const MAX_EXPR_CHARS: usize = 2_000;
 
@@ -222,7 +233,11 @@ impl fmt::Display for Expr {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Literal(ExprValue::Number(v)) => {
-                if v.fract() == 0.0 && v.abs() < 1e15 {
+                if matches!(v.classify(), std::num::FpCategory::Zero) {
+                    f.write_str("0")
+                } else if matches!(v.fract().classify(), std::num::FpCategory::Zero)
+                    && v.abs() < 1e15
+                {
                     write!(f, "{v:.0}")
                 } else {
                     write!(f, "{v}")
@@ -416,23 +431,9 @@ pub struct EvaluateExprResponse {
 ///
 /// # Errors
 /// Returns [`ExprIssue`] if `input` exceeds [`MAX_EXPR_CHARS`], exceeds [`MAX_AST_DEPTH`],
-/// or contains lexical/syntactic errors.
+/// exceeds [`MAX_CALL_ARGS`], or contains lexical/syntactic errors.
 pub fn parse(input: &str) -> Result<Expr, ExprIssue> {
-    if input.chars().count() > MAX_EXPR_CHARS {
-        return Err(ExprIssue {
-            code: String::from("EXPR_INVALID"),
-            message: format!("expression exceeds {MAX_EXPR_CHARS} character limit"),
-            column: Some(MAX_EXPR_CHARS + 1),
-        });
-    }
-    if input.trim().is_empty() {
-        return Err(ExprIssue {
-            code: String::from("EXPR_INVALID"),
-            message: String::from("expression cannot be empty"),
-            column: Some(1),
-        });
-    }
-    Ok(Expr::Literal(ExprValue::Null))
+    parser::parse_str(input)
 }
 
 /// Statically type-checks `expr` against `env` (`06-STEP05-06` §06.1.2).
@@ -440,15 +441,38 @@ pub fn parse(input: &str) -> Result<Expr, ExprIssue> {
 /// # Errors
 /// Returns [`ExprIssue`] (`EXPR_INVALID`) on unknown identifiers, unreferenceable property types,
 /// operator type mismatches, or invalid function signatures.
-pub fn typecheck(_expr: &Expr, _env: &ExprTypeEnv) -> Result<ExprType, ExprIssue> {
-    Ok(ExprType::Null)
+pub fn typecheck(expr: &Expr, env: &ExprTypeEnv) -> Result<ExprType, ExprIssue> {
+    typecheck::typecheck_detailed(expr, env).map(|info| info.result_type)
 }
 
 /// Evaluates `expr` deterministically against `env` (`06-STEP05-06` §06.1.2).
 #[must_use]
-pub fn eval(_expr: &Expr, _env: &EvalEnv) -> EvalReport {
-    EvalReport {
-        value: ExprValue::Null,
-        warnings: Vec::new(),
+pub fn eval(expr: &Expr, env: &EvalEnv) -> EvalReport {
+    eval::eval_ast(expr, env)
+}
+
+/// Validates `expression` against `node_type` and builds a [`ValidateExprResponse`].
+#[must_use]
+pub fn validate_for_node_type(node_type: &NodeTypeSpec, expression: &str) -> ValidateExprResponse {
+    let env = ExprTypeEnv::from_node_type(node_type);
+    match parse(expression) {
+        Err(issue) => ValidateExprResponse {
+            valid: false,
+            inferred_type: None,
+            issues: vec![issue],
+        },
+        Ok(ast) => match typecheck(&ast, &env) {
+            Ok(inferred) => ValidateExprResponse {
+                valid: true,
+                inferred_type: Some(inferred),
+                issues: Vec::new(),
+            },
+            Err(issue) => ValidateExprResponse {
+                valid: false,
+                inferred_type: None,
+                issues: vec![issue],
+            },
+        },
     }
 }
+
