@@ -754,6 +754,101 @@ export interface GraphqlExecutionResponse {
   errors?: GraphqlErrorItem[];
 }
 
+export type ExprType = "NUMBER" | "TEXT" | "BOOL" | "NULL";
+export type EvalWarningCode = "DIV_BY_ZERO" | "DOMAIN_ERROR";
+export type MetricProducer =
+  | "AGG"
+  | "DERIVED"
+  | "SYNC"
+  | "MANUAL"
+  | "ACTION"
+  | "ALGORITHM";
+
+export interface ExprIssue {
+  code: string;
+  message: string;
+  column?: number;
+}
+
+export interface ValidateExprRequest {
+  type_name: string;
+  expression: string;
+  subgraph?: string;
+}
+
+export interface ValidateExprResponse {
+  valid: boolean;
+  inferred_type?: ExprType;
+  issues: ExprIssue[];
+}
+
+export interface EvaluateExprRequest {
+  node_id: string;
+  expression: string;
+}
+
+export interface EvaluateExprResponse {
+  value: unknown;
+  value_type: ExprType;
+  warnings: EvalWarningCode[];
+}
+
+export interface RecomputeAggregateRequest {
+  type_name?: string;
+}
+
+export interface RecomputeAggregateResponse {
+  job_id: string;
+  type_name?: string;
+}
+
+export interface ExplainInputItem {
+  node_id: string;
+  node_key: string;
+  type_name: string;
+  title: string;
+  metric: string;
+  value: number | null;
+  weight?: number;
+}
+
+export interface MetricExplainResponse {
+  node_id: string;
+  metric: string;
+  value: number | null;
+  producer: MetricProducer;
+  rule: unknown;
+  inputs: ExplainInputItem[];
+  computed_at: string | null;
+  warnings: EvalWarningCode[];
+}
+
+export interface KnowledgeNodeCandidate {
+  entity_id: string;
+  name: string;
+  entity_type: string;
+  suggested_type_name: string;
+  occur_count: number;
+  confidence: number;
+  sample_docs: string[];
+}
+
+export interface KnowledgeNodeCandidatesResponse {
+  items: KnowledgeNodeCandidate[];
+}
+
+export interface AcceptNodeCandidateRequest {
+  type_name: string;
+  node_key: string;
+  title?: string;
+}
+
+export interface AcceptNodeCandidateResponse {
+  node: BlueNode;
+  entity_id: string;
+  confirmed: boolean;
+}
+
 const CANONICAL_DATA_TYPES: readonly DataType[] = [
   "STRING",
   "INT64",
@@ -1352,6 +1447,181 @@ export const GraphqlExecutionResponseSchema: z.ZodType<GraphqlExecutionResponse>
         })
       )
       .optional(),
+  });
+
+export const ExprTypeSchema: z.ZodType<ExprType> = z
+  .unknown()
+  .transform((v): ExprType => {
+    if (v === "NUMBER" || v === "TEXT" || v === "BOOL" || v === "NULL") {
+      return v;
+    }
+    return "NULL";
+  });
+
+export const EvalWarningCodeSchema: z.ZodType<EvalWarningCode> = z.enum([
+  "DIV_BY_ZERO",
+  "DOMAIN_ERROR",
+]);
+
+const EvalWarningCodeListSchema: z.ZodType<EvalWarningCode[]> = z
+  .unknown()
+  .transform((raw): EvalWarningCode[] => {
+    if (!Array.isArray(raw)) return [];
+    const out: EvalWarningCode[] = [];
+    for (const item of raw) {
+      if (item === "DIV_BY_ZERO" || item === "DOMAIN_ERROR") {
+        out.push(item);
+      }
+    }
+    return out;
+  });
+
+export const ExprIssueSchema: z.ZodType<ExprIssue> = z.object({
+  code: z.string().default("EXPR_INVALID"),
+  message: z.string().default(""),
+  column: z
+    .unknown()
+    .optional()
+    .transform((v): number | undefined =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0
+        ? Math.trunc(v)
+        : undefined
+    ),
+});
+
+export const ValidateExprResponseSchema: z.ZodType<ValidateExprResponse> =
+  z.object({
+    valid: z.boolean().default(true),
+    inferred_type: z
+      .unknown()
+      .optional()
+      .transform((v): ExprType | undefined => {
+        if (v === "NUMBER" || v === "TEXT" || v === "BOOL" || v === "NULL") {
+          return v;
+        }
+        return undefined;
+      }),
+    issues: z.array(ExprIssueSchema).default([]),
+  });
+
+export const EvaluateExprResponseSchema: z.ZodType<EvaluateExprResponse> =
+  z.object({
+    value: z.unknown().default(null),
+    value_type: ExprTypeSchema,
+    warnings: EvalWarningCodeListSchema,
+  });
+
+export const RecomputeAggregateResponseSchema: z.ZodType<RecomputeAggregateResponse> =
+  z.object({
+    job_id: z.string().default(""),
+    type_name: z
+      .unknown()
+      .optional()
+      .transform((v): string | undefined =>
+        typeof v === "string" && v.length > 0 ? v : undefined
+      ),
+  });
+
+export const MetricProducerSchema: z.ZodType<MetricProducer> = z
+  .unknown()
+  .transform((v): MetricProducer => {
+    if (
+      v === "AGG" ||
+      v === "DERIVED" ||
+      v === "SYNC" ||
+      v === "MANUAL" ||
+      v === "ACTION" ||
+      v === "ALGORITHM"
+    ) {
+      return v;
+    }
+    return "MANUAL";
+  });
+
+export const ExplainInputItemSchema: z.ZodType<ExplainInputItem> = z.object({
+  node_id: z.string().default(""),
+  node_key: z.string().default(""),
+  type_name: z.string().default(""),
+  title: z.string().default(""),
+  metric: z.string().default(""),
+  value: z
+    .unknown()
+    .transform((v): number | null =>
+      typeof v === "number" && Number.isFinite(v) ? v : null
+    ),
+  weight: z
+    .unknown()
+    .optional()
+    .transform((v): number | undefined =>
+      typeof v === "number" && Number.isFinite(v) ? v : undefined
+    ),
+});
+
+export const MetricExplainResponseSchema: z.ZodType<MetricExplainResponse> =
+  z.object({
+    node_id: z.string().default(""),
+    metric: z.string().default(""),
+    value: z
+      .unknown()
+      .transform((v): number | null =>
+        typeof v === "number" && Number.isFinite(v) ? v : null
+      ),
+    producer: MetricProducerSchema,
+    rule: z.unknown().default(null),
+    inputs: z.array(ExplainInputItemSchema).default([]),
+    computed_at: z
+      .unknown()
+      .transform((v): string | null =>
+        typeof v === "string" && v.length > 0 ? v : null
+      ),
+    warnings: EvalWarningCodeListSchema,
+  });
+
+export const KnowledgeNodeCandidateSchema: z.ZodType<KnowledgeNodeCandidate> =
+  z.object({
+    entity_id: z.string().default(""),
+    name: z.string().default(""),
+    entity_type: z.string().default(""),
+    suggested_type_name: z.string().default(""),
+    occur_count: z.number().default(0),
+    confidence: z.number().default(0),
+    sample_docs: z.array(z.string()).default([]),
+  });
+
+export const KnowledgeNodeCandidatesResponseSchema: z.ZodType<KnowledgeNodeCandidatesResponse> =
+  z.object({
+    items: z.array(KnowledgeNodeCandidateSchema).default([]),
+  });
+
+export const BlueNodeSchema: z.ZodType<BlueNode> = z.object({
+  id: z.string().default(""),
+  type_name: z.string().default(""),
+  node_key: z.string().default(""),
+  title: z.string().default(""),
+  properties: z.record(z.string(), z.unknown()).optional(),
+  metrics: z.record(z.string(), z.number()).default({}),
+  geo: z
+    .object({ lng: z.number(), lat: z.number() })
+    .nullable()
+    .optional(),
+  source_dataset_id: z.string().nullable().optional(),
+  source_row_key: z.string().nullable().optional(),
+  row_version: z.number().optional(),
+  created_at: z.string().optional(),
+  updated_at: z.string().optional(),
+});
+
+export const AcceptNodeCandidateResponseSchema: z.ZodType<AcceptNodeCandidateResponse> =
+  z.object({
+    node: BlueNodeSchema.default({
+      id: "",
+      type_name: "",
+      node_key: "",
+      title: "",
+      metrics: {},
+    }),
+    entity_id: z.string().default(""),
+    confirmed: z.boolean().default(true),
   });
 
 function parseResilient<T>(schema: z.ZodType<T>, raw: unknown, fallback: T): T {
@@ -2408,5 +2678,134 @@ export const xblueApi = {
       body: JSON.stringify(body),
     });
     return parseResilient(GraphqlExecutionResponseSchema, raw, {});
+  },
+
+  // =========================================================================
+  // Step 06: Expression Engine, Dynamic Rollup, Explainability & Knowledge Sync
+  // =========================================================================
+
+  validateExpr: async (
+    body: ValidateExprRequest
+  ): Promise<ValidateExprResponse> => {
+    const payload: ValidateExprRequest = {
+      type_name: body.type_name.trim(),
+      expression: body.expression,
+    };
+    if (body.subgraph && body.subgraph.trim().length > 0) {
+      payload.subgraph = body.subgraph.trim();
+    }
+    const raw = await requestJson<unknown>("/api/xblue/expr/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return parseResilient(ValidateExprResponseSchema, raw, {
+      valid: true,
+      issues: [],
+    });
+  },
+  evaluateExpr: async (
+    body: EvaluateExprRequest
+  ): Promise<EvaluateExprResponse> => {
+    const payload: EvaluateExprRequest = {
+      node_id: body.node_id.trim(),
+      expression: body.expression,
+    };
+    const raw = await requestJson<unknown>("/api/xblue/expr/evaluate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return parseResilient(EvaluateExprResponseSchema, raw, {
+      value: null,
+      value_type: "NULL",
+      warnings: [],
+    });
+  },
+  recomputeAggregate: async (
+    body?: RecomputeAggregateRequest
+  ): Promise<RecomputeAggregateResponse> => {
+    const payload: RecomputeAggregateRequest = {};
+    if (body?.type_name && body.type_name.trim().length > 0) {
+      payload.type_name = body.type_name.trim();
+    }
+    const raw = await requestJson<unknown>("/api/xblue/aggregate/recompute", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    return parseResilient(RecomputeAggregateResponseSchema, raw, {
+      job_id: "",
+      type_name: payload.type_name,
+    });
+  },
+  explainNodeMetric: async (
+    nodeId: string,
+    metric: string
+  ): Promise<MetricExplainResponse> => {
+    const raw = await requestJson<unknown>(
+      `/api/xblue/nodes/${encodeURIComponent(nodeId)}/explain/${encodeURIComponent(metric)}`
+    );
+    const parsed = MetricExplainResponseSchema.safeParse(raw ?? {});
+    if (parsed.success) {
+      return {
+        ...parsed.data,
+        node_id: parsed.data.node_id || nodeId,
+        metric: parsed.data.metric || metric,
+      };
+    }
+    return {
+      node_id: nodeId,
+      metric,
+      value: null,
+      producer: "MANUAL",
+      rule: null,
+      inputs: [],
+      computed_at: null,
+      warnings: [],
+    };
+  },
+  listKnowledgeNodeCandidates:
+    async (): Promise<KnowledgeNodeCandidatesResponse> => {
+      const raw = await requestJson<unknown>(
+        "/api/xblue/knowledge/node-candidates"
+      );
+      if (Array.isArray(raw)) {
+        return { items: parseListEnvelope(KnowledgeNodeCandidateSchema, raw) };
+      }
+      return parseResilient(KnowledgeNodeCandidatesResponseSchema, raw, {
+        items: [],
+      });
+    },
+  acceptKnowledgeNodeCandidate: async (
+    entityId: string,
+    body: AcceptNodeCandidateRequest
+  ): Promise<AcceptNodeCandidateResponse> => {
+    const payload: AcceptNodeCandidateRequest = {
+      type_name: body.type_name.trim(),
+      node_key: body.node_key.trim(),
+    };
+    if (body.title && body.title.trim().length > 0) {
+      payload.title = body.title.trim();
+    }
+    const raw = await requestJson<unknown>(
+      `/api/xblue/knowledge/node-candidates/${encodeURIComponent(entityId)}/accept`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
+    );
+    return parseResilient(AcceptNodeCandidateResponseSchema, raw, {
+      node: {
+        id: "",
+        type_name: payload.type_name,
+        node_key: payload.node_key,
+        title: payload.title ?? payload.node_key,
+        metrics: {},
+      },
+      entity_id: entityId,
+      confirmed: true,
+    });
   },
 };
