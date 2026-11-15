@@ -13,6 +13,7 @@ use axpoint_domain::AppError;
 use axpoint_domain::analytics::{ExplainResult, QueryRequest, QueryResult};
 use axpoint_domain::axhub::{Connection, SealedCredential};
 use axpoint_domain::enums::ConnectorType;
+use axpoint_domain::ports::LakeInternalQueryPort;
 use axpoint_security::CredentialKeyring;
 use lru::LruCache;
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
@@ -705,6 +706,21 @@ impl SessionPool {
             .get_or_try_init(tenant_id, catalog, live_sources)
             .await?;
         session.explain_sql(req, has_live_permission).await
+    }
+}
+
+impl LakeInternalQueryPort for SessionPool {
+    async fn query_internal(
+        &self,
+        tenant_id: &str,
+        sql: &str,
+        max_rows: usize,
+    ) -> Result<QueryResult, AppError> {
+        self.run_internal(tenant_id, sql, max_rows).await
+    }
+
+    async fn invalidate_tenant_session(&self, tenant_id: &str) -> bool {
+        self.invalidate_tenant(tenant_id).await
     }
 }
 
