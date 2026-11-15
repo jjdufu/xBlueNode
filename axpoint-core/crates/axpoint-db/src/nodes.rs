@@ -205,6 +205,19 @@ impl PgStore {
                     ),
                 ));
             }
+            let exists = sqlx::query(
+                "SELECT 1 FROM xb_nodes WHERE tenant_id = $1 AND id = $2 FOR KEY SHARE",
+            )
+            .bind(tenant_id)
+            .bind(*node_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|err| {
+                AppError::Database(format!("lock xb_nodes for embedding failed: {err}"))
+            })?;
+            if exists.is_none() {
+                continue;
+            }
             sqlx::query(
                 "INSERT INTO hg_embeddings (tenant_id, node_type, node_id, model_name, embedding_dim, embedding)
                  VALUES ($1, 'XB_NODE', $2, $3, $4, $5)
