@@ -9,12 +9,11 @@ use std::str::FromStr;
 
 use axpoint_db::studio_repo::NeighborBatchKey;
 use axpoint_domain::AppError;
-use axpoint_domain::analytics::QueryRequest;
 use axpoint_domain::axhub::{Dataset, PaginatedList};
-use axpoint_domain::enums::{AuditAction, Cardinality, DataType, GraphAlgo, Permission};
+use axpoint_domain::enums::{AuditAction, DataType, GraphAlgo, Permission};
 use axpoint_domain::graph::{
     AlgoResultsQuery, AlgoResultsResponse, AlgoRunRequest, AlgoRunResponse, BulkNodesRequest,
-    BulkNodesResponse, EntityCandidatesResponse, EntityLink, GeoPoint, LinkListQuery, LinkRecord,
+    BulkNodesResponse, EntityCandidatesResponse, EntityLink, LinkListQuery, LinkRecord,
     MetricCatalogEntry, MetricSeriesPoint, NeighborQuery, NodeDocumentsResponse, NodeListQuery,
     NodeListResponse, NodeMetricSeriesQuery, NodeSearchQuery, NodeSearchResponse, PatchNodeRequest,
     PathQuery, PathResponse, ResolveEntitiesRequest, ResolveEntitiesResponse, SubgraphQuery,
@@ -29,10 +28,9 @@ use axpoint_domain::ports::{
 use axpoint_domain::studio::{
     AiDraftRequest, ColumnProfileStats, ColumnRoleTag, CreateDraftRequest, CreateSubgraphRequest,
     DatasetProfileSummary, DomainObjectItemQuery, DomainObjectListQuery, DomainObjectListResponse,
-    DomainObjectRecord, DraftSource, DraftStatus, FkCandidate, IssueSeverity,
-    MappingPreviewNodeRow, MappingPreviewResponse, MappingRecord, MappingRejectSample,
-    MappingRunsResponse, MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeTypeSpec,
-    ObjectCatalogResponse, ObjectFieldSig, ObjectTypeCatalogItem, ProfilingBundle,
+    DomainObjectRecord, DraftSource, DraftStatus, IssueSeverity, MappingPreviewResponse,
+    MappingRecord, MappingRunsResponse, MergePreview, MergePreviewRequest, MergeSubgraphRequest,
+    NodeTypeSpec, ObjectCatalogResponse, ObjectFieldSig, ObjectTypeCatalogItem, ProfilingBundle,
     PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest,
     SchemaDiff, SchemaDoc, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary, SubgraphInfo,
     SubgraphQueryParam, TriggerMappingRunRequest, TriggerMappingRunResponse, UpdateDraftRequest,
@@ -97,14 +95,11 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/xblue/drafts/ai", post(create_ai_draft_handler))
         .route(
             "/xblue/drafts/{id}",
-            get(get_draft_handler)
-                .put(update_draft_handler)
-                .patch(update_draft_handler),
+            get(get_draft_handler).put(update_draft_handler),
         )
         .route("/xblue/drafts/{id}/discard", post(discard_draft_handler))
         .route("/xblue/drafts/{id}/publish", post(publish_draft_handler))
         .route("/xblue/mappings", get(list_mappings_handler))
-        .route("/xblue/mappings/{id}", get(get_mapping_handler))
         .route(
             "/xblue/mappings/{id}/preview",
             post(preview_mapping_handler),
@@ -124,6 +119,10 @@ pub(crate) fn router() -> Router<AppState> {
             get(get_domain_object_handler),
         )
         .route("/xblue/graphql", post(xblue_graphql::graphql_handler))
+        .route(
+            "/xblue/graphql/sdl",
+            get(xblue_graphql::graphql_sdl_handler),
+        )
         .merge(runtime_graph_router())
 }
 
@@ -271,7 +270,7 @@ async fn delete_subgraph_handler(
     principal: AuthPrincipal,
     ApiPath(slug): ApiPath<String>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
-    principal.require(Permission::StudioEdit)?;
+    principal.require(Permission::StudioPublish)?;
     state
         .store
         .delete_subgraph(&principal.tenant_id, slug.trim())
@@ -285,7 +284,7 @@ async fn preview_subgraph_merge_handler(
     ApiPath(slug): ApiPath<String>,
     body: Bytes,
 ) -> Result<Json<MergePreview>, HttpError> {
-    principal.require(Permission::DataRead)?;
+    principal.require(Permission::StudioEdit)?;
     let req: MergePreviewRequest = parse_optional_json(&body)?;
     let preview = state
         .store
@@ -348,8 +347,12 @@ async fn save_schema_handler(
     ApiQuery(sub): ApiQuery<SubgraphQueryParam>,
     ApiJson(req): ApiJson<SaveSchemaDirectRequest>,
 ) -> Result<Json<PublishedSchemaResponse>, HttpError> {
-    principal.require(Permission::StudioEdit)?;
     let slug = sub.slug_or_main();
+    if slug == "main" {
+        principal.require(Permission::StudioPublish)?;
+    } else {
+        principal.require(Permission::StudioEdit)?;
+    }
     let resp = state
         .store
         .save_schema_direct(&principal.tenant_id, slug, actor_uuid(&principal), req)
@@ -382,7 +385,7 @@ async fn validate_schema_handler(
     ApiQuery(sub): ApiQuery<SubgraphQueryParam>,
     ApiJson(payload): ApiJson<ValidateSchemaPayload>,
 ) -> Result<Json<ValidateSchemaResponse>, HttpError> {
-    principal.require(Permission::DataRead)?;
+    principal.require(Permission::StudioEdit)?;
     let doc = payload.schema_doc.unwrap_or(payload.flat_doc);
     let ctx = state
         .store
@@ -475,7 +478,7 @@ async fn list_drafts_handler(
     principal: AuthPrincipal,
     ApiQuery(query): ApiQuery<ListDraftsQuery>,
 ) -> Result<Json<PaginatedList<SchemaDraft>>, HttpError> {
-    principal.require(Permission::DataRead)?;
+    principal.require(Permission::StudioEdit)?;
     let slug = match query.subgraph.as_deref().map(str::trim) {
         Some(s) if !s.is_empty() => s,
         _ => "main",
@@ -499,7 +502,7 @@ async fn get_draft_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<SchemaDraft>, HttpError> {
-    principal.require(Permission::DataRead)?;
+    principal.require(Permission::StudioEdit)?;
     let draft = state
         .store
         .get_draft(&principal.tenant_id, id)
@@ -534,6 +537,17 @@ async fn update_draft_handler(
     ApiJson(req): ApiJson<UpdateDraftRequest>,
 ) -> Result<Json<SchemaDraft>, HttpError> {
     principal.require(Permission::StudioEdit)?;
+    let existing = state
+        .store
+        .get_draft(&principal.tenant_id, id)
+        .await?
+        .ok_or(AppError::NotFound("DRAFT_NOT_FOUND"))?;
+    if let Some(creator) = existing.created_by
+        && actor_uuid(&principal) != Some(creator)
+        && !principal.has(Permission::StudioPublish)
+    {
+        return Err(AppError::Forbidden("DRAFT_NOT_OWNER").into());
+    }
     let draft = state
         .store
         .update_draft(&principal.tenant_id, id, req)
@@ -557,7 +571,16 @@ async fn publish_draft_handler(
     ApiPath(id): ApiPath<Uuid>,
     body: Bytes,
 ) -> Result<Json<PublishDraftResponse>, HttpError> {
-    principal.require(Permission::StudioPublish)?;
+    let existing = state
+        .store
+        .get_draft(&principal.tenant_id, id)
+        .await?
+        .ok_or(AppError::NotFound("DRAFT_NOT_FOUND"))?;
+    if existing.subgraph_slug == "main" {
+        principal.require(Permission::StudioPublish)?;
+    } else {
+        principal.require(Permission::StudioEdit)?;
+    }
     let req: PublishDraftRequest = parse_optional_json(&body)?;
     let resp = state
         .store
@@ -588,6 +611,13 @@ async fn create_ai_draft_handler(
     ApiJson(req): ApiJson<AiDraftRequest>,
 ) -> Result<Json<SchemaDraft>, HttpError> {
     principal.require(Permission::StudioEdit)?;
+    if req.dataset_ids.is_empty() && req.doc_ids.is_empty() && req.description.trim().is_empty() {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            "at least one of dataset_ids, doc_ids, or description is required",
+        )
+        .into());
+    }
     let slug = sub.slug_or_main();
     let profiling = build_profiling_bundle(&state, &principal.tenant_id, &req.dataset_ids).await?;
     let doc_entities = state
@@ -646,64 +676,34 @@ async fn build_profiling_bundle(
     if dataset_ids.is_empty() {
         return Ok(ProfilingBundle::default());
     }
-    let session_opt = acquire_tenant_session(state, tenant_id, false).await.ok();
-    let mut summaries = Vec::with_capacity(dataset_ids.len());
-    let mut distinct_sets: BTreeMap<(String, String), BTreeSet<String>> = BTreeMap::new();
-
+    let mut datasets = Vec::with_capacity(dataset_ids.len());
     for &ds_id in dataset_ids {
         let ds = state
             .store
             .get_dataset(tenant_id, ds_id)
             .await?
             .ok_or(AppError::NotFound("DATASET_NOT_FOUND"))?;
-        let summary = profile_single_dataset(
-            &ds,
-            session_opt.as_ref().map(|(s, _)| s.as_ref()),
-            &mut distinct_sets,
-        )
-        .await;
-        summaries.push(summary);
+        datasets.push(ds);
     }
 
-    let fk_candidates = infer_fk_candidates(&summaries, &distinct_sets);
+    let _ = acquire_tenant_session(state, tenant_id, false).await;
+    if let Ok(bundle) =
+        axpoint_analytics::profile_datasets(&state.analytics_pool, tenant_id, &datasets).await
+    {
+        return Ok(bundle);
+    }
+
+    let summaries = datasets
+        .iter()
+        .map(fallback_dataset_profile_summary)
+        .collect();
     Ok(ProfilingBundle {
         datasets: summaries,
-        fk_candidates,
+        fk_candidates: Vec::new(),
     })
 }
 
-async fn profile_single_dataset(
-    ds: &Dataset,
-    session_opt: Option<&axpoint_analytics::TenantDb>,
-    distinct_sets: &mut BTreeMap<(String, String), BTreeSet<String>>,
-) -> DatasetProfileSummary {
-    let sampled_res = match session_opt {
-        Some(sess) => {
-            let escaped = ds.name.replace('"', "\"\"");
-            sess.execute_sql(
-                &QueryRequest {
-                    sql: format!("SELECT * FROM \"{escaped}\" LIMIT 5000"),
-                    params: BTreeMap::new(),
-                    max_rows: Some(5000),
-                    timeout_ms: Some(5000),
-                    reveal_pii: false,
-                    allow_live: false,
-                },
-                false,
-                false,
-            )
-            .await
-            .ok()
-        }
-        None => None,
-    };
-
-    if let Some(out) = sampled_res
-        && !out.result.rows.is_empty()
-    {
-        return summarize_sampled_rows(ds, &out.result, distinct_sets);
-    }
-
+fn fallback_dataset_profile_summary(ds: &Dataset) -> DatasetProfileSummary {
     let row_cnt = u64::try_from(ds.row_count.max(0)).unwrap_or(0);
     let mut pk_candidates = ds.primary_key.clone();
     let mut columns = Vec::with_capacity(ds.schema_json.len());
@@ -746,85 +746,6 @@ async fn profile_single_dataset(
     }
 }
 
-fn summarize_sampled_rows(
-    ds: &Dataset,
-    qr: &axpoint_domain::analytics::QueryResult,
-    distinct_sets: &mut BTreeMap<(String, String), BTreeSet<String>>,
-) -> DatasetProfileSummary {
-    let total = qr.rows.len();
-    let sampled_count = u64::try_from(total).unwrap_or(0);
-    let sampled_denom = f64::from(u32::try_from(total).unwrap_or(1));
-
-    let mut columns = Vec::with_capacity(qr.columns.len());
-    let mut pk_candidates: Vec<String> = Vec::new();
-
-    for col_meta in &qr.columns {
-        let mut nulls: u32 = 0;
-        let mut seen_vals: BTreeSet<String> = BTreeSet::new();
-        let mut samples: Vec<String> = Vec::new();
-
-        for row in &qr.rows {
-            match row.get(&col_meta.name) {
-                None | Some(serde_json::Value::Null) => {
-                    nulls = nulls.saturating_add(1);
-                }
-                Some(val) => {
-                    let s = json_scalar_display(val);
-                    if seen_vals.insert(s.clone()) && samples.len() < 8 {
-                        samples.push(s);
-                    }
-                }
-            }
-        }
-
-        let distinct_count = u64::try_from(seen_vals.len()).unwrap_or(0);
-        let null_rate = (f64::from(nulls) / sampled_denom).clamp(0.0, 1.0);
-        let mut roles = BTreeSet::new();
-        if (nulls == 0 && distinct_count == sampled_count && sampled_count > 0)
-            || ds.primary_key.contains(&col_meta.name)
-        {
-            roles.insert(ColumnRoleTag::PkCandidate);
-            pk_candidates.push(col_meta.name.clone());
-        }
-        if matches!(
-            col_meta.data_type,
-            DataType::Int64 | DataType::Float64 | DataType::Decimal
-        ) && !roles.contains(&ColumnRoleTag::PkCandidate)
-        {
-            roles.insert(ColumnRoleTag::NumericMetric);
-        }
-        if matches!(col_meta.data_type, DataType::Date | DataType::Timestamp) {
-            roles.insert(ColumnRoleTag::Temporal);
-        }
-        if distinct_count > 0
-            && distinct_count <= 50
-            && !roles.contains(&ColumnRoleTag::PkCandidate)
-        {
-            roles.insert(ColumnRoleTag::Categorical);
-        }
-
-        distinct_sets.insert((ds.name.clone(), col_meta.name.clone()), seen_vals);
-        columns.push(ColumnProfileStats {
-            name: col_meta.name.clone(),
-            data_type: col_meta.data_type,
-            null_rate,
-            distinct_count,
-            roles,
-            sample_values: samples,
-        });
-    }
-
-    rank_pk_names(&mut pk_candidates);
-    DatasetProfileSummary {
-        dataset_id: ds.id,
-        dataset_name: ds.name.clone(),
-        display_name: ds.display_name.clone(),
-        row_count: sampled_count,
-        columns,
-        pk_candidates,
-    }
-}
-
 fn rank_pk_names(names: &mut [String]) {
     let priority = |s: &str| -> u8 {
         let low = s.to_ascii_lowercase();
@@ -837,68 +758,6 @@ fn rank_pk_names(names: &mut [String]) {
         )
     };
     names.sort_by(|a, b| priority(a).cmp(&priority(b)).then_with(|| a.cmp(b)));
-}
-
-fn infer_fk_candidates(
-    summaries: &[DatasetProfileSummary],
-    distinct_sets: &BTreeMap<(String, String), BTreeSet<String>>,
-) -> Vec<FkCandidate> {
-    let mut out = Vec::new();
-    for src_ds in summaries {
-        let src_rows = f64::from(u32::try_from(src_ds.row_count).unwrap_or(0));
-        if src_rows <= 0.0 {
-            continue;
-        }
-        for src_col in &src_ds.columns {
-            let Some(src_vals) =
-                distinct_sets.get(&(src_ds.dataset_name.clone(), src_col.name.clone()))
-            else {
-                continue;
-            };
-            if src_vals.is_empty() {
-                continue;
-            }
-            for dst_ds in summaries {
-                if dst_ds.dataset_name == src_ds.dataset_name {
-                    continue;
-                }
-                for dst_pk in &dst_ds.pk_candidates {
-                    let Some(dst_vals) =
-                        distinct_sets.get(&(dst_ds.dataset_name.clone(), dst_pk.clone()))
-                    else {
-                        continue;
-                    };
-                    let overlap_cnt = src_vals.intersection(dst_vals).count();
-                    let denom = f64::from(u32::try_from(src_vals.len()).unwrap_or(1));
-                    let ratio = f64::from(u32::try_from(overlap_cnt).unwrap_or(0)) / denom;
-                    if ratio >= 0.9 {
-                        let uniq_ratio = denom / src_rows;
-                        let cardinality = if uniq_ratio >= 0.99 {
-                            Cardinality::OneToOne
-                        } else {
-                            Cardinality::ManyToOne
-                        };
-                        out.push(FkCandidate {
-                            src_dataset: src_ds.dataset_name.clone(),
-                            src_column: src_col.name.clone(),
-                            dst_dataset: dst_ds.dataset_name.clone(),
-                            dst_pk_column: dst_pk.clone(),
-                            overlap_ratio: ratio,
-                            cardinality,
-                        });
-                    }
-                }
-            }
-        }
-    }
-    out
-}
-
-fn json_scalar_display(val: &serde_json::Value) -> String {
-    match val {
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
-    }
 }
 
 // ============================================================================
@@ -919,20 +778,6 @@ async fn list_mappings_handler(
         items,
         next_cursor: None,
     }))
-}
-
-async fn get_mapping_handler(
-    State(state): State<AppState>,
-    principal: AuthPrincipal,
-    ApiPath(id): ApiPath<Uuid>,
-) -> Result<Json<MappingRecord>, HttpError> {
-    principal.require(Permission::DataRead)?;
-    let rec = state
-        .store
-        .get_mapping(&principal.tenant_id, id)
-        .await?
-        .ok_or(AppError::NotFound("MAPPING_NOT_FOUND"))?;
-    Ok(Json(rec))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -962,7 +807,7 @@ async fn trigger_mapping_run_handler(
     ApiPath(id): ApiPath<Uuid>,
     body: Bytes,
 ) -> Result<Json<TriggerMappingRunResponse>, HttpError> {
-    principal.require(Permission::StudioEdit)?;
+    principal.require(Permission::DataSync)?;
     let req: TriggerMappingRunRequest = parse_optional_json(&body)?;
     let resp = state
         .store
@@ -976,7 +821,7 @@ async fn preview_mapping_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<MappingPreviewResponse>, HttpError> {
-    principal.require(Permission::DataRead)?;
+    principal.require(Permission::StudioEdit)?;
     let mapping = state
         .store
         .get_mapping(&principal.tenant_id, id)
@@ -988,185 +833,62 @@ async fn preview_mapping_handler(
         .await?
         .ok_or(AppError::NotFound("DATASET_NOT_FOUND"))?;
 
-    let has_pii_raw = principal.has(Permission::PiiRawRead);
-    let (session, _) = acquire_tenant_session(&state, &principal.tenant_id, false).await?;
-    let escaped = ds.name.replace('"', "\"\"");
-    let sql = match mapping.spec.filter.as_deref().map(str::trim) {
-        Some(f) if !f.is_empty() => format!("SELECT * FROM \"{escaped}\" WHERE ({f}) LIMIT 50"),
-        _ => format!("SELECT * FROM \"{escaped}\" LIMIT 50"),
-    };
-    let out = session
-        .execute_sql(
-            &QueryRequest {
-                sql,
-                params: BTreeMap::new(),
-                max_rows: Some(50),
-                timeout_ms: Some(5000),
-                reveal_pii: has_pii_raw,
-                allow_live: false,
-            },
-            false,
-            has_pii_raw,
-        )
+    let published = state
+        .store
+        .get_published_schema(&principal.tenant_id, &mapping.subgraph_slug)
         .await?;
-
-    Ok(Json(build_mapping_preview_rows(
-        mapping.id,
-        &mapping.spec,
-        &out.result,
-    )))
-}
-
-fn build_mapping_preview_rows(
-    mapping_id: Uuid,
-    spec: &axpoint_domain::studio::MappingSpec,
-    qr: &axpoint_domain::analytics::QueryResult,
-) -> MappingPreviewResponse {
-    let mut items = Vec::with_capacity(qr.rows.len());
-    let mut rows_rejected: usize = 0;
-    let mut reject_samples: Vec<MappingRejectSample> = Vec::new();
-
-    for row in &qr.rows {
-        let key_opt = row
-            .get(&spec.key_column)
-            .filter(|v| !v.is_null())
-            .map(json_scalar_display)
-            .filter(|s| !s.trim().is_empty());
-
-        let Some(node_key) = key_opt else {
-            rows_rejected = rows_rejected.saturating_add(1);
-            if reject_samples.len() < 20 {
-                reject_samples.push(MappingRejectSample {
-                    row: serde_json::Value::Object(row.clone()),
-                    reason: String::from("NULL_OR_EMPTY_KEY"),
-                });
-            }
-            continue;
-        };
-
-        let title = render_preview_title(&spec.title, &node_key, row);
-        let mut attributes = serde_json::Map::new();
-        for (prop_name, col_name) in &spec.attributes {
-            if let Some(v) = row.get(col_name) {
-                attributes.insert(prop_name.clone(), v.clone());
-            }
-        }
-
-        let mut metrics = BTreeMap::new();
-        let mut metric_err = false;
-        for (m_name, col_name) in &spec.metrics {
-            if let Some(v) = row.get(col_name)
-                && !v.is_null()
-            {
-                if let Some(num) = v
-                    .as_f64()
-                    .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
-                {
-                    metrics.insert(m_name.clone(), num);
-                } else {
-                    metric_err = true;
-                }
-            }
-        }
-        if metric_err {
-            rows_rejected = rows_rejected.saturating_add(1);
-            if reject_samples.len() < 20 {
-                reject_samples.push(MappingRejectSample {
-                    row: serde_json::Value::Object(row.clone()),
-                    reason: String::from("INVALID_NUMERIC_METRIC"),
-                });
-            }
-            continue;
-        }
-
-        let geo = extract_preview_geo(&spec.geo, row);
-        let links = extract_preview_links(&spec.links, row);
-
-        items.push(MappingPreviewNodeRow {
-            node_key,
-            title,
-            attributes,
-            metrics,
-            geo,
-            links,
-        });
-    }
-
-    MappingPreviewResponse {
-        mapping_id,
-        sampled_rows: qr.rows.len(),
-        items,
-        rows_rejected,
-        reject_samples,
-    }
-}
-
-fn render_preview_title(
-    template: &str,
-    node_key: &str,
-    row: &serde_json::Map<String, serde_json::Value>,
-) -> String {
-    let mut rendered = template.replace("{node_key}", node_key);
-    for (col_name, val) in row {
-        let token = format!("{{{col_name}}}");
-        if rendered.contains(&token) {
-            let replacement = if val.is_null() {
-                String::new()
-            } else {
-                json_scalar_display(val)
-            };
-            rendered = rendered.replace(&token, &replacement);
-        }
-    }
-    if rendered.trim().is_empty() {
-        String::from(node_key)
-    } else {
-        rendered
-    }
-}
-
-fn extract_preview_geo(
-    geo_spec: &axpoint_domain::studio::MappingGeoSpec,
-    row: &serde_json::Map<String, serde_json::Value>,
-) -> Option<GeoPoint> {
-    let lng_col = geo_spec.lng_column.as_deref()?;
-    let lat_col = geo_spec.lat_column.as_deref()?;
-    let lng = row.get(lng_col).and_then(|v| {
-        v.as_f64()
-            .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
-    })?;
-    let lat = row.get(lat_col).and_then(|v| {
-        v.as_f64()
-            .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
-    })?;
-    if (-180.0..=180.0).contains(&lng) && (-90.0..=90.0).contains(&lat) {
-        Some(GeoPoint { lng, lat })
-    } else {
+    let main_published = if mapping.subgraph_slug == "main" {
         None
-    }
-}
+    } else {
+        state
+            .store
+            .get_published_schema(&principal.tenant_id, "main")
+            .await
+            .ok()
+    };
+    let node_type = published
+        .doc
+        .node_types
+        .iter()
+        .find(|n| n.name == mapping.spec.node_type)
+        .or_else(|| {
+            main_published.as_ref().and_then(|m| {
+                m.doc
+                    .node_types
+                    .iter()
+                    .find(|n| n.name == mapping.spec.node_type)
+            })
+        })
+        .cloned()
+        .unwrap_or_else(|| NodeTypeSpec {
+            id: None,
+            name: mapping.spec.node_type.clone(),
+            display_name: mapping.spec.node_type.clone(),
+            description: String::new(),
+            icon: String::from("circle"),
+            color: String::from("#2563eb"),
+            title_template: mapping.spec.title.clone(),
+            properties: Vec::new(),
+            agg_rules: Vec::new(),
+            derived_rules: Vec::new(),
+            sync_to_knowledge: false,
+            pos_x: 0.0,
+            pos_y: 0.0,
+        });
 
-fn extract_preview_links(
-    link_specs: &[axpoint_domain::studio::MappingLinkSpec],
-    row: &serde_json::Map<String, serde_json::Value>,
-) -> Vec<serde_json::Value> {
-    let mut out = Vec::new();
-    for ls in link_specs {
-        if let Some(val) = row.get(&ls.target_key_column)
-            && !val.is_null()
-        {
-            let target_key = json_scalar_display(val);
-            if !target_key.trim().is_empty() {
-                out.push(serde_json::json!({
-                    "link_type": ls.link_type,
-                    "direction": ls.direction,
-                    "target_type": ls.target_type,
-                    "target_node_key": target_key,
-                }));
-            }
-        }
-    }
-    out
+    let _ = acquire_tenant_session(&state, &principal.tenant_id, false).await?;
+    let preview = axpoint_analytics::preview_mapping_rows(
+        &state.analytics_pool,
+        &principal.tenant_id,
+        mapping.id,
+        &ds,
+        &node_type,
+        &mapping.spec,
+        50,
+    )
+    .await?;
+
+    Ok(Json(preview))
 }
 
 // ============================================================================
