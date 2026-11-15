@@ -95,11 +95,11 @@ wait_dataset_idle() {
 }
 wait_aggregate_idle() {
   wait_until "aggregate-idle" 120 \
-    "[[ \$(sql_app default \"SELECT count(*) FROM ax_jobs WHERE kind='GRAPH_AGGREGATE' AND status IN ('PENDING','RUNNING')\") == 0 ]]"
+    "[[ \$(sql_app default \"SELECT count(*) FROM ax_outbox WHERE processed_at IS NULL\") == 0 ]] && [[ \$(sql_app default \"SELECT count(*) FROM ax_jobs WHERE kind='GRAPH_AGGREGATE' AND status IN ('PENDING','RUNNING')\") == 0 ]]"
 }
 wait_mapping_idle() {
   wait_until "mapping-idle:$1" 120 \
-    "api GET '/api/xblue/mappings/$1/runs?limit=1' | jq -e '.items[0].status == \"SUCCEEDED\"'"
+    "[[ \$(sql_app default \"SELECT count(*) FROM ax_outbox WHERE processed_at IS NULL\") == 0 ]] && [[ \$(sql_app default \"SELECT count(*) FROM ax_jobs WHERE kind='MAP_MATERIALIZE' AND status IN ('PENDING','RUNNING')\") == 0 ]] && (api GET '/api/xblue/mappings/$1/runs?limit=1' | jq -e '.items[0].status == \"SUCCEEDED\"')"
 }
 wait_run_status() {
   wait_until "run:$1:$2" 120 "api GET '/api/axflow/runs/$1' | jq -e '.status == \"$2\"'"

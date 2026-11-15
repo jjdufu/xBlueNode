@@ -4,9 +4,11 @@ pub mod algo;
 pub mod analytics;
 pub mod axhub;
 pub mod enums;
+pub mod expr;
 pub mod graph;
 pub mod platform;
 pub mod ports;
+pub mod rollup;
 pub mod studio;
 pub mod topology;
 

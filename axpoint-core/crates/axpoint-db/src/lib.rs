@@ -1,11 +1,14 @@
 //! PostgreSQL (`pgvector` + hypergraph) persistence, five-way retrieval, and platform ports.
 
+pub mod aggregate_exec;
 pub mod analytics_repo;
 pub mod audit;
 pub mod axhub_repo;
 pub mod entity_link;
 pub mod graph_query;
 pub mod jobs;
+pub mod knowledge_sync;
+pub mod mapping_exec;
 pub mod metrics;
 pub mod nodes;
 pub mod outbox;
@@ -710,5 +713,89 @@ impl axpoint_domain::ports::HypergraphQueryPort for PgStore {
 
     async fn get_topology(&self, tenant_id: &str, limit: i64) -> Result<TopologyGraph, AppError> {
         Self::get_topology(self, tenant_id, limit).await
+    }
+}
+
+impl axpoint_domain::ports::StudioExecutionPort for PgStore {
+    async fn execute_mapping_materialize<L: axpoint_domain::ports::LakeInternalQueryPort>(
+        &self,
+        tenant_id: &str,
+        job_id: Uuid,
+        payload: &axpoint_domain::rollup::MapMaterializeJobPayload,
+        lake: &L,
+    ) -> Result<axpoint_domain::studio::MappingRunRecord, AppError> {
+        crate::mapping_exec::execute_mapping_materialize_impl(
+            self, tenant_id, job_id, payload, lake,
+        )
+        .await
+    }
+
+    async fn list_enabled_main_mappings_for_dataset(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+    ) -> Result<Vec<axpoint_domain::studio::MappingRecord>, AppError> {
+        crate::mapping_exec::list_enabled_main_mappings_for_dataset_impl(
+            self, tenant_id, dataset_id,
+        )
+        .await
+    }
+
+    async fn execute_graph_aggregate(
+        &self,
+        tenant_id: &str,
+        payload: &axpoint_domain::rollup::GraphAggregateJobPayload,
+    ) -> Result<serde_json::Value, AppError> {
+        crate::aggregate_exec::execute_graph_aggregate_impl(self, tenant_id, payload).await
+    }
+
+    async fn enqueue_graph_aggregate(
+        &self,
+        tenant_id: &str,
+        payload: axpoint_domain::rollup::GraphAggregateJobPayload,
+        idempotency_key: Option<String>,
+    ) -> Result<Uuid, AppError> {
+        crate::aggregate_exec::enqueue_graph_aggregate_impl(
+            self,
+            tenant_id,
+            payload,
+            idempotency_key,
+        )
+        .await
+    }
+
+    async fn explain_node_metric(
+        &self,
+        tenant_id: &str,
+        node_id: Uuid,
+        metric: &str,
+    ) -> Result<axpoint_domain::rollup::MetricExplainResponse, AppError> {
+        crate::aggregate_exec::explain_node_metric_impl(self, tenant_id, node_id, metric).await
+    }
+
+    async fn execute_knowledge_sync<E: axpoint_domain::ports::TextEmbedderPort>(
+        &self,
+        tenant_id: &str,
+        payload: &axpoint_domain::rollup::KnowledgeSyncJobPayload,
+        embedder: &E,
+    ) -> Result<serde_json::Value, AppError> {
+        crate::knowledge_sync::execute_knowledge_sync_impl(self, tenant_id, payload, embedder).await
+    }
+
+    async fn list_knowledge_node_candidates(
+        &self,
+        tenant_id: &str,
+    ) -> Result<axpoint_domain::rollup::KnowledgeNodeCandidatesResponse, AppError> {
+        crate::knowledge_sync::list_knowledge_node_candidates_impl(self, tenant_id).await
+    }
+
+    async fn accept_knowledge_node_candidate(
+        &self,
+        tenant_id: &str,
+        entity_id: Uuid,
+        req: axpoint_domain::rollup::AcceptNodeCandidateRequest,
+    ) -> Result<axpoint_domain::rollup::AcceptNodeCandidateResponse, AppError> {
+        crate::knowledge_sync::accept_knowledge_node_candidate_impl(self, tenant_id, entity_id, req)
+            .await
     }
 }
