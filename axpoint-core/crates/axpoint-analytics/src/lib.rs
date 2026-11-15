@@ -2,6 +2,7 @@
 
 pub mod nl2sql;
 pub mod pivot;
+pub mod profiling;
 pub mod result;
 pub mod semantic;
 pub mod session;
@@ -46,6 +47,12 @@ pub use pivot::{
     CompiledPivot, DEFAULT_PIVOT_COLUMN_LIMIT, DEFAULT_PIVOT_ROW_LIMIT, MAX_PIVOT_COL_DIMS,
     MAX_PIVOT_COLUMN_LIMIT, MAX_PIVOT_ROW_DIMS, MAX_PIVOT_ROW_LIMIT, MAX_PIVOT_VALUES,
     PivotExecuteOptions, compile_pivot, execute_pivot, execute_pivot_conn,
+};
+pub use profiling::{
+    CATEGORICAL_MAX_DISTINCT, FK_MIN_OVERLAP_RATIO, MAX_MAPPING_PREVIEW_ROWS,
+    MAX_PROFILE_SAMPLE_ROWS, MAX_PROFILE_SAMPLE_VALUES, MAX_REJECT_SAMPLES,
+    ONE_TO_ONE_MIN_UNIQUE_RATIO, format_tenant_lake_table, preview_mapping_rows,
+    preview_mapping_rows_conn, profile_datasets, profile_datasets_conn,
 };
 pub use result::{
     ResultSerializeOptions, SerializedQueryOutput, batches_to_query_result, map_arrow_data_type,

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use arrow::array::RecordBatch;
 use arrow::util::display::{ArrayFormatter, FormatOptions};
 use axpoint_domain::AppError;
-use axpoint_domain::analytics::{ExplainResult, QueryRequest};
+use axpoint_domain::analytics::{ExplainResult, QueryRequest, QueryResult};
 use axpoint_domain::axhub::{Connection, SealedCredential};
 use axpoint_domain::enums::ConnectorType;
 use axpoint_security::CredentialKeyring;
@@ -176,6 +176,25 @@ impl TenantDb {
                     AppError::Database(format!("duckdb session build join failed: {err}"))
                 })??;
         Ok(Arc::new(built))
+    }
+
+    /// Wraps an already-opened [`duckdb::Connection`] into an isolated [`TenantDb`] handle
+    /// (intended for pure in-memory `DuckDB` unit tests without `DuckLake` filesystem bootstrap).
+    ///
+    /// # Errors
+    /// Returns [`AppError::BadRequest`] (`INVALID_ARGUMENT`) if `tenant_id` is invalid.
+    pub fn from_connection(tenant_id: &str, conn: duckdb::Connection) -> Result<Self, AppError> {
+        validate_tenant_ident(tenant_id)?;
+        let interrupt_handle = conn.interrupt_handle();
+        Ok(Self {
+            conn: Arc::new(StdMutex::new(conn)),
+            interrupt_handle,
+            exec_gate: AsyncMutex::new(()),
+            tenant_id: String::from(tenant_id),
+            built_at: Instant::now(),
+            attached_live: HashSet::new(),
+            catalog: StdRwLock::new(TenantCatalog::new(tenant_id)),
+        })
     }
 
     /// Returns the owning `tenant_id`.
@@ -365,6 +384,86 @@ impl TenantDb {
         })
     }
 
+    /// Executes a trusted, code-generated internal `DuckDB` query without external user AST
+    /// rewriting or PII masking (`06-STEP05-06` §05.5.1, §05.7, §06.2.1).
+    ///
+    /// Streams Arrow batches up to `max_rows + 1` rows so `truncated` is accurately reported
+    /// without materializing unbounded result sets in memory.
+    ///
+    /// # Errors
+    /// Returns [`AppError::BadRequest`] (`INVALID_ARGUMENT` / `SQL_REJECTED`) on empty,
+    /// NUL-containing, or invalid SQL, or [`AppError::Database`] if `DuckDB` execution fails.
+    pub fn run_internal(&self, sql: &str, max_rows: usize) -> Result<QueryResult, AppError> {
+        let trimmed = sql.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                "internal SQL query cannot be empty",
+            ));
+        }
+        if trimmed.contains('\0') {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                "internal SQL query contains NUL byte",
+            ));
+        }
+
+        let started = Instant::now();
+        let (schema, batches) = {
+            let conn_guard = match self.conn.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let mut stmt = conn_guard
+                .prepare(trimmed)
+                .map_err(|err| map_duckdb_exec_error(&err.to_string()))?;
+            let arrow_stream = stmt
+                .query_arrow([])
+                .map_err(|err| map_duckdb_exec_error(&err.to_string()))?;
+            let schema = arrow_stream.get_schema();
+            let stop_after = max_rows.saturating_add(1);
+            let mut collected = Vec::new();
+            let mut row_acc = 0_usize;
+            for batch in arrow_stream {
+                row_acc = row_acc.saturating_add(batch.num_rows());
+                collected.push(batch);
+                if row_acc >= stop_after {
+                    break;
+                }
+            }
+            (schema, collected)
+        };
+
+        let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let effective_max_rows = u32::try_from(max_rows).unwrap_or(u32::MAX);
+        let empty_catalog = TenantCatalog::new(&self.tenant_id);
+        let empty_guarded = GuardedSql {
+            sql: String::from(trimmed),
+            effective_max_rows,
+            referenced_datasets: Vec::new(),
+            referenced_dataset_names: Vec::new(),
+            referenced_columns: Vec::new(),
+            output_lineage: Vec::new(),
+            uses_platform_views: false,
+            referenced_live_connections: Vec::new(),
+        };
+
+        let serialized = batches_to_query_result(
+            &schema,
+            &batches,
+            ResultSerializeOptions {
+                effective_max_rows,
+                sql: String::from(trimmed),
+                duration_ms,
+                reveal_pii: false,
+                has_pii_raw_read: false,
+                catalog: &empty_catalog,
+                guarded: &empty_guarded,
+            },
+        )?;
+        Ok(serialized.result)
+    }
+
     async fn run_arrow_with_timeout(
         &self,
         sql: String,
@@ -474,8 +573,12 @@ impl SessionPool {
         {
             let mut cache = self.inner.lock().await;
             if let Some(existing) = cache.get(tenant_id).cloned() {
-                existing.refresh_catalog(catalog);
-                return Ok(existing);
+                let missing_live = !live_sources.is_empty() && existing.attached_live.is_empty();
+                if !missing_live {
+                    existing.refresh_catalog(catalog);
+                    return Ok(existing);
+                }
+                let _ = cache.pop(tenant_id);
             }
         }
 
@@ -490,6 +593,56 @@ impl SessionPool {
         cache.put(String::from(tenant_id), Arc::clone(&built));
         debug!(tenant_id = %tenant_id, "initialized hardened DuckDB TenantDb session");
         Ok(built)
+    }
+
+    /// Acquires the cached [`TenantDb`] for `tenant_id` or opens a hardened `DuckLake`-backed
+    /// session with an empty user SQL catalog (for internal `profiling` and `MAP_MATERIALIZE` callers).
+    ///
+    /// # Errors
+    /// Propagates any error from [`TenantDb::build_async`].
+    pub async fn get_or_open(&self, tenant_id: &str) -> Result<Arc<TenantDb>, AppError> {
+        {
+            let mut cache = self.inner.lock().await;
+            if let Some(existing) = cache.get(tenant_id).cloned() {
+                return Ok(existing);
+            }
+        }
+
+        let built = TenantDb::build_async(
+            tenant_id,
+            self.cfg.clone(),
+            TenantCatalog::new(tenant_id),
+            Vec::new(),
+        )
+        .await?;
+
+        let mut cache = self.inner.lock().await;
+        if let Some(raced) = cache.get(tenant_id).cloned() {
+            return Ok(raced);
+        }
+        cache.put(String::from(tenant_id), Arc::clone(&built));
+        debug!(tenant_id = %tenant_id, "opened hardened DuckDB TenantDb session for internal query");
+        Ok(built)
+    }
+
+    /// Executes a trusted internal `DuckDB` query for `tenant_id` on the blocking threadpool
+    /// (`06-STEP05-06` §05.5.1, §05.7, §06.2.1).
+    ///
+    /// # Errors
+    /// Propagates any error from [`SessionPool::get_or_open`], [`TenantDb::run_internal`], or task join.
+    pub async fn run_internal(
+        &self,
+        tenant_id: &str,
+        sql: &str,
+        max_rows: usize,
+    ) -> Result<QueryResult, AppError> {
+        let session = self.get_or_open(tenant_id).await?;
+        let sql_owned = String::from(sql);
+        tokio::task::spawn_blocking(move || session.run_internal(&sql_owned, max_rows))
+            .await
+            .map_err(|err| {
+                AppError::Database(format!("duckdb internal query task failed: {err}"))
+            })?
     }
 
     /// Evicts `tenant_id` from the LRU session pool (used when live connections or DSNs change).
