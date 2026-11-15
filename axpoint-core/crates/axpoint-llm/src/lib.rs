@@ -1,6 +1,7 @@
 //! OpenAI-compatible LLM and multi-dimension Embedding adapter for `AxPoint`.
 
 pub mod cassette;
+pub mod schema_draft;
 
 use std::fmt::Write as _;
 use std::future::Future;
@@ -18,6 +19,10 @@ pub use cassette::{
 };
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::{Client, StatusCode};
+pub use schema_draft::{
+    GeneratedSchemaDraft, MAX_SCHEMA_DRAFT_ATTEMPTS, SCHEMA_DRAFT_SYSTEM_PROMPT, SchemaDraftInput,
+    build_schema_draft_user_prompt, generate_schema_draft, parse_schema_doc_lenient,
+};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
