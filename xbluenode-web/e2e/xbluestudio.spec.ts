@@ -13,6 +13,7 @@ declare const process: {
 const DATASET_ORDERS_ID = "00000000-0000-0000-0000-000000000501";
 const AI_DRAFT_ID = "00000000-0000-0000-0000-000000000520";
 const MAPPING_ID = "00000000-0000-0000-0000-000000000530";
+const CANDIDATE_ENTITY_ID = "00000000-0000-0000-0000-000000000611";
 
 function attachSecurityMonitors(
   page: Page,
@@ -729,20 +730,150 @@ type Query {
     }
 
     if (pathname === "/api/xblue/nodes" && method === "GET") {
+      const sampleNode = {
+        id: "00000000-0000-0000-0000-000000000551",
+        type_name: "Warehouse",
+        node_key: "W-1",
+        title: "华东仓",
+        metrics: { inventory: 500, total_demand: 320 },
+      };
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          nodes: [
+          items: [sampleNode],
+          nodes: [sampleNode],
+          links: [],
+          next_cursor: null,
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/xblue/expr/validate" && method === "POST") {
+      const body = (request.postDataJSON() ?? {}) as {
+        type_name?: string;
+        expression?: string;
+      };
+      const expr = (body.expression ?? "").trim();
+      if (expr.includes("1 < 2 < 3")) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            valid: false,
+            issues: [
+              {
+                code: "EXPR_INVALID",
+                message: "chained comparison is not associative",
+                column: 7,
+              },
+            ],
+          }),
+        });
+        return;
+      }
+      const isBoolFilter =
+        expr.includes("!=") || expr.includes("==") || expr.startsWith("not ");
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          valid: true,
+          inferred_type: isBoolFilter ? "BOOL" : "NUMBER",
+          issues: [],
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/xblue/expr/evaluate" && method === "POST") {
+      const body = (request.postDataJSON() ?? {}) as { expression?: string };
+      const expr = (body.expression ?? "").trim();
+      if (expr.includes("/ 0")) {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            value: null,
+            value_type: "NULL",
+            warnings: ["DIV_BY_ZERO"],
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          value: 1.5625,
+          value_type: "NUMBER",
+          warnings: [],
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/xblue/aggregate/recompute" && method === "POST") {
+      const body = (request.postDataJSON() ?? {}) as { type_name?: string };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          job_id: "00000000-0000-0000-0000-000000000601",
+          type_name: body.type_name ?? "Warehouse",
+        }),
+      });
+      return;
+    }
+
+    if (
+      pathname === "/api/xblue/knowledge/node-candidates" &&
+      method === "GET"
+    ) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          items: [
             {
-              id: "00000000-0000-0000-0000-000000000551",
-              type_name: "Warehouse",
-              node_key: "W-1",
-              title: "华东仓",
-              metrics: { inventory: 500, total_demand: 320 },
+              entity_id: CANDIDATE_ENTITY_ID,
+              name: "杭州分拨仓",
+              entity_type: "仓储枢纽",
+              suggested_type_name: "Warehouse",
+              occur_count: 5,
+              confidence: 0.92,
+              sample_docs: ["长三角仓配作业规范.md", "华东季度履约复盘.md"],
             },
           ],
-          links: [],
+        }),
+      });
+      return;
+    }
+
+    if (
+      pathname ===
+        `/api/xblue/knowledge/node-candidates/${CANDIDATE_ENTITY_ID}/accept` &&
+      method === "POST"
+    ) {
+      const body = (request.postDataJSON() ?? {}) as {
+        type_name?: string;
+        node_key?: string;
+        title?: string;
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          node: {
+            id: "00000000-0000-0000-0000-000000000612",
+            type_name: body.type_name ?? "Warehouse",
+            node_key: body.node_key ?? "W-HZ-01",
+            title: body.title ?? "杭州分拨仓",
+            metrics: {},
+          },
+          entity_id: CANDIDATE_ENTITY_ID,
+          confirmed: true,
         }),
       });
       return;
@@ -966,6 +1097,57 @@ test("xBlueStudio /studio renders canvas cards & edges, switches subgraph for me
 
   await page.getByTestId("inspector-tab-rules").click();
   await expect(page.getByTestId("rule-editor")).toBeVisible();
+  await expect(page.getByTestId("expr-dryrun-panel")).toBeVisible();
+  await expect(page.getByTestId("recompute-agg-btn")).toBeVisible();
+
+  if (!isLive) {
+    // Validate agg filter inferred BOOL badge
+    await page
+      .getByTestId("agg-filter-input-0")
+      .fill("prop.status != 'CANCELED'");
+    await expect(page.getByTestId("agg-filter-inferred-type-0")).toHaveText(
+      "BOOL"
+    );
+
+    // Add derived rule, verify NUMBER inferred badge & column-numbered error diagnostic
+    await page.getByTestId("add-derived-rule-btn").click();
+    await expect(page.getByTestId("derived-inferred-type-0")).toHaveText(
+      "NUMBER"
+    );
+    await page.getByTestId("derived-expr-input-0").fill("1 < 2 < 3");
+    await expect(page.getByTestId("derived-expr-issue-0-0")).toContainText(
+      "列 7: chained comparison is not associative"
+    );
+    await page
+      .getByTestId("derived-expr-input-0")
+      .fill("if(total_demand > 0, inventory / total_demand, null)");
+    await expect(page.getByTestId("derived-inferred-type-0")).toHaveText(
+      "NUMBER"
+    );
+
+    // Trigger full aggregate recompute
+    await page.getByTestId("recompute-agg-btn").click();
+    await expect(page.getByTestId("recompute-agg-status")).toContainText(
+      "Warehouse"
+    );
+
+    // Dry-run sample node evaluator: DIV_BY_ZERO warning then normal NUMBER evaluation
+    await page.getByTestId("expr-dryrun-input").fill("inventory / 0");
+    await page.getByTestId("expr-dryrun-submit-btn").click();
+    await expect(page.getByTestId("expr-dryrun-value-type")).toHaveText("NULL");
+    await expect(page.getByTestId("expr-dryrun-warnings")).toContainText(
+      "DIV_BY_ZERO"
+    );
+
+    await page
+      .getByTestId("expr-dryrun-input")
+      .fill("inventory / total_demand");
+    await page.getByTestId("expr-dryrun-submit-btn").click();
+    await expect(page.getByTestId("expr-dryrun-value")).toHaveText("1.5625");
+    await expect(page.getByTestId("expr-dryrun-value-type")).toHaveText(
+      "NUMBER"
+    );
+  }
 
   await page.getByTestId("inspector-tab-mappings").click();
   await expect(page.getByTestId("mapping-editor")).toBeVisible();
@@ -975,6 +1157,30 @@ test("xBlueStudio /studio renders canvas cards & edges, switches subgraph for me
       "O-101"
     );
   }
+
+  // 6b. Open Knowledge Candidates panel and accept candidate entity into Warehouse node
+  await page.getByTestId("knowledge-candidates-btn").click();
+  const candModal = page.getByTestId("knowledge-candidates-modal");
+  await expect(candModal).toBeVisible();
+  if (!isLive) {
+    await expect(
+      page.getByTestId(`knowledge-candidate-item-${CANDIDATE_ENTITY_ID}`)
+    ).toContainText("杭州分拨仓");
+    await expect(
+      page.getByTestId(`knowledge-candidate-item-${CANDIDATE_ENTITY_ID}`)
+    ).toContainText("长三角仓配作业规范.md");
+    await page
+      .getByTestId(`candidate-node-key-input-${CANDIDATE_ENTITY_ID}`)
+      .fill("W-HZ-01");
+    await page
+      .getByTestId(`accept-candidate-btn-${CANDIDATE_ENTITY_ID}`)
+      .click();
+    await expect(
+      page.getByTestId(`candidate-accepted-badge-${CANDIDATE_ENTITY_ID}`)
+    ).toContainText("W-HZ-01");
+  }
+  await page.getByTestId("close-knowledge-candidates-btn").click();
+  await expect(candModal).toHaveCount(0);
 
   // 7. Security & zero-error assertions
   expect(leakedTenantUrls).toEqual([]);
