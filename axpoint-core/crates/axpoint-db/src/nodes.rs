@@ -93,12 +93,13 @@ async fn ensure_node_type_exists_tx(
     tx: &mut Transaction<'_, Postgres>,
     type_name: &str,
 ) -> Result<(), AppError> {
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM xb_node_types WHERE name = $1)")
-            .bind(type_name)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|err| AppError::Database(format!("check xb_node_types failed: {err}")))?;
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM xb_node_types WHERE subgraph_slug = 'main' AND name = $1)",
+    )
+    .bind(type_name)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("check xb_node_types failed: {err}")))?;
 
     if !exists {
         return Err(AppError::bad(
@@ -114,7 +115,7 @@ async fn lookup_edge_impact_weight_tx(
     link_type: &str,
 ) -> Result<f64, AppError> {
     let maybe_weight: Option<f64> = sqlx::query_scalar(
-        "SELECT impact_weight FROM xb_edge_types WHERE name = $1 ORDER BY created_at ASC LIMIT 1",
+        "SELECT impact_weight FROM xb_edge_types WHERE subgraph_slug = 'main' AND name = $1 ORDER BY created_at ASC LIMIT 1",
     )
     .bind(link_type)
     .fetch_optional(&mut **tx)
@@ -1136,11 +1137,13 @@ async fn preload_bulk_nodes_state_tx(
     type_vec: &[String],
     deduped: &BTreeMap<(String, String), BulkNodeInput>,
 ) -> Result<PrevNodeMetricsMap, AppError> {
-    let existing_type_rows = sqlx::query("SELECT name FROM xb_node_types WHERE name = ANY($1)")
-        .bind(type_vec)
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|err| AppError::Database(format!("validate bulk xb_node_types: {err}")))?;
+    let existing_type_rows = sqlx::query(
+        "SELECT name FROM xb_node_types WHERE subgraph_slug = 'main' AND name = ANY($1)",
+    )
+    .bind(type_vec)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("validate bulk xb_node_types: {err}")))?;
     let valid_types: BTreeSet<String> = existing_type_rows
         .into_iter()
         .map(|r| r.get("name"))
@@ -1407,7 +1410,7 @@ async fn load_bulk_link_lookups_tx(
     let edge_rows = sqlx::query(
         "SELECT DISTINCT ON (name) name, impact_weight
            FROM xb_edge_types
-          WHERE name = ANY($1)
+          WHERE subgraph_slug = 'main' AND name = ANY($1)
           ORDER BY name, created_at ASC",
     )
     .bind(&lt_vec)

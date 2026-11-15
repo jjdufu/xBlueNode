@@ -52,14 +52,41 @@ jobs:
       DATABASE_URL: postgres://axpoint_app:axpoint_app_secret@localhost:5432/xbluenode
       AXPOINT_LAKE_CATALOG_DSN: postgres://axpoint_lake:axpoint_lake_secret@localhost:5432/xbluenode
       AXPOINT_REQUIRE_DB_TESTS: "1"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
+      CC: ccache gcc
+      CXX: ccache g++
+      CCACHE_DIR: /home/runner/.cache/ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_MAXSIZE: "2G"
     steps:
+      - name: Reclaim Runner Disk Space & Ensure ccache
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          if ! command -v ccache >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq ccache
+          fi
+          df -h /
       - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: /home/runner/.cache/ccache
+          key: ccache-duckdb-linux-amd64-${{ github.sha }}
+          restore-keys: |
+            ccache-duckdb-linux-amd64-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: axpoint-core
+      - name: Prune Oversized Legacy Debug Build Artifacts
+        run: |
+          if [ -d axpoint-core/target/debug/build ]; then
+            find axpoint-core/target/debug/build -maxdepth 3 -name 'libduckdb.a' -size +1G -printf 'Pruning oversized %p\n' -exec dirname {} \; | xargs -r -I{} rm -rf "{}/.."
+          fi
       - uses: actions/cache@v4
         with:
           path: ~/.duckdb/extensions
@@ -72,7 +99,10 @@ jobs:
             /tmp/ddb-ext/bin/python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL ducklake; INSTALL postgres; INSTALL mysql_scanner; INSTALL sqlite_scanner;')"
           fi
       - name: Install sqlx-cli
-        run: cargo install sqlx-cli --version ^0.9 --no-default-features --features rustls,postgres --locked
+        run: |
+          if ! command -v sqlx >/dev/null 2>&1; then
+            CC=gcc CXX=g++ cargo install sqlx-cli --version ^0.9 --no-default-features --features rustls,postgres --locked
+          fi
       - name: Run Database Migrations
         run: |
           sqlx migrate run --source deploy/migrations --database-url "$MIGRATION_DATABASE_URL"
@@ -81,7 +111,11 @@ jobs:
             -c "ALTER ROLE axpoint_lake PASSWORD 'axpoint_lake_secret'"
       - name: Format, Clippy & Tests
         working-directory: axpoint-core
-        run: cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace -- --test-threads=1
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace -- --test-threads=1
+          ccache -s || true
 
   python-parser:
     needs: detect-changes

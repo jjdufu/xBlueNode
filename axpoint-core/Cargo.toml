@@ -47,6 +47,8 @@ missing_panics_doc = "deny"
 aes-gcm = "0.11"
 argon2 = "0.6"
 arrow = { version = "60", default-features = false }
+async-graphql = { version = "7.2", features = ["dynamic-schema", "dataloader"] }
+async-graphql-axum = "7.2"
 axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }

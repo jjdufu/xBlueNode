@@ -38,6 +38,13 @@ use crate::platform::{
     ApiTokenRecord, AuditRecord, JobListQuery, JobListResponse, JobRecord, LeasedJob, NewJob,
     OutboxEvent, PrincipalRecord,
 };
+use crate::studio::{
+    CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus, MappingRecord,
+    MappingRunRecord, MergePreview, MergePreviewRequest, MergeSubgraphRequest, PublishDraftRequest,
+    PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest, SchemaDiff,
+    SchemaDraft, SchemaVersionDetail, SchemaVersionSummary, SubgraphInfo, TriggerMappingRunRequest,
+    TriggerMappingRunResponse, UpdateDraftRequest, UpdateSubgraphRequest, ValidationContext,
+};
 use crate::topology::{
     AxFlowDef, AxFlowRunResult, AxSandboxRecord, AxSimAction, AxSimResult, AxSimSnapshot, BlueNode,
     CreateAxFlowRequest, CreateAxSandboxRequest, SaveXBlueSchemaRequest, UpsertBlueNodeRequest,
@@ -1167,4 +1174,195 @@ pub trait AnalyticsQueryPort: Send + Sync {
         principal: &AnalyticsPrincipal,
         spec: PivotSpec,
     ) -> impl Future<Output = Result<PivotResult, AppError>> + Send;
+}
+
+/// Persistence port for `xBlueStudio` subgraphs, drafts, optimistic schema publication,
+/// cross-subgraph ontology alignment/merging, and dataset mappings (`06-STEP05-06` §05.4–§05.7).
+pub trait StudioRepository: Send + Sync {
+    /// Lists all subgraphs (`main` first, then department subgraphs) in `tenant_id`.
+    fn list_subgraphs(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<SubgraphInfo>, AppError>> + Send;
+
+    /// Creates a department subgraph (optionally seeding initial node types from `main`).
+    fn create_subgraph(
+        &self,
+        tenant_id: &str,
+        actor_user_id: Option<Uuid>,
+        req: CreateSubgraphRequest,
+    ) -> impl Future<Output = Result<SubgraphInfo, AppError>> + Send;
+
+    /// Updates mutable display metadata of a subgraph.
+    fn update_subgraph(
+        &self,
+        tenant_id: &str,
+        slug: &str,
+        req: UpdateSubgraphRequest,
+    ) -> impl Future<Output = Result<SubgraphInfo, AppError>> + Send;
+
+    /// Deletes a non-`main` department subgraph and its isolated drafts/versions/types/mappings.
+    fn delete_subgraph(
+        &self,
+        tenant_id: &str,
+        slug: &str,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Reads the currently published `SchemaDoc` and head `version` for `subgraph_slug` (ensuring `main` exists).
+    fn get_published_schema(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+    ) -> impl Future<Output = Result<PublishedSchemaResponse, AppError>> + Send;
+
+    /// Convenience direct save (`POST /api/xblue/schema?subgraph=`): creates a draft on current head and publishes immediately.
+    fn save_schema_direct(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        actor_user_id: Option<Uuid>,
+        req: SaveSchemaDirectRequest,
+    ) -> impl Future<Output = Result<PublishedSchemaResponse, AppError>> + Send;
+
+    /// Builds a [`ValidationContext`] hydrated from `tenant_id`'s `main` types, current subgraph doc, node/link counts, and `AxHub` datasets.
+    fn load_validation_context(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+    ) -> impl Future<Output = Result<ValidationContext, AppError>> + Send;
+
+    /// Lists published schema versions for `subgraph_slug` ordered by `version DESC`.
+    fn list_schema_versions(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+    ) -> impl Future<Output = Result<Vec<SchemaVersionSummary>, AppError>> + Send;
+
+    /// Fetches a specific published schema version snapshot (`None` if missing).
+    fn get_schema_version(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        version: i32,
+    ) -> impl Future<Output = Result<Option<SchemaVersionDetail>, AppError>> + Send;
+
+    /// Computes structural diff between version `from_version` and `to_version` in `subgraph_slug`.
+    fn diff_schema_versions(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        from_version: i32,
+        to_version: i32,
+    ) -> impl Future<Output = Result<SchemaDiff, AppError>> + Send;
+
+    /// Creates a `source = RESTORE` draft from historical snapshot `version` based on current head version.
+    fn restore_schema_version(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        version: i32,
+        actor_user_id: Option<Uuid>,
+    ) -> impl Future<Output = Result<SchemaDraft, AppError>> + Send;
+
+    /// Lists schema drafts in `subgraph_slug` (optionally filtered by `status`).
+    fn list_drafts(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        status: Option<DraftStatus>,
+    ) -> impl Future<Output = Result<Vec<SchemaDraft>, AppError>> + Send;
+
+    /// Fetches a single schema draft by UUID.
+    fn get_draft(
+        &self,
+        tenant_id: &str,
+        draft_id: Uuid,
+    ) -> impl Future<Output = Result<Option<SchemaDraft>, AppError>> + Send;
+
+    /// Creates a new schema draft, running `studio::validate` and storing computed `issues`.
+    fn create_draft(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        actor_user_id: Option<Uuid>,
+        req: CreateDraftRequest,
+    ) -> impl Future<Output = Result<SchemaDraft, AppError>> + Send;
+
+    /// Replaces `schema_doc` (and optional `title`) on an editable `DRAFT` and recomputes `issues`.
+    fn update_draft(
+        &self,
+        tenant_id: &str,
+        draft_id: Uuid,
+        req: UpdateDraftRequest,
+    ) -> impl Future<Output = Result<SchemaDraft, AppError>> + Send;
+
+    /// Marks an editable `DRAFT` as `DISCARDED`.
+    fn discard_draft(
+        &self,
+        tenant_id: &str,
+        draft_id: Uuid,
+    ) -> impl Future<Output = Result<SchemaDraft, AppError>> + Send;
+
+    /// Atomically validates and publishes `draft_id` under `pg_advisory_xact_lock` (`06-STEP05-06` §05.4.1).
+    fn publish_draft(
+        &self,
+        tenant_id: &str,
+        draft_id: Uuid,
+        actor_user_id: Option<Uuid>,
+        req: PublishDraftRequest,
+    ) -> impl Future<Output = Result<PublishDraftResponse, AppError>> + Send;
+
+    /// Computes cross-subgraph entity alignment & conflict preview against `main` (`06-STEP05-06` §05.4.5).
+    fn preview_subgraph_merge(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        req: MergePreviewRequest,
+    ) -> impl Future<Output = Result<MergePreview, AppError>> + Send;
+
+    /// Merges a department subgraph's published `SchemaDoc` into `main` atomically (`06-STEP05-06` §05.4.5).
+    fn merge_subgraph_into_main(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        actor_user_id: Option<Uuid>,
+        req: MergeSubgraphRequest,
+    ) -> impl Future<Output = Result<PublishDraftResponse, AppError>> + Send;
+
+    /// Lists persisted `xb_mappings` in `subgraph_slug`.
+    fn list_mappings(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+    ) -> impl Future<Output = Result<Vec<MappingRecord>, AppError>> + Send;
+
+    /// Fetches a single `xb_mappings` row by UUID.
+    fn get_mapping(
+        &self,
+        tenant_id: &str,
+        mapping_id: Uuid,
+    ) -> impl Future<Output = Result<Option<MappingRecord>, AppError>> + Send;
+
+    /// Lists execution runs for `mapping_id` ordered by `started_at DESC`.
+    fn list_mapping_runs(
+        &self,
+        tenant_id: &str,
+        mapping_id: Uuid,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<MappingRunRecord>, AppError>> + Send;
+
+    /// Enqueues a `MAP_MATERIALIZE` job for a `main` mapping (`POST /api/xblue/mappings/{id}/run`).
+    fn enqueue_mapping_run(
+        &self,
+        tenant_id: &str,
+        mapping_id: Uuid,
+        req: TriggerMappingRunRequest,
+    ) -> impl Future<Output = Result<TriggerMappingRunResponse, AppError>> + Send;
+
+    /// Extracts hypergraph entity groups and `RELATES` triples from `doc_ids` for AI schema draft generation (`06-STEP05-06` §05.5 step 2).
+    fn load_doc_entity_groups(
+        &self,
+        tenant_id: &str,
+        doc_ids: &[Uuid],
+    ) -> impl Future<Output = Result<Vec<DocEntityGroup>, AppError>> + Send;
 }

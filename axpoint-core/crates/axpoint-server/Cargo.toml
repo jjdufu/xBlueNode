@@ -14,6 +14,8 @@ axpoint-db = { path = "../axpoint-db" }
 axpoint-domain = { path = "../axpoint-domain" }
 axpoint-llm = { path = "../axpoint-llm" }
 axpoint-security = { path = "../axpoint-security" }
+async-graphql = { workspace = true }
+async-graphql-axum = { workspace = true }
 axum = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
