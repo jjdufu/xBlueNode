@@ -322,6 +322,21 @@ fn json_obj(val: serde_json::Value) -> JsonRow {
     }
 }
 
+async fn clear_tenant_bg_queues(
+    owner_pool: &PgPool,
+    tenant_id: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    sqlx::query("DELETE FROM ax_jobs WHERE tenant_id = $1")
+        .bind(tenant_id)
+        .execute(owner_pool)
+        .await?;
+    sqlx::query("DELETE FROM ax_outbox WHERE tenant_id = $1")
+        .bind(tenant_id)
+        .execute(owner_pool)
+        .await?;
+    Ok(())
+}
+
 #[tokio::test]
 async fn mapping_exec_and_aggregate_exec_full_incremental_and_explain() -> TestResult {
     let Some((app_pool, owner_pool)) = test_pools().await? else {
@@ -345,6 +360,7 @@ async fn mapping_exec_and_aggregate_exec_full_incremental_and_explain() -> TestR
             },
         )
         .await?;
+    clear_tenant_bg_queues(&owner_pool, &tenant_id).await?;
 
     let mappings = store
         .list_enabled_main_mappings_for_dataset(&tenant_id, ds_id)
@@ -493,6 +509,7 @@ async fn verify_rollup_and_incremental_delete(
         .await?;
     assert_eq!(exp_zero.value, None);
     assert_eq!(exp_zero.warnings, vec![EvalWarningCode::DivByZero]);
+    clear_tenant_bg_queues(owner_pool, tenant_id).await?;
     Ok(())
 }
 
@@ -519,6 +536,7 @@ async fn knowledge_sync_dossier_and_candidate_promotion_end_to_end() -> TestResu
             },
         )
         .await?;
+    clear_tenant_bg_queues(&owner_pool, &tenant_id).await?;
 
     let ent_id = Uuid::new_v4();
     sqlx::query(
@@ -585,5 +603,6 @@ async fn knowledge_sync_dossier_and_candidate_promotion_end_to_end() -> TestResu
             .and_then(serde_json::Value::as_u64),
         Some(1)
     );
+    clear_tenant_bg_queues(&owner_pool, &tenant_id).await?;
     Ok(())
 }

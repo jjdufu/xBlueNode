@@ -302,6 +302,7 @@ async fn run_streaming_pipeline<L: LakeInternalQueryPort>(
         let query_sql = build_chunk_sql(
             ctx.eff_mode,
             resolved,
+            &ctx.mapping.spec.key_column,
             from_snap,
             to_snap,
             sql_where.as_deref(),
@@ -346,6 +347,23 @@ async fn run_streaming_pipeline<L: LakeInternalQueryPort>(
     Ok(())
 }
 
+fn incremental_row_sort_key(row: &JsonRow) -> (i64, u8) {
+    let snap = row
+        .get("snapshot_id")
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+        })
+        .unwrap_or(0);
+    let kind_rank = match row.get("change_type").and_then(serde_json::Value::as_str) {
+        Some("delete") => 0,
+        Some("insert") | None => 1,
+        Some("update_postimage") => 2,
+        Some(_) => 3,
+    };
+    (snap, kind_rank)
+}
+
 async fn process_single_chunk(
     store: &PgStore,
     ctx: &ChunkExecCtx<'_>,
@@ -364,7 +382,12 @@ async fn process_single_chunk(
     let mut upserts_by_key: BTreeMap<String, CoercedRow> = BTreeMap::new();
     let mut delete_keys: BTreeSet<String> = BTreeSet::new();
 
-    for row in rows {
+    let mut ordered_rows: Vec<&JsonRow> = rows.iter().collect();
+    if ctx.eff_mode == MappingMode::Incremental {
+        ordered_rows.sort_by_key(|r| incremental_row_sort_key(r));
+    }
+
+    for row in ordered_rows {
         let change_kind = if ctx.eff_mode == MappingMode::Incremental {
             row.get("change_type")
                 .and_then(serde_json::Value::as_str)
@@ -1812,6 +1835,7 @@ async fn select_execution_mode<L: LakeInternalQueryPort>(
 fn build_chunk_sql(
     eff_mode: MappingMode,
     resolved: &ResolvedLakeTable,
+    key_column: &str,
     from_snap: Option<i64>,
     to_snap: Option<i64>,
     sql_where: Option<&str>,
@@ -1835,15 +1859,50 @@ fn build_chunk_sql(
                 ));
             };
             let start_snap = f.saturating_add(1);
-            Ok(format!(
-                "SELECT * FROM ducklake_table_changes('{}', '{}', '{}', {start_snap}, {t}) \
-                 WHERE change_type IN ('insert', 'update_postimage', 'delete') \
-                 ORDER BY snapshot_id ASC \
-                 LIMIT {CHUNK_ROWS} OFFSET {offset}",
-                escape_sql_literal(cat),
-                escape_sql_literal(sch),
-                escape_sql_literal(tbl),
-            ))
+            let key_col = key_column.trim();
+            if key_col.is_empty() {
+                Ok(format!(
+                    "SELECT * FROM ducklake_table_changes('{}', '{}', '{}', {start_snap}, {t}) \
+                     WHERE change_type IN ('insert', 'update_postimage', 'delete') \
+                     ORDER BY snapshot_id ASC, \
+                              CASE change_type \
+                                  WHEN 'delete' THEN 0 \
+                                  WHEN 'insert' THEN 1 \
+                                  WHEN 'update_postimage' THEN 2 \
+                                  ELSE 3 \
+                              END ASC, \
+                              rowid ASC \
+                     LIMIT {CHUNK_ROWS} OFFSET {offset}",
+                    escape_sql_literal(cat),
+                    escape_sql_literal(sch),
+                    escape_sql_literal(tbl),
+                ))
+            } else {
+                let q_key = quote_ident(key_col);
+                Ok(format!(
+                    "SELECT * EXCLUDE (_ax_rn) FROM ( \
+                         SELECT *, ROW_NUMBER() OVER ( \
+                             PARTITION BY {q_key} \
+                             ORDER BY snapshot_id DESC, \
+                                      CASE change_type \
+                                          WHEN 'delete' THEN 0 \
+                                          WHEN 'insert' THEN 1 \
+                                          WHEN 'update_postimage' THEN 2 \
+                                          ELSE 3 \
+                                      END DESC, \
+                                      rowid DESC \
+                         ) AS _ax_rn \
+                         FROM ducklake_table_changes('{}', '{}', '{}', {start_snap}, {t}) \
+                         WHERE change_type IN ('insert', 'update_postimage', 'delete') \
+                     ) _ax_dedup \
+                     WHERE _ax_rn = 1 \
+                     ORDER BY snapshot_id ASC, rowid ASC \
+                     LIMIT {CHUNK_ROWS} OFFSET {offset}",
+                    escape_sql_literal(cat),
+                    escape_sql_literal(sch),
+                    escape_sql_literal(tbl),
+                ))
+            }
         }
     }
 }
@@ -2267,5 +2326,39 @@ mod tests {
             allowed_values: None,
         };
         assert_eq!(prop.data_type, DataType::Int64);
+    }
+
+    #[test]
+    fn mapping_exec_incremental_upsert_orders_delete_before_insert() {
+        let mut ins = JsonRow::new();
+        ins.insert(String::from("snapshot_id"), serde_json::json!(12));
+        ins.insert(String::from("change_type"), serde_json::json!("insert"));
+        let mut del = JsonRow::new();
+        del.insert(String::from("snapshot_id"), serde_json::json!(12));
+        del.insert(String::from("change_type"), serde_json::json!("delete"));
+
+        assert!(incremental_row_sort_key(&del) < incremental_row_sort_key(&ins));
+
+        let resolved = ResolvedLakeTable {
+            full_ref: String::from("lake.\"tenant_default\".\"demo_orders\""),
+            ducklake_args: Some((
+                String::from("lake"),
+                String::from("tenant_default"),
+                String::from("demo_orders"),
+            )),
+            physical_columns: BTreeSet::new(),
+        };
+        let sql_res = build_chunk_sql(
+            MappingMode::Incremental,
+            &resolved,
+            "order_id",
+            Some(5),
+            Some(6),
+            None,
+            0,
+        );
+        assert!(sql_res.is_ok_and(|s| {
+            s.contains("PARTITION BY \"order_id\"") && s.contains("ducklake_table_changes")
+        }));
     }
 }
