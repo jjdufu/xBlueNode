@@ -68,7 +68,12 @@ async function installXBlueGraphMocks(
               node_key: "W-1",
               title: "华东仓",
               properties: { region: "华东", tier: "核心枢纽" },
-              metrics: { inventory: 500, capacity: 900 },
+              metrics: {
+                inventory: 500,
+                capacity: 900,
+                total_demand: 320,
+                fill_rate: 1.5625,
+              },
               geo: { lng: 121.4737, lat: 31.2304 },
               row_version: 2,
             },
@@ -113,7 +118,12 @@ async function installXBlueGraphMocks(
               node_key: "W-1",
               title: "华东仓",
               properties: { region: "华东" },
-              metrics: { inventory: 500, capacity: 900 },
+              metrics: {
+                inventory: 500,
+                capacity: 900,
+                total_demand: 320,
+                fill_rate: 1.5625,
+              },
               geo: { lng: 121.4737, lat: 31.2304 },
               score: 0.98,
               channels: ["FTS", "VECTOR"],
@@ -135,7 +145,12 @@ async function installXBlueGraphMocks(
               type_name: "Warehouse",
               node_key: "W-1",
               title: "华东仓",
-              metrics: { inventory: 500, capacity: 900 },
+              metrics: {
+                inventory: 500,
+                capacity: 900,
+                total_demand: 320,
+                fill_rate: 1.5625,
+              },
             },
             {
               id: FACTORY_F1_ID,
@@ -188,8 +203,7 @@ async function installXBlueGraphMocks(
     }
 
     if (
-      pathname ===
-      `/api/xblue/nodes/${WAREHOUSE_W1_ID}/metrics/inventory`
+      pathname.startsWith(`/api/xblue/nodes/${WAREHOUSE_W1_ID}/metrics/`)
     ) {
       await route.fulfill({
         status: 200,
@@ -202,6 +216,118 @@ async function installXBlueGraphMocks(
           { ts: "2026-01-29T00:00:00Z", value: 530 },
           { ts: "2026-01-30T00:00:00Z", value: 500 },
         ]),
+      });
+      return;
+    }
+
+    if (
+      pathname === `/api/xblue/nodes/${WAREHOUSE_W1_ID}/explain/inventory`
+    ) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          node_id: WAREHOUSE_W1_ID,
+          metric: "inventory",
+          value: 500,
+          producer: "SYNC",
+          rule: {
+            mapping_name: "warehouses_sync",
+            dataset: "demo_warehouses",
+          },
+          inputs: [],
+          computed_at: "2026-01-31T08:25:00Z",
+          warnings: [],
+        }),
+      });
+      return;
+    }
+
+    if (
+      pathname === `/api/xblue/nodes/${WAREHOUSE_W1_ID}/explain/fill_rate`
+    ) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          node_id: WAREHOUSE_W1_ID,
+          metric: "fill_rate",
+          value: 1.5625,
+          producer: "DERIVED",
+          rule: {
+            target_metric: "fill_rate",
+            expression:
+              "if(total_demand > 0, inventory / total_demand, null)",
+            enabled: true,
+          },
+          inputs: [
+            {
+              node_id: WAREHOUSE_W1_ID,
+              node_key: "W-1",
+              type_name: "Warehouse",
+              title: "华东仓",
+              metric: "inventory",
+              value: 500,
+            },
+            {
+              node_id: WAREHOUSE_W1_ID,
+              node_key: "W-1",
+              type_name: "Warehouse",
+              title: "华东仓",
+              metric: "total_demand",
+              value: 320,
+            },
+          ],
+          computed_at: "2026-01-31T08:30:00Z",
+          warnings: [],
+        }),
+      });
+      return;
+    }
+
+    if (
+      pathname === `/api/xblue/nodes/${WAREHOUSE_W1_ID}/explain/total_demand`
+    ) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          node_id: WAREHOUSE_W1_ID,
+          metric: "total_demand",
+          value: 320,
+          producer: "AGG",
+          rule: {
+            target_metric: "total_demand",
+            op: "SUM",
+            via_link_type: "FULFILLS",
+            direction: "OUT",
+            source_type_name: "Order",
+            source_metric: "demand",
+            weight_by_link: true,
+          },
+          inputs: [
+            {
+              node_id: ORDER_O3_ID,
+              node_key: "O-3",
+              type_name: "Order",
+              title: "华东履约单 O-3",
+              metric: "demand",
+              value: 120,
+              weight: 0.8,
+            },
+            {
+              node_id: ORDER_O4_ID,
+              node_key: "O-4",
+              type_name: "Order",
+              title: "华东履约单 O-4",
+              metric: "demand",
+              value: 200,
+              weight: 0.8,
+            },
+          ],
+          computed_at: "2026-01-31T08:29:00Z",
+          warnings: [],
+        }),
       });
       return;
     }
@@ -370,6 +496,36 @@ test("xBlueGraph /graph locates 华东仓 (W-1), expands 1-hop neighbors on doub
     }
   );
   expect(hasNonZeroPixels).toBe(true);
+
+  const explainChain = page.getByTestId("metric-explain-chain");
+  await expect(explainChain).toBeVisible();
+
+  if (process.env.PLAYWRIGHT_LIVE_API !== "1") {
+    await expect(page.getByTestId("explain-producer-badge")).toHaveText(
+      "SYNC 映射同步"
+    );
+
+    // Switch to derived metric fill_rate and recursively expand upstream total_demand AGG chain
+    await page.getByTestId("metric-item-fill_rate").click();
+    await expect(page.getByTestId("explain-producer-badge")).toHaveText(
+      "DERIVED 派生"
+    );
+    await expect(page.getByTestId("explain-rule-summary")).toContainText(
+      "if(total_demand > 0, inventory / total_demand, null)"
+    );
+    await expect(
+      page.getByTestId("explain-input-item-W-1-total_demand")
+    ).toContainText("华东仓");
+
+    await page.getByTestId("explain-expand-W-1-total_demand").click();
+    const level1 = page.getByTestId("explain-level-1");
+    await expect(level1).toContainText("AGG 聚合");
+    await expect(level1).toContainText(
+      "SUM(Order.demand) via FULFILLS (OUT)"
+    );
+    await expect(level1).toContainText("华东履约单 O-3");
+    await expect(level1).toContainText("weight=0.8");
+  }
 
   // Also verify PathFinder & AlgoPanel tabs execute without errors
   await page.getByTestId("side-tab-path").click();

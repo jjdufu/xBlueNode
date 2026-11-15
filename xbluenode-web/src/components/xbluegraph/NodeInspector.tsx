@@ -16,6 +16,7 @@ import {
 } from "@/lib/api/xblue";
 import { Badge, Button } from "@/components/ui/primitives";
 import { MetricChart } from "@/components/xbluegraph/MetricChart";
+import { MetricExplainChain } from "@/components/xbluegraph/MetricExplainChain";
 
 export interface NodeInspectorProps {
   node: BlueNode | null;
@@ -232,11 +233,14 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
         )}
 
         {selectedMetric && (
-          <MetricChart
-            nodeId={node.id}
-            nodeTitle={node.title}
-            metric={selectedMetric}
-          />
+          <>
+            <MetricChart
+              nodeId={node.id}
+              nodeTitle={node.title}
+              metric={selectedMetric}
+            />
+            <MetricExplainChain nodeId={node.id} metric={selectedMetric} />
+          </>
         )}
       </div>
 

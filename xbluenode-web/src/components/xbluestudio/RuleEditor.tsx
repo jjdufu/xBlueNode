@@ -1,13 +1,27 @@
-import React from "react";
-import { AlertCircle, CheckCircle2, Plus, Trash2 } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  FlaskConical,
+  Play,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from "lucide-react";
 import type { AggFn } from "@/lib/api/enums";
-import type {
-  AggRuleSpec,
-  DerivedRuleSpec,
-  EdgeTypeSpec,
-  LinkDirection,
-  NodeTypeSpec,
-  ValidationIssue,
+import {
+  xblueApi,
+  type AggRuleSpec,
+  type BlueNode,
+  type DerivedRuleSpec,
+  type EdgeTypeSpec,
+  type EvaluateExprResponse,
+  type ExprIssue,
+  type ExprType,
+  type LinkDirection,
+  type NodeTypeSpec,
+  type ValidationIssue,
 } from "@/lib/api/xblue";
 import { Badge, Button, Input } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
@@ -18,8 +32,15 @@ export interface RuleEditorProps {
   allNodeTypes: NodeTypeSpec[];
   edgeTypes: EdgeTypeSpec[];
   issues: ValidationIssue[];
+  subgraph?: string;
   onChangeAggRules: (next: AggRuleSpec[]) => void;
   onChangeDerivedRules: (next: DerivedRuleSpec[]) => void;
+}
+
+interface LiveExprDiagnostic {
+  valid: boolean;
+  inferred_type?: ExprType;
+  issues: ExprIssue[];
 }
 
 const AGG_OPS: readonly AggFn[] = [
@@ -156,21 +177,236 @@ function checkLocalExprSyntax(expr: string): string | null {
   return null;
 }
 
+function formatEvalValue(val: unknown): string {
+  if (val === null || val === undefined) return "null";
+  if (typeof val === "number") {
+    return Number.isInteger(val) ? String(val) : Number(val.toFixed(6)).toString();
+  }
+  if (typeof val === "boolean") return val ? "true" : "false";
+  if (typeof val === "string") return `'${val}'`;
+  return JSON.stringify(val);
+}
+
 export function RuleEditor({
   nodeIndex,
   nodeType,
   allNodeTypes,
   edgeTypes,
   issues,
+  subgraph = "main",
   onChangeAggRules,
   onChangeDerivedRules,
 }: RuleEditorProps) {
-  const ownMetrics = nodeType.properties
-    .filter((p) => p.kind === "METRIC" && p.name.trim().length > 0)
-    .map((p) => p.name);
-  const ownAttrs = nodeType.properties
-    .filter((p) => p.kind === "ATTRIBUTE" && p.name.trim().length > 0)
-    .map((p) => p.name);
+  const ownMetrics = useMemo(
+    () =>
+      nodeType.properties
+        .filter((p) => p.kind === "METRIC" && p.name.trim().length > 0)
+        .map((p) => p.name),
+    [nodeType.properties]
+  );
+  const ownAttrs = useMemo(
+    () =>
+      nodeType.properties
+        .filter((p) => p.kind === "ATTRIBUTE" && p.name.trim().length > 0)
+        .map((p) => p.name),
+    [nodeType.properties]
+  );
+
+  // Live backend validation map keyed by `${scopeType}::${expression}`
+  const [exprDiagnostics, setExprDiagnostics] = useState<
+    Record<string, LiveExprDiagnostic>
+  >({});
+
+  // Full aggregate recompute state
+  const [recomputing, setRecomputing] = useState(false);
+  const [recomputeStatus, setRecomputeStatus] = useState<string | null>(null);
+
+  // Sample runtime node dry-run evaluator state
+  const [sampleNodes, setSampleNodes] = useState<BlueNode[]>([]);
+  const [loadingSampleNodes, setLoadingSampleNodes] = useState(false);
+  const [selectedSampleNodeId, setSelectedSampleNodeId] = useState<string>("");
+  const [dryRunExpr, setDryRunExpr] = useState<string>("");
+  const [evaluating, setEvaluating] = useState(false);
+  const [evalResult, setEvalResult] = useState<EvaluateExprResponse | null>(
+    null
+  );
+  const [evalError, setEvalError] = useState<string | null>(null);
+
+  // Debounced live backend expression validation for derived formulas & agg filters
+  useEffect(() => {
+    const targets: { key: string; typeName: string; expression: string }[] = [];
+
+    for (const dRule of nodeType.derived_rules) {
+      const trimmed = dRule.expression.trim();
+      if (trimmed.length > 0 && nodeType.name.trim().length > 0) {
+        const key = `${subgraph}::${nodeType.name}::${trimmed}`;
+        targets.push({
+          key,
+          typeName: nodeType.name,
+          expression: dRule.expression,
+        });
+      }
+    }
+
+    for (const aRule of nodeType.agg_rules) {
+      const filterTrimmed = (aRule.filter ?? "").trim();
+      const filterScope = (aRule.source_type_name || nodeType.name).trim();
+      if (filterTrimmed.length > 0 && filterScope.length > 0) {
+        const key = `${subgraph}::${filterScope}::${filterTrimmed}`;
+        targets.push({
+          key,
+          typeName: filterScope,
+          expression: filterTrimmed,
+        });
+      }
+    }
+
+    if (targets.length === 0) return;
+
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void Promise.all(
+        targets.map(async (item) => {
+          try {
+            const res = await xblueApi.validateExpr({
+              type_name: item.typeName,
+              expression: item.expression,
+              subgraph,
+            });
+            return { key: item.key, res };
+          } catch {
+            // Graceful fallback to local syntax check if type is not published yet
+            return null;
+          }
+        })
+      ).then((results) => {
+        if (cancelled) return;
+        setExprDiagnostics((prev) => {
+          const next = { ...prev };
+          for (const entry of results) {
+            if (entry) {
+              next[entry.key] = {
+                valid: entry.res.valid,
+                inferred_type: entry.res.inferred_type,
+                issues: entry.res.issues,
+              };
+            }
+          }
+          return next;
+        });
+      });
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [nodeType.name, nodeType.derived_rules, nodeType.agg_rules, subgraph]);
+
+  // Load sample runtime nodes when selected nodeType.name changes
+  useEffect(() => {
+    setRecomputeStatus(null);
+    setEvalResult(null);
+    setEvalError(null);
+
+    const defaultFormula =
+      nodeType.derived_rules[0]?.expression ||
+      (ownMetrics.length >= 2
+        ? `if(${ownMetrics[1]} > 0, ${ownMetrics[0]} / ${ownMetrics[1]}, null)`
+        : ownMetrics[0] ?? "0");
+    setDryRunExpr(defaultFormula);
+
+    const typeName = nodeType.name.trim();
+    if (!typeName) {
+      setSampleNodes([]);
+      setSelectedSampleNodeId("");
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingSampleNodes(true);
+    void xblueApi
+      .listNodes({ type_name: typeName, limit: 20 })
+      .then((res) => {
+        if (cancelled) return;
+        const rawList =
+          Array.isArray(res?.items) && res.items.length > 0
+            ? res.items
+            : Array.isArray(res?.nodes)
+              ? res.nodes
+              : [];
+        const filtered = rawList.filter(
+          (n) => !n.type_name || n.type_name === typeName
+        );
+        const list = filtered.length > 0 ? filtered : rawList;
+        setSampleNodes(list);
+        setSelectedSampleNodeId((prev) =>
+          prev && list.some((n) => n.id === prev) ? prev : (list[0]?.id ?? "")
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSampleNodes([]);
+          setSelectedSampleNodeId("");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingSampleNodes(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nodeType.name]);
+
+  const handleRecomputeAggregate = async () => {
+    setRecomputing(true);
+    setRecomputeStatus(null);
+    try {
+      const res = await xblueApi.recomputeAggregate({
+        type_name: nodeType.name,
+      });
+      const shortJob = res.job_id ? res.job_id.slice(0, 8) : "queued";
+      setRecomputeStatus(
+        `已入队全量聚合重算任务 (${res.type_name ?? nodeType.name} · job=${shortJob})`
+      );
+    } catch (err) {
+      setRecomputeStatus(
+        err instanceof Error ? err.message : "触发聚合重算失败"
+      );
+    } finally {
+      setRecomputing(false);
+    }
+  };
+
+  const executeDryRun = async (exprOverride?: string) => {
+    const targetExpr = (exprOverride ?? dryRunExpr).trim();
+    if (!selectedSampleNodeId) {
+      setEvalError("请先选择一个已存在的运行时样本节点");
+      return;
+    }
+    if (!targetExpr) {
+      setEvalError("试算表达式不能为空");
+      return;
+    }
+    setEvaluating(true);
+    setEvalError(null);
+    try {
+      const res = await xblueApi.evaluateExpr({
+        node_id: selectedSampleNodeId,
+        expression: targetExpr,
+      });
+      setEvalResult(res);
+    } catch (err) {
+      setEvalResult(null);
+      setEvalError(err instanceof Error ? err.message : "表达式样本试算失败");
+    } finally {
+      setEvaluating(false);
+    }
+  };
 
   const addAggRule = () => {
     const firstEdge = edgeTypes.find(
@@ -216,17 +452,21 @@ export function RuleEditor({
   };
 
   const addDerivedRule = () => {
+    const nextFormula =
+      ownMetrics.length >= 2
+        ? `if(${ownMetrics[1]} > 0, ${ownMetrics[0]} / ${ownMetrics[1]}, null)`
+        : "0";
     onChangeDerivedRules([
       ...nodeType.derived_rules,
       {
         target_metric: ownMetrics[0] ?? "",
-        expression:
-          ownMetrics.length >= 2
-            ? `if(${ownMetrics[1]} > 0, ${ownMetrics[0]} / ${ownMetrics[1]}, null)`
-            : "0",
+        expression: nextFormula,
         enabled: true,
       },
     ]);
+    if (!dryRunExpr || dryRunExpr === "0") {
+      setDryRunExpr(nextFormula);
+    }
   };
 
   const updateDerivedRule = (idx: number, patch: Partial<DerivedRuleSpec>) => {
@@ -245,7 +485,9 @@ export function RuleEditor({
     const cur = nodeType.derived_rules[idx];
     if (!cur) return;
     const sep =
-      cur.expression.length > 0 && !cur.expression.endsWith(" ") && !cur.expression.endsWith("(")
+      cur.expression.length > 0 &&
+      !cur.expression.endsWith(" ") &&
+      !cur.expression.endsWith("(")
         ? " "
         : "";
     updateDerivedRule(idx, {
@@ -253,8 +495,50 @@ export function RuleEditor({
     });
   };
 
+  const selectedSampleNode = sampleNodes.find(
+    (n) => n.id === selectedSampleNodeId
+  );
+
   return (
     <div className="space-y-4 text-xs" data-testid="rule-editor">
+      {/* Top Action Bar: Full Aggregate Recompute Trigger */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-border bg-muted/20 px-2.5 py-2">
+        <div className="space-y-0.5">
+          <div className="font-semibold flex items-center gap-1.5">
+            <span>传播重算控制 ({nodeType.name})</span>
+            <Badge variant="outline">DAG 拓扑序</Badge>
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            对企业主图该类型全部实例入队 GRAPH_AGGREGATE 重算任务
+          </div>
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          className="h-7 px-2.5 py-1 text-xs"
+          data-testid="recompute-agg-btn"
+          disabled={recomputing || !nodeType.name.trim()}
+          onClick={() => void handleRecomputeAggregate()}
+        >
+          <RefreshCw
+            className={cn(
+              "h-3 w-3 text-xblue",
+              recomputing && "animate-spin"
+            )}
+          />
+          {recomputing ? "入队重算中..." : "触发全量重算"}
+        </Button>
+      </div>
+
+      {recomputeStatus && (
+        <div
+          className="rounded border border-border bg-muted/40 px-2.5 py-1.5 font-mono-tech text-[11px]"
+          data-testid="recompute-agg-status"
+        >
+          {recomputeStatus}
+        </div>
+      )}
+
       {/* Section 1: Dynamic Aggregation Rules */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
@@ -293,6 +577,21 @@ export function RuleEditor({
               const ruleIssues = issues.filter((iss) =>
                 iss.path.startsWith(rulePathPrefix)
               );
+              const filterTrimmed = (rule.filter ?? "").trim();
+              const filterScope = (
+                rule.source_type_name || nodeType.name
+              ).trim();
+              const filterKey =
+                filterTrimmed.length > 0 && filterScope.length > 0
+                  ? `${subgraph}::${filterScope}::${filterTrimmed}`
+                  : "";
+              const filterDiag = filterKey
+                ? exprDiagnostics[filterKey]
+                : undefined;
+              const localFilterErr =
+                filterTrimmed.length > 0 && !filterDiag
+                  ? checkLocalExprSyntax(filterTrimmed)
+                  : null;
 
               return (
                 <div
@@ -478,15 +777,28 @@ export function RuleEditor({
                           })
                         }
                       />
-                      <span className="text-[11px]">按边权重加权 (weight_by_link)</span>
+                      <span className="text-[11px]">
+                        按边权重加权 (weight_by_link)
+                      </span>
                     </label>
                   </div>
 
-                  <div>
-                    <label className="block text-[11px] text-muted-foreground mb-0.5">
-                      子节点过滤表达式 (filter，可选)
-                    </label>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-[11px] text-muted-foreground">
+                        子节点过滤表达式 (filter，可选)
+                      </label>
+                      {filterDiag?.valid && filterDiag.inferred_type && (
+                        <Badge
+                          variant="xblue"
+                          data-testid={`agg-filter-inferred-type-${idx}`}
+                        >
+                          {filterDiag.inferred_type}
+                        </Badge>
+                      )}
+                    </div>
                     <Input
+                      data-testid={`agg-filter-input-${idx}`}
                       value={rule.filter ?? ""}
                       onChange={(e) =>
                         updateAggRule(idx, { filter: e.target.value })
@@ -494,6 +806,25 @@ export function RuleEditor({
                       placeholder="例如 prop.status != 'CANCELED'"
                       className="h-7 px-2 text-xs font-mono-tech"
                     />
+                    {localFilterErr && (
+                      <div className="text-[11px] text-red-600 dark:text-red-400">
+                        语法提示: {localFilterErr}
+                      </div>
+                    )}
+                    {filterDiag?.issues.map((fIss, fIdx) => (
+                      <div
+                        key={fIdx}
+                        data-testid={`agg-filter-issue-${idx}-${fIdx}`}
+                        className="text-[11px] text-red-600 dark:text-red-400 flex items-center gap-1 font-mono-tech"
+                      >
+                        <AlertCircle className="h-3 w-3 shrink-0" />
+                        <span>
+                          {fIss.column !== undefined
+                            ? `列 ${fIss.column}: ${fIss.message}`
+                            : fIss.message}
+                        </span>
+                      </div>
+                    ))}
                   </div>
 
                   {ruleIssues.map((iss, iIdx) => (
@@ -539,12 +870,27 @@ export function RuleEditor({
         ) : (
           <div className="space-y-2">
             {nodeType.derived_rules.map((dRule, idx) => {
-              const localErr = checkLocalExprSyntax(dRule.expression);
+              const exprTrimmed = dRule.expression.trim();
+              const diagKey =
+                exprTrimmed.length > 0 && nodeType.name.trim().length > 0
+                  ? `${subgraph}::${nodeType.name}::${exprTrimmed}`
+                  : "";
+              const backendDiag = diagKey
+                ? exprDiagnostics[diagKey]
+                : undefined;
+              const localErr = !backendDiag
+                ? checkLocalExprSyntax(dRule.expression)
+                : null;
               const rulePathPrefix = `node_types[${nodeIndex}].derived_rules[${idx}]`;
               const serverIssues = issues.filter((iss) =>
                 iss.path.startsWith(rulePathPrefix)
               );
-              const hasIssue = Boolean(localErr) || serverIssues.length > 0;
+              const backendIssues = backendDiag?.issues ?? [];
+              const hasIssue =
+                Boolean(localErr) ||
+                backendIssues.length > 0 ||
+                backendDiag?.valid === false ||
+                serverIssues.length > 0;
 
               return (
                 <div
@@ -600,7 +946,15 @@ export function RuleEditor({
                       </label>
                     </div>
 
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-1.5">
+                      {backendDiag?.valid && backendDiag.inferred_type && (
+                        <Badge
+                          variant="xblue"
+                          data-testid={`derived-inferred-type-${idx}`}
+                        >
+                          {backendDiag.inferred_type}
+                        </Badge>
+                      )}
                       {hasIssue ? (
                         <Badge
                           variant="outline"
@@ -620,6 +974,19 @@ export function RuleEditor({
                       )}
                       <button
                         type="button"
+                        onClick={() => {
+                          setDryRunExpr(dRule.expression);
+                          if (selectedSampleNodeId) {
+                            void executeDryRun(dRule.expression);
+                          }
+                        }}
+                        title="带入样本节点试算"
+                        className="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-xblue cursor-pointer"
+                      >
+                        试算
+                      </button>
+                      <button
+                        type="button"
                         onClick={() => removeDerivedRule(idx)}
                         className="rounded p-1 text-muted-foreground hover:text-red-600 cursor-pointer"
                       >
@@ -631,6 +998,7 @@ export function RuleEditor({
                   {/* Monospace Expression Input */}
                   <textarea
                     rows={2}
+                    data-testid={`derived-expr-input-${idx}`}
                     value={dRule.expression}
                     onChange={(e) =>
                       updateDerivedRule(idx, { expression: e.target.value })
@@ -692,6 +1060,20 @@ export function RuleEditor({
                       语法提示: {localErr}
                     </div>
                   )}
+                  {backendIssues.map((bIss, bIdx) => (
+                    <div
+                      key={bIdx}
+                      data-testid={`derived-expr-issue-${idx}-${bIdx}`}
+                      className="text-[11px] text-red-600 dark:text-red-400 flex items-center gap-1 font-mono-tech"
+                    >
+                      <AlertCircle className="h-3 w-3 shrink-0" />
+                      <span>
+                        {bIss.column !== undefined
+                          ? `列 ${bIss.column}: ${bIss.message}`
+                          : bIss.message}
+                      </span>
+                    </div>
+                  ))}
                   {serverIssues.map((iss, sIdx) => (
                     <div
                       key={sIdx}
@@ -706,6 +1088,138 @@ export function RuleEditor({
           </div>
         )}
       </div>
+
+      {/* Section 3: Sample Runtime Node Dry-Run Evaluator */}
+      <div
+        className="space-y-2.5 border-t border-border pt-3"
+        data-testid="expr-dryrun-panel"
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5">
+            <FlaskConical className="h-3.5 w-3.5 text-xblue" />
+            <span className="font-semibold">样本节点试算 (Dry-Run 求值器)</span>
+            <span className="text-[11px] text-muted-foreground">
+              只读快照试算，不写库
+            </span>
+          </div>
+          <Badge variant="outline">
+            {loadingSampleNodes
+              ? "加载中..."
+              : `样本 ${sampleNodes.length} 个`}
+          </Badge>
+        </div>
+
+        <div className="rounded border border-border bg-muted/20 p-2.5 space-y-2">
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
+            <div className="md:col-span-5">
+              <label className="block text-[11px] text-muted-foreground mb-0.5">
+                运行时样本节点 ({nodeType.name})
+              </label>
+              <select
+                data-testid="expr-dryrun-node-select"
+                value={selectedSampleNodeId}
+                onChange={(e) => setSelectedSampleNodeId(e.target.value)}
+                disabled={sampleNodes.length === 0}
+                className="h-7 w-full rounded border border-input bg-background px-2 font-mono-tech text-xs"
+              >
+                {sampleNodes.length === 0 ? (
+                  <option value="">暂无运行时节点实例</option>
+                ) : (
+                  sampleNodes.map((n) => (
+                    <option key={n.id} value={n.id}>
+                      {n.title} ({n.node_key})
+                    </option>
+                  ))
+                )}
+              </select>
+            </div>
+
+            <div className="md:col-span-5">
+              <label className="block text-[11px] text-muted-foreground mb-0.5">
+                试算表达式 (expression)
+              </label>
+              <Input
+                data-testid="expr-dryrun-input"
+                value={dryRunExpr}
+                onChange={(e) => setDryRunExpr(e.target.value)}
+                placeholder="例如 inventory / total_demand"
+                className="h-7 px-2 text-xs font-mono-tech"
+              />
+            </div>
+
+            <div className="md:col-span-2">
+              <Button
+                type="button"
+                className="h-7 w-full px-2 py-1 text-xs"
+                data-testid="expr-dryrun-submit-btn"
+                disabled={
+                  evaluating ||
+                  !selectedSampleNodeId ||
+                  dryRunExpr.trim().length === 0
+                }
+                onClick={() => void executeDryRun()}
+              >
+                <Play className="h-3 w-3" />
+                {evaluating ? "计算中" : "执行试算"}
+              </Button>
+            </div>
+          </div>
+
+          {selectedSampleNode && (
+            <div className="font-mono-tech text-[10px] text-muted-foreground truncate">
+              当前快照 metrics: {JSON.stringify(selectedSampleNode.metrics ?? {})}
+            </div>
+          )}
+
+          {evalError && (
+            <div className="text-[11px] text-red-600 dark:text-red-400 flex items-center gap-1">
+              <AlertCircle className="h-3 w-3 shrink-0" />
+              <span>{evalError}</span>
+            </div>
+          )}
+
+          {evalResult && (
+            <div
+              className="rounded border border-border bg-background px-2.5 py-2 flex flex-wrap items-center justify-between gap-2"
+              data-testid="expr-dryrun-result"
+            >
+              <div className="flex items-center gap-2 font-mono-tech">
+                <span className="text-[11px] text-muted-foreground">
+                  求值结果:
+                </span>
+                <span
+                  className="text-sm font-semibold text-foreground"
+                  data-testid="expr-dryrun-value"
+                >
+                  {formatEvalValue(evalResult.value)}
+                </span>
+                <Badge variant="xblue" data-testid="expr-dryrun-value-type">
+                  {evalResult.value_type}
+                </Badge>
+              </div>
+
+              {evalResult.warnings.length > 0 && (
+                <div
+                  className="flex flex-wrap items-center gap-1.5"
+                  data-testid="expr-dryrun-warnings"
+                >
+                  {evalResult.warnings.map((wCode) => (
+                    <Badge
+                      key={wCode}
+                      variant="outline"
+                      className="border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+                    >
+                      <AlertTriangle className="h-3 w-3 mr-1" />
+                      {wCode}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
+

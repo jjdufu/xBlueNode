@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  BookOpenCheck,
   Code2,
   FilePlus2,
   GitCompare,
@@ -38,6 +39,7 @@ import { AiDraftWizard } from "@/components/xbluestudio/AiDraftWizard";
 import { DomainApiDrawer } from "@/components/xbluestudio/DomainApiDrawer";
 import { EdgeTypeEditor } from "@/components/xbluestudio/EdgeTypeEditor";
 import { IssueList } from "@/components/xbluestudio/IssueList";
+import { KnowledgeCandidatesModal } from "@/components/xbluestudio/KnowledgeCandidatesModal";
 import { MappingEditor } from "@/components/xbluestudio/MappingEditor";
 import { NodeTypeCard } from "@/components/xbluestudio/NodeTypeCard";
 import { PropertyTable } from "@/components/xbluestudio/PropertyTable";
@@ -101,6 +103,8 @@ export function XBlueStudioPage() {
   const [versionPanelOpen, setVersionPanelOpen] = useState<boolean>(false);
   const [domainDrawerOpen, setDomainDrawerOpen] = useState<boolean>(false);
   const [aiWizardOpen, setAiWizardOpen] = useState<boolean>(false);
+  const [knowledgeCandidatesOpen, setKnowledgeCandidatesOpen] =
+    useState<boolean>(false);
 
   const [mergeDialogOpen, setMergeDialogOpen] = useState<boolean>(false);
   const [mergePreview, setMergePreview] = useState<MergePreview | null>(null);
@@ -688,6 +692,16 @@ export function XBlueStudioPage() {
           <Button
             variant="outline"
             className="h-8 px-2.5 text-xs"
+            data-testid="knowledge-candidates-btn"
+            onClick={() => setKnowledgeCandidatesOpen(true)}
+          >
+            <BookOpenCheck className="h-3.5 w-3.5 text-xblue" />
+            知识候选建点
+          </Button>
+
+          <Button
+            variant="outline"
+            className="h-8 px-2.5 text-xs"
             data-testid="open-version-panel-btn"
             onClick={() => setVersionPanelOpen(true)}
           >
@@ -1043,6 +1057,7 @@ export function XBlueStudioPage() {
                   allNodeTypes={availableNodeTypesForEdges}
                   edgeTypes={workingDoc.edge_types}
                   issues={issues}
+                  subgraph={activeSubgraph}
                   onChangeAggRules={(nextAgg) =>
                     handleUpdateSelectedNode({
                       ...selectedNode,
@@ -1208,6 +1223,42 @@ export function XBlueStudioPage() {
         onClose={() => setMergeDialogOpen(false)}
         onRefreshPreview={refreshMergePreview}
         onExecuteMerge={executeSubgraphMerge}
+      />
+
+      <KnowledgeCandidatesModal
+        open={knowledgeCandidatesOpen}
+        mainNodeTypes={mainDoc.node_types}
+        onClose={() => setKnowledgeCandidatesOpen(false)}
+        onCandidateAccepted={(res, cand) => {
+          setStatusBanner(
+            `已从超图知识实体「${cand.name}」确认建点：${res.node.title || cand.name} (${res.node.node_key})`
+          );
+          if (res.node.id || res.node.node_key) {
+            setRuntimeNodes((prev) => {
+              const filtered = prev.filter(
+                (n) =>
+                  !(
+                    n.type_name === res.node.type_name &&
+                    n.node_key === res.node.node_key
+                  )
+              );
+              return [res.node, ...filtered];
+            });
+          }
+          void xblueApi
+            .getNodes()
+            .then((snap) => {
+              const resolved = Array.isArray(snap?.nodes)
+                ? snap.nodes
+                : Array.isArray(snap?.items)
+                  ? snap.items
+                  : [];
+              if (resolved.length > 0) {
+                setRuntimeNodes(resolved);
+              }
+            })
+            .catch(() => {});
+        }}
       />
     </div>
   );
