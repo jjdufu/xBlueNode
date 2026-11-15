@@ -181,16 +181,17 @@ async fn setup_tenant_and_dataset(
 
     let ds_id = Uuid::new_v4();
     let schema_json = serde_json::json!([
-        {"name": "order_id", "data_type": "STRING", "nullable": false, "null_count": 0},
-        {"name": "wh_key", "data_type": "STRING", "nullable": false, "null_count": 0},
-        {"name": "status", "data_type": "STRING", "nullable": false, "null_count": 0},
-        {"name": "amount", "data_type": "FLOAT64", "nullable": false, "null_count": 0}
+        {"name": "order_id", "ordinal": 1, "data_type": "STRING", "nullable": false},
+        {"name": "wh_key", "ordinal": 2, "data_type": "STRING", "nullable": false},
+        {"name": "status", "ordinal": 3, "data_type": "STRING", "nullable": false},
+        {"name": "amount", "ordinal": 4, "data_type": "FLOAT64", "nullable": false}
     ]);
     sqlx::query(
         "INSERT INTO ds_datasets (
-             id, tenant_id, name, lake_schema, lake_table, status, row_count, last_snapshot_id, schema_json
+             id, tenant_id, name, display_name, source_kind, lake_schema, lake_table,
+             status, row_count, last_snapshot_id, schema_json
          )
-         VALUES ($1, $2, 'orders', $3, 'orders', 'READY', 3, 10, $4)",
+         VALUES ($1, $2, 'orders', '订单表', 'SQL_TABLE', $3, 'orders', 'READY', 3, 10, $4)",
     )
     .bind(ds_id)
     .bind(tenant_id)

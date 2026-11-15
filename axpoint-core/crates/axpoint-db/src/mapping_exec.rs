@@ -5,7 +5,6 @@ use std::num::FpCategory;
 use std::str::FromStr;
 
 use axpoint_domain::AppError;
-use axpoint_domain::axhub::ColumnProfile;
 use axpoint_domain::enums::{DataType, JobKind, OutboxTopic};
 use axpoint_domain::expr::{
     BinaryOp, EvalEnv, Expr, ExprValue, UnaryOp, collect_references, eval as eval_expr,
@@ -1801,14 +1800,21 @@ async fn load_mapping_and_model(
 
     let mapping = decode_mapping_row(&m_row)?;
     let cols_json: serde_json::Value = m_row.get("schema_json");
-    let parsed_cols: Vec<ColumnProfile> = serde_json::from_value(cols_json).unwrap_or_default();
+    let schema_columns: BTreeSet<String> = cols_json
+        .as_array()
+        .map_or_default(|arr| {
+            arr.iter()
+                .filter_map(|v| v.get("name").and_then(serde_json::Value::as_str))
+                .map(String::from)
+                .collect()
+        });
     let ds_meta = DatasetExecMeta {
         id: mapping.dataset_id,
         name: m_row.get("dataset_name"),
         lake_schema: m_row.get("lake_schema"),
         lake_table: m_row.get("lake_table"),
         last_snapshot_id: m_row.get("ds_last_snapshot_id"),
-        schema_columns: parsed_cols.into_iter().map(|c| c.name).collect(),
+        schema_columns,
     };
 
     let nt_rows = sqlx::query(
