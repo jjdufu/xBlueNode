@@ -137,7 +137,9 @@ fn check_node(
             match op {
                 UnaryOp::Neg => {
                     if !is_numeric(inner_t) {
-                        return Err(tc_err(format!("unary '-' requires NUMBER, got {inner_t:?}")));
+                        return Err(tc_err(format!(
+                            "unary '-' requires NUMBER, got {inner_t:?}"
+                        )));
                     }
                     Ok(ExprType::Number)
                 }
@@ -244,9 +246,7 @@ fn check_call(
             let then_t = arg_types.get(1).copied().unwrap_or(ExprType::Null);
             let else_t = arg_types.get(2).copied().unwrap_or(ExprType::Null);
             if !is_bool(cond) {
-                return Err(tc_err(format!(
-                    "'if' condition must be BOOL, got {cond:?}"
-                )));
+                return Err(tc_err(format!("'if' condition must be BOOL, got {cond:?}")));
             }
             unify_types(then_t, else_t).ok_or_else(|| {
                 tc_err(format!(

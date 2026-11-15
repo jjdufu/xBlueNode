@@ -63,8 +63,8 @@ pub async fn execute_knowledge_sync_impl<E: TextEmbedderPort>(
 
     if let Some(del_id) = payload.deleted_node_id {
         let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
-        docs_deleted = docs_deleted
-            .saturating_add(delete_node_dossier_tx(&mut tx, tenant_id, del_id).await?);
+        docs_deleted =
+            docs_deleted.saturating_add(delete_node_dossier_tx(&mut tx, tenant_id, del_id).await?);
         tx.commit().await.map_err(|err| {
             AppError::Database(format!("commit knowledge_sync delete tx failed: {err}"))
         })?;
@@ -75,15 +75,16 @@ pub async fn execute_knowledge_sync_impl<E: TextEmbedderPort>(
         let Some(bundle) = load_node_dossier_inputs(store, tenant_id, nid, &sync_types).await?
         else {
             let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
-            docs_deleted = docs_deleted
-                .saturating_add(delete_node_dossier_tx(&mut tx, tenant_id, nid).await?);
+            docs_deleted =
+                docs_deleted.saturating_add(delete_node_dossier_tx(&mut tx, tenant_id, nid).await?);
             tx.commit().await.map_err(|err| {
                 AppError::Database(format!("commit knowledge_sync stale cleanup failed: {err}"))
             })?;
             continue;
         };
 
-        let prepared = build_and_embed_dossier(bundle.0, bundle.1, &bundle.2, &bundle.3, embedder).await?;
+        let prepared =
+            build_and_embed_dossier(bundle.0, bundle.1, &bundle.2, &bundle.3, embedder).await?;
         let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
         let _ = delete_node_dossier_tx(&mut tx, tenant_id, nid).await?;
         persist_node_dossier_tx(&mut tx, tenant_id, &prepared).await?;
@@ -207,9 +208,9 @@ async fn load_node_dossier_inputs(
     let neighbors = load_dossier_neighbors_tx(&mut tx, tenant_id, node_id).await?;
     let related_docs = load_related_doc_titles_tx(&mut tx, tenant_id, node_id).await?;
 
-    tx.commit()
-        .await
-        .map_err(|err| AppError::Database(format!("commit load_node_dossier_inputs failed: {err}")))?;
+    tx.commit().await.map_err(|err| {
+        AppError::Database(format!("commit load_node_dossier_inputs failed: {err}"))
+    })?;
     Ok(Some((node, nt, neighbors, related_docs)))
 }
 
@@ -350,11 +351,8 @@ fn render_node_dossier_markdown(
         let _ = writeln!(md, "- **地理坐标**：`{}, {}`", geo.lng, geo.lat);
     }
 
-    let prop_specs: BTreeMap<&str, &PropertySpec> = nt
-        .properties
-        .iter()
-        .map(|p| (p.name.as_str(), p))
-        .collect();
+    let prop_specs: BTreeMap<&str, &PropertySpec> =
+        nt.properties.iter().map(|p| (p.name.as_str(), p)).collect();
 
     md.push_str("\n## 属性表\n\n| 属性 | 键名 | 值 |\n| :--- | :--- | :--- |\n");
     let mut attr_count = 0_usize;
@@ -376,7 +374,9 @@ fn render_node_dossier_markdown(
         md.push_str("| - | - | 暂无属性 |\n");
     }
 
-    md.push_str("\n## 最新指标\n\n| 指标 | 键名 | 最新值 | 单位 |\n| :--- | :--- | :--- | :--- |\n");
+    md.push_str(
+        "\n## 最新指标\n\n| 指标 | 键名 | 最新值 | 单位 |\n| :--- | :--- | :--- | :--- |\n",
+    );
     if node.metrics.is_empty() {
         md.push_str("| - | - | 暂无指标 | - |\n");
     } else {
@@ -423,7 +423,9 @@ fn format_json_cell(v: &serde_json::Value) -> String {
         serde_json::Value::String(s) => s.replace('|', "\\|"),
         serde_json::Value::Number(n) => n.to_string(),
         serde_json::Value::Bool(b) => b.to_string(),
-        serde_json::Value::Array(_) | serde_json::Value::Object(_) => v.to_string().replace('|', "\\|"),
+        serde_json::Value::Array(_) | serde_json::Value::Object(_) => {
+            v.to_string().replace('|', "\\|")
+        }
     }
 }
 
@@ -622,7 +624,9 @@ async fn persist_dossier_paragraphs_tx(
             .bind(rel)
             .execute(&mut **tx)
             .await
-            .map_err(|err| AppError::Database(format!("insert dossier {rel} edge failed: {err}")))?;
+            .map_err(|err| {
+                AppError::Database(format!("insert dossier {rel} edge failed: {err}"))
+            })?;
         }
 
         if let Some(prev_id) = prev_para_id {
@@ -635,7 +639,9 @@ async fn persist_dossier_paragraphs_tx(
             .bind(para_id)
             .execute(&mut **tx)
             .await
-            .map_err(|err| AppError::Database(format!("insert dossier NEXT_PARA edge failed: {err}")))?;
+            .map_err(|err| {
+                AppError::Database(format!("insert dossier NEXT_PARA edge failed: {err}"))
+            })?;
         }
         prev_para_id = Some(para_id);
     }
@@ -667,9 +673,9 @@ pub async fn list_knowledge_node_candidates_impl(
         .map(|r| (r.get("name"), r.get("display_name")))
         .collect();
     if main_types.is_empty() {
-        tx.commit().await.map_err(|err| {
-            AppError::Database(format!("commit empty node candidates tx: {err}"))
-        })?;
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit empty node candidates tx: {err}")))?;
         return Ok(KnowledgeNodeCandidatesResponse { items: Vec::new() });
     }
 

@@ -476,4 +476,3 @@ pub fn validate_for_node_type(node_type: &NodeTypeSpec, expression: &str) -> Val
         },
     }
 }
-

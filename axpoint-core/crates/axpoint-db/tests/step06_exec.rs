@@ -92,7 +92,12 @@ impl LakeInternalQueryPort for MockLake {
             .and_then(|s| s.split_whitespace().next())
             .and_then(|n| n.parse::<usize>().ok())
             .unwrap_or(0);
-        let sliced: Vec<_> = full_guard.iter().skip(offset).take(take_n).cloned().collect();
+        let sliced: Vec<_> = full_guard
+            .iter()
+            .skip(offset)
+            .take(take_n)
+            .cloned()
+            .collect();
         let rc = sliced.len();
         Ok(QueryResult {
             columns: cols,
@@ -354,9 +359,15 @@ async fn mapping_exec_and_aggregate_exec_full_incremental_and_explain() -> TestR
             String::from("amount"),
         ])),
         full_rows: Arc::new(Mutex::new(vec![
-            json_obj(serde_json::json!({"order_id": "O-1", "wh_key": "WH-1", "status": "ACTIVE", "amount": 40.0})),
-            json_obj(serde_json::json!({"order_id": "O-2", "wh_key": "WH-1", "status": "CANCELED", "amount": 999.0})),
-            json_obj(serde_json::json!({"order_id": "", "wh_key": "WH-1", "status": "ACTIVE", "amount": 10.0})),
+            json_obj(
+                serde_json::json!({"order_id": "O-1", "wh_key": "WH-1", "status": "ACTIVE", "amount": 40.0}),
+            ),
+            json_obj(
+                serde_json::json!({"order_id": "O-2", "wh_key": "WH-1", "status": "CANCELED", "amount": 999.0}),
+            ),
+            json_obj(
+                serde_json::json!({"order_id": "", "wh_key": "WH-1", "status": "ACTIVE", "amount": 10.0}),
+            ),
         ])),
         delta_rows: Arc::new(Mutex::new(None)),
     };
@@ -377,7 +388,16 @@ async fn mapping_exec_and_aggregate_exec_full_incremental_and_explain() -> TestR
     assert_eq!(full_run.nodes_upserted, 2);
     assert_eq!(full_run.rows_rejected, 1);
 
-    verify_rollup_and_incremental_delete(&store, &owner_pool, &tenant_id, ds_id, mapping_id, pub_res.version, &lake).await
+    verify_rollup_and_incremental_delete(
+        &store,
+        &owner_pool,
+        &tenant_id,
+        ds_id,
+        mapping_id,
+        pub_res.version,
+        &lake,
+    )
+    .await
 }
 
 async fn verify_rollup_and_incremental_delete(
@@ -414,12 +434,16 @@ async fn verify_rollup_and_incremental_delete(
     .fetch_one(owner_pool)
     .await?;
 
-    let exp_td = store.explain_node_metric(tenant_id, wh_id, "total_demand").await?;
+    let exp_td = store
+        .explain_node_metric(tenant_id, wh_id, "total_demand")
+        .await?;
     assert_eq!(exp_td.producer, MetricProducer::Agg);
     assert_eq!(exp_td.value, Some(40.0));
     assert_eq!(exp_td.inputs.len(), 1);
 
-    let exp_fr = store.explain_node_metric(tenant_id, wh_id, "fill_rate").await?;
+    let exp_fr = store
+        .explain_node_metric(tenant_id, wh_id, "fill_rate")
+        .await?;
     assert_eq!(exp_fr.producer, MetricProducer::Derived);
     assert_eq!(exp_fr.value, Some(2.5));
 
@@ -464,7 +488,9 @@ async fn verify_rollup_and_incremental_delete(
         )
         .await?;
 
-    let exp_zero = store.explain_node_metric(tenant_id, wh_id, "fill_rate").await?;
+    let exp_zero = store
+        .explain_node_metric(tenant_id, wh_id, "fill_rate")
+        .await?;
     assert_eq!(exp_zero.value, None);
     assert_eq!(exp_zero.warnings, vec![EvalWarningCode::DivByZero]);
     Ok(())
@@ -538,7 +564,10 @@ async fn knowledge_sync_dossier_and_candidate_promotion_end_to_end() -> TestResu
             &MockEmbedder,
         )
         .await?;
-    assert_eq!(res1.get("docs_synced").and_then(serde_json::Value::as_u64), Some(1));
+    assert_eq!(
+        res1.get("docs_synced").and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
 
     let res_del = store
         .execute_knowledge_sync(
@@ -550,6 +579,11 @@ async fn knowledge_sync_dossier_and_candidate_promotion_end_to_end() -> TestResu
             &MockEmbedder,
         )
         .await?;
-    assert_eq!(res_del.get("docs_deleted").and_then(serde_json::Value::as_u64), Some(1));
+    assert_eq!(
+        res_del
+            .get("docs_deleted")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
     Ok(())
 }

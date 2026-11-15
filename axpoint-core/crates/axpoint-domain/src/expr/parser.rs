@@ -91,7 +91,8 @@ impl PrattParser {
 
             if is_cmp_op(op)
                 && let Some(next_tok) = self.peek()
-                && infix_binding_power(&next_tok.kind).is_some_and(|(next_op, _, _)| is_cmp_op(next_op))
+                && infix_binding_power(&next_tok.kind)
+                    .is_some_and(|(next_op, _, _)| is_cmp_op(next_op))
             {
                 return Err(parse_err(
                     next_tok.span.column,
@@ -193,7 +194,9 @@ impl PrattParser {
             if name != "prop" {
                 return Err(parse_err(
                     ident_col,
-                    format!("dot property access is only supported via 'prop.<attr>', got '{name}.'"),
+                    format!(
+                        "dot property access is only supported via 'prop.<attr>', got '{name}.'"
+                    ),
                 ));
             }
             return match self.next_token() {
@@ -232,8 +235,7 @@ impl PrattParser {
                             format!("function '{name}' exceeds maximum {MAX_CALL_ARGS} arguments"),
                         ));
                     }
-                    let (arg_expr, arg_depth) =
-                        self.parse_bp(0, call_depth.saturating_add(1))?;
+                    let (arg_expr, arg_depth) = self.parse_bp(0, call_depth.saturating_add(1))?;
                     max_child_depth = max_child_depth.max(arg_depth);
                     args.push(arg_expr);
 

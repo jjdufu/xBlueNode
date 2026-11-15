@@ -278,11 +278,7 @@ fn eval_call(
     }
 }
 
-fn eval_if(
-    args: &[Expr],
-    env: &EvalEnv,
-    warnings: &mut BTreeSet<EvalWarningCode>,
-) -> ExprValue {
+fn eval_if(args: &[Expr], env: &EvalEnv, warnings: &mut BTreeSet<EvalWarningCode>) -> ExprValue {
     let (Some(cond_expr), Some(then_expr), Some(else_expr)) =
         (args.first(), args.get(1), args.get(2))
     else {

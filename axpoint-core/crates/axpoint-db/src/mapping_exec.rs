@@ -224,13 +224,7 @@ pub async fn execute_mapping_materialize_impl<L: LakeInternalQueryPort>(
         select_execution_mode(lake, tenant_id, payload.mode, &mapping, &ds_meta, &resolved).await;
 
     let run_id = create_running_record(
-        store,
-        tenant_id,
-        mapping.id,
-        job_id,
-        eff_mode,
-        from_snap,
-        to_snap,
+        store, tenant_id, mapping.id, job_id, eff_mode, from_snap, to_snap,
     )
     .await?;
     let mut counters = RunCounters::default();
@@ -507,7 +501,15 @@ async fn upsert_mapped_nodes_tx(
     dataset_id: Uuid,
     type_name: &str,
     batch_rows: &[CoercedRow],
-) -> Result<(BTreeMap<String, Uuid>, BTreeSet<Uuid>, i64, BTreeSet<String>), AppError> {
+) -> Result<
+    (
+        BTreeMap<String, Uuid>,
+        BTreeSet<Uuid>,
+        i64,
+        BTreeSet<String>,
+    ),
+    AppError,
+> {
     let keys: Vec<String> = batch_rows.iter().map(|r| r.node_key.clone()).collect();
     let existing_rows = sqlx::query(
         "SELECT id, node_key, properties, metrics
@@ -1004,13 +1006,9 @@ async fn prune_unseen_full_nodes(
         return Ok(0);
     }
 
-    let (del_cnt, affected_neighbors) = delete_node_ids_and_collect_neighbors_tx(
-        &mut tx,
-        tenant_id,
-        &stale_ids,
-        sync_to_knowledge,
-    )
-    .await?;
+    let (del_cnt, affected_neighbors) =
+        delete_node_ids_and_collect_neighbors_tx(&mut tx, tenant_id, &stale_ids, sync_to_knowledge)
+            .await?;
 
     if !affected_neighbors.is_empty() {
         let dirty_vec: Vec<Uuid> = affected_neighbors.into_iter().collect();
@@ -1151,7 +1149,12 @@ fn coerce_row_attributes(
             continue;
         }
         let coerced = if let Some(ps) = prop_spec {
-            coerce_json_by_data_type(raw_val, ps.data_type, ps.allowed_values.as_deref(), attr_name)?
+            coerce_json_by_data_type(
+                raw_val,
+                ps.data_type,
+                ps.allowed_values.as_deref(),
+                attr_name,
+            )?
         } else {
             raw_val.clone()
         };
@@ -1227,13 +1230,17 @@ fn coerce_row_metrics(
     for (m_name, col_name) in &spec.metrics {
         let raw_val = row.get(col_name).unwrap_or(&serde_json::Value::Null);
         if raw_val.is_null() {
-            if metric_specs.get(m_name.as_str()).is_some_and(|p| p.required) {
+            if metric_specs
+                .get(m_name.as_str())
+                .is_some_and(|p| p.required)
+            {
                 return Err(format!("required metric '{m_name}' is null"));
             }
             continue;
         }
-        let v = parse_f64_cell(raw_val)
-            .ok_or_else(|| format!("metric '{m_name}' column '{col_name}' is not a finite number"))?;
+        let v = parse_f64_cell(raw_val).ok_or_else(|| {
+            format!("metric '{m_name}' column '{col_name}' is not a finite number")
+        })?;
         out.insert(m_name.clone(), v);
     }
     Ok(out)
@@ -1257,12 +1264,19 @@ fn coerce_row_timestamp(
         .ok_or_else(|| format!("metric_time_column '{col}' is not a valid timestamp"))
 }
 
-fn coerce_row_geo(
-    row: &JsonRow,
-    spec: &MappingSpec,
-) -> Result<Option<GeoPoint>, String> {
-    let lng_col = spec.geo.lng_column.as_deref().map(str::trim).filter(|s| !s.is_empty());
-    let lat_col = spec.geo.lat_column.as_deref().map(str::trim).filter(|s| !s.is_empty());
+fn coerce_row_geo(row: &JsonRow, spec: &MappingSpec) -> Result<Option<GeoPoint>, String> {
+    let lng_col = spec
+        .geo
+        .lng_column
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let lat_col = spec
+        .geo
+        .lat_column
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let (Some(lng_c), Some(lat_c)) = (lng_col, lat_col) else {
         return Ok(None);
     };
@@ -1303,13 +1317,18 @@ fn coerce_row_links(
             ),
         };
         let default_w = edge_weights.get(&edge_key).copied().unwrap_or(1.0);
-        let weight = if let Some(wc) = lk.weight_column.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let weight = if let Some(wc) = lk
+            .weight_column
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             let rv = row.get(wc).unwrap_or(&serde_json::Value::Null);
             if rv.is_null() {
                 default_w
             } else {
-                let parsed_w = parse_f64_cell(rv)
-                    .ok_or_else(|| format!("invalid weight_column '{wc}'"))?;
+                let parsed_w =
+                    parse_f64_cell(rv).ok_or_else(|| format!("invalid weight_column '{wc}'"))?;
                 if parsed_w <= 0.0 {
                     return Err(format!("weight_column '{wc}' must be > 0"));
                 }
@@ -1381,10 +1400,7 @@ fn render_mapping_title(
     }
 }
 
-fn extract_non_empty_key(
-    row: &JsonRow,
-    col: &str,
-) -> Option<String> {
+fn extract_non_empty_key(row: &JsonRow, col: &str) -> Option<String> {
     row.get(col)
         .and_then(scalar_to_string)
         .map(|s| String::from(s.trim()))
@@ -1545,12 +1561,14 @@ fn try_translate_duckdb_filter(expr: &Expr) -> Option<String> {
                 None
             }
         }
-        Expr::Unary { op: UnaryOp::Not, expr: inner } => {
-            Some(format!("(NOT ({}))", try_translate_duckdb_filter(inner)?))
-        }
-        Expr::Unary { op: UnaryOp::Neg, expr: inner } => {
-            Some(format!("(-({}))", try_translate_duckdb_filter(inner)?))
-        }
+        Expr::Unary {
+            op: UnaryOp::Not,
+            expr: inner,
+        } => Some(format!("(NOT ({}))", try_translate_duckdb_filter(inner)?)),
+        Expr::Unary {
+            op: UnaryOp::Neg,
+            expr: inner,
+        } => Some(format!("(-({}))", try_translate_duckdb_filter(inner)?)),
         Expr::Binary { op, left, right } => {
             let l = try_translate_duckdb_filter(left)?;
             let r = try_translate_duckdb_filter(right)?;
@@ -1602,24 +1620,50 @@ fn check_missing_columns(
             referenced.insert(col.trim().to_owned());
         }
     }
-    if let Some(ts_col) = spec.metric_time_column.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(ts_col) = spec
+        .metric_time_column
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         referenced.insert(String::from(ts_col));
     }
-    if let Some(lng) = spec.geo.lng_column.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(lng) = spec
+        .geo
+        .lng_column
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         referenced.insert(String::from(lng));
     }
-    if let Some(lat) = spec.geo.lat_column.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(lat) = spec
+        .geo
+        .lat_column
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
         referenced.insert(String::from(lat));
     }
     for lk in &spec.links {
         if !lk.target_key_column.trim().is_empty() {
             referenced.insert(lk.target_key_column.trim().to_owned());
         }
-        if let Some(wc) = lk.weight_column.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(wc) = lk
+            .weight_column
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
             referenced.insert(String::from(wc));
         }
     }
-    if let Some(filter_raw) = spec.filter.as_deref().map(str::trim).filter(|s| !s.is_empty())
+    if let Some(filter_raw) = spec
+        .filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         && let Ok(ast) = parse_expr(filter_raw)
     {
         let (m_refs, p_refs) = collect_references(&ast);
@@ -1649,7 +1693,13 @@ async fn resolve_lake_table<L: LakeInternalQueryPort>(
 ) -> Result<ResolvedLakeTable, AppError> {
     let sanitized_tenant: String = tenant_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let tbl = if ds.lake_table.trim().is_empty() {
         ds.name.as_str()
@@ -1659,18 +1709,38 @@ async fn resolve_lake_table<L: LakeInternalQueryPort>(
 
     let mut candidates: Vec<LakeRefCandidate> = vec![
         (
-            format!("lake.{}.{}", quote_ident(&format!("tenant_{sanitized_tenant}")), quote_ident(tbl)),
-            Some((String::from("lake"), format!("tenant_{sanitized_tenant}"), String::from(tbl))),
+            format!(
+                "lake.{}.{}",
+                quote_ident(&format!("tenant_{sanitized_tenant}")),
+                quote_ident(tbl)
+            ),
+            Some((
+                String::from("lake"),
+                format!("tenant_{sanitized_tenant}"),
+                String::from(tbl),
+            )),
         ),
         (
-            format!("lake.{}.{}", quote_ident(&format!("tenant_{tenant_id}")), quote_ident(tbl)),
-            Some((String::from("lake"), format!("tenant_{tenant_id}"), String::from(tbl))),
+            format!(
+                "lake.{}.{}",
+                quote_ident(&format!("tenant_{tenant_id}")),
+                quote_ident(tbl)
+            ),
+            Some((
+                String::from("lake"),
+                format!("tenant_{tenant_id}"),
+                String::from(tbl),
+            )),
         ),
     ];
     if !ds.lake_schema.trim().is_empty() {
         candidates.push((
             format!("lake.{}.{}", quote_ident(&ds.lake_schema), quote_ident(tbl)),
-            Some((String::from("lake"), ds.lake_schema.clone(), String::from(tbl))),
+            Some((
+                String::from("lake"),
+                ds.lake_schema.clone(),
+                String::from(tbl),
+            )),
         ));
     }
     candidates.push((quote_ident(tbl), None));
@@ -1693,7 +1763,10 @@ async fn resolve_lake_table<L: LakeInternalQueryPort>(
     }
 
     Err(last_err.unwrap_or_else(|| {
-        AppError::Database(format!("unable to resolve lake table for dataset '{}'", ds.name))
+        AppError::Database(format!(
+            "unable to resolve lake table for dataset '{}'",
+            ds.name
+        ))
     }))
 }
 
@@ -1800,14 +1873,12 @@ async fn load_mapping_and_model(
 
     let mapping = decode_mapping_row(&m_row)?;
     let cols_json: serde_json::Value = m_row.get("schema_json");
-    let schema_columns: BTreeSet<String> = cols_json
-        .as_array()
-        .map_or_default(|arr| {
-            arr.iter()
-                .filter_map(|v| v.get("name").and_then(serde_json::Value::as_str))
-                .map(String::from)
-                .collect()
-        });
+    let schema_columns: BTreeSet<String> = cols_json.as_array().map_or_default(|arr| {
+        arr.iter()
+            .filter_map(|v| v.get("name").and_then(serde_json::Value::as_str))
+            .map(String::from)
+            .collect()
+    });
     let ds_meta = DatasetExecMeta {
         id: mapping.dataset_id,
         name: m_row.get("dataset_name"),
@@ -2017,7 +2088,9 @@ async fn finalize_succeeded_run(
     .bind(samples_json)
     .fetch_one(&mut *tx)
     .await
-    .map_err(|err| AppError::Database(format!("finalize succeeded xb_mapping_runs failed: {err}")))?;
+    .map_err(|err| {
+        AppError::Database(format!("finalize succeeded xb_mapping_runs failed: {err}"))
+    })?;
 
     let rec = decode_mapping_run_row(&row)?;
     tx.commit()
@@ -2034,8 +2107,8 @@ async fn finalize_failed_run(
     counters: &RunCounters,
 ) -> Result<(), AppError> {
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
-    let samples_json = serde_json::to_value(&counters.reject_samples)
-        .unwrap_or_else(|_| serde_json::json!([]));
+    let samples_json =
+        serde_json::to_value(&counters.reject_samples).unwrap_or_else(|_| serde_json::json!([]));
     sqlx::query(
         "UPDATE xb_mapping_runs
             SET nodes_upserted = $3,
@@ -2114,10 +2187,7 @@ fn decode_mapping_run_row(row: &sqlx::postgres::PgRow) -> Result<MappingRunRecor
 }
 
 fn is_safe_sql_ident(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 128
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    !s.is_empty() && s.len() <= 128 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn quote_ident(ident: &str) -> String {

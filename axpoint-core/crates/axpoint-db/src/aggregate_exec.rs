@@ -122,7 +122,8 @@ pub async fn enqueue_graph_aggregate_impl(
         base_key
     };
 
-    let job = NewJob::new(JobKind::GraphAggregate, payload_json).with_idempotency_key(effective_key);
+    let job =
+        NewJob::new(JobKind::GraphAggregate, payload_json).with_idempotency_key(effective_key);
     let job_id = enqueue_job_tx(&mut tx, tenant_id, &job).await?;
     tx.commit()
         .await
@@ -139,11 +140,10 @@ pub async fn execute_graph_aggregate_impl(
     tenant_id: &str,
     payload: &GraphAggregateJobPayload,
 ) -> Result<serde_json::Value, AppError> {
-    let mut lock_conn = store
-        .pool()
-        .acquire()
-        .await
-        .map_err(|err| AppError::Database(format!("acquire advisory lock connection: {err}")))?;
+    let mut lock_conn =
+        store.pool().acquire().await.map_err(|err| {
+            AppError::Database(format!("acquire advisory lock connection: {err}"))
+        })?;
 
     let lock_name = format!("xb_agg:{tenant_id}");
     sqlx::query("SELECT pg_advisory_lock(hashtext($1))")
@@ -266,7 +266,10 @@ async fn initialize_dirty_seeds(
         let ms = declared_metrics.get(ft).cloned().unwrap_or_default();
         for r in rows {
             let nid: Uuid = r.get("id");
-            direct_by_type.entry(String::from(ft)).or_default().insert(nid);
+            direct_by_type
+                .entry(String::from(ft))
+                .or_default()
+                .insert(nid);
             for m in &ms {
                 dirty.insert(DirtyInstance {
                     node_id: nid,
@@ -403,7 +406,9 @@ async fn resolve_step_targets(
                     .bind(parent_type)
                     .fetch_all(&mut *tx)
                     .await
-                    .map_err(|err| AppError::Database(format!("lookup dirty parent nodes: {err}")))?;
+                    .map_err(|err| {
+                        AppError::Database(format!("lookup dirty parent nodes: {err}"))
+                    })?;
                 for r in rows {
                     targets.insert(r.get("id"));
                 }
@@ -450,14 +455,8 @@ async fn execute_rule_step_batches(
             target_v: &target_v,
             source_tag,
         };
-        apply_computed_metric_updates_tx(
-            &mut tx,
-            &upd_ctx,
-            &computed,
-            dirty_instances,
-            stats,
-        )
-        .await?;
+        apply_computed_metric_updates_tx(&mut tx, &upd_ctx, &computed, dirty_instances, stats)
+            .await?;
 
         tx.commit()
             .await
@@ -636,8 +635,10 @@ fn eval_agg_samples(samples: &[&ChildMetricSample], rule: &AggRuleSpec) -> Optio
         };
     }
     if rule.op == AggFn::Count {
-        let cnt = u32::try_from(samples.len())
-            .map_or_else(|_| samples.len().to_string().parse::<f64>().unwrap_or(0.0), f64::from);
+        let cnt = u32::try_from(samples.len()).map_or_else(
+            |_| samples.len().to_string().parse::<f64>().unwrap_or(0.0),
+            f64::from,
+        );
         return Some(cnt);
     }
 
@@ -1007,7 +1008,10 @@ pub async fn explain_node_metric_impl(
 ) -> Result<MetricExplainResponse, AppError> {
     let metric_name = metric.trim();
     if metric_name.is_empty() {
-        return Err(AppError::bad("INVALID_ARGUMENT", "metric name must not be empty"));
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            "metric name must not be empty",
+        ));
     }
 
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
@@ -1041,23 +1045,34 @@ pub async fn explain_node_metric_impl(
     .bind(metric_name)
     .fetch_optional(&mut *tx)
     .await
-    .map_err(|err| AppError::Database(format!("load latest xb_metric_series for explain: {err}")))?;
+    .map_err(|err| {
+        AppError::Database(format!("load latest xb_metric_series for explain: {err}"))
+    })?;
 
     let computed_at = extract_metric_ts(&node.properties, metric_name)
         .or_else(|| latest_series.as_ref().map(|r| r.get("ts")));
     let latest_tag: Option<String> = latest_series.map(|r| r.get("source_tag"));
 
-    let response = if let Some(drule) = nt_opt
-        .as_ref()
-        .and_then(|nt| nt.derived_rules.iter().find(|r| r.enabled && r.target_metric == metric_name))
-    {
+    let response = if let Some(drule) = nt_opt.as_ref().and_then(|nt| {
+        nt.derived_rules
+            .iter()
+            .find(|r| r.enabled && r.target_metric == metric_name)
+    }) {
         build_derived_explain(&node, metric_name, value, computed_at, drule)?
     } else if let Some(arule) = nt_opt
         .as_ref()
         .and_then(|nt| nt.agg_rules.iter().find(|r| r.target_metric == metric_name))
     {
-        build_agg_explain_tx(&mut tx, tenant_id, &node, metric_name, value, computed_at, arule)
-            .await?
+        build_agg_explain_tx(
+            &mut tx,
+            tenant_id,
+            &node,
+            metric_name,
+            value,
+            computed_at,
+            arule,
+        )
+        .await?
     } else {
         build_non_rule_explain_tx(
             &mut tx,
@@ -1156,14 +1171,9 @@ async fn build_agg_explain_tx(
         .filter(|s| !s.is_empty())
         .and_then(|f| parse_expr(f).ok());
 
-    let grouped = fetch_neighbor_samples_tx(
-        tx,
-        tenant_id,
-        &[node.id],
-        arule,
-        Some(MAX_EXPLAIN_INPUTS),
-    )
-    .await?;
+    let grouped =
+        fetch_neighbor_samples_tx(tx, tenant_id, &[node.id], arule, Some(MAX_EXPLAIN_INPUTS))
+            .await?;
 
     let mut inputs = Vec::new();
     let mut warnings_set = BTreeSet::new();
@@ -1426,10 +1436,7 @@ fn translate_pg_binary(op: BinaryOp, left: &Expr, right: &Expr) -> Option<String
 }
 
 fn is_safe_json_key(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    !s.is_empty() && s.len() <= 64 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn is_valid_series_metric_name(metric: &str) -> bool {
@@ -1511,25 +1518,64 @@ mod tests {
     #[test]
     fn aggregate_exec_evaluates_all_eight_ops_weights_and_empty_sets() {
         let empty: Vec<&ChildMetricSample> = Vec::new();
-        assert_eq!(eval_agg_samples(&empty, &mk_agg_rule(AggFn::Sum, false)), Some(0.0));
-        assert_eq!(eval_agg_samples(&empty, &mk_agg_rule(AggFn::Count, false)), Some(0.0));
-        assert_eq!(eval_agg_samples(&empty, &mk_agg_rule(AggFn::Avg, false)), None);
-        assert_eq!(eval_agg_samples(&empty, &mk_agg_rule(AggFn::Median, false)), None);
+        assert_eq!(
+            eval_agg_samples(&empty, &mk_agg_rule(AggFn::Sum, false)),
+            Some(0.0)
+        );
+        assert_eq!(
+            eval_agg_samples(&empty, &mk_agg_rule(AggFn::Count, false)),
+            Some(0.0)
+        );
+        assert_eq!(
+            eval_agg_samples(&empty, &mk_agg_rule(AggFn::Avg, false)),
+            None
+        );
+        assert_eq!(
+            eval_agg_samples(&empty, &mk_agg_rule(AggFn::Median, false)),
+            None
+        );
 
         let s1 = mk_sample("O-1", 10.0, 2.0, 1);
         let s2 = mk_sample("O-2", 20.0, 3.0, 5);
         let s3 = mk_sample("O-3", 20.0, 5.0, 3);
         let refs = vec![&s1, &s2, &s3];
 
-        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Sum, false)), Some(50.0));
-        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Sum, true)), Some(180.0));
-        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Avg, true)), Some(18.0));
-        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Min, false)), Some(10.0));
-        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Max, false)), Some(20.0));
-        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Count, false)), Some(3.0));
-        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::CountDistinct, false)), Some(2.0));
-        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Median, false)), Some(20.0));
-        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Last, false)), Some(20.0));
+        assert_eq!(
+            eval_agg_samples(&refs, &mk_agg_rule(AggFn::Sum, false)),
+            Some(50.0)
+        );
+        assert_eq!(
+            eval_agg_samples(&refs, &mk_agg_rule(AggFn::Sum, true)),
+            Some(180.0)
+        );
+        assert_eq!(
+            eval_agg_samples(&refs, &mk_agg_rule(AggFn::Avg, true)),
+            Some(18.0)
+        );
+        assert_eq!(
+            eval_agg_samples(&refs, &mk_agg_rule(AggFn::Min, false)),
+            Some(10.0)
+        );
+        assert_eq!(
+            eval_agg_samples(&refs, &mk_agg_rule(AggFn::Max, false)),
+            Some(20.0)
+        );
+        assert_eq!(
+            eval_agg_samples(&refs, &mk_agg_rule(AggFn::Count, false)),
+            Some(3.0)
+        );
+        assert_eq!(
+            eval_agg_samples(&refs, &mk_agg_rule(AggFn::CountDistinct, false)),
+            Some(2.0)
+        );
+        assert_eq!(
+            eval_agg_samples(&refs, &mk_agg_rule(AggFn::Median, false)),
+            Some(20.0)
+        );
+        assert_eq!(
+            eval_agg_samples(&refs, &mk_agg_rule(AggFn::Last, false)),
+            Some(20.0)
+        );
 
         assert!(values_effectively_equal(Some(100.0), Some(100.0 + 1e-13)));
         assert!(!values_effectively_equal(Some(100.0), Some(100.001)));
