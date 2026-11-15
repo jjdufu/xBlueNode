@@ -116,6 +116,21 @@
 - `GET /api/analytics/history`（`DATA_READ` 看本人，`DATA_ADMIN` 看全租户）：SQL/透视/指标/问数/变换执行历史分页查询。
 - `POST /api/chat/query`（`DATA_READ`，扩展）：新增 `session_id?` 与 `mode?: "AUTO"|"DOC"|"DATA"`，支持 `DOC`、`DATA`、`HYBRID`（`[文n]` + `[表]` 混合合成）与 `related_nodes` 业务节点关联返回。
 
+### `xBlueStudio` 多子图本体建模、草案发布、表达式与动态聚合（`/api/xblue/*`，Step 05 & Step 06）
+
+- `GET /api/xblue/subgraphs` / `POST /api/xblue/subgraphs` / `PATCH /api/xblue/subgraphs/{slug}` / `DELETE /api/xblue/subgraphs/{slug}`（`DATA_READ` / `STUDIO_EDIT` / `STUDIO_PUBLISH`）：企业主图（`main`）与部门独立子图工作空间管理。
+- `POST /api/xblue/subgraphs/{slug}/merge-preview` / `POST /api/xblue/subgraphs/{slug}/merge`（`STUDIO_EDIT` / `STUDIO_PUBLISH`）：部门子图与主图跨图实体对齐及合并冲突消解（`EXTEND_PROPS` / `KEEP_MAIN` / `OVERWRITE_MAIN`）。
+- `GET /api/xblue/schema` / `POST /api/xblue/schema` / `POST /api/xblue/schema/validate`（`DATA_READ` / `STUDIO_PUBLISH` / `STUDIO_EDIT`）：按 `?subgraph=` 查询、直接保存或静态校验模型文档（`SchemaDoc`）。
+- `GET /api/xblue/schema/versions` / `GET /api/xblue/schema/versions/{v}` / `GET /api/xblue/schema/versions/{v}/diff/{other}` / `POST /api/xblue/schema/versions/{v}/restore`（`DATA_READ` / `STUDIO_EDIT`）：模型版本历史、结构差异对比与回滚草案生成。
+- `GET /api/xblue/drafts` / `POST /api/xblue/drafts` / `POST /api/xblue/drafts/ai` / `GET /api/xblue/drafts/{id}` / `PUT /api/xblue/drafts/{id}` / `POST /api/xblue/drafts/{id}/discard` / `POST /api/xblue/drafts/{id}/publish`（`DATA_READ` / `STUDIO_EDIT` / `STUDIO_PUBLISH`）：模型草案生命周期、AI 自动建图与咨询锁乐观并发发布。
+- `GET /api/xblue/mappings` / `POST /api/xblue/mappings/preview` / `POST /api/xblue/mappings/{id}/run` / `GET /api/xblue/mappings/{id}/runs`（`DATA_READ` / `STUDIO_EDIT`）：数据集到图谱映射列表、样本试跑预览、主图全量/增量物化触发与运行记录。
+- `GET /api/xblue/objects` / `GET /api/xblue/objects/{type_name}` / `GET /api/xblue/objects/{type_name}/{node_key}`（`DATA_READ`）与 `POST /api/xblue/graphql` / `GET /api/xblue/graphql/sdl`（`DATA_READ`）：主图已发布类型自动暴露的强类型领域对象 REST 与动态 GraphQL Schema。
+- `POST /api/xblue/expr/validate`（`STUDIO_EDIT`）：在指定 `NodeType` 作用域下解析并静态类型检查表达式，返回推断类型与带列号的诊断列表。
+- `POST /api/xblue/expr/evaluate`（`DATA_READ`）：在指定 `node_id` 当前快照上只读试算表达式，返回值、类型与求值警告（`DIV_BY_ZERO` / `DOMAIN_ERROR`）。
+- `POST /api/xblue/aggregate/recompute`（`STUDIO_EDIT`）：入队全量或按 `type_name` 限定的 `GRAPH_AGGREGATE` 重算任务。
+- `GET /api/xblue/nodes/{id}/explain/{metric}`（`DATA_READ`）：返回指标来源（`AGG` / `DERIVED` / `SYNC` / `MANUAL` / `ACTION` / `ALGORITHM`）、规则定义、上游输入节点列表与求值警告。
+- `GET /api/xblue/knowledge/node-candidates` / `POST /api/xblue/knowledge/node-candidates/{entity_id}/accept`（`STUDIO_EDIT`）：知识库高频未链接实体反哺节点候选列表及确认建点。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）

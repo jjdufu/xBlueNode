@@ -38,6 +38,11 @@ use crate::platform::{
     ApiTokenRecord, AuditRecord, JobListQuery, JobListResponse, JobRecord, LeasedJob, NewJob,
     OutboxEvent, PrincipalRecord,
 };
+use crate::rollup::{
+    AcceptNodeCandidateRequest, AcceptNodeCandidateResponse, GraphAggregateJobPayload,
+    KnowledgeNodeCandidatesResponse, KnowledgeSyncJobPayload, MapMaterializeJobPayload,
+    MetricExplainResponse,
+};
 use crate::studio::{
     CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus, MappingRecord,
     MappingRunRecord, MergePreview, MergePreviewRequest, MergeSubgraphRequest, PublishDraftRequest,
@@ -1365,4 +1370,94 @@ pub trait StudioRepository: Send + Sync {
         tenant_id: &str,
         doc_ids: &[Uuid],
     ) -> impl Future<Output = Result<Vec<DocEntityGroup>, AppError>> + Send;
+}
+
+/// Internal trusted query port for reading `DuckLake` tables and change feeds inside background workers (`06-STEP05-06` §06.2.1).
+pub trait LakeInternalQueryPort: Send + Sync {
+    /// Executes a trusted code-generated `SELECT` statement against `tenant_id`'s `DuckLake` session (capped at `max_rows`).
+    fn query_internal(
+        &self,
+        tenant_id: &str,
+        sql: &str,
+        max_rows: usize,
+    ) -> impl Future<Output = Result<QueryResult, AppError>> + Send;
+
+    /// Invalidates any cached `DuckDB` session for `tenant_id` so subsequent reads observe newly committed `DuckLake` snapshots.
+    fn invalidate_tenant_session(&self, tenant_id: &str) -> impl Future<Output = bool> + Send;
+}
+
+/// Batch text embedding port decoupling `axpoint-db` knowledge sync from `axpoint-llm` (`06-STEP05-06` §06.5).
+pub trait TextEmbedderPort: Send + Sync {
+    /// Returns the configured embedding model identifier.
+    fn embedding_model_name(&self) -> &str;
+
+    /// Generates embeddings for a batch of texts, returning `(vectors, embedding_dim)`.
+    fn embed_texts(
+        &self,
+        texts: &[String],
+    ) -> impl Future<Output = Result<(Vec<Vec<f32>>, usize), AppError>> + Send;
+}
+
+/// Execution port for `xBlueStudio` mapping materialization, dynamic metric rollup, explainability, and knowledge sync (`06-STEP05-06` §06.2–§06.6).
+pub trait StudioExecutionPort: Send + Sync {
+    /// Executes `MAP_MATERIALIZE` (`FULL` or `INCREMENTAL`) in 5,000-row chunks and records `xb_mapping_runs`.
+    fn execute_mapping_materialize<L: LakeInternalQueryPort>(
+        &self,
+        tenant_id: &str,
+        job_id: Uuid,
+        payload: &MapMaterializeJobPayload,
+        lake: &L,
+    ) -> impl Future<Output = Result<MappingRunRecord, AppError>> + Send;
+
+    /// Lists enabled `main` subgraph mappings bound to `dataset_id` (used by `dataset.synced` subscriber).
+    fn list_enabled_main_mappings_for_dataset(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<MappingRecord>, AppError>> + Send;
+
+    /// Executes `GRAPH_AGGREGATE` under session-level `pg_advisory_lock(hashtext('xb_agg:' || tenant))`.
+    fn execute_graph_aggregate(
+        &self,
+        tenant_id: &str,
+        payload: &GraphAggregateJobPayload,
+    ) -> impl Future<Output = Result<serde_json::Value, AppError>> + Send;
+
+    /// Enqueues a `JobKind::GraphAggregate` job with optional deduplicating `idempotency_key`.
+    fn enqueue_graph_aggregate(
+        &self,
+        tenant_id: &str,
+        payload: GraphAggregateJobPayload,
+        idempotency_key: Option<String>,
+    ) -> impl Future<Output = Result<Uuid, AppError>> + Send;
+
+    /// Explains how `metric` on `node_id` was produced (`AGG`, `DERIVED`, `SYNC`, `MANUAL`, `ACTION`, `ALGORITHM`) along with upstream inputs and warnings.
+    fn explain_node_metric(
+        &self,
+        tenant_id: &str,
+        node_id: Uuid,
+        metric: &str,
+    ) -> impl Future<Output = Result<MetricExplainResponse, AppError>> + Send;
+
+    /// Executes `KNOWLEDGE_SYNC` (upserting or deleting `xb_node:<node_id>` hypergraph dossiers and `EXACT_KEY` links).
+    fn execute_knowledge_sync<E: TextEmbedderPort>(
+        &self,
+        tenant_id: &str,
+        payload: &KnowledgeSyncJobPayload,
+        embedder: &E,
+    ) -> impl Future<Output = Result<serde_json::Value, AppError>> + Send;
+
+    /// Lists unlinked hypergraph entities (`occur_count >= 3`) whose `entity_type` matches a `main` `NodeType` (`name` or `display_name`).
+    fn list_knowledge_node_candidates(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<KnowledgeNodeCandidatesResponse, AppError>> + Send;
+
+    /// Promotes a candidate `hg_entities` row into a `BlueNode` and confirms its `xb_entity_links` entry.
+    fn accept_knowledge_node_candidate(
+        &self,
+        tenant_id: &str,
+        entity_id: Uuid,
+        req: AcceptNodeCandidateRequest,
+    ) -> impl Future<Output = Result<AcceptNodeCandidateResponse, AppError>> + Send;
 }
