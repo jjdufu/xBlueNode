@@ -172,11 +172,34 @@ async function installDeterministicApiMocks(
       return;
     }
 
+    if (pathname === "/api/xblue/subgraphs") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: "00000000-0000-0000-0000-000000000010",
+            slug: "main",
+            display_name: "企业主图",
+            description: "企业权威生产主图",
+            owner_dept: "default",
+            is_main: true,
+            current_version: 1,
+            created_at: "2026-01-31T08:00:00Z",
+            updated_at: "2026-01-31T08:00:00Z",
+          },
+        ]),
+      });
+      return;
+    }
+
     if (pathname === "/api/xblue/schema") {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
+          subgraph_slug: "main",
+          version: 1,
           node_types: [
             {
               id: "00000000-0000-0000-0000-000000000011",
@@ -197,7 +220,43 @@ async function installDeterministicApiMocks(
               impact_weight: 0.8,
             },
           ],
+          mappings: [],
         }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/xblue/schema/validate") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ valid: true, issues: [] }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/xblue/schema/versions") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: "00000000-0000-0000-0000-000000000013",
+            subgraph_slug: "main",
+            version: 1,
+            change_summary: "基线模型快照",
+            published_at: "2026-01-31T08:00:00Z",
+          },
+        ]),
+      });
+      return;
+    }
+
+    if (pathname === "/api/xblue/drafts" || pathname === "/api/xblue/mappings") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([]),
       });
       return;
     }
