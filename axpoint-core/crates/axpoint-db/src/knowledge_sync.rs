@@ -86,7 +86,26 @@ pub async fn execute_knowledge_sync_impl<E: TextEmbedderPort>(
         let prepared =
             build_and_embed_dossier(bundle.0, bundle.1, &bundle.2, &bundle.3, embedder).await?;
         let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
-        let _ = delete_node_dossier_tx(&mut tx, tenant_id, nid).await?;
+        let still_exists =
+            sqlx::query("SELECT 1 FROM xb_nodes WHERE tenant_id = $1 AND id = $2 FOR KEY SHARE")
+                .bind(tenant_id)
+                .bind(nid)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|err| {
+                    AppError::Database(format!("lock xb_nodes for knowledge_sync failed: {err}"))
+                })?
+                .is_some();
+        let cleaned = delete_node_dossier_tx(&mut tx, tenant_id, nid).await?;
+        if !still_exists {
+            docs_deleted = docs_deleted.saturating_add(cleaned);
+            tx.commit().await.map_err(|err| {
+                AppError::Database(format!(
+                    "commit knowledge_sync concurrently deleted node tx failed: {err}"
+                ))
+            })?;
+            continue;
+        }
         persist_node_dossier_tx(&mut tx, tenant_id, &prepared).await?;
         tx.commit().await.map_err(|err| {
             AppError::Database(format!("commit knowledge_sync upsert tx failed: {err}"))

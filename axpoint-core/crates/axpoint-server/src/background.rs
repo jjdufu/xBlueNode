@@ -34,7 +34,7 @@ const SYNC_JOB_LEASE_SECS: u32 = 3600;
 const SYNC_JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Outbox fallback polling interval alongside `LISTEN ax_outbox`.
-const OUTBOX_POLL_INTERVAL: Duration = Duration::from_secs(5);
+const OUTBOX_POLL_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Outbox claim batch size.
 const OUTBOX_BATCH_LIMIT: u32 = 100;
@@ -84,7 +84,8 @@ impl JobHandler for RetentionJobHandler {
     }
 }
 
-/// Step 04 `dataset.synced` subscriber refreshing `SessionPool` and cascading `DERIVED_VIEW` syncs.
+/// Step 04 & Step 06 `dataset.synced` subscriber refreshing `SessionPool`, cascading `DERIVED_VIEW` syncs,
+/// and enqueueing incremental `MAP_MATERIALIZE` jobs for enabled `main` mappings (`06-STEP05-06` §06.2.2).
 struct DatasetSyncedSubscriber {
     store: PgStore,
     analytics_pool: Arc<axpoint_analytics::SessionPool>,
@@ -134,20 +135,237 @@ impl OutboxSubscriber for DatasetSyncedSubscriber {
                     .await?;
                 }
             }
+
+            let mappings =
+                axpoint_domain::ports::StudioExecutionPort::list_enabled_main_mappings_for_dataset(
+                    &self.store,
+                    &event.tenant_id,
+                    ds_id,
+                )
+                .await?;
+            let snap_opt = event
+                .payload
+                .get("snapshot_id")
+                .and_then(serde_json::Value::as_i64);
+
+            for mapping in mappings {
+                let payload = axpoint_domain::rollup::MapMaterializeJobPayload {
+                    mapping_id: mapping.id,
+                    mode: axpoint_domain::studio::MappingMode::Incremental,
+                    schema_version: None,
+                };
+                let payload_json = serde_json::to_value(&payload).map_err(|err| {
+                    AppError::Database(format!("serialize MapMaterializeJobPayload: {err}"))
+                })?;
+                let idem_key = match snap_opt {
+                    Some(snap) => {
+                        axpoint_domain::rollup::MapMaterializeJobPayload::idempotency_key_for_snapshot(
+                            mapping.id, snap,
+                        )
+                    }
+                    None => format!("outbox:{}:{}", event.id, mapping.id),
+                };
+                let mut job = NewJob::new(JobKind::MapMaterialize, payload_json)
+                    .with_idempotency_key(idem_key);
+                job.priority = 10;
+                job.max_attempts = 3;
+                let _ = self.store.enqueue(&event.tenant_id, job).await?;
+            }
+
             Ok(())
         })
     }
 }
 
-/// Spawns `JobWorker` tasks (`AXPOINT_WORKERS`, default `4`), `OutboxDispatcher`, and singleton schedulers.
-pub(crate) fn spawn_background_workers(state: &crate::state::AppState) {
-    let store = state.store.clone();
-    let worker_count = env::var("AXPOINT_WORKERS")
-        .ok()
-        .and_then(|s| s.trim().parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(4);
+fn parse_uuid_array(payload: &serde_json::Value, key: &str) -> Vec<Uuid> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map_or_else(Vec::new, |arr| {
+            arr.iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter_map(|s| Uuid::parse_str(s).ok())
+                .collect()
+        })
+}
 
+fn parse_string_array(payload: &serde_json::Value, key: &str) -> Vec<String> {
+    payload
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map_or_else(Vec::new, |arr| {
+            arr.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(String::from)
+                .collect()
+        })
+}
+
+/// Step 06 `node.metrics_changed` subscriber triggering incremental `GRAPH_AGGREGATE` (`06-STEP05-06` §06.3.3)
+/// while skipping `origin == "AGGREGATE"` events (and refreshing knowledge dossiers when aggregated nodes belong to `sync_to_knowledge = true` types).
+struct NodeMetricsChangedSubscriber {
+    store: PgStore,
+}
+
+impl OutboxSubscriber for NodeMetricsChangedSubscriber {
+    fn on_event<'a>(&'a self, event: &'a OutboxEvent) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if event.topic != axpoint_domain::enums::OutboxTopic::NodeMetricsChanged {
+                return Ok(());
+            }
+
+            let node_ids = parse_uuid_array(&event.payload, "node_ids");
+            if node_ids.is_empty() {
+                return Ok(());
+            }
+
+            let origin = event
+                .payload
+                .get("origin")
+                .and_then(serde_json::Value::as_str);
+
+            if origin == Some("AGGREGATE") {
+                enqueue_knowledge_sync_if_needed(
+                    &self.store,
+                    &event.tenant_id,
+                    event.id,
+                    None,
+                    &node_ids,
+                    None,
+                )
+                .await?;
+                return Ok(());
+            }
+
+            let metrics = parse_string_array(&event.payload, "metrics");
+            let payload = axpoint_domain::rollup::GraphAggregateJobPayload {
+                full: false,
+                full_type: None,
+                node_ids,
+                metrics,
+                schema_version: None,
+            };
+            let idem_key = format!("agg:{}", payload.canonical_hash());
+            let _ = axpoint_domain::ports::StudioExecutionPort::enqueue_graph_aggregate(
+                &self.store,
+                &event.tenant_id,
+                payload,
+                Some(idem_key),
+            )
+            .await?;
+
+            Ok(())
+        })
+    }
+}
+
+/// Step 06 `node.upserted` subscriber triggering `KNOWLEDGE_SYNC` for `sync_to_knowledge = true` types and deleted nodes (`06-STEP05-06` §06.5).
+struct NodeUpsertedSubscriber {
+    store: PgStore,
+}
+
+impl OutboxSubscriber for NodeUpsertedSubscriber {
+    fn on_event<'a>(&'a self, event: &'a OutboxEvent) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if event.topic != axpoint_domain::enums::OutboxTopic::NodeUpserted {
+                return Ok(());
+            }
+
+            let deleted_node_id = event
+                .payload
+                .get("deleted_node_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok());
+
+            let mut node_ids = parse_uuid_array(&event.payload, "node_ids");
+            if let Some(single_id) = event
+                .payload
+                .get("node_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok())
+                && !node_ids.contains(&single_id)
+            {
+                node_ids.push(single_id);
+            }
+
+            let type_hint = event
+                .payload
+                .get("type_name")
+                .and_then(serde_json::Value::as_str);
+
+            enqueue_knowledge_sync_if_needed(
+                &self.store,
+                &event.tenant_id,
+                event.id,
+                deleted_node_id,
+                &node_ids,
+                type_hint,
+            )
+            .await
+        })
+    }
+}
+
+async fn enqueue_knowledge_sync_if_needed(
+    store: &PgStore,
+    tenant_id: &str,
+    outbox_id: i64,
+    deleted_node_id: Option<Uuid>,
+    node_ids: &[Uuid],
+    type_hint: Option<&str>,
+) -> Result<(), AppError> {
+    if deleted_node_id.is_none() && node_ids.is_empty() {
+        return Ok(());
+    }
+
+    if deleted_node_id.is_none() {
+        let published =
+            axpoint_domain::ports::StudioRepository::get_published_schema(store, tenant_id, "main")
+                .await?;
+        let any_enabled = match type_hint {
+            Some(tn) => published
+                .doc
+                .node_types
+                .iter()
+                .any(|nt| nt.name == tn && nt.sync_to_knowledge),
+            None => published
+                .doc
+                .node_types
+                .iter()
+                .any(|nt| nt.sync_to_knowledge),
+        };
+        if !any_enabled {
+            return Ok(());
+        }
+    }
+
+    let payload = axpoint_domain::rollup::KnowledgeSyncJobPayload {
+        node_id: if node_ids.len() == 1 {
+            node_ids.first().copied()
+        } else {
+            None
+        },
+        node_ids: if node_ids.len() > 1 {
+            node_ids.to_vec()
+        } else {
+            Vec::new()
+        },
+        deleted_node_id,
+        type_names: Vec::new(),
+        schema_version: None,
+    };
+    let payload_json = serde_json::to_value(&payload)
+        .map_err(|err| AppError::Database(format!("serialize KnowledgeSyncJobPayload: {err}")))?;
+    let mut job = NewJob::new(JobKind::KnowledgeSync, payload_json)
+        .with_idempotency_key(format!("ksync:outbox:{outbox_id}"));
+    job.priority = 30;
+    job.max_attempts = 3;
+    let _ = store.enqueue(tenant_id, job).await?;
+    Ok(())
+}
+
+fn build_job_registry(state: &crate::state::AppState) -> Arc<JobHandlerRegistry> {
+    let store = &state.store;
     let mut registry = JobHandlerRegistry::new();
     registry.register(
         JobKind::Retention,
@@ -199,7 +417,38 @@ pub(crate) fn spawn_background_workers(state: &crate::state::AppState) {
             ai: state.ai.clone(),
         }),
     );
-    let registry = Arc::new(registry);
+    registry.register(
+        JobKind::MapMaterialize,
+        Arc::new(crate::workers::MapMaterializeHandler {
+            store: store.clone(),
+            analytics_pool: Arc::clone(&state.analytics_pool),
+        }),
+    );
+    registry.register(
+        JobKind::GraphAggregate,
+        Arc::new(crate::workers::GraphAggregateHandler {
+            store: store.clone(),
+        }),
+    );
+    registry.register(
+        JobKind::KnowledgeSync,
+        Arc::new(crate::workers::KnowledgeSyncHandler {
+            store: store.clone(),
+            ai: state.ai.clone(),
+        }),
+    );
+    Arc::new(registry)
+}
+
+/// Spawns `JobWorker` tasks (`AXPOINT_WORKERS`, default `4`), `OutboxDispatcher`, and singleton schedulers.
+pub(crate) fn spawn_background_workers(state: &crate::state::AppState) {
+    let store = state.store.clone();
+    let worker_count = env::var("AXPOINT_WORKERS")
+        .ok()
+        .and_then(|s| s.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(4);
+    let registry = build_job_registry(state);
 
     let instance_id = Uuid::new_v4().simple().to_string();
     for idx in 0..worker_count {
@@ -213,11 +462,18 @@ pub(crate) fn spawn_background_workers(state: &crate::state::AppState) {
 
     let outbox_worker_id = format!("core-{instance_id}-outbox");
     let outbox_store = store.clone();
-    let subscribers: Arc<Vec<Arc<dyn OutboxSubscriber>>> =
-        Arc::new(vec![Arc::new(DatasetSyncedSubscriber {
+    let subscribers: Arc<Vec<Arc<dyn OutboxSubscriber>>> = Arc::new(vec![
+        Arc::new(DatasetSyncedSubscriber {
             store: store.clone(),
             analytics_pool: Arc::clone(&state.analytics_pool),
-        })]);
+        }),
+        Arc::new(NodeMetricsChangedSubscriber {
+            store: store.clone(),
+        }),
+        Arc::new(NodeUpsertedSubscriber {
+            store: store.clone(),
+        }),
+    ]);
     tokio::spawn(async move {
         run_outbox_dispatcher(outbox_worker_id, outbox_store, subscribers).await;
     });
@@ -275,7 +531,10 @@ async fn execute_leased_job(store: &PgStore, registry: &JobHandlerRegistry, job:
         return;
     };
 
-    let is_long_sync = matches!(job.kind, JobKind::SyncDataset | JobKind::ParseFile);
+    let is_long_sync = matches!(
+        job.kind,
+        JobKind::SyncDataset | JobKind::ParseFile | JobKind::MapMaterialize
+    );
     let (lease_secs, hb_interval) = if is_long_sync {
         let _ = store.heartbeat(job, SYNC_JOB_LEASE_SECS).await;
         (SYNC_JOB_LEASE_SECS, SYNC_JOB_HEARTBEAT_INTERVAL)

@@ -580,6 +580,16 @@ impl axpoint_domain::ports::AiPort for AiGateway {
     }
 }
 
+impl axpoint_domain::ports::TextEmbedderPort for AiGateway {
+    fn embedding_model_name(&self) -> &str {
+        Self::embedding_model_name(self)
+    }
+
+    async fn embed_texts(&self, texts: &[String]) -> Result<(Vec<Vec<f32>>, usize), AppError> {
+        Self::embed_batch(self, texts).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

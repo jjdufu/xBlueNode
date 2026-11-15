@@ -205,6 +205,19 @@ impl PgStore {
                     ),
                 ));
             }
+            let exists = sqlx::query(
+                "SELECT 1 FROM xb_nodes WHERE tenant_id = $1 AND id = $2 FOR KEY SHARE",
+            )
+            .bind(tenant_id)
+            .bind(*node_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|err| {
+                AppError::Database(format!("lock xb_nodes for embedding failed: {err}"))
+            })?;
+            if exists.is_none() {
+                continue;
+            }
             sqlx::query(
                 "INSERT INTO hg_embeddings (tenant_id, node_type, node_id, model_name, embedding_dim, embedding)
                  VALUES ($1, 'XB_NODE', $2, $3, $4, $5)
@@ -560,6 +573,18 @@ impl GraphStorePort for PgStore {
 
     async fn delete_node(&self, tenant_id: &str, node_id: Uuid) -> Result<(), AppError> {
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let peer_rows = sqlx::query(
+            "SELECT DISTINCT CASE WHEN src_node_id = $1 THEN dst_node_id ELSE src_node_id END AS peer_id
+               FROM xb_links
+              WHERE (src_node_id = $1 OR dst_node_id = $1)
+                AND src_node_id <> dst_node_id",
+        )
+        .bind(node_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("query peer links before delete_node: {err}")))?;
+        let peer_ids: Vec<Uuid> = peer_rows.into_iter().map(|r| r.get("peer_id")).collect();
+
         let deleted = sqlx::query("DELETE FROM xb_nodes WHERE id = $1 RETURNING id")
             .bind(node_id)
             .fetch_optional(&mut *tx)
@@ -593,6 +618,28 @@ impl GraphStorePort for PgStore {
             .execute(&mut *tx)
             .await
             .map_err(|err| AppError::Database(format!("delete node embeddings: {err}")))?;
+
+        insert_outbox_tx(
+            &mut tx,
+            tenant_id,
+            &NewOutboxEvent {
+                topic: OutboxTopic::NodeUpserted,
+                payload: serde_json::json!({ "deleted_node_id": node_id }),
+            },
+        )
+        .await?;
+
+        if !peer_ids.is_empty() {
+            insert_outbox_tx(
+                &mut tx,
+                tenant_id,
+                &NewOutboxEvent {
+                    topic: OutboxTopic::NodeMetricsChanged,
+                    payload: serde_json::json!({ "node_ids": peer_ids }),
+                },
+            )
+            .await?;
+        }
 
         tx.commit()
             .await
@@ -764,6 +811,18 @@ impl GraphStorePort for PgStore {
         .await
         .map_err(|err| AppError::Database(format!("upsert xb_links failed: {err}")))?;
 
+        insert_outbox_tx(
+            &mut tx,
+            tenant_id,
+            &NewOutboxEvent {
+                topic: OutboxTopic::NodeMetricsChanged,
+                payload: serde_json::json!({
+                    "node_ids": [req.src_node_id, req.dst_node_id],
+                }),
+            },
+        )
+        .await?;
+
         tx.commit()
             .await
             .map_err(|err| AppError::Database(format!("commit upsert_link tx failed: {err}")))?;
@@ -773,15 +832,30 @@ impl GraphStorePort for PgStore {
 
     async fn delete_link(&self, tenant_id: &str, link_id: Uuid) -> Result<(), AppError> {
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
-        let res = sqlx::query("DELETE FROM xb_links WHERE id = $1")
-            .bind(link_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(|err| AppError::Database(format!("delete xb_links failed: {err}")))?;
+        let deleted_row =
+            sqlx::query("DELETE FROM xb_links WHERE id = $1 RETURNING src_node_id, dst_node_id")
+                .bind(link_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|err| AppError::Database(format!("delete xb_links failed: {err}")))?;
 
-        if res.rows_affected() == 0 {
+        let Some(row) = deleted_row else {
             return Err(AppError::NotFound("LINK_NOT_FOUND"));
-        }
+        };
+        let src_node_id: Uuid = row.get("src_node_id");
+        let dst_node_id: Uuid = row.get("dst_node_id");
+
+        insert_outbox_tx(
+            &mut tx,
+            tenant_id,
+            &NewOutboxEvent {
+                topic: OutboxTopic::NodeMetricsChanged,
+                payload: serde_json::json!({
+                    "node_ids": [src_node_id, dst_node_id],
+                }),
+            },
+        )
+        .await?;
 
         tx.commit()
             .await

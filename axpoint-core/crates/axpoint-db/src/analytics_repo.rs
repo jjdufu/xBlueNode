@@ -2858,6 +2858,7 @@ impl AnalyticsRepository for PgStore {
         }
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let mut written = 0_usize;
         for (node_type, node_id, vec_data) in items {
             let ntype = node_type.trim();
             if ntype != "DS_COLUMN" && ntype != "AN_METRIC" {
@@ -2876,7 +2877,23 @@ impl AnalyticsRepository for PgStore {
                 ));
             }
 
-            sqlx::query(
+            if ntype == "AN_METRIC" {
+                let exists = sqlx::query(
+                    "SELECT 1 FROM an_metrics WHERE tenant_id = $1 AND id = $2 FOR KEY SHARE",
+                )
+                .bind(tenant_id)
+                .bind(*node_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|err| {
+                    AppError::Database(format!("lock an_metrics for embedding failed: {err}"))
+                })?;
+                if exists.is_none() {
+                    continue;
+                }
+            }
+
+            let res = sqlx::query(
                 "INSERT INTO hg_embeddings (
                      tenant_id, node_type, node_id, model_name, embedding_dim, embedding
                  )
@@ -2897,12 +2914,13 @@ impl AnalyticsRepository for PgStore {
             .map_err(|err| {
                 AppError::Database(format!("upsert analytics hg_embeddings failed: {err}"))
             })?;
+            written = written.saturating_add(usize::try_from(res.rows_affected()).unwrap_or(0));
         }
 
         tx.commit().await.map_err(|err| {
             AppError::Database(format!("commit upsert_analytics_embeddings tx: {err}"))
         })?;
-        Ok(items.len())
+        Ok(written)
     }
 
     async fn create_transform_draft(
