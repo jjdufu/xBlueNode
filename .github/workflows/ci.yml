@@ -23,6 +23,7 @@ jobs:
               - 'axpoint-core/**'
               - 'deploy/migrations/**'
               - 'tests/cassettes/**'
+              - 'scripts/lint-guard.py'
               - '.github/workflows/ci.yml'
             python:
               - 'axpoint-parser/**'
@@ -76,7 +77,7 @@ jobs:
           key: ccache-duckdb-linux-amd64-${{ github.sha }}
           restore-keys: |
             ccache-duckdb-linux-amd64-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.100.0
         with:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
@@ -109,12 +110,16 @@ jobs:
           psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 \
             -c "ALTER ROLE axpoint_app PASSWORD 'axpoint_app_secret'" \
             -c "ALTER ROLE axpoint_lake PASSWORD 'axpoint_lake_secret'"
-      - name: Format, Clippy & Tests
+      - name: Anti-Bypass Lint Guard, Format, Clippy, Docs & Tests
         working-directory: axpoint-core
         run: |
+          python3 ../scripts/lint-guard.py
+          rustc --version | grep -qF "rustc 1.100.0 "
           cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets -- -D warnings
-          cargo test --workspace -- --test-threads=1
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          RUSTDOCFLAGS='-D warnings' cargo doc --workspace --all-features --no-deps --locked
+          cargo test --workspace --locked -- --test-threads=1
+          cargo test --workspace --doc --all-features --locked
           ccache -s || true
 
   python-parser:
@@ -188,7 +193,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify Autonomous Naming Policy
+      - name: Verify Autonomous Naming & Rust Anti-Bypass Policy
         env:
           NAMING_DENYLIST: ${{ vars.NAMING_DENYLIST }}
-        run: bash scripts/naming-guard.sh
+        run: |
+          bash scripts/naming-guard.sh
+          python3 scripts/lint-guard.py

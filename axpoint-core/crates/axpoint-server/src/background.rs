@@ -441,7 +441,10 @@ fn build_job_registry(state: &crate::state::AppState) -> Arc<JobHandlerRegistry>
 }
 
 /// Spawns `JobWorker` tasks (`AXPOINT_WORKERS`, default `4`), `OutboxDispatcher`, and singleton schedulers.
-pub(crate) fn spawn_background_workers(state: &crate::state::AppState) {
+pub(crate) fn spawn_background_workers(
+    state: &crate::state::AppState,
+    shutdown_rx: &tokio::sync::watch::Receiver<bool>,
+) {
     let store = state.store.clone();
     let worker_count = env::var("AXPOINT_WORKERS")
         .ok()
@@ -455,18 +458,20 @@ pub(crate) fn spawn_background_workers(state: &crate::state::AppState) {
         let worker_id = format!("core-{instance_id}-w{idx}");
         let worker_store = store.clone();
         let worker_reg = Arc::clone(&registry);
+        let worker_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
-            run_job_worker(worker_id, worker_store, worker_reg).await;
+            run_job_worker(worker_id, worker_store, worker_reg, worker_shutdown).await;
         });
     }
 
     let outbox_worker_id = format!("core-{instance_id}-outbox");
     let outbox_store = store.clone();
-    let subscribers: Arc<Vec<Arc<dyn OutboxSubscriber>>> = Arc::new(vec![
-        Arc::new(DatasetSyncedSubscriber {
-            store: store.clone(),
-            analytics_pool: Arc::clone(&state.analytics_pool),
-        }),
+    let ds_subscriber: Arc<dyn OutboxSubscriber> = Arc::new(DatasetSyncedSubscriber {
+        store: store.clone(),
+        analytics_pool: Arc::clone(&state.analytics_pool),
+    });
+    let subscribers: Arc<[Arc<dyn OutboxSubscriber>]> = Arc::from([
+        ds_subscriber,
         Arc::new(NodeMetricsChangedSubscriber {
             store: store.clone(),
         }),
@@ -474,40 +479,53 @@ pub(crate) fn spawn_background_workers(state: &crate::state::AppState) {
             store: store.clone(),
         }),
     ]);
+    let outbox_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
-        run_outbox_dispatcher(outbox_worker_id, outbox_store, subscribers).await;
+        run_outbox_dispatcher(outbox_worker_id, outbox_store, subscribers, outbox_shutdown).await;
     });
 
     let cron_store = store.clone();
+    let cron_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
-        crate::workers::run_cron_scheduler(cron_store).await;
+        crate::workers::run_cron_scheduler(cron_store, cron_shutdown).await;
     });
 
     let rollup_store = store.clone();
+    let rollup_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
-        crate::workers::run_rollup_scheduler(rollup_store).await;
+        crate::workers::run_rollup_scheduler(rollup_store, rollup_shutdown).await;
     });
 
     let part_store = store.clone();
+    let part_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
-        crate::workers::run_partition_worker(part_store).await;
+        crate::workers::run_partition_worker(part_store, part_shutdown).await;
     });
 
+    let ret_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
-        run_retention_scheduler(store).await;
+        run_retention_scheduler(store, ret_shutdown).await;
     });
 }
 
-async fn run_job_worker(worker_id: String, store: PgStore, registry: Arc<JobHandlerRegistry>) {
+async fn run_job_worker(
+    worker_id: String,
+    store: PgStore,
+    registry: Arc<JobHandlerRegistry>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
     let kinds = registry.kinds();
     if kinds.is_empty() {
         return;
     }
 
-    loop {
+    while !*shutdown_rx.borrow_and_update() {
         match store.lease(&worker_id, &kinds, 1, JOB_LEASE_SECS).await {
             Ok(jobs) if jobs.is_empty() => {
-                tokio::time::sleep(JOB_IDLE_POLL).await;
+                tokio::select! {
+                    () = tokio::time::sleep(JOB_IDLE_POLL) => {}
+                    _ = shutdown_rx.changed() => break,
+                }
             }
             Ok(jobs) => {
                 for job in jobs {
@@ -516,7 +534,10 @@ async fn run_job_worker(worker_id: String, store: PgStore, registry: Arc<JobHand
             }
             Err(err) => {
                 tracing::warn!(worker = %worker_id, error = %err, "ax_jobs lease failed");
-                tokio::time::sleep(JOB_IDLE_POLL).await;
+                tokio::select! {
+                    () = tokio::time::sleep(JOB_IDLE_POLL) => {}
+                    _ = shutdown_rx.changed() => break,
+                }
             }
         }
     }
@@ -525,7 +546,9 @@ async fn run_job_worker(worker_id: String, store: PgStore, registry: Arc<JobHand
 async fn execute_leased_job(store: &PgStore, registry: &JobHandlerRegistry, job: &LeasedJob) {
     let kind_label = job.kind.as_str();
     let Some(handler) = registry.get(job.kind) else {
-        let _ = store.fail(job, "missing handler for leased job kind").await;
+        if let Err(err) = store.fail(job, "missing handler for leased job kind").await {
+            tracing::warn!(job_id = %job.id, error = %err, "failed to mark unhandled job as failed");
+        }
         metrics::counter!("axpoint_jobs_total", "kind" => kind_label, "status" => "FAILED")
             .increment(1);
         return;
@@ -536,7 +559,9 @@ async fn execute_leased_job(store: &PgStore, registry: &JobHandlerRegistry, job:
         JobKind::SyncDataset | JobKind::ParseFile | JobKind::MapMaterialize
     );
     let (lease_secs, hb_interval) = if is_long_sync {
-        let _ = store.heartbeat(job, SYNC_JOB_LEASE_SECS).await;
+        if let Err(err) = store.heartbeat(job, SYNC_JOB_LEASE_SECS).await {
+            tracing::warn!(job_id = %job.id, error = %err, "initial sync job heartbeat failed");
+        }
         (SYNC_JOB_LEASE_SECS, SYNC_JOB_HEARTBEAT_INTERVAL)
     } else {
         (JOB_LEASE_SECS, JOB_HEARTBEAT_INTERVAL)
@@ -552,6 +577,7 @@ async fn execute_leased_job(store: &PgStore, registry: &JobHandlerRegistry, job:
             ticker.tick().await;
             if let Err(err) = hb_store.heartbeat(&hb_job, lease_secs).await {
                 tracing::warn!(job_id = %hb_job.id, error = %err, "job heartbeat failed");
+                break;
             }
         }
     });
@@ -595,7 +621,8 @@ async fn execute_leased_job(store: &PgStore, registry: &JobHandlerRegistry, job:
 async fn run_outbox_dispatcher(
     worker_id: String,
     store: PgStore,
-    subscribers: Arc<Vec<Arc<dyn OutboxSubscriber>>>,
+    subscribers: Arc<[Arc<dyn OutboxSubscriber>]>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     // Only dispatch/ack when subscribers are registered; in Step 00 `subscribers` is empty,
     // while `LISTEN ax_outbox` and periodic lag monitoring remain active.
@@ -617,10 +644,11 @@ async fn run_outbox_dispatcher(
     let mut ticker = tokio::time::interval(OUTBOX_POLL_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    loop {
+    while !*shutdown_rx.borrow_and_update() {
         if let Some(ref mut pg_listener) = listener {
             tokio::select! {
                 _ = ticker.tick() => {}
+                _ = shutdown_rx.changed() => break,
                 recv_res = pg_listener.recv() => {
                     if let Err(err) = recv_res {
                         tracing::warn!(error = %err, "PgListener ax_outbox connection interrupted");
@@ -629,7 +657,10 @@ async fn run_outbox_dispatcher(
                 }
             }
         } else {
-            ticker.tick().await;
+            tokio::select! {
+                _ = ticker.tick() => {}
+                _ = shutdown_rx.changed() => break,
+            }
         }
 
         if subscribers.is_empty() {
@@ -690,14 +721,20 @@ async fn drain_outbox_batch(
     Ok(())
 }
 
-async fn run_retention_scheduler(store: PgStore) {
+async fn run_retention_scheduler(
+    store: PgStore,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
     let mut ticker = tokio::time::interval(RETENTION_SCHEDULE_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     // Delay initial run by 60s after startup so cold start stays instantaneous.
     ticker.tick().await;
-    tokio::time::sleep(Duration::from_secs(60)).await;
+    tokio::select! {
+        () = tokio::time::sleep(Duration::from_secs(60)) => {}
+        _ = shutdown_rx.changed() => return,
+    }
 
-    loop {
+    while !*shutdown_rx.borrow_and_update() {
         if let Err(err) =
             run_with_advisory_singleton(store.pool(), "axpoint:retention_cron", || {
                 enqueue_daily_retention(&store)
@@ -706,7 +743,10 @@ async fn run_retention_scheduler(store: PgStore) {
         {
             tracing::warn!(error = %err, "retention singleton scheduler iteration failed");
         }
-        ticker.tick().await;
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = shutdown_rx.changed() => break,
+        }
     }
 }
 
@@ -729,7 +769,7 @@ async fn run_with_advisory_singleton<F, Fut>(
 ) -> Result<bool, AppError>
 where
     F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<(), AppError>>,
+    Fut: Future<Output = Result<(), AppError>>,
 {
     let mut conn = pool
         .acquire()
@@ -749,10 +789,13 @@ where
 
     let result = task().await;
 
-    let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext($1))")
+    if let Err(err) = sqlx::query("SELECT pg_advisory_unlock(hashtext($1))")
         .bind(lock_key)
         .execute(&mut *conn)
-        .await;
+        .await
+    {
+        tracing::warn!(lock_key = %lock_key, error = %err, "pg_advisory_unlock failed");
+    }
 
     result.map(|()| true)
 }

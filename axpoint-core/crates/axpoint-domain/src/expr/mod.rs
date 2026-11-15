@@ -443,7 +443,7 @@ pub fn parse(input: &str) -> Result<Expr, ExprIssue> {
 /// Returns [`ExprIssue`] (`EXPR_INVALID`) on unknown identifiers, unreferenceable property types,
 /// operator type mismatches, or invalid function signatures.
 pub fn typecheck(expr: &Expr, env: &ExprTypeEnv) -> Result<ExprType, ExprIssue> {
-    typecheck::typecheck_detailed(expr, env).map(|info| info.result_type)
+    typecheck_detailed(expr, env).map(|info| info.result_type)
 }
 
 /// Evaluates `expr` deterministically against `env` (`06-STEP05-06` §06.1.2).

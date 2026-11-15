@@ -549,7 +549,7 @@ fn serialize_timestamp_array(
 fn bytes_to_hex(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().saturating_mul(2));
     for b in bytes {
-        let _ = write!(out, "{b:02x}");
+        let _fmt_ok = write!(out, "{b:02x}");
     }
     out
 }

@@ -361,13 +361,13 @@ fn render_node_dossier_markdown(
     related_docs: &[String],
 ) -> String {
     let mut md = String::new();
-    let _ = writeln!(
+    let _fmt_ok = writeln!(
         md,
         "# {}（{} · {}）\n\n- **节点类型**：{} (`{}`)\n- **业务主键**：`{}`",
         node.title, nt.display_name, node.node_key, nt.display_name, nt.name, node.node_key
     );
     if let Some(geo) = node.geo {
-        let _ = writeln!(md, "- **地理坐标**：`{}, {}`", geo.lng, geo.lat);
+        let _fmt_ok = writeln!(md, "- **地理坐标**：`{}, {}`", geo.lng, geo.lat);
     }
 
     let prop_specs: BTreeMap<&str, &PropertySpec> =
@@ -386,7 +386,7 @@ fn render_node_dossier_markdown(
         } else {
             format_json_cell(v)
         };
-        let _ = writeln!(md, "| {label} | `{k}` | {rendered_val} |");
+        let _fmt_ok = writeln!(md, "| {label} | `{k}` | {rendered_val} |");
         attr_count = attr_count.saturating_add(1);
     }
     if attr_count == 0 {
@@ -409,7 +409,7 @@ fn render_node_dossier_markdown(
                 .and_then(|p| p.unit.as_deref())
                 .filter(|u| !u.is_empty())
                 .unwrap_or("-");
-            let _ = writeln!(md, "| {label} | `{mk}` | {mv:.4} | {unit} |");
+            let _fmt_ok = writeln!(md, "| {label} | `{mk}` | {mv:.4} | {unit} |");
         }
     }
 
@@ -418,7 +418,7 @@ fn render_node_dossier_markdown(
         md.push_str("- 暂无关联节点\n");
     } else {
         for nb in neighbors {
-            let _ = writeln!(
+            let _fmt_ok = writeln!(
                 md,
                 "- `{}` {} {}（`{}:{}`）",
                 nb.link_type, nb.arrow, nb.neighbor_title, nb.neighbor_type, nb.neighbor_key
@@ -429,7 +429,7 @@ fn render_node_dossier_markdown(
     if !related_docs.is_empty() {
         md.push_str("\n## 关联知识文档\n\n");
         for dt in related_docs {
-            let _ = writeln!(md, "- {dt}");
+            let _fmt_ok = writeln!(md, "- {dt}");
         }
     }
 

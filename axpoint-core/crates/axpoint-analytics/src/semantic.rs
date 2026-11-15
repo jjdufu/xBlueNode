@@ -1442,7 +1442,7 @@ fn build_multi_projections(
                 filter_expr: f_ast,
                 agg_depth: 0,
             };
-            let _ = VisitMut::visit(&mut expr_ast, &mut attacher);
+            let _visit_flow = VisitMut::visit(&mut expr_ast, &mut attacher);
         }
         projections.push(format!("({expr_ast}) AS {}", quote_ident(&m.name)));
     }

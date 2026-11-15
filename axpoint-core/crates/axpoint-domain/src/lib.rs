@@ -1,4 +1,5 @@
 //! Domain types, error definitions, and five-way RRF fusion logic for `AxPoint`.
+#![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
 pub mod algo;
 pub mod analytics;

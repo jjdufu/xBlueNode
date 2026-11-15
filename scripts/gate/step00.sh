@@ -2,8 +2,9 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-# 0. 门禁断言函数自测
+# 0. 门禁断言函数自测与 Rust 防绕过守卫
 bash "$(dirname "$0")/lib_test.sh"
+expect_eq "rust-lint-guard" "$(python3 scripts/lint-guard.py)" "lint-guard: OK"
 
 # 1. 迁移无待执行
 expect_eq "migrations-applied" \

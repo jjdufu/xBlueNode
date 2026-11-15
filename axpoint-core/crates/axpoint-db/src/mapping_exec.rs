@@ -252,8 +252,17 @@ pub async fn execute_mapping_materialize_impl<L: LakeInternalQueryPort>(
             finalize_succeeded_run(store, tenant_id, mapping.id, run_id, to_snap, &counters).await
         }
         Err(err) => {
-            let _ = finalize_failed_run(store, tenant_id, run_id, &err.client_message(), &counters)
-                .await;
+            if let Err(fin_err) =
+                finalize_failed_run(store, tenant_id, run_id, &err.client_message(), &counters)
+                    .await
+            {
+                tracing::warn!(
+                    tenant_id = tenant_id,
+                    run_id = %run_id,
+                    error = %fin_err,
+                    "failed to persist mapping failure status"
+                );
+            }
             Err(err)
         }
     }

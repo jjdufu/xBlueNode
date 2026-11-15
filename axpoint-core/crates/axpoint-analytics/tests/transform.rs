@@ -44,28 +44,28 @@ impl AiPort for ScriptedAi {
     fn embed_batch(
         &self,
         inputs: &[String],
-    ) -> impl std::future::Future<Output = Result<(Vec<Vec<f32>>, usize), AppError>> + Send {
+    ) -> impl Future<Output = Result<(Vec<Vec<f32>>, usize), AppError>> + Send {
         std::future::ready(Ok((vec![vec![0.0_f32; 64]; inputs.len()], 64)))
     }
 
     fn embed_one(
         &self,
         _text: &str,
-    ) -> impl std::future::Future<Output = Result<(Vec<f32>, usize), AppError>> + Send {
+    ) -> impl Future<Output = Result<(Vec<f32>, usize), AppError>> + Send {
         std::future::ready(Ok((vec![0.0_f32; 64], 64)))
     }
 
     fn extract_triples(
         &self,
         _paragraph: &str,
-    ) -> impl std::future::Future<Output = Result<Vec<ExtractedTriple>, AppError>> + Send {
+    ) -> impl Future<Output = Result<Vec<ExtractedTriple>, AppError>> + Send {
         std::future::ready(Ok(Vec::new()))
     }
 
     fn extract_query_entities(
         &self,
         _query: &str,
-    ) -> impl std::future::Future<Output = Result<Vec<String>, AppError>> + Send {
+    ) -> impl Future<Output = Result<Vec<String>, AppError>> + Send {
         std::future::ready(Ok(Vec::new()))
     }
 
@@ -73,7 +73,7 @@ impl AiPort for ScriptedAi {
         &self,
         _query: &str,
         _hits: &[FusedHit],
-    ) -> impl std::future::Future<Output = Result<String, AppError>> + Send {
+    ) -> impl Future<Output = Result<String, AppError>> + Send {
         std::future::ready(Ok(String::new()))
     }
 
@@ -81,7 +81,7 @@ impl AiPort for ScriptedAi {
         &self,
         _system_prompt: &str,
         _user_prompt: &str,
-    ) -> impl std::future::Future<Output = Result<String, AppError>> + Send {
+    ) -> impl Future<Output = Result<String, AppError>> + Send {
         let mut q = self
             .responses
             .lock()

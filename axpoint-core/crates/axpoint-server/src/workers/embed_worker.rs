@@ -77,10 +77,13 @@ impl EmbedNodesHandler {
             total_embedded = total_embedded.saturating_add(items.len());
         }
 
-        let _ = self
+        if let Err(err) = self
             .store
             .resolve_entity_links(tenant_id, ResolveEntitiesRequest::default())
-            .await;
+            .await
+        {
+            tracing::warn!(tenant_id = %tenant_id, error = %err, "embed_worker resolve_entity_links failed");
+        }
 
         Ok(total_embedded)
     }

@@ -140,7 +140,7 @@ pub fn build_schema_draft_user_prompt(input: &SchemaDraftInput<'_>) -> String {
     if desc.is_empty() {
         out.push_str("请基于下方数据集画像、文档实体与已有本体，推导完整的领域节点类型、因果关系、聚合/派生指标与数据映射。\n\n");
     } else {
-        let _ = writeln!(out, "业务建模需求：{desc}\n");
+        let _fmt_ok = writeln!(out, "业务建模需求：{desc}\n");
     }
 
     append_current_schema_section(&mut out, input.current_schema);
@@ -161,7 +161,7 @@ fn append_current_schema_section(out: &mut String, current: &SchemaDoc) {
             .iter()
             .map(|p| format!("{}:{}:{:?}", p.name, p.data_type, p.kind))
             .collect();
-        let _ = writeln!(
+        let _fmt_ok = writeln!(
             out,
             "- NodeType `{}` ({}) props=[{}]",
             nt.name,
@@ -170,7 +170,7 @@ fn append_current_schema_section(out: &mut String, current: &SchemaDoc) {
         );
     }
     for et in &current.edge_types {
-        let _ = writeln!(
+        let _fmt_ok = writeln!(
             out,
             "- EdgeType `{}`: {} -> {} ({}, w={})",
             et.name, et.src_type_name, et.dst_type_name, et.cardinality, et.impact_weight
@@ -186,7 +186,7 @@ fn append_profiling_section(out: &mut String, profiling: &ProfilingBundle) {
         return;
     }
     for ds in &profiling.datasets {
-        let _ = writeln!(
+        let _fmt_ok = writeln!(
             out,
             "- Dataset `{}` ({}) rows={} pk_candidates=[{}]",
             ds.dataset_name,
@@ -202,7 +202,7 @@ fn append_profiling_section(out: &mut String, profiling: &ProfilingBundle) {
                 .take(5)
                 .map(String::as_str)
                 .collect();
-            let _ = writeln!(
+            let _fmt_ok = writeln!(
                 out,
                 "  * col `{}` type={} null_rate={:.3} distinct={} roles=[{}] samples=[{}]",
                 col.name,
@@ -217,7 +217,7 @@ fn append_profiling_section(out: &mut String, profiling: &ProfilingBundle) {
     if !profiling.fk_candidates.is_empty() {
         out.push_str("- ForeignKey Candidates:\n");
         for fk in &profiling.fk_candidates {
-            let _ = writeln!(
+            let _fmt_ok = writeln!(
                 out,
                 "  * {}.{} -> {}.{} (overlap={:.2}, cardinality={})",
                 fk.src_dataset,
@@ -238,14 +238,14 @@ fn append_doc_entities_section(out: &mut String, groups: &[DocEntityGroup]) {
     }
     out.push_str("### 文档超图实体与关系\n");
     for g in groups {
-        let _ = writeln!(
+        let _fmt_ok = writeln!(
             out,
             "- EntityType `{}`: samples=[{}]",
             g.entity_type,
             g.entity_names.join(", ")
         );
         for (src, dst, fact) in &g.relations {
-            let _ = writeln!(out, "  * {src} -> {dst}: {fact}");
+            let _fmt_ok = writeln!(out, "  * {src} -> {dst}: {fact}");
         }
     }
     out.push('\n');
@@ -270,7 +270,7 @@ fn build_repair_user_prompt(
 fn format_validation_errors(issues: &[ValidationIssue]) -> String {
     let mut out = String::new();
     for issue in issues.iter().filter(|i| i.severity == IssueSeverity::Error) {
-        let _ = writeln!(out, "- [{}] {} @ {}", issue.code, issue.message, issue.path);
+        let _fmt_ok = writeln!(out, "- [{}] {} @ {}", issue.code, issue.message, issue.path);
     }
     out
 }

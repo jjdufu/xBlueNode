@@ -75,14 +75,14 @@ pub fn build_nl2sql_user_prompt(
     if !linked.matched_nodes.is_empty() {
         out.push_str("\n### 命中业务节点（过滤值候选）\n");
         for (type_name, node_key, title) in &linked.matched_nodes {
-            let _ = writeln!(out, "- {type_name} key='{node_key}' ({title})");
+            let _fmt_ok = writeln!(out, "- {type_name} key='{node_key}' ({title})");
         }
     }
 
     if !few_shots.is_empty() {
         out.push_str("\n### 参考示例\n");
         for fs in few_shots.iter().take(MAX_FEW_SHOT_TURNS) {
-            let _ = writeln!(
+            let _fmt_ok = writeln!(
                 out,
                 "问题: {}\nSQL: {}",
                 fs.question.trim(),
@@ -94,7 +94,7 @@ pub fn build_nl2sql_user_prompt(
     append_session_history(&mut out, session_turns);
     append_ask_context(&mut out, context);
 
-    let _ = write!(out, "\n### 当前问题\n{}", question.trim());
+    let _fmt_ok = write!(out, "\n### 当前问题\n{}", question.trim());
     out
 }
 
@@ -155,7 +155,7 @@ pub(crate) fn strip_trailing_semicolons(sql: &str) -> String {
 }
 
 fn append_table_ddl_and_samples(out: &mut String, tbl: &LinkedTableContext) {
-    let _ = writeln!(out, "CREATE TABLE {} (", tbl.dataset_name);
+    let _fmt_ok = writeln!(out, "CREATE TABLE {} (", tbl.dataset_name);
     for (idx, col) in tbl.columns.iter().enumerate() {
         let comma = if idx.saturating_add(1) < tbl.columns.len() {
             ","
@@ -164,18 +164,18 @@ fn append_table_ddl_and_samples(out: &mut String, tbl: &LinkedTableContext) {
         };
         let comment = build_col_comment(&col.description, &col.business_term, &col.unit);
         if comment.is_empty() {
-            let _ = writeln!(out, "  {} {}{comma}", col.name, col.data_type);
+            let _fmt_ok = writeln!(out, "  {} {}{comma}", col.name, col.data_type);
         } else {
-            let _ = writeln!(out, "  {} {}{comma} -- {comment}", col.name, col.data_type);
+            let _fmt_ok = writeln!(out, "  {} {}{comma} -- {comment}", col.name, col.data_type);
         }
     }
     out.push_str(");\n");
 
     if !tbl.sample_rows.is_empty() {
-        let _ = writeln!(out, "-- {} 样例行（已脱敏）:", tbl.dataset_name);
+        let _fmt_ok = writeln!(out, "-- {} 样例行（已脱敏）:", tbl.dataset_name);
         for row in tbl.sample_rows.iter().take(3) {
             if let Ok(line) = serde_json::to_string(row) {
-                let _ = writeln!(out, "-- {line}");
+                let _fmt_ok = writeln!(out, "-- {line}");
             }
         }
     }
@@ -203,7 +203,7 @@ fn append_metric_prompt_line(out: &mut String, m: &MetricDef) {
         m.filter_sql.trim().to_owned()
     };
     let time_note = m.time_column.as_deref().unwrap_or("无");
-    let _ = writeln!(
+    let _fmt_ok = writeln!(
         out,
         "- {}（{}）: 表达式=({}) | 过滤=({}) | 时间列={} | 维度=[{}]",
         m.name,
@@ -228,7 +228,7 @@ fn append_session_history(out: &mut String, session_turns: &[AskTurnRecord]) {
         let turn_no = idx.saturating_add(1);
         let sql_s = t.sql_text.as_deref().unwrap_or("");
         let cols_s = extract_preview_col_names(t.result_preview.as_ref());
-        let _ = writeln!(
+        let _fmt_ok = writeln!(
             out,
             "轮次 {turn_no} 问题: {}\n轮次 {turn_no} SQL: {sql_s}\n轮次 {turn_no} 结果列: {cols_s}",
             t.question.trim()
@@ -261,9 +261,9 @@ fn append_ask_context(out: &mut String, context: Option<&AskContext>) {
     if !ctx.filters.is_empty()
         && let Ok(f_json) = serde_json::to_string(&ctx.filters)
     {
-        let _ = writeln!(out, "必须满足筛选条件: {f_json}");
+        let _fmt_ok = writeln!(out, "必须满足筛选条件: {f_json}");
     }
     if !ctx.drill_path.is_empty() {
-        let _ = writeln!(out, "当前下钻路径: {}", ctx.drill_path.join(" -> "));
+        let _fmt_ok = writeln!(out, "当前下钻路径: {}", ctx.drill_path.join(" -> "));
     }
 }

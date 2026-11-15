@@ -173,13 +173,13 @@ impl MetricDependencyPlan {
     /// Builds a [`MetricDependencyPlan`] from the published `main` [`SchemaDoc`].
     #[must_use]
     pub fn from_schema(doc: &SchemaDoc) -> Self {
-        plan::build_dependency_plan(doc)
+        build_dependency_plan(doc)
     }
 
     /// Groups `self.steps` into topological execution layers so steps within the same layer have no mutual dependencies.
     #[must_use]
     pub fn layers(&self) -> Vec<Vec<MetricRuleStep>> {
-        plan::compute_rule_layers(self)
+        compute_rule_layers(self)
     }
 
     /// Looks up the rule step producing `(type_name, metric)`, if any.

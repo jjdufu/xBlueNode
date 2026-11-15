@@ -135,7 +135,9 @@ where
                                 Ok(()) => Ok(()),
                                 Err(ref e) => Err(AppError::Database(e.to_string())),
                             };
-                            let _ = waiter.send(err_copy);
+                            if waiter.send(err_copy).is_err() {
+                                tracing::debug!("audit flush waiter receiver dropped");
+                            }
                         }
                     }
                     None => {

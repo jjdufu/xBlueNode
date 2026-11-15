@@ -197,12 +197,15 @@ pub(crate) async fn ingest_text_with_deps(
         })
         .await?;
 
-    let _ = axpoint_domain::ports::GraphStorePort::resolve_entity_links(
+    if let Err(err) = axpoint_domain::ports::GraphStorePort::resolve_entity_links(
         store,
         tenant_id,
         axpoint_domain::graph::ResolveEntitiesRequest::default(),
     )
-    .await;
+    .await
+    {
+        tracing::warn!(tenant_id = %tenant_id, error = %err, "post-ingest resolve_entity_links failed");
+    }
 
     Ok(IngestResponse {
         doc_id: commit_res.doc_id,
@@ -376,16 +379,16 @@ async fn synthesize_hybrid_answer(
 
     let mut prompt = String::from("### 结构化查询结果 [表]\n");
     let sample: Vec<_> = data_rows.iter().take(20).collect();
-    let _ = writeln!(
+    let _fmt_ok = writeln!(
         prompt,
         "{}",
         serde_json::to_string(&sample).unwrap_or_default()
     );
     prompt.push_str("\n### 文档段落依据\n");
     for (i, c) in doc.citations.iter().take(6).enumerate() {
-        let _ = writeln!(prompt, "[文{}] 《{}》：{}", i + 1, c.doc_title, c.snippet);
+        let _fmt_ok = writeln!(prompt, "[文{}] 《{}》：{}", i + 1, c.doc_title, c.snippet);
     }
-    let _ = write!(prompt, "\n### 用户问题\n{}", question.trim());
+    let _fmt_ok = write!(prompt, "\n### 用户问题\n{}", question.trim());
 
     let Ok(raw) = state.ai.chat(HYBRID_SYSTEM_PROMPT, &prompt).await else {
         return fallback;

@@ -1,4 +1,5 @@
 //! OpenAI-compatible LLM and multi-dimension Embedding adapter for `AxPoint`.
+#![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
 pub mod cassette;
 pub mod schema_draft;
@@ -366,7 +367,9 @@ impl AiGateway {
                 || status == StatusCode::SERVICE_UNAVAILABLE;
             if is_retryable && attempt < self.max_retries {
                 let delay = self.compute_backoff_delay(attempt, resp.headers());
-                let _ = resp.bytes().await;
+                if let Err(drain_err) = resp.bytes().await {
+                    warn!("failed draining retryable embedding response body: {drain_err}");
+                }
                 warn!(
                     "embedding chunk returned {status}; retry {}/{} in {delay:?}",
                     attempt.saturating_add(1),
@@ -519,7 +522,7 @@ impl AiGateway {
         let mut context = String::new();
         for (idx, hit) in hits.iter().enumerate() {
             let num = idx.saturating_add(1);
-            let _ = write!(
+            let _fmt_ok = write!(
                 context,
                 "[{num}] 文档《{}》(RRF={:.4}):\n{}\n\n",
                 hit.doc_title, hit.rrf_score, hit.content
@@ -874,7 +877,7 @@ mod tests {
             .await?;
         assert_eq!(fallback, "via-user-hash");
 
-        let _ = fs::remove_dir_all(&dir);
+        fs::remove_dir_all(&dir).map_err(|e| AppError::Llm(e.to_string()))?;
         Ok(())
     }
 
@@ -890,13 +893,14 @@ mod tests {
         let server = tokio::spawn(async move {
             if let Ok((mut socket, _)) = listener.accept().await {
                 let mut buf = [0_u8; 2048];
-                let _ = socket.read(&mut buf).await;
-                let payload = r#"{"choices":[{"message":{"content":"recorded-answer"}}]}"#;
-                let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                    payload.len()
-                );
-                let _ = socket.write_all(resp.as_bytes()).await;
+                if socket.read(&mut buf).await.is_ok() {
+                    let payload = r#"{"choices":[{"message":{"content":"recorded-answer"}}]}"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                        payload.len()
+                    );
+                    assert!(socket.write_all(resp.as_bytes()).await.is_ok());
+                }
             }
         });
 
@@ -913,7 +917,7 @@ mod tests {
         let recorder = AiGateway::with_cassette(llm_live, embed_dead, &dir, CassetteMode::Record)?;
         let live_ans = recorder.chat("record-sys", "record-user").await?;
         assert_eq!(live_ans, "recorded-answer");
-        let _ = server.await;
+        server.await.map_err(|e| AppError::Llm(e.to_string()))?;
 
         assert!(dir.join("recorded.jsonl").is_file());
 
@@ -922,7 +926,7 @@ mod tests {
         let offline_ans = replayer.chat("record-sys", "record-user").await?;
         assert_eq!(offline_ans, "recorded-answer");
 
-        let _ = fs::remove_dir_all(&dir);
+        fs::remove_dir_all(&dir).map_err(|e| AppError::Llm(e.to_string()))?;
         Ok(())
     }
 
@@ -973,7 +977,7 @@ mod tests {
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
                     payload.len()
                 );
-                let _ = socket.write_all(resp.as_bytes()).await;
+                assert!(socket.write_all(resp.as_bytes()).await.is_ok());
             }
             observed_sizes
         });
@@ -1017,7 +1021,7 @@ mod tests {
                 let Ok((mut socket, _)) = listener_ok.accept().await else {
                     break;
                 };
-                let _ = read_http_json_body(&mut socket).await;
+                assert!(read_http_json_body(&mut socket).await.is_ok());
                 calls = calls.saturating_add(1);
 
                 if attempt < 2 {
@@ -1026,14 +1030,14 @@ mod tests {
                         "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0.005\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     );
-                    let _ = socket.write_all(resp.as_bytes()).await;
+                    assert!(socket.write_all(resp.as_bytes()).await.is_ok());
                 } else {
                     let body = r#"{"data":[{"index":0,"embedding":[0.25,0.75,0.5]}]}"#;
                     let resp = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                         body.len()
                     );
-                    let _ = socket.write_all(resp.as_bytes()).await;
+                    assert!(socket.write_all(resp.as_bytes()).await.is_ok());
                 }
             }
             calls
@@ -1062,14 +1066,14 @@ mod tests {
                 let Ok((mut socket, _)) = listener_fail.accept().await else {
                     break;
                 };
-                let _ = read_http_json_body(&mut socket).await;
+                assert!(read_http_json_body(&mut socket).await.is_ok());
                 calls = calls.saturating_add(1);
                 let body = r#"{"error":"persistent 429"}"#;
                 let resp = format!(
                     "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
-                let _ = socket.write_all(resp.as_bytes()).await;
+                assert!(socket.write_all(resp.as_bytes()).await.is_ok());
             }
             calls
         });

@@ -34,14 +34,20 @@ impl JobHandler for RollupJobHandler {
 }
 
 /// Periodically enqueues `ROLLUP` jobs across active tenants every 60 seconds.
-pub(crate) async fn run_rollup_scheduler(store: PgStore) {
+pub(crate) async fn run_rollup_scheduler(
+    store: PgStore,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
     let mut ticker = tokio::time::interval(ROLLUP_POLL_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     // Skip immediate tick so startup stays quiet until 60s elapses.
     ticker.tick().await;
 
-    loop {
-        ticker.tick().await;
+    while !*shutdown_rx.borrow_and_update() {
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = shutdown_rx.changed() => break,
+        }
         if let Err(err) = try_enqueue_periodic_rollups(&store).await {
             tracing::warn!(error = %err, "periodic rollup scheduler tick failed");
         }
@@ -74,13 +80,18 @@ async fn try_enqueue_periodic_rollups(store: &PgStore) -> Result<(), AppError> {
             serde_json::json!({ "trigger": "periodic", "minute": minute_key }),
         )
         .with_idempotency_key(format!("rollup:{minute_key}"));
-        let _ = store.enqueue(&tenant_id, job).await;
+        if let Err(err) = store.enqueue(&tenant_id, job).await {
+            tracing::warn!(tenant_id = %tenant_id, error = %err, "periodic rollup enqueue failed");
+        }
     }
 
-    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+    if let Err(err) = sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(ROLLUP_ADVISORY_LOCK_KEY)
         .execute(&mut *conn)
-        .await;
+        .await
+    {
+        tracing::warn!(error = %err, "rollup scheduler pg_advisory_unlock failed");
+    }
 
     Ok(())
 }

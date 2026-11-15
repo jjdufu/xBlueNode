@@ -594,6 +594,6 @@ async fn session_pool_ducklake_profile_and_preview_end_to_end() -> Result<(), Ap
     assert_eq!(preview.items.len(), 2);
     assert_eq!(preview.rows_rejected, 0);
 
-    let _ = std::fs::remove_dir_all(root);
+    std::fs::remove_dir_all(root).map_err(|e| AppError::Config(e.to_string()))?;
     Ok(())
 }

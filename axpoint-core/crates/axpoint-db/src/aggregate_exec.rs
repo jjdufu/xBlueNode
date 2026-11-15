@@ -154,10 +154,18 @@ pub async fn execute_graph_aggregate_impl(
 
     let exec_result = run_graph_aggregate_locked(store, tenant_id, payload).await;
 
-    let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext($1))")
+    if let Err(unlock_err) = sqlx::query("SELECT pg_advisory_unlock(hashtext($1))")
         .bind(&lock_name)
         .execute(&mut *lock_conn)
-        .await;
+        .await
+    {
+        tracing::warn!(
+            tenant_id = tenant_id,
+            lock_name = %lock_name,
+            error = %unlock_err,
+            "failed to release pg_advisory_lock cleanly"
+        );
+    }
 
     exec_result
 }

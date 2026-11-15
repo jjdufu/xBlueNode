@@ -128,28 +128,28 @@ impl AiPort for EvalCassetteGateway {
     fn embed_batch(
         &self,
         inputs: &[String],
-    ) -> impl std::future::Future<Output = Result<(Vec<Vec<f32>>, usize), AppError>> + Send {
+    ) -> impl Future<Output = Result<(Vec<Vec<f32>>, usize), AppError>> + Send {
         std::future::ready(Ok((vec![vec![0.0_f32; 64]; inputs.len()], 64)))
     }
 
     fn embed_one(
         &self,
         _text: &str,
-    ) -> impl std::future::Future<Output = Result<(Vec<f32>, usize), AppError>> + Send {
+    ) -> impl Future<Output = Result<(Vec<f32>, usize), AppError>> + Send {
         std::future::ready(Ok((vec![0.0_f32; 64], 64)))
     }
 
     fn extract_triples(
         &self,
         _paragraph: &str,
-    ) -> impl std::future::Future<Output = Result<Vec<ExtractedTriple>, AppError>> + Send {
+    ) -> impl Future<Output = Result<Vec<ExtractedTriple>, AppError>> + Send {
         std::future::ready(Ok(Vec::new()))
     }
 
     fn extract_query_entities(
         &self,
         _query: &str,
-    ) -> impl std::future::Future<Output = Result<Vec<String>, AppError>> + Send {
+    ) -> impl Future<Output = Result<Vec<String>, AppError>> + Send {
         std::future::ready(Ok(Vec::new()))
     }
 
@@ -157,7 +157,7 @@ impl AiPort for EvalCassetteGateway {
         &self,
         _query: &str,
         _hits: &[FusedHit],
-    ) -> impl std::future::Future<Output = Result<String, AppError>> + Send {
+    ) -> impl Future<Output = Result<String, AppError>> + Send {
         std::future::ready(Ok(String::new()))
     }
 
@@ -165,7 +165,7 @@ impl AiPort for EvalCassetteGateway {
         &self,
         system_prompt: &str,
         user_prompt: &str,
-    ) -> impl std::future::Future<Output = Result<String, AppError>> + Send {
+    ) -> impl Future<Output = Result<String, AppError>> + Send {
         let p_hash = compute_prompt_sha256(system_prompt, user_prompt);
         let u_hash = sha256_hex(user_prompt);
         let found = self
@@ -197,28 +197,28 @@ impl AiPort for BootstrapRecorderAi {
     fn embed_batch(
         &self,
         inputs: &[String],
-    ) -> impl std::future::Future<Output = Result<(Vec<Vec<f32>>, usize), AppError>> + Send {
+    ) -> impl Future<Output = Result<(Vec<Vec<f32>>, usize), AppError>> + Send {
         std::future::ready(Ok((vec![vec![0.0_f32; 64]; inputs.len()], 64)))
     }
 
     fn embed_one(
         &self,
         _text: &str,
-    ) -> impl std::future::Future<Output = Result<(Vec<f32>, usize), AppError>> + Send {
+    ) -> impl Future<Output = Result<(Vec<f32>, usize), AppError>> + Send {
         std::future::ready(Ok((vec![0.0_f32; 64], 64)))
     }
 
     fn extract_triples(
         &self,
         _paragraph: &str,
-    ) -> impl std::future::Future<Output = Result<Vec<ExtractedTriple>, AppError>> + Send {
+    ) -> impl Future<Output = Result<Vec<ExtractedTriple>, AppError>> + Send {
         std::future::ready(Ok(Vec::new()))
     }
 
     fn extract_query_entities(
         &self,
         _query: &str,
-    ) -> impl std::future::Future<Output = Result<Vec<String>, AppError>> + Send {
+    ) -> impl Future<Output = Result<Vec<String>, AppError>> + Send {
         std::future::ready(Ok(Vec::new()))
     }
 
@@ -226,7 +226,7 @@ impl AiPort for BootstrapRecorderAi {
         &self,
         _query: &str,
         _hits: &[FusedHit],
-    ) -> impl std::future::Future<Output = Result<String, AppError>> + Send {
+    ) -> impl Future<Output = Result<String, AppError>> + Send {
         std::future::ready(Ok(String::new()))
     }
 
@@ -234,7 +234,7 @@ impl AiPort for BootstrapRecorderAi {
         &self,
         system_prompt: &str,
         user_prompt: &str,
-    ) -> impl std::future::Future<Output = Result<String, AppError>> + Send {
+    ) -> impl Future<Output = Result<String, AppError>> + Send {
         if system_prompt == SUMMARY_SYSTEM_PROMPT {
             return std::future::ready(Err(AppError::Llm(String::from("skip summary in eval"))));
         }
@@ -604,7 +604,7 @@ fn execute_reference_rows(
         .query_arrow([])
         .map_err(|e| AppError::Database(format!("ref query: {e}")))?;
     let schema = stream.get_schema();
-    let batches: Vec<axpoint_analytics::arrow::array::RecordBatch> = stream.collect();
+    let batches: Vec<arrow::array::RecordBatch> = stream.collect();
     let ser = axpoint_analytics::batches_to_query_result(
         &schema,
         &batches,
@@ -823,15 +823,19 @@ async fn nl2sql_eval_replay_60_cases_meets_accuracy_and_refusal_gates() -> Resul
     let avg_ms = f64::from(u32::try_from(total_ms).unwrap_or(0)) / total_f;
 
     if std::env::var("AXPOINT_EVAL_LIVE").ok().as_deref() == Some("1") {
-        println!(
-            "[nl2sql_eval] cases={} accuracy={:.1}% refusal={}/{} avg_repairs={:.2} avg_ms={:.1}",
-            cases.len(),
-            accuracy * 100.0,
-            refusal_passed,
-            refusal_total,
-            avg_repairs,
-            avg_ms
-        );
+        std::io::Write::write_fmt(
+            &mut std::io::stdout(),
+            format_args!(
+                "[nl2sql_eval] cases={} accuracy={:.1}% refusal={}/{} avg_repairs={:.2} avg_ms={:.1}\n",
+                cases.len(),
+                accuracy * 100.0,
+                refusal_passed,
+                refusal_total,
+                avg_repairs,
+                avg_ms
+            ),
+        )
+        .map_err(|e| AppError::Config(e.to_string()))?;
     }
 
     assert_eq!(

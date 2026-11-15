@@ -21,12 +21,18 @@ const CRON_POLL_INTERVAL: Duration = Duration::from_secs(30);
 const SCHEDULER_ADVISORY_LOCK_KEY: i64 = 0x4158_4842_5f43_524e;
 
 /// Runs the periodic cron dataset sync & daily lake maintenance scheduler.
-pub(crate) async fn run_cron_scheduler(store: PgStore) {
+pub(crate) async fn run_cron_scheduler(
+    store: PgStore,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
     let mut ticker = tokio::time::interval(CRON_POLL_INTERVAL);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
-    loop {
-        ticker.tick().await;
+    while !*shutdown_rx.borrow_and_update() {
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = shutdown_rx.changed() => break,
+        }
         if let Err(err) = try_tick_cron(&store).await {
             tracing::warn!(error = %err, "cron scheduler tick failed");
         }
@@ -65,12 +71,17 @@ async fn try_tick_cron(store: &PgStore) -> Result<(), AppError> {
     }
 
     let res = evaluate_scheduled_datasets(store).await;
-    let _ = enqueue_daily_lake_maintenance(store).await;
+    if let Err(err) = enqueue_daily_lake_maintenance(store).await {
+        tracing::warn!(error = %err, "daily lake_maintenance enqueue failed");
+    }
 
-    let _ = sqlx::query("SELECT pg_advisory_unlock($1)")
+    if let Err(err) = sqlx::query("SELECT pg_advisory_unlock($1)")
         .bind(SCHEDULER_ADVISORY_LOCK_KEY)
         .execute(&mut *conn)
-        .await;
+        .await
+    {
+        tracing::warn!(error = %err, "cron scheduler pg_advisory_unlock failed");
+    }
 
     res
 }
@@ -117,10 +128,16 @@ async fn evaluate_scheduled_datasets(store: &PgStore) -> Result<(), AppError> {
 
         if let Some(next_local) = schedule.after(&base_local).next()
             && next_local.with_timezone(&Utc) <= now
-        {
-            let _ = store
+            && let Err(err) = store
                 .enqueue_sync_job(&item.tenant_id, item.dataset_id)
-                .await;
+                .await
+        {
+            tracing::warn!(
+                tenant_id = %item.tenant_id,
+                dataset_id = %item.dataset_id,
+                error = %err,
+                "scheduled dataset sync enqueue failed"
+            );
         }
     }
 
@@ -143,7 +160,9 @@ async fn enqueue_daily_lake_maintenance(store: &PgStore) -> Result<(), AppError>
             serde_json::json!({ "day": day_key }),
         )
         .with_idempotency_key(format!("lake_maint:{day_key}"));
-        let _ = store.enqueue(&tenant_id, job).await;
+        if let Err(err) = store.enqueue(&tenant_id, job).await {
+            tracing::warn!(tenant_id = %tenant_id, error = %err, "lake_maintenance enqueue failed");
+        }
     }
     Ok(())
 }
