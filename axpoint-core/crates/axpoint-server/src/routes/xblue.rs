@@ -10,7 +10,11 @@ use std::str::FromStr;
 use axpoint_db::studio_repo::NeighborBatchKey;
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::{Dataset, PaginatedList};
-use axpoint_domain::enums::{AuditAction, DataType, GraphAlgo, Permission};
+use axpoint_domain::enums::{AuditAction, DataType, GraphAlgo, JobKind, Permission};
+use axpoint_domain::expr::{
+    EvalEnv, EvaluateExprRequest, EvaluateExprResponse, ValidateExprRequest, ValidateExprResponse,
+    eval as eval_expr, parse as parse_expr, validate_for_node_type,
+};
 use axpoint_domain::graph::{
     AlgoResultsQuery, AlgoResultsResponse, AlgoRunRequest, AlgoRunResponse, BulkNodesRequest,
     BulkNodesResponse, EntityCandidatesResponse, EntityLink, LinkListQuery, LinkRecord,
@@ -20,10 +24,15 @@ use axpoint_domain::graph::{
     SubgraphResponse, UpsertLinkRequest, WindowQuery, WindowQueryResponse, WriteMetricsRequest,
     WriteMetricsResponse,
 };
-use axpoint_domain::platform::AuditRecord;
+use axpoint_domain::platform::{AuditRecord, NewJob};
 use axpoint_domain::ports::{
-    DatasetRepository as _, GraphQueryPort as _, GraphStorePort as _, MetricStorePort as _,
-    StudioRepository as _,
+    DatasetRepository as _, GraphQueryPort as _, GraphStorePort as _, JobQueuePort as _,
+    MetricStorePort as _, StudioExecutionPort as _, StudioRepository as _,
+};
+use axpoint_domain::rollup::{
+    AcceptNodeCandidateRequest, AcceptNodeCandidateResponse, GraphAggregateJobPayload,
+    KnowledgeNodeCandidatesResponse, KnowledgeSyncJobPayload, MetricExplainResponse,
+    RecomputeAggregateRequest, RecomputeAggregateResponse,
 };
 use axpoint_domain::studio::{
     AiDraftRequest, ColumnProfileStats, ColumnRoleTag, CreateDraftRequest, CreateSubgraphRequest,
@@ -99,6 +108,12 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/xblue/drafts/{id}/discard", post(discard_draft_handler))
         .route("/xblue/drafts/{id}/publish", post(publish_draft_handler))
+        .route("/xblue/expr/validate", post(validate_expr_handler))
+        .route("/xblue/expr/evaluate", post(evaluate_expr_handler))
+        .route(
+            "/xblue/aggregate/recompute",
+            post(recompute_aggregate_handler),
+        )
         .route("/xblue/mappings", get(list_mappings_handler))
         .route(
             "/xblue/mappings/{id}/preview",
@@ -171,6 +186,18 @@ fn runtime_graph_router() -> Router<AppState> {
         .route(
             "/xblue/entities/candidates",
             get(list_entity_candidates_handler),
+        )
+        .route(
+            "/xblue/nodes/{id}/explain/{metric}",
+            get(explain_node_metric_handler),
+        )
+        .route(
+            "/xblue/knowledge/node-candidates",
+            get(list_knowledge_node_candidates_handler),
+        )
+        .route(
+            "/xblue/knowledge/node-candidates/{entity_id}/accept",
+            post(accept_knowledge_node_candidate_handler),
         )
         .route(
             "/xblue/entities/links/{entity_id}/{node_id}/confirm",
@@ -1410,4 +1437,177 @@ async fn reject_entity_link_handler(
         .reject_entity_link(&principal.tenant_id, entity_id, node_id)
         .await?;
     Ok(Json(link))
+}
+
+async fn validate_expr_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiQuery(q): ApiQuery<SubgraphQueryParam>,
+    ApiJson(req): ApiJson<ValidateExprRequest>,
+) -> Result<Json<ValidateExprResponse>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    let slug = req
+        .subgraph
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| q.slug_or_main());
+
+    let target_type = req.type_name.trim();
+    let published = state
+        .store
+        .get_published_schema(&principal.tenant_id, slug)
+        .await?;
+
+    let mut found_nt = published
+        .doc
+        .node_types
+        .into_iter()
+        .find(|nt| nt.name == target_type);
+
+    if found_nt.is_none()
+        && slug != "main"
+        && let Ok(main_pub) = state
+            .store
+            .get_published_schema(&principal.tenant_id, "main")
+            .await
+    {
+        found_nt = main_pub
+            .doc
+            .node_types
+            .into_iter()
+            .find(|nt| nt.name == target_type);
+    }
+
+    let nt = found_nt.ok_or(AppError::NotFound("TYPE_NOT_FOUND"))?;
+    Ok(Json(validate_for_node_type(&nt, &req.expression)))
+}
+
+async fn evaluate_expr_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<EvaluateExprRequest>,
+) -> Result<Json<EvaluateExprResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let node = state
+        .store
+        .get_node(&principal.tenant_id, req.node_id)
+        .await?
+        .ok_or(AppError::NotFound("NODE_NOT_FOUND"))?;
+
+    let ast = parse_expr(&req.expression)
+        .map_err(|issue| AppError::bad("EXPR_INVALID", issue.message))?;
+    let env = EvalEnv::from_node(&node.metrics, &node.properties);
+    let rep = eval_expr(&ast, &env);
+
+    Ok(Json(EvaluateExprResponse {
+        value: rep.value.to_json_value(),
+        value_type: rep.value.expr_type(),
+        warnings: rep.warnings,
+    }))
+}
+
+async fn recompute_aggregate_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    body: Bytes,
+) -> Result<Json<RecomputeAggregateResponse>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    let req: RecomputeAggregateRequest = parse_optional_json(&body)?;
+    let clean_type = req
+        .type_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    let published = state
+        .store
+        .get_published_schema(&principal.tenant_id, "main")
+        .await?;
+
+    if let Some(ref tn) = clean_type
+        && !published.doc.node_types.iter().any(|nt| nt.name == *tn)
+    {
+        return Err(AppError::NotFound("TYPE_NOT_FOUND").into());
+    }
+
+    let job_id = state
+        .store
+        .enqueue_graph_aggregate(
+            &principal.tenant_id,
+            GraphAggregateJobPayload {
+                full: true,
+                full_type: clean_type.clone(),
+                node_ids: Vec::new(),
+                metrics: Vec::new(),
+                schema_version: Some(published.version),
+            },
+            None,
+        )
+        .await?;
+
+    Ok(Json(RecomputeAggregateResponse {
+        job_id,
+        type_name: clean_type,
+    }))
+}
+
+async fn explain_node_metric_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath((id, metric)): ApiPath<(Uuid, String)>,
+) -> Result<Json<MetricExplainResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let resp = state
+        .store
+        .explain_node_metric(&principal.tenant_id, id, &metric)
+        .await?;
+    Ok(Json(resp))
+}
+
+async fn list_knowledge_node_candidates_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+) -> Result<Json<KnowledgeNodeCandidatesResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let resp = state
+        .store
+        .list_knowledge_node_candidates(&principal.tenant_id)
+        .await?;
+    Ok(Json(resp))
+}
+
+async fn accept_knowledge_node_candidate_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(entity_id): ApiPath<Uuid>,
+    ApiJson(req): ApiJson<AcceptNodeCandidateRequest>,
+) -> Result<Json<AcceptNodeCandidateResponse>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    let resp = state
+        .store
+        .accept_knowledge_node_candidate(&principal.tenant_id, entity_id, req)
+        .await?;
+
+    if let Ok(main_pub) = state
+        .store
+        .get_published_schema(&principal.tenant_id, "main")
+        .await
+        && main_pub
+            .doc
+            .node_types
+            .iter()
+            .any(|nt| nt.name == resp.node.type_name && nt.sync_to_knowledge)
+        && let Ok(payload_json) = serde_json::to_value(KnowledgeSyncJobPayload {
+            node_id: Some(resp.node.id),
+            ..KnowledgeSyncJobPayload::default()
+        })
+    {
+        let job = NewJob::new(JobKind::KnowledgeSync, payload_json)
+            .with_idempotency_key(format!("ksync_accept:{}", resp.node.id));
+        let _ = state.store.enqueue(&principal.tenant_id, job).await;
+    }
+
+    Ok(Json(resp))
 }

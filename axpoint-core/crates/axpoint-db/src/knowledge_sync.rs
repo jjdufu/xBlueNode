@@ -895,3 +895,82 @@ pub async fn accept_knowledge_node_candidate_impl(
         confirmed: true,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axpoint_domain::enums::DataType;
+    use chrono::Utc;
+
+    #[test]
+    fn knowledge_sync_renders_dossier_and_redacts_secret_properties() {
+        let mut props = serde_json::Map::new();
+        props.insert(String::from("city"), serde_json::json!("苏州"));
+        props.insert(String::from("api_secret"), serde_json::json!("s3cr3t"));
+
+        let node = BlueNode {
+            id: Uuid::new_v4(),
+            type_name: String::from("Warehouse"),
+            node_key: String::from("W-1"),
+            title: String::from("华东中心仓"),
+            properties: props,
+            metrics: BTreeMap::from([(String::from("inventory"), 500.0)]),
+            geo: None,
+            source_dataset_id: None,
+            source_row_key: None,
+            row_version: 1,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let nt = NodeTypeSpec {
+            id: None,
+            name: String::from("Warehouse"),
+            display_name: String::from("仓库"),
+            description: String::new(),
+            icon: String::from("warehouse"),
+            color: String::from("#2563eb"),
+            title_template: String::from("{node_key}"),
+            properties: vec![
+                PropertySpec {
+                    name: String::from("city"),
+                    display_name: String::from("城市"),
+                    description: String::new(),
+                    unit: None,
+                    data_type: DataType::String,
+                    kind: PropertyKind::Attribute,
+                    required: false,
+                    pii_category: PiiCategory::None,
+                    allowed_values: None,
+                },
+                PropertySpec {
+                    name: String::from("api_secret"),
+                    display_name: String::from("密钥"),
+                    description: String::new(),
+                    unit: None,
+                    data_type: DataType::String,
+                    kind: PropertyKind::Attribute,
+                    required: false,
+                    pii_category: PiiCategory::Secret,
+                    allowed_values: None,
+                },
+            ],
+            agg_rules: Vec::new(),
+            derived_rules: Vec::new(),
+            sync_to_knowledge: true,
+            pos_x: 0.0,
+            pos_y: 0.0,
+        };
+
+        let md = render_node_dossier_markdown(&node, &nt, &[], &[String::from("2026履约SOP")]);
+        assert!(md.contains("华东中心仓（仓库 · W-1）"));
+        assert!(md.contains("苏州"));
+        assert!(!md.contains("s3cr3t"));
+        assert!(md.contains("[REDACTED]"));
+
+        let types = vec![(String::from("Warehouse"), String::from("仓库"))];
+        assert_eq!(
+            match_entity_to_node_type("仓库", &types).map(|t| t.0),
+            Some(String::from("Warehouse"))
+        );
+    }
+}

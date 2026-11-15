@@ -386,6 +386,7 @@ pub struct ExprIssue {
 #[serde(deny_unknown_fields)]
 pub struct ValidateExprRequest {
     /// Owning `NodeTypeSpec.name` whose metrics and attributes define the typing scope.
+    #[serde(alias = "node_type")]
     pub type_name: String,
     /// Expression source text to parse and type-check.
     pub expression: String,

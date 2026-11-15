@@ -1476,3 +1476,63 @@ fn values_effectively_equal(old_val: Option<f64>, new_val: Option<f64>) -> bool 
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_sample(key: &str, val: f64, weight: f64, sec: i64) -> ChildMetricSample {
+        let ts = DateTime::<Utc>::from_timestamp(1_700_000_000 + sec, 0).unwrap_or_else(Utc::now);
+        ChildMetricSample {
+            node_id: Uuid::new_v4(),
+            node_key: String::from(key),
+            type_name: String::from("Order"),
+            title: String::from(key),
+            properties: serde_json::Map::new(),
+            metrics: BTreeMap::from([(String::from("demand"), val)]),
+            link_weight: weight,
+            updated_at: ts,
+        }
+    }
+
+    fn mk_agg_rule(op: AggFn, weight_by_link: bool) -> AggRuleSpec {
+        AggRuleSpec {
+            target_metric: String::from("out"),
+            op,
+            via_link_type: String::from("FULFILLS"),
+            direction: LinkDirection::Out,
+            source_type_name: String::from("Order"),
+            source_metric: String::from("demand"),
+            filter: None,
+            weight_by_link,
+        }
+    }
+
+    #[test]
+    fn aggregate_exec_evaluates_all_eight_ops_weights_and_empty_sets() {
+        let empty: Vec<&ChildMetricSample> = Vec::new();
+        assert_eq!(eval_agg_samples(&empty, &mk_agg_rule(AggFn::Sum, false)), Some(0.0));
+        assert_eq!(eval_agg_samples(&empty, &mk_agg_rule(AggFn::Count, false)), Some(0.0));
+        assert_eq!(eval_agg_samples(&empty, &mk_agg_rule(AggFn::Avg, false)), None);
+        assert_eq!(eval_agg_samples(&empty, &mk_agg_rule(AggFn::Median, false)), None);
+
+        let s1 = mk_sample("O-1", 10.0, 2.0, 1);
+        let s2 = mk_sample("O-2", 20.0, 3.0, 5);
+        let s3 = mk_sample("O-3", 20.0, 5.0, 3);
+        let refs = vec![&s1, &s2, &s3];
+
+        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Sum, false)), Some(50.0));
+        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Sum, true)), Some(180.0));
+        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Avg, true)), Some(18.0));
+        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Min, false)), Some(10.0));
+        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Max, false)), Some(20.0));
+        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Count, false)), Some(3.0));
+        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::CountDistinct, false)), Some(2.0));
+        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Median, false)), Some(20.0));
+        assert_eq!(eval_agg_samples(&refs, &mk_agg_rule(AggFn::Last, false)), Some(20.0));
+
+        assert!(values_effectively_equal(Some(100.0), Some(100.0 + 1e-13)));
+        assert!(!values_effectively_equal(Some(100.0), Some(100.001)));
+        assert!(!values_effectively_equal(Some(0.0), None));
+    }
+}

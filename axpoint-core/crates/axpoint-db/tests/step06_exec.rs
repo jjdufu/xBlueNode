@@ -138,6 +138,7 @@ async fn test_pools() -> Result<Option<(PgPool, PgPool)>, Box<dyn std::error::Er
 
     let app_pool = match PgPoolOptions::new()
         .max_connections(6)
+        .acquire_timeout(std::time::Duration::from_secs(2))
         .connect(&app_url)
         .await
     {
@@ -147,6 +148,7 @@ async fn test_pools() -> Result<Option<(PgPool, PgPool)>, Box<dyn std::error::Er
     };
     let owner_pool = match PgPoolOptions::new()
         .max_connections(4)
+        .acquire_timeout(std::time::Duration::from_secs(2))
         .connect(&owner_url)
         .await
     {
@@ -315,7 +317,7 @@ fn json_obj(val: serde_json::Value) -> JsonRow {
 }
 
 #[tokio::test]
-async fn step06_full_and_incremental_mapping_rollup_and_explain_end_to_end() -> TestResult {
+async fn mapping_exec_and_aggregate_exec_full_incremental_and_explain() -> TestResult {
     let Some((app_pool, owner_pool)) = test_pools().await? else {
         return Ok(());
     };
@@ -468,7 +470,7 @@ async fn verify_rollup_and_incremental_delete(
 }
 
 #[tokio::test]
-async fn step06_knowledge_sync_dossier_and_candidate_promotion_end_to_end() -> TestResult {
+async fn knowledge_sync_dossier_and_candidate_promotion_end_to_end() -> TestResult {
     let Some((app_pool, owner_pool)) = test_pools().await? else {
         return Ok(());
     };

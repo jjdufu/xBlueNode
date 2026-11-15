@@ -1450,6 +1450,8 @@ fn parse_timestamp_cell(val: &serde_json::Value) -> Option<DateTime<Utc>> {
             for fmt in [
                 "%Y-%m-%d %H:%M:%S%.f%:z",
                 "%Y-%m-%d %H:%M:%S%:z",
+                "%Y-%m-%d %H:%M:%S%.f%#z",
+                "%Y-%m-%d %H:%M:%S%#z",
                 "%Y-%m-%dT%H:%M:%S%.f",
                 "%Y-%m-%d %H:%M:%S%.f",
                 "%Y-%m-%d %H:%M:%S",
@@ -2118,4 +2120,76 @@ fn quote_ident(ident: &str) -> String {
 
 fn escape_sql_literal(s: &str) -> String {
     s.replace('\'', "''")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axpoint_domain::enums::PiiCategory;
+    use axpoint_domain::studio::MappingGeoSpec;
+
+    #[test]
+    fn mapping_exec_timestamp_and_filter_coercion_handles_pg_and_rfc3339() {
+        let ts1 = parse_timestamp_cell(&serde_json::json!("2026-11-15T05:40:00.125Z"));
+        let ts2 = parse_timestamp_cell(&serde_json::json!("2026-11-15 05:40:00.125+00"));
+        assert!(ts1.is_some());
+        assert_eq!(ts1, ts2);
+
+        let raw_ast = parse_expr("status != 'TEST' and amount > 10");
+        assert!(raw_ast.is_ok());
+        if let Ok(ast) = raw_ast {
+            let norm = normalize_mapping_filter_ast(ast);
+            let mut ok_row = JsonRow::new();
+            ok_row.insert(String::from("status"), serde_json::json!("PAID"));
+            ok_row.insert(String::from("amount"), serde_json::json!(25.0));
+            assert!(eval_row_filter(&norm, &ok_row));
+
+            let mut bad_row = JsonRow::new();
+            bad_row.insert(String::from("status"), serde_json::json!("TEST"));
+            bad_row.insert(String::from("amount"), serde_json::json!(25.0));
+            assert!(!eval_row_filter(&norm, &bad_row));
+        }
+    }
+
+    #[test]
+    fn mapping_exec_missing_columns_detects_schema_drift() {
+        let spec = MappingSpec {
+            name: String::from("m1"),
+            dataset: String::from("orders"),
+            node_type: String::from("Order"),
+            key_column: String::from("order_id"),
+            title: String::from("{order_id}"),
+            filter: Some(String::from("status != 'TEST'")),
+            attributes: BTreeMap::new(),
+            metrics: BTreeMap::from([(String::from("demand"), String::from("amount"))]),
+            metric_time_column: None,
+            geo: MappingGeoSpec::default(),
+            links: Vec::new(),
+            on_source_delete: OnSourceDelete::Keep,
+            mode: MappingMode::Full,
+        };
+        let cols_ok = BTreeSet::from([
+            String::from("order_id"),
+            String::from("status"),
+            String::from("amount"),
+        ]);
+        assert!(check_missing_columns(&spec, &cols_ok, "orders").is_none());
+
+        let cols_missing = BTreeSet::from([String::from("order_id"), String::from("status")]);
+        let drift = check_missing_columns(&spec, &cols_missing, "orders");
+        assert!(drift.is_some_and(|m| m.contains("amount")));
+
+        let prop = PropertySpec {
+            name: String::from("tier"),
+            display_name: String::from("tier"),
+            description: String::new(),
+            unit: None,
+            data_type: DataType::Int64,
+            kind: PropertyKind::Attribute,
+            required: true,
+            pii_category: PiiCategory::None,
+            allowed_values: None,
+        };
+        assert_eq!(prop.data_type, DataType::Int64);
+    }
 }
