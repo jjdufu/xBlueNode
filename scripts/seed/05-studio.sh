@@ -133,6 +133,8 @@ MAPPING_ID=$(api GET /api/xblue/mappings | jq -r '.items[] | select(.name=="orde
 
 # 2. Restore W-1 snapshot inventory=500 & capacity=900 (preserving xb_metric_series hourly points from 03-axgraph.sh)
 api PATCH "/api/xblue/nodes/$WAREHOUSE_NODE_ID" '{"metrics":{"inventory":500,"capacity":900}}' >/dev/null
+wait_mapping_idle "$MAPPING_ID"
+wait_aggregate_idle
 
 echo "SCHEMA_VERSION=$SCHEMA_VER"
 echo "ORDER_MAPPING_ID=$MAPPING_ID"
