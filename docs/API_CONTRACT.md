@@ -131,6 +131,23 @@
 - `GET /api/xblue/nodes/{id}/explain/{metric}`（`DATA_READ`）：返回指标来源（`AGG` / `DERIVED` / `SYNC` / `MANUAL` / `ACTION` / `ALGORITHM`）、规则定义、上游输入节点列表与求值警告。
 - `GET /api/xblue/knowledge/node-candidates` / `POST /api/xblue/knowledge/node-candidates/{entity_id}/accept`（`STUDIO_EDIT`）：知识库高频未链接实体反哺节点候选列表及确认建点。
 
+### `AxFlow` DAG 引擎、持久化执行与流程版本（`/api/axflow/*`，Step 07）
+
+- `GET /api/axflow/operators`（`DATA_READ`）：返回已注册算子规格清单（`OperatorSpecDto[]`：含 `kind`、`display_name`、`description`、`config_schema` JSON Schema；`AGENT_TASK` 在 Step 09 注册）。
+- `GET /api/axflow/flows` / `POST /api/axflow/flows`（`DATA_READ` / `FLOW_EDIT`）：分页查询流程列表（`{items, next_cursor}`）或创建流程草稿（接受 `nodes` / `edges` / `trigger_cfg` / `slug`，兼容历史线性 `steps` 自动转换为链式 DAG；序列化响应不再输出 `steps`）。
+- `GET /api/axflow/flows/{id}` / `PUT /api/axflow/flows/{id}` / `DELETE /api/axflow/flows/{id}`（`DATA_READ` / `FLOW_EDIT`）：获取流程详情、保存草稿（返回更新后的 `AxFlowDef` 与静态校验 `issues`，允许保存有问题的草稿）或级联删除流程。
+- `POST /api/axflow/flows/{id}/validate`（`FLOW_EDIT`）：对流程当前草稿执行 8 条静态校验规则（节点 ID 与上限、边端点与去重、Kahn 环检测 `CYCLE_DETECTED`、根节点存在、算子注册 `UNSUPPORTED_FORMAT`、算子配置 JSON Schema `SCHEMA_INVALID`、`when` 表达式与 `{{...}}` 祖先引用 `EXPR_INVALID`、触发器合法性），返回 `{valid, issues}`。
+- `GET /api/axflow/flows/{id}/versions` / `POST /api/axflow/flows/{id}/versions`（`DATA_READ` / `FLOW_PUBLISH`）：列出已发布版本与当前 `TEST` / `PROD` 部署（`{items, deployments, next_cursor}`），或在草稿零错误时发布新版本（`version = max + 1`）。
+- `POST /api/axflow/flows/{id}/deploy`（`TEST` 需 `FLOW_EDIT`，`PROD` 需 `FLOW_PUBLISH`）：将指定已发布版本绑定到 `TEST` 或 `PROD` 环境（支持指向旧版本回退）。
+- `POST /api/axflow/flows/{id}/runs`（`FLOW_RUN`）：启动持久化 DAG 运行（`{environment?, version?, payload?, idempotency_key?}` → `202 {run_id, status, existing}`；同一 `(flow_id, idempotency_key)` 幂等返回已有运行）。
+- `POST /api/axflow/flows/{id}/run`（`FLOW_RUN`）：兼容入口，等价于 `POST /api/axflow/flows/{id}/runs` 且 `environment = "TEST"`，返回 `{run_id, status, existing}`。
+- `GET /api/axflow/flows/{id}/runs` / `GET /api/axflow/runs/{run_id}` / `GET /api/axflow/runs/{run_id}/steps`（`DATA_READ`）：查询流程运行历史分页列表、单次运行详情（含叶子输出 `outputs`）与逐节点尝试日志列表（`{items, next_cursor}`）。
+- `POST /api/axflow/runs/{run_id}/cancel` / `POST /api/axflow/runs/{run_id}/retry`（`FLOW_RUN`）：取消运行（置 `CANCELED`、`PENDING` 步骤置 `SKIPPED` 并取消对应 `FLOW_STEP` 任务，执行中算子在检查点退出）或从失败节点以 `attempt + 1` 重新推进。
+- `POST /api/axflow/flows/{id}/hook`（`FLOW_PUBLISH`）：创建或轮换流程 Webhook Bearer 秘密（密钥环加密存入 `ds_credentials`，明文秘密在响应中一次性返回）。
+- `POST /api/axflow/hooks/{tenant_id}/{slug}`（外部入口，`Authorization: Bearer <secret>`）：经 `ax_resolve_flow_hook` 常量时间校验秘密后，以请求体作为 `trigger` 载荷、`Idempotency-Key` 请求头作为幂等键启动该流程的 `PROD` 部署运行。
+- `GET /api/axflow/approvals` / `POST /api/axflow/approvals/{id}/decide`（`DATA_READ` / `APPROVAL_DECIDE`）：查询待审批/历史审批列表（支持 `?status=PENDING&mine=true&run_id=`）或提交 `{decision: "APPROVE"|"REJECT", comment?}`（决定者须属于 `assignee_roles` 或 `assignee_users`，否则 `403 PERMISSION_DENIED`；单事务写 `ax_approvals`、`approval.decided` 外发事件与 `APPROVAL_DECIDE` 审计）。
+- `GET /api/axflow/actions`（`DATA_READ`）：查询动作回写流水 `ax_action_log`（支持 `?run_id=&status=`，`TEST` 环境或 `dry_run=true` 记录为 `DRY_RUN`）。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）

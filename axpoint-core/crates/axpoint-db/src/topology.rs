@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 
 use axpoint_domain::AppError;
+use axpoint_domain::flow::{FlowEdge, FlowNode, TriggerCfg};
 use axpoint_domain::graph::GeoPoint;
 use axpoint_domain::topology::{
     AggRuleDef, AxFlowDef, AxFlowRunResult, AxFlowStep, AxSandboxRecord, AxSimAction, AxSimResult,
@@ -341,8 +342,9 @@ impl PgStore {
     pub async fn list_ax_flows(&self, tenant_id: &str) -> Result<Vec<AxFlowDef>, AppError> {
         let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
         let rows = sqlx::query(
-            "SELECT id, name, description, steps, status, last_run_at
-             FROM ax_flows WHERE tenant_id = $1 ORDER BY created_at DESC",
+            "SELECT id, name, description, slug, nodes, edges, trigger_cfg,
+                    status, created_by, last_run_at, created_at, updated_at
+               FROM ax_flows WHERE tenant_id = $1 ORDER BY created_at DESC",
         )
         .bind(tenant_id)
         .fetch_all(&mut *tx)
@@ -353,21 +355,7 @@ impl PgStore {
             .await
             .map_err(|err| AppError::Database(format!("commit list_ax_flows tx failed: {err}")))?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                let steps_val: serde_json::Value = r.get("steps");
-                let steps: Vec<AxFlowStep> = serde_json::from_value(steps_val).unwrap_or_default();
-                AxFlowDef {
-                    id: r.get("id"),
-                    name: r.get("name"),
-                    description: r.get("description"),
-                    steps,
-                    status: r.get("status"),
-                    last_run_at: r.get("last_run_at"),
-                }
-            })
-            .collect())
+        Ok(rows.iter().map(decode_ax_flow_row).collect())
     }
 
     /// Creates a new `AxFlow` pipeline.
@@ -380,35 +368,43 @@ impl PgStore {
         req: CreateAxFlowRequest,
     ) -> Result<AxFlowDef, AppError> {
         let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
-        let steps_json = serde_json::to_value(&req.steps)
-            .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid steps: {err}")))?;
+        let (nodes, edges) = req.resolve_dag();
+        let nodes_json = serde_json::to_value(&nodes)
+            .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid nodes: {err}")))?;
+        let edges_json = serde_json::to_value(&edges)
+            .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid edges: {err}")))?;
+        let trigger_json = serde_json::to_value(&req.trigger_cfg).map_err(|err| {
+            AppError::bad("INVALID_ARGUMENT", format!("invalid trigger_cfg: {err}"))
+        })?;
+        let slug = req
+            .slug
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
 
         let row = sqlx::query(
-            "INSERT INTO ax_flows (tenant_id, name, description, steps, status)
-             VALUES ($1, $2, $3, $4, 'PUBLISHED')
-             RETURNING id",
+            "INSERT INTO ax_flows (tenant_id, name, description, slug, nodes, edges, trigger_cfg, status)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, 'DRAFT')
+             RETURNING id, name, description, slug, nodes, edges, trigger_cfg,
+                       status, created_by, last_run_at, created_at, updated_at",
         )
         .bind(tenant_id)
         .bind(req.name.trim())
         .bind(req.description.trim())
-        .bind(steps_json)
+        .bind(slug)
+        .bind(nodes_json)
+        .bind(edges_json)
+        .bind(trigger_json)
         .fetch_one(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("insert ax_flow failed: {err}")))?;
 
-        let flow_id: Uuid = row.get("id");
         tx.commit()
             .await
             .map_err(|err| AppError::Database(format!("commit create_ax_flow tx failed: {err}")))?;
 
-        Ok(AxFlowDef {
-            id: flow_id,
-            name: req.name,
-            description: req.description,
-            steps: req.steps,
-            status: String::from("PUBLISHED"),
-            last_run_at: None,
-        })
+        Ok(decode_ax_flow_row(&row))
     }
 
     /// Executes an `AxFlow` pipeline and updates `last_run_at`.
@@ -665,5 +661,31 @@ impl axpoint_domain::ports::TopologyRepository for PgStore {
         actions: Vec<AxSimAction>,
     ) -> Result<AxSimResult, AppError> {
         Self::simulate_ax_sandbox(self, tenant_id, sandbox_id, actions).await
+    }
+}
+
+pub(crate) fn decode_ax_flow_row(row: &sqlx::postgres::PgRow) -> AxFlowDef {
+    let nodes_val: serde_json::Value = row.get("nodes");
+    let edges_val: serde_json::Value = row.get("edges");
+    let trigger_val: serde_json::Value = row.get("trigger_cfg");
+
+    let nodes: Vec<FlowNode> = serde_json::from_value(nodes_val).unwrap_or_default();
+    let edges: Vec<FlowEdge> = serde_json::from_value(edges_val).unwrap_or_default();
+    let trigger_cfg: TriggerCfg = serde_json::from_value(trigger_val).unwrap_or_default();
+
+    AxFlowDef {
+        id: row.get("id"),
+        name: row.get("name"),
+        description: row.get("description"),
+        slug: row.get("slug"),
+        nodes,
+        edges,
+        trigger_cfg,
+        status: row.get("status"),
+        created_by: row.get("created_by"),
+        last_run_at: row.get("last_run_at"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+        issues: Vec::new(),
     }
 }

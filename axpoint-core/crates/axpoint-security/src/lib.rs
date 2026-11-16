@@ -4,6 +4,7 @@
 pub mod audit;
 pub mod authenticator;
 pub mod keyring;
+pub mod net_guard;
 pub mod principal;
 
 pub use audit::AuditWriter;

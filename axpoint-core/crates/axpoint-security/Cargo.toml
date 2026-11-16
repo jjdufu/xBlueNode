@@ -13,6 +13,7 @@ aes-gcm = { workspace = true }
 axpoint-domain = { path = "../axpoint-domain" }
 base64 = { workspace = true }
 hex = { workspace = true }
+reqwest = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
 subtle = { workspace = true }
