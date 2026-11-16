@@ -797,6 +797,28 @@ async fn list_actions_handler(
     Ok(Json(page))
 }
 
+impl axpoint_domain::ports::FlowCredentialUnsealPort for AppState {
+    fn unseal_credential_json<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        credential_id: Uuid,
+    ) -> axpoint_domain::platform::BoxFuture<'a, serde_json::Value> {
+        Box::pin(async move {
+            let sealed = self
+                .store
+                .get_credential(tenant_id, credential_id)
+                .await?
+                .ok_or(AppError::NotFound("CREDENTIAL_NOT_FOUND"))?;
+            let secret_map = open_secret_map(&self.keyring, tenant_id, Some(&sealed))?;
+            let mut obj = serde_json::Map::with_capacity(secret_map.len());
+            for (k, v) in &secret_map {
+                obj.insert(k.clone(), serde_json::Value::String(v.clone()));
+            }
+            Ok(serde_json::Value::Object(obj))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use axum::http::HeaderValue;

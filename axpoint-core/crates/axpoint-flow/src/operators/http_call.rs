@@ -16,8 +16,8 @@ use axpoint_domain::ports::{FlowCredentialUnsealPort, FlowRepository, OutboundUr
 use base64::Engine as _;
 
 use super::{
-    parse_optional_bool, parse_optional_u64, parse_optional_uuid, parse_required_string,
-    templated_bool_schema, templated_int_schema, templated_uuid_schema,
+    parse_optional_bool, parse_optional_string_any, parse_optional_u64, parse_optional_uuid,
+    parse_required_string, templated_bool_schema, templated_int_schema, templated_uuid_schema,
 };
 
 /// Studio palette display name for `HTTP_CALL`.
@@ -42,19 +42,26 @@ pub fn config_schema() -> serde_json::Value {
                 ]
             },
             "url": { "type": "string", "minLength": 1 },
+            "test_url": { "type": "string" },
             "headers": {
                 "type": "object",
                 "additionalProperties": { "type": "string" }
             },
+            "auth": { "type": "object" },
             "body": {},
             "json": {},
             "credential_id": templated_uuid_schema(),
             "allow_private_network": templated_bool_schema(),
             "timeout_s": templated_int_schema(1, 300),
+            "expect_status": {
+                "type": "array",
+                "items": { "type": "integer", "minimum": 100, "maximum": 599 }
+            },
             "expected_status": {
                 "type": "array",
                 "items": { "type": "integer", "minimum": 100, "maximum": 599 }
             },
+            "response_path": { "type": "string" },
             "dry_run": templated_bool_schema()
         },
         "additionalProperties": false
@@ -95,7 +102,8 @@ where
             return Err(AppError::Conflict("RUN_CANCELED"));
         }
 
-        let url = parse_required_string(&ctx.config, "url")?;
+        let prod_url = parse_required_string(&ctx.config, "url")?;
+        let test_url = parse_optional_string_any(&ctx.config, &["test_url"])?;
         let method_str = ctx
             .config
             .get("method")
@@ -108,7 +116,11 @@ where
             .unwrap_or(30)
             .clamp(1, 300);
         let dry_run = parse_optional_bool(&ctx.config, "dry_run")?.unwrap_or(false);
-        let is_dry_run = ctx.environment == Environment::Test || dry_run;
+        let (url, is_dry_run) = match (ctx.environment, test_url, dry_run) {
+            (Environment::Test, Some(sandbox_url), false) => (sandbox_url, false),
+            (_, _, true) | (Environment::Test, None, false) => (prod_url, true),
+            (Environment::Prod, _, false) => (prod_url, false),
+        };
 
         let idem_key = format!("{}:{}:0", ctx.run_id, ctx.node_id);
         if let Some(existing) = self
@@ -187,7 +199,16 @@ where
             }
         }
 
-        if let Some(cred_id) = parse_optional_uuid(&ctx.config, "credential_id")? {
+        let cred_id_opt = match parse_optional_uuid(&ctx.config, "credential_id")? {
+            Some(id) => Some(id),
+            None => match ctx.config.get("auth") {
+                Some(auth_obj @ serde_json::Value::Object(_)) => {
+                    parse_optional_uuid(auth_obj, "credential_id")?
+                }
+                _ => None,
+            },
+        };
+        if let Some(cred_id) = cred_id_opt {
             let unsealer = self.cred_unsealer.as_ref().ok_or_else(|| {
                 AppError::Config(String::from("FlowCredentialUnsealPort is not configured"))
             })?;
@@ -260,10 +281,12 @@ where
             )
             .await?;
 
+        let extracted_body = extract_response_path(&body_val, &ctx.config);
+
         Ok(OperatorOutcome::Completed(serde_json::json!({
             "dry_run": false,
             "status_code": status_code,
-            "body": body_val,
+            "body": extracted_body,
             "action_id": rec.id,
         })))
     }
@@ -401,9 +424,46 @@ async fn read_capped_body(resp: &mut reqwest::Response) -> Result<serde_json::Va
     ))
 }
 
+fn extract_response_path(
+    body: &serde_json::Value,
+    config: &serde_json::Value,
+) -> serde_json::Value {
+    let Some(path) = config
+        .get("response_path")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return body.clone();
+    };
+    if path.starts_with('/') {
+        return body
+            .pointer(path)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+    }
+    let mut cur = body;
+    for seg in path.trim_start_matches("$.").split('.') {
+        if seg.is_empty() {
+            continue;
+        }
+        let next_opt = match cur {
+            serde_json::Value::Object(map) => map.get(seg),
+            serde_json::Value::Array(arr) => seg.parse::<usize>().ok().and_then(|idx| arr.get(idx)),
+            _ => None,
+        };
+        let Some(next) = next_opt else {
+            return serde_json::Value::Null;
+        };
+        cur = next;
+    }
+    cur.clone()
+}
+
 fn is_expected_status(config: &serde_json::Value, status_code: u16) -> bool {
     if let Some(arr) = config
         .get("expected_status")
+        .or_else(|| config.get("expect_status"))
         .and_then(serde_json::Value::as_array)
         && !arr.is_empty()
     {
@@ -418,10 +478,16 @@ fn redacted_request_summary(method: &str, config: &serde_json::Value) -> serde_j
         .get("headers")
         .and_then(serde_json::Value::as_object)
         .map_or_else(Vec::new, |m| m.keys().cloned().collect());
+    let has_cred = config.get("credential_id").is_some_and(|v| !v.is_null())
+        || config
+            .get("auth")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|m| m.get("credential_id"))
+            .is_some_and(|v| !v.is_null());
     serde_json::json!({
         "method": method,
         "header_keys": header_keys,
-        "has_credential": config.get("credential_id").is_some_and(|v| !v.is_null()),
+        "has_credential": has_cred,
     })
 }
 

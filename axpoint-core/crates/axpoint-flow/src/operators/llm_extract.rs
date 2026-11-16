@@ -8,7 +8,7 @@ use axpoint_domain::flow::{Operator, OperatorContext, OperatorOutcome};
 use axpoint_domain::platform::BoxFuture;
 use axpoint_domain::ports::{AiPort, FlowRepository};
 
-use super::{parse_optional_string_any, parse_required_string};
+use super::{parse_optional_string_any, parse_required_string_any};
 
 /// Studio palette display name for `LLM_EXTRACT`.
 pub const DISPLAY_NAME: &str = "大模型结构化抽取";
@@ -22,14 +22,19 @@ pub const DESCRIPTION: &str =
 pub fn config_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
-        "required": ["text"],
         "properties": {
             "text": { "type": "string", "minLength": 1 },
+            "input": { "type": "string", "minLength": 1 },
+            "model": { "type": "string" },
             "instruction": { "type": "string" },
             "system_prompt": { "type": "string" },
             "output_schema": { "type": "object" },
             "mode": { "type": "string", "enum": ["JSON", "TRIPLES"] }
         },
+        "anyOf": [
+            { "required": ["text"] },
+            { "required": ["input"] }
+        ],
         "additionalProperties": false
     })
 }
@@ -65,7 +70,7 @@ where
             return Ok(OperatorOutcome::Completed(cached));
         }
 
-        let text = parse_required_string(&ctx.config, "text")?;
+        let text = parse_required_string_any(&ctx.config, &["text", "input"])?;
         let mode = parse_optional_string_any(&ctx.config, &["mode"])?
             .unwrap_or_else(|| String::from("JSON"));
 

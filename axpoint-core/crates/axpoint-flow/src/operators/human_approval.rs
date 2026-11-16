@@ -32,6 +32,7 @@ pub fn config_schema() -> serde_json::Value {
         "properties": {
             "title": { "type": "string", "minLength": 1 },
             "detail": { "type": "object" },
+            "detail_template": { "type": "object" },
             "assignee_roles": {
                 "type": "array",
                 "items": { "type": "string", "minLength": 1 }
@@ -40,6 +41,7 @@ pub fn config_schema() -> serde_json::Value {
                 "type": "array",
                 "items": templated_uuid_schema()
             },
+            "expires_in_minutes": templated_int_schema(1, 43_200),
             "expires_in_s": templated_int_schema(1, 2_592_000),
             "timeout_s": templated_int_schema(1, 2_592_000),
             "ttl_s": templated_int_schema(1, 2_592_000)
@@ -69,7 +71,12 @@ where
         }
 
         let title = parse_required_string(&ctx.config, "title")?;
-        let detail = match ctx.config.get("detail") {
+        let detail_raw = ctx
+            .config
+            .get("detail")
+            .filter(|v| !v.is_null())
+            .or_else(|| ctx.config.get("detail_template"));
+        let detail = match detail_raw {
             Some(v @ serde_json::Value::Object(_)) => v.clone(),
             None | Some(serde_json::Value::Null) => serde_json::json!({}),
             Some(other) => serde_json::json!({ "value": other }),
@@ -82,7 +89,11 @@ where
         }
 
         let expires_in =
-            parse_optional_i64_any(&ctx.config, &["expires_in_s", "timeout_s", "ttl_s"])?;
+            match parse_optional_i64_any(&ctx.config, &["expires_in_s", "timeout_s", "ttl_s"])? {
+                Some(secs) => Some(secs),
+                None => parse_optional_i64_any(&ctx.config, &["expires_in_minutes"])?
+                    .map(|mins| mins.saturating_mul(60)),
+            };
         let expires_at = expires_in
             .filter(|&secs| secs > 0)
             .map(|secs| Utc::now() + Duration::seconds(secs));
