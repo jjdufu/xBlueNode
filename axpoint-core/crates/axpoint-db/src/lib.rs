@@ -6,6 +6,7 @@ pub mod analytics_repo;
 pub mod audit;
 pub mod axhub_repo;
 pub mod entity_link;
+pub mod flow_repo;
 pub mod graph_query;
 pub mod jobs;
 pub mod knowledge_sync;

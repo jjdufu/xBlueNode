@@ -6,6 +6,7 @@ pub mod analytics;
 pub mod axhub;
 pub mod enums;
 pub mod expr;
+pub mod flow;
 pub mod graph;
 pub mod platform;
 pub mod ports;

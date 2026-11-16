@@ -24,7 +24,14 @@ use crate::axhub::{
     SyncDatasetResponse, SyncJob, UnifiedParseResponse, UpdateColumnMetaRequest,
     UpdateConnectionInput, UpdateDatasetRequest, UploadRecord, WebhookBufferItem, WebhookConfig,
 };
-use crate::enums::{GraphAlgo, JobKind};
+use crate::enums::{Environment, GraphAlgo, JobKind};
+use crate::flow::{
+    ActionListQuery, ActionLogRecord, ApprovalListQuery, ApprovalRecord, DecideApprovalParams,
+    DeployFlowRequest, EventFlowItem, FlowDeploymentRecord, FlowListQuery, FlowVersionRecord,
+    FlowVersionsListResponse, NewActionLogInput, NewApprovalInput, ProgressionPlannerFn,
+    PublishFlowVersionRequest, ResolvedFlowHook, RunListQuery, RunRecord, ScheduledFlowItem,
+    StartRunParams, StepMutation, StepRecord, UpdateAxFlowRequest,
+};
 use crate::graph::{
     AlgoResultsQuery, AlgoResultsResponse, AlgoRunRequest, AlgoRunResponse, BulkNodesRequest,
     BulkNodesResponse, EntityCandidatesResponse, EntityLink, LinkListQuery, LinkRecord,
@@ -35,8 +42,8 @@ use crate::graph::{
     WriteMetricsResponse,
 };
 use crate::platform::{
-    ApiTokenRecord, AuditRecord, JobListQuery, JobListResponse, JobRecord, LeasedJob, NewJob,
-    OutboxEvent, PrincipalRecord,
+    ApiTokenRecord, AuditRecord, BoxFuture, JobListQuery, JobListResponse, JobRecord, LeasedJob,
+    NewJob, OutboxEvent, PrincipalRecord,
 };
 use crate::rollup::{
     AcceptNodeCandidateRequest, AcceptNodeCandidateResponse, GraphAggregateJobPayload,
@@ -1460,4 +1467,285 @@ pub trait StudioExecutionPort: Send + Sync {
         entity_id: Uuid,
         req: AcceptNodeCandidateRequest,
     ) -> impl Future<Output = Result<AcceptNodeCandidateResponse, AppError>> + Send;
+}
+
+/// Persistence port for `AxFlow` DAG definitions, versions, deployments, runs, step logs,
+/// human approvals, writeback action logs, and inbound flow webhooks (`07-STEP07-08` §07).
+pub trait FlowRepository: Send + Sync {
+    /// Lists `AxFlow` pipelines in `tenant_id` with optional search and cursor pagination.
+    fn list_flows(
+        &self,
+        tenant_id: &str,
+        query: FlowListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<AxFlowDef>, AppError>> + Send;
+
+    /// Fetches a single `AxFlow` draft/definition by UUID in `tenant_id`.
+    fn get_flow(
+        &self,
+        tenant_id: &str,
+        flow_id: Uuid,
+    ) -> impl Future<Output = Result<Option<AxFlowDef>, AppError>> + Send;
+
+    /// Creates a new `AxFlow` draft (`status = 'DRAFT'`) in `tenant_id`.
+    fn create_flow(
+        &self,
+        tenant_id: &str,
+        created_by: Option<Uuid>,
+        req: CreateAxFlowRequest,
+    ) -> impl Future<Output = Result<AxFlowDef, AppError>> + Send;
+
+    /// Updates mutable draft fields (`name`, `description`, `slug`, `nodes`, `edges`, `trigger_cfg`) on an `AxFlow`.
+    fn update_flow(
+        &self,
+        tenant_id: &str,
+        flow_id: Uuid,
+        req: UpdateAxFlowRequest,
+    ) -> impl Future<Output = Result<Option<AxFlowDef>, AppError>> + Send;
+
+    /// Deletes an `AxFlow` and cascades its versions, deployments, runs, step logs, approvals, and hooks.
+    fn delete_flow(
+        &self,
+        tenant_id: &str,
+        flow_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Snapshots the current flow draft into `ax_flow_versions(version = max + 1)` and sets `ax_flows.status = 'PUBLISHED'`.
+    fn publish_flow_version(
+        &self,
+        tenant_id: &str,
+        flow_id: Uuid,
+        published_by: Option<Uuid>,
+        req: PublishFlowVersionRequest,
+    ) -> impl Future<Output = Result<FlowVersionRecord, AppError>> + Send;
+
+    /// Lists published versions (`version DESC`) together with active `TEST`/`PROD` deployments for `flow_id`.
+    fn list_flow_versions(
+        &self,
+        tenant_id: &str,
+        flow_id: Uuid,
+    ) -> impl Future<Output = Result<FlowVersionsListResponse, AppError>> + Send;
+
+    /// Fetches a specific published [`FlowVersionRecord`] `(flow_id, version)` in `tenant_id`.
+    fn get_flow_version(
+        &self,
+        tenant_id: &str,
+        flow_id: Uuid,
+        version: i32,
+    ) -> impl Future<Output = Result<Option<FlowVersionRecord>, AppError>> + Send;
+
+    /// Upserts `(flow_id, environment)` in `ax_flow_deployments` pointing to an existing published `version`.
+    fn deploy_flow(
+        &self,
+        tenant_id: &str,
+        flow_id: Uuid,
+        deployed_by: Option<Uuid>,
+        req: DeployFlowRequest,
+    ) -> impl Future<Output = Result<FlowDeploymentRecord, AppError>> + Send;
+
+    /// Fetches the active [`FlowDeploymentRecord`] for `(flow_id, environment)`, if deployed.
+    fn get_flow_deployment(
+        &self,
+        tenant_id: &str,
+        flow_id: Uuid,
+        environment: Environment,
+    ) -> impl Future<Output = Result<Option<FlowDeploymentRecord>, AppError>> + Send;
+
+    /// Resolves target version, deduplicates on `(flow_id, idempotency_key)`, inserts `ax_flow_runs`,
+    /// creates root `PENDING` step rows, and enqueues initial `FLOW_STEP` jobs (`(run, existing)`).
+    fn start_flow_run(
+        &self,
+        tenant_id: &str,
+        params: StartRunParams,
+    ) -> impl Future<Output = Result<(RunRecord, bool), AppError>> + Send;
+
+    /// Fetches a single [`RunRecord`] by UUID in `tenant_id`.
+    fn get_flow_run(
+        &self,
+        tenant_id: &str,
+        run_id: Uuid,
+    ) -> impl Future<Output = Result<Option<RunRecord>, AppError>> + Send;
+
+    /// Lists runs for `flow_id` ordered by `created_at DESC` with cursor pagination.
+    fn list_flow_runs(
+        &self,
+        tenant_id: &str,
+        flow_id: Uuid,
+        query: RunListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<RunRecord>, AppError>> + Send;
+
+    /// Lists all step attempt records for `run_id` ordered by `(id ASC)`.
+    fn list_run_steps(
+        &self,
+        tenant_id: &str,
+        run_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<StepRecord>, AppError>> + Send;
+
+    /// Lists the highest-`attempt` [`StepRecord`] per `node_id` for `run_id`.
+    fn list_latest_run_steps(
+        &self,
+        tenant_id: &str,
+        run_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<StepRecord>, AppError>> + Send;
+
+    /// Marks `(run_id, node_id, attempt)` as `RUNNING` and records rendered `input` and `job_id`.
+    fn mark_step_running(
+        &self,
+        tenant_id: &str,
+        run_id: Uuid,
+        node_id: &str,
+        attempt: i32,
+        job_id: Option<Uuid>,
+        rendered_input: &serde_json::Value,
+    ) -> impl Future<Output = Result<StepRecord, AppError>> + Send;
+
+    /// Looks up a previously cached inline `output` for `(run_id, node_id)` matching `rendered_input` (used by `LLM_EXTRACT` retries).
+    fn find_cached_step_output(
+        &self,
+        tenant_id: &str,
+        run_id: Uuid,
+        node_id: &str,
+        rendered_input: &serde_json::Value,
+    ) -> impl Future<Output = Result<Option<serde_json::Value>, AppError>> + Send;
+
+    /// Locks `ax_flow_runs` via `SELECT ... FOR UPDATE`, applies `mutation`, runs `planner`,
+    /// and commits skipped nodes, newly ready `FLOW_STEP` jobs, and terminal run status in one transaction.
+    fn apply_step_mutation_and_progress(
+        &self,
+        tenant_id: &str,
+        run_id: Uuid,
+        mutation: StepMutation,
+        planner: ProgressionPlannerFn<'_>,
+    ) -> impl Future<Output = Result<RunRecord, AppError>> + Send;
+
+    ///Cancels an active run (`CANCELED`), marks `PENDING` steps `SKIPPED`, and cancels queued `FLOW_STEP` jobs.
+    fn cancel_flow_run(
+        &self,
+        tenant_id: &str,
+        run_id: Uuid,
+    ) -> impl Future<Output = Result<RunRecord, AppError>> + Send;
+
+    /// Re-queues terminal `FAILED` nodes on a `FAILED` run as `attempt + 1` and transitions the run back to `RUNNING`.
+    fn retry_flow_run(
+        &self,
+        tenant_id: &str,
+        run_id: Uuid,
+    ) -> impl Future<Output = Result<RunRecord, AppError>> + Send;
+
+    /// Idempotently creates or returns an existing `ax_approvals` row for `(run_id, node_id)` (`07-STEP07-08` §07.4).
+    fn create_or_get_approval(
+        &self,
+        tenant_id: &str,
+        input: NewApprovalInput,
+    ) -> impl Future<Output = Result<ApprovalRecord, AppError>> + Send;
+
+    /// Fetches a single [`ApprovalRecord`] by UUID in `tenant_id`.
+    fn get_approval(
+        &self,
+        tenant_id: &str,
+        approval_id: Uuid,
+    ) -> impl Future<Output = Result<Option<ApprovalRecord>, AppError>> + Send;
+
+    /// Lists approvals in `tenant_id` (optionally filtered by `status`, `run_id`, and `mine` against `viewer_user_id` / `viewer_roles`).
+    fn list_approvals(
+        &self,
+        tenant_id: &str,
+        viewer_user_id: Uuid,
+        viewer_roles: &[String],
+        query: ApprovalListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<ApprovalRecord>, AppError>> + Send;
+
+    /// Enforces assignee authorization (`403 PERMISSION_DENIED` if ineligible), updates `ax_approvals`,
+    /// emits `approval.decided` to `ax_outbox`, and writes `APPROVAL_DECIDE` audit in one transaction.
+    fn decide_approval(
+        &self,
+        tenant_id: &str,
+        params: DecideApprovalParams,
+    ) -> impl Future<Output = Result<ApprovalRecord, AppError>> + Send;
+
+    /// Marks overdue `PENDING` approvals in `tenant_id` (`expires_at <= NOW()`) as `EXPIRED` and emits `approval.decided` outbox events.
+    fn expire_overdue_approvals(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<u64, AppError>> + Send;
+
+    /// Inserts an `ax_action_log` row or returns `(existing_row, true)` on `(tenant_id, idempotency_key)` conflict.
+    fn record_action_log(
+        &self,
+        tenant_id: &str,
+        input: NewActionLogInput,
+    ) -> impl Future<Output = Result<(ActionLogRecord, bool), AppError>> + Send;
+
+    /// Looks up an existing `ax_action_log` row by `(tenant_id, idempotency_key)`.
+    fn get_action_log_by_key(
+        &self,
+        tenant_id: &str,
+        idempotency_key: &str,
+    ) -> impl Future<Output = Result<Option<ActionLogRecord>, AppError>> + Send;
+
+    /// Lists `ax_action_log` entries in `tenant_id` (optionally filtered by `run_id` / `status`).
+    fn list_action_logs(
+        &self,
+        tenant_id: &str,
+        query: ActionListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<ActionLogRecord>, AppError>> + Send;
+
+    /// Upserts `ax_flow_hooks` for `flow_id` pointing to sealed `credential_id` (returning `(hook_id, created_at)`).
+    fn upsert_flow_hook(
+        &self,
+        tenant_id: &str,
+        flow_id: Uuid,
+        credential_id: Uuid,
+    ) -> impl Future<Output = Result<(Uuid, chrono::DateTime<chrono::Utc>), AppError>> + Send;
+
+    /// Resolves `(flow_id, credential_id)` for an inbound flow webhook via `ax_resolve_flow_hook(tenant, slug)`.
+    fn resolve_flow_hook(
+        &self,
+        tenant_id: &str,
+        slug: &str,
+    ) -> impl Future<Output = Result<Option<ResolvedFlowHook>, AppError>> + Send;
+
+    /// Lists all `PROD`-deployed `CRON` flows across tenants via `ax_scheduled_flows()`.
+    fn list_scheduled_flows(
+        &self,
+    ) -> impl Future<Output = Result<Vec<ScheduledFlowItem>, AppError>> + Send;
+
+    /// Lists all `PROD`-deployed `OUTBOX_EVENT` flows matching `topic` across tenants via `ax_event_flows(topic)`.
+    fn list_event_flows(
+        &self,
+        topic: &str,
+    ) -> impl Future<Output = Result<Vec<EventFlowItem>, AppError>> + Send;
+
+    /// Lists active tenant IDs from `sec_tenants` for periodic approval-expiration scanning.
+    fn list_active_tenants(&self) -> impl Future<Output = Result<Vec<String>, AppError>> + Send;
+}
+
+/// Object-safe SSRF outbound URL guard port (`07-STEP07-08` §07.0 & Step 01 §01.1).
+pub trait OutboundUrlGuardPort: Send + Sync {
+    /// Validates URL scheme, hostname, and resolved DNS IP addresses against SSRF rules.
+    fn check_outbound_url<'a>(
+        &'a self,
+        url: &'a str,
+        allow_private_network: bool,
+    ) -> BoxFuture<'a, String>;
+}
+
+/// Object-safe port materializing a guarded `SQL_TRANSFORM` query into a `DERIVED_VIEW` dataset (`07-STEP07-08` §07.4).
+pub trait FlowSqlMaterializePort: Send + Sync {
+    /// Creates or refreshes a `DERIVED_VIEW` dataset named `dataset_name` backed by `sql` and returns its `dataset_id`.
+    fn materialize_sql_dataset<'a>(
+        &'a self,
+        principal: &'a AnalyticsPrincipal,
+        dataset_name: &'a str,
+        sql: &'a str,
+    ) -> BoxFuture<'a, Uuid>;
+}
+
+/// Object-safe port unsealing `ds_credentials` JSON secrets for `HTTP_CALL` authentication (`07-STEP07-08` §07.4).
+pub trait FlowCredentialUnsealPort: Send + Sync {
+    /// Loads and decrypts `credential_id` within `tenant_id` into a JSON object.
+    fn unseal_credential_json<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        credential_id: Uuid,
+    ) -> BoxFuture<'a, serde_json::Value>;
 }

@@ -12,6 +12,7 @@ workspace = true
 axpoint-analytics = { path = "../axpoint-analytics" }
 axpoint-db = { path = "../axpoint-db" }
 axpoint-domain = { path = "../axpoint-domain" }
+axpoint-flow = { path = "../axpoint-flow" }
 axpoint-llm = { path = "../axpoint-llm" }
 axpoint-security = { path = "../axpoint-security" }
 async-graphql = { workspace = true }

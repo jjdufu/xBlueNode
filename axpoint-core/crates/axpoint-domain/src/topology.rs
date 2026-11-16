@@ -6,7 +6,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::enums::PiiCategory;
+use crate::enums::{FlowOperator, PiiCategory};
+use crate::flow::{
+    FlowEdge, FlowIssue, FlowNode, JoinMode, OnFailure, Pos, RetryPolicy, TriggerCfg,
+};
 use crate::graph::{GeoPoint, MetricsMerge};
 use crate::studio::{LinkDirection, PropertyKind};
 
@@ -264,7 +267,7 @@ pub struct AxFlowStep {
     pub config: serde_json::Value,
 }
 
-/// `AxFlow` pipeline definition.
+/// `AxFlow` pipeline definition (`07-STEP07-08` §07.1 & §07.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AxFlowDef {
     /// Flow UUID.
@@ -273,16 +276,38 @@ pub struct AxFlowDef {
     pub name: String,
     /// Description.
     pub description: String,
-    /// Ordered pipeline steps.
-    pub steps: Vec<AxFlowStep>,
+    /// Optional unique tenant-scoped webhook slug.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
+    /// Draft DAG operator nodes.
+    #[serde(default)]
+    pub nodes: Vec<FlowNode>,
+    /// Draft DAG dependency edges.
+    #[serde(default)]
+    pub edges: Vec<FlowEdge>,
+    /// Draft trigger configuration.
+    #[serde(default)]
+    pub trigger_cfg: TriggerCfg,
     /// Status (`DRAFT`, `PUBLISHED`).
     pub status: String,
+    /// Creator user UUID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<Uuid>,
     /// Last execution timestamp.
     pub last_run_at: Option<DateTime<Utc>>,
+    /// Creation timestamp.
+    #[serde(default = "Utc::now")]
+    pub created_at: DateTime<Utc>,
+    /// Last draft update timestamp.
+    #[serde(default = "Utc::now")]
+    pub updated_at: DateTime<Utc>,
+    /// Validation issues returned when saving/inspecting a draft.
+    #[serde(default)]
+    pub issues: Vec<FlowIssue>,
 }
 
-/// Request to create an `AxFlow` pipeline.
-#[derive(Debug, Clone, Deserialize)]
+/// Request to create an `AxFlow` pipeline (`07-STEP07-08` §07.0 & §07.1).
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateAxFlowRequest {
     /// Flow name.
@@ -290,8 +315,84 @@ pub struct CreateAxFlowRequest {
     /// Description.
     #[serde(default)]
     pub description: String,
-    /// Flow steps.
-    pub steps: Vec<AxFlowStep>,
+    /// Optional webhook slug.
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// DAG operator nodes.
+    #[serde(default)]
+    pub nodes: Vec<FlowNode>,
+    /// DAG dependency edges.
+    #[serde(default)]
+    pub edges: Vec<FlowEdge>,
+    /// Trigger configuration (defaults to `MANUAL`).
+    #[serde(default)]
+    pub trigger_cfg: TriggerCfg,
+    /// Legacy linear steps converted to a sequential chain DAG when `nodes` is empty (`07-STEP07-08` §07.1).
+    #[serde(default)]
+    pub steps: Option<Vec<AxFlowStep>>,
+}
+
+impl CreateAxFlowRequest {
+    /// Resolves `(nodes, edges)` by preferring explicit `nodes`/`edges` or converting legacy `steps` into a chain DAG (`07-STEP07-08` §07.1).
+    #[must_use]
+    pub fn resolve_dag(&self) -> (Vec<FlowNode>, Vec<FlowEdge>) {
+        if !self.nodes.is_empty() || !self.edges.is_empty() {
+            return (self.nodes.clone(), self.edges.clone());
+        }
+        let Some(steps) = &self.steps else {
+            return (Vec::new(), Vec::new());
+        };
+        convert_legacy_steps_to_dag(steps)
+    }
+}
+
+/// Converts legacy linear [`AxFlowStep`]s into a sequential `(nodes, edges)` DAG (`07-STEP07-08` §07.1).
+#[must_use]
+pub fn convert_legacy_steps_to_dag(steps: &[AxFlowStep]) -> (Vec<FlowNode>, Vec<FlowEdge>) {
+    let mut nodes = Vec::with_capacity(steps.len());
+    let mut edges = Vec::with_capacity(steps.len().saturating_sub(1));
+    let mut prev_id: Option<String> = None;
+
+    for (idx, step) in steps.iter().enumerate() {
+        let (kind, config) = match step.kind.as_str() {
+            "INGEST" => (FlowOperator::SourceIngest, step.config.clone()),
+            "TRANSFORM" => (FlowOperator::SqlTransform, step.config.clone()),
+            "NODE_MAP" => (FlowOperator::XblueMap, step.config.clone()),
+            "ACTION" => (FlowOperator::ActionEmit, step.config.clone()),
+            _ => {
+                let mut map = match &step.config {
+                    serde_json::Value::Object(m) => m.clone(),
+                    _ => serde_json::Map::new(),
+                };
+                map.insert(String::from("dry_run"), serde_json::Value::Bool(true));
+                (FlowOperator::ActionEmit, serde_json::Value::Object(map))
+            }
+        };
+        let x_index = u32::try_from(idx).unwrap_or(0);
+        nodes.push(FlowNode {
+            id: step.id.clone(),
+            kind,
+            label: step.label.clone(),
+            config,
+            retry: RetryPolicy::default(),
+            timeout_s: 600,
+            on_failure: OnFailure::FailRun,
+            join: JoinMode::AllSuccess,
+            pos: Pos {
+                x: 200.0 * f64::from(x_index),
+                y: 120.0,
+            },
+        });
+        if let Some(from) = prev_id.replace(step.id.clone()) {
+            edges.push(FlowEdge {
+                from,
+                to: step.id.clone(),
+                when: None,
+            });
+        }
+    }
+
+    (nodes, edges)
 }
 
 /// Result of executing an `AxFlow` pipeline.

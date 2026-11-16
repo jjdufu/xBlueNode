@@ -2,6 +2,7 @@
 
 use axpoint_domain::enums::Permission;
 use axpoint_domain::topology::{AxFlowDef, AxFlowRunResult, CreateAxFlowRequest};
+use axpoint_flow as _;
 use axpoint_security::AuthPrincipal;
 use axum::extract::State;
 use axum::routing::{get, post};

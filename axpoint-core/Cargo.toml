@@ -6,6 +6,7 @@ members = [
     "crates/axpoint-db",
     "crates/axpoint-security",
     "crates/axpoint-analytics",
+    "crates/axpoint-flow",
     "crates/axpoint-server",
 ]
 
@@ -113,6 +114,7 @@ duckdb = { version = "1.20000", features = ["bundled", "parquet", "json", "vtab-
 hex = "0.4"
 hmac = "0.12"
 hyperloglogplus = "0.4"
+jsonschema = "0.61"
 lru = "0.16"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
