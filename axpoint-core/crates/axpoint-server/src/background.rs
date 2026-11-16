@@ -18,20 +18,20 @@ use sqlx::postgres::PgListener;
 use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
-/// Default job lease duration in seconds.
-const JOB_LEASE_SECS: u32 = 60;
+/// Default job lease duration in seconds (`20s` lease renewed every `7s` for fast crash recovery).
+const JOB_LEASE_SECS: u32 = 20;
 
-/// Interval between `heartbeat` renewals while a job is running (`20s` < `60s` lease).
-const JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(20);
+/// Interval between `heartbeat` renewals while a job is running (`7s` < `20s` lease).
+const JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(7);
 
 /// Poll interval when no `ax_jobs` work was found on the previous iteration.
 const JOB_IDLE_POLL: Duration = Duration::from_millis(250);
 
-/// Extended lease duration in seconds for long-running `SYNC_DATASET` / `PARSE_FILE` jobs (`03-STEP02` §02.5).
-const SYNC_JOB_LEASE_SECS: u32 = 3600;
+/// Lease duration in seconds for sync/parse/map jobs (`30s` lease renewed every `10s` for fast crash recovery).
+const SYNC_JOB_LEASE_SECS: u32 = 30;
 
-/// Heartbeat interval for long-running sync jobs (`60s` < `3600s` lease).
-const SYNC_JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
+/// Heartbeat interval for sync/parse/map jobs (`10s` < `30s` lease).
+const SYNC_JOB_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Outbox fallback polling interval alongside `LISTEN ax_outbox`.
 const OUTBOX_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -41,6 +41,9 @@ const OUTBOX_BATCH_LIMIT: u32 = 100;
 
 /// Outbox claim lease duration in seconds.
 const OUTBOX_LEASE_SECS: u32 = 30;
+
+/// Interval between singleton `AxFlow` cron & overdue-approval checks (`07-STEP07-08` §07.5).
+const FLOW_CRON_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Interval between singleton retention-enqueue checks.
 const RETENTION_SCHEDULE_INTERVAL: Duration = Duration::from_secs(3600);
@@ -364,7 +367,33 @@ async fn enqueue_knowledge_sync_if_needed(
     Ok(())
 }
 
-fn build_job_registry(state: &crate::state::AppState) -> Arc<JobHandlerRegistry> {
+fn build_flow_engine(state: &crate::state::AppState) -> Arc<axpoint_flow::FlowEngine<PgStore>> {
+    let store_arc = Arc::new(state.store.clone());
+    let state_arc = Arc::new(state.clone());
+    let ai_arc = Arc::new(state.ai.clone());
+    let url_guard = Arc::new(axpoint_security::NetGuard::new());
+    let operators = Arc::new(axpoint_flow::build_step07_operator_registry(
+        axpoint_flow::Step07OperatorDeps {
+            store: Arc::clone(&store_arc),
+            analytics: Arc::clone(&state_arc),
+            sql_materializer: Some(Arc::clone(&state_arc)),
+            ai: ai_arc,
+            lake: Arc::clone(&state.analytics_pool),
+            url_guard,
+            cred_unsealer: Some(state_arc),
+        },
+    ));
+    Arc::new(axpoint_flow::FlowEngine::new(
+        store_arc,
+        operators,
+        state.data_root.clone(),
+    ))
+}
+
+fn build_job_registry(
+    state: &crate::state::AppState,
+    flow_engine: &Arc<axpoint_flow::FlowEngine<PgStore>>,
+) -> Arc<JobHandlerRegistry> {
     let store = &state.store;
     let mut registry = JobHandlerRegistry::new();
     registry.register(
@@ -437,6 +466,12 @@ fn build_job_registry(state: &crate::state::AppState) -> Arc<JobHandlerRegistry>
             ai: state.ai.clone(),
         }),
     );
+    registry.register(
+        JobKind::FlowStep,
+        Arc::new(axpoint_flow::FlowStepJobHandler::new(Arc::clone(
+            flow_engine,
+        ))),
+    );
     Arc::new(registry)
 }
 
@@ -446,12 +481,14 @@ pub(crate) fn spawn_background_workers(
     shutdown_rx: &tokio::sync::watch::Receiver<bool>,
 ) {
     let store = state.store.clone();
+    let store_arc = Arc::new(store.clone());
+    let flow_engine = build_flow_engine(state);
     let worker_count = env::var("AXPOINT_WORKERS")
         .ok()
         .and_then(|s| s.trim().parse::<usize>().ok())
         .filter(|&n| n > 0)
         .unwrap_or(4);
-    let registry = build_job_registry(state);
+    let registry = build_job_registry(state, &flow_engine);
 
     let instance_id = Uuid::new_v4().simple().to_string();
     for idx in 0..worker_count {
@@ -478,6 +515,10 @@ pub(crate) fn spawn_background_workers(
         Arc::new(NodeUpsertedSubscriber {
             store: store.clone(),
         }),
+        Arc::new(axpoint_flow::ApprovalDecidedSubscriber::new(flow_engine)),
+        Arc::new(axpoint_flow::FlowOutboxTriggerSubscriber::new(Arc::clone(
+            &store_arc,
+        ))),
     ]);
     let outbox_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
@@ -488,6 +529,11 @@ pub(crate) fn spawn_background_workers(
     let cron_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
         crate::workers::run_cron_scheduler(cron_store, cron_shutdown).await;
+    });
+
+    let flow_cron_shutdown = shutdown_rx.clone();
+    tokio::spawn(async move {
+        run_flow_cron_scheduler(store_arc, flow_cron_shutdown).await;
     });
 
     let rollup_store = store.clone();
@@ -506,6 +552,32 @@ pub(crate) fn spawn_background_workers(
     tokio::spawn(async move {
         run_retention_scheduler(store, ret_shutdown).await;
     });
+}
+
+async fn run_flow_cron_scheduler(
+    store: Arc<PgStore>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    let scheduler = axpoint_flow::FlowCronScheduler::new(Arc::clone(&store));
+    let mut ticker = tokio::time::interval(FLOW_CRON_INTERVAL);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    ticker.tick().await;
+
+    while !*shutdown_rx.borrow_and_update() {
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = shutdown_rx.changed() => break,
+        }
+        if let Err(err) =
+            run_with_advisory_singleton(store.pool(), "axpoint:axflow_cron", || async {
+                let _ = scheduler.tick_once(Utc::now()).await?;
+                Ok(())
+            })
+            .await
+        {
+            tracing::warn!(error = %err, "axflow cron singleton scheduler iteration failed");
+        }
+    }
 }
 
 async fn run_job_worker(

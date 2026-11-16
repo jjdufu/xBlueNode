@@ -1572,3 +1572,76 @@ impl AnalyticsQueryPort for AppState {
         .await
     }
 }
+
+impl axpoint_domain::ports::FlowSqlMaterializePort for AppState {
+    fn materialize_sql_dataset<'a>(
+        &'a self,
+        principal: &'a AnalyticsPrincipal,
+        dataset_name: &'a str,
+        sql: &'a str,
+    ) -> axpoint_domain::platform::BoxFuture<'a, Uuid> {
+        Box::pin(async move {
+            if !principal.has_permission(Permission::DataSync) {
+                return Err(AppError::Forbidden("PERMISSION_DENIED"));
+            }
+
+            let (catalog, all_datasets, _, live_specs) =
+                load_tenant_catalog_and_live(self, &principal.tenant_id, false).await?;
+
+            if let Some(existing) = all_datasets.iter().find(|ds| ds.name == dataset_name) {
+                if existing.source_kind != SourceKind::DerivedView {
+                    return Err(AppError::Conflict("NAME_CONFLICT"));
+                }
+                let _ = self
+                    .store
+                    .enqueue_sync_job(&principal.tenant_id, existing.id)
+                    .await?;
+                return Ok(existing.id);
+            }
+
+            validate_target_dataset_name(dataset_name, &catalog)?;
+            let session = self
+                .analytics_pool
+                .get_or_try_init(&principal.tenant_id, catalog.clone(), &live_specs)
+                .await?;
+            let plan = preview_transform_sql(&session, &catalog, sql, &[], None).await?;
+
+            let existing_deps = extract_existing_derived_deps(&all_datasets);
+            ensure_no_dependency_cycle(Uuid::new_v4(), &plan.depends_on, &existing_deps)?;
+
+            let dataset = self
+                .store
+                .create_dataset(
+                    &principal.tenant_id,
+                    Some(principal.user_id),
+                    CreateDatasetRequest {
+                        connection_id: None,
+                        name: String::from(dataset_name),
+                        display_name: String::from(dataset_name),
+                        description: String::from("Materialized by AxFlow SQL_TRANSFORM"),
+                        source_kind: SourceKind::DerivedView,
+                        source_ref: serde_json::json!({
+                            "sql": plan.materialized_sql,
+                            "clean_sql": plan.clean_sql,
+                            "depends_on": plan.depends_on,
+                        }),
+                        sync_mode: SyncMode::Snapshot,
+                        primary_key: Vec::new(),
+                        cursor_column: None,
+                        delete_column: None,
+                        schema_policy: SchemaPolicy::Evolve,
+                        schedule_cron: None,
+                        tags: vec![String::from("derived"), String::from("axflow")],
+                    },
+                )
+                .await?;
+
+            let _ = self
+                .store
+                .enqueue_sync_job(&principal.tenant_id, dataset.id)
+                .await?;
+            refresh_cached_tenant_catalog(self, &principal.tenant_id).await;
+            Ok(dataset.id)
+        })
+    }
+}

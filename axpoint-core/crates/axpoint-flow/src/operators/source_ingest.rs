@@ -1,7 +1,7 @@
 //! `SOURCE_INGEST` operator triggering an `AxHub` dataset sync and optionally polling to completion (`07-STEP07-08` §07.4).
 
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axpoint_domain::AppError;
 use axpoint_domain::enums::{FlowOperator, JobStatus};
@@ -30,7 +30,8 @@ pub fn config_schema() -> serde_json::Value {
         "properties": {
             "dataset_id": templated_uuid_schema(),
             "wait": templated_bool_schema(),
-            "poll_ms": templated_int_schema(50, 10_000)
+            "poll_ms": templated_int_schema(50, 10_000),
+            "timeout_s": templated_int_schema(1, 86_400)
         },
         "additionalProperties": false
     })
@@ -66,6 +67,9 @@ where
         let poll_ms = parse_optional_u64(&ctx.config, "poll_ms")?
             .unwrap_or(250)
             .clamp(50, 10_000);
+        let timeout_s = parse_optional_u64(&ctx.config, "timeout_s")?
+            .unwrap_or(300)
+            .clamp(1, 86_400);
 
         let initial_ds = self
             .dataset_repo
@@ -90,7 +94,7 @@ where
             })));
         }
 
-        self.poll_sync_completion(ctx, dataset_id, sync_resp.job_id, poll_ms)
+        self.poll_sync_completion(ctx, dataset_id, sync_resp.job_id, poll_ms, timeout_s)
             .await
     }
 
@@ -100,9 +104,11 @@ where
         dataset_id: Uuid,
         job_id: Uuid,
         poll_ms: u64,
+        timeout_s: u64,
     ) -> Result<OperatorOutcome, AppError> {
         let interval = Duration::from_millis(poll_ms);
-        loop {
+        let deadline = Instant::now() + Duration::from_secs(timeout_s);
+        while Instant::now() < deadline {
             if ctx.is_canceled() {
                 return Err(AppError::Conflict("RUN_CANCELED"));
             }
@@ -148,6 +154,7 @@ where
                 }
             }
         }
+        Err(AppError::Timeout("UPSTREAM_TIMEOUT"))
     }
 }
 

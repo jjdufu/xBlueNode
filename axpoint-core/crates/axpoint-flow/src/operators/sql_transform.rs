@@ -12,7 +12,8 @@ use axpoint_domain::ports::{AnalyticsQueryPort, FlowSqlMaterializePort};
 
 use super::{
     parse_optional_bool, parse_optional_string_any, parse_optional_u32, parse_optional_u64,
-    parse_required_string, templated_bool_schema, templated_int_schema,
+    parse_optional_uuid, parse_required_string, templated_bool_schema, templated_int_schema,
+    templated_uuid_schema,
 };
 
 /// Studio palette display name for `SQL_TRANSFORM`.
@@ -37,10 +38,11 @@ const RESERVED_OUTPUT_KEYS: &[&str] = &[
 pub fn config_schema() -> serde_json::Value {
     serde_json::json!({
         "type": "object",
-        "required": ["sql"],
         "properties": {
             "sql": { "type": "string", "minLength": 1 },
+            "saved_query_id": templated_uuid_schema(),
             "params": { "type": "object" },
+            "materialize_to": { "type": "string", "minLength": 1, "maxLength": 128 },
             "output_dataset_name": { "type": "string", "minLength": 1, "maxLength": 128 },
             "materialize_as": { "type": "string", "minLength": 1, "maxLength": 128 },
             "dataset_name": { "type": "string", "minLength": 1, "maxLength": 128 },
@@ -48,6 +50,10 @@ pub fn config_schema() -> serde_json::Value {
             "timeout_ms": templated_int_schema(100, 120_000),
             "allow_live": templated_bool_schema()
         },
+        "anyOf": [
+            { "required": ["sql"] },
+            { "required": ["saved_query_id"] }
+        ],
         "additionalProperties": false
     })
 }
@@ -77,7 +83,6 @@ where
             return Err(AppError::Conflict("RUN_CANCELED"));
         }
 
-        let sql = parse_required_string(&ctx.config, "sql")?;
         let params: BTreeMap<String, serde_json::Value> = match ctx.config.get("params") {
             Some(serde_json::Value::Object(map)) => {
                 map.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
@@ -90,9 +95,6 @@ where
                 ));
             }
         };
-        let max_rows = parse_optional_u32(&ctx.config, "max_rows")?.or(Some(1_000));
-        let timeout_ms = parse_optional_u64(&ctx.config, "timeout_ms")?;
-        let allow_live = parse_optional_bool(&ctx.config, "allow_live")?.unwrap_or(false);
 
         let principal = AnalyticsPrincipal {
             user_id: ctx.principal.user_id,
@@ -100,6 +102,21 @@ where
             username: ctx.principal.username.clone(),
             permissions: ctx.principal.permissions.clone(),
         };
+
+        if let Some(saved_id) = parse_optional_uuid(&ctx.config, "saved_query_id")?
+            && parse_optional_string_any(&ctx.config, &["sql"])?.is_none()
+        {
+            let saved_out = self
+                .analytics
+                .run_saved(&principal, saved_id, params)
+                .await?;
+            return Ok(OperatorOutcome::Completed(saved_out));
+        }
+
+        let sql = parse_required_string(&ctx.config, "sql")?;
+        let max_rows = parse_optional_u32(&ctx.config, "max_rows")?.or(Some(1_000));
+        let timeout_ms = parse_optional_u64(&ctx.config, "timeout_ms")?;
+        let allow_live = parse_optional_bool(&ctx.config, "allow_live")?.unwrap_or(false);
 
         let res = self
             .analytics
@@ -118,7 +135,12 @@ where
 
         let target_ds_name = parse_optional_string_any(
             &ctx.config,
-            &["output_dataset_name", "materialize_as", "dataset_name"],
+            &[
+                "materialize_to",
+                "output_dataset_name",
+                "materialize_as",
+                "dataset_name",
+            ],
         )?;
 
         let dataset_id = if let Some(ds_name) = &target_ds_name {
