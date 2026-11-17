@@ -19,9 +19,9 @@ use crate::axhub::{
     CreateQualityRuleRequest, CreateWebhookRequest, Dataset, DatasetListQuery, DiscoveredObject,
     GlossaryTerm, LakeMaintenanceRequest, LakeMaintenanceResult, LakePreviewRequest,
     LakeSnapshotInfo, LineageEdge, NewConnectionInput, NewUploadInput, PaginatedList,
-    PreviewResponse, QualityRule, ResolvedWebhook, ScheduledDataset, SealedCredential,
-    SidecarConnectorRequest, SidecarPreviewRequest, SidecarSyncRequest, SidecarSyncResult,
-    SyncDatasetResponse, SyncJob, UnifiedParseResponse, UpdateColumnMetaRequest,
+    PreviewResponse, QualityReport, QualityRule, ResolvedWebhook, ScheduledDataset,
+    SealedCredential, SidecarConnectorRequest, SidecarPreviewRequest, SidecarSyncRequest,
+    SidecarSyncResult, SyncDatasetResponse, SyncJob, UnifiedParseResponse, UpdateColumnMetaRequest,
     UpdateConnectionInput, UpdateDatasetRequest, UploadRecord, WebhookBufferItem, WebhookConfig,
 };
 use crate::enums::{Environment, GraphAlgo, JobKind};
@@ -49,6 +49,14 @@ use crate::rollup::{
     AcceptNodeCandidateRequest, AcceptNodeCandidateResponse, GraphAggregateJobPayload,
     KnowledgeNodeCandidatesResponse, KnowledgeSyncJobPayload, MapMaterializeJobPayload,
     MetricExplainResponse,
+};
+use crate::rules::{
+    AbsenceRuleItem, AckBatchResponse, AlertEventKind, AlertEventRecord, AlertEventsQuery,
+    AlertListQuery, AlertRecord, AlertSilenceRecord, CreateRuleRequest, CreateSilenceRequest,
+    DeliveryFailureUpdate, DueDeliveryItem, EnqueueDeliveryInput, FalseConditionOutcome,
+    NotifyChannelRecord, NotifyDeliveryRecord, RuleDef, RuleListQuery, RuleScopeKind,
+    SaveNotifyChannelInput, SimplePageQuery, TrueConditionInput, TrueConditionOutcome,
+    UpdateRuleRequest,
 };
 use crate::studio::{
     CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus, MappingRecord,
@@ -1748,4 +1756,286 @@ pub trait FlowCredentialUnsealPort: Send + Sync {
         tenant_id: &'a str,
         credential_id: Uuid,
     ) -> BoxFuture<'a, serde_json::Value>;
+}
+
+/// Persistence port for operational alerting rules, deduplicated alerts, timeline events,
+/// notification channels, delivery retries, and silences (`07-STEP07-08` §08).
+pub trait RulesRepository: Send + Sync {
+    /// Lists alerting rules in `tenant_id` with optional filters and cursor pagination.
+    fn list_rules(
+        &self,
+        tenant_id: &str,
+        query: RuleListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<RuleDef>, AppError>> + Send;
+
+    /// Lists all enabled rules matching `scope_kind` in `tenant_id`.
+    fn list_enabled_rules_by_scope(
+        &self,
+        tenant_id: &str,
+        scope_kind: RuleScopeKind,
+    ) -> impl Future<Output = Result<Vec<RuleDef>, AppError>> + Send;
+
+    /// Fetches a single [`RuleDef`] by UUID in `tenant_id`.
+    fn get_rule(
+        &self,
+        tenant_id: &str,
+        rule_id: Uuid,
+    ) -> impl Future<Output = Result<Option<RuleDef>, AppError>> + Send;
+
+    /// Creates a new alerting rule in `tenant_id` (`409` on duplicate `(tenant_id, name)`).
+    fn create_rule(
+        &self,
+        tenant_id: &str,
+        created_by: Option<Uuid>,
+        req: CreateRuleRequest,
+    ) -> impl Future<Output = Result<RuleDef, AppError>> + Send;
+
+    /// Updates mutable fields on `rule_id` (`version = version + 1`); if `enabled` becomes `false`,
+    /// resolves all active alerts of `rule_id` with `resolve_reason = RULE_DISABLED` in the same transaction.
+    fn update_rule(
+        &self,
+        tenant_id: &str,
+        rule_id: Uuid,
+        req: UpdateRuleRequest,
+    ) -> impl Future<Output = Result<Option<RuleDef>, AppError>> + Send;
+
+    /// Deletes `rule_id` in `tenant_id` (cascading associated alerts and events).
+    fn delete_rule(
+        &self,
+        tenant_id: &str,
+        rule_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists alerts in `tenant_id` filtered by `status`, `severity`, `rule_id`, `node_id`, or `type_name`.
+    fn list_alerts(
+        &self,
+        tenant_id: &str,
+        query: AlertListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<AlertRecord>, AppError>> + Send;
+
+    /// Fetches a single [`AlertRecord`] (including its `deliveries`) by UUID in `tenant_id`.
+    fn get_alert(
+        &self,
+        tenant_id: &str,
+        alert_id: Uuid,
+    ) -> impl Future<Output = Result<Option<AlertRecord>, AppError>> + Send;
+
+    /// Lists all active (`status <> 'RESOLVED'`) alerts owned by `rule_id` in `tenant_id`.
+    fn list_active_alerts_for_rule(
+        &self,
+        tenant_id: &str,
+        rule_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<AlertRecord>, AppError>> + Send;
+
+    /// Lists timeline events (`ax_alert_events`) for `alert_id` ordered by `id ASC`.
+    fn list_alert_events(
+        &self,
+        tenant_id: &str,
+        alert_id: Uuid,
+        query: AlertEventsQuery,
+    ) -> impl Future<Output = Result<PaginatedList<AlertEventRecord>, AppError>> + Send;
+
+    /// Appends a timeline event to `ax_alert_events` for `alert_id`.
+    fn append_alert_event(
+        &self,
+        tenant_id: &str,
+        alert_id: Uuid,
+        event: AlertEventKind,
+        detail: serde_json::Value,
+        actor: Option<Uuid>,
+    ) -> impl Future<Output = Result<AlertEventRecord, AppError>> + Send;
+
+    /// Records the triggered `AxFlow` `(flow_id, run_id)` on `alert_id` (`detail` + `FLOW_STARTED` event).
+    fn set_alert_flow_run(
+        &self,
+        tenant_id: &str,
+        alert_id: Uuid,
+        flow_id: Uuid,
+        run_id: Uuid,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Applies the `true`-condition alert transition (`07-STEP07-08` §08.3.2):
+    /// checks cooldown on the latest `RESOLVED` alert, inserts a new `OPEN` alert guarded by `uq_ax_alerts_active`
+    /// (falling back to `RETRIGGERED` with 60s event merge on conflict), and emits `alert.opened` on new open.
+    fn record_true_condition(
+        &self,
+        tenant_id: &str,
+        input: TrueConditionInput,
+    ) -> impl Future<Output = Result<TrueConditionOutcome, AppError>> + Send;
+
+    /// Applies the `false`-condition alert transition (`07-STEP07-08` §08.3.2):
+    /// sets `last_false_at` if empty, and when `now - last_false_at >= resolve_after_minutes`,
+    /// resolves the active alert (`AUTO`), appends `RESOLVED`, and emits `alert.resolved`.
+    fn record_false_condition(
+        &self,
+        tenant_id: &str,
+        dedup_key: &str,
+        resolve_after_minutes: i32,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> impl Future<Output = Result<FalseConditionOutcome, AppError>> + Send;
+
+    /// Marks overdue unacknowledged `OPEN` alerts (`escalated_at IS NULL` and `now - first_seen_at >= escalate_after_minutes`)
+    /// on `rule_id` as `ESCALATED`, appends `ESCALATED` events, and returns the escalated alerts.
+    fn escalate_due_alerts(
+        &self,
+        tenant_id: &str,
+        rule_id: Uuid,
+        escalate_after_minutes: i32,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> impl Future<Output = Result<Vec<AlertRecord>, AppError>> + Send;
+
+    /// Transitions an `OPEN` (or idempotently `ACK`) alert to `ACK` and appends an `ACKED` event.
+    fn ack_alert(
+        &self,
+        tenant_id: &str,
+        alert_id: Uuid,
+        actor: Option<Uuid>,
+        comment: &str,
+    ) -> impl Future<Output = Result<AlertRecord, AppError>> + Send;
+
+    /// Batch-acknowledges `OPEN` alerts in `alert_ids` within `tenant_id`.
+    fn ack_alerts_batch(
+        &self,
+        tenant_id: &str,
+        alert_ids: &[Uuid],
+        actor: Option<Uuid>,
+        comment: &str,
+    ) -> impl Future<Output = Result<AckBatchResponse, AppError>> + Send;
+
+    /// Manually resolves an active alert (`resolve_reason = MANUAL`), appends `RESOLVED`, and emits `alert.resolved`.
+    fn resolve_alert_manual(
+        &self,
+        tenant_id: &str,
+        alert_id: Uuid,
+        actor: Option<Uuid>,
+        comment: &str,
+    ) -> impl Future<Output = Result<AlertRecord, AppError>> + Send;
+
+    /// Lists notification channels in `tenant_id` (populating `secret_fields_set` from credential metadata or unsealing at route layer).
+    fn list_channels(
+        &self,
+        tenant_id: &str,
+        query: SimplePageQuery,
+    ) -> impl Future<Output = Result<PaginatedList<NotifyChannelRecord>, AppError>> + Send;
+
+    /// Loads a notification channel and its optional sealed `ds_credentials` row in `tenant_id`.
+    fn get_channel(
+        &self,
+        tenant_id: &str,
+        channel_id: Uuid,
+    ) -> impl Future<
+        Output = Result<Option<(NotifyChannelRecord, Option<SealedCredential>)>, AppError>,
+    > + Send;
+
+    /// Creates a notification channel (and inserts `ds_credentials` when `new_sealed_secret` is provided).
+    fn create_channel(
+        &self,
+        tenant_id: &str,
+        input: SaveNotifyChannelInput,
+    ) -> impl Future<Output = Result<NotifyChannelRecord, AppError>> + Send;
+
+    /// Updates a notification channel and its optional sealed credential binding.
+    fn update_channel(
+        &self,
+        tenant_id: &str,
+        channel_id: Uuid,
+        input: SaveNotifyChannelInput,
+    ) -> impl Future<Output = Result<Option<NotifyChannelRecord>, AppError>> + Send;
+
+    /// Deletes a notification channel in `tenant_id`.
+    fn delete_channel(
+        &self,
+        tenant_id: &str,
+        channel_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Idempotently creates or returns an existing `ax_notify_deliveries` row (`(delivery, existing)`).
+    fn enqueue_delivery(
+        &self,
+        tenant_id: &str,
+        input: EnqueueDeliveryInput,
+    ) -> impl Future<Output = Result<(NotifyDeliveryRecord, bool), AppError>> + Send;
+
+    /// Fetches a single [`NotifyDeliveryRecord`] by UUID in `tenant_id`.
+    fn get_delivery(
+        &self,
+        tenant_id: &str,
+        delivery_id: Uuid,
+    ) -> impl Future<Output = Result<Option<NotifyDeliveryRecord>, AppError>> + Send;
+
+    /// Marks `delivery_id` as `SENT` (`sent_at = NOW()`) and, when bound to an `alert_id`, appends `NOTIFIED` to `ax_alert_events`.
+    fn mark_delivery_sent(
+        &self,
+        tenant_id: &str,
+        delivery_id: Uuid,
+        attempt: i32,
+        response_code: Option<i32>,
+    ) -> impl Future<Output = Result<NotifyDeliveryRecord, AppError>> + Send;
+
+    /// Records a failed delivery attempt: keeps `PENDING` with updated `next_retry_at` if `Some`,
+    /// or marks terminal `FAILED` (and appends `NOTIFY_FAILED` to `ax_alert_events` if `alert_id` is set) when `None`.
+    fn mark_delivery_failed(
+        &self,
+        tenant_id: &str,
+        delivery_id: Uuid,
+        update: DeliveryFailureUpdate,
+    ) -> impl Future<Output = Result<NotifyDeliveryRecord, AppError>> + Send;
+
+    /// Lists alert silence windows in `tenant_id`.
+    fn list_silences(
+        &self,
+        tenant_id: &str,
+        query: SimplePageQuery,
+    ) -> impl Future<Output = Result<PaginatedList<AlertSilenceRecord>, AppError>> + Send;
+
+    /// Lists currently active silences (`starts_at <= at && at < ends_at`) in `tenant_id`.
+    fn list_active_silences(
+        &self,
+        tenant_id: &str,
+        at: chrono::DateTime<chrono::Utc>,
+    ) -> impl Future<Output = Result<Vec<AlertSilenceRecord>, AppError>> + Send;
+
+    /// Creates a new [`AlertSilenceRecord`] (`ends_at > starts_at` validated).
+    fn create_silence(
+        &self,
+        tenant_id: &str,
+        created_by: Option<Uuid>,
+        req: CreateSilenceRequest,
+    ) -> impl Future<Output = Result<AlertSilenceRecord, AppError>> + Send;
+
+    /// Deletes an alert silence window by UUID in `tenant_id`.
+    fn delete_silence(
+        &self,
+        tenant_id: &str,
+        silence_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Queries raw numeric points `(ts, value)` from `xb_metric_series` for `(node_id, metric)` ordered newest-first (`ts DESC`),
+    /// optionally restricted to `ts >= since`, capped at `limit`.
+    fn query_raw_metric_points(
+        &self,
+        tenant_id: &str,
+        node_id: Uuid,
+        metric: &str,
+        since: Option<chrono::DateTime<chrono::Utc>>,
+        limit: u32,
+    ) -> impl Future<Output = Result<Vec<(chrono::DateTime<chrono::Utc>, f64)>, AppError>> + Send;
+
+    /// Loads `dataset_id` together with the `quality_result` of its most recent `SUCCEEDED` `ds_sync_jobs` row.
+    fn get_latest_dataset_quality(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+    ) -> impl Future<Output = Result<Option<(Dataset, Option<QualityReport>)>, AppError>> + Send;
+
+    /// Scans `ax_absence_rules()` across tenants (`ABSENCE` rules and rules with active alerts).
+    fn list_absence_rules(
+        &self,
+    ) -> impl Future<Output = Result<Vec<AbsenceRuleItem>, AppError>> + Send;
+
+    /// Scans `ax_due_notify_deliveries(limit)` across tenants for due `PENDING` notification deliveries.
+    fn list_due_deliveries(
+        &self,
+        limit: i32,
+    ) -> impl Future<Output = Result<Vec<DueDeliveryItem>, AppError>> + Send;
 }
