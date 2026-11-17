@@ -187,13 +187,34 @@ fn static_validation_checks_all_eight_rules() {
         ],
         edges: Vec::new(),
     };
-    let r5 = validate_flow_default(&g_unsupported, &TriggerCfg::default(), None);
+    let r5_step07 = crate::validate_flow(
+        &g_unsupported,
+        &TriggerCfg::default(),
+        None,
+        &crate::step07_schema_only_registry(),
+    );
     assert_eq!(
-        r5.issues
+        r5_step07
+            .issues
             .iter()
             .filter(|i| i.code == "UNSUPPORTED_FORMAT")
             .count(),
         2
+    );
+    let r5_step09 = validate_flow_default(&g_unsupported, &TriggerCfg::default(), None);
+    assert_eq!(
+        r5_step09
+            .issues
+            .iter()
+            .filter(|i| i.code == "UNSUPPORTED_FORMAT")
+            .count(),
+        1
+    );
+    assert!(
+        r5_step09
+            .issues
+            .iter()
+            .any(|i| i.node_id.as_deref() == Some("ag") && i.code == "SCHEMA_INVALID")
     );
 
     let g_schema_tpl = FlowGraph {

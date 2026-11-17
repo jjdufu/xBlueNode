@@ -30,10 +30,11 @@ pub use notify::{
     is_loopback_url,
 };
 pub use operators::{
-    ActionEmitOperator, AggTriggerOperator, CausalSimOperator, HttpCallOperator,
+    ActionEmitOperator, AgentTaskOperator, AggTriggerOperator, CausalSimOperator, HttpCallOperator,
     HumanApprovalOperator, LlmExtractOperator, SourceIngestOperator, SqlTransformOperator,
-    Step07OperatorDeps, XblueMapOperator, build_step07_operator_registry, default_operator_specs,
-    step07_schema_only_registry,
+    Step07OperatorDeps, Step09OperatorDeps, XblueMapOperator, build_step07_operator_registry,
+    build_step09_operator_registry, default_operator_specs, step07_schema_only_registry,
+    step09_schema_only_registry,
 };
 pub use rules::{
     AbsenceRuleScanner, ConditionOutcome, FlowEngineLauncher, RuleEvalJobHandler, RuleEvaluator,
