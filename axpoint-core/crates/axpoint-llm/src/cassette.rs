@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use axpoint_domain::AppError;
+use axpoint_domain::agent::ToolCallSpec;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tracing::warn;
@@ -31,9 +32,21 @@ pub enum CassetteMode {
     Record,
 }
 
+/// Recorded assistant turn (text content and optional tool calls) returned by [`Cassette::lookup_tool_turn`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CassetteTurn {
+    /// Recorded assistant text response.
+    pub content: String,
+    /// Recorded structured tool invocations.
+    pub tool_calls: Vec<ToolCallSpec>,
+}
+
 /// Single `JSONL` record stored in a cassette file.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CassetteEntry {
+    /// Optional lowercase hex `SHA-256` digest of the canonical multi-turn request transcript.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_sha256: Option<String>,
     /// Lowercase hex `SHA-256` digest of `"{system_prompt}\n---\n{user_prompt}"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_sha256: Option<String>,
@@ -44,11 +57,21 @@ pub struct CassetteEntry {
     /// only after `prompt_sha256` and `user_sha256` both miss.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_substring: Option<String>,
+    /// Substrings that must ALL appear in the canonical request transcript for this entry to match.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub match_all: Vec<String>,
+    /// Substrings where NONE may appear in the canonical request transcript for this entry to match.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_any: Vec<String>,
     /// Entry category (defaults to `"chat"`).
     #[serde(default = "default_entry_kind")]
     pub kind: String,
     /// Recorded assistant text response.
+    #[serde(default)]
     pub response: String,
+    /// Optional recorded assistant tool calls (`08-STEP09`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallSpec>,
 }
 
 fn default_entry_kind() -> String {
@@ -117,11 +140,34 @@ pub fn deterministic_embedding(text: &str, dim: usize) -> Vec<f32> {
     values
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+struct MatchRule {
+    match_all: Vec<String>,
+    exclude_any: Vec<String>,
+    turn: CassetteTurn,
+}
+
+impl MatchRule {
+    fn matches(&self, transcript: &str) -> bool {
+        !self.match_all.is_empty()
+            && self
+                .match_all
+                .iter()
+                .all(|pat| transcript.contains(pat.as_str()))
+            && !self
+                .exclude_any
+                .iter()
+                .any(|pat| transcript.contains(pat.as_str()))
+    }
+}
+
+#[derive(Debug, Default)]
 struct CassetteState {
-    by_prompt_sha256: HashMap<String, String>,
-    by_user_sha256: HashMap<String, String>,
-    by_substring: Vec<(String, String)>,
+    by_request_sha256: HashMap<String, CassetteTurn>,
+    by_prompt_sha256: HashMap<String, CassetteTurn>,
+    by_user_sha256: HashMap<String, CassetteTurn>,
+    by_substring: Vec<(String, CassetteTurn)>,
+    by_match_rules: Vec<MatchRule>,
     load_error: Option<String>,
 }
 
@@ -141,29 +187,17 @@ impl Cassette {
     /// not exist, cannot be read, or contains invalid `JSONL` records.
     pub fn open(path: &Path, mode: CassetteMode) -> Result<Self, AppError> {
         let record_target = resolve_record_target(path);
-        let mut by_prompt_sha256 = HashMap::new();
-        let mut by_user_sha256 = HashMap::new();
-        let mut by_substring = Vec::new();
+        let mut state = CassetteState::default();
 
         if path.exists() {
             if path.is_dir() {
                 let mut files = Vec::new();
                 collect_jsonl_files(path, &mut files)?;
                 for file in files {
-                    load_jsonl_file(
-                        &file,
-                        &mut by_prompt_sha256,
-                        &mut by_user_sha256,
-                        &mut by_substring,
-                    )?;
+                    load_jsonl_file(&file, &mut state)?;
                 }
             } else {
-                load_jsonl_file(
-                    path,
-                    &mut by_prompt_sha256,
-                    &mut by_user_sha256,
-                    &mut by_substring,
-                )?;
+                load_jsonl_file(path, &mut state)?;
             }
         } else if mode == CassetteMode::Replay {
             return Err(AppError::Llm(format!(
@@ -175,12 +209,7 @@ impl Cassette {
         Ok(Self {
             mode,
             record_target,
-            state: Arc::new(Mutex::new(CassetteState {
-                by_prompt_sha256,
-                by_user_sha256,
-                by_substring,
-                load_error: None,
-            })),
+            state: Arc::new(Mutex::new(state)),
         })
     }
 
@@ -212,10 +241,8 @@ impl Cassette {
                     mode,
                     record_target: resolve_record_target(path),
                     state: Arc::new(Mutex::new(CassetteState {
-                        by_prompt_sha256: HashMap::new(),
-                        by_user_sha256: HashMap::new(),
-                        by_substring: Vec::new(),
                         load_error: Some(err.to_string()),
+                        ..CassetteState::default()
                     })),
                 })
             }
@@ -228,41 +255,89 @@ impl Cassette {
         self.mode
     }
 
-    /// Looks up a recorded chat response by `prompt_sha256` with fallback to `user_sha256`
-    /// and deterministic `match_substring` entries.
+    /// Looks up a recorded chat response by `prompt_sha256` with fallback to `user_sha256`,
+    /// deterministic `match_substring`, and text-only `match_all` + `exclude_any` rules.
     ///
     /// # Errors
     /// Returns [`AppError::Llm`] (`UPSTREAM_LLM`) on cassette miss.
     pub fn lookup_chat(&self, system_prompt: &str, user_prompt: &str) -> Result<String, AppError> {
         let prompt_sha256 = compute_prompt_sha256(system_prompt, user_prompt);
         let user_sha256 = sha256_hex(user_prompt);
+        let combined = format!("{system_prompt}\n---\n{user_prompt}");
 
         let guard = self.state.lock().unwrap_or_else(PoisonError::into_inner);
 
-        if let Some(resp) = guard.by_prompt_sha256.get(&prompt_sha256) {
-            return Ok(resp.clone());
+        if let Some(turn) = guard.by_prompt_sha256.get(&prompt_sha256) {
+            return Ok(turn.content.clone());
         }
-        if let Some(resp) = guard.by_user_sha256.get(&user_sha256) {
-            return Ok(resp.clone());
+        if let Some(turn) = guard.by_user_sha256.get(&user_sha256) {
+            return Ok(turn.content.clone());
         }
-        if !guard.by_substring.is_empty() {
-            let combined = format!("{system_prompt}\n---\n{user_prompt}");
-            for (pat, resp) in &guard.by_substring {
-                if combined.contains(pat.as_str()) {
-                    return Ok(resp.clone());
+        for (pat, turn) in &guard.by_substring {
+            if combined.contains(pat.as_str()) {
+                return Ok(turn.content.clone());
+            }
+        }
+        for rule in &guard.by_match_rules {
+            if rule.turn.tool_calls.is_empty() && rule.matches(&combined) {
+                return Ok(rule.turn.content.clone());
+            }
+        }
+
+        Err(miss_error(
+            &prompt_sha256,
+            &user_sha256,
+            guard.load_error.as_deref(),
+        ))
+    }
+
+    /// Looks up a recorded tool-capable assistant turn in priority order:
+    /// (1) `request_sha256`, (2) `match_all` (non-empty) + `exclude_any` against `request_transcript`,
+    /// and (3) `prompt_sha256` / `user_sha256` / `match_substring` when no tool result is present
+    /// in `request_transcript`.
+    ///
+    /// # Errors
+    /// Returns [`AppError::Llm`] (`UPSTREAM_LLM`) on cassette miss.
+    pub fn lookup_tool_turn(
+        &self,
+        request_transcript: &str,
+        system_prompt: &str,
+        last_user_prompt: &str,
+    ) -> Result<CassetteTurn, AppError> {
+        let req_sha256 = sha256_hex(request_transcript);
+        let guard = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+
+        if let Some(turn) = guard.by_request_sha256.get(&req_sha256) {
+            return Ok(turn.clone());
+        }
+        for rule in &guard.by_match_rules {
+            if rule.matches(request_transcript) {
+                return Ok(rule.turn.clone());
+            }
+        }
+        if !transcript_has_tool_result(request_transcript) {
+            let prompt_sha256 = compute_prompt_sha256(system_prompt, last_user_prompt);
+            let user_sha256 = sha256_hex(last_user_prompt);
+            if let Some(turn) = guard.by_prompt_sha256.get(&prompt_sha256) {
+                return Ok(turn.clone());
+            }
+            if let Some(turn) = guard.by_user_sha256.get(&user_sha256) {
+                return Ok(turn.clone());
+            }
+            let combined = format!("{system_prompt}\n---\n{last_user_prompt}");
+            for (pat, turn) in &guard.by_substring {
+                if combined.contains(pat.as_str()) || request_transcript.contains(pat.as_str()) {
+                    return Ok(turn.clone());
                 }
             }
         }
 
-        if let Some(reason) = &guard.load_error {
-            return Err(AppError::Llm(format!(
-                "cassette miss for prompt hash {prompt_sha256} user_sha256={user_sha256} ({reason})"
-            )));
-        }
-
-        Err(AppError::Llm(format!(
-            "cassette miss for prompt hash {prompt_sha256} user_sha256={user_sha256}"
-        )))
+        let user_sha256 = sha256_hex(last_user_prompt);
+        Err(miss_error(
+            &req_sha256,
+            &user_sha256,
+            guard.load_error.as_deref(),
+        ))
     }
 
     /// Appends a live chat completion entry to the target `.jsonl` cassette file.
@@ -279,61 +354,117 @@ impl Cassette {
         let user_sha256 = sha256_hex(user_prompt);
 
         let entry = CassetteEntry {
+            request_sha256: None,
             prompt_sha256: Some(prompt_sha256.clone()),
             user_sha256: Some(user_sha256.clone()),
             match_substring: None,
+            match_all: Vec::new(),
+            exclude_any: Vec::new(),
             kind: String::from("chat"),
             response: response.to_owned(),
+            tool_calls: Vec::new(),
         };
 
-        let serialized = serde_json::to_string(&entry)
-            .map_err(|err| AppError::Llm(format!("failed to serialize cassette entry: {err}")))?;
-
         let mut guard = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        append_entry_to_disk(&self.record_target, &entry)?;
 
-        if let Some(parent) = self.record_target.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent).map_err(|err| {
-                AppError::Llm(format!(
-                    "failed to create cassette directory {}: {err}",
-                    parent.display()
-                ))
-            })?;
-        }
-
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&self.record_target)
-            .map_err(|err| {
-                AppError::Llm(format!(
-                    "failed to open cassette file {} for append: {err}",
-                    self.record_target.display()
-                ))
-            })?;
-
-        writeln!(file, "{serialized}").map_err(|err| {
-            AppError::Llm(format!(
-                "failed to append to cassette file {}: {err}",
-                self.record_target.display()
-            ))
-        })?;
-        file.flush().map_err(|err| {
-            AppError::Llm(format!(
-                "failed to flush cassette file {}: {err}",
-                self.record_target.display()
-            ))
-        })?;
-
-        guard
-            .by_prompt_sha256
-            .insert(prompt_sha256, response.to_owned());
-        guard
-            .by_user_sha256
-            .insert(user_sha256, response.to_owned());
+        let turn = CassetteTurn {
+            content: response.to_owned(),
+            tool_calls: Vec::new(),
+        };
+        guard.by_prompt_sha256.insert(prompt_sha256, turn.clone());
+        guard.by_user_sha256.insert(user_sha256, turn);
         Ok(())
     }
+
+    /// Appends a live tool-capable assistant turn keyed by `request_sha256` to the target `.jsonl` cassette.
+    ///
+    /// # Errors
+    /// Returns [`AppError::Llm`] if serializing or writing to disk fails.
+    pub fn record_tool_turn(
+        &self,
+        request_transcript: &str,
+        turn: &CassetteTurn,
+    ) -> Result<(), AppError> {
+        let req_sha256 = sha256_hex(request_transcript);
+        let entry = CassetteEntry {
+            request_sha256: Some(req_sha256.clone()),
+            prompt_sha256: None,
+            user_sha256: None,
+            match_substring: None,
+            match_all: Vec::new(),
+            exclude_any: Vec::new(),
+            kind: String::from("chat"),
+            response: turn.content.clone(),
+            tool_calls: turn.tool_calls.clone(),
+        };
+
+        let mut guard = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        append_entry_to_disk(&self.record_target, &entry)?;
+        guard.by_request_sha256.insert(req_sha256, turn.clone());
+        Ok(())
+    }
+}
+
+fn transcript_has_tool_result(transcript: &str) -> bool {
+    transcript.contains("ROLE:tool")
+        || transcript.contains("ROLE:TOOL")
+        || transcript.contains("[TOOL")
+        || transcript.contains("\"role\":\"tool\"")
+        || transcript.contains("\"role\": \"tool\"")
+        || transcript.contains("tool_call_id=")
+        || transcript.contains("\"tool_call_id\"")
+}
+
+fn miss_error(primary_hash: &str, user_sha256: &str, load_error: Option<&str>) -> AppError {
+    if let Some(reason) = load_error {
+        return AppError::Llm(format!(
+            "cassette miss for prompt hash {primary_hash} user_sha256={user_sha256} ({reason})"
+        ));
+    }
+    AppError::Llm(format!(
+        "cassette miss for prompt hash {primary_hash} user_sha256={user_sha256}"
+    ))
+}
+
+fn append_entry_to_disk(record_target: &Path, entry: &CassetteEntry) -> Result<(), AppError> {
+    let serialized = serde_json::to_string(entry)
+        .map_err(|err| AppError::Llm(format!("failed to serialize cassette entry: {err}")))?;
+
+    if let Some(parent) = record_target.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent).map_err(|err| {
+            AppError::Llm(format!(
+                "failed to create cassette directory {}: {err}",
+                parent.display()
+            ))
+        })?;
+    }
+
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(record_target)
+        .map_err(|err| {
+            AppError::Llm(format!(
+                "failed to open cassette file {} for append: {err}",
+                record_target.display()
+            ))
+        })?;
+
+    writeln!(file, "{serialized}").map_err(|err| {
+        AppError::Llm(format!(
+            "failed to append to cassette file {}: {err}",
+            record_target.display()
+        ))
+    })?;
+    file.flush().map_err(|err| {
+        AppError::Llm(format!(
+            "failed to flush cassette file {}: {err}",
+            record_target.display()
+        ))
+    })
 }
 
 fn resolve_record_target(path: &Path) -> PathBuf {
@@ -384,12 +515,85 @@ fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), AppErro
     Ok(())
 }
 
-fn load_jsonl_file(
+fn normalize_opt_hex(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_ascii_lowercase)
+}
+
+fn register_cassette_entry(
     file_path: &Path,
-    by_prompt_sha256: &mut HashMap<String, String>,
-    by_user_sha256: &mut HashMap<String, String>,
-    by_substring: &mut Vec<(String, String)>,
+    line_no: usize,
+    entry: CassetteEntry,
+    state: &mut CassetteState,
 ) -> Result<(), AppError> {
+    if !entry.kind.eq_ignore_ascii_case("chat")
+        && !entry.kind.eq_ignore_ascii_case("tool")
+        && !entry.kind.eq_ignore_ascii_case("agent")
+    {
+        return Ok(());
+    }
+
+    let req_key = normalize_opt_hex(entry.request_sha256.as_deref());
+    let prompt_key = normalize_opt_hex(entry.prompt_sha256.as_deref());
+    let user_key = normalize_opt_hex(entry.user_sha256.as_deref());
+    let sub_key = entry
+        .match_substring
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned);
+    let has_match_all = entry.match_all.iter().any(|s| !s.is_empty());
+
+    if req_key.is_none()
+        && prompt_key.is_none()
+        && user_key.is_none()
+        && sub_key.is_none()
+        && !has_match_all
+    {
+        return Err(AppError::Llm(format!(
+            "cassette entry at {}:{line_no} must specify request_sha256, prompt_sha256, user_sha256, match_substring, or match_all",
+            file_path.display()
+        )));
+    }
+
+    let turn = CassetteTurn {
+        content: entry.response,
+        tool_calls: entry.tool_calls,
+    };
+
+    if let Some(rk) = req_key {
+        state.by_request_sha256.insert(rk, turn.clone());
+    }
+    if has_match_all {
+        let match_all = entry
+            .match_all
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect();
+        let exclude_any = entry
+            .exclude_any
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect();
+        state.by_match_rules.push(MatchRule {
+            match_all,
+            exclude_any,
+            turn: turn.clone(),
+        });
+    }
+    if let Some(pk) = prompt_key {
+        state.by_prompt_sha256.insert(pk, turn.clone());
+    }
+    if let Some(uk) = user_key {
+        state.by_user_sha256.insert(uk, turn.clone());
+    }
+    if let Some(sk) = sub_key {
+        state.by_substring.push((sk, turn));
+    }
+    Ok(())
+}
+
+fn load_jsonl_file(file_path: &Path, state: &mut CassetteState) -> Result<(), AppError> {
     let raw = fs::read_to_string(file_path).map_err(|err| {
         AppError::Llm(format!(
             "failed to read cassette file {}: {err}",
@@ -409,46 +613,156 @@ fn load_jsonl_file(
                 file_path.display()
             ))
         })?;
-
-        if !entry.kind.eq_ignore_ascii_case("chat") {
-            continue;
-        }
-
-        let prompt_key = entry
-            .prompt_sha256
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_ascii_lowercase);
-        let user_key = entry
-            .user_sha256
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_ascii_lowercase);
-        let sub_key = entry
-            .match_substring
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .map(str::to_owned);
-
-        if prompt_key.is_none() && user_key.is_none() && sub_key.is_none() {
-            return Err(AppError::Llm(format!(
-                "cassette entry at {}:{line_no} must specify prompt_sha256, user_sha256, or match_substring",
-                file_path.display()
-            )));
-        }
-
-        if let Some(pk) = prompt_key {
-            by_prompt_sha256.insert(pk, entry.response.clone());
-        }
-        if let Some(uk) = user_key {
-            by_user_sha256.insert(uk, entry.response.clone());
-        }
-        if let Some(sk) = sub_key {
-            by_substring.push((sk, entry.response));
-        }
+        register_cassette_entry(file_path, line_no, entry, state)?;
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use axpoint_domain::enums::Purpose;
+    use serde_json::json;
+    use uuid::Uuid;
+
+    use super::*;
+    use crate::tools::{ToolChatMessage, ToolDefinition, canonical_request_transcript};
+
+    fn temp_cassette_file(tag: &str) -> PathBuf {
+        env::temp_dir().join(format!(
+            "axpoint_cassette_{tag}_{}.jsonl",
+            Uuid::new_v4().simple()
+        ))
+    }
+
+    fn write_entries(path: &Path, entries: &[CassetteEntry]) -> Result<(), AppError> {
+        let mut content = String::new();
+        for e in entries {
+            let line = serde_json::to_string(e).map_err(|err| AppError::Llm(err.to_string()))?;
+            content.push_str(&line);
+            content.push('\n');
+        }
+        fs::write(path, content).map_err(|err| AppError::Llm(err.to_string()))
+    }
+
+    #[test]
+    fn cassette_lookup_tool_turn_supports_request_sha256_and_miss() -> Result<(), AppError> {
+        let path = temp_cassette_file("req_hash");
+        let tools = vec![ToolDefinition::function(
+            "ask_data",
+            "Ask data",
+            json!({"type": "object"}),
+        )];
+        let exact_msgs = vec![
+            ToolChatMessage::system("exact-sys"),
+            ToolChatMessage::user("exact-user"),
+        ];
+        let exact_transcript = canonical_request_transcript(Purpose::Agent, &exact_msgs, &tools);
+        let exact_hash = sha256_hex(&exact_transcript);
+
+        write_entries(
+            &path,
+            &[CassetteEntry {
+                request_sha256: Some(exact_hash),
+                prompt_sha256: None,
+                user_sha256: None,
+                match_substring: None,
+                match_all: Vec::new(),
+                exclude_any: Vec::new(),
+                kind: String::from("chat"),
+                response: String::from("exact-hit"),
+                tool_calls: Vec::new(),
+            }],
+        )?;
+
+        let cassette = Cassette::open(&path, CassetteMode::Replay)?;
+        let exact_res = cassette.lookup_tool_turn(&exact_transcript, "exact-sys", "exact-user")?;
+        assert_eq!(exact_res.content, "exact-hit");
+        assert_eq!(exact_res.tool_calls.len(), 0);
+
+        let miss =
+            cassette.lookup_tool_turn("PURPOSE:AGENT\nROLE:user\n未录制问题\n", "", "未录制问题");
+        assert!(miss.is_err());
+        if let Err(err) = miss {
+            assert_eq!(err.error_code(), "UPSTREAM_LLM");
+        }
+
+        fs::remove_file(&path).map_err(|err| AppError::Llm(err.to_string()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn cassette_lookup_tool_turn_supports_multi_turn_match_exclude() -> Result<(), AppError> {
+        let path = temp_cassette_file("multi_turn");
+        let tools = vec![ToolDefinition::function(
+            "ask_data",
+            "Ask data",
+            json!({"type": "object"}),
+        )];
+
+        write_entries(
+            &path,
+            &[
+                CassetteEntry {
+                    request_sha256: None,
+                    prompt_sha256: None,
+                    user_sha256: None,
+                    match_substring: None,
+                    match_all: vec![String::from("已支付订单总金额是多少")],
+                    exclude_any: vec![String::from("ROLE:tool")],
+                    kind: String::from("chat"),
+                    response: String::new(),
+                    tool_calls: vec![ToolCallSpec {
+                        id: String::from("call_1"),
+                        name: String::from("ask_data"),
+                        arguments: json!({"question": "已支付订单总金额是多少"}),
+                    }],
+                },
+                CassetteEntry {
+                    request_sha256: None,
+                    prompt_sha256: None,
+                    user_sha256: None,
+                    match_substring: None,
+                    match_all: vec![
+                        String::from("已支付订单总金额是多少"),
+                        String::from("ROLE:tool"),
+                        String::from("33239.25"),
+                    ],
+                    exclude_any: Vec::new(),
+                    kind: String::from("chat"),
+                    response: String::from("已支付订单总金额为 33239.25 元。"),
+                    tool_calls: Vec::new(),
+                },
+            ],
+        )?;
+
+        let cassette = Cassette::open(&path, CassetteMode::Replay)?;
+        let turn1_msgs = vec![
+            ToolChatMessage::system("你是运营主管"),
+            ToolChatMessage::user("已支付订单总金额是多少？"),
+        ];
+        let turn1_tx = canonical_request_transcript(Purpose::Agent, &turn1_msgs, &tools);
+        let turn1 =
+            cassette.lookup_tool_turn(&turn1_tx, "你是运营主管", "已支付订单总金额是多少？")?;
+        assert_eq!(turn1.tool_calls.len(), 1);
+        assert_eq!(
+            turn1.tool_calls.first().map(|c| c.name.as_str()),
+            Some("ask_data")
+        );
+
+        let mut turn2_msgs = turn1_msgs;
+        turn2_msgs.push(ToolChatMessage::assistant_with_tools("", turn1.tool_calls));
+        turn2_msgs.push(ToolChatMessage::tool_result(
+            "call_1",
+            r#"{"rows":[{"paid_amount":33239.25}]}"#,
+        ));
+        let turn2_tx = canonical_request_transcript(Purpose::Agent, &turn2_msgs, &tools);
+        let turn2 =
+            cassette.lookup_tool_turn(&turn2_tx, "你是运营主管", "已支付订单总金额是多少？")?;
+        assert_eq!(turn2.tool_calls.len(), 0);
+        assert_eq!(turn2.content, "已支付订单总金额为 33239.25 元。");
+
+        fs::remove_file(&path).map_err(|err| AppError::Llm(err.to_string()))?;
+        Ok(())
+    }
 }
