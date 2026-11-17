@@ -1,10 +1,13 @@
 import { z } from "zod";
 import { requestJson } from "./client";
 import type {
+  AlertStatus,
   Environment,
   FlowOperator,
+  NotifyKind,
   OutboxTopic,
   RunStatus,
+  Severity,
   StepStatus,
   TriggerType,
 } from "./enums";
@@ -1554,4 +1557,1393 @@ export const axflowApi = {
     const raw = await requestJson<unknown>(`/api/axflow/actions${qs}`);
     return parsePaginatedEnvelope(ActionLogRecordSchema, raw);
   },
+
+  // ==========================================================================
+  // Step 08: Rules, Alerts, Notification Channels & Silences (`/api/axflow/*`)
+  // ==========================================================================
+
+  listRules: async (
+    query?: RuleListQuery
+  ): Promise<FlowPaginatedList<RuleDef>> => {
+    const qs = buildQuery({
+      scope_kind: query?.scope_kind,
+      enabled: query?.enabled,
+      q: query?.q,
+      limit: query?.limit,
+      cursor: query?.cursor,
+    });
+    const raw = await requestJson<unknown>(`/api/axflow/rules${qs}`);
+    return parsePaginatedEnvelope(RuleDefSchema, raw);
+  },
+
+  getRule: async (id: string): Promise<RuleDef> => {
+    const raw = await requestJson<unknown>(
+      `/api/axflow/rules/${encodeURIComponent(id)}`
+    );
+    return RuleDefSchema.parse(raw);
+  },
+
+  createRule: async (req: CreateRuleRequest): Promise<RuleDef> => {
+    const body = sanitizeCreateRuleForWire(req);
+    const raw = await requestJson<unknown>("/api/axflow/rules", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return RuleDefSchema.parse(raw);
+  },
+
+  updateRule: async (id: string, req: UpdateRuleRequest): Promise<RuleDef> => {
+    const body = sanitizeUpdateRuleForWire(req);
+    const raw = await requestJson<unknown>(
+      `/api/axflow/rules/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+    return RuleDefSchema.parse(raw);
+  },
+
+  deleteRule: async (id: string): Promise<{ deleted: boolean }> => {
+    const raw = await requestJson<unknown>(
+      `/api/axflow/rules/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
+    const rec = toRecord(raw);
+    return {
+      deleted: typeof rec.deleted === "boolean" ? rec.deleted : true,
+    };
+  },
+
+  dryRunSavedRule: async (id: string): Promise<RuleDryRunResponse> => {
+    const raw = await requestJson<unknown>(
+      `/api/axflow/rules/${encodeURIComponent(id)}/dry-run`,
+      { method: "POST" }
+    );
+    return RuleDryRunResponseSchema.parse(raw);
+  },
+
+  dryRunAdhocRule: async (
+    req: CreateRuleRequest
+  ): Promise<RuleDryRunResponse> => {
+    const body = sanitizeCreateRuleForWire(req);
+    const raw = await requestJson<unknown>("/api/axflow/rules/dry-run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return RuleDryRunResponseSchema.parse(raw);
+  },
+
+  listAlerts: async (
+    query?: AlertListQuery
+  ): Promise<FlowPaginatedList<AlertRecord>> => {
+    const qs = buildQuery({
+      status: query?.status,
+      severity: query?.severity,
+      rule_id: query?.rule_id,
+      node_id: query?.node_id,
+      type_name: query?.type_name,
+      limit: query?.limit,
+      cursor: query?.cursor,
+    });
+    const raw = await requestJson<unknown>(`/api/axflow/alerts${qs}`);
+    return parsePaginatedEnvelope(AlertRecordSchema, raw);
+  },
+
+  getAlert: async (id: string): Promise<AlertRecord> => {
+    const raw = await requestJson<unknown>(
+      `/api/axflow/alerts/${encodeURIComponent(id)}`
+    );
+    return AlertRecordSchema.parse(raw);
+  },
+
+  listAlertEvents: async (
+    alertId: string,
+    query?: AlertEventsQuery
+  ): Promise<FlowPaginatedList<AlertEventRecord>> => {
+    const qs = buildQuery({
+      limit: query?.limit,
+      cursor: query?.cursor,
+    });
+    const raw = await requestJson<unknown>(
+      `/api/axflow/alerts/${encodeURIComponent(alertId)}/events${qs}`
+    );
+    return parsePaginatedEnvelope(AlertEventRecordSchema, raw);
+  },
+
+  ackAlert: async (
+    id: string,
+    req?: AlertActionCommentRequest
+  ): Promise<AlertRecord> => {
+    const body: AlertActionCommentRequest = {
+      comment: req?.comment?.trim() ?? "",
+    };
+    const raw = await requestJson<unknown>(
+      `/api/axflow/alerts/${encodeURIComponent(id)}/ack`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+    return AlertRecordSchema.parse(raw);
+  },
+
+  ackAlertsBatch: async (req: AckBatchRequest): Promise<AckBatchResponse> => {
+    const body: { alert_ids: string[]; comment: string } = {
+      alert_ids: req.alert_ids
+        .map((id) => id.trim())
+        .filter((id) => id.length > 0),
+      comment: req.comment?.trim() ?? "",
+    };
+    const raw = await requestJson<unknown>("/api/axflow/alerts/ack-batch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return AckBatchResponseSchema.parse(raw);
+  },
+
+  resolveAlert: async (
+    id: string,
+    req?: AlertActionCommentRequest
+  ): Promise<AlertRecord> => {
+    const body: AlertActionCommentRequest = {
+      comment: req?.comment?.trim() ?? "",
+    };
+    const raw = await requestJson<unknown>(
+      `/api/axflow/alerts/${encodeURIComponent(id)}/resolve`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+    return AlertRecordSchema.parse(raw);
+  },
+
+  listNotifyChannels: async (
+    query?: SimplePageQuery
+  ): Promise<FlowPaginatedList<NotifyChannelRecord>> => {
+    const qs = buildQuery({
+      limit: query?.limit,
+      cursor: query?.cursor,
+    });
+    const raw = await requestJson<unknown>(`/api/axflow/channels${qs}`);
+    return parsePaginatedEnvelope(NotifyChannelRecordSchema, raw);
+  },
+
+  createNotifyChannel: async (
+    req: CreateNotifyChannelRequest
+  ): Promise<NotifyChannelRecord> => {
+    const body = sanitizeCreateChannelForWire(req);
+    const raw = await requestJson<unknown>("/api/axflow/channels", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return NotifyChannelRecordSchema.parse(raw);
+  },
+
+  updateNotifyChannel: async (
+    id: string,
+    req: UpdateNotifyChannelRequest
+  ): Promise<NotifyChannelRecord> => {
+    const body = sanitizeUpdateChannelForWire(req);
+    const raw = await requestJson<unknown>(
+      `/api/axflow/channels/${encodeURIComponent(id)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    );
+    return NotifyChannelRecordSchema.parse(raw);
+  },
+
+  deleteNotifyChannel: async (id: string): Promise<{ deleted: boolean }> => {
+    const raw = await requestJson<unknown>(
+      `/api/axflow/channels/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
+    const rec = toRecord(raw);
+    return {
+      deleted: typeof rec.deleted === "boolean" ? rec.deleted : true,
+    };
+  },
+
+  testNotifyChannel: async (id: string): Promise<TestChannelResponse> => {
+    const raw = await requestJson<unknown>(
+      `/api/axflow/channels/${encodeURIComponent(id)}/test`,
+      { method: "POST" }
+    );
+    return TestChannelResponseSchema.parse(raw);
+  },
+
+  listAlertSilences: async (
+    query?: SimplePageQuery
+  ): Promise<FlowPaginatedList<AlertSilenceRecord>> => {
+    const qs = buildQuery({
+      limit: query?.limit,
+      cursor: query?.cursor,
+    });
+    const raw = await requestJson<unknown>(`/api/axflow/silences${qs}`);
+    return parsePaginatedEnvelope(AlertSilenceRecordSchema, raw);
+  },
+
+  createAlertSilence: async (
+    req: CreateSilenceRequest
+  ): Promise<AlertSilenceRecord> => {
+    const body = sanitizeCreateSilenceForWire(req);
+    const raw = await requestJson<unknown>("/api/axflow/silences", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return AlertSilenceRecordSchema.parse(raw);
+  },
+
+  deleteAlertSilence: async (id: string): Promise<{ deleted: boolean }> => {
+    const raw = await requestJson<unknown>(
+      `/api/axflow/silences/${encodeURIComponent(id)}`,
+      { method: "DELETE" }
+    );
+    const rec = toRecord(raw);
+    return {
+      deleted: typeof rec.deleted === "boolean" ? rec.deleted : true,
+    };
+  },
 };
+
+// ============================================================================
+// Step 08: Operational Rules, Alerts, Notification Channels & Silences Types
+// Synchronized verbatim with `axpoint-domain/src/rules.rs` (`07-STEP07-08` §08)
+// ============================================================================
+
+export type RuleScopeKind = "METRIC" | "DATASET_QUALITY" | "EVENT";
+
+export type ComparisonOp = "GT" | "GTE" | "LT" | "LTE" | "EQ" | "NE";
+
+export type AlertResolveReason = "AUTO" | "MANUAL" | "RULE_DISABLED";
+
+export type AlertEventKind =
+  | "OPENED"
+  | "RETRIGGERED"
+  | "ACKED"
+  | "ESCALATED"
+  | "RESOLVED"
+  | "NOTIFIED"
+  | "NOTIFY_FAILED"
+  | "SILENCED"
+  | "FLOW_STARTED";
+
+export type NotifyDeliveryEvent =
+  | "OPENED"
+  | "ESCALATED"
+  | "RESOLVED"
+  | "TEST"
+  | "ACTION";
+
+export type NotifyDeliveryStatus = "PENDING" | "SENT" | "FAILED";
+
+export type RuleQualityMinSeverity = "WARN" | "BLOCK";
+
+export type ConditionKind =
+  | "THRESHOLD"
+  | "CHANGE_RATE"
+  | "ABSENCE"
+  | "ANOMALY_ZSCORE"
+  | "EXPR"
+  | "QUALITY_FAILED"
+  | "EVENT_MATCH";
+
+export type Condition =
+  | {
+      kind: "THRESHOLD";
+      op: ComparisonOp;
+      value: number;
+      for_minutes: number;
+    }
+  | {
+      kind: "CHANGE_RATE";
+      window_minutes: number;
+      op: ComparisonOp;
+      pct: number;
+    }
+  | {
+      kind: "ABSENCE";
+      minutes: number;
+    }
+  | {
+      kind: "ANOMALY_ZSCORE";
+      lookback_points: number;
+      z: number;
+      min_points: number;
+    }
+  | {
+      kind: "EXPR";
+      expression: string;
+    }
+  | {
+      kind: "QUALITY_FAILED";
+      min_severity: RuleQualityMinSeverity;
+    }
+  | {
+      kind: "EVENT_MATCH";
+    };
+
+export interface MetricRuleTarget {
+  type_name: string;
+  metric: string;
+  node_filter?: string | null;
+}
+
+export interface DatasetQualityRuleTarget {
+  dataset_id?: string | null;
+}
+
+export interface EventRuleTarget {
+  topic: string;
+  filter?: string | null;
+}
+
+export interface RuleDef {
+  id: string;
+  name: string;
+  description: string;
+  scope_kind: RuleScopeKind;
+  target: Record<string, unknown>;
+  condition: Condition;
+  severity: Severity;
+  title_template: string;
+  body_template: string;
+  cooldown_minutes: number;
+  resolve_after_minutes: number;
+  escalate_after_minutes: number | null;
+  channel_ids: string[];
+  escalation_channel_ids: string[];
+  run_flow_id: string | null;
+  enabled: boolean;
+  version: number;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type RuleRecord = RuleDef;
+
+export interface CreateRuleRequest {
+  name: string;
+  description?: string;
+  scope_kind: RuleScopeKind;
+  target: Record<string, unknown>;
+  condition: Condition;
+  severity: Severity;
+  title_template: string;
+  body_template?: string;
+  cooldown_minutes?: number;
+  resolve_after_minutes?: number;
+  escalate_after_minutes?: number | null;
+  channel_ids?: string[];
+  escalation_channel_ids?: string[];
+  run_flow_id?: string | null;
+  enabled?: boolean;
+}
+
+export interface UpdateRuleRequest {
+  name?: string;
+  description?: string;
+  scope_kind?: RuleScopeKind;
+  target?: Record<string, unknown>;
+  condition?: Condition;
+  severity?: Severity;
+  title_template?: string;
+  body_template?: string;
+  cooldown_minutes?: number;
+  resolve_after_minutes?: number;
+  escalate_after_minutes?: number | null;
+  channel_ids?: string[];
+  escalation_channel_ids?: string[];
+  run_flow_id?: string | null;
+  enabled?: boolean;
+}
+
+export interface RuleListQuery {
+  scope_kind?: RuleScopeKind;
+  enabled?: boolean;
+  q?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface RuleDryRunHit {
+  dedup_key: string;
+  severity: Severity;
+  title: string;
+  body: string;
+  node_id: string | null;
+  dataset_id: string | null;
+  value: number | null;
+  detail: Record<string, unknown>;
+}
+
+export interface RuleDryRunResponse {
+  rule_id: string;
+  evaluated_objects: number;
+  matched_count: number;
+  would_trigger: RuleDryRunHit[];
+}
+
+export interface NotifyDeliveryRecord {
+  id: string;
+  alert_id: string | null;
+  channel_id: string;
+  event: NotifyDeliveryEvent;
+  status: NotifyDeliveryStatus;
+  attempt: number;
+  response_code: number | null;
+  error_message: string | null;
+  next_retry_at: string;
+  created_at: string;
+  sent_at: string | null;
+}
+
+export interface AlertRecord {
+  id: string;
+  rule_id: string;
+  dedup_key: string;
+  severity: Severity;
+  status: AlertStatus;
+  title: string;
+  body: string;
+  node_id: string | null;
+  dataset_id: string | null;
+  last_value: number | null;
+  detail: Record<string, unknown>;
+  occurrences: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  last_false_at: string | null;
+  acked_by: string | null;
+  acked_at: string | null;
+  escalated_at: string | null;
+  resolved_at: string | null;
+  resolve_reason: AlertResolveReason | null;
+  deliveries: NotifyDeliveryRecord[];
+}
+
+export interface AlertListQuery {
+  status?: AlertStatus;
+  severity?: Severity;
+  rule_id?: string;
+  node_id?: string;
+  type_name?: string;
+  limit?: number;
+  cursor?: string;
+}
+
+export interface AlertEventsQuery {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface AlertActionCommentRequest {
+  comment?: string;
+}
+
+export interface AckBatchRequest {
+  alert_ids: string[];
+  comment?: string;
+}
+
+export interface AckBatchResponse {
+  acked_count: number;
+  items: AlertRecord[];
+  alert_ids: string[];
+}
+
+export interface AlertEventRecord {
+  id: number;
+  alert_id: string;
+  event: AlertEventKind;
+  detail: Record<string, unknown>;
+  actor: string | null;
+  created_at: string;
+}
+
+export interface NotifyChannelRecord {
+  id: string;
+  name: string;
+  kind: NotifyKind;
+  config: Record<string, unknown>;
+  secret_fields_set: string[];
+  allow_private_network: boolean;
+  enabled: boolean;
+  created_at: string;
+}
+
+export interface CreateNotifyChannelRequest {
+  name: string;
+  kind: NotifyKind;
+  config?: Record<string, unknown>;
+  secrets?: Record<string, string>;
+  credential_id?: string | null;
+  allow_private_network?: boolean;
+  enabled?: boolean;
+}
+
+export interface UpdateNotifyChannelRequest {
+  name?: string;
+  kind?: NotifyKind;
+  config?: Record<string, unknown>;
+  secrets?: Record<string, string>;
+  allow_private_network?: boolean;
+  enabled?: boolean;
+}
+
+export interface SimplePageQuery {
+  limit?: number;
+  cursor?: string;
+}
+
+export interface TestChannelResponse {
+  ok: boolean;
+  delivery: NotifyDeliveryRecord;
+}
+
+export interface SilenceMatcher {
+  rule_ids: string[];
+  severities: Severity[];
+  node_ids: string[];
+  type_names: string[];
+}
+
+export interface AlertSilenceRecord {
+  id: string;
+  matcher: SilenceMatcher;
+  starts_at: string;
+  ends_at: string;
+  reason: string;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface CreateSilenceRequest {
+  matcher: Partial<SilenceMatcher>;
+  starts_at: string;
+  ends_at: string;
+  reason: string;
+}
+
+// ============================================================================
+// Step 08: Runtime Zod Schemas & Wire Sanitizers
+// ============================================================================
+
+const CANONICAL_SEVERITIES: readonly Severity[] = ["INFO", "WARN", "CRITICAL"];
+const CANONICAL_ALERT_STATUSES: readonly AlertStatus[] = [
+  "OPEN",
+  "ACK",
+  "RESOLVED",
+];
+const CANONICAL_NOTIFY_KINDS: readonly NotifyKind[] = [
+  "WEBHOOK",
+  "EMAIL",
+  "WECOM",
+  "DINGTALK",
+  "FEISHU",
+];
+const CANONICAL_COMPARISON_OPS: readonly ComparisonOp[] = [
+  "GT",
+  "GTE",
+  "LT",
+  "LTE",
+  "EQ",
+  "NE",
+];
+const CANONICAL_ALERT_EVENT_KINDS: readonly AlertEventKind[] = [
+  "OPENED",
+  "RETRIGGERED",
+  "ACKED",
+  "ESCALATED",
+  "RESOLVED",
+  "NOTIFIED",
+  "NOTIFY_FAILED",
+  "SILENCED",
+  "FLOW_STARTED",
+];
+const CANONICAL_DELIVERY_EVENTS: readonly NotifyDeliveryEvent[] = [
+  "OPENED",
+  "ESCALATED",
+  "RESOLVED",
+  "TEST",
+  "ACTION",
+];
+const CANONICAL_DELIVERY_STATUSES: readonly NotifyDeliveryStatus[] = [
+  "PENDING",
+  "SENT",
+  "FAILED",
+];
+
+function normalizeSeverity(raw: unknown): Severity {
+  if (typeof raw === "string") {
+    const upper = raw.trim().toUpperCase();
+    if ((CANONICAL_SEVERITIES as readonly string[]).includes(upper)) {
+      return upper as Severity;
+    }
+  }
+  return "WARN";
+}
+
+function normalizeAlertStatus(raw: unknown): AlertStatus {
+  if (typeof raw === "string") {
+    const upper = raw.trim().toUpperCase();
+    if ((CANONICAL_ALERT_STATUSES as readonly string[]).includes(upper)) {
+      return upper as AlertStatus;
+    }
+  }
+  return "OPEN";
+}
+
+function normalizeNotifyKind(raw: unknown): NotifyKind {
+  if (typeof raw === "string") {
+    const upper = raw.trim().toUpperCase();
+    if ((CANONICAL_NOTIFY_KINDS as readonly string[]).includes(upper)) {
+      return upper as NotifyKind;
+    }
+  }
+  return "WEBHOOK";
+}
+
+function normalizeRuleScopeKind(raw: unknown): RuleScopeKind {
+  if (typeof raw === "string") {
+    const upper = raw.trim().toUpperCase();
+    if (upper === "DATASET" || upper === "DATASET_QUALITY") {
+      return "DATASET_QUALITY";
+    }
+    if (upper === "EVENT") return "EVENT";
+  }
+  return "METRIC";
+}
+
+function normalizeComparisonOp(raw: unknown): ComparisonOp {
+  if (typeof raw === "string") {
+    const upper = raw.trim().toUpperCase();
+    if ((CANONICAL_COMPARISON_OPS as readonly string[]).includes(upper)) {
+      return upper as ComparisonOp;
+    }
+  }
+  return "LT";
+}
+
+function normalizeResolveReason(raw: unknown): AlertResolveReason | null {
+  if (raw === "AUTO" || raw === "MANUAL" || raw === "RULE_DISABLED") {
+    return raw;
+  }
+  return null;
+}
+
+function normalizeAlertEventKind(raw: unknown): AlertEventKind {
+  if (typeof raw === "string") {
+    const upper = raw.trim().toUpperCase();
+    if ((CANONICAL_ALERT_EVENT_KINDS as readonly string[]).includes(upper)) {
+      return upper as AlertEventKind;
+    }
+  }
+  return "OPENED";
+}
+
+function normalizeDeliveryEvent(raw: unknown): NotifyDeliveryEvent {
+  if (typeof raw === "string") {
+    const upper = raw.trim().toUpperCase();
+    if ((CANONICAL_DELIVERY_EVENTS as readonly string[]).includes(upper)) {
+      return upper as NotifyDeliveryEvent;
+    }
+  }
+  return "OPENED";
+}
+
+function normalizeDeliveryStatus(raw: unknown): NotifyDeliveryStatus {
+  if (typeof raw === "string") {
+    const upper = raw.trim().toUpperCase();
+    if ((CANONICAL_DELIVERY_STATUSES as readonly string[]).includes(upper)) {
+      return upper as NotifyDeliveryStatus;
+    }
+  }
+  return "PENDING";
+}
+
+function toFiniteNumber(raw: unknown, fallback: number): number {
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : fallback;
+}
+
+function toNullableNumber(raw: unknown): number | null {
+  return typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+}
+
+function toStringArray(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((item): item is string => typeof item === "string")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+export const ConditionSchema: z.ZodType<Condition> = z
+  .unknown()
+  .transform((raw): Condition => {
+    const rec = toRecord(raw);
+    const rawTag =
+      typeof rec.kind === "string"
+        ? rec.kind
+        : typeof rec.type === "string"
+          ? rec.type
+          : "THRESHOLD";
+    const upper = rawTag.trim().toUpperCase();
+
+    if (upper === "CHANGE_RATE" || upper === "RATE_OF_CHANGE") {
+      return {
+        kind: "CHANGE_RATE",
+        window_minutes: Math.max(
+          1,
+          Math.trunc(toFiniteNumber(rec.window_minutes, 15))
+        ),
+        op: normalizeComparisonOp(rec.op),
+        pct: toFiniteNumber(rec.pct, 0.2),
+      };
+    }
+    if (upper === "ABSENCE") {
+      return {
+        kind: "ABSENCE",
+        minutes: Math.max(1, Math.trunc(toFiniteNumber(rec.minutes, 10))),
+      };
+    }
+    if (upper === "ANOMALY_ZSCORE") {
+      return {
+        kind: "ANOMALY_ZSCORE",
+        lookback_points: Math.max(
+          1,
+          Math.trunc(toFiniteNumber(rec.lookback_points, 96))
+        ),
+        z: toFiniteNumber(rec.z, 3.0),
+        min_points: Math.max(
+          1,
+          Math.trunc(toFiniteNumber(rec.min_points, 30))
+        ),
+      };
+    }
+    if (upper === "EXPR") {
+      return {
+        kind: "EXPR",
+        expression:
+          typeof rec.expression === "string" ? rec.expression : "true",
+      };
+    }
+    if (upper === "QUALITY_FAILED") {
+      return {
+        kind: "QUALITY_FAILED",
+        min_severity: rec.min_severity === "BLOCK" ? "BLOCK" : "WARN",
+      };
+    }
+    if (upper === "EVENT_MATCH") {
+      return {
+        kind: "EVENT_MATCH",
+      };
+    }
+
+    return {
+      kind: "THRESHOLD",
+      op: normalizeComparisonOp(rec.op),
+      value: toFiniteNumber(rec.value, 0),
+      for_minutes: Math.max(0, Math.trunc(toFiniteNumber(rec.for_minutes, 0))),
+    };
+  });
+
+export const RuleDefSchema: z.ZodType<RuleDef> = z
+  .unknown()
+  .transform((raw): RuleDef => {
+    const rec = toRecord(raw);
+    return {
+      id: typeof rec.id === "string" ? rec.id : "",
+      name: typeof rec.name === "string" ? rec.name : "未命名规则",
+      description: typeof rec.description === "string" ? rec.description : "",
+      scope_kind: normalizeRuleScopeKind(rec.scope_kind),
+      target: toRecord(rec.target),
+      condition: ConditionSchema.parse(rec.condition),
+      severity: normalizeSeverity(rec.severity),
+      title_template:
+        typeof rec.title_template === "string" ? rec.title_template : "",
+      body_template:
+        typeof rec.body_template === "string" ? rec.body_template : "",
+      cooldown_minutes: Math.max(
+        0,
+        Math.trunc(toFiniteNumber(rec.cooldown_minutes, 30))
+      ),
+      resolve_after_minutes: Math.max(
+        0,
+        Math.trunc(toFiniteNumber(rec.resolve_after_minutes, 10))
+      ),
+      escalate_after_minutes: toNullableNumber(rec.escalate_after_minutes),
+      channel_ids: toStringArray(rec.channel_ids),
+      escalation_channel_ids: toStringArray(rec.escalation_channel_ids),
+      run_flow_id:
+        typeof rec.run_flow_id === "string" && rec.run_flow_id.length > 0
+          ? rec.run_flow_id
+          : null,
+      enabled: typeof rec.enabled === "boolean" ? rec.enabled : true,
+      version: Math.max(1, Math.trunc(toFiniteNumber(rec.version, 1))),
+      created_by: typeof rec.created_by === "string" ? rec.created_by : null,
+      created_at: typeof rec.created_at === "string" ? rec.created_at : "",
+      updated_at: typeof rec.updated_at === "string" ? rec.updated_at : "",
+    };
+  });
+
+export const RuleDryRunHitSchema: z.ZodType<RuleDryRunHit> = z
+  .unknown()
+  .transform((raw): RuleDryRunHit => {
+    const rec = toRecord(raw);
+    return {
+      dedup_key: typeof rec.dedup_key === "string" ? rec.dedup_key : "",
+      severity: normalizeSeverity(rec.severity),
+      title: typeof rec.title === "string" ? rec.title : "",
+      body: typeof rec.body === "string" ? rec.body : "",
+      node_id: typeof rec.node_id === "string" ? rec.node_id : null,
+      dataset_id: typeof rec.dataset_id === "string" ? rec.dataset_id : null,
+      value: toNullableNumber(rec.value),
+      detail: toRecord(rec.detail),
+    };
+  });
+
+export const RuleDryRunResponseSchema: z.ZodType<RuleDryRunResponse> = z
+  .unknown()
+  .transform((raw): RuleDryRunResponse => {
+    const rec = toRecord(raw);
+    const evaluated =
+      typeof rec.evaluated_objects === "number"
+        ? rec.evaluated_objects
+        : typeof rec.evaluated_count === "number"
+          ? rec.evaluated_count
+          : 0;
+    const rawHits = Array.isArray(rec.would_trigger)
+      ? rec.would_trigger
+      : Array.isArray(rec.items)
+        ? rec.items
+        : [];
+    const hits = rawHits.map((item) => RuleDryRunHitSchema.parse(item));
+    const matched =
+      typeof rec.matched_count === "number" ? rec.matched_count : hits.length;
+    return {
+      rule_id: typeof rec.rule_id === "string" ? rec.rule_id : "",
+      evaluated_objects: Math.max(0, Math.trunc(evaluated)),
+      matched_count: Math.max(0, Math.trunc(matched)),
+      would_trigger: hits,
+    };
+  });
+
+export const NotifyDeliveryRecordSchema: z.ZodType<NotifyDeliveryRecord> = z
+  .unknown()
+  .transform((raw): NotifyDeliveryRecord => {
+    const rec = toRecord(raw);
+    return {
+      id: typeof rec.id === "string" ? rec.id : "",
+      alert_id: typeof rec.alert_id === "string" ? rec.alert_id : null,
+      channel_id: typeof rec.channel_id === "string" ? rec.channel_id : "",
+      event: normalizeDeliveryEvent(rec.event),
+      status: normalizeDeliveryStatus(rec.status),
+      attempt: Math.max(0, Math.trunc(toFiniteNumber(rec.attempt, 0))),
+      response_code: toNullableNumber(rec.response_code),
+      error_message:
+        typeof rec.error_message === "string" ? rec.error_message : null,
+      next_retry_at:
+        typeof rec.next_retry_at === "string" ? rec.next_retry_at : "",
+      created_at: typeof rec.created_at === "string" ? rec.created_at : "",
+      sent_at: typeof rec.sent_at === "string" ? rec.sent_at : null,
+    };
+  });
+
+export const AlertRecordSchema: z.ZodType<AlertRecord> = z
+  .unknown()
+  .transform((raw): AlertRecord => {
+    const rec = toRecord(raw);
+    return {
+      id: typeof rec.id === "string" ? rec.id : "",
+      rule_id: typeof rec.rule_id === "string" ? rec.rule_id : "",
+      dedup_key: typeof rec.dedup_key === "string" ? rec.dedup_key : "",
+      severity: normalizeSeverity(rec.severity),
+      status: normalizeAlertStatus(rec.status),
+      title: typeof rec.title === "string" ? rec.title : "未命名告警",
+      body: typeof rec.body === "string" ? rec.body : "",
+      node_id: typeof rec.node_id === "string" ? rec.node_id : null,
+      dataset_id: typeof rec.dataset_id === "string" ? rec.dataset_id : null,
+      last_value: toNullableNumber(rec.last_value),
+      detail: toRecord(rec.detail),
+      occurrences: Math.max(1, Math.trunc(toFiniteNumber(rec.occurrences, 1))),
+      first_seen_at:
+        typeof rec.first_seen_at === "string" ? rec.first_seen_at : "",
+      last_seen_at:
+        typeof rec.last_seen_at === "string" ? rec.last_seen_at : "",
+      last_false_at:
+        typeof rec.last_false_at === "string" ? rec.last_false_at : null,
+      acked_by: typeof rec.acked_by === "string" ? rec.acked_by : null,
+      acked_at: typeof rec.acked_at === "string" ? rec.acked_at : null,
+      escalated_at:
+        typeof rec.escalated_at === "string" ? rec.escalated_at : null,
+      resolved_at: typeof rec.resolved_at === "string" ? rec.resolved_at : null,
+      resolve_reason: normalizeResolveReason(rec.resolve_reason),
+      deliveries: Array.isArray(rec.deliveries)
+        ? rec.deliveries.map((d) => NotifyDeliveryRecordSchema.parse(d))
+        : [],
+    };
+  });
+
+export const AckBatchResponseSchema: z.ZodType<AckBatchResponse> = z
+  .unknown()
+  .transform((raw): AckBatchResponse => {
+    const rec = toRecord(raw);
+    const items = Array.isArray(rec.items)
+      ? rec.items.map((item) => AlertRecordSchema.parse(item))
+      : [];
+    const explicitIds = toStringArray(rec.alert_ids);
+    const alertIds =
+      explicitIds.length > 0 ? explicitIds : items.map((item) => item.id);
+    const ackedCount =
+      typeof rec.acked_count === "number"
+        ? Math.max(0, Math.trunc(rec.acked_count))
+        : items.length > 0
+          ? items.length
+          : alertIds.length;
+    return {
+      acked_count: ackedCount,
+      items,
+      alert_ids: alertIds,
+    };
+  });
+
+export const AlertEventRecordSchema: z.ZodType<AlertEventRecord> = z
+  .unknown()
+  .transform((raw): AlertEventRecord => {
+    const rec = toRecord(raw);
+    return {
+      id: typeof rec.id === "number" ? rec.id : 0,
+      alert_id: typeof rec.alert_id === "string" ? rec.alert_id : "",
+      event: normalizeAlertEventKind(rec.event),
+      detail: toRecord(rec.detail),
+      actor: typeof rec.actor === "string" ? rec.actor : null,
+      created_at: typeof rec.created_at === "string" ? rec.created_at : "",
+    };
+  });
+
+export const NotifyChannelRecordSchema: z.ZodType<NotifyChannelRecord> = z
+  .unknown()
+  .transform((raw): NotifyChannelRecord => {
+    const rec = toRecord(raw);
+    return {
+      id: typeof rec.id === "string" ? rec.id : "",
+      name: typeof rec.name === "string" ? rec.name : "未命名渠道",
+      kind: normalizeNotifyKind(rec.kind),
+      config: toRecord(rec.config),
+      secret_fields_set: toStringArray(rec.secret_fields_set),
+      allow_private_network: Boolean(rec.allow_private_network),
+      enabled: typeof rec.enabled === "boolean" ? rec.enabled : true,
+      created_at: typeof rec.created_at === "string" ? rec.created_at : "",
+    };
+  });
+
+export const TestChannelResponseSchema: z.ZodType<TestChannelResponse> = z
+  .unknown()
+  .transform((raw): TestChannelResponse => {
+    const rec = toRecord(raw);
+    const delivery = NotifyDeliveryRecordSchema.parse(rec.delivery);
+    return {
+      ok: typeof rec.ok === "boolean" ? rec.ok : delivery.status === "SENT",
+      delivery,
+    };
+  });
+
+export const SilenceMatcherSchema: z.ZodType<SilenceMatcher> = z
+  .unknown()
+  .transform((raw): SilenceMatcher => {
+    const rec = toRecord(raw);
+    const severities = Array.isArray(rec.severities)
+      ? rec.severities
+          .map((s) => normalizeSeverity(s))
+          .filter((val, idx, arr) => arr.indexOf(val) === idx)
+      : [];
+    return {
+      rule_ids: toStringArray(rec.rule_ids),
+      severities,
+      node_ids: toStringArray(rec.node_ids),
+      type_names: toStringArray(rec.type_names),
+    };
+  });
+
+export const AlertSilenceRecordSchema: z.ZodType<AlertSilenceRecord> = z
+  .unknown()
+  .transform((raw): AlertSilenceRecord => {
+    const rec = toRecord(raw);
+    return {
+      id: typeof rec.id === "string" ? rec.id : "",
+      matcher: SilenceMatcherSchema.parse(rec.matcher),
+      starts_at: typeof rec.starts_at === "string" ? rec.starts_at : "",
+      ends_at: typeof rec.ends_at === "string" ? rec.ends_at : "",
+      reason: typeof rec.reason === "string" ? rec.reason : "",
+      created_by: typeof rec.created_by === "string" ? rec.created_by : null,
+      created_at: typeof rec.created_at === "string" ? rec.created_at : "",
+    };
+  });
+
+function sanitizeRuleTargetForWire(
+  scopeKind: RuleScopeKind,
+  rawTarget: Record<string, unknown>
+): Record<string, unknown> {
+  if (scopeKind === "METRIC") {
+    const out: Record<string, unknown> = {
+      type_name:
+        typeof rawTarget.type_name === "string"
+          ? rawTarget.type_name.trim()
+          : "",
+      metric:
+        typeof rawTarget.metric === "string" ? rawTarget.metric.trim() : "",
+    };
+    if (
+      typeof rawTarget.node_filter === "string" &&
+      rawTarget.node_filter.trim().length > 0
+    ) {
+      out.node_filter = rawTarget.node_filter.trim();
+    }
+    return out;
+  }
+
+  if (scopeKind === "DATASET_QUALITY") {
+    const out: Record<string, unknown> = {};
+    if (
+      typeof rawTarget.dataset_id === "string" &&
+      rawTarget.dataset_id.trim().length > 0
+    ) {
+      out.dataset_id = rawTarget.dataset_id.trim();
+    }
+    return out;
+  }
+
+  const out: Record<string, unknown> = {
+    topic: typeof rawTarget.topic === "string" ? rawTarget.topic.trim() : "",
+  };
+  if (
+    typeof rawTarget.filter === "string" &&
+    rawTarget.filter.trim().length > 0
+  ) {
+    out.filter = rawTarget.filter.trim();
+  }
+  return out;
+}
+
+function sanitizeConditionForWire(cond: Condition): Condition {
+  switch (cond.kind) {
+    case "THRESHOLD":
+      return {
+        kind: "THRESHOLD",
+        op: cond.op,
+        value: Number.isFinite(cond.value) ? cond.value : 0,
+        for_minutes: Math.max(0, Math.trunc(cond.for_minutes)),
+      };
+    case "CHANGE_RATE":
+      return {
+        kind: "CHANGE_RATE",
+        window_minutes: Math.max(1, Math.trunc(cond.window_minutes)),
+        op: cond.op,
+        pct: Number.isFinite(cond.pct) ? cond.pct : 0.1,
+      };
+    case "ABSENCE":
+      return {
+        kind: "ABSENCE",
+        minutes: Math.max(1, Math.trunc(cond.minutes)),
+      };
+    case "ANOMALY_ZSCORE":
+      return {
+        kind: "ANOMALY_ZSCORE",
+        lookback_points: Math.max(1, Math.trunc(cond.lookback_points)),
+        z: Number.isFinite(cond.z) ? cond.z : 3.0,
+        min_points: Math.max(1, Math.trunc(cond.min_points)),
+      };
+    case "EXPR":
+      return {
+        kind: "EXPR",
+        expression: cond.expression.trim(),
+      };
+    case "QUALITY_FAILED":
+      return {
+        kind: "QUALITY_FAILED",
+        min_severity: cond.min_severity === "BLOCK" ? "BLOCK" : "WARN",
+      };
+    case "EVENT_MATCH":
+      return {
+        kind: "EVENT_MATCH",
+      };
+  }
+}
+
+function sanitizeCreateRuleForWire(
+  req: CreateRuleRequest
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {
+    name: req.name.trim(),
+    description: req.description?.trim() ?? "",
+    scope_kind: req.scope_kind,
+    target: sanitizeRuleTargetForWire(req.scope_kind, req.target),
+    condition: sanitizeConditionForWire(req.condition),
+    severity: req.severity,
+    title_template: req.title_template.trim(),
+    body_template: req.body_template ?? "",
+    cooldown_minutes: Math.max(0, Math.trunc(req.cooldown_minutes ?? 30)),
+    resolve_after_minutes: Math.max(
+      0,
+      Math.trunc(req.resolve_after_minutes ?? 10)
+    ),
+    channel_ids: (req.channel_ids ?? [])
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0),
+    escalation_channel_ids: (req.escalation_channel_ids ?? [])
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0),
+    enabled: req.enabled ?? true,
+  };
+
+  if (
+    typeof req.escalate_after_minutes === "number" &&
+    Number.isFinite(req.escalate_after_minutes) &&
+    req.escalate_after_minutes > 0
+  ) {
+    body.escalate_after_minutes = Math.trunc(req.escalate_after_minutes);
+  }
+  if (typeof req.run_flow_id === "string" && req.run_flow_id.trim().length > 0) {
+    body.run_flow_id = req.run_flow_id.trim();
+  }
+  return body;
+}
+
+function sanitizeUpdateRuleForWire(
+  req: UpdateRuleRequest
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (req.name !== undefined) body.name = req.name.trim();
+  if (req.description !== undefined) body.description = req.description;
+  if (req.scope_kind !== undefined) body.scope_kind = req.scope_kind;
+  if (req.target !== undefined) {
+    body.target = req.scope_kind
+      ? sanitizeRuleTargetForWire(req.scope_kind, req.target)
+      : req.target;
+  }
+  if (req.condition !== undefined) {
+    body.condition = sanitizeConditionForWire(req.condition);
+  }
+  if (req.severity !== undefined) body.severity = req.severity;
+  if (req.title_template !== undefined) {
+    body.title_template = req.title_template.trim();
+  }
+  if (req.body_template !== undefined) body.body_template = req.body_template;
+  if (req.cooldown_minutes !== undefined) {
+    body.cooldown_minutes = Math.max(0, Math.trunc(req.cooldown_minutes));
+  }
+  if (req.resolve_after_minutes !== undefined) {
+    body.resolve_after_minutes = Math.max(
+      0,
+      Math.trunc(req.resolve_after_minutes)
+    );
+  }
+  if (req.escalate_after_minutes !== undefined) {
+    body.escalate_after_minutes =
+      req.escalate_after_minutes === null || req.escalate_after_minutes <= 0
+        ? null
+        : Math.trunc(req.escalate_after_minutes);
+  }
+  if (req.channel_ids !== undefined) {
+    body.channel_ids = req.channel_ids
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0);
+  }
+  if (req.escalation_channel_ids !== undefined) {
+    body.escalation_channel_ids = req.escalation_channel_ids
+      .map((id) => id.trim())
+      .filter((id) => id.length > 0);
+  }
+  if (req.run_flow_id !== undefined) {
+    body.run_flow_id =
+      req.run_flow_id === null || req.run_flow_id.trim().length === 0
+        ? null
+        : req.run_flow_id.trim();
+  }
+  if (req.enabled !== undefined) body.enabled = req.enabled;
+  return body;
+}
+
+function sanitizeChannelConfigForWire(
+  raw: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  if (!raw) return {};
+  const clean: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (k === "tenant_id") continue;
+    clean[k] = v;
+  }
+  return clean;
+}
+
+function sanitizeCreateChannelForWire(
+  req: CreateNotifyChannelRequest
+): Record<string, unknown> {
+  const secrets: Record<string, string> = {};
+  if (req.secrets) {
+    for (const [k, v] of Object.entries(req.secrets)) {
+      if (k !== "tenant_id" && typeof v === "string" && v.trim().length > 0) {
+        secrets[k] = v.trim();
+      }
+    }
+  }
+  const body: Record<string, unknown> = {
+    name: req.name.trim(),
+    kind: req.kind,
+    config: sanitizeChannelConfigForWire(req.config),
+    secrets,
+    allow_private_network: Boolean(req.allow_private_network),
+    enabled: req.enabled ?? true,
+  };
+  if (
+    typeof req.credential_id === "string" &&
+    req.credential_id.trim().length > 0
+  ) {
+    body.credential_id = req.credential_id.trim();
+  }
+  return body;
+}
+
+function sanitizeUpdateChannelForWire(
+  req: UpdateNotifyChannelRequest
+): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  if (req.name !== undefined) body.name = req.name.trim();
+  if (req.kind !== undefined) body.kind = req.kind;
+  if (req.config !== undefined) {
+    body.config = sanitizeChannelConfigForWire(req.config);
+  }
+  if (req.secrets !== undefined) {
+    const secrets: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.secrets)) {
+      if (k !== "tenant_id" && typeof v === "string" && v.trim().length > 0) {
+        secrets[k] = v.trim();
+      }
+    }
+    body.secrets = secrets;
+  }
+  if (req.allow_private_network !== undefined) {
+    body.allow_private_network = req.allow_private_network;
+  }
+  if (req.enabled !== undefined) body.enabled = req.enabled;
+  return body;
+}
+
+function sanitizeCreateSilenceForWire(
+  req: CreateSilenceRequest
+): Record<string, unknown> {
+  const matcher: SilenceMatcher = {
+    rule_ids: toStringArray(req.matcher.rule_ids),
+    severities: Array.isArray(req.matcher.severities)
+      ? req.matcher.severities
+      : [],
+    node_ids: toStringArray(req.matcher.node_ids),
+    type_names: toStringArray(req.matcher.type_names),
+  };
+  return {
+    matcher,
+    starts_at: req.starts_at,
+    ends_at: req.ends_at,
+    reason: req.reason.trim(),
+  };
+}
+
+// Named function exports for Step 08 API client
+export const listRules = axflowApi.listRules;
+export const getRule = axflowApi.getRule;
+export const createRule = axflowApi.createRule;
+export const updateRule = axflowApi.updateRule;
+export const deleteRule = axflowApi.deleteRule;
+export const dryRunSavedRule = axflowApi.dryRunSavedRule;
+export const dryRunAdhocRule = axflowApi.dryRunAdhocRule;
+
+export const listAlerts = axflowApi.listAlerts;
+export const getAlert = axflowApi.getAlert;
+export const listAlertEvents = axflowApi.listAlertEvents;
+export const ackAlert = axflowApi.ackAlert;
+export const ackAlertsBatch = axflowApi.ackAlertsBatch;
+export const resolveAlert = axflowApi.resolveAlert;
+
+export const listNotifyChannels = axflowApi.listNotifyChannels;
+export const createNotifyChannel = axflowApi.createNotifyChannel;
+export const updateNotifyChannel = axflowApi.updateNotifyChannel;
+export const deleteNotifyChannel = axflowApi.deleteNotifyChannel;
+export const testNotifyChannel = axflowApi.testNotifyChannel;
+
+export const listAlertSilences = axflowApi.listAlertSilences;
+export const createAlertSilence = axflowApi.createAlertSilence;
+export const deleteAlertSilence = axflowApi.deleteAlertSilence;
+
+export function extractConditionThreshold(condition: Condition): number | null {
+  switch (condition.kind) {
+    case "THRESHOLD":
+      return condition.value;
+    case "CHANGE_RATE":
+      return condition.pct;
+    case "ANOMALY_ZSCORE":
+      return condition.z;
+    case "ABSENCE":
+    case "EXPR":
+    case "QUALITY_FAILED":
+    case "EVENT_MATCH":
+      return null;
+  }
+}
+
+export function formatComparisonOpSymbol(op: ComparisonOp): string {
+  switch (op) {
+    case "GT":
+      return ">";
+    case "GTE":
+      return ">=";
+    case "LT":
+      return "<";
+    case "LTE":
+      return "<=";
+    case "EQ":
+      return "==";
+    case "NE":
+      return "!=";
+  }
+}
+
+export function formatConditionSummary(condition: Condition): string {
+  switch (condition.kind) {
+    case "THRESHOLD": {
+      const sym = formatComparisonOpSymbol(condition.op);
+      const dur =
+        condition.for_minutes > 0 ? ` · 持续 ${condition.for_minutes}m` : "";
+      return `THRESHOLD (${sym} ${condition.value}${dur})`;
+    }
+    case "CHANGE_RATE": {
+      const sym = formatComparisonOpSymbol(condition.op);
+      const pctText = `${(condition.pct * 100).toFixed(1)}%`;
+      return `CHANGE_RATE (${condition.window_minutes}m 变化率 ${sym} ${pctText})`;
+    }
+    case "ABSENCE":
+      return `ABSENCE (${condition.minutes}m 无数据点)`;
+    case "ANOMALY_ZSCORE":
+      return `ANOMALY_ZSCORE (|Z| >= ${condition.z}, 回看 ${condition.lookback_points} 点)`;
+    case "EXPR":
+      return `EXPR (${condition.expression})`;
+    case "QUALITY_FAILED":
+      return `QUALITY_FAILED (>= ${condition.min_severity})`;
+    case "EVENT_MATCH":
+      return "EVENT_MATCH (事件主题匹配)";
+  }
+}
+
