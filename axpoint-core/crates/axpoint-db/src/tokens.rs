@@ -1,65 +1,205 @@
-//! Personal access token and principal repository (`CredentialStore`) for [`PgStore`].
+//! Credential and personal access token persistence (`CredentialStore` + `ApiTokenRepository`).
 
 use std::collections::BTreeSet;
-use std::str::FromStr;
 
 use axpoint_domain::AppError;
+use axpoint_domain::agent::{NewApiTokenInput, PersonalAccessTokenSummary};
 use axpoint_domain::enums::Permission;
 use axpoint_domain::platform::{ApiTokenRecord, PrincipalRecord};
-use axpoint_domain::ports::CredentialStore;
+use axpoint_domain::ports::{ApiTokenRepository, CredentialStore};
+use chrono::{DateTime, Utc};
 use sqlx::Row;
 use uuid::Uuid;
 
 use crate::PgStore;
+use crate::tenant::begin_tenant_tx;
+
+fn parse_permission_list(raw_values: Vec<String>) -> Result<Vec<Permission>, AppError> {
+    let mut out = Vec::with_capacity(raw_values.len());
+    for raw in raw_values {
+        let perm: Permission = raw.parse()?;
+        out.push(perm);
+    }
+    Ok(out)
+}
+
+fn parse_permission_set(raw_values: Vec<String>) -> Result<BTreeSet<Permission>, AppError> {
+    let mut set = BTreeSet::new();
+    for raw in raw_values {
+        let perm: Permission = raw.parse()?;
+        set.insert(perm);
+    }
+    Ok(set)
+}
+
+fn decode_pat_summary_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<PersonalAccessTokenSummary, AppError> {
+    let id: Uuid = row
+        .try_get("id")
+        .map_err(|err| AppError::Database(format!("decode sec_api_tokens.id failed: {err}")))?;
+    let name: String = row
+        .try_get("name")
+        .map_err(|err| AppError::Database(format!("decode sec_api_tokens.name failed: {err}")))?;
+    let token_prefix: String = row.try_get("token_prefix").map_err(|err| {
+        AppError::Database(format!("decode sec_api_tokens.token_prefix failed: {err}"))
+    })?;
+    let raw_scopes: Vec<String> = row
+        .try_get("scopes")
+        .map_err(|err| AppError::Database(format!("decode sec_api_tokens.scopes failed: {err}")))?;
+    let scopes = parse_permission_list(raw_scopes)?;
+    let expires_at: Option<DateTime<Utc>> = row.try_get("expires_at").map_err(|err| {
+        AppError::Database(format!("decode sec_api_tokens.expires_at failed: {err}"))
+    })?;
+    let last_used_at: Option<DateTime<Utc>> = row.try_get("last_used_at").map_err(|err| {
+        AppError::Database(format!("decode sec_api_tokens.last_used_at failed: {err}"))
+    })?;
+    let revoked_at: Option<DateTime<Utc>> = row.try_get("revoked_at").map_err(|err| {
+        AppError::Database(format!("decode sec_api_tokens.revoked_at failed: {err}"))
+    })?;
+    let created_at: DateTime<Utc> = row.try_get("created_at").map_err(|err| {
+        AppError::Database(format!("decode sec_api_tokens.created_at failed: {err}"))
+    })?;
+
+    Ok(PersonalAccessTokenSummary {
+        id,
+        name,
+        token_prefix,
+        scopes,
+        expires_at,
+        last_used_at,
+        revoked_at,
+        created_at,
+    })
+}
+
+impl ApiTokenRepository for PgStore {
+    async fn list_user_api_tokens(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+    ) -> Result<Vec<PersonalAccessTokenSummary>, AppError> {
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT id, name, token_prefix, scopes, expires_at, last_used_at, revoked_at, created_at
+               FROM sec_api_tokens
+              WHERE user_id = $1
+              ORDER BY created_at DESC, id DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("list sec_api_tokens failed: {err}")))?;
+
+        let mut out = Vec::with_capacity(rows.len());
+        for row in &rows {
+            out.push(decode_pat_summary_row(row)?);
+        }
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit list_user_api_tokens tx failed: {err}"))
+        })?;
+        Ok(out)
+    }
+
+    async fn create_api_token(
+        &self,
+        tenant_id: &str,
+        input: NewApiTokenInput,
+    ) -> Result<PersonalAccessTokenSummary, AppError> {
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        let scope_strings: Vec<String> = input
+            .scopes
+            .iter()
+            .map(|perm| String::from(perm.as_str()))
+            .collect();
+
+        let row = sqlx::query(
+            "INSERT INTO sec_api_tokens
+                (tenant_id, user_id, name, token_prefix, token_hash, scopes, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             RETURNING id, name, token_prefix, scopes, expires_at, last_used_at, revoked_at, created_at",
+        )
+        .bind(tenant_id)
+        .bind(input.user_id)
+        .bind(&input.name)
+        .bind(&input.token_prefix)
+        .bind(&input.token_hash)
+        .bind(&scope_strings)
+        .bind(input.expires_at)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("insert sec_api_tokens failed: {err}")))?;
+
+        let summary = decode_pat_summary_row(&row)?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit create_api_token tx failed: {err}"))
+        })?;
+        Ok(summary)
+    }
+
+    async fn revoke_api_token(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+        token_id: Uuid,
+    ) -> Result<bool, AppError> {
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        let res = sqlx::query(
+            "UPDATE sec_api_tokens
+                SET revoked_at = COALESCE(revoked_at, NOW())
+              WHERE id = $1 AND user_id = $2",
+        )
+        .bind(token_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("revoke sec_api_tokens failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit revoke_api_token tx failed: {err}"))
+        })?;
+        Ok(res.rows_affected() > 0)
+    }
+}
 
 impl CredentialStore for PgStore {
     async fn resolve_api_token(
         &self,
         token_hash: &str,
     ) -> Result<Option<ApiTokenRecord>, AppError> {
-        let maybe_row = sqlx::query(
-            "SELECT token_id, tenant_id, user_id, scopes
-               FROM ax_resolve_api_token($1)",
+        let row_opt = sqlx::query(
+            "SELECT token_id, tenant_id, user_id, scopes FROM ax_resolve_api_token($1)",
         )
         .bind(token_hash)
-        .fetch_optional(self.pool())
+        .fetch_optional(&self.pool)
         .await
         .map_err(|err| AppError::Database(format!("ax_resolve_api_token failed: {err}")))?;
 
-        let Some(row) = maybe_row else {
+        let Some(row) = row_opt else {
             return Ok(None);
         };
 
-        let raw_scopes: Vec<String> = row.get("scopes");
-        let mut scopes = BTreeSet::new();
-        for scope_str in raw_scopes {
-            scopes.insert(Permission::from_str(&scope_str)?);
-        }
+        let token_id: Uuid = row
+            .try_get("token_id")
+            .map_err(|err| AppError::Database(format!("decode token_id failed: {err}")))?;
+        let tenant_id: String = row
+            .try_get("tenant_id")
+            .map_err(|err| AppError::Database(format!("decode tenant_id failed: {err}")))?;
+        let user_id: Uuid = row
+            .try_get("user_id")
+            .map_err(|err| AppError::Database(format!("decode user_id failed: {err}")))?;
+        let raw_scopes: Vec<String> = row
+            .try_get("scopes")
+            .map_err(|err| AppError::Database(format!("decode scopes failed: {err}")))?;
 
+        let scopes = parse_permission_set(raw_scopes)?;
         Ok(Some(ApiTokenRecord {
-            token_id: row.get("token_id"),
-            tenant_id: row.get("tenant_id"),
-            user_id: row.get("user_id"),
+            token_id,
+            tenant_id,
+            user_id,
             scopes,
         }))
-    }
-
-    async fn touch_api_token(&self, tenant_id: &str, token_id: Uuid) -> Result<(), AppError> {
-        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
-        sqlx::query(
-            "UPDATE sec_api_tokens
-                SET last_used_at = NOW()
-              WHERE id = $1",
-        )
-        .bind(token_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(|err| AppError::Database(format!("touch sec_api_token failed: {err}")))?;
-
-        tx.commit().await.map_err(|err| {
-            AppError::Database(format!("commit touch sec_api_token tx failed: {err}"))
-        })?;
-        Ok(())
     }
 
     async fn load_principal(
@@ -67,25 +207,22 @@ impl CredentialStore for PgStore {
         tenant_id: &str,
         user_id: Uuid,
     ) -> Result<Option<PrincipalRecord>, AppError> {
-        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
 
-        let maybe_user = sqlx::query(
-            "SELECT u.id, u.tenant_id, u.username, u.display_name, u.dept_id
-               FROM sec_users u
-               JOIN sec_tenants t ON t.tenant_id = u.tenant_id
-              WHERE u.id = $1
-                AND u.status = 'ACTIVE'
-                AND t.status = 'ACTIVE'",
+        let user_opt = sqlx::query(
+            "SELECT id, tenant_id, username, display_name, dept_id
+               FROM sec_users
+              WHERE id = $1 AND status = 'ACTIVE'",
         )
         .bind(user_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(|err| AppError::Database(format!("query sec_users failed: {err}")))?;
+        .map_err(|err| AppError::Database(format!("load sec_users failed: {err}")))?;
 
-        let Some(user_row) = maybe_user else {
-            tx.commit().await.map_err(|err| {
-                AppError::Database(format!("commit empty load_principal tx failed: {err}"))
-            })?;
+        let Some(user_row) = user_opt else {
+            tx.commit()
+                .await
+                .map_err(|err| AppError::Database(format!("commit principal lookup tx: {err}")))?;
             return Ok(None);
         };
 
@@ -99,31 +236,59 @@ impl CredentialStore for PgStore {
         .bind(user_id)
         .fetch_all(&mut *tx)
         .await
-        .map_err(|err| AppError::Database(format!("query sec_user_roles failed: {err}")))?;
-
-        tx.commit()
-            .await
-            .map_err(|err| AppError::Database(format!("commit load_principal tx failed: {err}")))?;
+        .map_err(|err| AppError::Database(format!("load sec_roles failed: {err}")))?;
 
         let mut roles = Vec::with_capacity(role_rows.len());
         let mut permissions = BTreeSet::new();
-        for role_row in role_rows {
-            let role_name: String = role_row.get("name");
-            let role_perms: Vec<String> = role_row.get("permissions");
+        for row in role_rows {
+            let role_name: String = row
+                .try_get("name")
+                .map_err(|err| AppError::Database(format!("decode role name failed: {err}")))?;
+            let raw_perms: Vec<String> = row.try_get("permissions").map_err(|err| {
+                AppError::Database(format!("decode role permissions failed: {err}"))
+            })?;
             roles.push(role_name);
-            for perm_str in role_perms {
-                permissions.insert(Permission::from_str(&perm_str)?);
-            }
+            permissions.extend(parse_permission_set(raw_perms)?);
         }
 
+        let username: String = user_row
+            .try_get("username")
+            .map_err(|err| AppError::Database(format!("decode username failed: {err}")))?;
+        let display_name: String = user_row
+            .try_get("display_name")
+            .map_err(|err| AppError::Database(format!("decode display_name failed: {err}")))?;
+        let dept_id: String = user_row
+            .try_get("dept_id")
+            .map_err(|err| AppError::Database(format!("decode dept_id failed: {err}")))?;
+        let resolved_tenant: String = user_row
+            .try_get("tenant_id")
+            .map_err(|err| AppError::Database(format!("decode tenant_id failed: {err}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit principal lookup tx: {err}")))?;
+
         Ok(Some(PrincipalRecord {
-            user_id: user_row.get("id"),
-            tenant_id: user_row.get("tenant_id"),
-            username: user_row.get("username"),
-            display_name: user_row.get("display_name"),
-            dept_id: user_row.get("dept_id"),
+            user_id,
+            tenant_id: resolved_tenant,
+            username,
+            display_name,
+            dept_id,
             roles,
             permissions,
         }))
+    }
+
+    async fn touch_api_token(&self, tenant_id: &str, token_id: Uuid) -> Result<(), AppError> {
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        sqlx::query("UPDATE sec_api_tokens SET last_used_at = NOW() WHERE id = $1")
+            .bind(token_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| AppError::Database(format!("touch sec_api_tokens failed: {err}")))?;
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit touch_api_token tx: {err}")))?;
+        Ok(())
     }
 }
