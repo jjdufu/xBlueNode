@@ -1,10 +1,13 @@
 //! `AxFlow` persistent DAG orchestration engine, static validator, template renderer,
-//! Step 07 operator registry, cron scheduler, and outbox triggers (`07-STEP07-08` §07.1–§07.8).
+//! Step 07 operator registry, cron scheduler, outbox triggers, Step 08 operational rules
+//! evaluator, and 5-channel notification dispatcher (`07-STEP07-08` §07.1–§08.4).
 #![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
 pub mod engine;
 pub mod graph;
+pub mod notify;
 pub mod operators;
+pub mod rules;
 pub mod scheduler;
 pub mod template;
 pub mod triggers;
@@ -21,11 +24,20 @@ pub use graph::{
     ancestors, leaf_nodes, node_map, predecessors, root_nodes, strict_descendants, successors,
     topological_order_or_cycle,
 };
+pub use notify::{
+    AlertEscalationNotifier, AlertNotifySubscriber, MAX_NOTIFY_ATTEMPTS, NOTIFY_HTTP_TIMEOUT_SECS,
+    NoopCredentialUnsealer, NotificationDispatcher, NotifyPayloadView, delivery_retry_delay,
+    is_loopback_url,
+};
 pub use operators::{
     ActionEmitOperator, AggTriggerOperator, CausalSimOperator, HttpCallOperator,
     HumanApprovalOperator, LlmExtractOperator, SourceIngestOperator, SqlTransformOperator,
     Step07OperatorDeps, XblueMapOperator, build_step07_operator_registry, default_operator_specs,
     step07_schema_only_registry,
+};
+pub use rules::{
+    AbsenceRuleScanner, ConditionOutcome, FlowEngineLauncher, RuleEvalJobHandler, RuleEvaluator,
+    RuleFlowLauncherPort, RuleTriggerSubscriber, eval_node_filter,
 };
 pub use scheduler::{
     FlowCronScheduler, cron_idempotency_key, due_cron_minute_slot, parse_timezone_offset,
