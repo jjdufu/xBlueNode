@@ -159,6 +159,22 @@
 - `POST /api/axflow/channels/{id}/test`（`RULE_EDIT`）：经 `NetGuard` 校验后同步发送一条 `event = TEST` 测试消息并返回 `{ok, delivery}`。
 - `GET /api/axflow/silences` / `POST /api/axflow/silences` / `DELETE /api/axflow/silences/{id}`（`DATA_READ` / `ALERT_ACK`）：查询、创建（`ends_at > starts_at`）或删除告警静默窗口 `ax_alert_silences`。
 
+### `AxAgent` 个人访问令牌、多模型路由、能力发布、MCP 与多轮智能体（`/api/auth/tokens*`、`/api/axagent/*`、`/api/published/*`、`/api/mcp`，Step 09）
+
+- `GET /api/auth/tokens` / `POST /api/auth/tokens` / `DELETE /api/auth/tokens/{id}`（已认证用户）：列出当前用户个人访问令牌（不含明文）、签发 `axp_<prefix8>_<secret32>`（`scopes` 须为当前用户权限子集，一次性返回明文并审计 `TOKEN_ISSUE`）或吊销令牌（审计 `TOKEN_REVOKE`）。
+- `GET /api/axagent/providers` / `POST /api/axagent/providers` / `PUT /api/axagent/providers/{id}` / `DELETE /api/axagent/providers/{id}` / `POST /api/axagent/providers/{id}/test`（`AGENT_EDIT`；`allow_private_network=true` 需 `GUARD_ADMIN`）：多模型提供方注册、密钥环加密存储、优先级与熔断配置及连通性测试。
+- `GET /api/axagent/usage?from=&to=`（`AGENT_EDIT`）：按提供方、日期与用途查询请求量、错误数与 Token 用量统计（`ax_llm_usage`）。
+- `GET /api/axagent/endpoints` / `POST /api/axagent/endpoints` / `PUT /api/axagent/endpoints/{id}` / `DELETE /api/axagent/endpoints/{id}` / `POST /api/axagent/endpoints/{id}/promote`（`DATA_READ` / `STUDIO_PUBLISH`；`kind=FLOW` 需 `FLOW_PUBLISH`）：管理五类发布端点（`SAVED_QUERY`、`METRIC`、`OBJECT_TYPE`、`FLOW`、`AGENT`），自动推导 Draft 2020-12 `input_schema`，并在提升至 `PROD` 时固定 `target_version` 与 `target_snapshot`。
+- `GET /api/axagent/endpoints/openapi.json?environment=PROD` / `GET /api/axagent/endpoints/{id}/skill.json`（`DATA_READ`）：导出 OpenAPI 3.1 规范文档与外部智能体 Skill 清单。
+- `POST /api/axagent/apps/{endpoint_id}/run`（端点 `required_scope`）：查询即应用内部执行入口，以当前登录主体直接调用目标能力。
+- `POST /api/published/{env}/{tenant_id}/{slug}` / `GET /api/published/{env}/{tenant_id}/{slug}/runs/{run_id}`（`Authorization: Bearer axp_...` 个人访问令牌）：校验租户与 `required_scope`、`(endpoint_id, token_id)` 速率限制、JSON Schema 入参、`moka` TTL 缓存后执行能力并写审计日志。
+- `POST /api/mcp` / `GET /api/mcp` / `DELETE /api/mcp`（`Authorization: Bearer axp_...` 个人访问令牌）：Streamable HTTP MCP Server（`Mcp-Session-Id` 会话管理），动态暴露 `PROD` 且 `expose_mcp=true` 的发布端点与内置只读工具（`search_knowledge`、`ask_data`、`list_datasets`、`describe_dataset`、`query_objects`、`graph_neighbors`、`get_node`）及 `axpoint://datasets/*`、`axpoint://objects/*` 资源，每次 `tools/call` 写 `MCP_CALL` 审计。
+- `GET /api/axagent/mcp-clients` / `POST /api/axagent/mcp-clients` / `DELETE /api/axagent/mcp-clients/{id}` / `POST /api/axagent/mcp-clients/{id}/sync`（`AGENT_EDIT`）：外部 Streamable HTTP MCP 服务登记（经 `NetGuard` 校验）与 `tools/list` 同步缓存。
+- `GET /api/axagent/agents` / `POST /api/axagent/agents` / `GET /api/axagent/agents/{id}` / `PUT /api/axagent/agents/{id}` / `DELETE /api/axagent/agents/{id}` / `POST /api/axagent/agents/{id}/publish`（`DATA_READ` / `AGENT_EDIT`）：智能体草稿编辑、多智能体嵌套深度校验（`<= 2`）与不可变版本发布（`ax_agent_versions`）。
+- `POST /api/axagent/agents/{id}/chat`（`AGENT_RUN`；`draft=true` 需 `AGENT_EDIT`）：智能体多轮工具循环对话（支持 `Accept: text/event-stream` 流式 `token|tool_call|tool_result|approval_required|final|error` 事件与 `Accept: application/json` 同步返回，写 `ax_messages` 与 `AGENT_CHAT` 审计）。
+- `GET /api/axagent/conversations` / `GET /api/axagent/conversations/{id}/messages` / `DELETE /api/axagent/conversations/{id}`（`AGENT_RUN`，仅本人会话）：工作台多轮会话与消息流管理。
+- `POST /api/axagent/agents/{id}/embeds` / `GET /api/axagent/agents/{id}/embeds` / `DELETE /api/axagent/embeds/{embed_id}`（`VIEW_SHARE`）与 `POST /api/axagent/embed/{token}/chat`（公开嵌入令牌 `axe_...`）：按权限子集与 `allowed_origins` 签发、查询、吊销外部嵌入链接及按 `(embed_id, client_ip)` 限流的公开对话入口。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）

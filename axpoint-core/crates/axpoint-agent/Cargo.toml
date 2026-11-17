@@ -1,0 +1,29 @@
+[package]
+name = "axpoint-agent"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+axpoint-domain = { path = "../axpoint-domain" }
+axpoint-llm = { path = "../axpoint-llm" }
+axpoint-security = { path = "../axpoint-security" }
+chrono = { workspace = true }
+eventsource-stream = { workspace = true }
+futures = { workspace = true }
+hex = { workspace = true }
+jsonschema = { workspace = true }
+metrics = { workspace = true }
+moka = { workspace = true }
+reqwest = { workspace = true }
+rmcp = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }

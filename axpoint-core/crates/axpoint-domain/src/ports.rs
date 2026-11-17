@@ -5,6 +5,15 @@ use std::future::Future;
 
 use uuid::Uuid;
 
+use crate::agent::{
+    AgentEmbedRecord, AgentRecord, AgentTaskInput, AgentTaskOutcome, AgentVersionRecord,
+    ConversationListQuery, ConversationRecord, CreateAgentRequest, EndpointListQuery, EndpointSpec,
+    LlmProviderRecord, LlmUsageDelta, LlmUsageQuery, LlmUsageRecord, McpClientRecord, McpToolInfo,
+    MessageRecord, NewAgentEmbedInput, NewApiTokenInput, NewConversationInput, NewMessageInput,
+    PersonalAccessTokenSummary, ResolvedAgentEmbed, SaveEndpointInput, SaveLlmProviderInput,
+    SaveMcpClientInput, SimRunToolInput, SimRunToolOutput, UpdateAgentRequest,
+    UpdateEndpointRequest,
+};
 use crate::analytics::{
     AnalyticsPrincipal, AskFeedbackKind, AskTurnRecord, CreateMetricRequest,
     CreateSavedQueryRequest, FewShotTurn, MaterializeRequest, MetricDef, MetricQuery,
@@ -24,7 +33,7 @@ use crate::axhub::{
     SidecarSyncResult, SyncDatasetResponse, SyncJob, UnifiedParseResponse, UpdateColumnMetaRequest,
     UpdateConnectionInput, UpdateDatasetRequest, UploadRecord, WebhookBufferItem, WebhookConfig,
 };
-use crate::enums::{Environment, GraphAlgo, JobKind};
+use crate::enums::{ConversationStatus, Environment, GraphAlgo, JobKind};
 use crate::flow::{
     ActionListQuery, ActionLogRecord, ApprovalListQuery, ApprovalRecord, DecideApprovalParams,
     DeployFlowRequest, EventFlowItem, FlowDeploymentRecord, FlowListQuery, FlowVersionRecord,
@@ -60,10 +69,11 @@ use crate::rules::{
 };
 use crate::studio::{
     CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus, MappingRecord,
-    MappingRunRecord, MergePreview, MergePreviewRequest, MergeSubgraphRequest, PublishDraftRequest,
-    PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest, SchemaDiff,
-    SchemaDraft, SchemaVersionDetail, SchemaVersionSummary, SubgraphInfo, TriggerMappingRunRequest,
-    TriggerMappingRunResponse, UpdateDraftRequest, UpdateSubgraphRequest, ValidationContext,
+    MappingRunRecord, MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeTypeSpec,
+    PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest,
+    SchemaDiff, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary, SubgraphInfo,
+    TriggerMappingRunRequest, TriggerMappingRunResponse, UpdateDraftRequest, UpdateSubgraphRequest,
+    ValidationContext,
 };
 use crate::topology::{
     AxFlowDef, AxFlowRunResult, AxSandboxRecord, AxSimAction, AxSimResult, AxSimSnapshot, BlueNode,
@@ -2038,4 +2048,418 @@ pub trait RulesRepository: Send + Sync {
         &self,
         limit: i32,
     ) -> impl Future<Output = Result<Vec<DueDeliveryItem>, AppError>> + Send;
+}
+
+/// Object-safe simulation execution port decoupling `AxAgent` (`BuiltinToolRegistry`) from `AxSim` Step 10 (`08-STEP09` §09.0 & §09.5.1).
+///
+/// When `None` is injected into `BuiltinToolRegistry` (Step 09), `run_simulation` is hidden from the tool catalog;
+/// when `Some(Arc<dyn SimExecutionPort>)` is wired in Step 10, `run_simulation` becomes available without modifying `axpoint-agent`.
+pub trait SimExecutionPort: Send + Sync {
+    /// Executes an `AxSim` scenario on behalf of `(tenant_id, user_id)` and returns a structured KPI/diff summary.
+    fn run_simulation_tool<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        user_id: Uuid,
+        input: SimRunToolInput,
+    ) -> BoxFuture<'a, SimRunToolOutput>;
+}
+
+/// Object-safe port decoupling `AxFlow`'s `AGENT_TASK` operator (`axpoint-flow`) from `AgentRuntime` (`axpoint-agent`) (`08-STEP09` §09.6).
+pub trait AgentTaskPort: Send + Sync {
+    /// Runs or idempotently reuses an `AxAgent` conversation (`channel = FLOW`), returning `Completed` or `WaitingApproval`.
+    fn execute_flow_agent_task(&self, input: AgentTaskInput) -> BoxFuture<'_, AgentTaskOutcome>;
+}
+
+/// Object-safe capability bridge used by `AxAgent` publishing, MCP Server, and built-in tools (`08-STEP09` §09.3–§09.5).
+pub trait AgentCapabilityPort: Send + Sync {
+    /// Executes five-way hypergraph document retrieval (`search_knowledge`), optionally scoped by `doc_title_prefix`.
+    fn search_knowledge<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        query: &'a str,
+        top_k: usize,
+        doc_title_prefix: Option<&'a str>,
+    ) -> BoxFuture<'a, Vec<FusedHit>>;
+
+    /// Executes Step 04 NL2SQL `ask_data` under `principal`, optionally restricted to `dataset_names`.
+    fn ask_data<'a>(
+        &'a self,
+        principal: &'a AnalyticsPrincipal,
+        question: &'a str,
+        dataset_names: &'a [String],
+    ) -> BoxFuture<'a, serde_json::Value>;
+
+    /// Executes a `sql_guard`-validated `DuckDB` SQL query capped at `max_rows` (`run_sql` tool, max 200 rows).
+    fn run_sql_bounded<'a>(
+        &'a self,
+        principal: &'a AnalyticsPrincipal,
+        sql: &'a str,
+        max_rows: usize,
+    ) -> BoxFuture<'a, QueryResult>;
+
+    /// Executes a semantic metric query against either a `PROD`-pinned `MetricDef` snapshot or the live `an_metrics` definition.
+    fn run_metric_endpoint<'a>(
+        &'a self,
+        principal: &'a AnalyticsPrincipal,
+        metric_name: &'a str,
+        pinned_snapshot: Option<&'a MetricDef>,
+        query: MetricQuery,
+    ) -> BoxFuture<'a, MetricQueryResult>;
+
+    /// Executes a saved query against either a `PROD`-pinned `SavedQuery` snapshot or the live `an_saved_queries` definition.
+    fn run_saved_endpoint<'a>(
+        &'a self,
+        principal: &'a AnalyticsPrincipal,
+        saved_id: Uuid,
+        pinned_snapshot: Option<&'a SavedQuery>,
+        params: BTreeMap<String, serde_json::Value>,
+    ) -> BoxFuture<'a, serde_json::Value>;
+
+    /// Queries published `main` domain objects (`OBJECT_TYPE` endpoint and `query_objects` MCP/built-in tool),
+    /// applying property masking, optional `pinned_snapshot` projection, and 1-hop `include_links` expansion.
+    fn query_domain_objects<'a>(
+        &'a self,
+        principal: &'a AnalyticsPrincipal,
+        type_name: &'a str,
+        pinned_snapshot: Option<&'a NodeTypeSpec>,
+        payload: &'a serde_json::Value,
+    ) -> BoxFuture<'a, serde_json::Value>;
+}
+
+/// Object-safe LLM provider lookup and daily token usage persistence port consumed by `axpoint-llm::router::LlmRouter` (`08-STEP09` §09.2).
+pub trait LlmProviderStore: Send + Sync {
+    /// Lists all `ax_llm_providers` rows for `tenant_id` ordered by `priority ASC, created_at ASC`.
+    fn list_tenant_providers<'a>(
+        &'a self,
+        tenant_id: &'a str,
+    ) -> BoxFuture<'a, Vec<LlmProviderRecord>>;
+
+    /// Atomically increments daily request/error/token counters in `ax_llm_usage`.
+    fn record_usage<'a>(&'a self, tenant_id: &'a str, delta: LlmUsageDelta) -> BoxFuture<'a, ()>;
+}
+
+/// Personal access token management port (`GET/POST /api/auth/tokens`, `DELETE /api/auth/tokens/{id}`, `08-STEP09` §09.8).
+pub trait ApiTokenRepository: Send + Sync {
+    /// Lists personal access tokens owned by `user_id` in `tenant_id` (excluding plaintext/hash).
+    fn list_user_api_tokens(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<PersonalAccessTokenSummary>, AppError>> + Send;
+
+    /// Inserts a newly issued `sec_api_tokens` row in `tenant_id`.
+    fn create_api_token(
+        &self,
+        tenant_id: &str,
+        input: NewApiTokenInput,
+    ) -> impl Future<Output = Result<PersonalAccessTokenSummary, AppError>> + Send;
+
+    /// Revokes (`revoked_at = NOW()`) a token owned by `user_id` in `tenant_id` (`Ok(false)` if not found or owned by another user).
+    fn revoke_api_token(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+        token_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+}
+
+/// Persistence port for `AxAgent` providers, usage, published endpoints, MCP clients,
+/// agents, versions, conversations, messages, and embed links (`08-STEP09` §09.1–§09.7).
+pub trait AgentRepository: Send + Sync {
+    /// Lists LLM providers in `tenant_id` ordered by `priority ASC, created_at ASC`.
+    fn list_llm_providers(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<LlmProviderRecord>, AppError>> + Send;
+
+    /// Fetches a single LLM provider (and its optional sealed API key credential) in `tenant_id`.
+    fn get_llm_provider(
+        &self,
+        tenant_id: &str,
+        provider_id: Uuid,
+    ) -> impl Future<
+        Output = Result<Option<(LlmProviderRecord, Option<SealedCredential>)>, AppError>,
+    > + Send;
+
+    /// Creates a new LLM provider in `tenant_id` (`409` on duplicate `(tenant_id, name)`).
+    fn create_llm_provider(
+        &self,
+        tenant_id: &str,
+        input: SaveLlmProviderInput,
+    ) -> impl Future<Output = Result<LlmProviderRecord, AppError>> + Send;
+
+    /// Updates an existing LLM provider in `tenant_id`.
+    fn update_llm_provider(
+        &self,
+        tenant_id: &str,
+        provider_id: Uuid,
+        input: SaveLlmProviderInput,
+    ) -> impl Future<Output = Result<Option<LlmProviderRecord>, AppError>> + Send;
+
+    /// Deletes an LLM provider in `tenant_id`.
+    fn delete_llm_provider(
+        &self,
+        tenant_id: &str,
+        provider_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Increments daily `ax_llm_usage` counters via `INSERT ... ON CONFLICT DO UPDATE`.
+    fn record_llm_usage(
+        &self,
+        tenant_id: &str,
+        delta: LlmUsageDelta,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Queries aggregated `ax_llm_usage` rows in `tenant_id` filtered by `[from, to]`.
+    fn query_llm_usage(
+        &self,
+        tenant_id: &str,
+        query: LlmUsageQuery,
+    ) -> impl Future<Output = Result<Vec<LlmUsageRecord>, AppError>> + Send;
+
+    /// Lists published endpoints in `tenant_id` with optional `environment`, `kind`, and `show_as_app` filters.
+    fn list_endpoints(
+        &self,
+        tenant_id: &str,
+        query: EndpointListQuery,
+    ) -> impl Future<Output = Result<Vec<EndpointSpec>, AppError>> + Send;
+
+    /// Fetches a single published endpoint by UUID in `tenant_id`.
+    fn get_endpoint(
+        &self,
+        tenant_id: &str,
+        endpoint_id: Uuid,
+    ) -> impl Future<Output = Result<Option<EndpointSpec>, AppError>> + Send;
+
+    /// Fetches a published endpoint by `(environment, slug)` in `tenant_id`.
+    fn get_endpoint_by_slug(
+        &self,
+        tenant_id: &str,
+        environment: Environment,
+        slug: &str,
+    ) -> impl Future<Output = Result<Option<EndpointSpec>, AppError>> + Send;
+
+    /// Inserts a new published endpoint (`409` on duplicate `(tenant_id, environment, slug)`).
+    fn create_endpoint(
+        &self,
+        tenant_id: &str,
+        input: SaveEndpointInput,
+    ) -> impl Future<Output = Result<EndpointSpec, AppError>> + Send;
+
+    /// Updates mutable configuration fields on an endpoint by UUID.
+    fn update_endpoint(
+        &self,
+        tenant_id: &str,
+        endpoint_id: Uuid,
+        req: UpdateEndpointRequest,
+    ) -> impl Future<Output = Result<Option<EndpointSpec>, AppError>> + Send;
+
+    /// Upserts a `PROD` endpoint on `(tenant_id, environment, slug)` during `/promote`.
+    fn upsert_endpoint_by_slug(
+        &self,
+        tenant_id: &str,
+        input: SaveEndpointInput,
+    ) -> impl Future<Output = Result<EndpointSpec, AppError>> + Send;
+
+    /// Deletes a published endpoint by UUID in `tenant_id`.
+    fn delete_endpoint(
+        &self,
+        tenant_id: &str,
+        endpoint_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists registered external MCP clients in `tenant_id`.
+    fn list_mcp_clients(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<McpClientRecord>, AppError>> + Send;
+
+    /// Fetches an external MCP client (and its optional sealed headers credential) by UUID.
+    fn get_mcp_client(
+        &self,
+        tenant_id: &str,
+        client_id: Uuid,
+    ) -> impl Future<Output = Result<Option<(McpClientRecord, Option<SealedCredential>)>, AppError>> + Send;
+
+    /// Fetches an external MCP client (and its optional sealed headers credential) by unique `name`.
+    fn get_mcp_client_by_name(
+        &self,
+        tenant_id: &str,
+        name: &str,
+    ) -> impl Future<Output = Result<Option<(McpClientRecord, Option<SealedCredential>)>, AppError>> + Send;
+
+    /// Registers a new external MCP client in `tenant_id`.
+    fn create_mcp_client(
+        &self,
+        tenant_id: &str,
+        input: SaveMcpClientInput,
+    ) -> impl Future<Output = Result<McpClientRecord, AppError>> + Send;
+
+    /// Deletes an external MCP client by UUID in `tenant_id`.
+    fn delete_mcp_client(
+        &self,
+        tenant_id: &str,
+        client_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Updates `tools_cache` and `last_synced_at = NOW()` after `POST /api/axagent/mcp-clients/{id}/sync`.
+    fn update_mcp_client_tools(
+        &self,
+        tenant_id: &str,
+        client_id: Uuid,
+        tools: &[McpToolInfo],
+    ) -> impl Future<Output = Result<Option<McpClientRecord>, AppError>> + Send;
+
+    /// Lists `AxAgent` definitions in `tenant_id`.
+    fn list_agents(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<AgentRecord>, AppError>> + Send;
+
+    /// Fetches a single `AxAgent` definition by UUID in `tenant_id`.
+    fn get_agent(
+        &self,
+        tenant_id: &str,
+        agent_id: Uuid,
+    ) -> impl Future<Output = Result<Option<AgentRecord>, AppError>> + Send;
+
+    /// Fetches a single `AxAgent` definition by unique `name` in `tenant_id`.
+    fn get_agent_by_name(
+        &self,
+        tenant_id: &str,
+        name: &str,
+    ) -> impl Future<Output = Result<Option<AgentRecord>, AppError>> + Send;
+
+    /// Creates a new `AxAgent` draft (`version = 0`) in `tenant_id`.
+    fn create_agent(
+        &self,
+        tenant_id: &str,
+        created_by: Option<Uuid>,
+        req: CreateAgentRequest,
+    ) -> impl Future<Output = Result<AgentRecord, AppError>> + Send;
+
+    /// Updates the draft `spec` (and optional `name`/`description`) of an `AxAgent`.
+    fn update_agent(
+        &self,
+        tenant_id: &str,
+        agent_id: Uuid,
+        req: UpdateAgentRequest,
+    ) -> impl Future<Output = Result<Option<AgentRecord>, AppError>> + Send;
+
+    /// Deletes an `AxAgent` (cascading versions, conversations, messages, and embeds).
+    fn delete_agent(
+        &self,
+        tenant_id: &str,
+        agent_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Snapshots `ax_agents.spec` into `ax_agent_versions(version + 1)` and increments `ax_agents.version`.
+    fn publish_agent_version(
+        &self,
+        tenant_id: &str,
+        agent_id: Uuid,
+        published_by: Option<Uuid>,
+    ) -> impl Future<Output = Result<AgentVersionRecord, AppError>> + Send;
+
+    /// Fetches a specific published [`AgentVersionRecord`] `(agent_id, version)` in `tenant_id`.
+    fn get_agent_version(
+        &self,
+        tenant_id: &str,
+        agent_id: Uuid,
+        version: i32,
+    ) -> impl Future<Output = Result<Option<AgentVersionRecord>, AppError>> + Send;
+
+    /// Lists all published versions of `agent_id` ordered by `version DESC`.
+    fn list_agent_versions(
+        &self,
+        tenant_id: &str,
+        agent_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<AgentVersionRecord>, AppError>> + Send;
+
+    /// Creates a new `ax_conversations` session.
+    fn create_conversation(
+        &self,
+        tenant_id: &str,
+        input: NewConversationInput,
+    ) -> impl Future<Output = Result<ConversationRecord, AppError>> + Send;
+
+    /// Fetches a single `ax_conversations` row by UUID in `tenant_id`.
+    fn get_conversation(
+        &self,
+        tenant_id: &str,
+        conversation_id: Uuid,
+    ) -> impl Future<Output = Result<Option<ConversationRecord>, AppError>> + Send;
+
+    /// Looks up an existing `FLOW`-channel conversation by deterministic `title` (`flow:<idempotency_key>`).
+    fn find_flow_conversation(
+        &self,
+        tenant_id: &str,
+        agent_id: Uuid,
+        idempotency_title: &str,
+    ) -> impl Future<Output = Result<Option<ConversationRecord>, AppError>> + Send;
+
+    /// Lists conversations owned by `user_id` (`GET /api/axagent/conversations` — caller sees only their own).
+    fn list_user_conversations(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+        query: ConversationListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<ConversationRecord>, AppError>> + Send;
+
+    /// Updates `status` and `updated_at = NOW()` on `conversation_id`.
+    fn update_conversation_status(
+        &self,
+        tenant_id: &str,
+        conversation_id: Uuid,
+        status: ConversationStatus,
+    ) -> impl Future<Output = Result<Option<ConversationRecord>, AppError>> + Send;
+
+    /// Deletes a conversation owned by `user_id` (`None` skips user ownership check for admin/internal cleanup).
+    fn delete_conversation(
+        &self,
+        tenant_id: &str,
+        conversation_id: Uuid,
+        owner_user_id: Option<Uuid>,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Appends a message to `ax_messages` and touches `ax_conversations.updated_at`.
+    fn append_message(
+        &self,
+        tenant_id: &str,
+        input: NewMessageInput,
+    ) -> impl Future<Output = Result<MessageRecord, AppError>> + Send;
+
+    /// Lists all messages in `conversation_id` ordered chronologically (`id ASC`).
+    fn list_conversation_messages(
+        &self,
+        tenant_id: &str,
+        conversation_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<MessageRecord>, AppError>> + Send;
+
+    /// Inserts an `ax_agent_embeds` row in `tenant_id`.
+    fn create_agent_embed(
+        &self,
+        tenant_id: &str,
+        input: NewAgentEmbedInput,
+    ) -> impl Future<Output = Result<AgentEmbedRecord, AppError>> + Send;
+
+    /// Lists active and revoked embed links for `agent_id` in `tenant_id`.
+    fn list_agent_embeds(
+        &self,
+        tenant_id: &str,
+        agent_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<AgentEmbedRecord>, AppError>> + Send;
+
+    /// Revokes (`revoked_at = NOW()`) an `ax_agent_embeds` row by UUID in `tenant_id`.
+    fn revoke_agent_embed(
+        &self,
+        tenant_id: &str,
+        embed_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Resolves an unauthenticated `axe_...` embed token digest via `ax_resolve_agent_embed`.
+    fn resolve_agent_embed(
+        &self,
+        token_hash: &str,
+    ) -> impl Future<Output = Result<Option<ResolvedAgentEmbed>, AppError>> + Send;
 }
