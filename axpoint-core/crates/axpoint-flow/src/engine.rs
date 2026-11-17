@@ -450,6 +450,10 @@ where
         &self.operators
     }
 
+    pub(crate) const fn repo_arc(&self) -> &Arc<R> {
+        &self.repo
+    }
+
     /// Cancels `run_id` in storage and flips all in-flight cooperative `cancel_flag`s.
     ///
     /// # Errors
