@@ -13,11 +13,15 @@ axpoint-domain = { path = "../axpoint-domain" }
 base64 = { workspace = true }
 chrono = { workspace = true }
 cron = { workspace = true }
+hex = { workspace = true }
+hmac = { workspace = true }
 jsonschema = { workspace = true }
+lettre = { workspace = true }
 petgraph = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true }

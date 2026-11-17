@@ -8,6 +8,7 @@ import {
   Share2,
   Blocks,
   Workflow,
+  Bell,
   GitBranch,
 } from "lucide-react";
 import { DashboardPage } from "@/pages/DashboardPage";
@@ -18,6 +19,7 @@ import { AxQueryPage } from "@/pages/AxQueryPage";
 import { XBlueGraphPage } from "@/pages/XBlueGraphPage";
 import { XBlueStudioPage } from "@/pages/XBlueStudioPage";
 import { AxFlowPage } from "@/pages/AxFlowPage";
+import { AxAlertsPage } from "@/pages/AxAlertsPage";
 import { AxSimPage } from "@/pages/AxSimPage";
 
 export type TabKey =
@@ -29,6 +31,7 @@ export type TabKey =
   | "xbluegraph"
   | "xbluestudio"
   | "axflow"
+  | "axalerts"
   | "axsim";
 
 export interface ModuleRouteSpec {
@@ -49,5 +52,6 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
   { key: "xbluegraph", path: "/graph", label: "xBlueGraph · 图浏览", icon: Share2, component: XBlueGraphPage },
   { key: "xbluestudio", path: "/studio", label: "xBlueStudio · 节点建模", icon: Blocks, component: XBlueStudioPage },
   { key: "axflow", path: "/flow", label: "AxFlow · 编排", icon: Workflow, component: AxFlowPage },
+  { key: "axalerts", path: "/alerts", label: "AxAlerts · 告警中心", icon: Bell, component: AxAlertsPage },
   { key: "axsim", path: "/sim", label: "AxSim · 因果推演", icon: GitBranch, component: AxSimPage },
 ];

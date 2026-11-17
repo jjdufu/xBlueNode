@@ -148,6 +148,17 @@
 - `GET /api/axflow/approvals` / `POST /api/axflow/approvals/{id}/decide`（`DATA_READ` / `APPROVAL_DECIDE`）：查询待审批/历史审批列表（支持 `?status=PENDING&mine=true&run_id=`）或提交 `{decision: "APPROVE"|"REJECT", comment?}`（决定者须属于 `assignee_roles` 或 `assignee_users`，否则 `403 PERMISSION_DENIED`；单事务写 `ax_approvals`、`approval.decided` 外发事件与 `APPROVAL_DECIDE` 审计）。
 - `GET /api/axflow/actions`（`DATA_READ`）：查询动作回写流水 `ax_action_log`（支持 `?run_id=&status=`，`TEST` 环境或 `dry_run=true` 记录为 `DRY_RUN`）。
 
+### 规则引擎、告警中心与通知渠道（`/api/axflow/{rules,alerts,channels,silences}*`，Step 08）
+
+- `GET /api/axflow/rules` / `POST /api/axflow/rules`（`DATA_READ` / `RULE_EDIT`）：分页查询或创建规则定义（支持 `scope_kind: METRIC|DATASET_QUALITY|EVENT`、`THRESHOLD|CHANGE_RATE|ABSENCE|ANOMALY_ZSCORE|EXPR|QUALITY_FAILED|EVENT_MATCH` 7 种条件、冷却/恢复/升级分钟数、通知渠道与 `run_flow_id` 联动流程）。
+- `GET /api/axflow/rules/{id}` / `PUT /api/axflow/rules/{id}` / `DELETE /api/axflow/rules/{id}`（`DATA_READ` / `RULE_EDIT`）：读取、更新或删除规则（停用规则时自动将活动告警置为 `RESOLVED(RULE_DISABLED)`）。
+- `POST /api/axflow/rules/{id}/dry-run`（`RULE_EDIT`）：对当前数据执行一次只读试判定（不落库、不发通知），返回 `{rule_id, evaluated_objects, matched_count, would_trigger}`。
+- `GET /api/axflow/alerts` / `GET /api/axflow/alerts/{id}` / `GET /api/axflow/alerts/{id}/events`（`DATA_READ`）：按 `?status=&severity=&rule_id=&node_id=&type_name=` 分页查询告警、查询单条告警详情（含关联 `deliveries`）及时间线事件流 `ax_alert_events`。
+- `POST /api/axflow/alerts/{id}/ack` / `POST /api/axflow/alerts/{id}/resolve` / `POST /api/axflow/alerts/ack-batch`（`ALERT_ACK`）：单条确认（`OPEN -> ACK`）、手动恢复（`RESOLVED(MANUAL)` 并触发 `alert.resolved`）或批量确认（`{alert_ids, comment?}`）。
+- `GET /api/axflow/channels` / `POST /api/axflow/channels` / `PUT /api/axflow/channels/{id}` / `DELETE /api/axflow/channels/{id}`（`DATA_READ` / `RULE_EDIT`）：管理 `WEBHOOK`、`EMAIL`、`WECOM`、`DINGTALK`、`FEISHU` 五类通知渠道；秘密字段经密钥环加密写入 `ds_credentials`（仅回显 `secret_fields_set`），设置 `allow_private_network = true` 需具备 `GUARD_ADMIN`。
+- `POST /api/axflow/channels/{id}/test`（`RULE_EDIT`）：经 `NetGuard` 校验后同步发送一条 `event = TEST` 测试消息并返回 `{ok, delivery}`。
+- `GET /api/axflow/silences` / `POST /api/axflow/silences` / `DELETE /api/axflow/silences/{id}`（`DATA_READ` / `ALERT_ACK`）：查询、创建（`ends_at > starts_at`）或删除告警静默窗口 `ax_alert_silences`。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）

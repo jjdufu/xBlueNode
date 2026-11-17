@@ -2620,6 +2620,7 @@ async fn complete_sync_execution_impl(
                 "dataset_id": dataset_id,
                 "snapshot_id": result.snapshot_id,
                 "rows_written": result.rows_written,
+                "quality": result.quality,
             }),
         },
     )

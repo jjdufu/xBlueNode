@@ -15,6 +15,7 @@ pub mod metrics;
 pub mod nodes;
 pub mod outbox;
 pub mod rollup;
+pub mod rules_repo;
 pub mod studio_repo;
 pub mod tenant;
 pub mod tokens;
