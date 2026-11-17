@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { ApiError, ApiErrorBodySchema, requestJson } from "./client";
 import { getAccessToken } from "./auth";
 import type { EndpointKind, Environment, Permission } from "./enums";
@@ -303,6 +304,8 @@ export interface AgentChatResponse {
 }
 
 export type AgentEvent =
+  | { type: "conversation_started"; conversation_id: string }
+  | { type: "agent_switched"; agent_name: string; from_agent?: string }
   | { type: "token"; delta: string; agent_name?: string }
   | {
       type: "tool_call";
@@ -333,7 +336,72 @@ export type AgentEvent =
       answer: string;
       structured?: Record<string, unknown>;
     }
+  | {
+      type: "done";
+      conversation_id?: string;
+      answer?: string;
+      structured?: Record<string, unknown>;
+    }
   | { type: "error"; error_code: string; message: string };
+
+const JsonRecordSchema = z.record(z.string(), z.unknown());
+
+export const AgentEventSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("conversation_started"),
+    conversation_id: z.string(),
+  }),
+  z.object({
+    type: z.literal("agent_switched"),
+    agent_name: z.string(),
+    from_agent: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("token"),
+    delta: z.string(),
+    agent_name: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("tool_call"),
+    id: z.string(),
+    name: z.string(),
+    arguments: JsonRecordSchema.default({}),
+    agent_name: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("tool_result"),
+    tool_call_id: z.string(),
+    name: z.string().default("tool"),
+    content: z.string(),
+    truncated: z.boolean().default(false),
+    agent_name: z.string().optional(),
+  }),
+  z.object({
+    type: z.literal("approval_required"),
+    approval_id: z.string(),
+    conversation_id: z.string(),
+    tool_call_id: z.string(),
+    tool_name: z.string(),
+    arguments: JsonRecordSchema.default({}),
+  }),
+  z.object({
+    type: z.literal("final"),
+    conversation_id: z.string(),
+    answer: z.string(),
+    structured: JsonRecordSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("done"),
+    conversation_id: z.string().optional(),
+    answer: z.string().optional(),
+    structured: JsonRecordSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("error"),
+    error_code: z.string().default("AGENT_ERROR"),
+    message: z.string(),
+  }),
+]);
 
 export interface AgentEmbedRecord {
   id: string;
@@ -372,8 +440,22 @@ export interface PaginatedItems<T> {
   next_cursor?: string | null;
 }
 
-function unwrapItems<T>(res: T[] | PaginatedItems<T>): T[] {
-  return Array.isArray(res) ? res : res.items;
+function unwrapItems<T>(
+  res: T[] | PaginatedItems<T> | Record<string, unknown> | null | undefined
+): T[] {
+  if (Array.isArray(res)) {
+    return res;
+  }
+  if (
+    res !== null &&
+    res !== undefined &&
+    typeof res === "object" &&
+    "items" in res &&
+    Array.isArray(res.items)
+  ) {
+    return res.items as T[];
+  }
+  return [];
 }
 
 export async function listApiTokens(): Promise<PersonalAccessTokenSummary[]> {
@@ -524,11 +606,15 @@ export async function fetchEndpointsOpenApi(
   );
 }
 
+export const fetchPublishedOpenApi = fetchEndpointsOpenApi;
+
 export async function fetchEndpointSkill(id: string): Promise<SkillManifest> {
   return requestJson<SkillManifest>(
     `/api/axagent/endpoints/${encodeURIComponent(id)}/skill.json`
   );
 }
+
+export const fetchEndpointSkillManifest = fetchEndpointSkill;
 
 export async function runPublishedApp(
   endpointId: string,
@@ -542,6 +628,79 @@ export async function runPublishedApp(
       body: JSON.stringify(payload),
     }
   );
+}
+
+async function parseIsolatedJsonResponse<T>(resp: Response): Promise<T> {
+  if (!resp.ok) {
+    const raw = await resp.text();
+    try {
+      const parsed = ApiErrorBodySchema.safeParse(JSON.parse(raw));
+      if (parsed.success) {
+        throw new ApiError({
+          status: resp.status,
+          errorCode: parsed.data.error_code,
+          message: parsed.data.message,
+          traceId: parsed.data.trace_id,
+        });
+      }
+    } catch (err) {
+      if (err instanceof ApiError) throw err;
+    }
+    throw new ApiError({
+      status: resp.status,
+      errorCode: `HTTP_${resp.status}`,
+      message: raw || resp.statusText,
+      traceId: "",
+    });
+  }
+  return (await resp.json()) as T;
+}
+
+/**
+ * Invokes a published capability either via external `/api/published/{env}/{tenant}/{slug}`
+ * when a `Bearer axp_...` PAT is supplied, or via internal `/api/axagent/apps/{id}/run`
+ * using the active authenticated workbench session.
+ */
+export async function invokePublishedEndpoint(
+  endpoint: Pick<EndpointSpec, "id" | "environment" | "tenant_id" | "slug">,
+  payload: Record<string, unknown>,
+  options?: { patToken?: string | null }
+): Promise<Record<string, unknown>> {
+  const pat = options?.patToken?.trim() ?? "";
+  if (pat.startsWith("axp_")) {
+    const envPath = endpoint.environment.toLowerCase();
+    const resp = await fetch(
+      `/api/published/${encodeURIComponent(envPath)}/${encodeURIComponent(endpoint.tenant_id)}/${encodeURIComponent(endpoint.slug)}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${pat}`,
+        },
+        body: JSON.stringify(payload),
+      }
+    );
+    return parseIsolatedJsonResponse<Record<string, unknown>>(resp);
+  }
+  return runPublishedApp(endpoint.id, payload);
+}
+
+export async function getPublishedRunStatus(
+  endpoint: Pick<EndpointSpec, "environment" | "tenant_id" | "slug">,
+  runId: string,
+  patToken: string
+): Promise<Record<string, unknown>> {
+  const envPath = endpoint.environment.toLowerCase();
+  const resp = await fetch(
+    `/api/published/${encodeURIComponent(envPath)}/${encodeURIComponent(endpoint.tenant_id)}/${encodeURIComponent(endpoint.slug)}/runs/${encodeURIComponent(runId)}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${patToken.trim()}`,
+      },
+    }
+  );
+  return parseIsolatedJsonResponse<Record<string, unknown>>(resp);
 }
 
 export async function listMcpClients(): Promise<McpClientRecord[]> {
@@ -626,6 +785,22 @@ export async function publishAgent(id: string): Promise<AgentVersionRecord> {
   );
 }
 
+export async function listAgentVersions(
+  agentId: string
+): Promise<AgentVersionRecord[]> {
+  try {
+    const res = await requestJson<
+      AgentVersionRecord[] | PaginatedItems<AgentVersionRecord>
+    >(`/api/axagent/agents/${encodeURIComponent(agentId)}/versions`);
+    return unwrapItems(res);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 404) {
+      return [];
+    }
+    throw err;
+  }
+}
+
 export async function chatAgentJson(
   agentId: string,
   req: AgentChatRequest
@@ -643,29 +818,99 @@ export async function chatAgentJson(
   );
 }
 
-export async function streamAgentChat(
-  agentId: string,
-  req: AgentChatRequest,
-  onEvent: (event: AgentEvent) => void,
-  signal?: AbortSignal
-): Promise<void> {
-  const headers = new Headers({
-    "Content-Type": "application/json",
-    Accept: "text/event-stream",
-  });
-  const token = getAccessToken();
-  if (token) {
-    headers.set("Authorization", `Bearer ${token}`);
-  }
-  const resp = await fetch(
-    `/api/axagent/agents/${encodeURIComponent(agentId)}/chat`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify(req),
-      signal,
+export const chatWithAgent = chatAgentJson;
+
+function dispatchParsedSseFrame(
+  frame: string,
+  onEvent: (event: AgentEvent) => void
+): void {
+  let eventName = "";
+  const dataLines: string[] = [];
+  for (const rawLine of frame.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim();
+    } else if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
     }
-  );
+  }
+  if (dataLines.length === 0) return;
+  const payloadText = dataLines.join("\n").trim();
+  if (payloadText.length === 0 || payloadText === "[DONE]") {
+    if (eventName === "done") {
+      onEvent({ type: "done" });
+    }
+    return;
+  }
+  try {
+    const parsedRaw: unknown = JSON.parse(payloadText);
+    if (
+      typeof parsedRaw === "object" &&
+      parsedRaw !== null &&
+      !Array.isArray(parsedRaw)
+    ) {
+      const record = parsedRaw as Record<string, unknown>;
+      const effectiveType =
+        typeof record.type === "string" && record.type.length > 0
+          ? record.type
+          : eventName;
+      const candidate: Record<string, unknown> = {
+        ...record,
+        type: effectiveType,
+      };
+      if (
+        effectiveType === "tool_call" &&
+        (typeof candidate.arguments !== "object" ||
+          candidate.arguments === null ||
+          Array.isArray(candidate.arguments))
+      ) {
+        if (typeof candidate.arguments === "string") {
+          try {
+            const parsedArgs: unknown = JSON.parse(candidate.arguments);
+            if (
+              typeof parsedArgs === "object" &&
+              parsedArgs !== null &&
+              !Array.isArray(parsedArgs)
+            ) {
+              candidate.arguments = parsedArgs;
+            } else {
+              candidate.arguments = { value: parsedArgs };
+            }
+          } catch {
+            candidate.arguments = { raw: candidate.arguments };
+          }
+        } else {
+          candidate.arguments = {};
+        }
+      }
+      if (
+        effectiveType === "tool_result" &&
+        typeof candidate.content !== "string" &&
+        candidate.content !== undefined
+      ) {
+        candidate.content = JSON.stringify(candidate.content);
+      }
+      if (
+        effectiveType === "tool_result" &&
+        typeof candidate.tool_call_id !== "string" &&
+        typeof candidate.id === "string"
+      ) {
+        candidate.tool_call_id = candidate.id;
+      }
+      const validated = AgentEventSchema.safeParse(candidate);
+      if (validated.success) {
+        onEvent(validated.data);
+      }
+    }
+  } catch {
+    // Ignore malformed comment/heartbeat frames.
+  }
+}
+
+async function consumeAgentStreamResponse(
+  resp: Response,
+  onEvent: (event: AgentEvent) => void
+): Promise<void> {
   if (!resp.ok) {
     const raw = await resp.text();
     let parsedErr: ApiError | null = null;
@@ -695,9 +940,18 @@ export async function streamAgentChat(
   const contentType = resp.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
     const jsonResp = (await resp.json()) as AgentChatResponse;
-    for (const msg of jsonResp.messages) {
+    if (jsonResp.conversation_id) {
+      onEvent({
+        type: "conversation_started",
+        conversation_id: jsonResp.conversation_id,
+      });
+    }
+    const messages = Array.isArray(jsonResp.messages) ? jsonResp.messages : [];
+    const callNameById = new Map<string, string>();
+    for (const msg of messages) {
       if (msg.tool_calls) {
         for (const tc of msg.tool_calls) {
+          callNameById.set(tc.id, tc.name);
           onEvent({
             type: "tool_call",
             id: tc.id,
@@ -710,12 +964,26 @@ export async function streamAgentChat(
         onEvent({
           type: "tool_result",
           tool_call_id: msg.tool_call_id,
-          name: msg.agent_name ?? "tool",
+          name: callNameById.get(msg.tool_call_id) ?? msg.agent_name ?? "tool",
           content: msg.content,
           truncated: false,
           agent_name: msg.agent_name,
         });
       }
+    }
+    if (
+      jsonResp.status === "WAITING_APPROVAL" &&
+      typeof jsonResp.approval_id === "string"
+    ) {
+      onEvent({
+        type: "approval_required",
+        approval_id: jsonResp.approval_id,
+        conversation_id: jsonResp.conversation_id,
+        tool_call_id: "",
+        tool_name: "approval_gate",
+        arguments: {},
+      });
+      return;
     }
     onEvent({
       type: "final",
@@ -733,33 +1001,50 @@ export async function streamAgentChat(
   let buffer = "";
   for (;;) {
     const { value, done } = await reader.read();
-    if (done) break;
+    if (done) {
+      buffer += decoder.decode();
+      const normalizedRest = buffer.replace(/\r\n/g, "\n").trim();
+      if (normalizedRest.length > 0) {
+        for (const trailingFrame of normalizedRest.split("\n\n")) {
+          dispatchParsedSseFrame(trailingFrame, onEvent);
+        }
+      }
+      break;
+    }
     buffer += decoder.decode(value, { stream: true });
+    buffer = buffer.replace(/\r\n/g, "\n");
     const frames = buffer.split("\n\n");
     buffer = frames.pop() ?? "";
     for (const frame of frames) {
-      let eventName = "";
-      const dataLines: string[] = [];
-      for (const rawLine of frame.split("\n")) {
-        const line = rawLine.replace(/\r$/, "");
-        if (line.startsWith("event:")) {
-          eventName = line.slice(6).trim();
-        } else if (line.startsWith("data:")) {
-          dataLines.push(line.slice(5).trim());
-        }
-      }
-      if (dataLines.length === 0) continue;
-      const payloadText = dataLines.join("\n");
-      try {
-        const parsed = JSON.parse(payloadText) as Record<string, unknown>;
-        const effectiveType =
-          typeof parsed.type === "string" ? parsed.type : eventName;
-        onEvent({ ...parsed, type: effectiveType } as AgentEvent);
-      } catch {
-        // Ignore malformed comment/heartbeat frames.
-      }
+      dispatchParsedSseFrame(frame, onEvent);
     }
   }
+}
+
+export async function streamAgentChat(
+  agentId: string,
+  req: AgentChatRequest,
+  onEvent: (event: AgentEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const headers = new Headers({
+    "Content-Type": "application/json",
+    Accept: "text/event-stream, application/json",
+  });
+  const token = getAccessToken();
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  const resp = await fetch(
+    `/api/axagent/agents/${encodeURIComponent(agentId)}/chat`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify(req),
+      signal,
+    }
+  );
+  await consumeAgentStreamResponse(resp, onEvent);
 }
 
 export async function listConversations(params?: {
@@ -784,6 +1069,8 @@ export async function listConversationMessages(
   );
   return unwrapItems(res);
 }
+
+export const getConversationMessages = listConversationMessages;
 
 export async function deleteConversation(
   conversationId: string
@@ -840,27 +1127,30 @@ export async function postEmbedChat(
       body: JSON.stringify(req),
     }
   );
-  if (!resp.ok) {
-    const raw = await resp.text();
-    try {
-      const parsed = ApiErrorBodySchema.safeParse(JSON.parse(raw));
-      if (parsed.success) {
-        throw new ApiError({
-          status: resp.status,
-          errorCode: parsed.data.error_code,
-          message: parsed.data.message,
-          traceId: parsed.data.trace_id,
-        });
-      }
-    } catch (err) {
-      if (err instanceof ApiError) throw err;
+  return parseIsolatedJsonResponse<AgentChatResponse>(resp);
+}
+
+/**
+ * Unauthenticated streaming embed chat (`POST /api/axagent/embed/{token}/chat`),
+ * supporting both SSE (`text/event-stream`) and synchronous JSON (`application/json`) responses.
+ */
+export async function streamEmbedChat(
+  token: string,
+  req: { message: string; conversation_id?: string },
+  onEvent: (event: AgentEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const resp = await fetch(
+    `/api/axagent/embed/${encodeURIComponent(token)}/chat`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "text/event-stream, application/json",
+      },
+      body: JSON.stringify(req),
+      signal,
     }
-    throw new ApiError({
-      status: resp.status,
-      errorCode: `HTTP_${resp.status}`,
-      message: raw || resp.statusText,
-      traceId: "",
-    });
-  }
-  return (await resp.json()) as AgentChatResponse;
+  );
+  await consumeAgentStreamResponse(resp, onEvent);
 }
