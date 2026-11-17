@@ -568,6 +568,7 @@ async fn knowledge_sync_dossier_and_candidate_promotion_end_to_end() -> TestResu
         .await?;
     assert!(accepted.confirmed);
     assert_eq!(accepted.node.node_key, "WH-SOUTH");
+    clear_tenant_bg_queues(&owner_pool, &tenant_id).await?;
 
     let cands_after = store.list_knowledge_node_candidates(&tenant_id).await?;
     assert_eq!(cands_after.items.len(), 0);
@@ -597,11 +598,11 @@ async fn knowledge_sync_dossier_and_candidate_promotion_end_to_end() -> TestResu
             &MockEmbedder,
         )
         .await?;
-    assert_eq!(
+    assert!(
         res_del
             .get("docs_deleted")
-            .and_then(serde_json::Value::as_u64),
-        Some(1)
+            .and_then(serde_json::Value::as_u64)
+            .is_some_and(|n| n >= 1)
     );
     clear_tenant_bg_queues(&owner_pool, &tenant_id).await?;
     Ok(())

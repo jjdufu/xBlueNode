@@ -152,7 +152,7 @@
 
 - `GET /api/axflow/rules` / `POST /api/axflow/rules`（`DATA_READ` / `RULE_EDIT`）：分页查询或创建规则定义（支持 `scope_kind: METRIC|DATASET_QUALITY|EVENT`、`THRESHOLD|CHANGE_RATE|ABSENCE|ANOMALY_ZSCORE|EXPR|QUALITY_FAILED|EVENT_MATCH` 7 种条件、冷却/恢复/升级分钟数、通知渠道与 `run_flow_id` 联动流程）。
 - `GET /api/axflow/rules/{id}` / `PUT /api/axflow/rules/{id}` / `DELETE /api/axflow/rules/{id}`（`DATA_READ` / `RULE_EDIT`）：读取、更新或删除规则（停用规则时自动将活动告警置为 `RESOLVED(RULE_DISABLED)`）。
-- `POST /api/axflow/rules/{id}/dry-run`（`RULE_EDIT`）：对当前数据执行一次只读试判定（不落库、不发通知），返回 `{rule_id, evaluated_objects, matched_count, would_trigger}`。
+- `POST /api/axflow/rules/{id}/dry-run` / `POST /api/axflow/rules/dry-run`（`RULE_EDIT`）：对已保存规则或草稿规则定义执行一次只读试判定（不落库、不发通知），返回 `{rule_id, evaluated_objects, matched_count, would_trigger}`。
 - `GET /api/axflow/alerts` / `GET /api/axflow/alerts/{id}` / `GET /api/axflow/alerts/{id}/events`（`DATA_READ`）：按 `?status=&severity=&rule_id=&node_id=&type_name=` 分页查询告警、查询单条告警详情（含关联 `deliveries`）及时间线事件流 `ax_alert_events`。
 - `POST /api/axflow/alerts/{id}/ack` / `POST /api/axflow/alerts/{id}/resolve` / `POST /api/axflow/alerts/ack-batch`（`ALERT_ACK`）：单条确认（`OPEN -> ACK`）、手动恢复（`RESOLVED(MANUAL)` 并触发 `alert.resolved`）或批量确认（`{alert_ids, comment?}`）。
 - `GET /api/axflow/channels` / `POST /api/axflow/channels` / `PUT /api/axflow/channels/{id}` / `DELETE /api/axflow/channels/{id}`（`DATA_READ` / `RULE_EDIT`）：管理 `WEBHOOK`、`EMAIL`、`WECOM`、`DINGTALK`、`FEISHU` 五类通知渠道；秘密字段经密钥环加密写入 `ds_credentials`（仅回显 `secret_fields_set`），设置 `allow_private_network = true` 需具备 `GUARD_ADMIN`。

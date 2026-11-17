@@ -56,6 +56,7 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/axflow/flows/{id}/deploy", post(deploy_flow_handler))
         .merge(runs_and_hooks_router())
+        .merge(super::axflow_rules::router())
 }
 
 fn runs_and_hooks_router() -> Router<AppState> {
@@ -85,7 +86,7 @@ fn runs_and_hooks_router() -> Router<AppState> {
         .route("/axflow/actions", get(list_actions_handler))
 }
 
-fn validate_page_limit(limit: Option<u32>) -> Result<(), AppError> {
+pub(super) fn validate_page_limit(limit: Option<u32>) -> Result<(), AppError> {
     if let Some(val) = limit
         && !(1..=500).contains(&val)
     {
@@ -106,7 +107,9 @@ fn populate_flow_issues(flow: &mut AxFlowDef) {
         axpoint_flow::validate_flow_default(&graph, &flow.trigger_cfg, flow.slug.as_deref()).issues;
 }
 
-fn parse_optional_json<T: Default + DeserializeOwned>(body: &Bytes) -> Result<T, AppError> {
+pub(super) fn parse_optional_json<T: Default + DeserializeOwned>(
+    body: &Bytes,
+) -> Result<T, AppError> {
     if body.is_empty() || body.iter().all(u8::is_ascii_whitespace) {
         return Ok(T::default());
     }

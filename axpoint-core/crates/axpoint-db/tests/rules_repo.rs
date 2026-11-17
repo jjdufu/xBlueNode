@@ -4,7 +4,7 @@ use axpoint_db::{PgStore, begin_tenant_tx};
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::QualityOnFail;
 use axpoint_domain::enums::{AlertStatus, NotifyKind, OutboxTopic, Severity};
-use axpoint_domain::ports::{OutboxPort as _, RulesRepository as _};
+use axpoint_domain::ports::RulesRepository as _;
 use axpoint_domain::rules::{
     AlertEventKind, AlertEventsQuery, AlertListQuery, AlertRecord, AlertResolveReason,
     ComparisonOp, Condition, CreateRuleRequest, CreateSilenceRequest, DeliveryFailureUpdate,
@@ -393,15 +393,18 @@ async fn rules_repo_alert_dedup_merge_cooldown_and_auto_resolve() -> TestResult 
         t0 + Duration::minutes(2),
     )
     .await?;
-    let topics: Vec<_> = store
-        .claim("w1", 50, 30)
-        .await?
-        .into_iter()
-        .filter(|e| e.tenant_id == t)
-        .map(|e| e.topic)
-        .collect();
+    let topics: Vec<String> =
+        sqlx::query_scalar("SELECT topic FROM ax_outbox WHERE tenant_id = $1")
+            .bind(&t)
+            .fetch_all(&owner_pool)
+            .await?;
     assert!(
-        topics.contains(&OutboxTopic::AlertOpened) && topics.contains(&OutboxTopic::AlertResolved)
+        topics
+            .iter()
+            .any(|tp| tp == OutboxTopic::AlertOpened.as_str())
+            && topics
+                .iter()
+                .any(|tp| tp == OutboxTopic::AlertResolved.as_str())
     );
 
     cleanup_tenant(&owner_pool, &t).await?;

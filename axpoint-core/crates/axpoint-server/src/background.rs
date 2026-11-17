@@ -45,6 +45,12 @@ const OUTBOX_LEASE_SECS: u32 = 30;
 /// Interval between singleton `AxFlow` cron & overdue-approval checks (`07-STEP07-08` §07.5).
 const FLOW_CRON_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Interval between singleton Step 08 absence/auto-resolve/escalation rule scans (`07-STEP07-08` §08.3.1).
+const ABSENCE_SCAN_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Interval between singleton Step 08 pending notification retry polls (`07-STEP07-08` §08.4).
+const NOTIFY_RETRY_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Interval between singleton retention-enqueue checks.
 const RETENTION_SCHEDULE_INTERVAL: Duration = Duration::from_secs(3600);
 
@@ -390,9 +396,16 @@ fn build_flow_engine(state: &crate::state::AppState) -> Arc<axpoint_flow::FlowEn
     ))
 }
 
+type ServerNotifyDispatcher = axpoint_flow::NotificationDispatcher<
+    PgStore,
+    axpoint_security::NetGuard,
+    crate::state::AppState,
+>;
+
 fn build_job_registry(
     state: &crate::state::AppState,
     flow_engine: &Arc<axpoint_flow::FlowEngine<PgStore>>,
+    rule_evaluator: &Arc<axpoint_flow::RuleEvaluator<PgStore>>,
 ) -> Arc<JobHandlerRegistry> {
     let store = &state.store;
     let mut registry = JobHandlerRegistry::new();
@@ -472,6 +485,12 @@ fn build_job_registry(
             flow_engine,
         ))),
     );
+    registry.register(
+        JobKind::RuleEval,
+        Arc::new(axpoint_flow::RuleEvalJobHandler::new(Arc::clone(
+            rule_evaluator,
+        ))),
+    );
     Arc::new(registry)
 }
 
@@ -483,12 +502,26 @@ pub(crate) fn spawn_background_workers(
     let store = state.store.clone();
     let store_arc = Arc::new(store.clone());
     let flow_engine = build_flow_engine(state);
+    let notify_dispatcher = Arc::new(axpoint_flow::NotificationDispatcher::new(
+        Arc::clone(&store_arc),
+        Arc::new(axpoint_security::NetGuard::new()),
+        Arc::new(state.clone()),
+    ));
+    let launcher: Arc<dyn axpoint_flow::RuleFlowLauncherPort> =
+        Arc::new(axpoint_flow::FlowEngineLauncher::from_engine(&flow_engine));
+    let escalation_concrete = Arc::clone(&notify_dispatcher);
+    let escalation_notifier: Arc<dyn axpoint_flow::AlertEscalationNotifier> = escalation_concrete;
+    let rule_evaluator = Arc::new(
+        axpoint_flow::RuleEvaluator::new(Arc::clone(&store_arc), Some(launcher))
+            .with_escalation_notifier(escalation_notifier),
+    );
+
     let worker_count = env::var("AXPOINT_WORKERS")
         .ok()
         .and_then(|s| s.trim().parse::<usize>().ok())
         .filter(|&n| n > 0)
         .unwrap_or(4);
-    let registry = build_job_registry(state, &flow_engine);
+    let registry = build_job_registry(state, &flow_engine, &rule_evaluator);
 
     let instance_id = Uuid::new_v4().simple().to_string();
     for idx in 0..worker_count {
@@ -519,21 +552,48 @@ pub(crate) fn spawn_background_workers(
         Arc::new(axpoint_flow::FlowOutboxTriggerSubscriber::new(Arc::clone(
             &store_arc,
         ))),
+        Arc::new(axpoint_flow::RuleTriggerSubscriber::new(Arc::clone(
+            &store_arc,
+        ))),
+        Arc::new(axpoint_flow::AlertNotifySubscriber::new(Arc::clone(
+            &notify_dispatcher,
+        ))),
     ]);
     let outbox_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
         run_outbox_dispatcher(outbox_worker_id, outbox_store, subscribers, outbox_shutdown).await;
     });
 
+    spawn_singleton_schedulers(store, store_arc, notify_dispatcher, shutdown_rx);
+}
+
+fn spawn_singleton_schedulers(
+    store: PgStore,
+    store_arc: Arc<PgStore>,
+    notify_dispatcher: Arc<ServerNotifyDispatcher>,
+    shutdown_rx: &tokio::sync::watch::Receiver<bool>,
+) {
     let cron_store = store.clone();
     let cron_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
         crate::workers::run_cron_scheduler(cron_store, cron_shutdown).await;
     });
 
+    let flow_cron_store = Arc::clone(&store_arc);
     let flow_cron_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
-        run_flow_cron_scheduler(store_arc, flow_cron_shutdown).await;
+        run_flow_cron_scheduler(flow_cron_store, flow_cron_shutdown).await;
+    });
+
+    let absence_store = Arc::clone(&store_arc);
+    let absence_shutdown = shutdown_rx.clone();
+    tokio::spawn(async move {
+        run_absence_rule_scheduler(absence_store, absence_shutdown).await;
+    });
+
+    let retry_shutdown = shutdown_rx.clone();
+    tokio::spawn(async move {
+        run_notify_retry_scheduler(store_arc, notify_dispatcher, retry_shutdown).await;
     });
 
     let rollup_store = store.clone();
@@ -576,6 +636,58 @@ async fn run_flow_cron_scheduler(
             .await
         {
             tracing::warn!(error = %err, "axflow cron singleton scheduler iteration failed");
+        }
+    }
+}
+
+async fn run_absence_rule_scheduler(
+    store: Arc<PgStore>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    let scanner = axpoint_flow::AbsenceRuleScanner::new(Arc::clone(&store));
+    let mut ticker = tokio::time::interval(ABSENCE_SCAN_INTERVAL);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    ticker.tick().await;
+
+    while !*shutdown_rx.borrow_and_update() {
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = shutdown_rx.changed() => break,
+        }
+        if let Err(err) =
+            run_with_advisory_singleton(store.pool(), "axpoint:absence_rules", || async {
+                let _ = scanner.scan_once(Utc::now()).await?;
+                Ok(())
+            })
+            .await
+        {
+            tracing::warn!(error = %err, "absence rule singleton scheduler iteration failed");
+        }
+    }
+}
+
+async fn run_notify_retry_scheduler(
+    store: Arc<PgStore>,
+    dispatcher: Arc<ServerNotifyDispatcher>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut ticker = tokio::time::interval(NOTIFY_RETRY_INTERVAL);
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    ticker.tick().await;
+
+    while !*shutdown_rx.borrow_and_update() {
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = shutdown_rx.changed() => break,
+        }
+        if let Err(err) =
+            run_with_advisory_singleton(store.pool(), "axpoint:notify_retries", || async {
+                let _ = dispatcher.poll_due_deliveries(50).await?;
+                Ok(())
+            })
+            .await
+        {
+            tracing::warn!(error = %err, "notify retry singleton scheduler iteration failed");
         }
     }
 }

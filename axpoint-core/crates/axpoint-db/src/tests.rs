@@ -215,8 +215,8 @@ async fn jobs_lease_is_exclusive() -> TestResult {
     let store = PgStore::new(app_pool);
     let future_run = Utc::now() + chrono::Duration::hours(1);
 
-    // Enqueue 100 jobs in the future with top priority (-1_000_000) so no concurrent worker
-    // can touch them during insertion and no other tenant's jobs need to be deleted.
+    // Enqueue 110 jobs in the future with top priority (-1_000_000) so even if a live
+    // background server worker leases a small batch, both 50-item test workers get full batches.
     let mut idem_job = NewJob::new(JobKind::LakeMaintenance, serde_json::json!({"seq": 0}))
         .with_idempotency_key("idem-0");
     idem_job.priority = -1_000_000;
@@ -225,7 +225,7 @@ async fn jobs_lease_is_exclusive() -> TestResult {
     let dup_id = store.enqueue(&tenant, idem_job).await?;
     assert_eq!(first_id, dup_id);
 
-    for seq in 1..100_i32 {
+    for seq in 1..110_i32 {
         let mut job = NewJob::new(JobKind::LakeMaintenance, serde_json::json!({"seq": seq}));
         job.priority = -1_000_000;
         job.next_run_at = Some(future_run);
