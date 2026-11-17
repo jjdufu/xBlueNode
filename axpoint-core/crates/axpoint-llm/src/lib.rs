@@ -2,7 +2,10 @@
 #![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
 pub mod cassette;
+pub mod router;
 pub mod schema_draft;
+pub mod stream;
+pub mod tools;
 
 use std::fmt::Write as _;
 use std::future::Future;
@@ -13,18 +16,23 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
+pub use axpoint_domain::enums::Purpose;
 use axpoint_domain::{AppError, ExtractedTriple, FusedHit};
 pub use cassette::{
-    CASSETTE_ENV_VAR, Cassette, CassetteEntry, CassetteMode, DEFAULT_OFFLINE_EMBED_DIM,
-    EVAL_RECORD_ENV_VAR, compute_prompt_sha256, deterministic_embedding, sha256_hex,
+    CASSETTE_ENV_VAR, Cassette, CassetteEntry, CassetteMode, CassetteTurn,
+    DEFAULT_OFFLINE_EMBED_DIM, EVAL_RECORD_ENV_VAR, compute_prompt_sha256, deterministic_embedding,
+    sha256_hex,
 };
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::{Client, StatusCode};
+pub use router::{LlmRouter, ProviderSecretResolver, RoutedTurnOutcome, RouterTurnRequest};
 pub use schema_draft::{
     GeneratedSchemaDraft, MAX_SCHEMA_DRAFT_ATTEMPTS, SCHEMA_DRAFT_SYSTEM_PROMPT, SchemaDraftInput,
     build_schema_draft_user_prompt, generate_schema_draft, parse_schema_doc_lenient,
 };
 use serde::{Deserialize, Serialize};
+pub use stream::{consume_sse_byte_stream, consume_sse_response};
+pub use tools::{TokenUsage, ToolChatMessage, ToolChatTurn, ToolDefinition, ToolFunctionDef};
 use tracing::warn;
 
 /// Maximum number of texts sent in a single `/embeddings` HTTP request (`04-STEP03` §03.0).
@@ -71,6 +79,9 @@ pub struct AiGateway {
     embed: EmbeddingConfig,
     detected_dim: Arc<AtomicUsize>,
     cassette: Option<Cassette>,
+    router: Option<Arc<LlmRouter>>,
+    default_tenant: String,
+    purpose_override: Option<Purpose>,
     max_retries: u32,
     base_backoff: Duration,
 }
@@ -196,6 +207,9 @@ impl AiGateway {
             embed,
             detected_dim: Arc::new(AtomicUsize::new(initial_dim)),
             cassette,
+            router: None,
+            default_tenant: String::from("default"),
+            purpose_override: None,
             max_retries: DEFAULT_EMBED_MAX_RETRIES,
             base_backoff: Duration::from_millis(DEFAULT_EMBED_BASE_BACKOFF_MS),
         }
@@ -220,9 +234,40 @@ impl AiGateway {
             embed,
             detected_dim: Arc::new(AtomicUsize::new(initial_dim)),
             cassette: Some(cassette),
+            router: None,
+            default_tenant: String::from("default"),
+            purpose_override: None,
             max_retries: DEFAULT_EMBED_MAX_RETRIES,
             base_backoff: Duration::from_millis(DEFAULT_EMBED_BASE_BACKOFF_MS),
         })
+    }
+
+    /// Attaches a multi-model [`LlmRouter`] for purpose-aware tenant routing (`08-STEP09` §09.2).
+    #[must_use]
+    pub fn with_router(mut self, router: Arc<LlmRouter>) -> Self {
+        self.router = Some(router);
+        self
+    }
+
+    /// Returns a reference to the attached [`LlmRouter`], if configured.
+    #[must_use]
+    pub const fn router(&self) -> Option<&Arc<LlmRouter>> {
+        self.router.as_ref()
+    }
+
+    /// Returns a lightweight clone bound to `tenant_id` for [`axpoint_domain::ports::AiPort`] calls.
+    #[must_use]
+    pub fn for_tenant(&self, tenant_id: impl Into<String>) -> Self {
+        let mut cloned = self.clone();
+        cloned.default_tenant = tenant_id.into();
+        cloned
+    }
+
+    /// Overrides the [`Purpose`] used by [`AiGateway::chat`] / [`AiGateway::chat_for_tenant`] (e.g., [`Purpose::Nl2Sql`]).
+    #[must_use]
+    pub const fn with_purpose_override(mut self, purpose: Purpose) -> Self {
+        self.purpose_override = Some(purpose);
+        self
     }
 
     /// Configures maximum retry attempts and initial exponential backoff duration for transient HTTP `429`/`503` responses.
@@ -418,11 +463,64 @@ impl AiGateway {
         Ok((first, dim))
     }
 
+    /// Calls the chat completion API routed for `tenant_id` (`Purpose::Chat` unless overridden).
+    ///
+    /// # Errors
+    /// Returns [`AppError`] if routing or upstream completion fails.
+    pub async fn chat_for_tenant(
+        &self,
+        tenant_id: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<String, AppError> {
+        let purpose = self.purpose_override.unwrap_or(Purpose::Chat);
+        self.complete_with_purpose(tenant_id, purpose, system_prompt, user_prompt)
+            .await
+    }
+
+    /// Calls the chat completion API routed for `Purpose::Nl2Sql` under `tenant_id`.
+    ///
+    /// # Errors
+    /// Returns [`AppError`] if routing or upstream completion fails.
+    pub async fn complete_nl2sql(
+        &self,
+        tenant_id: &str,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<String, AppError> {
+        self.complete_with_purpose(tenant_id, Purpose::Nl2Sql, system_prompt, user_prompt)
+            .await
+    }
+
+    async fn complete_with_purpose(
+        &self,
+        tenant_id: &str,
+        purpose: Purpose,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<String, AppError> {
+        if let Some(router) = &self.router {
+            return router
+                .complete_chat(tenant_id, purpose, system_prompt, user_prompt)
+                .await;
+        }
+        self.chat_direct(system_prompt, user_prompt).await
+    }
+
     /// Calls the chat completion API and returns the assistant message text.
     ///
     /// # Errors
     /// Returns [`AppError::Llm`] if the request fails or returns no choices.
     pub async fn chat(&self, system_prompt: &str, user_prompt: &str) -> Result<String, AppError> {
+        self.chat_for_tenant(&self.default_tenant, system_prompt, user_prompt)
+            .await
+    }
+
+    async fn chat_direct(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<String, AppError> {
         if let Some(cassette) = &self.cassette
             && cassette.mode() == CassetteMode::Replay
         {
@@ -488,16 +586,47 @@ impl AiGateway {
             .ok_or_else(|| AppError::Llm(String::from("chat API returned zero choices")))
     }
 
+    /// Extracts knowledge triples from a paragraph via LLM (`Purpose::Extract`).
+    ///
+    /// # Errors
+    /// Returns [`AppError`] if the routed or direct chat API call fails.
+    pub async fn extract_triples_for_tenant(
+        &self,
+        tenant_id: &str,
+        paragraph: &str,
+    ) -> Result<Vec<ExtractedTriple>, AppError> {
+        let system = "You are a precision knowledge graph extractor. Output ONLY a valid JSON array of objects with fields: subject, subject_type, predicate, object, object_type, fact, confidence (0.0-1.0). No markdown fences.";
+        let prompt =
+            format!("Extract key entity-relation triples from this paragraph:\n\n{paragraph}");
+        let raw = self
+            .complete_with_purpose(tenant_id, Purpose::Extract, system, &prompt)
+            .await?;
+        Ok(parse_json_array_lenient::<ExtractedTriple>(&raw))
+    }
+
     /// Extracts knowledge triples from a paragraph via LLM.
     ///
     /// # Errors
     /// Returns [`AppError::Llm`] if the chat API call fails.
     pub async fn extract_triples(&self, paragraph: &str) -> Result<Vec<ExtractedTriple>, AppError> {
-        let system = "You are a precision knowledge graph extractor. Output ONLY a valid JSON array of objects with fields: subject, subject_type, predicate, object, object_type, fact, confidence (0.0-1.0). No markdown fences.";
-        let prompt =
-            format!("Extract key entity-relation triples from this paragraph:\n\n{paragraph}");
-        let raw = self.chat(system, &prompt).await?;
-        Ok(parse_json_array_lenient::<ExtractedTriple>(&raw))
+        self.extract_triples_for_tenant(&self.default_tenant, paragraph)
+            .await
+    }
+
+    /// Extracts seed entity names from a user question (`Purpose::Extract`) under `tenant_id`.
+    ///
+    /// # Errors
+    /// Returns [`AppError`] if the routed or direct chat API call fails.
+    pub async fn extract_query_entities_for_tenant(
+        &self,
+        tenant_id: &str,
+        query: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let system = "Extract up to 5 key entity or concept names from the user query. Output ONLY a JSON array of strings.";
+        let raw = self
+            .complete_with_purpose(tenant_id, Purpose::Extract, system, query)
+            .await?;
+        Ok(parse_json_array_lenient::<String>(&raw))
     }
 
     /// Extracts seed entity names from a user question for graph-link recall.
@@ -505,17 +634,17 @@ impl AiGateway {
     /// # Errors
     /// Returns [`AppError::Llm`] if the chat API call fails.
     pub async fn extract_query_entities(&self, query: &str) -> Result<Vec<String>, AppError> {
-        let system = "Extract up to 5 key entity or concept names from the user query. Output ONLY a JSON array of strings.";
-        let raw = self.chat(system, query).await?;
-        Ok(parse_json_array_lenient::<String>(&raw))
+        self.extract_query_entities_for_tenant(&self.default_tenant, query)
+            .await
     }
 
-    /// Synthesizes a grounded answer from fused five-way evidence hits.
+    /// Synthesizes a grounded answer from fused five-way evidence hits (`Purpose::Summarize`) under `tenant_id`.
     ///
     /// # Errors
-    /// Returns [`AppError::Llm`] if the chat API call fails.
-    pub async fn synthesize_answer(
+    /// Returns [`AppError`] if the routed or direct chat API call fails.
+    pub async fn synthesize_answer_for_tenant(
         &self,
+        tenant_id: &str,
         query: &str,
         hits: &[FusedHit],
     ) -> Result<String, AppError> {
@@ -531,7 +660,21 @@ impl AiGateway {
 
         let system = "你是 xBlueNode / AxPoint 本体智能助手。请严格基于提供的多路检索证据用中文回答问题，并在关键结论后标注引用编号如 [1]。若证据不足请明确说明。";
         let user = format!("问题：{query}\n\n检索证据：\n{context}");
-        self.chat(system, &user).await
+        self.complete_with_purpose(tenant_id, Purpose::Summarize, system, &user)
+            .await
+    }
+
+    /// Synthesizes a grounded answer from fused five-way evidence hits.
+    ///
+    /// # Errors
+    /// Returns [`AppError::Llm`] if the chat API call fails.
+    pub async fn synthesize_answer(
+        &self,
+        query: &str,
+        hits: &[FusedHit],
+    ) -> Result<String, AppError> {
+        self.synthesize_answer_for_tenant(&self.default_tenant, query, hits)
+            .await
     }
 }
 
@@ -635,6 +778,9 @@ mod tests {
             embed: embed_live,
             detected_dim: Arc::new(AtomicUsize::new(0)),
             cassette: None,
+            router: None,
+            default_tenant: String::from("default"),
+            purpose_override: None,
             max_retries: DEFAULT_EMBED_MAX_RETRIES,
             base_backoff: Duration::from_millis(5),
         }

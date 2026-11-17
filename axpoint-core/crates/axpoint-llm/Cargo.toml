@@ -10,12 +10,17 @@ workspace = true
 
 [dependencies]
 axpoint-domain = { path = "../axpoint-domain" }
+chrono = { workspace = true }
+eventsource-stream = { workspace = true }
+futures = { workspace = true }
 hex = { workspace = true }
+metrics = { workspace = true }
+moka = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-tracing = { workspace = true }
-
-[dev-dependencies]
 tokio = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+
