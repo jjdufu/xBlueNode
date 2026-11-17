@@ -9,6 +9,7 @@ import {
   Blocks,
   Workflow,
   Bell,
+  Bot,
   GitBranch,
 } from "lucide-react";
 import { DashboardPage } from "@/pages/DashboardPage";
@@ -20,6 +21,8 @@ import { XBlueGraphPage } from "@/pages/XBlueGraphPage";
 import { XBlueStudioPage } from "@/pages/XBlueStudioPage";
 import { AxFlowPage } from "@/pages/AxFlowPage";
 import { AxAlertsPage } from "@/pages/AxAlertsPage";
+import { AxAgentPage } from "@/pages/AxAgentPage";
+import { AgentEmbedPage } from "@/pages/AgentEmbedPage";
 import { AxSimPage } from "@/pages/AxSimPage";
 
 export type TabKey =
@@ -32,6 +35,8 @@ export type TabKey =
   | "xbluestudio"
   | "axflow"
   | "axalerts"
+  | "axagent"
+  | "agent_embed"
   | "axsim";
 
 export interface ModuleRouteSpec {
@@ -53,5 +58,7 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
   { key: "xbluestudio", path: "/studio", label: "xBlueStudio · 节点建模", icon: Blocks, component: XBlueStudioPage },
   { key: "axflow", path: "/flow", label: "AxFlow · 编排", icon: Workflow, component: AxFlowPage },
   { key: "axalerts", path: "/alerts", label: "AxAlerts · 告警中心", icon: Bell, component: AxAlertsPage },
+  { key: "axagent", path: "/agents", label: "AxAgent · 智能体与发布", icon: Bot, component: AxAgentPage },
   { key: "axsim", path: "/sim", label: "AxSim · 因果推演", icon: GitBranch, component: AxSimPage },
+  { key: "agent_embed", path: "/share/agent/:token", label: "AxAgent 嵌入对话", icon: Bot, component: AgentEmbedPage, public: true },
 ];

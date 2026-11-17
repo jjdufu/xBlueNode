@@ -100,6 +100,13 @@ const router = createBrowserRouter([
     path: "/login",
     element: <LoginPage />,
   },
+  ...MODULE_REGISTRY.filter((m) => m.public).map((m) => {
+    const PublicPageComponent = m.component;
+    return {
+      path: m.path,
+      element: <PublicPageComponent />,
+    };
+  }),
   {
     element: <ShellLayout />,
     children: [

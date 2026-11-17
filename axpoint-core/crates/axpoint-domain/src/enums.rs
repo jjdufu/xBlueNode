@@ -853,6 +853,80 @@ define_str_enum! {
     }
 }
 
+define_str_enum! {
+    /// Workload purpose used by `LlmRouter` (`08-STEP09` §09.2).
+    pub enum Purpose {
+        /// General-purpose conversational chat.
+        Chat => "CHAT",
+        /// Dense vector embedding generation.
+        Embed => "EMBED",
+        /// Natural-language-to-SQL generation and repair.
+        Nl2Sql => "NL2SQL",
+        /// Entity-relation triple or structured field extraction.
+        Extract => "EXTRACT",
+        /// Tool-calling autonomous agent loop (`supports_tools = true`).
+        Agent => "AGENT",
+        /// Grounded synthesis and summarization.
+        Summarize => "SUMMARIZE",
+    }
+}
+
+define_str_enum! {
+    /// Output payload shape declared by an `AxAgent` published endpoint (`08-STEP09` §09.1).
+    pub enum OutputShape {
+        /// Tabular `{columns, rows}` response.
+        Rows => "ROWS",
+        /// Domain object `{items, next_cursor}` response.
+        Object => "OBJECT",
+        /// Conversational text/answer response.
+        Text => "TEXT",
+        /// Asynchronous `AxFlow` `{run_id}` response.
+        Run => "RUN",
+    }
+}
+
+define_str_enum! {
+    /// Originating channel of an `AxAgent` conversation (`08-STEP09` §09.1).
+    pub enum ConversationChannel {
+        /// Interactive multi-turn workbench UI.
+        Workbench => "WORKBENCH",
+        /// External unauthenticated `axe_...` embed widget.
+        Embed => "EMBED",
+        /// Published REST API or sub-agent invocation.
+        Api => "API",
+        /// `AxFlow` `AGENT_TASK` DAG operator.
+        Flow => "FLOW",
+        /// MCP tool invocation.
+        Mcp => "MCP",
+    }
+}
+
+define_str_enum! {
+    /// Lifecycle status of an `AxAgent` conversation (`08-STEP09` §09.1).
+    pub enum ConversationStatus {
+        /// Active and ready for messages.
+        Active => "ACTIVE",
+        /// Paused on an `approval_required_tools` human gate.
+        WaitingApproval => "WAITING_APPROVAL",
+        /// Explicitly closed or archived.
+        Closed => "CLOSED",
+    }
+}
+
+define_str_enum! {
+    /// Speaker role of a message in `ax_messages` (`08-STEP09` §09.1).
+    pub enum MessageRole {
+        /// End-user message.
+        User => "USER",
+        /// Model assistant message (may include `tool_calls`).
+        Assistant => "ASSISTANT",
+        /// Tool execution result linked via `tool_call_id`.
+        Tool => "TOOL",
+        /// System instruction or step-limit directive.
+        System => "SYSTEM",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
