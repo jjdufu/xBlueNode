@@ -19,7 +19,7 @@ use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use rmcp::model::ProtocolVersion;
 use uuid::Uuid;
 
-const MCP_HTTP_TIMEOUT_SECS: u64 = 30;
+const MCP_HTTP_TIMEOUT_SECS: u64 = 60;
 const MCP_SESSION_HEADER: &str = "mcp-session-id";
 
 /// Outbound Streamable HTTP MCP client manager enforcing `NetGuard` SSRF checks,

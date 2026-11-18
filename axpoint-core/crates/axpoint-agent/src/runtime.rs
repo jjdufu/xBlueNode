@@ -4,7 +4,8 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{
@@ -42,6 +43,9 @@ use crate::publish::{
 use crate::tools::{BuiltinToolRegistry, is_known_builtin_tool, truncate_tool_output};
 
 const STEP_EXHAUSTED_DIRECTIVE: &str = "已达到最大工具调用步数上限。请不要再调用任何工具，直接基于已有工具结果与上下文给出准确、完整的最终回答。";
+const MAX_CONCURRENT_TOOL_CALLS: usize = 4;
+const TOOL_EXEC_TIMEOUT_SECS: u64 = 60;
+const MAX_TOTAL_MODEL_CALLS_PER_TURN: u32 = 20;
 
 /// Dependency bundle passed to [`AgentRuntime::new`].
 pub struct AgentRuntimeDeps<R> {
@@ -105,6 +109,7 @@ struct LoopContext<'a> {
     channel: ConversationChannel,
     flow_gate: Option<(Uuid, String)>,
     depth: usize,
+    total_model_calls: Arc<AtomicU32>,
 }
 
 enum BatchToolOutcome {
@@ -504,7 +509,8 @@ where
             spec,
             channel: call.channel,
             flow_gate: None,
-            depth: 0,
+            depth: 1,
+            total_model_calls: Arc::new(AtomicU32::new(0)),
         };
         let resp = self
             .run_loop_on_conversation(&loop_ctx, event_tx.as_ref())
@@ -562,7 +568,8 @@ where
             spec,
             channel: conv.channel,
             flow_gate: approval.run_id.zip(approval.node_id.clone()),
-            depth: 0,
+            depth: 1,
+            total_model_calls: Arc::new(AtomicU32::new(0)),
         };
 
         if let Some(paused) = self
@@ -588,7 +595,7 @@ where
             .store
             .list_conversation_messages(tenant_id, ctx.conv_id)
             .await?;
-        let pending_calls = find_unanswered_tool_calls(&history);
+        let pending_calls = find_unanswered_tool_calls(&history, &ctx.agent_name);
         if pending_calls.is_empty() {
             return Ok(None);
         }
@@ -603,6 +610,7 @@ where
                 let denied_json = serde_json::json!({
                     "approved": false,
                     "error_code": err_code,
+                    "message": format!("用户拒绝执行 {}", call.name),
                     "comment": approval.comment,
                 });
                 let _ = self
@@ -656,10 +664,15 @@ where
         let max_steps = usize::try_from(ctx.spec.max_steps.clamp(1, 20)).unwrap_or(8);
         let table = self.resolve_tool_table(ctx).await?;
         let mut model_messages = self
-            .load_model_messages(tenant_id, ctx.conv_id, &ctx.spec)
+            .load_model_messages(tenant_id, ctx.conv_id, &ctx.agent_name, &ctx.spec)
             .await?;
 
         for _step in 0..max_steps {
+            if ctx.total_model_calls.load(Ordering::Relaxed)
+                >= MAX_TOTAL_MODEL_CALLS_PER_TURN.saturating_sub(1)
+            {
+                break;
+            }
             let start = Instant::now();
             let turn = self
                 .call_model_with_optional_stream(ctx, &model_messages, &table.defs, event_tx)
@@ -702,7 +715,7 @@ where
             {
                 BatchToolOutcome::AllExecuted => {
                     model_messages = self
-                        .load_model_messages(tenant_id, ctx.conv_id, &ctx.spec)
+                        .load_model_messages(tenant_id, ctx.conv_id, &ctx.agent_name, &ctx.spec)
                         .await?;
                 }
                 BatchToolOutcome::Paused { approval_id } => {
@@ -790,7 +803,7 @@ where
             )
             .await?;
 
-        if ctx.depth == 0 {
+        if ctx.depth <= 1 {
             send_event(
                 event_tx,
                 AgentEvent::Final {
@@ -856,6 +869,7 @@ where
             ),
         });
 
+        let _ = ctx.total_model_calls.fetch_add(1, Ordering::Relaxed);
         let retry_turn = self
             .model
             .complete_turn(
@@ -896,6 +910,56 @@ where
         bypassed_call_ids: &HashSet<String>,
         event_tx: Option<&mpsc::Sender<AgentEvent>>,
     ) -> Result<BatchToolOutcome, AppError> {
+        let mut ready_slice = calls;
+        let mut gated_call: Option<&ToolCallSpec> = None;
+
+        for (idx, call) in calls.iter().enumerate() {
+            if !bypassed_call_ids.contains(&call.id)
+                && ctx
+                    .spec
+                    .approval_required_tools
+                    .iter()
+                    .any(|t| t == &call.name)
+            {
+                ready_slice = calls.get(..idx).unwrap_or(&[]);
+                gated_call = Some(call);
+                break;
+            }
+        }
+
+        if !ready_slice.is_empty() {
+            self.run_concurrent_tool_slice(ctx, table, ready_slice, event_tx)
+                .await?;
+        }
+
+        if let Some(call) = gated_call {
+            send_event(
+                event_tx,
+                AgentEvent::ToolCall {
+                    id: call.id.clone(),
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                    agent_name: Some(ctx.agent_name.clone()),
+                },
+            )
+            .await;
+            if let Some(approval_id) = self.gate_on_human_approval(ctx, call, event_tx).await? {
+                return Ok(BatchToolOutcome::Paused { approval_id });
+            }
+            self.run_concurrent_tool_slice(ctx, table, std::slice::from_ref(call), event_tx)
+                .await?;
+        }
+
+        Ok(BatchToolOutcome::AllExecuted)
+    }
+
+    async fn run_concurrent_tool_slice(
+        &self,
+        ctx: &LoopContext<'_>,
+        table: &ResolvedToolTable,
+        calls: &[ToolCallSpec],
+        event_tx: Option<&mpsc::Sender<AgentEvent>>,
+    ) -> Result<(), AppError> {
         let tenant_id = &ctx.principal.tenant_id;
         for call in calls {
             send_event(
@@ -908,19 +972,26 @@ where
                 },
             )
             .await;
+        }
 
-            if !bypassed_call_ids.contains(&call.id)
-                && ctx
-                    .spec
-                    .approval_required_tools
-                    .iter()
-                    .any(|t| t == &call.name)
-                && let Some(approval_id) = self.gate_on_human_approval(ctx, call, event_tx).await?
-            {
-                return Ok(BatchToolOutcome::Paused { approval_id });
-            }
+        let mut outcomes = Vec::with_capacity(calls.len());
+        for chunk in calls.chunks(MAX_CONCURRENT_TOOL_CALLS) {
+            let batch_futs = chunk.iter().map(|call| async move {
+                let timed = tokio::time::timeout(
+                    Duration::from_secs(TOOL_EXEC_TIMEOUT_SECS),
+                    self.invoke_single_tool(ctx, table, call, event_tx),
+                )
+                .await;
+                let res = match timed {
+                    Ok(inner) => inner,
+                    Err(_) => Err(AppError::Timeout("UPSTREAM_TIMEOUT")),
+                };
+                (call, res)
+            });
+            outcomes.extend(futures::future::join_all(batch_futs).await);
+        }
 
-            let raw_result = self.invoke_single_tool(ctx, table, call, event_tx).await;
+        for (call, raw_result) in outcomes {
             let json_val = match raw_result {
                 Ok(val) => val,
                 Err(
@@ -963,7 +1034,7 @@ where
             )
             .await;
         }
-        Ok(BatchToolOutcome::AllExecuted)
+        Ok(())
     }
 
     async fn gate_on_human_approval(
@@ -1087,7 +1158,7 @@ where
 
     fn execute_sub_agent_delegation<'a>(
         &'a self,
-        parent_ctx: &'a LoopContext<'a>,
+        parent_ctx: &'a LoopContext<'_>,
         sub_agent_name: &'a str,
         sub_spec: &'a AgentSpec,
         arguments: &'a serde_json::Value,
@@ -1103,40 +1174,13 @@ where
             }
 
             let prompt = format_sub_agent_prompt(arguments)?;
-            let tenant_id = &parent_ctx.principal.tenant_id;
-            let child_conv = self
-                .store
-                .create_conversation(
-                    tenant_id,
-                    NewConversationInput {
-                        agent_id: parent_ctx.agent_id,
-                        agent_version: parent_ctx.agent_version,
-                        user_id: None,
-                        channel: ConversationChannel::Api,
-                        embed_id: None,
-                        title: format!("sub:{sub_agent_name}"),
-                    },
-                )
-                .await?;
-            let _ = self
-                .store
-                .append_message(
-                    tenant_id,
-                    plain_message(
-                        child_conv.id,
-                        MessageRole::User,
-                        prompt,
-                        Some(String::from(sub_agent_name)),
-                    ),
-                )
-                .await?;
-
             let mut capped_spec = sub_spec.clone();
             capped_spec.max_steps = capped_spec.max_steps.clamp(1, 10);
+            capped_spec.approval_required_tools.clear();
 
             let child_ctx = LoopContext {
                 principal: parent_ctx.principal,
-                conv_id: child_conv.id,
+                conv_id: parent_ctx.conv_id,
                 agent_id: parent_ctx.agent_id,
                 agent_version: parent_ctx.agent_version,
                 agent_name: String::from(sub_agent_name),
@@ -1144,14 +1188,103 @@ where
                 channel: ConversationChannel::Api,
                 flow_gate: None,
                 depth: next_depth,
+                total_model_calls: parent_ctx.total_model_calls.clone(),
             };
-            let child_resp = self.run_loop_on_conversation(&child_ctx, event_tx).await?;
+            let child_resp = self
+                .run_specialist_in_parent_conversation(&child_ctx, prompt, event_tx)
+                .await?;
             Ok(serde_json::json!({
                 "agent": sub_agent_name,
                 "summary": child_resp.answer,
                 "structured": child_resp.structured,
             }))
         })
+    }
+
+    async fn run_specialist_in_parent_conversation(
+        &self,
+        ctx: &LoopContext<'_>,
+        prompt: String,
+        event_tx: Option<&mpsc::Sender<AgentEvent>>,
+    ) -> Result<AgentChatResponse, AppError> {
+        let tenant_id = &ctx.principal.tenant_id;
+        let max_steps = usize::try_from(ctx.spec.max_steps.clamp(1, 10)).unwrap_or(5);
+        let table = self.resolve_tool_table(ctx).await?;
+        let mut model_messages = vec![
+            ModelMessage::System {
+                content: build_effective_system_prompt(&ctx.spec),
+            },
+            ModelMessage::User { content: prompt },
+        ];
+
+        for _step in 0..max_steps {
+            if ctx.total_model_calls.load(Ordering::Relaxed)
+                >= MAX_TOTAL_MODEL_CALLS_PER_TURN.saturating_sub(1)
+            {
+                break;
+            }
+            let start = Instant::now();
+            let turn = self
+                .call_model_with_optional_stream(ctx, &model_messages, &table.defs, event_tx)
+                .await?;
+            let latency_ms = i32::try_from(start.elapsed().as_millis()).unwrap_or(i32::MAX);
+
+            if turn.tool_calls.is_empty() {
+                return self
+                    .finalize_assistant_turn(ctx, &mut model_messages, turn, latency_ms, event_tx)
+                    .await;
+            }
+
+            let _ = self
+                .store
+                .append_message(
+                    tenant_id,
+                    NewMessageInput {
+                        conversation_id: ctx.conv_id,
+                        role: MessageRole::Assistant,
+                        content: turn.content.clone(),
+                        tool_calls: Some(turn.tool_calls.clone()),
+                        tool_call_id: None,
+                        agent_name: Some(ctx.agent_name.clone()),
+                        provider_id: ctx.spec.provider_id,
+                        prompt_tokens: opt_i32_tokens(turn.prompt_tokens),
+                        completion_tokens: opt_i32_tokens(turn.completion_tokens),
+                        latency_ms: Some(latency_ms),
+                    },
+                )
+                .await?;
+            model_messages.push(ModelMessage::Assistant {
+                content: turn.content,
+                tool_calls: turn.tool_calls.clone(),
+            });
+
+            let call_ids: HashSet<String> = turn.tool_calls.iter().map(|c| c.id.clone()).collect();
+            let empty_bypass = HashSet::new();
+            let _ = self
+                .execute_tool_call_batch(ctx, &table, &turn.tool_calls, &empty_bypass, event_tx)
+                .await?;
+            let after_msgs = self
+                .store
+                .list_conversation_messages(tenant_id, ctx.conv_id)
+                .await?;
+            for msg in &after_msgs {
+                if msg.role == MessageRole::Tool
+                    && msg.agent_name.as_deref() == Some(ctx.agent_name.as_str())
+                    && msg
+                        .tool_call_id
+                        .as_deref()
+                        .is_some_and(|id| call_ids.contains(id))
+                {
+                    model_messages.push(ModelMessage::Tool {
+                        tool_call_id: msg.tool_call_id.clone().unwrap_or_default(),
+                        content: msg.content.clone(),
+                    });
+                }
+            }
+        }
+
+        self.complete_after_step_exhaustion(ctx, &mut model_messages, event_tx)
+            .await
     }
 
     async fn resolve_tool_table(
@@ -1315,6 +1448,16 @@ where
         tools: &[ModelToolDef],
         event_tx: Option<&mpsc::Sender<AgentEvent>>,
     ) -> Result<AgentModelTurn, AppError> {
+        let prev = ctx.total_model_calls.fetch_add(1, Ordering::Relaxed);
+        if prev >= MAX_TOTAL_MODEL_CALLS_PER_TURN {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                format!(
+                    "single request exceeded maximum {MAX_TOTAL_MODEL_CALLS_PER_TURN} total model calls"
+                ),
+            ));
+        }
+
         let req = AgentModelRequest {
             tenant_id: ctx.principal.tenant_id.clone(),
             purpose: ctx.spec.provider_purpose,
@@ -1361,13 +1504,18 @@ where
         &self,
         tenant_id: &str,
         conv_id: Uuid,
+        agent_name: &str,
         spec: &AgentSpec,
     ) -> Result<Vec<ModelMessage>, AppError> {
         let stored = self
             .store
             .list_conversation_messages(tenant_id, conv_id)
             .await?;
-        let windowed = slice_recent_turns(&stored, spec.memory_turns);
+        let own_msgs: Vec<MessageRecord> = stored
+            .into_iter()
+            .filter(|m| m.agent_name.as_deref().is_none_or(|a| a == agent_name))
+            .collect();
+        let windowed = slice_recent_turns(&own_msgs, spec.memory_turns);
 
         let mut out = Vec::with_capacity(windowed.len().saturating_add(1));
         out.push(ModelMessage::System {
@@ -1677,7 +1825,8 @@ where
                 spec,
                 channel: ConversationChannel::Flow,
                 flow_gate: Some((input.run_id, input.node_id)),
-                depth: 0,
+                depth: 1,
+                total_model_calls: Arc::new(AtomicU32::new(0)),
             };
             let resp = self.run_loop_on_conversation(&loop_ctx, None).await?;
             if let (ConversationStatus::WaitingApproval, Some(approval_id)) =
@@ -2022,18 +2171,20 @@ fn extract_agent_approval_target(approval: &ApprovalRecord) -> Option<(Uuid, Str
     None
 }
 
-fn find_unanswered_tool_calls(history: &[MessageRecord]) -> Vec<ToolCallSpec> {
+fn find_unanswered_tool_calls(history: &[MessageRecord], agent_name: &str) -> Vec<ToolCallSpec> {
     let answered: HashSet<&str> = history
         .iter()
-        .filter(|m| m.role == MessageRole::Tool)
+        .filter(|m| {
+            m.role == MessageRole::Tool && m.agent_name.as_deref().is_none_or(|a| a == agent_name)
+        })
         .filter_map(|m| m.tool_call_id.as_deref())
         .collect();
 
-    let Some(last_assistant_with_tools) = history
-        .iter()
-        .rev()
-        .find(|m| m.role == MessageRole::Assistant && m.tool_calls.is_some())
-    else {
+    let Some(last_assistant_with_tools) = history.iter().rev().find(|m| {
+        m.role == MessageRole::Assistant
+            && m.tool_calls.is_some()
+            && m.agent_name.as_deref().is_none_or(|a| a == agent_name)
+    }) else {
         return Vec::new();
     };
 

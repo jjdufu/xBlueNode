@@ -150,7 +150,7 @@ where
     if let Some(id) = root_agent_id {
         visiting.insert(id);
     }
-    validate_children_recursive(store, tenant_id, root_spec, 0, &mut visiting).await
+    validate_children_recursive(store, tenant_id, root_spec, 1, &mut visiting).await
 }
 
 fn validate_children_recursive<'a, R>(

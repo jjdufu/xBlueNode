@@ -63,7 +63,7 @@ impl<R> EmbedService<R> {
 
 impl<R> EmbedService<R>
 where
-    R: AgentRepository + 'static,
+    R: AgentRepository + CredentialStore + 'static,
 {
     /// Issues a new `axe_<32 base62>` external embed token (`VIEW_SHARE` required, permissions subset enforced).
     ///
@@ -183,7 +183,7 @@ where
     /// checks `(embed_id, client_ip)` rate limits (`429 RATE_LIMITED`), and emits `SHARE_ACCESS` audit.
     ///
     /// # Errors
-    /// Returns [`AppError::Unauthorized`] (`TOKEN_INVALID`) when malformed/unknown/revoked/expired,
+    /// Returns [`AppError::NotFound`] (`NOT_FOUND`) when the token is malformed, unknown, revoked, or expired (`08-STEP09` §09.7),
     /// [`AppError::Forbidden`] (`PERMISSION_DENIED`) on disallowed `Origin`, or [`AppError::RateLimited`].
     pub async fn authenticate_embed(
         &self,
@@ -192,14 +192,14 @@ where
     ) -> Result<(ResolvedAgentEmbed, AuthPrincipal), AppError> {
         let trimmed = raw_token.trim();
         if !trimmed.starts_with("axe_") || trimmed.len() < 8 {
-            return Err(AppError::Unauthorized("TOKEN_INVALID"));
+            return Err(AppError::NotFound("NOT_FOUND"));
         }
         let token_hash = sha256_hex(trimmed);
         let resolved = self
             .store
             .resolve_agent_embed(&token_hash)
             .await?
-            .ok_or(AppError::Unauthorized("TOKEN_INVALID"))?;
+            .ok_or(AppError::NotFound("NOT_FOUND"))?;
 
         verify_embed_origin(
             &resolved.allowed_origins,
@@ -214,6 +214,19 @@ where
         };
         self.rate_limiter
             .check_and_consume((resolved.embed_id, ip_key.clone()), resolved.rate_limit_rpm)?;
+
+        let effective_perms = match self
+            .store
+            .load_principal(&resolved.tenant_id, resolved.created_by)
+            .await?
+        {
+            Some(creator) => resolved
+                .permissions
+                .intersection(&creator.permissions)
+                .copied()
+                .collect(),
+            None => resolved.permissions.clone(),
+        };
 
         let username = format!("embed:{}", resolved.embed_id);
         self.emit_embed_audit(&EmbedAuditEvent {
@@ -232,7 +245,7 @@ where
             username,
             dept_id: String::from("default"),
             roles: Vec::new(),
-            permissions: resolved.permissions.iter().copied().collect(),
+            permissions: effective_perms,
             token_kind: TokenKind::Embed,
         };
         Ok((resolved, principal))

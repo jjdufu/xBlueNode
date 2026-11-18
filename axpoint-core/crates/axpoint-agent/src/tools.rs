@@ -56,22 +56,22 @@ pub const ALL_BUILTIN_TOOL_NAMES: &[&str] = &[
     "run_simulation",
 ];
 
-/// Returns `true` if `name` is one of the `13` declared built-in `AxAgent` tool names.
+/// Returns `true` if `name` is a recognized built-in `AxAgent` tool identifier (including `08-STEP09` §09.5.1 aliases).
 #[must_use]
 pub fn is_known_builtin_tool(name: &str) -> bool {
     ALL_BUILTIN_TOOL_NAMES.contains(&name)
+        || matches!(name, "query_objects" | "node_metric_series" | "start_flow")
 }
 
 /// Returns the [`Permission`] required to see and invoke a built-in tool (`08-STEP09` §09.5.1).
 #[must_use]
 pub fn required_builtin_permission(name: &str) -> Option<Permission> {
     match name {
-        "search_knowledge" | "ask_data" | "run_sql" | "query_metric" | "get_node"
-        | "search_nodes" | "graph_neighbors" | "node_timeseries" | "list_alerts" => {
-            Some(Permission::DataRead)
-        }
+        "search_knowledge" | "ask_data" | "run_sql" | "query_metric" | "query_objects"
+        | "get_node" | "search_nodes" | "graph_neighbors" | "node_timeseries"
+        | "node_metric_series" | "list_alerts" => Some(Permission::DataRead),
         "ack_alert" => Some(Permission::AlertAck),
-        "trigger_flow" => Some(Permission::FlowRun),
+        "trigger_flow" | "start_flow" => Some(Permission::FlowRun),
         "write_node_metric" => Some(Permission::DataSync),
         "run_simulation" => Some(Permission::SimRun),
         _ => None,
@@ -272,13 +272,16 @@ where
             "ask_data" => self.exec_ask_data(principal, args, knowledge_scope).await,
             "run_sql" => self.exec_run_sql(principal, args).await,
             "query_metric" => self.exec_query_metric(principal, args).await,
+            "query_objects" => self.exec_query_objects(principal, args).await,
             "get_node" => self.exec_get_node(principal, args).await,
             "search_nodes" => self.exec_search_nodes(principal, args).await,
             "graph_neighbors" => self.exec_graph_neighbors(principal, args).await,
-            "node_timeseries" => self.exec_node_timeseries(principal, args).await,
+            "node_timeseries" | "node_metric_series" => {
+                self.exec_node_timeseries(principal, args).await
+            }
             "list_alerts" => self.exec_list_alerts(principal, args).await,
             "ack_alert" => self.exec_ack_alert(principal, args).await,
-            "trigger_flow" => self.exec_trigger_flow(principal, args).await,
+            "trigger_flow" | "start_flow" => self.exec_trigger_flow(principal, args).await,
             "write_node_metric" => {
                 self.exec_write_node_metric(principal, args, idempotency_prefix)
                     .await
@@ -289,6 +292,26 @@ where
                 format!("unknown tool '{name}'"),
             )),
         }
+    }
+
+    async fn exec_query_objects(
+        &self,
+        principal: &AuthPrincipal,
+        args: &serde_json::Value,
+    ) -> Result<serde_json::Value, AppError> {
+        let type_name = req_str(args, "type_name")?;
+        let mut payload = args.clone();
+        if let Some(obj) = payload.as_object_mut() {
+            obj.remove("type_name");
+        }
+        self.capability
+            .query_domain_objects(
+                &to_analytics_principal(principal),
+                type_name,
+                None,
+                &payload,
+            )
+            .await
     }
 
     async fn exec_search_knowledge(
@@ -593,9 +616,19 @@ where
         args: &serde_json::Value,
     ) -> Result<serde_json::Value, AppError> {
         let flow_id = req_uuid(args, "flow_id")?;
+        let env = match opt_str(args, "environment") {
+            Some("TEST" | "test") => Environment::Test,
+            Some("PROD" | "prod") | None => Environment::Prod,
+            Some(other) => {
+                return Err(AppError::bad(
+                    "INVALID_ARGUMENT",
+                    format!("invalid environment '{other}'"),
+                ));
+            }
+        };
         let dep = self
             .store
-            .get_flow_deployment(&principal.tenant_id, flow_id, Environment::Prod)
+            .get_flow_deployment(&principal.tenant_id, flow_id, env)
             .await?
             .ok_or(AppError::Forbidden("PERMISSION_DENIED"))?;
 
@@ -616,7 +649,7 @@ where
                 &principal.tenant_id,
                 StartRunParams {
                     flow_id,
-                    environment: Environment::Prod,
+                    environment: env,
                     explicit_version: Some(dep.version),
                     trigger_source: TriggerType::Api,
                     trigger_payload: payload,
@@ -824,6 +857,23 @@ fn builtin_data_tool_def(name: &str) -> Option<ModelToolDef> {
                 "additionalProperties": false
             }),
         ),
+        "query_objects" => (
+            "按主图已发布对象类型、属性与指标过滤查询业务对象及 1 跳关联",
+            serde_json::json!({
+                "type": "object",
+                "required": ["type_name"],
+                "properties": {
+                    "type_name": { "type": "string", "minLength": 1 },
+                    "q": { "type": "string" },
+                    "keys": { "type": "array", "items": { "type": "string" } },
+                    "properties": { "type": "object" },
+                    "metrics_min": { "type": "object" },
+                    "include_links": { "type": "array", "items": { "type": "string" } },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+                },
+                "additionalProperties": false
+            }),
+        ),
         _ => return None,
     };
 
@@ -876,7 +926,7 @@ fn builtin_graph_tool_def(name: &str) -> Option<ModelToolDef> {
                 "additionalProperties": false
             }),
         ),
-        "node_timeseries" => (
+        "node_timeseries" | "node_metric_series" => (
             "查询业务节点指定指标的历史时序数据",
             serde_json::json!({
                 "type": "object",
@@ -931,13 +981,14 @@ fn builtin_action_tool_def(name: &str) -> Option<ModelToolDef> {
                 "additionalProperties": false
             }),
         ),
-        "trigger_flow" => (
-            "触发一个已部署到 PROD 环境的 AxFlow 自动化流程",
+        "trigger_flow" | "start_flow" => (
+            "触发一个已部署到 TEST 或 PROD 环境的 AxFlow 自动化流程",
             serde_json::json!({
                 "type": "object",
                 "required": ["flow_id"],
                 "properties": {
                     "flow_id": { "type": "string", "format": "uuid" },
+                    "environment": { "type": "string", "enum": ["TEST", "PROD"] },
                     "payload": { "type": "object" },
                     "idempotency_key": { "type": "string" }
                 },
@@ -964,13 +1015,11 @@ fn builtin_action_tool_def(name: &str) -> Option<ModelToolDef> {
             "在 AxSim 因果推演沙盘上执行干预仿真并返回传导影响摘要",
             serde_json::json!({
                 "type": "object",
-                "required": ["sandbox_id"],
                 "properties": {
                     "sandbox_id": { "type": "string", "format": "uuid" },
-                    "target_node_id": { "type": "string", "format": "uuid" },
-                    "metric_key": { "type": "string" },
-                    "delta_ratio": { "type": "number" },
-                    "actions": { "type": "array", "items": { "type": "object" } }
+                    "scenario_name": { "type": "string" },
+                    "interventions": {},
+                    "max_hops": { "type": "integer", "minimum": 1, "maximum": 10 }
                 },
                 "additionalProperties": true
             }),
