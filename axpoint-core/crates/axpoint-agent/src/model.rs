@@ -9,7 +9,7 @@ use axpoint_domain::AppError;
 use axpoint_domain::agent::ToolCallSpec;
 use axpoint_domain::enums::Purpose;
 use axpoint_domain::platform::BoxFuture;
-use axpoint_llm::sha256_hex;
+use axpoint_llm::{LlmRouter, RouterTurnRequest, ToolChatMessage, ToolDefinition, sha256_hex};
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -329,6 +329,64 @@ impl AgentModelPort for CassetteModelAdapter {
                 }
             }
             Ok(turn)
+        })
+    }
+}
+
+impl AgentModelPort for LlmRouter {
+    fn complete_turn(
+        &self,
+        req: AgentModelRequest,
+        token_tx: Option<mpsc::Sender<String>>,
+    ) -> BoxFuture<'_, AgentModelTurn> {
+        Box::pin(async move {
+            let messages: Vec<ToolChatMessage> = req
+                .messages
+                .into_iter()
+                .map(|m| match m {
+                    ModelMessage::System { content } => ToolChatMessage::system(content),
+                    ModelMessage::User { content } => ToolChatMessage::user(content),
+                    ModelMessage::Assistant {
+                        content,
+                        tool_calls,
+                    } => {
+                        if tool_calls.is_empty() {
+                            ToolChatMessage::assistant(content)
+                        } else {
+                            ToolChatMessage::assistant_with_tools(content, tool_calls)
+                        }
+                    }
+                    ModelMessage::Tool {
+                        tool_call_id,
+                        content,
+                    } => ToolChatMessage::tool_result(tool_call_id, content),
+                })
+                .collect();
+            let tools: Vec<ToolDefinition> = req
+                .tools
+                .into_iter()
+                .map(|t| ToolDefinition::function(t.name, t.description, t.parameters))
+                .collect();
+            let require_tools = !tools.is_empty();
+            let router_req = RouterTurnRequest::new(req.purpose, messages)
+                .with_pinned_provider(req.provider_id)
+                .with_tools(tools)
+                .with_temperature(req.temperature)
+                .with_require_tools(require_tools);
+
+            let outcome = if token_tx.is_some() {
+                self.stream_tool_turn_routed(&req.tenant_id, router_req, token_tx)
+                    .await?
+            } else {
+                self.complete_tool_turn_routed(&req.tenant_id, router_req)
+                    .await?
+            };
+            Ok(AgentModelTurn {
+                content: outcome.turn.content,
+                tool_calls: outcome.turn.tool_calls,
+                prompt_tokens: outcome.turn.usage.prompt_tokens,
+                completion_tokens: outcome.turn.usage.completion_tokens,
+            })
         })
     }
 }
