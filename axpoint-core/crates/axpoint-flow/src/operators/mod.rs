@@ -1,6 +1,7 @@
 //! Built-in Step 07 `AxFlow` operators, shared config helpers, and registry constructors (`07-STEP07-08` §07.4).
 
 pub mod action_emit;
+pub mod agent_task;
 pub mod agg_trigger;
 pub mod causal_sim;
 pub mod http_call;
@@ -19,13 +20,15 @@ use axpoint_domain::flow::{
 };
 use axpoint_domain::platform::BoxFuture;
 use axpoint_domain::ports::{
-    AiPort, AnalyticsQueryPort, DatasetRepository, FlowCredentialUnsealPort, FlowRepository,
-    FlowSqlMaterializePort, GraphStorePort, JobQueuePort, LakeInternalQueryPort, MetricStorePort,
-    OutboundUrlGuardPort, StudioExecutionPort, StudioRepository, TopologyRepository,
+    AgentTaskPort, AiPort, AnalyticsQueryPort, DatasetRepository, FlowCredentialUnsealPort,
+    FlowRepository, FlowSqlMaterializePort, GraphStorePort, JobQueuePort, LakeInternalQueryPort,
+    MetricStorePort, OutboundUrlGuardPort, StudioExecutionPort, StudioRepository,
+    TopologyRepository,
 };
 use uuid::Uuid;
 
 pub use action_emit::ActionEmitOperator;
+pub use agent_task::AgentTaskOperator;
 pub use agg_trigger::AggTriggerOperator;
 pub use causal_sim::CausalSimOperator;
 pub use http_call::HttpCallOperator;
@@ -229,11 +232,60 @@ pub fn step07_schema_only_registry() -> OperatorRegistry {
     reg
 }
 
-/// Returns the canonical 9 Step 07 [`OperatorSpecDto`] descriptors (`AGENT_TASK` excluded)
-/// for `GET /api/axflow/operators` and static schema validation.
+/// Port dependency bundle passed to [`build_step09_operator_registry`].
+pub struct Step09OperatorDeps<R, Q, M, A, L, U, C> {
+    /// Step 07 core operator dependencies.
+    pub step07: Step07OperatorDeps<R, Q, M, A, L, U, C>,
+    /// `AxAgent` task execution port (`FlowOperator::AgentTask`).
+    pub agent_task: Arc<dyn AgentTaskPort>,
+}
+
+/// Builds an [`OperatorRegistry`] populated with all 10 executable Step 09 operators (`9` Step 07 + `AGENT_TASK`).
+#[must_use]
+pub fn build_step09_operator_registry<R, Q, M, A, L, U, C>(
+    deps: Step09OperatorDeps<R, Q, M, A, L, U, C>,
+) -> OperatorRegistry
+where
+    R: FlowRepository
+        + DatasetRepository
+        + JobQueuePort
+        + StudioRepository
+        + StudioExecutionPort
+        + TopologyRepository
+        + GraphStorePort
+        + MetricStorePort
+        + 'static,
+    Q: AnalyticsQueryPort + 'static,
+    M: FlowSqlMaterializePort + 'static,
+    A: AiPort + 'static,
+    L: LakeInternalQueryPort + 'static,
+    U: OutboundUrlGuardPort + 'static,
+    C: FlowCredentialUnsealPort + 'static,
+{
+    let mut reg = build_step07_operator_registry(deps.step07);
+    reg.register(Arc::new(AgentTaskOperator::new(deps.agent_task)));
+    reg
+}
+
+/// Builds a lightweight [`OperatorRegistry`] exposing all 10 Step 09 operator metadata & JSON Schemas
+/// (`9` Step 07 + `AGENT_TASK`) for static validation and `GET /api/axflow/operators`.
+#[must_use]
+pub fn step09_schema_only_registry() -> OperatorRegistry {
+    let mut reg = step07_schema_only_registry();
+    reg.register(Arc::new(SchemaOnlyOperator {
+        kind: FlowOperator::AgentTask,
+        display_name: AgentTaskOperator::DISPLAY_NAME,
+        description: AgentTaskOperator::DESCRIPTION,
+        schema_fn: AgentTaskOperator::config_schema,
+    }));
+    reg
+}
+
+/// Returns the canonical 10 Step 09 [`OperatorSpecDto`] descriptors (including `AGENT_TASK`)
+/// for `GET /api/axflow/operators`.
 #[must_use]
 pub fn default_operator_specs() -> Vec<OperatorSpecDto> {
-    step07_schema_only_registry().specs()
+    step09_schema_only_registry().specs()
 }
 
 pub(crate) fn templated_uuid_schema() -> serde_json::Value {

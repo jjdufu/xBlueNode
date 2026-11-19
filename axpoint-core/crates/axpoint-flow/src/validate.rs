@@ -12,21 +12,21 @@ use axpoint_domain::flow::{
 
 use crate::graph::{ancestors, root_nodes, topological_order_or_cycle};
 use crate::operators::action_emit::contains_unsupported_work_item;
-use crate::operators::step07_schema_only_registry;
+use crate::operators::step09_schema_only_registry;
 use crate::scheduler::{parse_timezone_offset, to_six_field_cron};
 use crate::template::collect_config_template_errors;
 
 const MAX_NODES: usize = 200;
 const MAX_EDGES: usize = 1_000;
 
-/// Runs all 8 static validation rules on `(graph, trigger_cfg, slug)` using the Step 07 operator schema registry.
+/// Runs all 8 static validation rules on `(graph, trigger_cfg, slug)` using the Step 09 operator schema registry.
 #[must_use]
 pub fn validate_flow_default(
     graph: &FlowGraph,
     trigger_cfg: &TriggerCfg,
     slug: Option<&str>,
 ) -> ValidateFlowResponse {
-    let reg = step07_schema_only_registry();
+    let reg = step09_schema_only_registry();
     validate_flow(graph, trigger_cfg, slug, &reg)
 }
 

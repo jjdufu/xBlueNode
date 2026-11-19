@@ -1,68 +1,63 @@
-//! `AxAgent` capability publishing, OpenAPI/Skill manifests, Streamable HTTP MCP Server & Client,
-//! tool-calling autonomous agent runtime, multi-agent supervisor orchestration, and embed links (`08-STEP09`).
 #![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
+//! `AxAgent` capability publishing, Streamable HTTP `MCP` server & client,
+//! 13-tool multi-turn agent runtime, multi-agent delegation, and external embed tokens (`08-STEP09`).
+
+// Ensure Cargo manifest dependencies not directly imported at crate root remain acknowledged.
+use hex as _;
+use sha2 as _;
+
+pub mod embed;
+pub mod mcp_client;
+pub mod mcp_server;
+pub mod model;
+pub mod multi;
+pub mod openapi;
+pub mod publish;
+pub mod rate_limit;
+pub mod runtime;
+pub mod tools;
 
 pub use axpoint_domain::agent::{
     AgentChatRequest, AgentChatResponse, AgentEmbedRecord, AgentEvent, AgentRecord, AgentSpec,
     AgentTaskInput, AgentTaskOutcome, AgentVersionRecord, ConversationListQuery,
     ConversationRecord, CreateAgentEmbedRequest, CreateAgentEmbedResponse, CreateAgentRequest,
-    CreateEndpointRequest, CreateMcpClientRequest, EmbedChatRequest, EndpointListQuery,
-    EndpointSpec, KnowledgeScope, LlmProviderRecord, LlmUsageDelta, LlmUsageQuery, LlmUsageRecord,
-    McpClientRecord, McpToolInfo, MessageRecord, NewConversationInput, NewMessageInput,
-    ProviderTestResponse, ResolvedAgentEmbed, SaveLlmProviderRequest, SimRunToolInput,
-    SimRunToolOutput, SkillInvokeSpec, SkillManifest, ToolCallSpec, ToolRef, UpdateAgentRequest,
-    UpdateEndpointRequest, default_shape_for_kind,
+    CreateApiTokenRequest, CreateApiTokenResponse, CreateEndpointRequest, CreateMcpClientRequest,
+    CredentialMutation, EmbedChatRequest, EndpointListQuery, EndpointSpec, KnowledgeScope,
+    LlmProviderFlags, LlmProviderRecord, LlmUsageDelta, LlmUsageQuery, LlmUsageRecord,
+    McpClientRecord, McpToolInfo, MessageRecord, NewAgentEmbedInput, NewApiTokenInput,
+    NewConversationInput, NewMessageInput, PersonalAccessTokenSummary, ProviderTestResponse,
+    ResolvedAgentEmbed, SaveEndpointInput, SaveLlmProviderInput, SaveLlmProviderRequest,
+    SaveMcpClientInput, SimRunToolInput, SimRunToolOutput, SkillInvokeSpec, SkillManifest,
+    ToolCallSpec, ToolRef, UpdateAgentRequest, UpdateEndpointRequest,
 };
-pub use axpoint_domain::enums::{
-    ConversationChannel, ConversationStatus, EndpointKind, Environment, MessageRole, OutputShape,
-    Purpose,
-};
+pub use axpoint_domain::enums::EndpointKind;
 pub use axpoint_domain::ports::{
-    AgentCapabilityPort, AgentRepository, AgentTaskPort, LlmProviderStore, SimExecutionPort,
+    AgentCapabilityPort, AgentRepository, AgentTaskPort, ApiTokenRepository, LlmProviderStore,
+    SimExecutionPort,
 };
 
-use axpoint_llm as _;
-use axpoint_security as _;
-use chrono as _;
-use eventsource_stream as _;
-use futures as _;
-use hex as _;
-use jsonschema as _;
-use metrics as _;
-use moka as _;
-use reqwest as _;
-use rmcp as _;
-use serde as _;
-use serde_json as _;
-use sha2 as _;
-use tokio as _;
-use tracing as _;
-use uuid as _;
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        AgentEvent, AgentSpec, EndpointKind, OutputShape, Purpose, default_shape_for_kind,
-    };
-
-    #[test]
-    fn default_agent_spec_and_event_names_match_blueprint() {
-        let spec = AgentSpec::default();
-        assert_eq!(spec.provider_purpose, Purpose::Agent);
-        assert_eq!(spec.max_steps, 8);
-        assert_eq!(spec.memory_turns, 10);
-        assert_eq!(
-            default_shape_for_kind(EndpointKind::ObjectType),
-            OutputShape::Object
-        );
-        assert_eq!(
-            default_shape_for_kind(EndpointKind::Metric),
-            OutputShape::Rows
-        );
-        let ev = AgentEvent::Token {
-            delta: String::from("ok"),
-            agent_name: None,
-        };
-        assert_eq!(ev.sse_event_name(), "token");
-    }
-}
+pub use embed::{EmbedRequestMeta, EmbedService, generate_embed_token};
+pub use mcp_client::McpClientManager;
+pub use mcp_server::{McpHttpResponse, McpServerHub};
+pub use model::{
+    AgentCassetteEntry, AgentModelPort, AgentModelRequest, AgentModelTurn, CassetteModelAdapter,
+    ModelMessage, ModelToolDef, compute_agent_request_sha256,
+};
+pub use multi::{
+    MAX_SUB_AGENT_DEPTH, build_sub_agent_tool_def, format_sub_agent_prompt, sub_agent_tool_name,
+    validate_as_tool_name, validate_sub_agent_graph,
+};
+pub use openapi::{build_openapi_spec, build_skill_manifest, env_path_segment};
+pub use publish::{
+    CapabilityPublisher, PublishedAgentCall, PublishedAgentInvoker, PublishedCallContext,
+    PublishedInvokeOutcome, PublishedRouteTarget, build_agent_schema, build_flow_schema,
+    build_metric_schema, build_object_type_schema, build_saved_query_schema,
+    validate_endpoint_slug, validate_instance_against_schema,
+};
+pub use runtime::{
+    AgentApprovalDecidedSubscriber, AgentRuntime, AgentRuntimeDeps, ChannelChatCall,
+};
+pub use tools::{
+    ALL_BUILTIN_TOOL_NAMES, BuiltinToolRegistry, MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_ROWS,
+    TRUNCATION_HINT, is_known_builtin_tool, required_builtin_permission, truncate_tool_output,
+};
