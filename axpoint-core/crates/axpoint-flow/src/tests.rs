@@ -2709,3 +2709,1316 @@ async fn verify_outbox_triggers_and_cron_slot(store: &Arc<MockStore>) -> Result<
     assert!(slot.is_some());
     Ok(())
 }
+
+mod step10_causal_sim_tests {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    use axpoint_domain::AppError;
+    use axpoint_domain::agent::{
+        AgentTaskInput, AgentTaskOutcome, SimRunToolInput, SimRunToolOutput,
+    };
+    use axpoint_domain::axhub::{
+        CatalogSearchHit, ColumnMeta, CreateDatasetRequest, CreateGlossaryTermRequest,
+        CreateQualityRuleRequest, CreateWebhookRequest, Dataset, DatasetListQuery, GlossaryTerm,
+        LineageEdge, NewUploadInput, PaginatedList, QualityRule, ResolvedWebhook, ScheduledDataset,
+        SealedCredential, SidecarSyncResult, SyncDatasetResponse, SyncJob, UpdateColumnMetaRequest,
+        UpdateDatasetRequest, UploadRecord, WebhookBufferItem, WebhookConfig,
+    };
+    use axpoint_domain::enums::{Environment, FlowOperator, InterventionMode};
+    use axpoint_domain::flow::{
+        FlowActorPrincipal, FlowGraph, Operator, OperatorContext, OperatorOutcome, TriggerCfg,
+    };
+    use axpoint_domain::platform::{
+        BoxFuture, JobListQuery, JobListResponse, JobRecord, LeasedJob, NewJob,
+    };
+    use axpoint_domain::ports::{
+        AgentTaskPort, DatasetRepository, JobQueuePort, LakeInternalQueryPort, SimExecutionPort,
+        StudioExecutionPort, StudioRepository, TopologyRepository,
+    };
+    use axpoint_domain::rollup::{
+        AcceptNodeCandidateRequest, AcceptNodeCandidateResponse, GraphAggregateJobPayload,
+        KnowledgeNodeCandidatesResponse, KnowledgeSyncJobPayload, MapMaterializeJobPayload,
+        MetricExplainResponse,
+    };
+    use axpoint_domain::sim::SimMode;
+    use axpoint_domain::studio::{
+        CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus, MappingRecord,
+        MappingRunRecord, MergePreview, MergePreviewRequest, MergeSubgraphRequest,
+        PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse,
+        SaveSchemaDirectRequest, SchemaDiff, SchemaDraft, SchemaVersionDetail,
+        SchemaVersionSummary, SubgraphInfo, TriggerMappingRunRequest, TriggerMappingRunResponse,
+        UpdateDraftRequest, UpdateSubgraphRequest, ValidationContext,
+    };
+    use axpoint_domain::topology::{
+        AxFlowDef, AxFlowRunResult, AxSandboxRecord, AxSimAction, AxSimImpactRow, AxSimResult,
+        AxSimSnapshot, BlueLink, BlueNode, CreateAxFlowRequest, CreateAxSandboxRequest,
+        SaveXBlueSchemaRequest, UpsertBlueNodeRequest, XBlueSchema,
+    };
+    use chrono::Utc;
+    use tokio::sync::Mutex;
+    use uuid::Uuid;
+
+    use super::{
+        CountingAi, MockAnalytics, MockStore, NoopMat, NoopUnsealer, StrictSsrfGuard, make_node,
+    };
+    use crate::operators::causal_sim::{parse_sim_actions, parse_sim_params};
+    use crate::{
+        CausalSimOperator, Step07OperatorDeps, Step09OperatorDeps, Step10OperatorDeps,
+        build_step10_operator_registry, validate_flow_default,
+    };
+
+    #[derive(Clone, Default)]
+    struct MockSimPort {
+        calls: Arc<Mutex<Vec<(String, Uuid, SimRunToolInput)>>>,
+        use_top_impacts: bool,
+    }
+
+    impl SimExecutionPort for MockSimPort {
+        fn run_simulation_tool<'a>(
+            &'a self,
+            tenant_id: &'a str,
+            user_id: Uuid,
+            input: SimRunToolInput,
+        ) -> BoxFuture<'a, SimRunToolOutput> {
+            Box::pin(async move {
+                let sb_id = input.sandbox_id.unwrap_or_else(Uuid::new_v4);
+                self.calls
+                    .lock()
+                    .await
+                    .push((String::from(tenant_id), user_id, input));
+                let scenario_id = Uuid::new_v4();
+                let impact_row = serde_json::json!({
+                    "node_id": Uuid::new_v4(),
+                    "type_name": "Order",
+                    "title": "重点客户订单",
+                    "metric": "fulfillment",
+                    "before_val": 1.0,
+                    "after_val": 0.75,
+                    "delta": -0.25,
+                    "delta_ratio": -0.25,
+                    "hop_distance": 2
+                });
+                let summary = if self.use_top_impacts {
+                    serde_json::json!({
+                        "top_impacts": [impact_row],
+                        "kpis": [{ "type_name": "Order", "metric": "fulfillment", "before_sum": 1.0, "after_sum": 0.75, "delta": -0.25, "delta_ratio": -0.25, "affected_nodes": 1 }],
+                        "converged": true,
+                        "iterations": 4
+                    })
+                } else {
+                    serde_json::json!({
+                        "affected_count": 2,
+                        "impacts": [impact_row],
+                        "kpis": [{ "type_name": "Order", "metric": "fulfillment", "before_sum": 1.0, "after_sum": 0.75, "delta": -0.25, "delta_ratio": -0.25, "affected_nodes": 1 }],
+                        "warnings": [],
+                        "converged": true,
+                        "iterations": 3
+                    })
+                };
+                Ok(SimRunToolOutput {
+                    sandbox_id: sb_id,
+                    scenario_id: Some(scenario_id),
+                    summary,
+                })
+            })
+        }
+    }
+
+    #[derive(Default)]
+    struct MockTopologyState {
+        snapshot: Option<AxSimSnapshot>,
+        sandbox_calls: Vec<(Uuid, Vec<AxSimAction>)>,
+    }
+
+    #[derive(Clone, Default)]
+    struct MockTopologyRepo {
+        state: Arc<Mutex<MockTopologyState>>,
+    }
+
+    impl TopologyRepository for MockTopologyRepo {
+        fn get_xblue_schema(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<XBlueSchema, AppError>> {
+            std::future::ready(Ok(XBlueSchema {
+                node_types: Vec::new(),
+                edge_types: Vec::new(),
+            }))
+        }
+        fn save_xblue_schema(
+            &self,
+            _t: &str,
+            _req: SaveXBlueSchemaRequest,
+        ) -> impl Future<Output = Result<XBlueSchema, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        async fn get_runtime_snapshot(&self, _t: &str) -> Result<AxSimSnapshot, AppError> {
+            let guard = self.state.lock().await;
+            Ok(guard.snapshot.clone().unwrap_or(AxSimSnapshot {
+                nodes: Vec::new(),
+                links: Vec::new(),
+            }))
+        }
+        fn upsert_blue_node(
+            &self,
+            _t: &str,
+            _req: UpsertBlueNodeRequest,
+        ) -> impl Future<Output = Result<BlueNode, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn list_ax_flows(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<Vec<AxFlowDef>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn create_ax_flow(
+            &self,
+            _t: &str,
+            _req: CreateAxFlowRequest,
+        ) -> impl Future<Output = Result<AxFlowDef, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn run_ax_flow(
+            &self,
+            _t: &str,
+            _id: Uuid,
+        ) -> impl Future<Output = Result<AxFlowRunResult, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn list_ax_sandboxes(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<Vec<AxSandboxRecord>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn create_ax_sandbox(
+            &self,
+            _t: &str,
+            _req: CreateAxSandboxRequest,
+        ) -> impl Future<Output = Result<AxSandboxRecord, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        async fn simulate_ax_sandbox(
+            &self,
+            _t: &str,
+            sandbox_id: Uuid,
+            actions: Vec<AxSimAction>,
+        ) -> Result<AxSimResult, AppError> {
+            self.state
+                .lock()
+                .await
+                .sandbox_calls
+                .push((sandbox_id, actions.clone()));
+            let node_id = actions.first().map_or_else(Uuid::nil, |a| a.target_node_id);
+            Ok(AxSimResult {
+                impacts: vec![AxSimImpactRow {
+                    node_id,
+                    type_name: String::from("Factory"),
+                    title: String::from("F-1"),
+                    metric_key: String::from("output"),
+                    before_val: 100.0,
+                    after_val: 70.0,
+                    delta: -30.0,
+                    delta_ratio: Some(-0.3),
+                    hop_distance: 0,
+                    top_path: vec![node_id],
+                }],
+                affected_count: 1,
+                kpis: Vec::new(),
+                warnings: Vec::new(),
+                converged: true,
+            })
+        }
+    }
+
+    impl TopologyRepository for MockStore {
+        fn get_xblue_schema(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<XBlueSchema, AppError>> {
+            std::future::ready(Ok(XBlueSchema {
+                node_types: Vec::new(),
+                edge_types: Vec::new(),
+            }))
+        }
+        fn save_xblue_schema(
+            &self,
+            _t: &str,
+            _req: SaveXBlueSchemaRequest,
+        ) -> impl Future<Output = Result<XBlueSchema, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn get_runtime_snapshot(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<AxSimSnapshot, AppError>> {
+            std::future::ready(Ok(AxSimSnapshot {
+                nodes: Vec::new(),
+                links: Vec::new(),
+            }))
+        }
+        fn upsert_blue_node(
+            &self,
+            _t: &str,
+            _req: UpsertBlueNodeRequest,
+        ) -> impl Future<Output = Result<BlueNode, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn list_ax_flows(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<Vec<AxFlowDef>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn create_ax_flow(
+            &self,
+            _t: &str,
+            _req: CreateAxFlowRequest,
+        ) -> impl Future<Output = Result<AxFlowDef, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn run_ax_flow(
+            &self,
+            _t: &str,
+            _id: Uuid,
+        ) -> impl Future<Output = Result<AxFlowRunResult, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn list_ax_sandboxes(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<Vec<AxSandboxRecord>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn create_ax_sandbox(
+            &self,
+            _t: &str,
+            _req: CreateAxSandboxRequest,
+        ) -> impl Future<Output = Result<AxSandboxRecord, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn simulate_ax_sandbox(
+            &self,
+            _t: &str,
+            _id: Uuid,
+            _actions: Vec<AxSimAction>,
+        ) -> impl Future<Output = Result<AxSimResult, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+    }
+
+    impl JobQueuePort for MockStore {
+        fn enqueue(&self, _t: &str, _j: NewJob) -> impl Future<Output = Result<Uuid, AppError>> {
+            std::future::ready(Ok(Uuid::new_v4()))
+        }
+        fn lease(
+            &self,
+            _w: &str,
+            _k: &[axpoint_domain::enums::JobKind],
+            _l: u32,
+            _ls: u32,
+        ) -> impl Future<Output = Result<Vec<LeasedJob>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn heartbeat(
+            &self,
+            _j: &LeasedJob,
+            _ls: u32,
+        ) -> impl Future<Output = Result<(), AppError>> {
+            std::future::ready(Ok(()))
+        }
+        fn complete(
+            &self,
+            _j: &LeasedJob,
+            _r: serde_json::Value,
+        ) -> impl Future<Output = Result<(), AppError>> {
+            std::future::ready(Ok(()))
+        }
+        fn fail(&self, _j: &LeasedJob, _e: &str) -> impl Future<Output = Result<(), AppError>> {
+            std::future::ready(Ok(()))
+        }
+        fn list_jobs(
+            &self,
+            _t: &str,
+            _q: JobListQuery,
+        ) -> impl Future<Output = Result<JobListResponse, AppError>> {
+            std::future::ready(Ok(JobListResponse {
+                items: Vec::new(),
+                next_cursor: None,
+            }))
+        }
+        fn get_job(
+            &self,
+            _t: &str,
+            _id: Uuid,
+        ) -> impl Future<Output = Result<Option<JobRecord>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+    }
+
+    impl StudioExecutionPort for MockStore {
+        fn execute_mapping_materialize<L: LakeInternalQueryPort>(
+            &self,
+            _t: &str,
+            _j: Uuid,
+            _p: &MapMaterializeJobPayload,
+            _l: &L,
+        ) -> impl Future<Output = Result<MappingRunRecord, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn list_enabled_main_mappings_for_dataset(
+            &self,
+            _t: &str,
+            _d: Uuid,
+        ) -> impl Future<Output = Result<Vec<MappingRecord>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn execute_graph_aggregate(
+            &self,
+            _t: &str,
+            _p: &GraphAggregateJobPayload,
+        ) -> impl Future<Output = Result<serde_json::Value, AppError>> {
+            std::future::ready(Ok(serde_json::json!({ "status": "SUCCEEDED" })))
+        }
+        fn enqueue_graph_aggregate(
+            &self,
+            _t: &str,
+            _p: GraphAggregateJobPayload,
+            _k: Option<String>,
+        ) -> impl Future<Output = Result<Uuid, AppError>> {
+            std::future::ready(Ok(Uuid::new_v4()))
+        }
+        fn explain_node_metric(
+            &self,
+            _t: &str,
+            _n: Uuid,
+            _m: &str,
+        ) -> impl Future<Output = Result<MetricExplainResponse, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn execute_knowledge_sync<E: axpoint_domain::ports::TextEmbedderPort>(
+            &self,
+            _t: &str,
+            _p: &KnowledgeSyncJobPayload,
+            _e: &E,
+        ) -> impl Future<Output = Result<serde_json::Value, AppError>> {
+            std::future::ready(Ok(serde_json::json!({})))
+        }
+        fn list_knowledge_node_candidates(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<KnowledgeNodeCandidatesResponse, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn accept_knowledge_node_candidate(
+            &self,
+            _t: &str,
+            _e: Uuid,
+            _r: AcceptNodeCandidateRequest,
+        ) -> impl Future<Output = Result<AcceptNodeCandidateResponse, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+    }
+
+    impl DatasetRepository for MockStore {
+        fn list_datasets(
+            &self,
+            _t: &str,
+            _q: DatasetListQuery,
+        ) -> impl Future<Output = Result<PaginatedList<Dataset>, AppError>> {
+            std::future::ready(Ok(PaginatedList {
+                items: Vec::new(),
+                next_cursor: None,
+            }))
+        }
+        fn get_dataset(
+            &self,
+            _t: &str,
+            _id: Uuid,
+        ) -> impl Future<Output = Result<Option<Dataset>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn get_dataset_by_name(
+            &self,
+            _t: &str,
+            _n: &str,
+        ) -> impl Future<Output = Result<Option<Dataset>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn create_dataset(
+            &self,
+            _t: &str,
+            _o: Option<Uuid>,
+            _r: CreateDatasetRequest,
+        ) -> impl Future<Output = Result<Dataset, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn update_dataset(
+            &self,
+            _t: &str,
+            _id: Uuid,
+            _r: UpdateDatasetRequest,
+        ) -> impl Future<Output = Result<Option<Dataset>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn delete_dataset(
+            &self,
+            _t: &str,
+            _id: Uuid,
+        ) -> impl Future<Output = Result<Option<Dataset>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn enqueue_sync_job(
+            &self,
+            _t: &str,
+            _id: Uuid,
+        ) -> impl Future<Output = Result<SyncDatasetResponse, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn start_sync_execution(
+            &self,
+            _t: &str,
+            _d: Uuid,
+            _j: Uuid,
+        ) -> impl Future<Output = Result<SyncJob, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn complete_sync_execution(
+            &self,
+            _t: &str,
+            _s: Uuid,
+            _d: Uuid,
+            _r: &SidecarSyncResult,
+        ) -> impl Future<Output = Result<(), AppError>> {
+            std::future::ready(Ok(()))
+        }
+        fn fail_sync_execution(
+            &self,
+            _t: &str,
+            _s: Uuid,
+            _d: Uuid,
+            _c: &str,
+            _m: &str,
+            _term: bool,
+        ) -> impl Future<Output = Result<(), AppError>> {
+            std::future::ready(Ok(()))
+        }
+        fn list_sync_jobs(
+            &self,
+            _t: &str,
+            _d: Uuid,
+            _l: u32,
+            _c: Option<&str>,
+        ) -> impl Future<Output = Result<PaginatedList<SyncJob>, AppError>> {
+            std::future::ready(Ok(PaginatedList {
+                items: Vec::new(),
+                next_cursor: None,
+            }))
+        }
+        fn get_stream_offsets(
+            &self,
+            _t: &str,
+            _d: Uuid,
+        ) -> impl Future<Output = Result<BTreeMap<String, String>, AppError>> {
+            std::future::ready(Ok(BTreeMap::new()))
+        }
+        fn list_columns(
+            &self,
+            _t: &str,
+            _d: Uuid,
+        ) -> impl Future<Output = Result<Vec<ColumnMeta>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn update_column_meta(
+            &self,
+            _t: &str,
+            _d: Uuid,
+            _c: &str,
+            _r: UpdateColumnMetaRequest,
+        ) -> impl Future<Output = Result<Option<ColumnMeta>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn list_quality_rules(
+            &self,
+            _t: &str,
+            _d: Uuid,
+        ) -> impl Future<Output = Result<Vec<QualityRule>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn create_quality_rule(
+            &self,
+            _t: &str,
+            _d: Uuid,
+            _r: CreateQualityRuleRequest,
+        ) -> impl Future<Output = Result<QualityRule, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn delete_quality_rule(
+            &self,
+            _t: &str,
+            _id: Uuid,
+        ) -> impl Future<Output = Result<bool, AppError>> {
+            std::future::ready(Ok(false))
+        }
+        fn find_committed_upload_by_sha(
+            &self,
+            _t: &str,
+            _s: &str,
+        ) -> impl Future<Output = Result<Option<UploadRecord>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn create_upload(
+            &self,
+            _t: &str,
+            _i: NewUploadInput,
+        ) -> impl Future<Output = Result<UploadRecord, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn get_upload(
+            &self,
+            _t: &str,
+            _id: Uuid,
+        ) -> impl Future<Output = Result<Option<UploadRecord>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn complete_upload(
+            &self,
+            _t: &str,
+            _u: Uuid,
+            _p: Uuid,
+            _d: Option<Uuid>,
+            _ds: &[Uuid],
+        ) -> impl Future<Output = Result<(), AppError>> {
+            std::future::ready(Ok(()))
+        }
+        fn fail_upload(
+            &self,
+            _t: &str,
+            _u: Uuid,
+            _c: &str,
+        ) -> impl Future<Output = Result<(), AppError>> {
+            std::future::ready(Ok(()))
+        }
+        fn create_webhook(
+            &self,
+            _t: &str,
+            _o: Option<Uuid>,
+            _r: &CreateWebhookRequest,
+            _c: SealedCredential,
+        ) -> impl Future<Output = Result<(WebhookConfig, Dataset), AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn list_webhooks(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<Vec<WebhookConfig>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn delete_webhook(
+            &self,
+            _t: &str,
+            _id: Uuid,
+        ) -> impl Future<Output = Result<bool, AppError>> {
+            std::future::ready(Ok(false))
+        }
+        fn resolve_webhook(
+            &self,
+            _t: &str,
+            _s: &str,
+        ) -> impl Future<Output = Result<Option<ResolvedWebhook>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn get_webhook_by_dataset(
+            &self,
+            _t: &str,
+            _d: Uuid,
+        ) -> impl Future<Output = Result<Option<WebhookConfig>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn ingest_webhook_event(
+            &self,
+            _t: &str,
+            _w: Uuid,
+            _d: &str,
+            _p: serde_json::Value,
+        ) -> impl Future<Output = Result<bool, AppError>> {
+            std::future::ready(Ok(true))
+        }
+        fn list_pending_webhook_events(
+            &self,
+            _t: &str,
+            _w: Uuid,
+            _l: u32,
+        ) -> impl Future<Output = Result<Vec<WebhookBufferItem>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn mark_webhook_events_flushed(
+            &self,
+            _t: &str,
+            _ids: &[i64],
+        ) -> impl Future<Output = Result<(), AppError>> {
+            std::future::ready(Ok(()))
+        }
+        fn upsert_lineage(
+            &self,
+            _t: &str,
+            _sk: &str,
+            _si: &str,
+            _dk: &str,
+            _di: &str,
+            _v: &str,
+        ) -> impl Future<Output = Result<(), AppError>> {
+            std::future::ready(Ok(()))
+        }
+        fn get_dataset_lineage(
+            &self,
+            _t: &str,
+            _d: Uuid,
+            _dp: u32,
+        ) -> impl Future<Output = Result<Vec<LineageEdge>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn search_catalog(
+            &self,
+            _t: &str,
+            _q: &str,
+            _l: u32,
+        ) -> impl Future<Output = Result<PaginatedList<CatalogSearchHit>, AppError>> {
+            std::future::ready(Ok(PaginatedList {
+                items: Vec::new(),
+                next_cursor: None,
+            }))
+        }
+        fn list_glossary(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<Vec<GlossaryTerm>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn create_glossary_term(
+            &self,
+            _t: &str,
+            _r: CreateGlossaryTermRequest,
+        ) -> impl Future<Output = Result<GlossaryTerm, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn delete_glossary_term(
+            &self,
+            _t: &str,
+            _id: Uuid,
+        ) -> impl Future<Output = Result<bool, AppError>> {
+            std::future::ready(Ok(false))
+        }
+        fn list_scheduled_datasets(
+            &self,
+        ) -> impl Future<Output = Result<Vec<ScheduledDataset>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn get_tenant_timezone(&self, _t: &str) -> impl Future<Output = Result<String, AppError>> {
+            std::future::ready(Ok(String::from("Asia/Shanghai")))
+        }
+        fn get_lake_snapshot_keep_days(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<i32, AppError>> {
+            std::future::ready(Ok(30))
+        }
+    }
+
+    impl StudioRepository for MockStore {
+        fn list_subgraphs(
+            &self,
+            _t: &str,
+        ) -> impl Future<Output = Result<Vec<SubgraphInfo>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn create_subgraph(
+            &self,
+            _t: &str,
+            _a: Option<Uuid>,
+            _r: CreateSubgraphRequest,
+        ) -> impl Future<Output = Result<SubgraphInfo, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn update_subgraph(
+            &self,
+            _t: &str,
+            _s: &str,
+            _r: UpdateSubgraphRequest,
+        ) -> impl Future<Output = Result<SubgraphInfo, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn delete_subgraph(
+            &self,
+            _t: &str,
+            _s: &str,
+        ) -> impl Future<Output = Result<(), AppError>> {
+            std::future::ready(Ok(()))
+        }
+        fn get_published_schema(
+            &self,
+            _t: &str,
+            _s: &str,
+        ) -> impl Future<Output = Result<PublishedSchemaResponse, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn save_schema_direct(
+            &self,
+            _t: &str,
+            _s: &str,
+            _a: Option<Uuid>,
+            _r: SaveSchemaDirectRequest,
+        ) -> impl Future<Output = Result<PublishedSchemaResponse, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn load_validation_context(
+            &self,
+            _t: &str,
+            _s: &str,
+        ) -> impl Future<Output = Result<ValidationContext, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn list_schema_versions(
+            &self,
+            _t: &str,
+            _s: &str,
+        ) -> impl Future<Output = Result<Vec<SchemaVersionSummary>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn get_schema_version(
+            &self,
+            _t: &str,
+            _s: &str,
+            _v: i32,
+        ) -> impl Future<Output = Result<Option<SchemaVersionDetail>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn diff_schema_versions(
+            &self,
+            _t: &str,
+            _s: &str,
+            _f: i32,
+            _to: i32,
+        ) -> impl Future<Output = Result<SchemaDiff, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn restore_schema_version(
+            &self,
+            _t: &str,
+            _s: &str,
+            _v: i32,
+            _a: Option<Uuid>,
+        ) -> impl Future<Output = Result<SchemaDraft, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn list_drafts(
+            &self,
+            _t: &str,
+            _s: &str,
+            _st: Option<DraftStatus>,
+        ) -> impl Future<Output = Result<Vec<SchemaDraft>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn get_draft(
+            &self,
+            _t: &str,
+            _d: Uuid,
+        ) -> impl Future<Output = Result<Option<SchemaDraft>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn create_draft(
+            &self,
+            _t: &str,
+            _s: &str,
+            _a: Option<Uuid>,
+            _r: CreateDraftRequest,
+        ) -> impl Future<Output = Result<SchemaDraft, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn update_draft(
+            &self,
+            _t: &str,
+            _d: Uuid,
+            _r: UpdateDraftRequest,
+        ) -> impl Future<Output = Result<SchemaDraft, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn discard_draft(
+            &self,
+            _t: &str,
+            _d: Uuid,
+        ) -> impl Future<Output = Result<SchemaDraft, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn publish_draft(
+            &self,
+            _t: &str,
+            _d: Uuid,
+            _a: Option<Uuid>,
+            _r: PublishDraftRequest,
+        ) -> impl Future<Output = Result<PublishDraftResponse, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn preview_subgraph_merge(
+            &self,
+            _t: &str,
+            _s: &str,
+            _r: MergePreviewRequest,
+        ) -> impl Future<Output = Result<MergePreview, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn merge_subgraph_into_main(
+            &self,
+            _t: &str,
+            _s: &str,
+            _a: Option<Uuid>,
+            _r: MergeSubgraphRequest,
+        ) -> impl Future<Output = Result<PublishDraftResponse, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn list_mappings(
+            &self,
+            _t: &str,
+            _s: &str,
+        ) -> impl Future<Output = Result<Vec<MappingRecord>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn get_mapping(
+            &self,
+            _t: &str,
+            _m: Uuid,
+        ) -> impl Future<Output = Result<Option<MappingRecord>, AppError>> {
+            std::future::ready(Ok(None))
+        }
+        fn list_mapping_runs(
+            &self,
+            _t: &str,
+            _m: Uuid,
+            _l: u32,
+        ) -> impl Future<Output = Result<Vec<MappingRunRecord>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+        fn enqueue_mapping_run(
+            &self,
+            _t: &str,
+            _m: Uuid,
+            _r: TriggerMappingRunRequest,
+        ) -> impl Future<Output = Result<TriggerMappingRunResponse, AppError>> {
+            std::future::ready(Err(AppError::NotFound("MOCK")))
+        }
+        fn load_doc_entity_groups(
+            &self,
+            _t: &str,
+            _d: &[Uuid],
+        ) -> impl Future<Output = Result<Vec<DocEntityGroup>, AppError>> {
+            std::future::ready(Ok(Vec::new()))
+        }
+    }
+
+    struct MockLake;
+    impl LakeInternalQueryPort for MockLake {
+        fn query_internal(
+            &self,
+            _t: &str,
+            sql: &str,
+            _max_rows: usize,
+        ) -> impl Future<Output = Result<axpoint_domain::analytics::QueryResult, AppError>>
+        {
+            std::future::ready(Ok(axpoint_domain::analytics::QueryResult {
+                columns: Vec::new(),
+                rows: Vec::new(),
+                row_count: 0,
+                truncated: false,
+                sql: String::from(sql),
+                duration_ms: 1,
+            }))
+        }
+        fn invalidate_tenant_session(&self, _t: &str) -> impl Future<Output = bool> {
+            std::future::ready(false)
+        }
+    }
+
+    struct MockAgentTaskPort;
+    impl AgentTaskPort for MockAgentTaskPort {
+        fn execute_flow_agent_task(
+            &self,
+            input: AgentTaskInput,
+        ) -> BoxFuture<'_, AgentTaskOutcome> {
+            Box::pin(async move {
+                Ok(AgentTaskOutcome::Completed {
+                    conversation_id: Uuid::nil(),
+                    answer: input.instruction,
+                    structured: None,
+                })
+            })
+        }
+    }
+
+    fn make_ctx(user_id: Uuid, env: Environment, config: serde_json::Value) -> OperatorContext {
+        OperatorContext::new(
+            String::from("default"),
+            Uuid::new_v4(),
+            1,
+            Uuid::new_v4(),
+            String::from("sim_step"),
+            1,
+            env,
+        )
+        .with_execution_inputs(
+            config,
+            FlowActorPrincipal::service(Some(user_id)),
+            Arc::new(AtomicBool::new(false)),
+        )
+    }
+
+    #[test]
+    fn parse_sim_actions_supports_ratio_add_absolute_at_step_and_legacy_delta_ratio()
+    -> Result<(), AppError> {
+        let n1 = Uuid::new_v4();
+        let n2 = Uuid::new_v4();
+        let n3 = Uuid::new_v4();
+        let n4 = Uuid::new_v4();
+
+        let cfg = serde_json::json!({
+            "actions": [
+                { "target_node_id": n1.to_string(), "metric_key": "output", "mode": "RATIO", "value": -0.3, "at_step": 1 },
+                { "target_node_id": n2.to_string(), "metric_key": "inventory", "mode": "ADD", "value": 40.0, "at_step": 2 },
+                { "target_node_id": n3.to_string(), "metric_key": "fulfillment", "mode": "ABSOLUTE", "value": 0.95, "at_step": 3 },
+                { "node_id": n4.to_string(), "metric": "output", "delta_ratio": -0.5 }
+            ]
+        });
+
+        let parsed = parse_sim_actions(&cfg)?;
+        assert_eq!(parsed.len(), 4);
+
+        let a0 = parsed.first().ok_or(AppError::NotFound("A0"))?;
+        assert_eq!(a0.target_node_id, n1);
+        assert_eq!(a0.metric_key, "output");
+        assert_eq!(a0.mode, Some(InterventionMode::Ratio));
+        assert_eq!(a0.value, Some(-0.3));
+        assert_eq!(a0.delta_ratio, None);
+        assert_eq!(a0.at_step, 1);
+
+        let a1 = parsed.get(1).ok_or(AppError::NotFound("A1"))?;
+        assert_eq!(a1.mode, Some(InterventionMode::Add));
+        assert_eq!(a1.value, Some(40.0));
+        assert_eq!(a1.at_step, 2);
+
+        let a2 = parsed.get(2).ok_or(AppError::NotFound("A2"))?;
+        assert_eq!(a2.mode, Some(InterventionMode::Absolute));
+        assert_eq!(a2.value, Some(0.95));
+        assert_eq!(a2.at_step, 3);
+
+        let a3 = parsed.get(3).ok_or(AppError::NotFound("A3"))?;
+        assert_eq!(a3.target_node_id, n4);
+        assert_eq!(a3.metric_key, "output");
+        assert_eq!(a3.mode, None);
+        assert_eq!(a3.delta_ratio, Some(-0.5));
+        assert_eq!(a3.at_step, 0);
+
+        let conflict = serde_json::json!({
+            "actions": [{ "target_node_id": n1.to_string(), "metric_key": "output", "mode": "RATIO", "value": -0.2, "delta_ratio": -0.2 }]
+        });
+        assert!(parse_sim_actions(&conflict).is_err());
+
+        let too_low = serde_json::json!({
+            "actions": [{ "target_node_id": n1.to_string(), "metric_key": "output", "mode": "RATIO", "value": -1.0 }]
+        });
+        assert!(parse_sim_actions(&too_low).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn parse_sim_params_and_schema_validation_support_step10_options() -> Result<(), AppError> {
+        let cfg = serde_json::json!({
+            "sandbox_id": "{{ trigger.sandbox_id }}",
+            "actions": [
+                { "target_node_id": Uuid::new_v4().to_string(), "metric_key": "output", "mode": "ADD", "value": -20.0, "at_step": 2 }
+            ],
+            "params": {
+                "mode": "STEPPED",
+                "horizon_steps": 24,
+                "damping": 0.9,
+                "max_iters": 300,
+                "tol": 1e-7,
+                "max_hops": 4,
+                "uncertainty": { "enabled": true, "samples": 150, "sigma_rel": 0.15, "seed": 77 }
+            }
+        });
+
+        let params = parse_sim_params(&cfg)?;
+        assert_eq!(params.mode, SimMode::Stepped);
+        assert_eq!(params.horizon_steps, 24);
+        assert!((params.damping - 0.9).abs() < 1e-12);
+        assert_eq!(params.max_iterations, 300);
+        assert!((params.tolerance - 1e-7).abs() < 1e-15);
+        assert_eq!(params.max_hops, Some(4));
+        let unc = params.uncertainty.ok_or(AppError::NotFound("UNC"))?;
+        assert_eq!(unc.samples, 150);
+        assert!((unc.coefficient_cv - 0.15).abs() < 1e-12);
+        assert_eq!(unc.seed, 77);
+
+        let disabled_unc = parse_sim_params(&serde_json::json!({
+            "params": { "uncertainty": { "enabled": false, "samples": 100 } }
+        }))?;
+        assert!(disabled_unc.uncertainty.is_none());
+        assert!(
+            parse_sim_params(&serde_json::json!({ "params": { "horizon_steps": 200 } })).is_err()
+        );
+
+        let valid_graph = FlowGraph {
+            nodes: vec![make_node("sim", FlowOperator::CausalSim, cfg)],
+            edges: Vec::new(),
+        };
+        let validation = validate_flow_default(&valid_graph, &TriggerCfg::default(), None);
+        assert!(validation.valid, "issues: {:?}", validation.issues);
+
+        let invalid_graph = FlowGraph {
+            nodes: vec![make_node(
+                "sim_bad",
+                FlowOperator::CausalSim,
+                serde_json::json!({
+                    "actions": [{ "target_node_id": Uuid::new_v4().to_string(), "metric_key": "output" }]
+                }),
+            )],
+            edges: Vec::new(),
+        };
+        let bad_val = validate_flow_default(&invalid_graph, &TriggerCfg::default(), None);
+        assert!(!bad_val.valid);
+        assert!(bad_val.issues.iter().any(|i| i.code == "SCHEMA_INVALID"));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn causal_sim_with_sim_port_verifies_input_and_propagates_output() -> Result<(), AppError>
+    {
+        let topo = Arc::new(MockTopologyRepo::default());
+        let sim_port = Arc::new(MockSimPort::default());
+        let sim_port_ref = Arc::clone(&sim_port);
+        let sim_dyn: Arc<dyn SimExecutionPort> = sim_port_ref;
+        let op = CausalSimOperator::with_sim_port(topo, sim_dyn);
+
+        let sb_id = Uuid::new_v4();
+        let node_a = Uuid::new_v4();
+        let actor_id = Uuid::new_v4();
+        let ctx = make_ctx(
+            actor_id,
+            Environment::Prod,
+            serde_json::json!({
+                "sandbox_id": sb_id.to_string(),
+                "scenario_name": "east_china_cut",
+                "actions": [
+                    { "target_node_id": node_a.to_string(), "metric_key": "output", "mode": "RATIO", "value": -0.3, "at_step": 1 }
+                ],
+                "params": {
+                    "mode": "STEPPED",
+                    "horizon_steps": 16,
+                    "damping": 0.8,
+                    "max_iters": 200,
+                    "tol": 1e-8,
+                    "max_hops": 5,
+                    "uncertainty": { "enabled": true, "samples": 80, "sigma_rel": 0.1, "seed": 99 }
+                }
+            }),
+        );
+
+        let OperatorOutcome::Completed(out) = op.execute(&ctx).await? else {
+            return Err(AppError::Config(String::from("expected Completed")));
+        };
+        assert_eq!(out.get("sandbox_id"), Some(&serde_json::json!(sb_id)));
+        assert!(out.get("scenario_id").is_some());
+        assert_eq!(out.get("affected_count"), Some(&serde_json::json!(2)));
+        assert_eq!(out.get("converged"), Some(&serde_json::json!(true)));
+        assert_eq!(out.get("iterations"), Some(&serde_json::json!(3)));
+        assert!(
+            out.get("impacts")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|rows| rows.len() == 1)
+        );
+        assert!(
+            out.get("kpis")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|rows| rows.len() == 1)
+        );
+
+        let recorded = sim_port.calls.lock().await;
+        let (tenant, uid, input) = recorded.first().ok_or(AppError::NotFound("CALL"))?;
+        assert_eq!(tenant, "default");
+        assert_eq!(*uid, actor_id);
+        assert_eq!(input.sandbox_id, Some(sb_id));
+        assert_eq!(input.scenario_name.as_deref(), Some("east_china_cut"));
+        assert_eq!(input.max_hops, Some(5));
+        assert_eq!(
+            input
+                .interventions
+                .get("params")
+                .and_then(|p| p.get("horizon_steps")),
+            Some(&serde_json::json!(16))
+        );
+        assert_eq!(
+            input
+                .interventions
+                .get("params")
+                .and_then(|p| p.get("uncertainty"))
+                .and_then(|u| u.get("coefficient_cv")),
+            Some(&serde_json::json!(0.1))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn causal_sim_with_sim_port_handles_top_impacts_and_array_interventions()
+    -> Result<(), AppError> {
+        let top_port = Arc::new(MockSimPort {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            use_top_impacts: true,
+        });
+        let top_port_ref = Arc::clone(&top_port);
+        let top_dyn: Arc<dyn SimExecutionPort> = top_port_ref;
+        let op = CausalSimOperator::with_sim_port(Arc::new(MockTopologyRepo::default()), top_dyn);
+        let node_a = Uuid::new_v4();
+        let actor_id = Uuid::new_v4();
+        let ctx = make_ctx(
+            actor_id,
+            Environment::Test,
+            serde_json::json!({
+                "actions": [{ "target_node_id": node_a.to_string(), "metric_key": "output", "delta_ratio": -0.25 }]
+            }),
+        );
+        let OperatorOutcome::Completed(out) = op.execute(&ctx).await? else {
+            return Err(AppError::Config(String::from("expected Completed")));
+        };
+        assert_eq!(out.get("affected_count"), Some(&serde_json::json!(1)));
+        assert!(
+            out.get("impacts")
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|rows| rows.len() == 1)
+        );
+        let rec = top_port.calls.lock().await;
+        let (_, _, input) = rec.first().ok_or(AppError::NotFound("CALL2"))?;
+        assert!(input.interventions.is_array());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn causal_sim_without_sim_port_falls_back_to_topology_snapshot() -> Result<(), AppError> {
+        let id_a = Uuid::new_v4();
+        let id_b = Uuid::new_v4();
+        let now = Utc::now();
+        let snapshot = AxSimSnapshot {
+            nodes: vec![
+                BlueNode {
+                    id: id_a,
+                    type_name: String::from("Factory"),
+                    node_key: String::from("F-1"),
+                    title: String::from("工厂1"),
+                    properties: serde_json::Map::new(),
+                    metrics: BTreeMap::from([(String::from("output"), 100.0)]),
+                    geo: None,
+                    source_dataset_id: None,
+                    source_row_key: None,
+                    row_version: 1,
+                    created_at: now,
+                    updated_at: now,
+                },
+                BlueNode {
+                    id: id_b,
+                    type_name: String::from("Warehouse"),
+                    node_key: String::from("W-1"),
+                    title: String::from("仓库1"),
+                    properties: serde_json::Map::new(),
+                    metrics: BTreeMap::from([(String::from("output"), 50.0)]),
+                    geo: None,
+                    source_dataset_id: None,
+                    source_row_key: None,
+                    row_version: 1,
+                    created_at: now,
+                    updated_at: now,
+                },
+            ],
+            links: vec![BlueLink {
+                id: Uuid::new_v4(),
+                link_type: String::from("SUPPLIES"),
+                src_node_id: id_a,
+                dst_node_id: id_b,
+                weight: 0.8,
+            }],
+        };
+        let topo = Arc::new(MockTopologyRepo {
+            state: Arc::new(Mutex::new(MockTopologyState {
+                snapshot: Some(snapshot),
+                sandbox_calls: Vec::new(),
+            })),
+        });
+        let op = CausalSimOperator::new(Arc::clone(&topo));
+
+        let ctx = make_ctx(
+            Uuid::nil(),
+            Environment::Test,
+            serde_json::json!({
+                "actions": [{ "target_node_id": id_a.to_string(), "metric_key": "output", "delta_ratio": -0.5 }]
+            }),
+        );
+        let OperatorOutcome::Completed(out) = op.execute(&ctx).await? else {
+            return Err(AppError::Config(String::from("expected Completed")));
+        };
+        assert_eq!(out.get("affected_count"), Some(&serde_json::json!(2)));
+        assert_eq!(out.get("converged"), Some(&serde_json::json!(true)));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn build_step10_operator_registry_wires_causal_sim_with_sim_port() -> Result<(), AppError>
+    {
+        let store = Arc::new(MockStore::default());
+        let sim_port = Arc::new(MockSimPort::default());
+        let sim_port_ref = Arc::clone(&sim_port);
+        let sim_dyn: Arc<dyn SimExecutionPort> = sim_port_ref;
+        let registry = build_step10_operator_registry(Step10OperatorDeps {
+            step09: Step09OperatorDeps {
+                step07: Step07OperatorDeps {
+                    store: Arc::clone(&store),
+                    analytics: Arc::new(MockAnalytics),
+                    sql_materializer: Some(Arc::new(NoopMat)),
+                    ai: Arc::new(CountingAi {
+                        chats: std::sync::atomic::AtomicUsize::new(0),
+                    }),
+                    lake: Arc::new(MockLake),
+                    url_guard: Arc::new(StrictSsrfGuard),
+                    cred_unsealer: Some(Arc::new(NoopUnsealer)),
+                },
+                agent_task: Arc::new(MockAgentTaskPort),
+            },
+            sim_port: sim_dyn,
+        });
+
+        for kind in FlowOperator::ALL {
+            assert!(registry.contains(*kind), "missing operator {kind}");
+        }
+
+        let op = registry
+            .get(FlowOperator::CausalSim)
+            .ok_or(AppError::NotFound("CAUSAL_SIM_OP"))?;
+        let sb_id = Uuid::new_v4();
+        let node_id = Uuid::new_v4();
+        let ctx = make_ctx(
+            Uuid::new_v4(),
+            Environment::Prod,
+            serde_json::json!({
+                "sandbox_id": sb_id.to_string(),
+                "actions": [
+                    { "target_node_id": node_id.to_string(), "metric_key": "inventory", "mode": "ADD", "value": -10.0, "at_step": 0 }
+                ]
+            }),
+        );
+        let OperatorOutcome::Completed(out) = op.execute(&ctx).await? else {
+            return Err(AppError::Config(String::from("expected Completed")));
+        };
+        assert_eq!(out.get("sandbox_id"), Some(&serde_json::json!(sb_id)));
+        assert_eq!(sim_port.calls.lock().await.len(), 1);
+        Ok(())
+    }
+}
