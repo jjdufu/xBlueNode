@@ -259,7 +259,7 @@ async fn run_single_case(case: &EvalCase) -> bool {
                             _ => InterventionMode::Ratio,
                         };
                         Some(first.target_node_id) == expected_id
-                            && Some(first.metric.as_str()) == case.expect_metric.as_deref()
+                            && Some(first.metric_key.as_str()) == case.expect_metric.as_deref()
                             && first.mode == expected_mode
                             && case
                                 .expect_value
@@ -299,6 +299,7 @@ async fn run_single_case(case: &EvalCase) -> bool {
                 id,
                 sandbox_id: sb,
                 name: String::from(name),
+                description: String::new(),
                 status: ScenarioStatus::Succeeded,
                 actions: vec![AxSimAction {
                     target_node_id: Uuid::from_u128(1),
@@ -309,12 +310,26 @@ async fn run_single_case(case: &EvalCase) -> bool {
                     at_step: 0,
                 }],
                 params: SimParams::default(),
-                summary: Some(ScenarioSummary {
+                result: Some(ScenarioSummary {
                     affected_count: 4,
-                    max_abs_delta: max_d,
+                    top_impacts: vec![ImpactRow {
+                        node_id: Uuid::from_u128(1),
+                        type_name: String::from("Factory"),
+                        title: String::from("晶圆一厂 F-1"),
+                        metric: String::from("output"),
+                        before_val: Some(1000.0),
+                        after_val: 1000.0 - max_d,
+                        delta: Some(-max_d),
+                        delta_ratio: Some(-max_d / 1000.0),
+                        p10: None,
+                        p90: None,
+                        hop_distance: 0,
+                        top_path: vec![Uuid::from_u128(1)],
+                    }],
                     kpis: Vec::new(),
                     warnings: Vec::new(),
                     converged: true,
+                    reason: None,
                     iterations: 1,
                 }),
                 error_message: None,
@@ -322,7 +337,7 @@ async fn run_single_case(case: &EvalCase) -> bool {
                 is_stale: false,
                 created_by: None,
                 created_at: now,
-                completed_at: Some(now),
+                finished_at: Some(now),
             };
             let scenarios = vec![mk_sc(s1, "s1", 300.0), mk_sc(s2, "s2", 150.0)];
             let mut kpi_vals = BTreeMap::new();

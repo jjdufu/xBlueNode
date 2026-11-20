@@ -3,18 +3,20 @@
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
-use axpoint_analytics::nl2sql::{AskPipelineInput, LinkBuildExtras, QueryHistoryTurn};
-use axpoint_analytics::sql_guard::{CatalogDatasetEntry, TenantCatalog};
-use axpoint_analytics::{DbRecallEvidence, run_ask_pipeline_conn};
+use axpoint_analytics::nl2sql::schema_link::SchemaLinkExtras;
+use axpoint_analytics::{
+    AskPipelineInput, AskTurnRecord, CatalogDatasetEntry, SchemaRecallBundle, TenantCatalog,
+    run_ask_pipeline_conn,
+};
 use axpoint_domain::AppError;
 use axpoint_domain::analytics::{AskIntent, AskRequest, AskResponse};
 use axpoint_domain::axhub::ColumnMeta;
-use axpoint_domain::enums::{DataType, InterventionMode, PiiCategory, RollupGrain, SimAskIntent};
+use axpoint_domain::enums::{DataType, InterventionMode, PiiCategory};
 use axpoint_domain::graph::NodeSearchHit;
 use axpoint_domain::ports::AiPort;
 use axpoint_domain::sim::{
-    CompareBriefing, CompareKpiRow, CompareNodeRow, ImpactRow, ScenarioRecord, SimGraph, SimNode,
-    SimResult,
+    CompareBriefing, CompareKpiRow, CompareNodeRow, ImpactRow, ScenarioRecord, SimAskIntent,
+    SimGraph, SimNode, SimResult,
 };
 use axpoint_domain::topology::AxSimAction;
 use serde::{Deserialize, Serialize};
@@ -31,7 +33,7 @@ pub struct RawWhatIfIntervention {
     #[serde(default = "default_metric_key")]
     pub metric_key: String,
     /// Intervention mode (`RATIO` | `ADD` | `ABSOLUTE`).
-    #[serde(default)]
+    #[serde(default = "default_intervention_mode")]
     pub mode: InterventionMode,
     /// Numeric perturbation value.
     pub value: f64,
@@ -42,6 +44,10 @@ pub struct RawWhatIfIntervention {
 
 fn default_metric_key() -> String {
     String::from("output")
+}
+
+const fn default_intervention_mode() -> InterventionMode {
+    InterventionMode::Ratio
 }
 
 /// Structured LLM extraction result for `WHAT_IF` questions.
@@ -59,7 +65,7 @@ pub struct WhatIfExtraction {
 }
 
 /// Outcome of resolving raw `WHAT_IF` mentions against sandbox & graph nodes.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum DisambiguationOutcome {
     /// All interventions uniquely matched target nodes and normalized cleanly.
     Resolved(Vec<AxSimAction>),
@@ -448,37 +454,30 @@ pub fn build_impacts_duckdb(
         }
     }
 
-    let columns = vec![
-        col_meta("node_id", DataType::String),
-        col_meta("type_name", DataType::String),
-        col_meta("title", DataType::String),
-        col_meta("metric", DataType::String),
-        col_meta("before_val", DataType::Float64),
-        col_meta("after_val", DataType::Float64),
-        col_meta("delta", DataType::Float64),
-        col_meta("delta_ratio", DataType::Float64),
-        col_meta("hop_distance", DataType::Int64),
-        col_meta("p10", DataType::Float64),
-        col_meta("p90", DataType::Float64),
+    let col_specs = [
+        ("node_id", DataType::String),
+        ("type_name", DataType::String),
+        ("title", DataType::String),
+        ("metric", DataType::String),
+        ("before_val", DataType::Float64),
+        ("after_val", DataType::Float64),
+        ("delta", DataType::Float64),
+        ("delta_ratio", DataType::Float64),
+        ("hop_distance", DataType::Int64),
+        ("p10", DataType::Float64),
+        ("p90", DataType::Float64),
     ];
 
-    let ds_entry = CatalogDatasetEntry {
-        id: Uuid::nil(),
-        name: String::from("impacts"),
-        display_name: String::from("仿真影响明细表"),
-        description: String::from(
-            "AxSim 场景影响结果明细表，包含 node_id, type_name, title, metric, before_val, after_val, delta, delta_ratio, hop_distance, p10, p90 字段",
-        ),
-        lake_table: String::from("impacts"),
-        is_live: false,
-        live_connection: None,
-        live_table: None,
-        live_schema: None,
-        certified: true,
-        rollup_grain: RollupGrain::None,
-        row_count: i64::try_from(impacts.len()).unwrap_or(i64::MAX),
-        columns,
-    };
+    let mut ds_entry = CatalogDatasetEntry::simple(Uuid::nil(), "impacts", "impacts");
+    ds_entry.display_name = String::from("仿真影响明细表");
+    ds_entry.row_count = i64::try_from(impacts.len()).unwrap_or(i64::MAX);
+    for (idx, (col_name, data_type)) in col_specs.iter().enumerate() {
+        let ordinal = i32::try_from(idx).unwrap_or(0);
+        ds_entry.columns.insert(
+            String::from(*col_name),
+            col_meta(col_name, *data_type, ordinal),
+        );
+    }
 
     let mut catalog = TenantCatalog::new(tenant_id);
     catalog.insert_dataset(ds_entry);
@@ -486,14 +485,17 @@ pub fn build_impacts_duckdb(
     Ok((conn, catalog))
 }
 
-fn col_meta(name: &str, data_type: DataType) -> ColumnMeta {
+fn col_meta(name: &str, data_type: DataType, ordinal: i32) -> ColumnMeta {
     ColumnMeta {
-        name: String::from(name),
-        display_name: Some(String::from(name)),
+        dataset_id: Uuid::nil(),
+        column_name: String::from(name),
         data_type,
-        nullable: true,
         pii_category: PiiCategory::None,
-        description: None,
+        pii_confirmed: false,
+        description: String::new(),
+        business_term: String::new(),
+        unit: String::new(),
+        ordinal,
     }
 }
 
@@ -513,12 +515,12 @@ pub async fn query_impacts_with_nl2sql<A: AiPort>(
         session_id: None,
         context: None,
     };
-    let recall = DbRecallEvidence::default();
-    let extras = LinkBuildExtras {
+    let recall = SchemaRecallBundle::default();
+    let extras = SchemaLinkExtras {
         restrict_dataset_ids: vec![Uuid::nil()],
-        ..LinkBuildExtras::default()
+        ..SchemaLinkExtras::default()
     };
-    let turns: Vec<QueryHistoryTurn> = Vec::new();
+    let turns: Vec<AskTurnRecord> = Vec::new();
     let input = AskPipelineInput {
         request: &req,
         catalog: &catalog,
@@ -743,19 +745,20 @@ pub async fn generate_grounded_briefing<A: AiPort>(
     for sc in scenarios {
         allowed_tokens.push(sc.id.to_string());
         allowed_tokens.push(sc.name.clone());
+        let max_d = scenario_max_abs_delta(sc);
         let _w = writeln!(
             table_text,
             "- scenario id={} name={} status={} affected={}",
             sc.id,
             sc.name,
             sc.status.as_str(),
-            sc.summary.as_ref().map_or(0, |s| s.affected_count)
+            sc.result.as_ref().map_or(0, |s| s.affected_count)
         );
-        if let Some(ref s) = sc.summary {
+        if let Some(ref s) = sc.result {
             allowed_nums.push(f64::from(
                 u32::try_from(s.affected_count).unwrap_or(u32::MAX),
             ));
-            allowed_nums.push(s.max_abs_delta);
+            allowed_nums.push(max_d);
         }
     }
 
@@ -844,6 +847,16 @@ pub async fn generate_grounded_briefing<A: AiPort>(
     Ok(deterministic_compare_briefing(scenarios, kpis))
 }
 
+fn scenario_max_abs_delta(sc: &ScenarioRecord) -> f64 {
+    sc.result.as_ref().map_or(0.0, |s| {
+        s.top_impacts
+            .iter()
+            .filter_map(|r| r.delta)
+            .map(f64::abs)
+            .fold(0.0_f64, f64::max)
+    })
+}
+
 fn parse_briefing_json(raw: &str) -> Option<LlmBriefingRaw> {
     let trimmed = raw.trim();
     if let Ok(v) = serde_json::from_str::<LlmBriefingRaw>(trimmed) {
@@ -885,8 +898,14 @@ fn deterministic_compare_briefing(
     kpis: &[CompareKpiRow],
 ) -> CompareBriefing {
     let best = scenarios.iter().min_by(|a, b| {
-        let da = a.summary.as_ref().map_or(f64::MAX, |s| s.max_abs_delta);
-        let db = b.summary.as_ref().map_or(f64::MAX, |s| s.max_abs_delta);
+        let da = a
+            .result
+            .as_ref()
+            .map_or(f64::MAX, |_| scenario_max_abs_delta(a));
+        let db = b
+            .result
+            .as_ref()
+            .map_or(f64::MAX, |_| scenario_max_abs_delta(b));
         da.total_cmp(&db)
     });
 
@@ -904,8 +923,8 @@ fn deterministic_compare_briefing(
 
     let mut reasons = Vec::new();
     for sc in scenarios {
-        let affected = sc.summary.as_ref().map_or(0, |s| s.affected_count);
-        let max_d = sc.summary.as_ref().map_or(0.0, |s| s.max_abs_delta);
+        let affected = sc.result.as_ref().map_or(0, |s| s.affected_count);
+        let max_d = scenario_max_abs_delta(sc);
         reasons.push(format!(
             "场景 {}：受影响指标 {} 项，最大绝对变动 {:.2}。",
             sc.name, affected, max_d

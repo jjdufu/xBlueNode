@@ -9,7 +9,7 @@ use axpoint_domain::PaginatedList;
 use axpoint_domain::agent::{SimRunToolInput, SimRunToolOutput};
 use axpoint_domain::enums::{
     AuditAction, Environment, InterventionMode, OutboxTopic, Permission, ScenarioStatus,
-    SimAskIntent, TriggerType,
+    TriggerType,
 };
 use axpoint_domain::flow::{ApprovalSourceKind, ApprovalStatus, StartRunParams};
 use axpoint_domain::graph::NodeSearchQuery;
@@ -21,7 +21,7 @@ use axpoint_domain::sim::{
     CreateOverlayLinkRequest, CreateOverlayNodeRequest, CreateScenarioRequest, DecisionRecord,
     DecisionStatus, ImpactListQuery, ImpactRow, PatchOverlayLinkRequest, PatchOverlayNodeRequest,
     RefreshBaseResponse, SandboxGraphLink, SandboxGraphNode, SandboxGraphResponse, SandboxScope,
-    ScenarioRecord, SimAskRequest, SimAskResponse, SimGraph, SimParams,
+    ScenarioRecord, SimAskIntent, SimAskRequest, SimAskResponse, SimGraph, SimParams,
 };
 use axpoint_domain::topology::{
     AxSandboxRecord, AxSimAction, AxSimResult, CreateAxSandboxRequest, SimulateAxSandboxRequest,
@@ -960,6 +960,7 @@ async fn sim_ask_handler(
                                 &overlay_hash,
                                 CreateScenarioRequest {
                                     name: sc_name,
+                                    description: String::new(),
                                     actions: actions.clone(),
                                     params: sim_params.clone(),
                                 },
@@ -1162,6 +1163,7 @@ impl SimExecutionPort for ServerSimPort {
                     &overlay_hash,
                     CreateScenarioRequest {
                         name: sc_name,
+                        description: String::new(),
                         actions: actions.clone(),
                         params: params.clone(),
                     },
@@ -1191,15 +1193,20 @@ impl SimExecutionPort for ServerSimPort {
                 )
                 .await?;
 
-            let max_abs_delta = solved.summary.as_ref().map_or(0.0, |s| s.max_abs_delta);
-            let affected_count = solved.summary.as_ref().map_or(0, |s| s.affected_count);
+            let max_abs_delta = top_page
+                .items
+                .iter()
+                .filter_map(|r| r.delta)
+                .map(f64::abs)
+                .fold(0.0_f64, f64::max);
+            let affected_count = solved.result.as_ref().map_or(0, |s| s.affected_count);
             let kpis = solved
-                .summary
+                .result
                 .as_ref()
                 .map(|s| s.kpis.clone())
                 .unwrap_or_default();
             let warnings = solved
-                .summary
+                .result
                 .as_ref()
                 .map(|s| s.warnings.clone())
                 .unwrap_or_default();
