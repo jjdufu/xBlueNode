@@ -225,15 +225,23 @@ struct DocRagOutcome {
     citations: Vec<AskCitation>,
 }
 
-async fn run_doc_rag_pipeline(
+/// Executes 5-channel hypergraph document recall (`vector + bm25 + entity_link + multi_hop + context`)
+/// fused via RRF, optionally filtered by `doc_title_prefix` (`08-STEP09` §09.5.1).
+pub(crate) async fn recall_knowledge_hits(
     state: &AppState,
     tenant_id: &str,
     query: &str,
     top_k: usize,
-) -> Result<DocRagOutcome, AppError> {
+    doc_title_prefix: Option<&str>,
+) -> Result<(Vec<FusedHit>, Vec<String>), AppError> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() || top_k == 0 {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let tenant_ai = state.ai.for_tenant(tenant_id);
     let (embed_res, seed_entities) = tokio::join!(
-        state.ai.embed_one(query),
-        state.ai.extract_query_entities(query)
+        tenant_ai.embed_one(trimmed),
+        tenant_ai.extract_query_entities(trimmed)
     );
 
     let (q_vec, q_dim) = embed_res?;
@@ -242,7 +250,7 @@ async fn run_doc_rag_pipeline(
     let recall_started = Instant::now();
     let (vec_res, bm25_res, ent_res, hop_res) = tokio::join!(
         state.store.recall_vector(tenant_id, q_vec, q_dim, 12),
-        state.store.recall_bm25(tenant_id, query, 12),
+        state.store.recall_bm25(tenant_id, trimmed, 12),
         state.store.recall_entity_link(tenant_id, &seeds, 10),
         state.store.recall_multi_hop(tenant_id, &seeds, 10)
     );
@@ -262,8 +270,33 @@ async fn run_doc_rag_pipeline(
         .await?;
     all_candidates.extend(ctx_res);
 
-    let hits = rrf_fuse(all_candidates, top_k);
-    let answer = state.ai.synthesize_answer(query, &hits).await?;
+    let clean_prefix = doc_title_prefix.map(str::trim).filter(|s| !s.is_empty());
+    let fetch_k = if clean_prefix.is_some() {
+        top_k.saturating_mul(4).max(20)
+    } else {
+        top_k
+    };
+    let mut hits = rrf_fuse(all_candidates, fetch_k);
+    if let Some(prefix) = clean_prefix {
+        hits.retain(|h| h.doc_title.starts_with(prefix));
+        hits.truncate(top_k);
+    }
+    Ok((hits, seeds))
+}
+
+async fn run_doc_rag_pipeline(
+    state: &AppState,
+    tenant_id: &str,
+    query: &str,
+    top_k: usize,
+) -> Result<DocRagOutcome, AppError> {
+    let (hits, seeds) = recall_knowledge_hits(state, tenant_id, query, top_k, None).await?;
+    let answer = state
+        .ai
+        .for_tenant(tenant_id)
+        .with_purpose_override(axpoint_domain::enums::Purpose::Summarize)
+        .synthesize_answer(query, &hits)
+        .await?;
     let citations = hits
         .iter()
         .map(|h| AskCitation {

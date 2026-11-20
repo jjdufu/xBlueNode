@@ -1,5 +1,6 @@
 //! `AxPoint` Core HTTP server (`Axum`) with `AxGuard` authentication, background workers, and SPA hosting.
 
+mod agent_bridge;
 mod auth;
 mod background;
 mod routes;
@@ -26,6 +27,7 @@ use sqlx::PgConnection;
 use sqlx::postgres::PgPoolOptions;
 use tracing::info;
 
+use crate::agent_bridge::{build_axagent_services, build_llm_router};
 use crate::sidecar::HttpSidecarClient;
 use crate::state::AppState;
 
@@ -63,42 +65,7 @@ async fn main() -> Result<(), AppError> {
     maybe_run_migrations_on_start().await?;
 
     let max_upload_bytes = parse_max_upload_bytes()?;
-    let http = build_sidecar_http_client()?;
-    let (llm_cfg, embed_cfg) = load_ai_configs()?;
-    let keyring = Arc::new(CredentialKeyring::from_env()?);
-    let sidecar = Arc::new(HttpSidecarClient::new(&parser_base_url, http.clone()));
-    let analytics_pool = Arc::new(SessionPool::new(load_analytics_config(
-        &data_root,
-        &database_url,
-        (*keyring).clone(),
-    )?));
-
-    let pool = PgPoolOptions::new()
-        .max_connections(16)
-        .connect(&database_url)
-        .await
-        .map_err(|err| AppError::Database(format!("postgres connection failed: {err}")))?;
-
-    let store = PgStore::new(pool);
-    if let Err(err) = store.ensure_metric_partitions(24, 3).await {
-        tracing::warn!(error = %err, "startup ensure_metric_partitions skipped");
-    }
-
-    let authenticator = Arc::new(Authenticator::from_env(store.clone())?);
-    let audit = AuditWriter::new(store.clone());
-
-    let state = AppState {
-        store,
-        ai: AiGateway::new(llm_cfg, embed_cfg),
-        authenticator,
-        audit,
-        keyring,
-        sidecar,
-        analytics_pool,
-        data_root,
-        parser_base_url,
-        http,
-    };
+    let state = assemble_runtime_state(&database_url, parser_base_url, data_root).await?;
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
     background::spawn_background_workers(&state, &shutdown_rx);
     let shutdown_audit = state.audit.clone();
@@ -311,6 +278,56 @@ fn load_analytics_config(
     })
 }
 
+async fn assemble_runtime_state(
+    database_url: &str,
+    parser_base_url: String,
+    data_root: PathBuf,
+) -> Result<AppState, AppError> {
+    let http = build_sidecar_http_client()?;
+    let (llm_cfg, embed_cfg) = load_ai_configs()?;
+    let keyring = Arc::new(CredentialKeyring::from_env()?);
+    let sidecar = Arc::new(HttpSidecarClient::new(&parser_base_url, http.clone()));
+    let analytics_pool = Arc::new(SessionPool::new(load_analytics_config(
+        &data_root,
+        database_url,
+        (*keyring).clone(),
+    )?));
+
+    let pool = PgPoolOptions::new()
+        .max_connections(16)
+        .connect(database_url)
+        .await
+        .map_err(|err| AppError::Database(format!("postgres connection failed: {err}")))?;
+
+    let store = PgStore::new(pool);
+    if let Err(err) = store.ensure_metric_partitions(24, 3).await {
+        tracing::warn!(error = %err, "startup ensure_metric_partitions skipped");
+    }
+
+    let authenticator = Arc::new(Authenticator::from_env(store.clone())?);
+    let audit = AuditWriter::new(store.clone());
+    let llm_router = build_llm_router(&store, &keyring, llm_cfg.clone(), embed_cfg.clone());
+    let ai = AiGateway::new(llm_cfg, embed_cfg).with_router(Arc::clone(&llm_router));
+    let axagent = build_axagent_services(&store, &llm_router, &keyring, &audit, None);
+
+    let state = AppState {
+        store,
+        ai,
+        llm_router,
+        axagent: Arc::clone(&axagent),
+        authenticator,
+        audit,
+        keyring,
+        sidecar,
+        analytics_pool,
+        data_root,
+        parser_base_url,
+        http,
+    };
+    axagent.capability.bind_state(state.clone());
+    Ok(state)
+}
+
 async fn shutdown_signal(shutdown_tx: tokio::sync::watch::Sender<bool>) {
     if let Err(err) = tokio::signal::ctrl_c().await {
         tracing::warn!(error = %err, "ctrl_c signal wait failed");
@@ -331,6 +348,7 @@ mod tests {
     use sqlx::postgres::PgPoolOptions;
     use uuid::Uuid;
 
+    use crate::agent_bridge::{build_axagent_services, build_llm_router};
     use crate::sidecar::HttpSidecarClient;
     use crate::spa::build_app;
     use crate::state::AppState;
@@ -348,27 +366,30 @@ mod tests {
             Some(String::from(TEST_DEV_TOKEN)),
         )?);
         let audit = AuditWriter::new(store.clone());
-        let ai = AiGateway::new(
-            LlmConfig {
-                api_base: String::from("http://127.0.0.1:9"),
-                api_key: String::new(),
-                model: String::from("test-llm"),
-            },
-            EmbeddingConfig {
-                api_base: String::from("http://127.0.0.1:9"),
-                api_key: String::new(),
-                model: String::from("test-embed"),
-                configured_dim: Some(64),
-            },
-        );
+        let llm_cfg = LlmConfig {
+            api_base: String::from("http://127.0.0.1:9"),
+            api_key: String::new(),
+            model: String::from("test-llm"),
+        };
+        let embed_cfg = EmbeddingConfig {
+            api_base: String::from("http://127.0.0.1:9"),
+            api_key: String::new(),
+            model: String::from("test-embed"),
+            configured_dim: Some(64),
+        };
+        let keyring = Arc::new(CredentialKeyring::ephemeral()?);
+        let llm_router = build_llm_router(&store, &keyring, llm_cfg.clone(), embed_cfg.clone());
+        let ai = AiGateway::new(llm_cfg, embed_cfg).with_router(Arc::clone(&llm_router));
+        let axagent = build_axagent_services(&store, &llm_router, &keyring, &audit, None);
         let http = reqwest::Client::new();
         let parser_base_url = String::from("http://127.0.0.1:8001");
-        let keyring = Arc::new(CredentialKeyring::ephemeral()?);
         let sidecar = Arc::new(HttpSidecarClient::new(&parser_base_url, http.clone()));
         let analytics_pool = Arc::new(SessionPool::new(AnalyticsConfig::default()));
-        Ok(AppState {
+        let state = AppState {
             store,
             ai,
+            llm_router,
+            axagent: Arc::clone(&axagent),
             authenticator,
             audit,
             keyring,
@@ -377,7 +398,9 @@ mod tests {
             data_root: std::env::temp_dir(),
             parser_base_url,
             http,
-        })
+        };
+        axagent.capability.bind_state(state.clone());
+        Ok(state)
     }
 
     #[tokio::test]

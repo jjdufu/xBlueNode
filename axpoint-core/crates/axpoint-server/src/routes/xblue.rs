@@ -2,7 +2,7 @@
 //! domain objects, and `AxGraph` runtime topology routes (`/api/xblue/*`).
 
 #[path = "xblue_graphql.rs"]
-mod xblue_graphql;
+pub(crate) mod xblue_graphql;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::str::FromStr;

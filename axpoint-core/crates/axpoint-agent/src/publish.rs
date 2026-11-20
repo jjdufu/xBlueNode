@@ -167,6 +167,7 @@ impl<R> CapabilityPublisher<R> {
         let response_cache = Cache::builder()
             .max_capacity(4_096)
             .expire_after(PerEntryTtlExpiry)
+            .support_invalidation_closures()
             .build();
         Self {
             store,
