@@ -4,6 +4,13 @@ source "$(dirname "$0")/lib.sh"
 
 (cd axpoint-core && cargo test -p axpoint-domain sim && cargo test -p axpoint-db sim_repo)
 
+SANDBOX_ID="${SANDBOX_ID:-$(api GET /api/axsim/sandboxes | jq -r '.[0].id // empty')}"
+WAREHOUSE_NODE_ID="${WAREHOUSE_NODE_ID:-$(sql_app default "SELECT id FROM xb_nodes WHERE node_key = 'W-1' LIMIT 1")}"
+FACTORY1_NODE_ID="${FACTORY1_NODE_ID:-$(sql_app default "SELECT id FROM xb_nodes WHERE node_key = 'F-1' LIMIT 1")}"
+if [[ -z "$SANDBOX_ID" || -z "$WAREHOUSE_NODE_ID" || -z "$FACTORY1_NODE_ID" ]]; then
+  eval "$(bash "$(dirname "$0")/../seed/10-axsim.sh")"
+fi
+
 PROD_BEFORE=$(sql_app default "SELECT md5(string_agg(id::text || metrics::text, ',' ORDER BY id)) FROM xb_nodes")
 
 # 写时复制：沙盘编辑不影响生产

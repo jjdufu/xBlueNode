@@ -308,7 +308,11 @@ async fn assemble_runtime_state(
     let audit = AuditWriter::new(store.clone());
     let llm_router = build_llm_router(&store, &keyring, llm_cfg.clone(), embed_cfg.clone());
     let ai = AiGateway::new(llm_cfg, embed_cfg).with_router(Arc::clone(&llm_router));
-    let axagent = build_axagent_services(&store, &llm_router, &keyring, &audit, None);
+    let sim_port: Arc<dyn axpoint_domain::ports::SimExecutionPort> =
+        Arc::new(routes::axsim::ServerSimPort {
+            store: store.clone(),
+        });
+    let axagent = build_axagent_services(&store, &llm_router, &keyring, &audit, Some(sim_port));
 
     let state = AppState {
         store,
@@ -380,7 +384,11 @@ mod tests {
         let keyring = Arc::new(CredentialKeyring::ephemeral()?);
         let llm_router = build_llm_router(&store, &keyring, llm_cfg.clone(), embed_cfg.clone());
         let ai = AiGateway::new(llm_cfg, embed_cfg).with_router(Arc::clone(&llm_router));
-        let axagent = build_axagent_services(&store, &llm_router, &keyring, &audit, None);
+        let sim_port: Arc<dyn axpoint_domain::ports::SimExecutionPort> =
+            Arc::new(crate::routes::axsim::ServerSimPort {
+                store: store.clone(),
+            });
+        let axagent = build_axagent_services(&store, &llm_router, &keyring, &audit, Some(sim_port));
         let http = reqwest::Client::new();
         let parser_base_url = String::from("http://127.0.0.1:8001");
         let sidecar = Arc::new(HttpSidecarClient::new(&parser_base_url, http.clone()));
