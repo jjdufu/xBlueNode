@@ -309,7 +309,7 @@ async fn assemble_runtime_state(
     let llm_router = build_llm_router(&store, &keyring, llm_cfg.clone(), embed_cfg.clone());
     let ai = AiGateway::new(llm_cfg, embed_cfg).with_router(Arc::clone(&llm_router));
     let sim_port: Arc<dyn axpoint_domain::ports::SimExecutionPort> =
-        Arc::new(crate::routes::axsim::ServerSimPort {
+        Arc::new(routes::axsim::ServerSimPort {
             store: store.clone(),
         });
     let axagent = build_axagent_services(&store, &llm_router, &keyring, &audit, Some(sim_port));

@@ -296,6 +296,19 @@ enum SingleNodeMatch {
     None,
 }
 
+fn nodes_to_candidates(nodes: &[&SimNode]) -> Vec<axpoint_domain::sim::SimAskCandidate> {
+    nodes
+        .iter()
+        .take(8)
+        .map(|n| axpoint_domain::sim::SimAskCandidate {
+            node_id: n.id,
+            type_name: n.type_name.clone(),
+            title: n.title.clone(),
+            node_key: n.node_key.clone(),
+        })
+        .collect()
+}
+
 fn match_single_node(
     query: &str,
     graph_nodes: &[SimNode],
@@ -307,9 +320,6 @@ fn match_single_node(
         return SingleNodeMatch::Unique(node.id, node.metrics.keys().next().cloned());
     }
 
-    let q_lower = query.to_lowercase();
-
-    // 1. Exact node_key or title match in sandbox graph.
     let exact: Vec<&SimNode> = graph_nodes
         .iter()
         .filter(|n| n.node_key.eq_ignore_ascii_case(query) || n.title.eq_ignore_ascii_case(query))
@@ -320,20 +330,10 @@ fn match_single_node(
         return SingleNodeMatch::Unique(first.id, first.metrics.keys().next().cloned());
     }
     if exact.len() > 1 {
-        return SingleNodeMatch::Ambiguous(
-            exact
-                .into_iter()
-                .map(|n| axpoint_domain::sim::SimAskCandidate {
-                    node_id: n.id,
-                    type_name: n.type_name.clone(),
-                    title: n.title.clone(),
-                    node_key: n.node_key.clone(),
-                })
-                .collect(),
-        );
+        return SingleNodeMatch::Ambiguous(nodes_to_candidates(&exact));
     }
 
-    // 2. Substring match on node_key or title in sandbox graph.
+    let q_lower = query.to_lowercase();
     let partial: Vec<&SimNode> = graph_nodes
         .iter()
         .filter(|n| {
@@ -347,21 +347,17 @@ fn match_single_node(
         return SingleNodeMatch::Unique(first.id, first.metrics.keys().next().cloned());
     }
     if partial.len() > 1 {
-        return SingleNodeMatch::Ambiguous(
-            partial
-                .into_iter()
-                .take(8)
-                .map(|n| axpoint_domain::sim::SimAskCandidate {
-                    node_id: n.id,
-                    type_name: n.type_name.clone(),
-                    title: n.title.clone(),
-                    node_key: n.node_key.clone(),
-                })
-                .collect(),
-        );
+        return SingleNodeMatch::Ambiguous(nodes_to_candidates(&partial));
     }
 
-    // 3. Fallback to hybrid search hits restricted to nodes present in sandbox graph (or all hits if graph empty).
+    match_from_hybrid_hits(query, graph_nodes, extra_hits)
+}
+
+fn match_from_hybrid_hits(
+    query: &str,
+    graph_nodes: &[SimNode],
+    extra_hits: &[NodeSearchHit],
+) -> SingleNodeMatch {
     let filtered_hits: Vec<&NodeSearchHit> = if graph_nodes.is_empty() {
         extra_hits.iter().collect()
     } else {
@@ -738,6 +734,63 @@ pub async fn generate_grounded_briefing<A: AiPort>(
     kpis: &[CompareKpiRow],
     key_nodes: &[CompareNodeRow],
 ) -> Result<CompareBriefing, AppError> {
+    let (allowed_nums, allowed_tokens, table_text) =
+        collect_briefing_grounding(scenarios, kpis, key_nodes);
+
+    let sys = "PURPOSE:SIM_COMPARE_BRIEFING\nYou are a causal simulation decision analyst. Compare the scenarios below and output ONLY valid JSON: {\"recommended_scenario_id\":\"<exact uuid or scenario name>\",\"summary\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"]}. Cite ONLY exact numbers from the table.";
+    let usr = format!("scenarios_and_kpis:\n{table_text}");
+
+    if let Ok(raw) = ai.chat(sys, &usr).await
+        && let Some(parsed) = parse_briefing_json(&raw)
+    {
+        let rec_ref = parsed
+            .recommended_scenario_id
+            .as_deref()
+            .or(parsed.recommended_scenario.as_deref());
+        let resolved_id = resolve_scenario_ref(rec_ref, scenarios);
+        let reasons = if parsed.reasons.is_empty() {
+            parsed.key_tradeoffs
+        } else {
+            parsed.reasons
+        };
+        let risks = if parsed.risks.is_empty() {
+            parsed.warnings
+        } else {
+            parsed.risks
+        };
+
+        let mut combined_text = parsed.summary.clone();
+        for r in &reasons {
+            combined_text.push(' ');
+            combined_text.push_str(r);
+        }
+        for rk in &risks {
+            combined_text.push(' ');
+            combined_text.push_str(rk);
+        }
+
+        if resolved_id.is_some()
+            && !parsed.summary.trim().is_empty()
+            && verify_grounded_numbers(&combined_text, &allowed_nums, &allowed_tokens)
+        {
+            return Ok(CompareBriefing {
+                summary: parsed.summary,
+                recommended_scenario_id: resolved_id,
+                reasons,
+                risks,
+                error: None,
+            });
+        }
+    }
+
+    Ok(deterministic_compare_briefing(scenarios, kpis))
+}
+
+fn collect_briefing_grounding(
+    scenarios: &[ScenarioRecord],
+    kpis: &[CompareKpiRow],
+    key_nodes: &[CompareNodeRow],
+) -> (Vec<f64>, Vec<String>, String) {
     let mut allowed_nums = Vec::new();
     let mut allowed_tokens = Vec::new();
     let mut table_text = String::new();
@@ -797,54 +850,7 @@ pub async fn generate_grounded_briefing<A: AiPort>(
         }
     }
 
-    let sys = "PURPOSE:SIM_COMPARE_BRIEFING\nYou are a causal simulation decision analyst. Compare the scenarios below and output ONLY valid JSON: {\"recommended_scenario_id\":\"<exact uuid or scenario name>\",\"summary\":\"...\",\"reasons\":[\"...\"],\"risks\":[\"...\"]}. Cite ONLY exact numbers from the table.";
-    let usr = format!("scenarios_and_kpis:\n{table_text}");
-
-    if let Ok(raw) = ai.chat(sys, &usr).await
-        && let Some(parsed) = parse_briefing_json(&raw)
-    {
-        let rec_ref = parsed
-            .recommended_scenario_id
-            .as_deref()
-            .or(parsed.recommended_scenario.as_deref());
-        let resolved_id = resolve_scenario_ref(rec_ref, scenarios);
-
-        let reasons = if parsed.reasons.is_empty() {
-            parsed.key_tradeoffs
-        } else {
-            parsed.reasons
-        };
-        let risks = if parsed.risks.is_empty() {
-            parsed.warnings
-        } else {
-            parsed.risks
-        };
-
-        let mut combined_text = parsed.summary.clone();
-        for r in &reasons {
-            combined_text.push(' ');
-            combined_text.push_str(r);
-        }
-        for rk in &risks {
-            combined_text.push(' ');
-            combined_text.push_str(rk);
-        }
-
-        if resolved_id.is_some()
-            && !parsed.summary.trim().is_empty()
-            && verify_grounded_numbers(&combined_text, &allowed_nums, &allowed_tokens)
-        {
-            return Ok(CompareBriefing {
-                summary: parsed.summary,
-                recommended_scenario_id: resolved_id,
-                reasons,
-                risks,
-                error: None,
-            });
-        }
-    }
-
-    Ok(deterministic_compare_briefing(scenarios, kpis))
+    (allowed_nums, allowed_tokens, table_text)
 }
 
 fn scenario_max_abs_delta(sc: &ScenarioRecord) -> f64 {

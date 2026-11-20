@@ -1,12 +1,11 @@
 //! `AxSim` sandbox cloning, CoW overlay editing, causal simulation, Ask, compare, and decision routes (`/api/axsim/*`).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
 use axpoint_db::PgStore;
 use axpoint_domain::AppError;
-use axpoint_domain::PaginatedList;
 use axpoint_domain::agent::{SimRunToolInput, SimRunToolOutput};
+use axpoint_domain::axhub::PaginatedList;
 use axpoint_domain::enums::{
     AuditAction, Environment, InterventionMode, OutboxTopic, Permission, TriggerType,
 };
@@ -26,6 +25,7 @@ use axpoint_domain::sim::{
 use axpoint_domain::topology::{
     AxSandboxRecord, AxSimAction, AxSimResult, CreateAxSandboxRequest, SimulateAxSandboxRequest,
 };
+use axpoint_security::AuthPrincipal;
 use axpoint_server::sim_ask::{
     DisambiguationOutcome, classify_sim_ask_intent, disambiguate_what_if_actions,
     extract_what_if_interventions, generate_grounded_briefing, graph_hint_nodes,
@@ -37,7 +37,6 @@ use axum::{Json, Router};
 use serde::Serialize;
 use uuid::Uuid;
 
-use crate::auth::AuthPrincipal;
 use crate::state::{ApiJson, ApiPath, ApiQuery, AppState, HttpError};
 
 /// Builds the `/axsim/*` Axum router (`09-STEP10` §10.9).
@@ -373,8 +372,12 @@ async fn create_scenario_handler(
         )
         .await?;
 
-    let is_heavy =
-        graph.nodes.len() > 5_000 || req.params.uncertainty.as_ref().is_some_and(|u| u.enabled);
+    let is_heavy = graph.nodes.len() > 5_000
+        || req
+            .params
+            .uncertainty
+            .as_ref()
+            .is_some_and(|u| u.samples > 1);
     if is_heavy {
         let store = state.store.clone();
         let tenant_id = principal.tenant_id.clone();
@@ -534,16 +537,10 @@ async fn list_scenario_checkpoints_handler(
     Ok(Json(CheckpointsResponse { items }))
 }
 
-async fn compare_scenarios_handler(
-    State(state): State<AppState>,
-    principal: AuthPrincipal,
-    ApiQuery(query): ApiQuery<CompareScenariosQuery>,
-) -> Result<Json<CompareScenariosResponse>, HttpError> {
-    principal.require(Permission::DataRead)?;
-
+fn parse_compare_ids(raw_ids: &str) -> Result<Vec<Uuid>, AppError> {
     let mut ids = Vec::new();
     let mut seen = BTreeSet::new();
-    for part in query.ids.split(',') {
+    for part in raw_ids.split(',') {
         let trimmed = part.trim();
         if trimmed.is_empty() {
             continue;
@@ -558,13 +555,22 @@ async fn compare_scenarios_handler(
             ids.push(parsed);
         }
     }
-
     if !(2..=5).contains(&ids.len()) {
-        return Err(HttpError::from(AppError::bad(
+        return Err(AppError::bad(
             "INVALID_ARGUMENT",
             "compare requires between 2 and 5 unique scenario ids",
-        )));
+        ));
     }
+    Ok(ids)
+}
+
+async fn compare_scenarios_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiQuery(query): ApiQuery<CompareScenariosQuery>,
+) -> Result<Json<CompareScenariosResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let ids = parse_compare_ids(&query.ids)?;
 
     let mut scenarios = Vec::with_capacity(ids.len());
     for sc_id in &ids {
@@ -646,13 +652,11 @@ async fn compare_scenarios_handler(
     }))
 }
 
-fn build_comparison_matrices(
+fn compute_base_sums(
     graph: &SimGraph,
-    impacts_by_scenario: &[(Uuid, Vec<ImpactRow>)],
     metric_filter: Option<&BTreeSet<String>>,
     type_filter: Option<&str>,
-) -> (Vec<CompareKpiRow>, Vec<CompareNodeRow>) {
-    // Baseline sums across all sandbox nodes grouped by (type_name, metric).
+) -> BTreeMap<(String, String), f64> {
     let mut base_sums: BTreeMap<(String, String), f64> = BTreeMap::new();
     for node in &graph.nodes {
         if let Some(tf) = type_filter
@@ -672,7 +676,16 @@ fn build_comparison_matrices(
             *entry += *m_val;
         }
     }
+    base_sums
+}
 
+fn build_comparison_matrices(
+    graph: &SimGraph,
+    impacts_by_scenario: &[(Uuid, Vec<ImpactRow>)],
+    metric_filter: Option<&BTreeSet<String>>,
+    type_filter: Option<&str>,
+) -> (Vec<CompareKpiRow>, Vec<CompareNodeRow>) {
+    let base_sums = compute_base_sums(graph, metric_filter, type_filter);
     let mut kpi_values: BTreeMap<(String, String), BTreeMap<String, CompareKpiCell>> =
         BTreeMap::new();
     let mut node_rows_map: BTreeMap<(Uuid, String), CompareNodeRow> = BTreeMap::new();
@@ -693,9 +706,10 @@ fn build_comparison_matrices(
                 continue;
             }
 
-            let kpi_key = (row.type_name.clone(), row.metric.clone());
             let delta = row.delta.unwrap_or(row.after_val);
-            let agg = sc_kpi_delta.entry(kpi_key).or_insert((0.0, 0));
+            let agg = sc_kpi_delta
+                .entry((row.type_name.clone(), row.metric.clone()))
+                .or_insert((0.0, 0));
             agg.0 += delta;
             agg.1 = agg.1.saturating_add(1);
 
@@ -743,6 +757,16 @@ fn build_comparison_matrices(
         }
     }
 
+    (
+        finalize_kpi_rows(kpi_values, &base_sums),
+        finalize_node_rows(node_rows_map, impacts_by_scenario),
+    )
+}
+
+fn finalize_kpi_rows(
+    kpi_values: BTreeMap<(String, String), BTreeMap<String, CompareKpiCell>>,
+    base_sums: &BTreeMap<(String, String), f64>,
+) -> Vec<CompareKpiRow> {
     let mut kpis: Vec<CompareKpiRow> = kpi_values
         .into_iter()
         .map(|((type_name, metric), values)| {
@@ -771,7 +795,13 @@ fn build_comparison_matrices(
             .fold(0.0_f64, f64::max);
         max_b.total_cmp(&max_a)
     });
+    kpis
+}
 
+fn finalize_node_rows(
+    node_rows_map: BTreeMap<(Uuid, String), CompareNodeRow>,
+    impacts_by_scenario: &[(Uuid, Vec<ImpactRow>)],
+) -> Vec<CompareNodeRow> {
     let mut nodes: Vec<CompareNodeRow> = node_rows_map
         .into_values()
         .map(|mut r| {
@@ -798,8 +828,7 @@ fn build_comparison_matrices(
         .collect();
     nodes.sort_by(|a, b| b.max_spread.total_cmp(&a.max_spread));
     nodes.truncate(200);
-
-    (kpis, nodes)
+    nodes
 }
 
 async fn sim_ask_handler(
@@ -827,191 +856,199 @@ async fn sim_ask_handler(
 
     match intent {
         SimAskIntent::QueryResult => {
-            let scenario_id = match req.scenario_id {
-                Some(id) => id,
-                None => {
-                    let list = state
-                        .store
-                        .list_scenarios(&principal.tenant_id, req.sandbox_id)
-                        .await?;
-                    list.into_iter()
-                        .find(|s| s.status == ScenarioStatus::Succeeded)
-                        .map(|s| s.id)
-                        .ok_or_else(|| {
-                            AppError::bad(
-                                "INVALID_ARGUMENT",
-                                "no completed scenario found for QUERY_RESULT",
-                            )
-                        })?
-                }
-            };
-            let impacts = state
-                .store
-                .list_all_scenario_impacts(&principal.tenant_id, scenario_id)
-                .await?;
-            let ask_resp =
-                query_impacts_with_nl2sql(&state.ai, &principal.tenant_id, &impacts, question)
-                    .await?;
-
-            record_sim_ask_audit(&state, &principal, scenario_id, question, &ask_resp.sql).await;
-
-            Ok(Json(SimAskResponse {
-                intent: SimAskIntent::QueryResult,
-                scenario_id: Some(scenario_id),
-                answer: ask_resp.answer,
-                sql: (!ask_resp.sql.is_empty()).then_some(ask_resp.sql),
-                columns: ask_resp.columns,
-                rows: ask_resp.rows,
-                need_clarification: ask_resp.need_clarification,
-                candidates: Vec::new(),
-                impacts: Vec::new(),
-                kpis: Vec::new(),
-            }))
+            handle_sim_ask_query_result(&state, &principal, &req, question).await
         }
-        SimAskIntent::WhatIf => {
-            let graph = state
+        SimAskIntent::WhatIf => handle_sim_ask_what_if(&state, &principal, &req, question).await,
+    }
+}
+
+async fn handle_sim_ask_query_result(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    req: &SimAskRequest,
+    question: &str,
+) -> Result<Json<SimAskResponse>, HttpError> {
+    let scenario_id = match req.scenario_id {
+        Some(id) => id,
+        None => {
+            let list = state
                 .store
-                .load_graph(&principal.tenant_id, req.sandbox_id)
+                .list_scenarios(&principal.tenant_id, req.sandbox_id)
                 .await?;
-            let hints = graph_hint_nodes(&graph);
-            let extracted = extract_what_if_interventions(&state.ai, question, &hints).await?;
-
-            if extracted.need_clarification {
-                return Ok(Json(SimAskResponse {
-                    intent: SimAskIntent::WhatIf,
-                    scenario_id: None,
-                    answer: extracted
-                        .clarification_message
-                        .unwrap_or_else(|| String::from("请补充需要推演的目标节点与指标变动。")),
-                    sql: None,
-                    columns: Vec::new(),
-                    rows: Vec::new(),
-                    need_clarification: true,
-                    candidates: Vec::new(),
-                    impacts: Vec::new(),
-                    kpis: Vec::new(),
-                }));
-            }
-
-            let mut extra_hits = Vec::new();
-            for item in &extracted.interventions {
-                if let Ok(resp) = state
-                    .store
-                    .search_nodes(
-                        &principal.tenant_id,
-                        NodeSearchQuery {
-                            q: item.node_query.clone(),
-                            type_name: None,
-                            k: 10,
-                        },
-                        None,
+            list.into_iter()
+                .find(|s| s.status == ScenarioStatus::Succeeded)
+                .map(|s| s.id)
+                .ok_or_else(|| {
+                    AppError::bad(
+                        "INVALID_ARGUMENT",
+                        "no completed scenario found for QUERY_RESULT",
                     )
-                    .await
-                {
-                    extra_hits.extend(resp.items);
-                }
-            }
+                })?
+        }
+    };
+    let impacts = state
+        .store
+        .list_all_scenario_impacts(&principal.tenant_id, scenario_id)
+        .await?;
+    let ask_resp =
+        query_impacts_with_nl2sql(&state.ai, &principal.tenant_id, &impacts, question).await?;
 
-            match disambiguate_what_if_actions(&extracted.interventions, &graph.nodes, &extra_hits)
-            {
-                DisambiguationOutcome::Ambiguous { candidates, reason } => {
-                    Ok(Json(SimAskResponse {
-                        intent: SimAskIntent::WhatIf,
-                        scenario_id: None,
-                        answer: reason,
-                        sql: None,
-                        columns: Vec::new(),
-                        rows: Vec::new(),
-                        need_clarification: true,
-                        candidates,
-                        impacts: Vec::new(),
-                        kpis: Vec::new(),
-                    }))
-                }
-                DisambiguationOutcome::NotFound { reason } => Ok(Json(SimAskResponse {
-                    intent: SimAskIntent::WhatIf,
-                    scenario_id: None,
-                    answer: reason,
-                    sql: None,
-                    columns: Vec::new(),
-                    rows: Vec::new(),
-                    need_clarification: true,
-                    candidates: Vec::new(),
-                    impacts: Vec::new(),
-                    kpis: Vec::new(),
-                })),
-                DisambiguationOutcome::Resolved(actions) => {
-                    let sim_params = SimParams::default();
-                    let overlay_hash = state
-                        .store
-                        .compute_overlay_hash(&principal.tenant_id, req.sandbox_id)
-                        .await?;
-                    let sc_name = format!(
-                        "ask-{}",
-                        Uuid::new_v4().to_string().get(..8).unwrap_or("whatif")
-                    );
+    record_sim_ask_audit(state, principal, scenario_id, question, &ask_resp.sql).await;
 
-                    let scenario_rec = if principal.has(Permission::SimRun) {
-                        let created = state
-                            .store
-                            .create_scenario_record(
-                                &principal.tenant_id,
-                                req.sandbox_id,
-                                Some(principal.user_id),
-                                &overlay_hash,
-                                CreateScenarioRequest {
-                                    name: sc_name,
-                                    description: String::new(),
-                                    actions: actions.clone(),
-                                    params: sim_params.clone(),
-                                },
-                            )
-                            .await?;
-                        Some(created)
-                    } else {
-                        None
-                    };
+    Ok(Json(SimAskResponse {
+        intent: SimAskIntent::QueryResult,
+        scenario_id: Some(scenario_id),
+        answer: ask_resp.answer,
+        sql: (!ask_resp.sql.is_empty()).then_some(ask_resp.sql),
+        columns: ask_resp.columns,
+        rows: ask_resp.rows,
+        need_clarification: ask_resp.need_clarification,
+        candidates: Vec::new(),
+        impacts: Vec::new(),
+        kpis: Vec::new(),
+    }))
+}
 
-                    let sim_graph = graph;
-                    let solved = tokio::task::spawn_blocking(move || {
-                        axpoint_domain::sim::uncertainty::solve(&sim_graph, &actions, &sim_params)
-                    })
-                    .await
-                    .map_err(|err| {
-                        AppError::Database(format!("what-if solve join failed: {err}"))
-                    })??;
+async fn handle_sim_ask_what_if(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    req: &SimAskRequest,
+    question: &str,
+) -> Result<Json<SimAskResponse>, HttpError> {
+    let graph = state
+        .store
+        .load_graph(&principal.tenant_id, req.sandbox_id)
+        .await?;
+    let hints = graph_hint_nodes(&graph);
+    let extracted = extract_what_if_interventions(&state.ai, question, &hints).await?;
 
-                    if let Some(ref sc) = scenario_rec {
-                        let _saved = state
-                            .store
-                            .save_scenario_success(
-                                &principal.tenant_id,
-                                sc.id,
-                                &overlay_hash,
-                                &solved,
-                            )
-                            .await?;
-                    }
+    if extracted.need_clarification {
+        return Ok(Json(clarify_response(
+            extracted
+                .clarification_message
+                .unwrap_or_else(|| String::from("请补充需要推演的目标节点与指标变动。")),
+            Vec::new(),
+        )));
+    }
 
-                    let answer = summarize_what_if_result(&state.ai, question, &solved).await;
-                    let top_impacts: Vec<ImpactRow> = solved.impacts.into_iter().take(50).collect();
-
-                    Ok(Json(SimAskResponse {
-                        intent: SimAskIntent::WhatIf,
-                        scenario_id: scenario_rec.map(|s| s.id),
-                        answer,
-                        sql: None,
-                        columns: Vec::new(),
-                        rows: Vec::new(),
-                        need_clarification: false,
-                        candidates: Vec::new(),
-                        impacts: top_impacts,
-                        kpis: solved.kpis,
-                    }))
-                }
-            }
+    let mut extra_hits = Vec::new();
+    for item in &extracted.interventions {
+        if let Ok(resp) = state
+            .store
+            .search_nodes(
+                &principal.tenant_id,
+                NodeSearchQuery {
+                    q: item.node_query.clone(),
+                    type_name: None,
+                    k: 10,
+                },
+                None,
+            )
+            .await
+        {
+            extra_hits.extend(resp.items);
         }
     }
+
+    let actions =
+        match disambiguate_what_if_actions(&extracted.interventions, &graph.nodes, &extra_hits) {
+            DisambiguationOutcome::Ambiguous { candidates, reason } => {
+                return Ok(Json(clarify_response(reason, candidates)));
+            }
+            DisambiguationOutcome::NotFound { reason } => {
+                return Ok(Json(clarify_response(reason, Vec::new())));
+            }
+            DisambiguationOutcome::Resolved(actions) => actions,
+        };
+
+    execute_what_if_actions(state, principal, req.sandbox_id, question, graph, actions).await
+}
+
+fn clarify_response(
+    answer: String,
+    candidates: Vec<axpoint_domain::sim::SimAskCandidate>,
+) -> SimAskResponse {
+    SimAskResponse {
+        intent: SimAskIntent::WhatIf,
+        scenario_id: None,
+        answer,
+        sql: None,
+        columns: Vec::new(),
+        rows: Vec::new(),
+        need_clarification: true,
+        candidates,
+        impacts: Vec::new(),
+        kpis: Vec::new(),
+    }
+}
+
+async fn execute_what_if_actions(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    sandbox_id: Uuid,
+    question: &str,
+    graph: SimGraph,
+    actions: Vec<AxSimAction>,
+) -> Result<Json<SimAskResponse>, HttpError> {
+    let sim_params = SimParams::default();
+    let overlay_hash = state
+        .store
+        .compute_overlay_hash(&principal.tenant_id, sandbox_id)
+        .await?;
+    let sc_name = format!(
+        "ask-{}",
+        Uuid::new_v4().to_string().get(..8).unwrap_or("whatif")
+    );
+
+    let scenario_rec = if principal.has(Permission::SimRun) {
+        let created = state
+            .store
+            .create_scenario_record(
+                &principal.tenant_id,
+                sandbox_id,
+                Some(principal.user_id),
+                &overlay_hash,
+                CreateScenarioRequest {
+                    name: sc_name,
+                    description: String::new(),
+                    actions: actions.clone(),
+                    params: sim_params.clone(),
+                },
+            )
+            .await?;
+        Some(created)
+    } else {
+        None
+    };
+
+    let solved = tokio::task::spawn_blocking(move || {
+        axpoint_domain::sim::uncertainty::solve(&graph, &actions, &sim_params)
+    })
+    .await
+    .map_err(|err| AppError::Database(format!("what-if solve join failed: {err}")))??;
+
+    if let Some(ref sc) = scenario_rec {
+        let _saved = state
+            .store
+            .save_scenario_success(&principal.tenant_id, sc.id, &overlay_hash, &solved)
+            .await?;
+    }
+
+    let answer = summarize_what_if_result(&state.ai, question, &solved).await;
+    let top_impacts: Vec<ImpactRow> = solved.impacts.into_iter().take(50).collect();
+
+    Ok(Json(SimAskResponse {
+        intent: SimAskIntent::WhatIf,
+        scenario_id: scenario_rec.map(|s| s.id),
+        answer,
+        sql: None,
+        columns: Vec::new(),
+        rows: Vec::new(),
+        need_clarification: false,
+        candidates: Vec::new(),
+        impacts: top_impacts,
+        kpis: solved.kpis,
+    }))
 }
 
 async fn record_sim_ask_audit(
@@ -1095,6 +1132,39 @@ pub(crate) struct ServerSimPort {
     pub(crate) store: PgStore,
 }
 
+async fn resolve_or_create_tool_sandbox(
+    store: &PgStore,
+    tenant_id: &str,
+    user_id: Uuid,
+    requested_id: Option<Uuid>,
+    scenario_name: Option<&str>,
+    actions: &[AxSimAction],
+) -> Result<Uuid, AppError> {
+    if let Some(id) = requested_id {
+        return Ok(id);
+    }
+    let existing = store.list_sandboxes(tenant_id).await?;
+    if let Some(first) = existing.first() {
+        return Ok(first.id);
+    }
+    let root_ids: Vec<Uuid> = actions.iter().map(|a| a.target_node_id).collect();
+    let created = store
+        .create_sandbox(
+            tenant_id,
+            Some(user_id),
+            CreateAxSandboxRequest {
+                name: String::from(scenario_name.unwrap_or("auto-sim-sandbox")),
+                scope: Some(SandboxScope {
+                    root_node_ids: root_ids,
+                    depth: 6,
+                    ..SandboxScope::default()
+                }),
+            },
+        )
+        .await?;
+    Ok(created.id)
+}
+
 impl SimExecutionPort for ServerSimPort {
     fn run_simulation_tool<'a>(
         &'a self,
@@ -1114,44 +1184,21 @@ impl SimExecutionPort for ServerSimPort {
                 ));
             }
 
-            let sandbox_id = match input.sandbox_id {
-                Some(id) => id,
-                None => {
-                    let existing = self.store.list_sandboxes(tenant_id).await?;
-                    if let Some(first) = existing.first() {
-                        first.id
-                    } else {
-                        let root_ids: Vec<Uuid> =
-                            actions.iter().map(|a| a.target_node_id).collect();
-                        let created = self
-                            .store
-                            .create_sandbox(
-                                tenant_id,
-                                Some(user_id),
-                                CreateAxSandboxRequest {
-                                    name: input
-                                        .scenario_name
-                                        .clone()
-                                        .unwrap_or_else(|| String::from("auto-sim-sandbox")),
-                                    scope: Some(SandboxScope {
-                                        root_node_ids: root_ids,
-                                        depth: 6,
-                                        ..SandboxScope::default()
-                                    }),
-                                },
-                            )
-                            .await?;
-                        created.id
-                    }
-                }
-            };
+            let sandbox_id = resolve_or_create_tool_sandbox(
+                &self.store,
+                tenant_id,
+                user_id,
+                input.sandbox_id,
+                input.scenario_name.as_deref(),
+                &actions,
+            )
+            .await?;
 
             let graph = self.store.load_graph(tenant_id, sandbox_id).await?;
             let overlay_hash = self
                 .store
                 .compute_overlay_hash(tenant_id, sandbox_id)
                 .await?;
-
             let sc_name = input.scenario_name.unwrap_or_else(|| {
                 let id_str = Uuid::new_v4().to_string();
                 format!("tool-{}", id_str.get(..8).unwrap_or("sim"))
@@ -1213,18 +1260,16 @@ impl SimExecutionPort for ServerSimPort {
                 .map(|s| s.warnings.clone())
                 .unwrap_or_default();
 
-            let summary = serde_json::json!({
-                "affected_count": affected_count,
-                "max_abs_delta": max_abs_delta,
-                "kpis": kpis,
-                "warnings": warnings,
-                "impacts": top_page.items,
-            });
-
             Ok(SimRunToolOutput {
                 sandbox_id,
                 scenario_id: Some(solved.id),
-                summary,
+                summary: serde_json::json!({
+                    "affected_count": affected_count,
+                    "max_abs_delta": max_abs_delta,
+                    "kpis": kpis,
+                    "warnings": warnings,
+                    "impacts": top_page.items,
+                }),
             })
         })
     }

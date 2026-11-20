@@ -241,153 +241,172 @@ async fn run_single_case(case: &EvalCase) -> bool {
     };
 
     match case.kind.as_str() {
-        "what_if" => {
-            let Ok(extracted) = extract_what_if_interventions(&ai, &case.question, &nodes).await
-            else {
-                return false;
-            };
-            let outcome = disambiguate_what_if_actions(&extracted.interventions, &nodes, &[]);
-            match case.expect_outcome.as_deref() {
-                Some("resolved") => match outcome {
-                    DisambiguationOutcome::Resolved(actions) => {
-                        let Some(first) = actions.first() else {
-                            return false;
-                        };
-                        let expected_id = case
-                            .expect_node_key
-                            .as_deref()
-                            .and_then(|k| ids.get(k))
-                            .copied();
-                        let expected_mode = match case.expect_mode.as_deref() {
-                            Some("ADD") => InterventionMode::Add,
-                            Some("ABSOLUTE") => InterventionMode::Absolute,
-                            _ => InterventionMode::Ratio,
-                        };
-                        Some(first.target_node_id) == expected_id
-                            && Some(first.metric_key.as_str()) == case.expect_metric.as_deref()
-                            && first.mode == Some(expected_mode)
-                            && case
-                                .expect_value
-                                .is_none_or(|v| first.value.is_some_and(|fv| (fv - v).abs() < 1e-6))
-                    }
-                    _ => false,
-                },
-                Some("ambiguous") => match outcome {
-                    DisambiguationOutcome::Ambiguous { candidates, .. } => {
-                        candidates.len() >= case.expect_candidates_min.unwrap_or(2)
-                    }
-                    _ => false,
-                },
-                Some("not_found") => matches!(outcome, DisambiguationOutcome::NotFound { .. }),
-                _ => false,
-            }
-        }
-        "query_result" => {
-            let Ok(resp) =
-                query_impacts_with_nl2sql(&ai, "eval-tenant", &impacts, &case.question).await
-            else {
-                return false;
-            };
-            let min_rows = case.expect_min_rows.unwrap_or(1);
-            let sql_ok = case
-                .expect_sql_contains
-                .as_deref()
-                .is_none_or(|needle| resp.sql.to_uppercase().contains(&needle.to_uppercase()));
-            sql_ok && resp.rows.len() >= min_rows && !resp.answer.trim().is_empty()
-        }
-        "briefing" => {
-            let sb = Uuid::from_u128(10);
-            let s1 = Uuid::from_u128(11);
-            let s2 = Uuid::from_u128(12);
-            let now = Utc::now();
-            let mk_sc = |id: Uuid, name: &str, max_d: f64| ScenarioRecord {
-                id,
-                sandbox_id: sb,
-                name: String::from(name),
-                description: String::new(),
-                status: ScenarioStatus::Succeeded,
-                actions: vec![AxSimAction {
-                    target_node_id: Uuid::from_u128(1),
-                    metric_key: String::from("output"),
-                    mode: Some(InterventionMode::Ratio),
-                    value: Some(-0.3),
-                    delta_ratio: Some(-0.3),
-                    at_step: 0,
-                }],
-                params: SimParams::default(),
-                result: Some(ScenarioSummary {
-                    affected_count: 4,
-                    top_impacts: vec![ImpactRow {
-                        node_id: Uuid::from_u128(1),
-                        type_name: String::from("Factory"),
-                        title: String::from("晶圆一厂 F-1"),
-                        metric: String::from("output"),
-                        before_val: Some(1000.0),
-                        after_val: 1000.0 - max_d,
-                        delta: Some(-max_d),
-                        delta_ratio: Some(-max_d / 1000.0),
-                        p10: None,
-                        p90: None,
-                        hop_distance: 0,
-                        top_path: vec![Uuid::from_u128(1)],
-                        series: Vec::new(),
-                    }],
-                    kpis: Vec::new(),
-                    warnings: Vec::new(),
-                    converged: true,
-                    reason: None,
-                    iterations: 1,
-                }),
-                error_message: None,
-                overlay_hash: String::from("h0"),
-                is_stale: false,
-                created_by: None,
-                created_at: now,
-                finished_at: Some(now),
-            };
-            let scenarios = vec![mk_sc(s1, "s1", 300.0), mk_sc(s2, "s2", 150.0)];
-            let mut kpi_vals = BTreeMap::new();
-            kpi_vals.insert(
-                s1.to_string(),
-                CompareKpiCell {
-                    after_sum: 700.0,
-                    delta: -300.0,
-                    delta_ratio: Some(-0.3),
-                    affected_nodes: 1,
-                },
-            );
-            kpi_vals.insert(
-                s2.to_string(),
-                CompareKpiCell {
-                    after_sum: 850.0,
-                    delta: -150.0,
-                    delta_ratio: Some(-0.15),
-                    affected_nodes: 1,
-                },
-            );
-            let kpis = vec![CompareKpiRow {
-                type_name: String::from("Factory"),
-                metric: String::from("output"),
-                before_sum: 1000.0,
-                values: kpi_vals,
-            }];
-
-            let Ok(briefing) = generate_grounded_briefing(&ai, &scenarios, &kpis, &[]).await else {
-                return false;
-            };
-            let expected_rec = match case.expect_recommended.as_deref() {
-                Some("s2") => Some(s2),
-                _ => Some(s1),
-            };
-            let used_fallback = briefing
-                .risks
-                .iter()
-                .any(|r| r == "BRIEFING_DETERMINISTIC_GROUNDED");
-            briefing.recommended_scenario_id == expected_rec
-                && Some(used_fallback) == case.expect_deterministic_fallback
-        }
+        "what_if" => eval_what_if_case(&ai, case, &nodes, &ids).await,
+        "query_result" => eval_query_result_case(&ai, case, &impacts).await,
+        "briefing" => eval_briefing_case(&ai, case).await,
         _ => false,
     }
+}
+
+async fn eval_what_if_case(
+    ai: &ScriptedCaseAi,
+    case: &EvalCase,
+    nodes: &[SimNode],
+    ids: &BTreeMap<String, Uuid>,
+) -> bool {
+    let Ok(extracted) = extract_what_if_interventions(ai, &case.question, nodes).await else {
+        return false;
+    };
+    let outcome = disambiguate_what_if_actions(&extracted.interventions, nodes, &[]);
+    match case.expect_outcome.as_deref() {
+        Some("resolved") => match outcome {
+            DisambiguationOutcome::Resolved(actions) => {
+                let Some(first) = actions.first() else {
+                    return false;
+                };
+                let expected_id = case
+                    .expect_node_key
+                    .as_deref()
+                    .and_then(|k| ids.get(k))
+                    .copied();
+                let expected_mode = match case.expect_mode.as_deref() {
+                    Some("ADD") => InterventionMode::Add,
+                    Some("ABSOLUTE") => InterventionMode::Absolute,
+                    _ => InterventionMode::Ratio,
+                };
+                Some(first.target_node_id) == expected_id
+                    && Some(first.metric_key.as_str()) == case.expect_metric.as_deref()
+                    && first.mode == Some(expected_mode)
+                    && case
+                        .expect_value
+                        .is_none_or(|v| first.value.is_some_and(|fv| (fv - v).abs() < 1e-6))
+            }
+            _ => false,
+        },
+        Some("ambiguous") => match outcome {
+            DisambiguationOutcome::Ambiguous { candidates, .. } => {
+                candidates.len() >= case.expect_candidates_min.unwrap_or(2)
+            }
+            _ => false,
+        },
+        Some("not_found") => matches!(outcome, DisambiguationOutcome::NotFound { .. }),
+        _ => false,
+    }
+}
+
+async fn eval_query_result_case(
+    ai: &ScriptedCaseAi,
+    case: &EvalCase,
+    impacts: &[ImpactRow],
+) -> bool {
+    let Ok(resp) = query_impacts_with_nl2sql(ai, "eval-tenant", impacts, &case.question).await
+    else {
+        return false;
+    };
+    let min_rows = case.expect_min_rows.unwrap_or(1);
+    let sql_ok = case
+        .expect_sql_contains
+        .as_deref()
+        .is_none_or(|needle| resp.sql.to_uppercase().contains(&needle.to_uppercase()));
+    sql_ok && resp.rows.len() >= min_rows && !resp.answer.trim().is_empty()
+}
+
+fn briefing_fixture_scenario(sb: Uuid, id: Uuid, name: &str, max_d: f64) -> ScenarioRecord {
+    let now = Utc::now();
+    ScenarioRecord {
+        id,
+        sandbox_id: sb,
+        name: String::from(name),
+        description: String::new(),
+        status: ScenarioStatus::Succeeded,
+        actions: vec![AxSimAction {
+            target_node_id: Uuid::from_u128(1),
+            metric_key: String::from("output"),
+            mode: Some(InterventionMode::Ratio),
+            value: Some(-0.3),
+            delta_ratio: Some(-0.3),
+            at_step: 0,
+        }],
+        params: SimParams::default(),
+        result: Some(ScenarioSummary {
+            affected_count: 4,
+            top_impacts: vec![ImpactRow {
+                node_id: Uuid::from_u128(1),
+                type_name: String::from("Factory"),
+                title: String::from("晶圆一厂 F-1"),
+                metric: String::from("output"),
+                before_val: Some(1000.0),
+                after_val: 1000.0 - max_d,
+                delta: Some(-max_d),
+                delta_ratio: Some(-max_d / 1000.0),
+                p10: None,
+                p90: None,
+                hop_distance: 0,
+                top_path: vec![Uuid::from_u128(1)],
+                series: Vec::new(),
+            }],
+            kpis: Vec::new(),
+            warnings: Vec::new(),
+            converged: true,
+            reason: None,
+            iterations: 1,
+        }),
+        error_message: None,
+        overlay_hash: String::from("h0"),
+        is_stale: false,
+        created_by: None,
+        created_at: now,
+        finished_at: Some(now),
+    }
+}
+
+async fn eval_briefing_case(ai: &ScriptedCaseAi, case: &EvalCase) -> bool {
+    let sb = Uuid::from_u128(10);
+    let s1 = Uuid::from_u128(11);
+    let s2 = Uuid::from_u128(12);
+    let scenarios = vec![
+        briefing_fixture_scenario(sb, s1, "s1", 300.0),
+        briefing_fixture_scenario(sb, s2, "s2", 150.0),
+    ];
+    let mut kpi_vals = BTreeMap::new();
+    kpi_vals.insert(
+        s1.to_string(),
+        CompareKpiCell {
+            after_sum: 700.0,
+            delta: -300.0,
+            delta_ratio: Some(-0.3),
+            affected_nodes: 1,
+        },
+    );
+    kpi_vals.insert(
+        s2.to_string(),
+        CompareKpiCell {
+            after_sum: 850.0,
+            delta: -150.0,
+            delta_ratio: Some(-0.15),
+            affected_nodes: 1,
+        },
+    );
+    let kpis = vec![CompareKpiRow {
+        type_name: String::from("Factory"),
+        metric: String::from("output"),
+        before_sum: 1000.0,
+        values: kpi_vals,
+    }];
+
+    let Ok(briefing) = generate_grounded_briefing(ai, &scenarios, &kpis, &[]).await else {
+        return false;
+    };
+    let expected_rec = match case.expect_recommended.as_deref() {
+        Some("s2") => Some(s2),
+        _ => Some(s1),
+    };
+    let used_fallback = briefing
+        .risks
+        .iter()
+        .any(|r| r == "BRIEFING_DETERMINISTIC_GROUNDED");
+    briefing.recommended_scenario_id == expected_rec
+        && Some(used_fallback) == case.expect_deterministic_fallback
 }
 
 #[tokio::test]
