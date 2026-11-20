@@ -32,6 +32,7 @@ pub use axpoint_domain::analytics::{
 use axpoint_domain::enums::ConnectorType;
 use axpoint_security::Keyring;
 use chrono::Utc;
+pub use duckdb;
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 use sqlparser::dialect::DuckDbDialect;

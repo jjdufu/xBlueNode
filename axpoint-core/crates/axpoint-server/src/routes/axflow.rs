@@ -770,6 +770,11 @@ async fn decide_approval_handler(
     ApiJson(req): ApiJson<DecideApprovalRequest>,
 ) -> Result<Json<ApprovalRecord>, HttpError> {
     principal.require(Permission::ApprovalDecide)?;
+    if let Some(existing) = state.store.get_approval(&principal.tenant_id, id).await?
+        && existing.source_kind == axpoint_domain::flow::ApprovalSourceKind::SimApply
+    {
+        principal.require(Permission::SimApply)?;
+    }
     let approval = state
         .store
         .decide_approval(

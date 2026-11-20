@@ -1,0 +1,8 @@
+{"match_all":["PURPOSE:SIM_ASK_INTENT","如果"],"kind":"chat","response":"WHAT_IF"}
+{"match_all":["PURPOSE:SIM_ASK_INTENT","哪些"],"kind":"chat","response":"QUERY_RESULT"}
+{"match_all":["PURPOSE:SIM_ASK_WHATIF","F-1"],"kind":"chat","response":"{\"interventions\":[{\"node_query\":\"F-1\",\"metric_key\":\"output\",\"mode\":\"RATIO\",\"value\":-0.3,\"at_step\":0}],\"need_clarification\":false,\"clarification_message\":null}"}
+{"match_all":["PURPOSE:SIM_ASK_WHATIF","华东"],"kind":"chat","response":"{\"interventions\":[{\"node_query\":\"华东\",\"metric_key\":\"inventory\",\"mode\":\"RATIO\",\"value\":-0.2,\"at_step\":0}],\"need_clarification\":false,\"clarification_message\":null}"}
+{"match_all":["PURPOSE:SIM_ASK_SUMMARIZE"],"kind":"chat","response":"推演已完成，F-1 产能下降后已传导至下游仓库与订单指标。"}
+{"match_all":["PURPOSE:SIM_COMPARE_BRIEFING","s1","s2"],"kind":"chat","response":"{\"recommended_scenario_id\":\"s1\",\"summary\":\"基于对比矩阵，场景 s1 与 s2 表现一致，建议采用方案 s1。\",\"reasons\":[\"均完成因果收敛并输出完整影响评估\"],\"risks\":[]}"}
+{"match_all":["impacts","影响最大的前 5 个订单"],"kind":"chat","response":"{\"sql\":\"SELECT title, delta, after_val FROM impacts WHERE type_name = 'Order' ORDER BY ABS(delta) DESC LIMIT 5\",\"explanation\":\"查询受影响绝对值最大的前 5 个 Order 节点\",\"used_metrics\":[\"delta\"]}"}
+{"match_all":["结果列:","title","delta","after_val"],"kind":"chat","response":"已查询 impacts 表中受影响最大的 Order 节点明细。"}

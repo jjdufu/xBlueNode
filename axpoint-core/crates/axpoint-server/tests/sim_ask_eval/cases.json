@@ -1,0 +1,136 @@
+[
+  {
+    "id": "whatif_f1_drop_30",
+    "kind": "what_if",
+    "question": "如果 F-1 晶圆厂产能下降 30%，会对哪些订单造成影响？",
+    "llm_response": "{\"interventions\":[{\"node_query\":\"F-1\",\"metric_key\":\"output\",\"mode\":\"RATIO\",\"value\":-0.3,\"at_step\":0}],\"need_clarification\":false,\"clarification_message\":null}",
+    "expect_outcome": "resolved",
+    "expect_node_key": "F-1",
+    "expect_metric": "output",
+    "expect_mode": "RATIO",
+    "expect_value": -0.3
+  },
+  {
+    "id": "whatif_w1_add_50",
+    "kind": "what_if",
+    "question": "假如华东中心仓 W-1 库存增加 50 个单位会怎样？",
+    "llm_response": "{\"interventions\":[{\"node_query\":\"W-1\",\"metric_key\":\"inventory\",\"mode\":\"ADD\",\"value\":50.0,\"at_step\":0}],\"need_clarification\":false,\"clarification_message\":null}",
+    "expect_outcome": "resolved",
+    "expect_node_key": "W-1",
+    "expect_metric": "inventory",
+    "expect_mode": "ADD",
+    "expect_value": 50.0
+  },
+  {
+    "id": "whatif_absolute_override",
+    "kind": "what_if",
+    "question": "假设 F-1 产能直接设定为 600",
+    "llm_response": "{\"interventions\":[{\"node_query\":\"F-1\",\"metric_key\":\"output\",\"mode\":\"ABSOLUTE\",\"value\":600.0,\"at_step\":0}],\"need_clarification\":false,\"clarification_message\":null}",
+    "expect_outcome": "resolved",
+    "expect_node_key": "F-1",
+    "expect_metric": "output",
+    "expect_mode": "ABSOLUTE",
+    "expect_value": 600.0
+  },
+  {
+    "id": "whatif_ambiguous_huadong",
+    "kind": "what_if",
+    "question": "如果华东节点库存下降 20% 会如何？",
+    "llm_response": "{\"interventions\":[{\"node_query\":\"华东\",\"metric_key\":\"inventory\",\"mode\":\"RATIO\",\"value\":-0.2,\"at_step\":0}],\"need_clarification\":false,\"clarification_message\":null}",
+    "expect_outcome": "ambiguous",
+    "expect_candidates_min": 2
+  },
+  {
+    "id": "whatif_missing_node",
+    "kind": "what_if",
+    "question": "如果不存在的工厂 X-999 停产会如何？",
+    "llm_response": "{\"interventions\":[{\"node_query\":\"X-999\",\"metric_key\":\"output\",\"mode\":\"RATIO\",\"value\":-1.0,\"at_step\":0}],\"need_clarification\":false,\"clarification_message\":null}",
+    "expect_outcome": "not_found"
+  },
+  {
+    "id": "query_top_orders_by_abs_delta",
+    "kind": "query_result",
+    "question": "受影响最大的前 2 个 Order 是哪些？",
+    "sql_json": "{\"sql\":\"SELECT title, delta, after_val FROM impacts WHERE type_name = 'Order' ORDER BY ABS(delta) DESC LIMIT 2\",\"explanation\":\"按绝对影响幅度降序查询前 2 个 Order 节点\",\"used_metrics\":[\"delta\"]}",
+    "summary_text": "受影响最大的前 2 个订单为 订单 O-2 与 订单 O-1。",
+    "expect_min_rows": 2,
+    "expect_sql_contains": "FROM impacts"
+  },
+  {
+    "id": "query_count_impacted_orders",
+    "kind": "query_result",
+    "question": "有多少个 Order 节点的 delta 小于 0？",
+    "sql_json": "{\"sql\":\"SELECT COUNT(*) AS cnt FROM impacts WHERE type_name = 'Order' AND delta < 0\",\"explanation\":\"统计负向受影响的 Order 数量\",\"used_metrics\":[\"delta\"]}",
+    "summary_text": "共有 2 个 Order 节点受到负向影响。",
+    "expect_min_rows": 1,
+    "expect_sql_contains": "COUNT"
+  },
+  {
+    "id": "query_sum_delta_by_type",
+    "kind": "query_result",
+    "question": "按节点类型统计受影响的 delta 总和是多少？",
+    "sql_json": "{\"sql\":\"SELECT type_name, SUM(delta) AS total_delta FROM impacts GROUP BY type_name ORDER BY ABS(total_delta) DESC\",\"explanation\":\"按节点类型聚合 delta 变化总和\",\"used_metrics\":[\"delta\"]}",
+    "summary_text": "已按节点类型汇总各项指标的 delta 总和。",
+    "expect_min_rows": 3,
+    "expect_sql_contains": "GROUP BY type_name"
+  },
+  {
+    "id": "query_hop_gte_2",
+    "kind": "query_result",
+    "question": "列出传导距离大于等于 2 跳的节点明细",
+    "sql_json": "{\"sql\":\"SELECT node_id, title, metric, hop_distance, delta FROM impacts WHERE hop_distance >= 2 ORDER BY hop_distance ASC\",\"explanation\":\"筛选 hop_distance >= 2 的间接传导影响\",\"used_metrics\":[\"delta\"]}",
+    "summary_text": "已列出所有传导距离大于等于 2 跳的节点影响结果。",
+    "expect_min_rows": 2,
+    "expect_sql_contains": "hop_distance >= 2"
+  },
+  {
+    "id": "query_warehouse_metric_after",
+    "kind": "query_result",
+    "question": "Warehouse 节点仿真后的库存是多少？",
+    "sql_json": "{\"sql\":\"SELECT title, before_val, after_val, delta FROM impacts WHERE type_name = 'Warehouse' AND metric = 'inventory'\",\"explanation\":\"查询 Warehouse 节点仿真前后库存\",\"used_metrics\":[\"after_val\"]}",
+    "summary_text": "华东中心仓仿真后库存由 500.00 降至 380.00。",
+    "expect_min_rows": 1,
+    "expect_sql_contains": "Warehouse"
+  },
+  {
+    "id": "query_uncertainty_bounds",
+    "kind": "query_result",
+    "question": "哪些节点的 P10 与 P90 区间宽度最大？",
+    "sql_json": "{\"sql\":\"SELECT title, metric, (p90 - p10) AS spread FROM impacts WHERE p10 IS NOT NULL AND p90 IS NOT NULL ORDER BY spread DESC LIMIT 3\",\"explanation\":\"计算置信区间宽度并排序\",\"used_metrics\":[\"p10\",\"p90\"]}",
+    "summary_text": "已列出置信区间 P10-P90 跨度最大的前 3 个节点。",
+    "expect_min_rows": 3,
+    "expect_sql_contains": "p90"
+  },
+  {
+    "id": "query_min_delta_ratio",
+    "kind": "query_result",
+    "question": "相对降幅最大的指标是哪一条？",
+    "sql_json": "{\"sql\":\"SELECT title, metric, delta_ratio FROM impacts WHERE delta_ratio IS NOT NULL ORDER BY delta_ratio ASC LIMIT 1\",\"explanation\":\"按 delta_ratio 升序找出降幅最大指标\",\"used_metrics\":[\"delta_ratio\"]}",
+    "summary_text": "相对降幅最大的指标为 F-1 产能 output（-30%）。",
+    "expect_min_rows": 1,
+    "expect_sql_contains": "delta_ratio"
+  },
+  {
+    "id": "query_avg_after_val_orders",
+    "kind": "query_result",
+    "question": "受影响 Order 的平均 fulfillment 是多少？",
+    "sql_json": "{\"sql\":\"SELECT AVG(after_val) AS avg_fulfillment FROM impacts WHERE type_name = 'Order' AND metric = 'fulfillment'\",\"explanation\":\"计算 Order 节点平均满足度\",\"used_metrics\":[\"after_val\"]}",
+    "summary_text": "Order 节点平均 fulfillment 为 82.40。",
+    "expect_min_rows": 1,
+    "expect_sql_contains": "AVG"
+  },
+  {
+    "id": "briefing_grounded_name_resolution",
+    "kind": "briefing",
+    "llm_response": "{\"recommended_scenario_id\":\"s1\",\"summary\":\"场景 s1 与 s2 的最大波动幅度均为 300.00，建议选定 s1。\",\"reasons\":[\"影响节点指标 4 项\"],\"risks\":[]}",
+    "expect_recommended": "s1",
+    "expect_deterministic_fallback": false
+  },
+  {
+    "id": "briefing_ungrounded_number_fallback",
+    "kind": "briefing",
+    "llm_response": "{\"recommended_scenario_id\":\"s1\",\"summary\":\"场景 s1 预计创造额外利润 998877.00 元。\",\"reasons\":[\"虚构收益\"],\"risks\":[]}",
+    "expect_recommended": "s2",
+    "expect_deterministic_fallback": true
+  }
+]
