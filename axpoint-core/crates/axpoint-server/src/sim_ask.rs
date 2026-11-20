@@ -265,8 +265,8 @@ pub fn disambiguate_what_if_actions(
                 actions.push(AxSimAction {
                     target_node_id: node_id,
                     metric_key: metric,
-                    mode: item.mode,
-                    value: item.value,
+                    mode: Some(item.mode),
+                    value: Some(item.value),
                     delta_ratio,
                     at_step: item.at_step,
                 });

@@ -260,10 +260,10 @@ async fn run_single_case(case: &EvalCase) -> bool {
                         };
                         Some(first.target_node_id) == expected_id
                             && Some(first.metric_key.as_str()) == case.expect_metric.as_deref()
-                            && first.mode == expected_mode
+                            && first.mode == Some(expected_mode)
                             && case
                                 .expect_value
-                                .is_none_or(|v| (first.value - v).abs() < 1e-6)
+                                .is_none_or(|v| first.value.is_some_and(|fv| (fv - v).abs() < 1e-6))
                     }
                     _ => false,
                 },
@@ -304,8 +304,8 @@ async fn run_single_case(case: &EvalCase) -> bool {
                 actions: vec![AxSimAction {
                     target_node_id: Uuid::from_u128(1),
                     metric_key: String::from("output"),
-                    mode: InterventionMode::Ratio,
-                    value: -0.3,
+                    mode: Some(InterventionMode::Ratio),
+                    value: Some(-0.3),
                     delta_ratio: Some(-0.3),
                     at_step: 0,
                 }],

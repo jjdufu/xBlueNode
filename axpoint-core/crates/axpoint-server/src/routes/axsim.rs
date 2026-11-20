@@ -1325,8 +1325,8 @@ fn parse_single_tool_action(val: &serde_json::Value) -> Result<AxSimAction, AppE
     Ok(AxSimAction {
         target_node_id,
         metric_key,
-        mode,
-        value,
+        mode: Some(mode),
+        value: Some(value),
         delta_ratio,
         at_step,
     })
