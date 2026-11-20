@@ -401,11 +401,26 @@ pub fn build_impacts_duckdb(
     tenant_id: &str,
     impacts: &[ImpactRow],
 ) -> Result<(axpoint_analytics::duckdb::Connection, TenantCatalog), AppError> {
+    let valid_tenant = !tenant_id.is_empty()
+        && tenant_id.len() <= 64
+        && tenant_id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-');
+    if !valid_tenant {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            "invalid tenant_id format for DuckDB impacts catalog",
+        ));
+    }
+    let tenant_schema = format!("tenant_{tenant_id}");
+
     let conn = axpoint_analytics::duckdb::Connection::open_in_memory()
         .map_err(|err| AppError::Database(format!("open in-memory duckdb failed: {err}")))?;
 
-    conn.execute_batch(
-        "CREATE TABLE impacts (
+    let ddl = format!(
+        "ATTACH IF NOT EXISTS ':memory:' AS lake;
+         CREATE SCHEMA IF NOT EXISTS lake.\"{tenant_schema}\";
+         CREATE TABLE lake.\"{tenant_schema}\".\"impacts\" (
             node_id VARCHAR,
             type_name VARCHAR,
             title VARCHAR,
@@ -417,18 +432,21 @@ pub fn build_impacts_duckdb(
             hop_distance INTEGER,
             p10 DOUBLE,
             p90 DOUBLE
-        );",
-    )
-    .map_err(|err| AppError::Database(format!("create duckdb impacts table failed: {err}")))?;
+        );"
+    );
+
+    conn.execute_batch(&ddl)
+        .map_err(|err| AppError::Database(format!("create duckdb impacts table failed: {err}")))?;
 
     {
+        let insert_sql = format!(
+            "INSERT INTO lake.\"{tenant_schema}\".\"impacts\" (
+                node_id, type_name, title, metric, before_val, after_val,
+                delta, delta_ratio, hop_distance, p10, p90
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        );
         let mut stmt = conn
-            .prepare(
-                "INSERT INTO impacts (
-                    node_id, type_name, title, metric, before_val, after_val,
-                    delta, delta_ratio, hop_distance, p10, p90
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            )
+            .prepare(&insert_sql)
             .map_err(|err| AppError::Database(format!("prepare impacts insert failed: {err}")))?;
 
         for row in impacts {

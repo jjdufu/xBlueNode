@@ -95,6 +95,7 @@ impl AiPort for ScriptedCaseAi {
         {
             self.what_if_raw.clone()
         } else if system_prompt.contains("结果总结")
+            || system_prompt.contains("数据分析助手")
             || user_prompt.contains("结果列:")
             || system_prompt.contains("数据分析报告")
         {
