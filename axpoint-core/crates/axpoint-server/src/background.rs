@@ -552,6 +552,12 @@ pub(crate) fn spawn_background_workers(
         store: store.clone(),
         analytics_pool: Arc::clone(&state.analytics_pool),
     });
+    let view_sub: Arc<dyn OutboxSubscriber> =
+        Arc::new(axpoint_server::view::events::ViewEventSubscriber::new(
+            store.clone(),
+            store.pool().clone(),
+            Arc::clone(&state.view.cache),
+        ));
     let subscribers: Arc<[Arc<dyn OutboxSubscriber>]> = Arc::from([
         ds_subscriber,
         Arc::new(NodeMetricsChangedSubscriber {
@@ -576,10 +582,25 @@ pub(crate) fn spawn_background_workers(
         Arc::new(axpoint_flow::AlertNotifySubscriber::new(Arc::clone(
             &notify_dispatcher,
         ))),
+        view_sub,
     ]);
     let outbox_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
         run_outbox_dispatcher(outbox_worker_id, outbox_store, subscribers, outbox_shutdown).await;
+    });
+
+    let view_pool = store.pool().clone();
+    let view_bus = Arc::clone(&state.view.event_bus);
+    let view_cache = Arc::clone(&state.view.cache);
+    let view_shutdown = shutdown_rx.clone();
+    tokio::spawn(async move {
+        axpoint_server::view::events::run_view_event_listener_with_cache(
+            view_pool,
+            view_bus,
+            Some(view_cache),
+            view_shutdown,
+        )
+        .await;
     });
 
     spawn_singleton_schedulers(store, store_arc, notify_dispatcher, shutdown_rx);

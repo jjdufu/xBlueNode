@@ -313,6 +313,12 @@ async fn assemble_runtime_state(
             store: store.clone(),
         });
     let axagent = build_axagent_services(&store, &llm_router, &keyring, &audit, Some(sim_port));
+    let view = Arc::new(axpoint_server::view::ViewServices::new(
+        store.clone(),
+        Arc::clone(&analytics_pool),
+        Arc::clone(&llm_router),
+        data_root.clone(),
+    ));
 
     let state = AppState {
         store,
@@ -324,6 +330,7 @@ async fn assemble_runtime_state(
         keyring,
         sidecar,
         analytics_pool,
+        view,
         data_root,
         parser_base_url,
         http,
@@ -393,6 +400,13 @@ mod tests {
         let parser_base_url = String::from("http://127.0.0.1:8001");
         let sidecar = Arc::new(HttpSidecarClient::new(&parser_base_url, http.clone()));
         let analytics_pool = Arc::new(SessionPool::new(AnalyticsConfig::default()));
+        let data_root = std::env::temp_dir();
+        let view = Arc::new(axpoint_server::view::ViewServices::new(
+            store.clone(),
+            Arc::clone(&analytics_pool),
+            Arc::clone(&llm_router),
+            data_root.clone(),
+        ));
         let state = AppState {
             store,
             ai,
@@ -403,7 +417,8 @@ mod tests {
             keyring,
             sidecar,
             analytics_pool,
-            data_root: std::env::temp_dir(),
+            view,
+            data_root,
             parser_base_url,
             http,
         };
