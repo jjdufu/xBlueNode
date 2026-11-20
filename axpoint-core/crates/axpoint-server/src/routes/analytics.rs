@@ -693,24 +693,19 @@ async fn delete_metric_handler(
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
-async fn execute_single_metric_with_telemetry(
+async fn execute_metric_def_with_telemetry(
     state: &AppState,
     tenant_id: &str,
     user_id: Uuid,
     has_pii_raw_read: bool,
-    name: &str,
+    metric: &MetricDef,
     query: MetricQuery,
 ) -> Result<MetricQueryResult, AppError> {
-    let metric = state
-        .store
-        .get_metric_by_name(tenant_id, name)
-        .await?
-        .ok_or(AppError::NotFound("METRIC_NOT_FOUND"))?;
     let (session, catalog) = acquire_tenant_session(state, tenant_id, false).await?;
     let res = execute_metric_query(
         &session,
         &catalog,
-        &metric,
+        metric,
         &query,
         MetricExecuteOptions {
             timeout_ms: None,
@@ -738,6 +733,57 @@ async fn execute_single_metric_with_telemetry(
         tracing::warn!(error = %err, "record_query_history failed");
     }
     Ok(res)
+}
+
+async fn execute_single_metric_with_telemetry(
+    state: &AppState,
+    tenant_id: &str,
+    user_id: Uuid,
+    has_pii_raw_read: bool,
+    name: &str,
+    query: MetricQuery,
+) -> Result<MetricQueryResult, AppError> {
+    let metric = state
+        .store
+        .get_metric_by_name(tenant_id, name)
+        .await?
+        .ok_or(AppError::NotFound("METRIC_NOT_FOUND"))?;
+    execute_metric_def_with_telemetry(state, tenant_id, user_id, has_pii_raw_read, &metric, query)
+        .await
+}
+
+/// Executes a semantic metric against either a `PROD`-pinned [`MetricDef`] snapshot or live `an_metrics`.
+pub(crate) async fn execute_published_metric(
+    state: &AppState,
+    principal: &AnalyticsPrincipal,
+    metric_name: &str,
+    pinned_snapshot: Option<&MetricDef>,
+    query: MetricQuery,
+) -> Result<MetricQueryResult, AppError> {
+    if !principal.has_permission(Permission::DataRead) {
+        return Err(AppError::Forbidden("PERMISSION_DENIED"));
+    }
+    let has_pii_raw = principal.has_permission(Permission::PiiRawRead);
+    if let Some(pinned) = pinned_snapshot {
+        return execute_metric_def_with_telemetry(
+            state,
+            &principal.tenant_id,
+            principal.user_id,
+            has_pii_raw,
+            pinned,
+            query,
+        )
+        .await;
+    }
+    execute_single_metric_with_telemetry(
+        state,
+        &principal.tenant_id,
+        principal.user_id,
+        has_pii_raw,
+        metric_name,
+        query,
+    )
+    .await
 }
 
 async fn query_metric_handler(
@@ -896,21 +942,12 @@ async fn delete_saved_query_handler(
     Ok(Json(serde_json::json!({ "deleted": true })))
 }
 
-async fn run_saved_query_inner(
+async fn execute_saved_query_def(
     state: &AppState,
     caller: CallerCtx<'_>,
-    id: Uuid,
+    sq: SavedQuery,
     mut params: BTreeMap<String, serde_json::Value>,
 ) -> Result<serde_json::Value, AppError> {
-    let sq = state
-        .store
-        .get_saved_query(caller.tenant_id, id)
-        .await?
-        .ok_or(AppError::NotFound("SAVED_QUERY_NOT_FOUND"))?;
-    if !sq.shared && sq.owner_user_id != Some(caller.user_id) && !caller.has_data_admin {
-        return Err(AppError::NotFound("SAVED_QUERY_NOT_FOUND"));
-    }
-
     for decl in &sq.parameters {
         if !params.contains_key(&decl.name)
             && let Some(ref def_val) = decl.default
@@ -991,6 +1028,46 @@ async fn run_saved_query_inner(
             })
         }
     }
+}
+
+async fn run_saved_query_inner(
+    state: &AppState,
+    caller: CallerCtx<'_>,
+    id: Uuid,
+    params: BTreeMap<String, serde_json::Value>,
+) -> Result<serde_json::Value, AppError> {
+    let sq = state
+        .store
+        .get_saved_query(caller.tenant_id, id)
+        .await?
+        .ok_or(AppError::NotFound("SAVED_QUERY_NOT_FOUND"))?;
+    if !sq.shared && sq.owner_user_id != Some(caller.user_id) && !caller.has_data_admin {
+        return Err(AppError::NotFound("SAVED_QUERY_NOT_FOUND"));
+    }
+    execute_saved_query_def(state, caller, sq, params).await
+}
+
+/// Executes a published saved query against either a `PROD`-pinned [`SavedQuery`] snapshot or live `an_saved_queries`.
+pub(crate) async fn execute_published_saved_query(
+    state: &AppState,
+    principal: &AnalyticsPrincipal,
+    saved_id: Uuid,
+    pinned_snapshot: Option<&SavedQuery>,
+    params: BTreeMap<String, serde_json::Value>,
+) -> Result<serde_json::Value, AppError> {
+    if !principal.has_permission(Permission::DataRead) {
+        return Err(AppError::Forbidden("PERMISSION_DENIED"));
+    }
+    let caller = CallerCtx::from_analytics(principal);
+    if let Some(pinned) = pinned_snapshot {
+        return execute_saved_query_def(state, caller, pinned.clone(), params).await;
+    }
+    let sq = state
+        .store
+        .get_saved_query(caller.tenant_id, saved_id)
+        .await?
+        .ok_or(AppError::NotFound("SAVED_QUERY_NOT_FOUND"))?;
+    execute_saved_query_def(state, caller, sq, params).await
 }
 
 async fn run_saved_query_handler(
@@ -1184,8 +1261,12 @@ pub(crate) async fn execute_ask_for_principal(
         prior_session_sqls: Vec::new(),
     };
 
+    let nl2sql_ai = state
+        .ai
+        .for_tenant(&principal.tenant_id)
+        .with_purpose_override(axpoint_domain::enums::Purpose::Nl2Sql);
     let out = run_ask_pipeline(
-        &state.ai,
+        &nl2sql_ai,
         &session,
         &AskPipelineInput {
             request: &req,

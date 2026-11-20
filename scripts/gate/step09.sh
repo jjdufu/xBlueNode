@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-(cd axpoint-core && cargo test -p axpoint-agent && cargo test -p axpoint-llm router cassette)
+(cd axpoint-core && cargo test -p axpoint-agent && cargo test -p axpoint-llm router && cargo test -p axpoint-llm cassette)
 
 PUB="$CORE_BASE_URL/api/published/prod/default/$PAID_ENDPOINT_SLUG"
 OBJ_PUB="$CORE_BASE_URL/api/published/prod/default/$OBJECT_ENDPOINT_SLUG"

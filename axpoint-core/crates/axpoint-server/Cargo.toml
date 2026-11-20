@@ -9,6 +9,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+axpoint-agent = { path = "../axpoint-agent" }
 axpoint-analytics = { path = "../axpoint-analytics" }
 axpoint-db = { path = "../axpoint-db" }
 axpoint-domain = { path = "../axpoint-domain" }
@@ -22,6 +23,7 @@ base64 = { workspace = true }
 chrono = { workspace = true }
 cron = { workspace = true }
 dotenvy = { workspace = true }
+futures = { workspace = true }
 hex = { workspace = true }
 hmac = { workspace = true }
 metrics = { workspace = true }

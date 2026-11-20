@@ -6,7 +6,7 @@ use std::sync::Arc;
 use axpoint_analytics::SessionPool;
 use axpoint_db::PgStore;
 use axpoint_domain::AppError;
-use axpoint_llm::AiGateway;
+use axpoint_llm::{AiGateway, LlmRouter};
 use axpoint_security::{AuditWriter, Authenticator, CredentialKeyring};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
@@ -17,6 +17,7 @@ use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::agent_bridge::AxAgentServices;
 use crate::sidecar::HttpSidecarClient;
 use crate::telemetry::current_trace_id;
 
@@ -25,6 +26,8 @@ use crate::telemetry::current_trace_id;
 pub(crate) struct AppState {
     pub(crate) store: PgStore,
     pub(crate) ai: AiGateway,
+    pub(crate) llm_router: Arc<LlmRouter>,
+    pub(crate) axagent: Arc<AxAgentServices>,
     pub(crate) authenticator: Arc<Authenticator<PgStore>>,
     pub(crate) audit: AuditWriter,
     pub(crate) keyring: Arc<CredentialKeyring>,

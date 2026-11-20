@@ -1,0 +1,7 @@
+{"match_all":["PURPOSE:AGENT","agent_id=ops_supervisor","已支付订单总金额是多少？依据哪份制度补货？"],"exclude_any":["ROLE:tool"],"kind":"chat","response":"","tool_calls":[{"id":"call_sup_1","name":"data_analyst","arguments":{"task":"查询已支付订单的总金额是多少"}},{"id":"call_sup_2","name":"knowledge_expert","arguments":{"task":"检索供应链与仓库补货依据哪份管理制度"}}]}
+{"match_all":["PURPOSE:AGENT","agent_id=data_analyst","查询已支付订单的总金额是多少"],"exclude_any":["ROLE:tool"],"kind":"chat","response":"","tool_calls":[{"id":"call_da_1","name":"run_sql","arguments":{"sql":"SELECT SUM(amount) AS paid_amount FROM demo_orders WHERE status = 'PAID'"}}]}
+{"match_all":["PURPOSE:AGENT","agent_id=data_analyst","ROLE:tool tool_call_id=call_da_1"],"kind":"chat","response":"经查询 demo_orders 订单表，已支付（PAID）订单总金额为 33239.25 元。"}
+{"match_all":["PURPOSE:AGENT","agent_id=knowledge_expert","检索供应链与仓库补货依据哪份管理制度"],"exclude_any":["ROLE:tool"],"kind":"chat","response":"","tool_calls":[{"id":"call_ke_1","name":"search_knowledge","arguments":{"query":"供应链制度 华东仓","top_k":5}}]}
+{"match_all":["PURPOSE:AGENT","agent_id=knowledge_expert","ROLE:tool tool_call_id=call_ke_1"],"kind":"chat","response":"依据《供应链制度》（policy.md），华东仓（W-1）负责履约相关订单并按该制度执行补货。"}
+{"match_all":["PURPOSE:AGENT","agent_id=ops_supervisor","ROLE:tool tool_call_id=call_sup_1","ROLE:tool tool_call_id=call_sup_2"],"kind":"chat","response":"汇总数据分析与制度检索结果：已支付订单总金额为 33239.25 元；补货依据《供应链制度》（policy.md）执行。"}
+{"match_all":["PURPOSE:AGENT","agent_id=ops_supervisor","ROLE:user\n你好\n---"],"exclude_any":["ROLE:tool"],"kind":"chat","response":"你好！我是供应链运营主管智能体，可协助查询业务指标与管理制度。"}

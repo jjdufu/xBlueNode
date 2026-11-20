@@ -378,15 +378,20 @@ fn build_flow_engine(state: &crate::state::AppState) -> Arc<axpoint_flow::FlowEn
     let state_arc = Arc::new(state.clone());
     let ai_arc = Arc::new(state.ai.clone());
     let url_guard = Arc::new(axpoint_security::NetGuard::new());
-    let operators = Arc::new(axpoint_flow::build_step07_operator_registry(
-        axpoint_flow::Step07OperatorDeps {
-            store: Arc::clone(&store_arc),
-            analytics: Arc::clone(&state_arc),
-            sql_materializer: Some(Arc::clone(&state_arc)),
-            ai: ai_arc,
-            lake: Arc::clone(&state.analytics_pool),
-            url_guard,
-            cred_unsealer: Some(state_arc),
+    let runtime_arc = Arc::clone(&state.axagent.runtime);
+    let agent_task: Arc<dyn axpoint_domain::ports::AgentTaskPort> = runtime_arc;
+    let operators = Arc::new(axpoint_flow::build_step09_operator_registry(
+        axpoint_flow::Step09OperatorDeps {
+            step07: axpoint_flow::Step07OperatorDeps {
+                store: Arc::clone(&store_arc),
+                analytics: Arc::clone(&state_arc),
+                sql_materializer: Some(Arc::clone(&state_arc)),
+                ai: ai_arc,
+                lake: Arc::clone(&state.analytics_pool),
+                url_guard,
+                cred_unsealer: Some(state_arc),
+            },
+            agent_task,
         },
     ));
     Arc::new(axpoint_flow::FlowEngine::new(
@@ -549,6 +554,9 @@ pub(crate) fn spawn_background_workers(
             store: store.clone(),
         }),
         Arc::new(axpoint_flow::ApprovalDecidedSubscriber::new(flow_engine)),
+        Arc::new(axpoint_agent::AgentApprovalDecidedSubscriber::new(
+            Arc::clone(&state.axagent.runtime),
+        )),
         Arc::new(axpoint_flow::FlowOutboxTriggerSubscriber::new(Arc::clone(
             &store_arc,
         ))),
