@@ -13,6 +13,7 @@ mod mcp;
 pub(crate) mod published;
 mod system;
 pub(crate) mod xblue;
+mod xblueview;
 
 pub(crate) use axhub::{open_secret_map, sanitize_dataset_prefix, to_six_field_cron};
 pub(crate) use documents::ingest_text_with_deps;
@@ -35,6 +36,7 @@ pub(crate) fn api_router(state: AppState) -> Router {
         .merge(published::router())
         .merge(mcp::router())
         .merge(axsim::router())
+        .merge(xblueview::router())
         .merge(axops::router())
         .fallback(|| async { HttpError(AppError::NotFound("ROUTE_NOT_FOUND")) });
     Router::new().nest("/api", api).with_state(state)

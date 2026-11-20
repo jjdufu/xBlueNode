@@ -13,11 +13,10 @@ use axpoint_domain::rules::SimplePageQuery;
 use axpoint_domain::view::{
     AiGenerateDashboardRequest, AssetRecord, CreateAssetParams, CreateDashboardRequest,
     CreateWidgetRecordParams, CreateWidgetRequest, DashboardDetail, DashboardRecord,
-    DuplicateDashboardRequest, FloorPlacementRecord, InvokeWidgetActionRequest,
-    InvokeWidgetActionResponse, PutFloorPlacementsRequest, PutScene3dBindingsRequest,
-    Scene3dBindingRecord, UpdateDashboardRequest, UpdateLayoutRequest, UpdateWidgetRecordParams,
-    UpdateWidgetRequest, ViewEvent, WidgetDataRequest, WidgetDataResponse, WidgetPreviewRequest,
-    WidgetRecord,
+    FloorPlacementRecord, InvokeWidgetActionRequest, InvokeWidgetActionResponse,
+    PutFloorPlacementsRequest, PutScene3dBindingsRequest, Scene3dBindingRecord,
+    UpdateDashboardRequest, UpdateLayoutRequest, UpdateWidgetRecordParams, UpdateWidgetRequest,
+    ViewEvent, WidgetDataRequest, WidgetDataResponse, WidgetPreviewRequest, WidgetRecord,
 };
 use axpoint_security::AuthPrincipal;
 use axpoint_server::view::action::invoke_widget_action;
@@ -45,6 +44,13 @@ const MAX_VISUAL_ASSET_BYTES: usize = 20 * 1024 * 1024;
 const MAX_MODEL_3D_BYTES: usize = 50 * 1024 * 1024;
 const GLB_MAGIC_LE: u32 = 0x4654_6C67;
 const GLB_VERSION_2: u32 = 2;
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DuplicateDashboardRequest {
+    name: Option<String>,
+    slug: Option<String>,
+}
 
 /// Builds the `/xblueview/*` sub-router mounted under `/api` (`10-STEP11-12` §11.7).
 pub(crate) fn router() -> Router<AppState> {
