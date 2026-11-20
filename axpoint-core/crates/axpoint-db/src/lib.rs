@@ -22,6 +22,7 @@ pub mod studio_repo;
 pub mod tenant;
 pub mod tokens;
 pub mod topology;
+pub mod view_repo;
 
 #[cfg(test)]
 mod tests;
