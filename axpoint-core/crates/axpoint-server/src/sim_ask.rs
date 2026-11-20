@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 use axpoint_analytics::nl2sql::schema_link::SchemaLinkExtras;
 use axpoint_analytics::{
     AskPipelineInput, AskTurnRecord, CatalogDatasetEntry, SchemaRecallBundle, TenantCatalog,
-    run_ask_pipeline_conn,
+    TenantDb, run_ask_pipeline,
 };
 use axpoint_domain::AppError;
 use axpoint_domain::analytics::{AskIntent, AskRequest, AskResponse};
@@ -506,6 +506,8 @@ pub async fn query_impacts_with_nl2sql<A: AiPort>(
     question: &str,
 ) -> Result<AskResponse, AppError> {
     let (conn, catalog) = build_impacts_duckdb(tenant_id, impacts)?;
+    let session = TenantDb::from_connection(tenant_id, conn)?;
+    session.refresh_catalog(catalog.clone());
     let req = AskRequest {
         question: question.to_owned(),
         session_id: None,
@@ -529,7 +531,7 @@ pub async fn query_impacts_with_nl2sql<A: AiPort>(
         timeout_ms: Some(15_000),
         force_intent: Some(AskIntent::Data),
     };
-    let out = run_ask_pipeline_conn(ai, &conn, &input).await?;
+    let out = run_ask_pipeline(ai, &session, &input).await?;
     Ok(out.response)
 }
 
