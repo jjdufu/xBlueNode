@@ -1,4 +1,4 @@
-//! `AxSim` sandbox cloning, CoW overlay editing, causal simulation, Ask, compare, and decision routes (`/api/axsim/*`).
+//! `AxSim` sandbox cloning, `CoW` overlay editing, causal simulation, Ask, compare, and decision routes (`/api/axsim/*`).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -868,23 +868,22 @@ async fn handle_sim_ask_query_result(
     req: &SimAskRequest,
     question: &str,
 ) -> Result<Json<SimAskResponse>, HttpError> {
-    let scenario_id = match req.scenario_id {
-        Some(id) => id,
-        None => {
-            let list = state
-                .store
-                .list_scenarios(&principal.tenant_id, req.sandbox_id)
-                .await?;
-            list.into_iter()
-                .find(|s| s.status == ScenarioStatus::Succeeded)
-                .map(|s| s.id)
-                .ok_or_else(|| {
-                    AppError::bad(
-                        "INVALID_ARGUMENT",
-                        "no completed scenario found for QUERY_RESULT",
-                    )
-                })?
-        }
+    let scenario_id = if let Some(id) = req.scenario_id {
+        id
+    } else {
+        let list = state
+            .store
+            .list_scenarios(&principal.tenant_id, req.sandbox_id)
+            .await?;
+        list.into_iter()
+            .find(|s| s.status == ScenarioStatus::Succeeded)
+            .map(|s| s.id)
+            .ok_or_else(|| {
+                AppError::bad(
+                    "INVALID_ARGUMENT",
+                    "no completed scenario found for QUERY_RESULT",
+                )
+            })?
     };
     let impacts = state
         .store
@@ -1127,7 +1126,7 @@ async fn rebase_decision_handler(
 }
 
 /// [`SimExecutionPort`] implementation bridging `AxFlow` (`CAUSAL_SIM`) and `AxAgent` (`run_simulation`)
-/// onto the Step 10 `AxSim` solver and CoW sandbox store (`09-STEP10` §10.10).
+/// onto the Step 10 `AxSim` solver and `CoW` sandbox store (`09-STEP10` §10.10).
 pub(crate) struct ServerSimPort {
     pub(crate) store: PgStore,
 }
@@ -1249,16 +1248,11 @@ impl SimExecutionPort for ServerSimPort {
                 .map(f64::abs)
                 .fold(0.0_f64, f64::max);
             let affected_count = solved.result.as_ref().map_or(0, |s| s.affected_count);
-            let kpis = solved
-                .result
-                .as_ref()
-                .map(|s| s.kpis.clone())
-                .unwrap_or_default();
+            let kpis = solved.result.as_ref().map_or_default(|s| s.kpis.clone());
             let warnings = solved
                 .result
                 .as_ref()
-                .map(|s| s.warnings.clone())
-                .unwrap_or_default();
+                .map_or_default(|s| s.warnings.clone());
 
             Ok(SimRunToolOutput {
                 sandbox_id,
