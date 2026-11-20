@@ -1,13 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as echarts from "echarts";
-import {
-  Cpu,
-  Info,
-  RefreshCw,
-  Route,
-  Search,
-  Share2,
-} from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
+import { Cpu, Info, RefreshCw, Route, Share2 } from "lucide-react";
 import { api, type TopologyGraph } from "@/lib/api/rag";
 import {
   xblueApi,
@@ -19,31 +12,28 @@ import {
   type PathResponse,
   type SubgraphResponse,
 } from "@/lib/api/xblue";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { Badge, Button, Card } from "@/components/ui/primitives";
+import { AlgoLegend } from "@/components/graph/AlgoLegend";
+import { GraphToolbar } from "@/components/graph/GraphToolbar";
+import { PathPanel } from "@/components/graph/PathPanel";
+import {
+  SigmaCanvas,
+  type CanvasEdge,
+  type GraphColorMode,
+} from "@/components/graph/SigmaCanvas";
 import {
   AlgoPanel,
   type AlgoVisualMode,
 } from "@/components/xbluegraph/AlgoPanel";
 import { NeighborExpand } from "@/components/xbluegraph/NeighborExpand";
 import { NodeInspector } from "@/components/xbluegraph/NodeInspector";
-import { PathFinder } from "@/components/xbluegraph/PathFinder";
 
 type SideTab = "inspector" | "neighbors" | "path" | "algo";
 type GraphLayer = "business" | "hypergraph";
 
-interface CanvasEdge {
-  id: string;
-  link_type: string;
-  src_node_id: string;
-  dst_node_id: string;
-  weight: number;
-}
-
 function toCanvasEdge(lk: BlueLink | LinkRecord): CanvasEdge {
   return {
-    id:
-      lk.id ||
-      `${lk.link_type}:${lk.src_node_id}->${lk.dst_node_id}`,
+    id: lk.id || `${lk.link_type}:${lk.src_node_id}->${lk.dst_node_id}`,
     link_type: lk.link_type,
     src_node_id: lk.src_node_id,
     dst_node_id: lk.dst_node_id,
@@ -83,46 +73,27 @@ function mergeEdgesDeduplicated(
   return Array.from(map.values());
 }
 
-function extractNodeIdFromEvent(data: unknown): string | null {
-  if (typeof data === "object" && data !== null && "id" in data) {
-    const idVal = (data as { id?: unknown }).id;
-    if (typeof idVal === "string") {
-      return idVal;
-    }
-  }
-  return null;
-}
-
-const COMMUNITY_PALETTE_LIGHT = [
-  "#2563eb",
-  "#09090b",
-  "#52525b",
-  "#1d4ed8",
-  "#3f3f46",
-  "#60a5fa",
-];
-
-const COMMUNITY_PALETTE_DARK = [
-  "#3b82f6",
-  "#fafafa",
-  "#a1a1aa",
-  "#60a5fa",
-  "#d4d4d8",
-  "#93c5fd",
-];
-
 export function XBlueGraphPage() {
-  const canvasContainerRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<echarts.ECharts | null>(null);
+  const [searchParams] = useSearchParams();
+  const initialNodeIdParam = searchParams.get("node_id");
 
   const [graphLayer, setGraphLayer] = useState<GraphLayer>("business");
   const [hypergraph, setHypergraph] = useState<TopologyGraph | null>(null);
 
   const [nodes, setNodes] = useState<BlueNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
+    initialNodeIdParam
+  );
   const [sideTab, setSideTab] = useState<SideTab>("inspector");
   const [typeFilter, setTypeFilter] = useState<string>("");
+
+  const [colorMode, setColorMode] = useState<GraphColorMode>("TYPE");
+  const [colorMetricKey, setColorMetricKey] = useState<string>("inventory");
+  const [fa2Running, setFa2Running] = useState<boolean>(false);
+
+  const [presetPathFrom, setPresetPathFrom] = useState<string | null>(null);
+  const [presetPathTo, setPresetPathTo] = useState<string | null>(null);
 
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<NodeSearchHit[]>([]);
@@ -147,15 +118,24 @@ export function XBlueGraphPage() {
     setErrorMsg(null);
     try {
       let sub = await xblueApi
-        .querySubgraph({ type_names: "Factory,Warehouse", limit: 200 })
+        .querySubgraph({ type_names: "Factory,Warehouse", limit: 1000 })
         .catch(() => ({ nodes: [], links: [], truncated: false }));
       if (!Array.isArray(sub?.nodes) || sub.nodes.length === 0) {
         sub = await xblueApi
-          .querySubgraph({ limit: 200 })
+          .querySubgraph({ limit: 1000 })
           .catch(() => ({ nodes: [], links: [], truncated: false }));
       }
-      const subNodes = Array.isArray(sub?.nodes) ? sub.nodes : [];
+      let subNodes = Array.isArray(sub?.nodes) ? sub.nodes : [];
       const subLinks = Array.isArray(sub?.links) ? sub.links : [];
+
+      if (initialNodeIdParam && !subNodes.some((n) => n.id === initialNodeIdParam)) {
+        const focused = await xblueApi
+          .getNode(initialNodeIdParam)
+          .catch(() => null);
+        if (focused) {
+          subNodes = [focused, ...subNodes];
+        }
+      }
 
       if (subNodes.length > 0) {
         setNodes(subNodes);
@@ -167,7 +147,7 @@ export function XBlueGraphPage() {
         );
       } else {
         const fallback = await xblueApi
-          .listNodes({ limit: 200 })
+          .listNodes({ limit: 500 })
           .catch(() => ({ items: [], nodes: [], links: [], next_cursor: null }));
         const fbNodes =
           Array.isArray(fallback?.items) && fallback.items.length > 0
@@ -189,7 +169,7 @@ export function XBlueGraphPage() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [initialNodeIdParam]);
 
   const loadHypergraph = useCallback(async () => {
     try {
@@ -257,14 +237,6 @@ export function XBlueGraphPage() {
     [mergeSubgraphIntoCanvas]
   );
 
-  // Keep refs updated for ECharts click / dblclick listeners
-  const selectHandlerRef = useRef(handleSelectNode);
-  const expandHandlerRef = useRef(handleExpandOneHop);
-  useEffect(() => {
-    selectHandlerRef.current = handleSelectNode;
-    expandHandlerRef.current = handleExpandOneHop;
-  }, [handleSelectNode, handleExpandOneHop]);
-
   const distinctTypes = useMemo(() => {
     const set = new Set<string>();
     for (const n of nodes) {
@@ -272,6 +244,25 @@ export function XBlueGraphPage() {
     }
     return Array.from(set).sort();
   }, [nodes]);
+
+  const availableMetrics = useMemo(() => {
+    const set = new Set<string>();
+    for (const n of nodes) {
+      for (const k of Object.keys(n.metrics ?? {})) {
+        set.add(k);
+      }
+    }
+    return Array.from(set).sort();
+  }, [nodes]);
+
+  useEffect(() => {
+    if (
+      availableMetrics.length > 0 &&
+      !availableMetrics.includes(colorMetricKey)
+    ) {
+      setColorMetricKey(availableMetrics[0] ?? "");
+    }
+  }, [availableMetrics, colorMetricKey]);
 
   const knownLinkTypes = useMemo(() => {
     const set = new Set<string>();
@@ -282,8 +273,7 @@ export function XBlueGraphPage() {
   }, [edges]);
 
   const visibleNodes = useMemo(
-    () =>
-      typeFilter ? nodes.filter((n) => n.type_name === typeFilter) : nodes,
+    () => (typeFilter ? nodes.filter((n) => n.type_name === typeFilter) : nodes),
     [nodes, typeFilter]
   );
 
@@ -306,200 +296,6 @@ export function XBlueGraphPage() {
     () => nodes.find((n) => n.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId]
   );
-
-  // Initialize ECharts Force Graph Canvas
-  useEffect(() => {
-    if (graphLayer !== "business") return;
-    const el = canvasContainerRef.current;
-    if (!el) return;
-
-    const chart = echarts.init(el);
-    chartRef.current = chart;
-
-    chart.on("click", (params) => {
-      if (params.dataType === "node") {
-        const nodeId = extractNodeIdFromEvent(params.data);
-        if (nodeId) {
-          selectHandlerRef.current(nodeId);
-        }
-      }
-    });
-
-    chart.on("dblclick", (params) => {
-      if (params.dataType === "node") {
-        const nodeId = extractNodeIdFromEvent(params.data);
-        if (nodeId) {
-          selectHandlerRef.current(nodeId);
-          void expandHandlerRef.current(nodeId);
-        }
-      }
-    });
-
-    const resizeObserver = new ResizeObserver(() => {
-      chart.resize();
-    });
-    resizeObserver.observe(el);
-
-    return () => {
-      resizeObserver.disconnect();
-      chart.dispose();
-      chartRef.current = null;
-    };
-  }, [graphLayer]);
-
-  // Update ECharts Force Graph Option
-  useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart || graphLayer !== "business") return;
-
-    const fgColor = isDark ? "#fafafa" : "#09090b";
-    const mutedColor = isDark ? "#a1a1aa" : "#71717a";
-    const cardBg = isDark ? "#18181b" : "#f4f4f5";
-    const borderCol = isDark ? "#3f3f46" : "#d4d4d8";
-    const accentBlue = isDark ? "#3b82f6" : "#2563eb";
-    const palette = isDark ? COMMUNITY_PALETTE_DARK : COMMUNITY_PALETTE_LIGHT;
-
-    const categories = distinctTypes.map((t) => ({ name: t }));
-    const typeIdxMap = new Map<string, number>();
-    distinctTypes.forEach((t, idx) => typeIdxMap.set(t, idx));
-
-    const pathNodeSet = new Set(highlightedPathIds);
-    const pathPairSet = new Set<string>();
-    for (let i = 0; i < highlightedPathIds.length - 1; i += 1) {
-      const a = highlightedPathIds[i];
-      const b = highlightedPathIds[i + 1];
-      if (a && b) {
-        pathPairSet.add(`${a}->${b}`);
-        pathPairSet.add(`${b}->${a}`);
-      }
-    }
-
-    const algoMap = new Map<string, AlgoTopEntry>();
-    let maxScore = 0;
-    for (const entry of algoEntries) {
-      algoMap.set(entry.node_id, entry);
-      if (entry.score !== null && entry.score > maxScore) {
-        maxScore = entry.score;
-      }
-    }
-
-    const seriesData = visibleNodes.map((node) => {
-      const isSelected = node.id === selectedNodeId;
-      const isInPath = pathNodeSet.has(node.id);
-      const algoEntry = algoMap.get(node.id);
-      const catIdx = typeIdxMap.get(node.type_name) ?? 0;
-
-      let symbolSize = isSelected || isInPath ? 32 : 24;
-      if (
-        algoMode === "SCORE_SIZE" &&
-        algoEntry?.score !== null &&
-        algoEntry?.score !== undefined &&
-        maxScore > 0
-      ) {
-        symbolSize = Math.round(18 + (algoEntry.score / maxScore) * 30);
-      }
-
-      let fillColor = palette[catIdx % palette.length] ?? fgColor;
-      if (
-        algoMode === "COMMUNITY_COLOR" &&
-        algoEntry?.community !== null &&
-        algoEntry?.community !== undefined
-      ) {
-        const commIdx = Math.abs(algoEntry.community) % palette.length;
-        fillColor = palette[commIdx] ?? accentBlue;
-      }
-      if (isSelected || isInPath) {
-        fillColor = accentBlue;
-      }
-
-      return {
-        id: node.id,
-        name: `${node.title} (${node.node_key})`,
-        category: catIdx,
-        symbolSize,
-        itemStyle: {
-          color: fillColor,
-          borderColor: isSelected || isInPath ? accentBlue : fgColor,
-          borderWidth: isSelected || isInPath ? 3 : 1.5,
-        },
-      };
-    });
-
-    const seriesLinks = visibleEdges.map((edge) => {
-      const inPath = pathPairSet.has(`${edge.src_node_id}->${edge.dst_node_id}`);
-      return {
-        source: edge.src_node_id,
-        target: edge.dst_node_id,
-        label: {
-          show: visibleEdges.length <= 60 || inPath,
-          formatter: edge.link_type,
-          color: inPath ? accentBlue : mutedColor,
-          fontSize: 10,
-        },
-        lineStyle: {
-          color: inPath ? accentBlue : mutedColor,
-          width: inPath ? 3 : 1.5,
-          opacity: inPath ? 1 : 0.65,
-          curveness: 0.08,
-        },
-      };
-    });
-
-    const option: echarts.EChartsOption = {
-      animation: false,
-      tooltip: {
-        trigger: "item",
-        backgroundColor: cardBg,
-        borderColor: borderCol,
-        textStyle: { color: fgColor, fontSize: 12 },
-      },
-      legend:
-        categories.length > 0
-          ? {
-              top: 8,
-              left: 10,
-              data: categories.map((c) => c.name),
-              textStyle: { color: mutedColor, fontSize: 11 },
-            }
-          : undefined,
-      series: [
-        {
-          type: "graph",
-          layout: "force",
-          roam: true,
-          draggable: true,
-          categories,
-          edgeSymbol: ["none", "arrow"],
-          edgeSymbolSize: [4, 8],
-          force: {
-            repulsion: 280,
-            edgeLength: [80, 145],
-            gravity: 0.12,
-          },
-          label: {
-            show: visibleNodes.length <= 120,
-            position: "bottom",
-            color: fgColor,
-            fontSize: 11,
-          },
-          data: seriesData,
-          links: seriesLinks,
-        },
-      ],
-    };
-
-    chart.setOption(option, true);
-  }, [
-    algoEntries,
-    algoMode,
-    distinctTypes,
-    graphLayer,
-    highlightedPathIds,
-    isDark,
-    selectedNodeId,
-    visibleEdges,
-    visibleNodes,
-  ]);
 
   const handleHybridSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -540,6 +336,31 @@ export function XBlueGraphPage() {
     setHighlightedPathIds(pathRes.path);
   };
 
+  const handleColorModeChange = (mode: GraphColorMode) => {
+    setColorMode(mode);
+    if (mode === "ALGO" && algoEntries.length === 0) {
+      xblueApi
+        .getAlgorithmResults("PAGERANK", { limit: 200 })
+        .then((res) => {
+          const items = Array.isArray(res?.items) ? res.items : [];
+          if (items.length > 0) {
+            setAlgoEntries(
+              items.map((r) => ({
+                node_id: r.node_id,
+                title: r.title,
+                score: r.score,
+                community: r.community,
+              }))
+            );
+            setAlgoMode("SCORE_SIZE");
+          }
+        })
+        .catch(() => {
+          // Ignore if no precomputed algorithm results exist
+        });
+    }
+  };
+
   return (
     <div className="space-y-4" data-testid="xbluegraph-page">
       {/* Header */}
@@ -549,7 +370,7 @@ export function XBlueGraphPage() {
             xBlueGraph · 拓扑浏览器
           </h1>
           <p className="text-xs text-muted-foreground mt-0.5">
-            力导向业务对象关系网络、时序指标钻取、多跳遍历、最短路径与图算法工作台
+            Sigma.js WebGL 万级节点力导向关系网络、时序指标钻取、多跳遍历、最短路径与图算法工作台
           </p>
         </div>
 
@@ -613,175 +434,71 @@ export function XBlueGraphPage() {
 
       {graphLayer === "business" ? (
         <>
-          {/* Search, Type Filter & Canvas Telemetry Bar */}
-          <Card className="p-3 space-y-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <form
-                onSubmit={(e) => void handleHybridSearch(e)}
-                className="flex flex-1 min-w-[260px] items-center gap-2"
-              >
-                <Input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="全文 + 向量混合检索业务节点（如 华东仓 / W-1）..."
-                  className="h-8 text-xs"
-                  data-testid="graph-search-input"
-                />
-                <select
-                  value={typeFilter}
-                  onChange={(e) => setTypeFilter(e.target.value)}
-                  className="h-8 rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
-                  data-testid="graph-type-filter"
-                >
-                  <option value="">全部节点类型</option>
-                  {distinctTypes.map((t) => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
-                <Button
-                  type="submit"
-                  variant="outline"
-                  className="px-3 py-1.5 text-xs"
-                  disabled={searching}
-                  data-testid="graph-search-btn"
-                >
-                  <Search className="h-3.5 w-3.5" />
-                  检索
-                </Button>
-              </form>
+          <GraphToolbar
+            searchQuery={searchQuery}
+            onSearchQueryChange={setSearchQuery}
+            onSearchSubmit={(e) => void handleHybridSearch(e)}
+            searching={searching}
+            searchOpen={searchOpen}
+            onCloseSearch={() => setSearchOpen(false)}
+            searchHits={searchHits}
+            onPickSearchHit={handlePickSearchHit}
+            typeFilter={typeFilter}
+            onTypeFilterChange={setTypeFilter}
+            distinctTypes={distinctTypes}
+            colorMode={colorMode}
+            onColorModeChange={handleColorModeChange}
+            colorMetricKey={colorMetricKey}
+            onColorMetricKeyChange={setColorMetricKey}
+            availableMetrics={availableMetrics}
+            fa2Running={fa2Running}
+            onToggleFa2={() => setFa2Running((prev) => !prev)}
+            visibleNodes={visibleNodes}
+            visibleEdgeCount={visibleEdges.length}
+            selectedNodeId={selectedNodeId}
+            expanding={expanding}
+            onSelectNode={handleSelectNode}
+            onExpandNode={(id) => void handleExpandOneHop(id)}
+          />
 
-              <div className="flex items-center gap-2 text-xs">
-                <span className="rounded border border-border bg-muted px-2.5 py-1 font-mono-tech">
-                  节点{" "}
-                  <strong
-                    className="text-xblue"
-                    data-testid="canvas-node-count"
-                  >
-                    {visibleNodes.length}
-                  </strong>
-                </span>
-                <span className="rounded border border-border bg-muted px-2.5 py-1 font-mono-tech">
-                  关系{" "}
-                  <strong data-testid="canvas-edge-count">
-                    {visibleEdges.length}
-                  </strong>
-                </span>
-
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="px-2.5 py-1 text-xs"
-                  disabled={!selectedNode || expanding}
-                  onClick={() => {
-                    if (selectedNode) {
-                      void handleExpandOneHop(selectedNode.id);
-                    }
-                  }}
-                  data-testid="expand-node-btn"
-                >
-                  <Share2 className="h-3.5 w-3.5 text-xblue" />
-                  {expanding ? "展开中..." : "展开选中 1 跳"}
-                </Button>
-              </div>
-            </div>
-
-            {/* Hybrid Search Dropdown Results */}
-            {searchOpen && (
-              <div
-                className="rounded border border-border bg-background p-2 space-y-1.5"
-                data-testid="graph-search-results"
-              >
-                <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                  <span>混合检索命中 ({searchHits.length})</span>
-                  <button
-                    type="button"
-                    onClick={() => setSearchOpen(false)}
-                    className="hover:text-foreground cursor-pointer"
-                  >
-                    收起
-                  </button>
-                </div>
-                {searchHits.length === 0 ? (
-                  <div className="text-xs text-muted-foreground py-1">
-                    未命中匹配的业务节点。
-                  </div>
-                ) : (
-                  <div className="flex flex-wrap gap-1.5">
-                    {searchHits.map((hit) => (
-                      <button
-                        key={hit.id}
-                        type="button"
-                        onClick={() => handlePickSearchHit(hit)}
-                        data-testid={`search-hit-${hit.node_key}`}
-                        className="rounded border border-border px-2.5 py-1 text-xs flex items-center gap-1.5 hover:border-xblue hover:bg-xblue-soft transition-colors cursor-pointer"
-                      >
-                        <span className="font-medium">{hit.title}</span>
-                        <span className="font-mono-tech text-[11px] text-muted-foreground">
-                          ({hit.node_key})
-                        </span>
-                        <Badge variant="xblue">
-                          {(hit.channels ?? []).join("+") || hit.type_name}
-                        </Badge>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Quick Canvas Node Index Strip (Single-click selects, Double-click expands 1-hop) */}
-            {visibleNodes.length > 0 && (
-              <div
-                className="flex items-center gap-1.5 overflow-x-auto pt-1 border-t border-border"
-                data-testid="canvas-node-list"
-              >
-                <span className="text-[11px] text-muted-foreground shrink-0">
-                  画布节点（单击查看详情 / 双击展开 1 跳）:
-                </span>
-                {visibleNodes.slice(0, 30).map((node) => {
-                  const active = node.id === selectedNodeId;
-                  return (
-                    <button
-                      key={node.id}
-                      type="button"
-                      onClick={() => handleSelectNode(node.id)}
-                      onDoubleClick={() => {
-                        handleSelectNode(node.id);
-                        void handleExpandOneHop(node.id);
-                      }}
-                      data-testid={`graph-node-${node.node_key}`}
-                      className={`shrink-0 rounded border px-2 py-0.5 text-[11px] font-mono-tech transition-colors cursor-pointer ${
-                        active
-                          ? "border-xblue bg-xblue-soft text-xblue font-medium"
-                          : "border-border bg-background hover:bg-muted"
-                      }`}
-                    >
-                      {node.title} ({node.node_key})
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </Card>
-
-          {/* Main Canvas + Right Tool Drawer */}
+          {/* Main Sigma Canvas + Right Tool Drawer */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-            <Card className="lg:col-span-8 p-2 overflow-hidden relative">
-              <div
-                ref={canvasContainerRef}
-                className="w-full h-[540px] bg-background"
-                data-testid="xbluegraph-canvas"
+            <Card className="lg:col-span-8 p-0 overflow-hidden relative flex flex-col">
+              <SigmaCanvas
+                nodes={visibleNodes}
+                edges={visibleEdges}
+                selectedNodeId={selectedNodeId}
+                highlightedPathIds={highlightedPathIds}
+                colorMode={colorMode}
+                colorMetricKey={colorMetricKey}
+                algoMode={algoMode}
+                algoEntries={algoEntries}
+                fa2Running={fa2Running}
+                isDark={isDark}
+                onSelectNode={handleSelectNode}
+                onExpandNode={(id) => void handleExpandOneHop(id)}
+                onSetPathEndpoint={(role, nodeId) => {
+                  if (role === "from") setPresetPathFrom(nodeId);
+                  else setPresetPathTo(nodeId);
+                  setSideTab("path");
+                }}
               />
               {visibleNodes.length === 0 && !loading && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs text-muted-foreground">
                   当前画布暂无业务节点，请通过 xBlueStudio 或数据映射写入业务对象。
                 </div>
               )}
+              <AlgoLegend
+                colorMode={colorMode}
+                colorMetricKey={colorMetricKey}
+                distinctTypes={distinctTypes}
+                algoMode={algoMode}
+                algoEntries={algoEntries}
+                isDark={isDark}
+              />
             </Card>
 
-            <Card className="lg:col-span-4 p-3 space-y-3 max-h-[558px] overflow-y-auto">
+            <Card className="lg:col-span-4 p-3 space-y-3 max-h-[580px] overflow-y-auto">
               {/* Side Drawer Tool Tabs */}
               <div className="grid grid-cols-4 gap-1 rounded-md border border-border bg-muted/40 p-0.5">
                 {(
@@ -830,8 +547,10 @@ export function XBlueGraphPage() {
               )}
 
               {sideTab === "path" && (
-                <PathFinder
+                <PathPanel
                   nodes={nodes}
+                  presetFromId={presetPathFrom}
+                  presetToId={presetPathTo}
                   onPathFound={handlePathFound}
                   onClearHighlight={() => setHighlightedPathIds([])}
                 />
@@ -842,6 +561,7 @@ export function XBlueGraphPage() {
                   onApplyVisualMapping={(mode, entries) => {
                     setAlgoMode(mode);
                     setAlgoEntries(entries);
+                    if (mode !== "NONE") setColorMode("ALGO");
                   }}
                   onSelectNodeId={(id) => handleSelectNode(id)}
                 />

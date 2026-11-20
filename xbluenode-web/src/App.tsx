@@ -12,6 +12,7 @@ import { getAccessToken, setUnauthorizedHandler } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { MODULE_REGISTRY } from "@/modules/registry";
 import { LoginPage } from "@/pages/LoginPage";
+import { XBlueViewPage } from "@/pages/XBlueViewPage";
 
 function ShellLayout() {
   const location = useLocation();
@@ -26,6 +27,14 @@ function ShellLayout() {
     return <Navigate to="/login" replace />;
   }
 
+  const isScreenMode =
+    location.pathname.startsWith("/view/") &&
+    new URLSearchParams(location.search).get("screen") === "1";
+
+  if (isScreenMode) {
+    return <Outlet />;
+  }
+
   const toggleTheme = () => {
     const next = !dark;
     setDark(next);
@@ -33,6 +42,7 @@ function ShellLayout() {
   };
 
   const navItems = MODULE_REGISTRY.filter((m) => !m.public);
+  const isViewRoute = location.pathname.startsWith("/view");
 
   return (
     <div className="min-h-screen flex bg-background text-foreground">
@@ -88,7 +98,12 @@ function ShellLayout() {
         </button>
       </aside>
 
-      <main className="flex-1 p-6 md:p-8 max-w-6xl mx-auto w-full">
+      <main
+        className={cn(
+          "flex-1 min-w-0 w-full mx-auto",
+          isViewRoute ? "p-4 md:p-6 max-w-[1600px]" : "p-6 md:p-8 max-w-6xl"
+        )}
+      >
         <Outlet />
       </main>
     </div>
@@ -117,6 +132,10 @@ const router = createBrowserRouter([
           element: <PageComponent />,
         };
       }),
+      {
+        path: "/view/:slug",
+        element: <XBlueViewPage />,
+      },
       {
         path: "*",
         element: <Navigate to="/" replace />,

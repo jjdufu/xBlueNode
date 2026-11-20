@@ -38,6 +38,11 @@ const SHELL_SMOKE_ROUTES: readonly SmokeRouteAssertion[] = [
     sidebarLabel: "AxSim · 因果推演",
     heading: "AxSim · 因果推演沙盘",
   },
+  {
+    path: "/view",
+    sidebarLabel: "xBlueView · 孪生驾驶舱",
+    heading: "xBlueView · 孪生驾驶舱",
+  },
 ];
 
 async function installDeterministicApiMocks(
@@ -315,6 +320,34 @@ async function installDeterministicApiMocks(
             created_at: "2026-01-31T08:00:00Z",
           },
         ]),
+      });
+      return;
+    }
+
+    if (pathname === "/api/xblueview/dashboards") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          items: [
+            {
+              id: "00000000-0000-0000-0000-000000000051",
+              tenant_id: "default",
+              name: "供应链总览",
+              slug: "supply-overview",
+              description: "华东供应链孪生监控看板",
+              filters: [],
+              theme: "light",
+              canvas: { cols: 24, row_height: 30, screen_width: 1920, screen_height: 1080 },
+              status: "PUBLISHED",
+              version: 1,
+              created_by: null,
+              created_at: "2026-01-31T08:00:00Z",
+              updated_at: "2026-01-31T08:00:00Z",
+            },
+          ],
+          next_cursor: null,
+        }),
       });
       return;
     }
