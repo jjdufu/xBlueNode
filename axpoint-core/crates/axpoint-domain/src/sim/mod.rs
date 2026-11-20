@@ -17,10 +17,17 @@ use uuid::Uuid;
 use crate::graph::TraversalDirection;
 use crate::topology::{AxSandboxRecord, AxSimAction};
 
-pub use action::{NormalizedAction, normalize_actions};
-pub use explain::{compute_hop_distances, compute_top_paths};
-pub use graph::{PropagationClamp, PropagationRule, PropagationSpec, SimGraph, SimLink, SimNode};
-pub use scc::{SccGraph, tarjan_scc_topo};
+pub use action::{NormalizedAction, normalize_actions, normalize_actions_indexed};
+pub use explain::{
+    ImpactPathExplanation, PathStepDetail, compute_hop_distances, compute_top_paths,
+    explain_impact_path,
+};
+pub use graph::{
+    CompiledEdge, EdgeSaturation, IndexedSimGraph, IndexedSimNode, NodeIdx, PropagationClamp,
+    PropagationCurve, PropagationRule, PropagationSpec, SimGraph, SimLink, SimNode, aggregate_kpis,
+    apply_clamp, eval_edge_delta, merge_clamps,
+};
+pub use scc::{SccGraph, is_cyclic_component, tarjan_scc_topo};
 
 /// Default maximum node count permitted when cloning an `AxSim` sandbox without explicit truncation.
 pub const DEFAULT_SANDBOX_MAX_NODES: usize = 50_000;

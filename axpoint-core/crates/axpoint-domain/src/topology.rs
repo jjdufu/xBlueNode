@@ -1,6 +1,6 @@
 //! `xBlueStudio` node/edge modeling, `AxFlow` pipelines, and `AxSim` causal sandbox domain logic.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -556,86 +556,72 @@ pub fn simulate_causal_propagation(
     snapshot: &AxSimSnapshot,
     actions: &[AxSimAction],
 ) -> AxSimResult {
-    let node_map: HashMap<Uuid, &BlueNode> = snapshot.nodes.iter().map(|n| (n.id, n)).collect();
+    let sim_graph = crate::sim::SimGraph {
+        nodes: snapshot
+            .nodes
+            .iter()
+            .map(|n| crate::sim::SimNode {
+                id: n.id,
+                type_name: n.type_name.clone(),
+                node_key: n.node_key.clone(),
+                title: n.title.clone(),
+                metrics: n.metrics.clone(),
+                properties: n.properties.clone(),
+                row_version: n.row_version,
+            })
+            .collect(),
+        links: snapshot
+            .links
+            .iter()
+            .map(|l| crate::sim::SimLink {
+                id: l.id,
+                link_type: l.link_type.clone(),
+                src_node_id: l.src_node_id,
+                dst_node_id: l.dst_node_id,
+                weight: l.weight,
+            })
+            .collect(),
+        edge_specs: BTreeMap::new(),
+    };
 
-    let mut adj: HashMap<Uuid, Vec<&BlueLink>> = HashMap::new();
-    for link in &snapshot.links {
-        adj.entry(link.src_node_id).or_default().push(link);
-    }
-
-    let mut ratio_changes: HashMap<(Uuid, String), (f64, u32)> = HashMap::new();
-    let mut queue: VecDeque<(Uuid, String, f64, u32)> = VecDeque::new();
-
-    for act in actions {
-        let ratio = match (act.delta_ratio, act.mode, act.value) {
-            (Some(dr), _, _) => dr,
-            (None, Some(crate::enums::InterventionMode::Ratio), Some(v)) => v,
-            _ => continue,
-        };
-        queue.push_back((act.target_node_id, act.metric_key.clone(), ratio, 0));
-    }
-
-    while let Some((curr_id, metric_key, delta_ratio, hop)) = queue.pop_front() {
-        if delta_ratio.abs() < 1e-4 || hop > 6 {
-            continue;
-        }
-
-        let entry = ratio_changes
-            .entry((curr_id, metric_key.clone()))
-            .or_insert((0.0, hop));
-        entry.0 += delta_ratio;
-        if hop < entry.1 {
-            entry.1 = hop;
-        }
-
-        if let Some(neighbors) = adj.get(&curr_id) {
-            for link in neighbors {
-                let propagated = delta_ratio * link.weight.clamp(0.0, 1.0);
-                queue.push_back((
-                    link.dst_node_id,
-                    metric_key.clone(),
-                    propagated,
-                    hop.saturating_add(1),
-                ));
+    match crate::sim::steady::solve(&sim_graph, actions, &crate::sim::SimParams::default()) {
+        Ok(res) => {
+            let impacts: Vec<AxSimImpactRow> = res
+                .impacts
+                .into_iter()
+                .map(|row| AxSimImpactRow {
+                    node_id: row.node_id,
+                    type_name: row.type_name,
+                    title: row.title,
+                    metric_key: row.metric,
+                    before_val: row.before_val.unwrap_or(0.0),
+                    after_val: row.after_val,
+                    delta: row.delta.unwrap_or(row.after_val),
+                    delta_ratio: row.delta_ratio,
+                    hop_distance: row.hop_distance,
+                    top_path: row.top_path,
+                })
+                .collect();
+            let affected_count = impacts.len();
+            AxSimResult {
+                impacts,
+                affected_count,
+                kpis: res.kpis,
+                warnings: res.warnings,
+                converged: res.converged,
             }
         }
-    }
-
-    let mut impacts = Vec::new();
-    for ((node_id, metric_key), (total_ratio, hop_distance)) in ratio_changes {
-        if let Some(node) = node_map.get(&node_id)
-            && let Some(&before_val) = node.metrics.get(&metric_key)
-        {
-            let after_val = (before_val * (1.0 + total_ratio)).max(0.0);
-            let delta = after_val - before_val;
-            let delta_ratio = if before_val.abs() > f64::EPSILON {
-                Some(delta / before_val)
-            } else {
-                None
-            };
-            impacts.push(AxSimImpactRow {
-                node_id,
-                type_name: node.type_name.clone(),
-                title: node.title.clone(),
-                metric_key,
-                before_val,
-                after_val,
-                delta,
-                delta_ratio,
-                hop_distance,
-                top_path: Vec::new(),
-            });
-        }
-    }
-
-    impacts.sort_by(|a, b| b.delta.abs().total_cmp(&a.delta.abs()));
-    let affected_count = impacts.len();
-    AxSimResult {
-        impacts,
-        affected_count,
-        kpis: Vec::new(),
-        warnings: Vec::new(),
-        converged: true,
+        Err(err) => AxSimResult {
+            impacts: Vec::new(),
+            affected_count: 0,
+            kpis: Vec::new(),
+            warnings: vec![crate::sim::SimWarning {
+                node_id: actions.first().map_or_else(Uuid::nil, |a| a.target_node_id),
+                code: err.error_code().to_string(),
+                message: err.client_message(),
+            }],
+            converged: false,
+        },
     }
 }
 
