@@ -8,8 +8,7 @@ use axpoint_domain::AppError;
 use axpoint_domain::PaginatedList;
 use axpoint_domain::agent::{SimRunToolInput, SimRunToolOutput};
 use axpoint_domain::enums::{
-    AuditAction, Environment, InterventionMode, OutboxTopic, Permission, ScenarioStatus,
-    TriggerType,
+    AuditAction, Environment, InterventionMode, OutboxTopic, Permission, TriggerType,
 };
 use axpoint_domain::flow::{ApprovalSourceKind, ApprovalStatus, StartRunParams};
 use axpoint_domain::graph::NodeSearchQuery;
@@ -21,7 +20,8 @@ use axpoint_domain::sim::{
     CreateOverlayLinkRequest, CreateOverlayNodeRequest, CreateScenarioRequest, DecisionRecord,
     DecisionStatus, ImpactListQuery, ImpactRow, PatchOverlayLinkRequest, PatchOverlayNodeRequest,
     RefreshBaseResponse, SandboxGraphLink, SandboxGraphNode, SandboxGraphResponse, SandboxScope,
-    ScenarioRecord, SimAskIntent, SimAskRequest, SimAskResponse, SimGraph, SimParams,
+    ScenarioRecord, ScenarioStatus, SimAskIntent, SimAskRequest, SimAskResponse, SimGraph,
+    SimParams,
 };
 use axpoint_domain::topology::{
     AxSandboxRecord, AxSimAction, AxSimResult, CreateAxSandboxRequest, SimulateAxSandboxRequest,
@@ -373,7 +373,8 @@ async fn create_scenario_handler(
         )
         .await?;
 
-    let is_heavy = graph.nodes.len() > 5_000 || req.params.uncertainty.enabled;
+    let is_heavy =
+        graph.nodes.len() > 5_000 || req.params.uncertainty.as_ref().is_some_and(|u| u.enabled);
     if is_heavy {
         let store = state.store.clone();
         let tenant_id = principal.tenant_id.clone();
@@ -426,7 +427,7 @@ async fn execute_and_persist_scenario(
         axpoint_domain::sim::uncertainty::solve(&graph, &actions, &params)
     })
     .await
-    .map_err(|err| AppError::Internal(format!("sim solver join failed: {err}")))?;
+    .map_err(|err| AppError::Database(format!("sim solver join failed: {err}")))?;
 
     match solve_outcome {
         Ok(result) => {
@@ -977,7 +978,7 @@ async fn sim_ask_handler(
                     })
                     .await
                     .map_err(|err| {
-                        AppError::Internal(format!("what-if solve join failed: {err}"))
+                        AppError::Database(format!("what-if solve join failed: {err}"))
                     })??;
 
                     if let Some(ref sc) = scenario_rec {
@@ -1035,6 +1036,7 @@ async fn record_sim_ask_audit(
             "question": question,
             "sql": sql,
         }),
+        created_at: chrono::Utc::now(),
     });
     if let Err(err) = state.audit.flush().await {
         tracing::warn!(error = %err, "axsim ask audit flush failed");
@@ -1367,7 +1369,7 @@ impl OutboxSubscriber for SimApprovalDecidedSubscriber {
                 return Ok(());
             }
 
-            let Some(decision_id) = approval.source_ref else {
+            let Ok(decision_id) = Uuid::parse_str(approval.source_ref.trim()) else {
                 return Ok(());
             };
 

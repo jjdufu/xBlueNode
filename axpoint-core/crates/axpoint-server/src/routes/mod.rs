@@ -7,7 +7,7 @@ mod axflow;
 mod axflow_rules;
 mod axhub;
 mod axops;
-mod axsim;
+pub(crate) mod axsim;
 pub(crate) mod documents;
 mod mcp;
 pub(crate) mod published;

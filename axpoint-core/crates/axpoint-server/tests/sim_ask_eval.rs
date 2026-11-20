@@ -4,10 +4,11 @@
 use std::collections::BTreeMap;
 use std::future::Future;
 
-use axpoint_domain::enums::{InterventionMode, ScenarioStatus};
+use axpoint_domain::enums::InterventionMode;
 use axpoint_domain::ports::AiPort;
 use axpoint_domain::sim::{
-    CompareKpiCell, CompareKpiRow, ImpactRow, ScenarioRecord, ScenarioSummary, SimNode, SimParams,
+    CompareKpiCell, CompareKpiRow, ImpactRow, ScenarioRecord, ScenarioStatus, ScenarioSummary,
+    SimNode, SimParams,
 };
 use axpoint_domain::topology::AxSimAction;
 use axpoint_domain::{AppError, ExtractedTriple, FusedHit};
@@ -148,9 +149,9 @@ fn fixture_nodes() -> (Vec<SimNode>, BTreeMap<String, Uuid>) {
             type_name: String::from(ty),
             node_key: String::from(key),
             title: String::from(title),
-            attributes: BTreeMap::new(),
             metrics,
-            metric_bounds: BTreeMap::new(),
+            properties: serde_json::Map::new(),
+            row_version: 1,
         }
     };
 
@@ -180,6 +181,7 @@ fn fixture_impacts(ids: &BTreeMap<String, Uuid>) -> Vec<ImpactRow> {
             p90: Some(730.0),
             hop_distance: 0,
             top_path: vec![id("F-1")],
+            series: Vec::new(),
         },
         ImpactRow {
             node_id: id("W-1"),
@@ -194,6 +196,7 @@ fn fixture_impacts(ids: &BTreeMap<String, Uuid>) -> Vec<ImpactRow> {
             p90: Some(400.0),
             hop_distance: 1,
             top_path: vec![id("F-1"), id("W-1")],
+            series: Vec::new(),
         },
         ImpactRow {
             node_id: id("O-1"),
@@ -208,6 +211,7 @@ fn fixture_impacts(ids: &BTreeMap<String, Uuid>) -> Vec<ImpactRow> {
             p90: Some(81.0),
             hop_distance: 2,
             top_path: vec![id("F-1"), id("W-1"), id("O-1")],
+            series: Vec::new(),
         },
         ImpactRow {
             node_id: id("O-2"),
@@ -222,6 +226,7 @@ fn fixture_impacts(ids: &BTreeMap<String, Uuid>) -> Vec<ImpactRow> {
             p90: Some(93.6),
             hop_distance: 2,
             top_path: vec![id("F-1"), id("W-1"), id("O-2")],
+            series: Vec::new(),
         },
     ]
 }
@@ -325,6 +330,7 @@ async fn run_single_case(case: &EvalCase) -> bool {
                         p90: None,
                         hop_distance: 0,
                         top_path: vec![Uuid::from_u128(1)],
+                        series: Vec::new(),
                     }],
                     kpis: Vec::new(),
                     warnings: Vec::new(),
