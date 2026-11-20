@@ -1,0 +1,73 @@
+[
+  {
+    "id": "case_01_east_supply_orders_inv",
+    "prompt": "生成华东供应链库存与已支付订单监控看板",
+    "llm_response": "{\"name\":\"华东供应链监控看板\",\"slug\":\"east-supply-monitor\",\"theme\":\"light\",\"description\":\"供应链核心指标与库存看板\",\"filters\":[],\"widgets\":[{\"widget_kind\":\"KPI_CARD\",\"title\":\"已支付订单总金额\",\"position\":{\"x\":0,\"y\":0,\"w\":6,\"h\":4},\"data_source\":{\"kind\":\"METRIC\",\"metric\":\"paid_amount\",\"dimensions\":[]}},{\"widget_kind\":\"BAR_CHART\",\"title\":\"各状态订单金额\",\"position\":{\"x\":6,\"y\":0,\"w\":12,\"h\":6},\"data_source\":{\"kind\":\"SQL\",\"sql\":\"SELECT status, SUM(amount) AS total_amount FROM demo_orders GROUP BY status\"},\"encoding\":{\"x\":\"status\",\"y\":[\"total_amount\"]}},{\"widget_kind\":\"LINE_CHART\",\"title\":\"仓库库存趋势\",\"position\":{\"x\":0,\"y\":4,\"w\":12,\"h\":6},\"data_source\":{\"kind\":\"NODE_METRIC\",\"type_name\":\"Warehouse\",\"metric\":\"inventory\",\"agg\":\"SUM\",\"grain\":\"HOUR\",\"time_range\":\"LAST_7_DAYS\",\"group_by\":\"node\"}},{\"widget_kind\":\"ALERT_LIST\",\"title\":\"实时运维告警\",\"position\":{\"x\":18,\"y\":0,\"w\":6,\"h\":10},\"data_source\":{\"kind\":\"ALERTS\",\"status\":[\"OPEN\",\"ACK\"],\"severity\":[\"WARN\",\"CRITICAL\"],\"limit\":20}}]}",
+    "expect_min_widgets": 4,
+    "expect_kinds": ["KPI_CARD", "BAR_CHART", "LINE_CHART", "ALERT_LIST"]
+  },
+  {
+    "id": "case_02_factory_topology_orders",
+    "prompt": "工厂产能与供应链拓扑关系分析看板",
+    "llm_response": "{\"name\":\"工厂与拓扑监控\",\"slug\":\"factory-topology-view\",\"theme\":\"dark\",\"description\":\"工厂产能及上下游供应拓扑\",\"filters\":[],\"widgets\":[{\"widget_kind\":\"KPI_CARD\",\"title\":\"工厂总产出\",\"position\":{\"x\":0,\"y\":0,\"w\":6,\"h\":4},\"data_source\":{\"kind\":\"NODE_METRIC\",\"type_name\":\"Factory\",\"metric\":\"output\",\"agg\":\"SUM\",\"grain\":\"DAY\",\"time_range\":\"LAST_30_DAYS\"}},{\"widget_kind\":\"GRAPH_TOPOLOGY\",\"title\":\"供应链供应网络\",\"position\":{\"x\":6,\"y\":0,\"w\":18,\"h\":8},\"data_source\":{\"kind\":\"GRAPH\",\"type_names\":[\"Factory\",\"Warehouse\"],\"link_types\":[\"SUPPLIES\"],\"color_metric\":\"inventory\",\"limit\":500}},{\"widget_kind\":\"TABLE\",\"title\":\"近期订单明细\",\"position\":{\"x\":0,\"y\":4,\"w\":6,\"h\":4},\"data_source\":{\"kind\":\"SQL\",\"sql\":\"SELECT order_id, status, amount, warehouse_code FROM demo_orders ORDER BY updated_at DESC LIMIT 50\"}}]}",
+    "expect_min_widgets": 3,
+    "expect_kinds": ["KPI_CARD", "GRAPH_TOPOLOGY", "TABLE"]
+  },
+  {
+    "id": "case_03_geo_logistics_map",
+    "prompt": "全国工厂与仓库地理分布及订单占比驾驶舱",
+    "llm_response": "{\"name\":\"物流地理分布驾驶舱\",\"slug\":\"geo-logistics-map\",\"theme\":\"screen\",\"description\":\"全国节点地理分布与订单结构\",\"filters\":[],\"widgets\":[{\"widget_kind\":\"MAP\",\"title\":\"工厂与仓库分布图\",\"position\":{\"x\":0,\"y\":0,\"w\":16,\"h\":10},\"data_source\":{\"kind\":\"NODES_GEO\",\"type_names\":[\"Factory\",\"Warehouse\"],\"color_metric\":\"inventory\",\"link_types\":[\"SUPPLIES\"]}},{\"widget_kind\":\"PIE_CHART\",\"title\":\"订单状态分布\",\"position\":{\"x\":16,\"y\":0,\"w\":8,\"h\":10},\"data_source\":{\"kind\":\"SQL\",\"sql\":\"SELECT status, COUNT(*) AS cnt FROM demo_orders GROUP BY status\"},\"encoding\":{\"category\":\"status\",\"value\":\"cnt\"}}]}",
+    "expect_min_widgets": 2,
+    "expect_kinds": ["MAP", "PIE_CHART"]
+  },
+  {
+    "id": "case_04_scene3d_twin_action",
+    "prompt": "仓库三维数字孪生监控与库存盘点回写看板",
+    "llm_response": "{\"name\":\"仓库3D孪生控制台\",\"slug\":\"warehouse-3d-twin\",\"theme\":\"dark\",\"description\":\"三维孪生场景与实时库存盘点回写\",\"filters\":[],\"widgets\":[{\"widget_kind\":\"SCENE_3D\",\"title\":\"仓库三维孪生\",\"position\":{\"x\":0,\"y\":0,\"w\":16,\"h\":10},\"data_source\":{\"kind\":\"SCENE_3D\",\"asset_id\":\"00000000-0000-0000-0000-000000000301\",\"color_metric\":\"inventory\"}},{\"widget_kind\":\"ACTION_FORM\",\"title\":\"库存盘点回写\",\"position\":{\"x\":16,\"y\":0,\"w\":8,\"h\":10},\"data_source\":{\"kind\":\"ACTION\",\"action_type\":\"WRITE_NODE\",\"node_id\":\"00000000-0000-0000-0000-000000000201\",\"target_kind\":\"METRIC\",\"key\":\"inventory\",\"input_schema\":{\"type\":\"object\",\"required\":[\"value\"],\"properties\":{\"value\":{\"type\":\"number\"}}}}}]}",
+    "expect_min_widgets": 2,
+    "expect_kinds": ["SCENE_3D", "ACTION_FORM"]
+  },
+  {
+    "id": "case_05_floorplan_gauge",
+    "prompt": "园区二维平面库位监控与满足率仪表盘",
+    "llm_response": "{\"name\":\"库位平面图监控\",\"slug\":\"floorplan-monitor\",\"theme\":\"light\",\"description\":\"二维平面图与满足率仪表\",\"filters\":[],\"widgets\":[{\"widget_kind\":\"FLOOR_PLAN\",\"title\":\"库位平面图\",\"position\":{\"x\":0,\"y\":0,\"w\":16,\"h\":8},\"data_source\":{\"kind\":\"FLOOR_PLAN\",\"asset_id\":\"00000000-0000-0000-0000-000000000302\",\"color_metric\":\"inventory\"}},{\"widget_kind\":\"GAUGE\",\"title\":\"仓库满足率\",\"position\":{\"x\":16,\"y\":0,\"w\":8,\"h\":8},\"data_source\":{\"kind\":\"NODE_METRIC\",\"type_name\":\"Warehouse\",\"metric\":\"fill_rate\",\"agg\":\"AVG\",\"grain\":\"DAY\",\"time_range\":\"LAST_7_DAYS\"}}]}",
+    "expect_min_widgets": 2,
+    "expect_kinds": ["FLOOR_PLAN", "GAUGE"]
+  },
+  {
+    "id": "case_06_sim_compare_note",
+    "prompt": "推演方案对比与供应链风险简报看板",
+    "llm_response": "{\"name\":\"推演对比看板\",\"slug\":\"sim-compare-brief\",\"theme\":\"light\",\"description\":\"多推演场景对比与运营说明\",\"filters\":[],\"widgets\":[{\"widget_kind\":\"SIM_COMPARE\",\"title\":\"断供推演方案对比\",\"position\":{\"x\":0,\"y\":0,\"w\":16,\"h\":8},\"data_source\":{\"kind\":\"SIM_SCENARIOS\",\"scenario_ids\":[\"00000000-0000-0000-0000-000000000401\",\"00000000-0000-0000-0000-000000000402\"],\"metrics\":[\"inventory\",\"fulfillment\"]}},{\"widget_kind\":\"MARKDOWN_NOTE\",\"title\":\"分析说明\",\"position\":{\"x\":16,\"y\":0,\"w\":8,\"h\":8},\"data_source\":{\"kind\":\"STATIC\",\"columns\":[],\"rows\":[]},\"options\":{\"markdown\":\"## 推演说明\\n请对比备用仓启用前后库存变化。\"}}]}",
+    "expect_min_widgets": 2,
+    "expect_kinds": ["SIM_COMPARE", "MARKDOWN_NOTE"]
+  },
+  {
+    "id": "case_07_pivot_scatter",
+    "prompt": "按仓库和状态交叉透视订单金额与散点分布",
+    "llm_response": "{\"name\":\"订单透视与分布\",\"slug\":\"orders-pivot-scatter\",\"theme\":\"light\",\"description\":\"交叉透视与金额散点\",\"filters\":[],\"widgets\":[{\"widget_kind\":\"PIVOT_TABLE\",\"title\":\"仓库状态交叉表\",\"position\":{\"x\":0,\"y\":0,\"w\":12,\"h\":8},\"data_source\":{\"kind\":\"PIVOT\",\"spec\":{\"dataset\":\"demo_orders\",\"rows\":[{\"field\":\"warehouse_code\"}],\"columns\":[{\"field\":\"status\"}],\"values\":[{\"field\":\"amount\",\"agg\":\"SUM\"}],\"subtotals\":true,\"grand_total\":true}}},{\"widget_kind\":\"SCATTER\",\"title\":\"订单金额与数量散点\",\"position\":{\"x\":12,\"y\":0,\"w\":12,\"h\":8},\"data_source\":{\"kind\":\"SQL\",\"sql\":\"SELECT warehouse_code, amount FROM demo_orders\"}}]}",
+    "expect_min_widgets": 2,
+    "expect_kinds": ["PIVOT_TABLE", "SCATTER"]
+  },
+  {
+    "id": "case_08_flow_button_heatmap",
+    "prompt": "补货流程一键触发与仓库时段热力图",
+    "llm_response": "{\"name\":\"补货调度控制台\",\"slug\":\"replenish-dispatch\",\"theme\":\"light\",\"description\":\"一键触发补货流程与热力分析\",\"filters\":[],\"widgets\":[{\"widget_kind\":\"ACTION_BUTTON\",\"title\":\"启动补货流程\",\"position\":{\"x\":0,\"y\":0,\"w\":6,\"h\":4},\"data_source\":{\"kind\":\"ACTION\",\"action_type\":\"RUN_FLOW\",\"flow_id\":\"00000000-0000-0000-0000-000000000501\",\"input_schema\":{\"type\":\"object\",\"properties\":{}},\"confirm_text\":\"确认启动补货流程？\"}},{\"widget_kind\":\"HEATMAP\",\"title\":\"仓库订单热力分布\",\"position\":{\"x\":6,\"y\":0,\"w\":18,\"h\":8},\"data_source\":{\"kind\":\"SQL\",\"sql\":\"SELECT warehouse_code, status, SUM(amount) AS amt FROM demo_orders GROUP BY warehouse_code, status\"}}]}",
+    "expect_min_widgets": 2,
+    "expect_kinds": ["ACTION_BUTTON", "HEATMAP"]
+  },
+  {
+    "id": "case_09_radar_sankey",
+    "prompt": "仓库综合指标雷达与流向桑基图看板",
+    "llm_response": "{\"name\":\"仓库综合评估看板\",\"slug\":\"warehouse-radar-sankey\",\"theme\":\"dark\",\"description\":\"多维指标与流向分析\",\"filters\":[],\"widgets\":[{\"widget_kind\":\"RADAR\",\"title\":\"仓库能力雷达\",\"position\":{\"x\":0,\"y\":0,\"w\":10,\"h\":8},\"data_source\":{\"kind\":\"NODE_METRIC\",\"type_name\":\"Warehouse\",\"metric\":\"inventory\",\"agg\":\"AVG\",\"grain\":\"DAY\",\"time_range\":\"LAST_7_DAYS\",\"group_by\":\"node\"}},{\"widget_kind\":\"SANKEY\",\"title\":\"仓库状态流向\",\"position\":{\"x\":10,\"y\":0,\"w\":14,\"h\":8},\"data_source\":{\"kind\":\"SQL\",\"sql\":\"SELECT warehouse_code AS source, status AS target, SUM(amount) AS value FROM demo_orders GROUP BY warehouse_code, status\"}}]}",
+    "expect_min_widgets": 2,
+    "expect_kinds": ["RADAR", "SANKEY"]
+  },
+  {
+    "id": "case_10_self_repair_bounds",
+    "prompt": "监控已支付订单与库存（验证越界与非法字段自动修复）",
+    "llm_response": "{\"name\":\"修复前看板\",\"slug\":\"repair-before\",\"widgets\":[{\"widget_kind\":\"KPI_CARD\",\"title\":\"越界指标\",\"position\":{\"x\":20,\"y\":0,\"w\":8,\"h\":4},\"data_source\":{\"kind\":\"METRIC\",\"metric\":\"nonexistent_metric\",\"dimensions\":[]}}]}",
+    "repair_response": "{\"name\":\"修复后订单库存看板\",\"slug\":\"repaired-orders-inv\",\"theme\":\"light\",\"description\":\"自动修正后的合法看板\",\"filters\":[],\"widgets\":[{\"widget_kind\":\"KPI_CARD\",\"title\":\"已支付订单总金额\",\"position\":{\"x\":0,\"y\":0,\"w\":8,\"h\":4},\"data_source\":{\"kind\":\"METRIC\",\"metric\":\"paid_amount\",\"dimensions\":[]}},{\"widget_kind\":\"LINE_CHART\",\"title\":\"仓库库存\",\"position\":{\"x\":8,\"y\":0,\"w\":16,\"h\":6},\"data_source\":{\"kind\":\"NODE_METRIC\",\"type_name\":\"Warehouse\",\"metric\":\"inventory\",\"agg\":\"SUM\",\"grain\":\"HOUR\",\"time_range\":\"LAST_7_DAYS\"}}]}",
+    "expect_min_widgets": 2,
+    "expect_kinds": ["KPI_CARD", "LINE_CHART"]
+  }
+]

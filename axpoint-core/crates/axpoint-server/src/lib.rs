@@ -2,3 +2,4 @@
 #![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
 pub mod sim_ask;
+pub mod view;
