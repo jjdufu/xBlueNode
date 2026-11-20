@@ -13,6 +13,7 @@ pub mod platform;
 pub mod ports;
 pub mod rollup;
 pub mod rules;
+pub mod sim;
 pub mod studio;
 pub mod topology;
 

@@ -417,31 +417,48 @@ pub struct AxSimSnapshot {
     pub links: Vec<BlueLink>,
 }
 
-/// A hypothetical "What-If" intervention applied inside `AxSim`.
+/// A hypothetical "What-If" intervention applied inside `AxSim` (`09-STEP10` §10.3.1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AxSimAction {
     /// Target node UUID.
     pub target_node_id: Uuid,
     /// Metric key to perturb (e.g., `output`, `inventory`).
     pub metric_key: String,
-    /// Relative percentage delta (e.g., `-0.5` for -50% capacity drop).
-    pub delta_ratio: f64,
+    /// Perturbation mode (`RATIO`, `ADD`, or `ABSOLUTE`).
+    #[serde(default)]
+    pub mode: Option<crate::enums::InterventionMode>,
+    /// Perturbation numeric value used with `mode`.
+    #[serde(default)]
+    pub value: Option<f64>,
+    /// Shorthand equivalent to `mode = RATIO`, `value = delta_ratio`.
+    #[serde(default)]
+    pub delta_ratio: Option<f64>,
+    /// Time step when the intervention takes effect in `STEPPED` mode (default `0`).
+    #[serde(default)]
+    pub at_step: u32,
 }
 
-/// Request to create a new isolated `AxSim` sandbox.
+/// Request to create a new isolated `AxSim` sandbox (`09-STEP10` §10.2.1).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateAxSandboxRequest {
     /// Sandbox name.
     pub name: String,
+    /// Optional scope filter for bounded subgraph cloning.
+    #[serde(default)]
+    pub scope: Option<crate::sim::SandboxScope>,
 }
 
-/// Request to run causal simulation inside `AxSim`.
+/// Request to run quick causal simulation inside `AxSim` (`09-STEP10` §10.9).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SimulateAxSandboxRequest {
     /// Hypothetical actions to apply.
     pub actions: Vec<AxSimAction>,
+    /// Optional solver parameters (defaults to steady-state mode).
+    #[serde(default)]
+    pub params: Option<crate::sim::SimParams>,
 }
 
 /// Impact row comparing baseline vs. simulated metric for one node.
@@ -461,8 +478,14 @@ pub struct AxSimImpactRow {
     pub after_val: f64,
     /// Absolute change (`after_val - before_val`).
     pub delta: f64,
+    /// Relative change ratio, if baseline is non-zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delta_ratio: Option<f64>,
     /// Propagation hop distance from the intervention origin (`0` = direct target).
     pub hop_distance: u32,
+    /// Dominant propagation path `[seed, ..., node_id]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_path: Vec<Uuid>,
 }
 
 /// Complete `AxSim` simulation result.
@@ -472,25 +495,56 @@ pub struct AxSimResult {
     pub impacts: Vec<AxSimImpactRow>,
     /// Total nodes affected.
     pub affected_count: usize,
+    /// Per-`(type_name, metric)` aggregated KPIs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kpis: Vec<crate::sim::SimKpiRow>,
+    /// Diagnostic warnings emitted during propagation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<crate::sim::SimWarning>,
+    /// Whether cyclic SCC iteration converged.
+    #[serde(default = "default_sim_converged")]
+    pub converged: bool,
 }
 
-/// `AxSim` sandbox record returned to API clients.
+/// `AxSim` sandbox record returned to API clients (`09-STEP10` §10.1–§10.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AxSandboxRecord {
     /// Sandbox UUID.
     pub id: Uuid,
     /// Sandbox name.
     pub name: String,
+    /// Provisioning status (`CLONING`, `READY`, `ARCHIVED`).
+    #[serde(default)]
+    pub status: crate::sim::SandboxStatus,
+    /// Scope configuration used to clone production nodes.
+    #[serde(default)]
+    pub scope: crate::sim::SandboxScope,
     /// Snapshot node count.
     pub node_count: usize,
     /// Snapshot link count.
     pub link_count: usize,
-    /// Applied actions.
+    /// Timestamp when baseline was captured from production.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_captured_at: Option<DateTime<Utc>>,
+    /// Published `xBlueStudio` schema version at capture time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_version: Option<i32>,
+    /// Creator user UUID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<Uuid>,
+    /// Applied actions (from quick `/simulate`).
     pub actions: Vec<AxSimAction>,
-    /// Latest simulation result.
+    /// Latest simulation result (from quick `/simulate`).
     pub sim_result: Option<AxSimResult>,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
+    /// Last modification timestamp.
+    #[serde(default = "Utc::now")]
+    pub updated_at: DateTime<Utc>,
+}
+
+const fn default_sim_converged() -> bool {
+    true
 }
 
 /// Copy-on-Write causal propagation engine for `AxSim` sandboxes.
@@ -513,12 +567,12 @@ pub fn simulate_causal_propagation(
     let mut queue: VecDeque<(Uuid, String, f64, u32)> = VecDeque::new();
 
     for act in actions {
-        queue.push_back((
-            act.target_node_id,
-            act.metric_key.clone(),
-            act.delta_ratio,
-            0,
-        ));
+        let ratio = match (act.delta_ratio, act.mode, act.value) {
+            (Some(dr), _, _) => dr,
+            (None, Some(crate::enums::InterventionMode::Ratio), Some(v)) => v,
+            _ => continue,
+        };
+        queue.push_back((act.target_node_id, act.metric_key.clone(), ratio, 0));
     }
 
     while let Some((curr_id, metric_key, delta_ratio, hop)) = queue.pop_front() {
@@ -549,10 +603,16 @@ pub fn simulate_causal_propagation(
 
     let mut impacts = Vec::new();
     for ((node_id, metric_key), (total_ratio, hop_distance)) in ratio_changes {
-        if let Some(node) = node_map.get(&node_id) {
-            let before_val = node.metrics.get(&metric_key).copied().unwrap_or(100.0);
+        if let Some(node) = node_map.get(&node_id)
+            && let Some(&before_val) = node.metrics.get(&metric_key)
+        {
             let after_val = (before_val * (1.0 + total_ratio)).max(0.0);
             let delta = after_val - before_val;
+            let delta_ratio = if before_val.abs() > f64::EPSILON {
+                Some(delta / before_val)
+            } else {
+                None
+            };
             impacts.push(AxSimImpactRow {
                 node_id,
                 type_name: node.type_name.clone(),
@@ -561,7 +621,9 @@ pub fn simulate_causal_propagation(
                 before_val,
                 after_val,
                 delta,
+                delta_ratio,
                 hop_distance,
+                top_path: Vec::new(),
             });
         }
     }
@@ -571,6 +633,9 @@ pub fn simulate_causal_propagation(
     AxSimResult {
         impacts,
         affected_count,
+        kpis: Vec::new(),
+        warnings: Vec::new(),
+        converged: true,
     }
 }
 
@@ -659,7 +724,10 @@ mod tests {
         let actions = vec![AxSimAction {
             target_node_id: id_a,
             metric_key: String::from("output"),
-            delta_ratio: -0.5,
+            mode: None,
+            value: None,
+            delta_ratio: Some(-0.5),
+            at_step: 0,
         }];
 
         let res = simulate_causal_propagation(&snapshot, &actions);

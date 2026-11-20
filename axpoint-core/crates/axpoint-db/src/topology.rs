@@ -488,11 +488,17 @@ impl PgStore {
                 AxSandboxRecord {
                     id: r.get("id"),
                     name: r.get("name"),
+                    status: axpoint_domain::sim::SandboxStatus::Ready,
+                    scope: axpoint_domain::sim::SandboxScope::default(),
                     node_count: snap.nodes.len(),
                     link_count: snap.links.len(),
+                    base_captured_at: None,
+                    schema_version: None,
+                    created_by: None,
                     actions,
                     sim_result,
                     created_at,
+                    updated_at: created_at,
                 }
             })
             .collect())
@@ -539,11 +545,17 @@ impl PgStore {
         Ok(AxSandboxRecord {
             id: sandbox_id,
             name: req.name,
+            status: axpoint_domain::sim::SandboxStatus::Ready,
+            scope: req.scope.unwrap_or_default(),
             node_count,
             link_count,
+            base_captured_at: Some(created_at),
+            schema_version: None,
+            created_by: None,
             actions: Vec::new(),
             sim_result: None,
             created_at,
+            updated_at: created_at,
         })
     }
 

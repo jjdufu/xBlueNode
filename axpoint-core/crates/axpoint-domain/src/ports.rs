@@ -67,6 +67,12 @@ use crate::rules::{
     SaveNotifyChannelInput, SimplePageQuery, TrueConditionInput, TrueConditionOutcome,
     UpdateRuleRequest,
 };
+use crate::sim::{
+    Checkpoint, CreateDecisionRequest, CreateOverlayLinkRequest, CreateOverlayNodeRequest,
+    CreateScenarioRequest, DecisionRecord, ImpactListQuery, ImpactRow, PatchOverlayLinkRequest,
+    PatchOverlayNodeRequest, RefreshBaseResponse, SandboxGraphLink, SandboxGraphNode,
+    SandboxGraphResponse, ScenarioRecord, SimGraph, SimResult,
+};
 use crate::studio::{
     CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus, MappingRecord,
     MappingRunRecord, MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeTypeSpec,
@@ -77,8 +83,8 @@ use crate::studio::{
 };
 use crate::topology::{
     AxFlowDef, AxFlowRunResult, AxSandboxRecord, AxSimAction, AxSimResult, AxSimSnapshot, BlueNode,
-    CreateAxFlowRequest, CreateAxSandboxRequest, SaveXBlueSchemaRequest, UpsertBlueNodeRequest,
-    XBlueSchema,
+    CreateAxFlowRequest, CreateAxSandboxRequest, SaveXBlueSchemaRequest, SimulateAxSandboxRequest,
+    UpsertBlueNodeRequest, XBlueSchema,
 };
 use crate::{AppError, ExtractedTriple, FusedHit, SystemStats, TopologyGraph};
 
@@ -2462,4 +2468,241 @@ pub trait AgentRepository: Send + Sync {
         &self,
         token_hash: &str,
     ) -> impl Future<Output = Result<Option<ResolvedAgentEmbed>, AppError>> + Send;
+}
+
+/// Persistence port for `AxSim` sandboxes, Copy-on-Write overlays, scenarios, checkpoints,
+/// and production decision writebacks (`09-STEP10` §10.2–§10.8).
+pub trait SimRepository: Send + Sync {
+    /// Lists `AxSim` sandboxes in `tenant_id` ordered by `created_at DESC`.
+    fn list_sandboxes(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<AxSandboxRecord>, AppError>> + Send;
+
+    /// Fetches a single `AxSim` sandbox by UUID in `tenant_id`.
+    fn get_sandbox(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+    ) -> impl Future<Output = Result<Option<AxSandboxRecord>, AppError>> + Send;
+
+    /// Creates a new `AxSim` sandbox and clones the scoped production subgraph into `ax_sim_base_*`.
+    fn create_sandbox(
+        &self,
+        tenant_id: &str,
+        created_by: Option<Uuid>,
+        req: CreateAxSandboxRequest,
+    ) -> impl Future<Output = Result<AxSandboxRecord, AppError>> + Send;
+
+    /// Deletes an `AxSim` sandbox and all associated base, overlay, scenario, and decision rows.
+    fn delete_sandbox(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Loads the effective Copy-on-Write `SimGraph` (`base` merged with `overlay` plus `edge_specs`).
+    fn load_graph(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+    ) -> impl Future<Output = Result<SimGraph, AppError>> + Send;
+
+    /// Returns the merged Copy-on-Write sandbox graph view for canvas rendering.
+    fn get_sandbox_graph(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+    ) -> impl Future<Output = Result<SandboxGraphResponse, AppError>> + Send;
+
+    /// Computes the canonical overlay content hash for staleness tracking.
+    fn compute_overlay_hash(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+    ) -> impl Future<Output = Result<String, AppError>> + Send;
+
+    /// Upserts key-level node metric/property/title patches into `ax_sim_overlay_nodes`.
+    fn patch_overlay_node(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+        node_id: Uuid,
+        req: PatchOverlayNodeRequest,
+    ) -> impl Future<Output = Result<SandboxGraphNode, AppError>> + Send;
+
+    /// Creates a sandbox-local node (`is_new = true`) inside `ax_sim_overlay_nodes`.
+    fn create_overlay_node(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+        req: CreateOverlayNodeRequest,
+    ) -> impl Future<Output = Result<SandboxGraphNode, AppError>> + Send;
+
+    /// Marks a node deleted in the sandbox overlay and hides incident sandbox links.
+    fn delete_overlay_node(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+        node_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Creates a sandbox-local link (`is_new = true`) inside `ax_sim_overlay_links`.
+    fn create_overlay_link(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+        req: CreateOverlayLinkRequest,
+    ) -> impl Future<Output = Result<SandboxGraphLink, AppError>> + Send;
+
+    /// Updates a link's type or weight inside `ax_sim_overlay_links`.
+    fn patch_overlay_link(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+        link_id: Uuid,
+        req: PatchOverlayLinkRequest,
+    ) -> impl Future<Output = Result<SandboxGraphLink, AppError>> + Send;
+
+    /// Marks a link deleted in `ax_sim_overlay_links`.
+    fn delete_overlay_link(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+        link_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Clears all overlay edits for `sandbox_id`.
+    fn reset_overlay(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Re-clones production baseline into `ax_sim_base_*` while preserving overlays and reporting orphans.
+    fn refresh_sandbox_base(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+    ) -> impl Future<Output = Result<RefreshBaseResponse, AppError>> + Send;
+
+    /// Runs a quick simulation without creating a named scenario and saves `ax_sandboxes.actions`/`sim_result`.
+    fn quick_simulate_sandbox(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+        req: SimulateAxSandboxRequest,
+    ) -> impl Future<Output = Result<AxSimResult, AppError>> + Send;
+
+    /// Lists scenarios belonging to `sandbox_id` with live `is_stale` computation.
+    fn list_scenarios(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<ScenarioRecord>, AppError>> + Send;
+
+    /// Fetches a single scenario by UUID in `tenant_id`.
+    fn get_scenario(
+        &self,
+        tenant_id: &str,
+        scenario_id: Uuid,
+    ) -> impl Future<Output = Result<Option<ScenarioRecord>, AppError>> + Send;
+
+    /// Inserts a new `ax_sim_scenarios` record (`PENDING` or `RUNNING`).
+    fn create_scenario_record(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+        created_by: Option<Uuid>,
+        overlay_hash: &str,
+        req: CreateScenarioRequest,
+    ) -> impl Future<Output = Result<ScenarioRecord, AppError>> + Send;
+
+    /// Marks an existing scenario `RUNNING` ahead of recomputation.
+    fn mark_scenario_running(
+        &self,
+        tenant_id: &str,
+        scenario_id: Uuid,
+        overlay_hash: &str,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Atomically persists solved `SimResult`, `ax_sim_impacts`, and `ax_sim_checkpoints`.
+    fn save_scenario_success(
+        &self,
+        tenant_id: &str,
+        scenario_id: Uuid,
+        overlay_hash: &str,
+        result: &SimResult,
+    ) -> impl Future<Output = Result<ScenarioRecord, AppError>> + Send;
+
+    /// Marks a scenario `FAILED` with diagnostic `error_message`.
+    fn save_scenario_failure(
+        &self,
+        tenant_id: &str,
+        scenario_id: Uuid,
+        error_message: &str,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Deletes a scenario by UUID in `tenant_id`.
+    fn delete_scenario(
+        &self,
+        tenant_id: &str,
+        scenario_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists paginated impact rows for `scenario_id` ordered by `|delta|` descending.
+    fn list_scenario_impacts(
+        &self,
+        tenant_id: &str,
+        scenario_id: Uuid,
+        query: ImpactListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<ImpactRow>, AppError>> + Send;
+
+    /// Loads all impact rows for `scenario_id` (used for scenario comparison and `DuckDB` `sim_ask`).
+    fn list_all_scenario_impacts(
+        &self,
+        tenant_id: &str,
+        scenario_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<ImpactRow>, AppError>> + Send;
+
+    /// Lists ordered replay checkpoints for `scenario_id`.
+    fn list_scenario_checkpoints(
+        &self,
+        tenant_id: &str,
+        scenario_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<Checkpoint>, AppError>> + Send;
+
+    /// Creates a decision proposal and linked `ax_approvals(source_kind = SIM_APPLY)` gate.
+    fn create_decision(
+        &self,
+        tenant_id: &str,
+        scenario_id: Uuid,
+        created_by: Option<Uuid>,
+        req: CreateDecisionRequest,
+    ) -> impl Future<Output = Result<DecisionRecord, AppError>> + Send;
+
+    /// Fetches a decision record by UUID in `tenant_id`.
+    fn get_decision(
+        &self,
+        tenant_id: &str,
+        decision_id: Uuid,
+    ) -> impl Future<Output = Result<Option<DecisionRecord>, AppError>> + Send;
+
+    /// Executes production writeback upon `APPROVE` (with `SELECT ... FOR UPDATE` conflict check)
+    /// or marks the decision `REJECTED`.
+    fn apply_or_reject_decision(
+        &self,
+        tenant_id: &str,
+        decision_id: Uuid,
+        decided_by: Option<Uuid>,
+        approved: bool,
+    ) -> impl Future<Output = Result<DecisionRecord, AppError>> + Send;
+
+    /// Rebases a conflicted decision onto current production `xb_nodes.metrics` and reopens approval.
+    fn rebase_decision(
+        &self,
+        tenant_id: &str,
+        decision_id: Uuid,
+        actor_user_id: Option<Uuid>,
+    ) -> impl Future<Output = Result<DecisionRecord, AppError>> + Send;
 }
