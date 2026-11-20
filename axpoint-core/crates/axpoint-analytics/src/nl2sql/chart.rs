@@ -167,9 +167,12 @@ fn extract_number_tokens(text: &str) -> Vec<ExtractedNum> {
             continue;
         }
 
-        // Skip numbers embedded inside identifiers like `order_1` or `[文1]`.
+        // Skip numbers embedded inside identifiers like `order_1`, `F-1`, or `[文1]`.
         let prev = idx.checked_sub(1).and_then(|p| chars.get(p)).copied();
         if prev.is_some_and(|p| p.is_ascii_alphabetic() || p == '_' || p == '文') {
+            if ch == '-' {
+                idx = idx.saturating_add(1);
+            }
             while chars
                 .get(idx)
                 .is_some_and(|c| c.is_ascii_alphanumeric() || *c == '_')
@@ -330,4 +333,20 @@ fn contains_standalone_digits(haystack: &str, needle: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::verify_or_fallback_summary;
+
+    #[test]
+    fn verify_summary_skips_hyphenated_identifiers_without_looping() {
+        let mut row = serde_json::Map::new();
+        row.insert(String::from("delta_ratio"), serde_json::json!(-0.3));
+        let rows = vec![row];
+
+        let summary = "相对降幅最大的指标为 F-1 产能 output（-30%），关联订单 O-2。";
+        let out = verify_or_fallback_summary(summary, &rows);
+        assert_eq!(out, summary);
+    }
 }
