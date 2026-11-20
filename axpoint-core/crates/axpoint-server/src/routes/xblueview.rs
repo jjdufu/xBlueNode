@@ -9,6 +9,7 @@ use std::time::Duration;
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::PaginatedList;
 use axpoint_domain::enums::{AssetKind, Permission, TokenKind};
+use axpoint_domain::ports::ViewRepository as _;
 use axpoint_domain::rules::SimplePageQuery;
 use axpoint_domain::view::{
     AiGenerateDashboardRequest, AssetRecord, CreateAssetParams, CreateDashboardRequest,
