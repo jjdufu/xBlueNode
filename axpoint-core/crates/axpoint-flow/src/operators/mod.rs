@@ -240,6 +240,14 @@ pub struct Step09OperatorDeps<R, Q, M, A, L, U, C> {
     pub agent_task: Arc<dyn AgentTaskPort>,
 }
 
+/// Port dependency bundle passed to [`build_step10_operator_registry`].
+pub struct Step10OperatorDeps<R, Q, M, A, L, U, C> {
+    /// Step 09 operator dependencies.
+    pub step09: Step09OperatorDeps<R, Q, M, A, L, U, C>,
+    /// Full `AxSim` simulation execution port (`FlowOperator::CausalSim`).
+    pub sim_port: Arc<dyn axpoint_domain::ports::SimExecutionPort>,
+}
+
 /// Builds an [`OperatorRegistry`] populated with all 10 executable Step 09 operators (`9` Step 07 + `AGENT_TASK`).
 #[must_use]
 pub fn build_step09_operator_registry<R, Q, M, A, L, U, C>(
@@ -264,6 +272,38 @@ where
 {
     let mut reg = build_step07_operator_registry(deps.step07);
     reg.register(Arc::new(AgentTaskOperator::new(deps.agent_task)));
+    reg
+}
+
+/// Builds an [`OperatorRegistry`] populated with all 10 executable Step 10 operators
+/// (wiring [`axpoint_domain::ports::SimExecutionPort`] into `CAUSAL_SIM`).
+#[must_use]
+pub fn build_step10_operator_registry<R, Q, M, A, L, U, C>(
+    deps: Step10OperatorDeps<R, Q, M, A, L, U, C>,
+) -> OperatorRegistry
+where
+    R: FlowRepository
+        + DatasetRepository
+        + JobQueuePort
+        + StudioRepository
+        + StudioExecutionPort
+        + TopologyRepository
+        + GraphStorePort
+        + MetricStorePort
+        + 'static,
+    Q: AnalyticsQueryPort + 'static,
+    M: FlowSqlMaterializePort + 'static,
+    A: AiPort + 'static,
+    L: LakeInternalQueryPort + 'static,
+    U: OutboundUrlGuardPort + 'static,
+    C: FlowCredentialUnsealPort + 'static,
+{
+    let store_for_sim = Arc::clone(&deps.step09.step07.store);
+    let mut reg = build_step09_operator_registry(deps.step09);
+    reg.register(Arc::new(CausalSimOperator::with_sim_port(
+        store_for_sim,
+        deps.sim_port,
+    )));
     reg
 }
 

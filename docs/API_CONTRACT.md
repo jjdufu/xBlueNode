@@ -175,6 +175,18 @@
 - `GET /api/axagent/conversations` / `GET /api/axagent/conversations/{id}/messages` / `DELETE /api/axagent/conversations/{id}`（`AGENT_RUN`，仅本人会话）：工作台多轮会话与消息流管理。
 - `POST /api/axagent/agents/{id}/embeds` / `GET /api/axagent/agents/{id}/embeds` / `DELETE /api/axagent/embeds/{embed_id}`（`VIEW_SHARE`）与 `POST /api/axagent/embed/{token}/chat`（公开嵌入令牌 `axe_...`）：按权限子集与 `allowed_origins` 签发、查询、吊销外部嵌入链接及按 `(embed_id, client_ip)` 限流的公开对话入口。
 
+### `AxSim` 写时复制沙盘、因果推演、对比问数与决策下发（`/api/axsim/*`，Step 10）
+
+- `GET /api/axsim/sandboxes` / `POST /api/axsim/sandboxes` / `GET /api/axsim/sandboxes/{id}` / `DELETE /api/axsim/sandboxes/{id}`（`DATA_READ` / `SIM_RUN`）：按范围（`scope: {root_node_ids, depth<=6, direction, type_names, link_types, max_nodes<=50000}`）从生产业务图克隆基线快照到 `ax_sim_base_*`，管理沙盘生命周期（`CLONING | READY | ARCHIVED`）。
+- `GET /api/axsim/sandboxes/{id}/graph`（`DATA_READ`）：返回 `base` 与 `overlay` 合并后的沙盘节点与关系视图（含 `is_modified`、`is_new`、`overlay_hash`）。
+- 覆盖层编辑（`SIM_RUN`）：`PATCH /api/axsim/sandboxes/{id}/nodes/{node_id}`、`POST /api/axsim/sandboxes/{id}/nodes`、`DELETE /api/axsim/sandboxes/{id}/nodes/{node_id}`、`POST /api/axsim/sandboxes/{id}/links`、`PATCH /api/axsim/sandboxes/{id}/links/{link_id}`、`DELETE /api/axsim/sandboxes/{id}/links/{link_id}`、`POST /api/axsim/sandboxes/{id}/reset`、`POST /api/axsim/sandboxes/{id}/refresh-base`（保留覆盖层并列出孤立 ID）；所有操作不修改生产表。
+- `POST /api/axsim/sandboxes/{id}/simulate`（`SIM_RUN`）：快速因果推演，支持 `{actions, params?}`，支持 `RATIO | ADD | ABSOLUTE` 及 `delta_ratio` 简写；目标节点缺失指标且模式为 `RATIO`/`ADD` 返回 `400 INVALID_ARGUMENT`。
+- `GET /api/axsim/sandboxes/{id}/scenarios` / `POST /api/axsim/sandboxes/{id}/scenarios` / `GET /api/axsim/scenarios/{id}` / `POST /api/axsim/scenarios/{id}/rerun` / `DELETE /api/axsim/scenarios/{id}`（`DATA_READ` / `SIM_RUN`）：创建并求解稳态（SCC + 阻尼雅可比迭代）或分步（`t = 0..=horizon_steps`）场景，可选 Monte-Carlo 不确定性抽样（`P10`/`P90`），记录 `overlay_hash` 并在覆盖层变化后标为过期。
+- `GET /api/axsim/scenarios/{id}/impacts?type_name=&metric=&limit=&cursor=` / `GET /api/axsim/scenarios/{id}/checkpoints`（`DATA_READ`）：分页查询受影响节点（含 `before_val`、`after_val`、`delta`、`delta_ratio`、`p10`、`p90`、`hop_distance`、`top_path`、`series`）及逐步回放检查点。
+- `GET /api/axsim/scenarios/compare?ids=&metrics=&type_name=&briefing=`（`DATA_READ`）：同沙盘内 2～5 个场景 KPI 与节点级并排对比；`briefing=true` 返回经数值校验的 AI 研判 `{summary, recommended_scenario_id, reasons[], risks[]}`。
+- `POST /api/axsim/ask`（`SIM_RUN`）：推演问数，自动识别 `WHAT_IF`（大模型解析干预 + 节点检索消歧 + 创建运行场景）或 `QUERY_RESULT`（内存 DuckDB `impacts` 表 NL2SQL），写 `ASK_DATA` 审计。
+- `POST /api/axsim/scenarios/{id}/decisions` / `GET /api/axsim/decisions/{id}` / `POST /api/axsim/decisions/{id}/rebase`（`SIM_RUN`，审批需 `SIM_APPLY`）：创建下发提案与 `ax_approvals(source_kind=SIM_APPLY)` 审批门；通过后 `SELECT ... FOR UPDATE` 校验生产基线冲突，无冲突则原子写 `xb_nodes.metrics`、`xb_metric_series(ACTION)`、`ax_action_log`、`ax_outbox(sim.applied, node.metrics_changed)`、`sec_audit_logs(SIM_APPLY)` 并按需触发 `PROD` 流程；存在冲突则标为 `CONFLICT` 并支持 `/rebase`。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）

@@ -11,6 +11,7 @@ import type {
   RollupGrain,
   SubgraphMergeStrategy,
 } from "./enums";
+import type { AxSandboxRecord, AxSimResult } from "./axsim";
 
 export type PropertyKind = "ATTRIBUTE" | "METRIC";
 export type LinkDirection = "OUT" | "IN";
@@ -312,31 +313,6 @@ export interface AxFlowRunResult {
   status: string;
   steps_executed: number;
   logs: string[];
-}
-
-export interface AxSimImpactRow {
-  node_id: string;
-  type_name: string;
-  title: string;
-  metric_key: string;
-  before_val: number;
-  after_val: number;
-  delta: number;
-  hop_distance: number;
-}
-
-export interface AxSimResult {
-  impacts: AxSimImpactRow[];
-  affected_count: number;
-}
-
-export interface AxSandboxRecord {
-  id: string;
-  name: string;
-  node_count: number;
-  link_count: number;
-  sim_result: AxSimResult | null;
-  created_at: string;
 }
 
 export interface PropertySpec {

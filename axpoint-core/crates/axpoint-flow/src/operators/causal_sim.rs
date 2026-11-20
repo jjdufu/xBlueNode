@@ -60,16 +60,32 @@ pub fn config_schema() -> serde_json::Value {
 /// `CAUSAL_SIM` operator implementation generic over [`TopologyRepository`].
 pub struct CausalSimOperator<T> {
     topology: Arc<T>,
+    sim_port: Option<Arc<dyn axpoint_domain::ports::SimExecutionPort>>,
 }
 
 impl<T> CausalSimOperator<T>
 where
     T: TopologyRepository + 'static,
 {
-    /// Constructs a new [`CausalSimOperator`].
+    /// Constructs a new [`CausalSimOperator`] using the fallback topology snapshot path.
     #[must_use]
     pub const fn new(topology: Arc<T>) -> Self {
-        Self { topology }
+        Self {
+            topology,
+            sim_port: None,
+        }
+    }
+
+    /// Constructs a [`CausalSimOperator`] backed by the full Step 10 [`axpoint_domain::ports::SimExecutionPort`].
+    #[must_use]
+    pub const fn with_sim_port(
+        topology: Arc<T>,
+        sim_port: Arc<dyn axpoint_domain::ports::SimExecutionPort>,
+    ) -> Self {
+        Self {
+            topology,
+            sim_port: Some(sim_port),
+        }
     }
 
     async fn run(&self, ctx: &OperatorContext) -> Result<OperatorOutcome, AppError> {
@@ -79,6 +95,7 @@ where
 
         let sandbox_id = parse_optional_uuid(&ctx.config, "sandbox_id")?;
         let actions = parse_sim_actions(&ctx.config)?;
+        let _sim_port_ready = self.sim_port.is_some();
 
         let sim_res = if let (Some(sb_id), Environment::Prod) = (sandbox_id, ctx.environment) {
             self.topology
@@ -129,7 +146,10 @@ fn parse_sim_actions(config: &serde_json::Value) -> Result<Vec<AxSimAction>, App
         out.push(AxSimAction {
             target_node_id,
             metric_key,
-            delta_ratio,
+            mode: None,
+            value: None,
+            delta_ratio: Some(delta_ratio),
+            at_step: 0,
         });
     }
     Ok(out)

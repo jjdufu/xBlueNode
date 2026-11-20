@@ -6,4 +6,5 @@ export * from "./api/xblue";
 export * from "./api/analytics";
 export * from "./api/axflow";
 export * from "./api/axagent";
+export * from "./api/axsim";
 
