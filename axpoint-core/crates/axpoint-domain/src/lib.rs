@@ -16,6 +16,7 @@ pub mod rules;
 pub mod sim;
 pub mod studio;
 pub mod topology;
+pub mod view;
 
 use std::collections::HashMap;
 

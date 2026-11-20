@@ -86,6 +86,13 @@ use crate::topology::{
     CreateAxFlowRequest, CreateAxSandboxRequest, SaveXBlueSchemaRequest, SimulateAxSandboxRequest,
     UpsertBlueNodeRequest, XBlueSchema,
 };
+use crate::view::{
+    AffectedWidgetRef, AssetRecord, CreateAssetParams, CreateDashboardRequest,
+    CreateWidgetRecordParams, DashboardDetail, DashboardRecord, FloorPlacementRecord, FloorPlanRow,
+    LayoutUpdateItem, NodesGeoRow, PutFloorPlacementItem, PutScene3dBindingItem,
+    Scene3dBindingRecord, Scene3dRow, UpdateDashboardRequest, UpdateWidgetRecordParams,
+    ViewWriteNodeOutcome, ViewWriteNodeParams, WidgetDeps, WidgetRecord,
+};
 use crate::{AppError, ExtractedTriple, FusedHit, SystemStats, TopologyGraph};
 
 /// Abstract persistence port for `xBlueStudio`, `AxFlow`, and `AxSim` operations.
@@ -2705,4 +2712,224 @@ pub trait SimRepository: Send + Sync {
         decision_id: Uuid,
         actor_user_id: Option<Uuid>,
     ) -> impl Future<Output = Result<DecisionRecord, AppError>> + Send;
+}
+
+/// Persistence port for `xBlueView` dashboards, widgets, assets, spatial twin bindings,
+/// GIN dependency resolution, and transactional node action writebacks (`10-STEP11-12`).
+pub trait ViewRepository: Send + Sync {
+    /// Lists dashboards in `tenant_id` (`only_published = true` restricts to `PUBLISHED` status).
+    fn list_dashboards(
+        &self,
+        tenant_id: &str,
+        only_published: bool,
+        query: SimplePageQuery,
+    ) -> impl Future<Output = Result<PaginatedList<DashboardRecord>, AppError>> + Send;
+
+    /// Creates a new `DRAFT` dashboard and returns its initial detail view.
+    fn create_dashboard(
+        &self,
+        tenant_id: &str,
+        created_by: Option<Uuid>,
+        req: CreateDashboardRequest,
+    ) -> impl Future<Output = Result<DashboardDetail, AppError>> + Send;
+
+    /// Fetches a dashboard and its ordered widgets by UUID.
+    fn get_dashboard(
+        &self,
+        tenant_id: &str,
+        dashboard_id: Uuid,
+        require_published: bool,
+    ) -> impl Future<Output = Result<Option<DashboardDetail>, AppError>> + Send;
+
+    /// Fetches a dashboard and its ordered widgets by URL slug.
+    fn get_dashboard_by_slug(
+        &self,
+        tenant_id: &str,
+        slug: &str,
+        require_published: bool,
+    ) -> impl Future<Output = Result<Option<DashboardDetail>, AppError>> + Send;
+
+    /// Updates mutable metadata and global filters on a dashboard.
+    fn update_dashboard(
+        &self,
+        tenant_id: &str,
+        dashboard_id: Uuid,
+        req: UpdateDashboardRequest,
+    ) -> impl Future<Output = Result<DashboardRecord, AppError>> + Send;
+
+    /// Deletes a dashboard and cascades to its widgets.
+    fn delete_dashboard(
+        &self,
+        tenant_id: &str,
+        dashboard_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Transitions a dashboard to `PUBLISHED` and increments its `version`.
+    fn publish_dashboard(
+        &self,
+        tenant_id: &str,
+        dashboard_id: Uuid,
+    ) -> impl Future<Output = Result<DashboardRecord, AppError>> + Send;
+
+    /// Duplicates a dashboard and all of its widgets into a new `DRAFT` dashboard.
+    fn duplicate_dashboard(
+        &self,
+        tenant_id: &str,
+        dashboard_id: Uuid,
+        new_name: Option<String>,
+        new_slug: Option<String>,
+        created_by: Option<Uuid>,
+    ) -> impl Future<Output = Result<DashboardDetail, AppError>> + Send;
+
+    /// Fetches a single widget by UUID in `tenant_id`.
+    fn get_widget(
+        &self,
+        tenant_id: &str,
+        widget_id: Uuid,
+    ) -> impl Future<Output = Result<Option<WidgetRecord>, AppError>> + Send;
+
+    /// Creates a new widget inside an existing dashboard with precomputed `deps`.
+    fn create_widget(
+        &self,
+        tenant_id: &str,
+        params: CreateWidgetRecordParams,
+    ) -> impl Future<Output = Result<WidgetRecord, AppError>> + Send;
+
+    /// Updates a widget's configuration and optional recomputed `deps`.
+    fn update_widget(
+        &self,
+        tenant_id: &str,
+        widget_id: Uuid,
+        params: UpdateWidgetRecordParams,
+    ) -> impl Future<Output = Result<WidgetRecord, AppError>> + Send;
+
+    /// Deletes a widget by UUID in `tenant_id`.
+    fn delete_widget(
+        &self,
+        tenant_id: &str,
+        widget_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Batch-updates widget `{x, y, w, h}` positions for a dashboard in one transaction.
+    fn update_dashboard_layout(
+        &self,
+        tenant_id: &str,
+        dashboard_id: Uuid,
+        items: &[LayoutUpdateItem],
+    ) -> impl Future<Output = Result<Vec<WidgetRecord>, AppError>> + Send;
+
+    /// Atomically creates an AI-generated `DRAFT` dashboard along with all drafted widgets.
+    fn create_ai_dashboard(
+        &self,
+        tenant_id: &str,
+        created_by: Option<Uuid>,
+        dashboard: CreateDashboardRequest,
+        widgets: Vec<CreateWidgetRecordParams>,
+    ) -> impl Future<Output = Result<DashboardDetail, AppError>> + Send;
+
+    /// Finds widgets in `tenant_id` whose GIN-indexed `deps` match any dependency in `filter_deps`.
+    fn find_widgets_by_deps(
+        &self,
+        tenant_id: &str,
+        filter_deps: &WidgetDeps,
+    ) -> impl Future<Output = Result<Vec<AffectedWidgetRef>, AppError>> + Send;
+
+    /// Lists uploaded visual assets in `tenant_id`, optionally filtered by `AssetKind`.
+    fn list_assets(
+        &self,
+        tenant_id: &str,
+        asset_kind: Option<crate::enums::AssetKind>,
+        query: SimplePageQuery,
+    ) -> impl Future<Output = Result<PaginatedList<AssetRecord>, AppError>> + Send;
+
+    /// Persists uploaded visual asset metadata in `xv_assets`.
+    fn create_asset(
+        &self,
+        tenant_id: &str,
+        params: CreateAssetParams,
+    ) -> impl Future<Output = Result<AssetRecord, AppError>> + Send;
+
+    /// Fetches a visual asset record by UUID in `tenant_id`.
+    fn get_asset(
+        &self,
+        tenant_id: &str,
+        asset_id: Uuid,
+    ) -> impl Future<Output = Result<Option<AssetRecord>, AppError>> + Send;
+
+    /// Deletes a visual asset record and returns the removed record for disk cleanup.
+    fn delete_asset(
+        &self,
+        tenant_id: &str,
+        asset_id: Uuid,
+    ) -> impl Future<Output = Result<Option<AssetRecord>, AppError>> + Send;
+
+    /// Lists 2D floor-plan node placements for `asset_id`.
+    fn list_floor_placements(
+        &self,
+        tenant_id: &str,
+        asset_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<FloorPlacementRecord>, AppError>> + Send;
+
+    /// Atomically replaces all 2D floor-plan placements for `asset_id`.
+    fn replace_floor_placements(
+        &self,
+        tenant_id: &str,
+        asset_id: Uuid,
+        items: &[PutFloorPlacementItem],
+    ) -> impl Future<Output = Result<Vec<FloorPlacementRecord>, AppError>> + Send;
+
+    /// Lists 3D twin mesh/coordinate bindings for `asset_id`.
+    fn list_scene3d_bindings(
+        &self,
+        tenant_id: &str,
+        asset_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<Scene3dBindingRecord>, AppError>> + Send;
+
+    /// Atomically replaces all 3D twin bindings for `asset_id`.
+    fn replace_scene3d_bindings(
+        &self,
+        tenant_id: &str,
+        asset_id: Uuid,
+        items: &[PutScene3dBindingItem],
+    ) -> impl Future<Output = Result<Vec<Scene3dBindingRecord>, AppError>> + Send;
+
+    /// Queries geo-located nodes with optional `color_metric` and active open alert counts.
+    fn query_nodes_geo(
+        &self,
+        tenant_id: &str,
+        type_names: &[String],
+        color_metric: Option<&str>,
+    ) -> impl Future<Output = Result<Vec<NodesGeoRow>, AppError>> + Send;
+
+    /// Queries floor-plan placements joined with node titles, live metric, and alert counts.
+    fn query_floor_plan_rows(
+        &self,
+        tenant_id: &str,
+        asset_id: Uuid,
+        color_metric: Option<&str>,
+    ) -> impl Future<Output = Result<Vec<FloorPlanRow>, AppError>> + Send;
+
+    /// Queries 3D scene bindings joined with node titles, live metric, and active alert counts.
+    fn query_scene3d_rows(
+        &self,
+        tenant_id: &str,
+        asset_id: Uuid,
+        color_metric: Option<&str>,
+    ) -> impl Future<Output = Result<Vec<Scene3dRow>, AppError>> + Send;
+
+    /// Lists the latest `ax_action_log` rows generated by action widget `widget_id`.
+    fn list_widget_action_logs(
+        &self,
+        tenant_id: &str,
+        widget_id: Uuid,
+        limit: i64,
+    ) -> impl Future<Output = Result<Vec<ActionLogRecord>, AppError>> + Send;
+
+    /// Atomically writes a property or metric onto `xb_nodes`, inserts `xb_metric_series` (`ACTION`),
+    /// logs `ax_action_log(source_kind = 'VIEW')`, and emits `node.upserted` / `node.metrics_changed`.
+    fn execute_view_write_node(
+        &self,
+        tenant_id: &str,
+        params: ViewWriteNodeParams,
+    ) -> impl Future<Output = Result<ViewWriteNodeOutcome, AppError>> + Send;
 }

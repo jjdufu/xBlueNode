@@ -187,6 +187,18 @@
 - `POST /api/axsim/ask`（`SIM_RUN`）：推演问数，自动识别 `WHAT_IF`（大模型解析干预 + 节点检索消歧 + 创建运行场景）或 `QUERY_RESULT`（内存 DuckDB `impacts` 表 NL2SQL），写 `ASK_DATA` 审计。
 - `POST /api/axsim/scenarios/{id}/decisions` / `GET /api/axsim/decisions/{id}` / `POST /api/axsim/decisions/{id}/rebase`（`SIM_RUN`，审批需 `SIM_APPLY`）：创建下发提案与 `ax_approvals(source_kind=SIM_APPLY)` 审批门；通过后 `SELECT ... FOR UPDATE` 校验生产基线冲突，无冲突则原子写 `xb_nodes.metrics`、`xb_metric_series(ACTION)`、`ax_action_log`、`ax_outbox(sim.applied, node.metrics_changed)`、`sec_audit_logs(SIM_APPLY)` 并按需触发 `PROD` 流程；存在冲突则标为 `CONFLICT` 并支持 `/rebase`。
 
+### `xBlueView` 孪生驾驶舱、AI 看板生成、空间绑定与动作回写（`/api/xblueview/*`，Step 11）
+
+- `GET /api/xblueview/dashboards` / `POST /api/xblueview/dashboards` / `GET /api/xblueview/dashboards/{id}` / `PUT /api/xblueview/dashboards/{id}` / `DELETE /api/xblueview/dashboards/{id}` / `GET /api/xblueview/dashboards/by-slug/{slug}`（`DATA_READ` / `VIEW_EDIT`）：驾驶舱增删改查；非 `VIEW_EDIT` 主体仅可见 `PUBLISHED` 驾驶舱，slug 严格校验 `^[a-z0-9][a-z0-9-]{0,62}$`。
+- `POST /api/xblueview/dashboards/ai-generate`（`VIEW_EDIT`）：收集租户主图 `SchemaDoc`、语义指标、数据集及空间资产上下文，经 `LlmRouter(Purpose::Extract)` 生成 24 列栅格驾驶舱草案（校验并自动自修一次），落库为 `DRAFT`。
+- `POST /api/xblueview/dashboards/{id}/publish` / `POST /api/xblueview/dashboards/{id}/duplicate` / `PUT /api/xblueview/dashboards/{id}/layout`（`VIEW_EDIT`）：发布版本（`version + 1`、`status=PUBLISHED`）、复制为新草稿、批量更新组件栅格坐标 `{x,y,w,h}`。
+- `POST /api/xblueview/dashboards/{id}/widgets` / `PUT /api/xblueview/widgets/{id}` / `DELETE /api/xblueview/widgets/{id}`（`VIEW_EDIT`）：维护 20 类组件（`KPI_CARD`、`TABLE`、`PIVOT_TABLE`、各类图表、`GRAPH_TOPOLOGY`、`MAP`、`FLOOR_PLAN`、`SCENE_3D`、`ALERT_LIST`、`SIM_COMPARE`、`ACTION_BUTTON`、`ACTION_FORM`、`MARKDOWN_NOTE`）并在保存时计算 GIN 依赖 `deps`。
+- `POST /api/xblueview/widgets/{id}/data` / `POST /api/xblueview/widgets/preview`（`DATA_READ`）：统一组件执行入口，支持 `SAVED_QUERY` / `METRIC` / `SQL` / `NODE_METRIC` / `PIVOT` / `GRAPH` / `ALERTS` / `SIM_SCENARIOS` / `NODES_GEO` / `FLOOR_PLAN` / `SCENE_3D` / `ACTION` / `STATIC`，参数化注入全局筛选与下钻包装查询，并按 `(tenant_id, widget_id, hash(filters, drill_path, principal_fingerprint))` 在 `moka` 缓存（TTL 600s）。
+- `POST /api/xblueview/widgets/{id}/invoke`（`FLOW_RUN`；禁止分享令牌访问）：按组件 `input_schema` 校验入参；`RUN_FLOW` 触发目标流程 `PROD` 部署，`WRITE_NODE` 校验主体部门与 `NodeTypeSpec` 后在单事务内更新 `xb_nodes`、`xb_metric_series(ACTION)`、`ax_action_log(source_kind='VIEW')` 并外发 `node.upserted`/`node.metrics_changed`。
+- `GET /api/xblueview/dashboards/{id}/stream`（`DATA_READ`，SSE `text/event-stream`）：通过 `PgListener('ax_view_events')` + 进程内广播通道向同租户驾驶舱实时推送 `event: invalidate` 与 `event: alert`（15s `KeepAlive`）。
+- `GET /api/xblueview/assets` / `POST /api/xblueview/assets` / `GET /api/xblueview/assets/{id}/content` / `DELETE /api/xblueview/assets/{id}`（`DATA_READ` / `VIEW_EDIT`）：管理 `FLOOR_PLAN_IMAGE`（含 SVG 白名单清洗，≤20 MB）、`GEOJSON`（校验 `FeatureCollection`，≤20 MB）、`ICON`（≤20 MB）与 `MODEL_3D`（校验 `.glb` 12 字节头魔数、版本 `2` 与长度，≤50 MB）。
+- `GET /api/xblueview/assets/{id}/placements` / `PUT /api/xblueview/assets/{id}/placements` 与 `GET /api/xblueview/assets/{id}/bindings3d` / `PUT /api/xblueview/assets/{id}/bindings3d`（`DATA_READ` / `VIEW_EDIT`）：读写 2D 平面图比例坐标与 3D `glTF` 网格/桩点节点绑定。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）
