@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { getAccessToken } from "./auth";
-import { requestJson, requestMultipart } from "./client";
-import type { AssetKind, DataType, WidgetKind } from "./enums";
+import { ApiError, ApiErrorBodySchema, requestJson, requestMultipart } from "./client";
+import type { AssetKind, DataType, ExportFormat, JobStatus, WidgetKind } from "./enums";
 
 export type DashboardTheme = "light" | "dark" | "screen";
 export type DashboardStatus = "DRAFT" | "PUBLISHED";
@@ -538,4 +538,349 @@ export const xblueviewApi = {
         body: JSON.stringify({ bindings }),
       }
     ),
+
+  createExport: (body: CreateExportRequest) =>
+    requestJson<ExportJobRecord>("/api/xblueview/exports", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  listExports: (params?: {
+    mine?: boolean;
+    limit?: number;
+    cursor?: string;
+  }) =>
+    requestJson<ViewPaginatedList<ExportJobRecord>>(
+      `/api/xblueview/exports${qs(params ?? {})}`
+    ),
+
+  getExport: (exportId: string) =>
+    requestJson<ExportJobRecord>(`/api/xblueview/exports/${exportId}`),
+
+  deleteExport: (exportId: string) =>
+    requestJson<{ deleted: boolean }>(`/api/xblueview/exports/${exportId}`, {
+      method: "DELETE",
+    }),
+
+  downloadExportBlob: async (
+    exportId: string
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const token = getAccessToken();
+    const headers = new Headers();
+    if (token) {
+      headers.set("Authorization", `Bearer ${token}`);
+    }
+    const resp = await fetch(`/api/xblueview/exports/${exportId}/download`, {
+      headers,
+    });
+    if (!resp.ok) {
+      throw await parsePublicFetchError(resp);
+    }
+    const cd = resp.headers.get("Content-Disposition") ?? "";
+    const filename = parseContentDispositionFilename(cd) ?? `export-${exportId}`;
+    const blob = await resp.blob();
+    return { blob, filename };
+  },
+
+  listExportTemplates: (params?: { limit?: number; cursor?: string }) =>
+    requestJson<ViewPaginatedList<ExportTemplateRecord>>(
+      `/api/xblueview/export-templates${qs(params ?? {})}`
+    ),
+
+  uploadExportTemplate: (
+    file: File,
+    exportFormat: "DOCX" | "PPTX",
+    name: string
+  ) => {
+    const form = new FormData();
+    form.append("export_format", exportFormat);
+    form.append("name", name);
+    form.append("file", file);
+    return requestMultipart<ExportTemplateRecord>(
+      "/api/xblueview/export-templates",
+      form
+    );
+  },
+
+  deleteExportTemplate: (templateId: string) =>
+    requestJson<{ deleted: boolean }>(
+      `/api/xblueview/export-templates/${templateId}`,
+      { method: "DELETE" }
+    ),
+
+  createShare: (body: CreateShareRequest) =>
+    requestJson<CreateShareResponse>("/api/xblueview/shares", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  listShares: (params?: {
+    target_id?: string;
+    limit?: number;
+    cursor?: string;
+  }) =>
+    requestJson<ViewPaginatedList<ShareLinkRecord>>(
+      `/api/xblueview/shares${qs(params ?? {})}`
+    ),
+
+  revokeShare: (shareId: string) =>
+    requestJson<{ deleted: boolean }>(`/api/xblueview/shares/${shareId}`, {
+      method: "DELETE",
+    }),
+};
+
+export type ExportPageSize = "A4" | "A3";
+export type ExportOrientation = "portrait" | "landscape";
+export type ShareTargetKind = "DASHBOARD" | "EXPORT_FILE" | "SCENARIO";
+
+export type ExportSource =
+  | {
+      kind: "DASHBOARD";
+      dashboard_id: string;
+      filters?: Record<string, unknown>;
+    }
+  | {
+      kind: "WIDGET";
+      widget_id: string;
+      filters?: Record<string, unknown>;
+      drill_path?: DrillPathItem[];
+    }
+  | {
+      kind: "SAVED_QUERY";
+      saved_query_id: string;
+    }
+  | {
+      kind: "PIVOT";
+      spec: Record<string, unknown>;
+    }
+  | {
+      kind: "SCENARIO";
+      scenario_ids: string[];
+    }
+  | {
+      kind: "CONVERSATION";
+      conversation_id: string;
+    };
+
+export interface ExportOptions {
+  title?: string;
+  subtitle?: string;
+  watermark?: boolean | string;
+  csv_bom?: boolean;
+  page_size?: ExportPageSize;
+  orientation?: ExportOrientation;
+  placeholders?: Record<string, string>;
+  timezone?: string;
+}
+
+export interface CreateExportRequest {
+  export_format: ExportFormat;
+  source: ExportSource;
+  options?: ExportOptions;
+  template_id?: string | null;
+}
+
+export interface ExportJobRecord {
+  id: string;
+  tenant_id: string;
+  export_format: ExportFormat;
+  source: ExportSource;
+  options: ExportOptions;
+  template_id?: string | null;
+  job_id?: string | null;
+  status: JobStatus;
+  file_name?: string | null;
+  file_size?: number | null;
+  sha256?: string | null;
+  error_message?: string | null;
+  created_by: string;
+  created_at: string;
+  finished_at?: string | null;
+  expires_at?: string | null;
+}
+
+export interface ExportTemplateRecord {
+  id: string;
+  tenant_id: string;
+  name: string;
+  export_format: "DOCX" | "PPTX";
+  sha256: string;
+  placeholders: string[];
+  created_by?: string | null;
+  created_at: string;
+}
+
+export interface CreateShareRequest {
+  target_kind: ShareTargetKind;
+  target_id: string;
+  expires_in_hours: number;
+  max_views?: number | null;
+  password?: string | null;
+  locked_filters?: Record<string, unknown>;
+  allow_filters?: boolean;
+  allow_export?: boolean;
+}
+
+export interface CreateShareResponse {
+  id: string;
+  token: string;
+  url: string;
+  expires_at: string;
+}
+
+export interface ShareLinkRecord {
+  id: string;
+  tenant_id: string;
+  token_prefix: string;
+  target_kind: ShareTargetKind;
+  target_id: string;
+  locked_filters: Record<string, unknown>;
+  allow_filters: boolean;
+  allow_export: boolean;
+  has_password: boolean;
+  expires_at: string;
+  max_views?: number | null;
+  view_count: number;
+  created_by: string;
+  created_at: string;
+  revoked_at?: string | null;
+}
+
+export interface SharedExportFileMeta {
+  id: string;
+  export_format: ExportFormat;
+  file_name: string;
+  file_size: number;
+  finished_at?: string | null;
+}
+
+export interface SharePublicResponse {
+  password_required: boolean;
+  target_kind?: ShareTargetKind;
+  expires_at?: string;
+  locked_filters?: Record<string, unknown>;
+  allow_filters?: boolean;
+  allow_export?: boolean;
+  dashboard?: DashboardDetail;
+  export_file?: SharedExportFileMeta;
+  scenario?: Record<string, unknown>;
+}
+
+export interface ShareUnlockResponse {
+  share_session: string;
+  expires_at: string;
+}
+
+async function parsePublicFetchError(resp: Response): Promise<ApiError> {
+  try {
+    const raw: unknown = await resp.json();
+    const parsed = ApiErrorBodySchema.safeParse(raw);
+    if (parsed.success) {
+      return new ApiError({
+        status: resp.status,
+        errorCode: parsed.data.error_code,
+        message: parsed.data.message,
+        traceId: parsed.data.trace_id,
+      });
+    }
+  } catch {
+    // ignore non-json error body
+  }
+  return new ApiError({
+    status: resp.status,
+    errorCode: `HTTP_${resp.status}`,
+    message: `请求失败 (${resp.status})`,
+    traceId: "",
+  });
+}
+
+function parseContentDispositionFilename(header: string): string | null {
+  const utf8Match = /filename\*=UTF-8''([^;\s]+)/i.exec(header);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+  const plainMatch = /filename="?([^";]+)"?/i.exec(header);
+  return plainMatch?.[1] ?? null;
+}
+
+async function requestSharePublic<T>(
+  path: string,
+  shareSession?: string | null,
+  init?: RequestInit
+): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set("Accept", "application/json");
+  if (shareSession) {
+    headers.set("X-Share-Session", shareSession);
+  }
+  const resp = await fetch(path, { ...init, headers });
+  if (!resp.ok) {
+    throw await parsePublicFetchError(resp);
+  }
+  return (await resp.json()) as T;
+}
+
+/** Public no-Bearer API client for `/share/:token` (`SharePage`) that never redirects to `/login`. */
+export const xblueviewShareApi = {
+  getShare: (token: string, shareSession?: string | null) =>
+    requestSharePublic<SharePublicResponse>(
+      `/api/xblueview/share/${encodeURIComponent(token)}`,
+      shareSession
+    ),
+
+  unlockShare: (token: string, password: string) =>
+    requestSharePublic<ShareUnlockResponse>(
+      `/api/xblueview/share/${encodeURIComponent(token)}/unlock`,
+      null,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      }
+    ),
+
+  fetchSharedWidgetData: (
+    token: string,
+    widgetId: string,
+    body: WidgetDataRequest,
+    shareSession?: string | null
+  ) =>
+    requestSharePublic<WidgetDataResponse>(
+      `/api/xblueview/share/${encodeURIComponent(token)}/widgets/${encodeURIComponent(widgetId)}/data`,
+      shareSession,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    ),
+
+  downloadSharedArtifact: async (
+    token: string,
+    shareSession?: string | null,
+    format?: ExportFormat
+  ): Promise<{ blob: Blob; filename: string }> => {
+    const headers = new Headers();
+    if (shareSession) {
+      headers.set("X-Share-Session", shareSession);
+    }
+    const suffix = format ? `?format=${encodeURIComponent(format)}` : "";
+    const resp = await fetch(
+      `/api/xblueview/share/${encodeURIComponent(token)}/download${suffix}`,
+      { headers }
+    );
+    if (!resp.ok) {
+      throw await parsePublicFetchError(resp);
+    }
+    const cd = resp.headers.get("Content-Disposition") ?? "";
+    const filename = parseContentDispositionFilename(cd) ?? `shared-export`;
+    const blob = await resp.blob();
+    return { blob, filename };
+  },
 };

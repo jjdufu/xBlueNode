@@ -202,6 +202,18 @@
 - `GET /api/xblueview/assets?asset_kind=&limit=&cursor=`（`DATA_READ`）/ `POST /api/xblueview/assets`（`VIEW_EDIT` → `201 AssetRecord`，`multipart/form-data` 字段 `asset_kind`、`name?`、`file`；超限返回 `413 UPLOAD_TOO_LARGE`；SVG 经严格白名单清洗并以 `CSP: sandbox` 隔离返回，`.glb` 校验 12 字节 `glTF` v2 头与长度，`GEOJSON` 校验 `FeatureCollection`）/ `GET /api/xblueview/assets/{id}/content`（`DATA_READ`）/ `DELETE /api/xblueview/assets/{id}`（`VIEW_EDIT` → `204`）。
 - `GET /api/xblueview/assets/{id}/placements` / `PUT /api/xblueview/assets/{id}/placements {placements: [{node_id, x_ratio, y_ratio}]}` 与 `GET /api/xblueview/assets/{id}/bindings3d` / `PUT /api/xblueview/assets/{id}/bindings3d {bindings: [{node_id, mesh_name, pos_x, pos_y, pos_z, scale}]}`（`DATA_READ` / `VIEW_EDIT`）：读写 2D 平面图比例坐标与 3D `glTF` 网格/桩点绑定，保存时自动重算关联组件 `deps` 并失效 `ViewCache`。
 
+### `xBlueView` 全格式出品引擎与安全分享（`/api/xblueview/*`，Step 12）
+
+- `POST /api/xblueview/exports {export_format, source, options?, template_id?}`（`EXPORT_DATA` → `201 ExportJobRecord`）/ `GET /api/xblueview/exports?mine=&limit=&cursor=` / `GET /api/xblueview/exports/{id}`（`EXPORT_DATA` → `200`）/ `DELETE /api/xblueview/exports/{id}`（`EXPORT_DATA` → `204`）：提交后台 `ax_jobs(kind=EXPORT)` 异步出品任务，支持 `XLSX | CSV | PDF | DOCX | PPTX | MARKDOWN` 与六种来源（`DASHBOARD | WIDGET | SAVED_QUERY | PIVOT | SCENARIO | CONVERSATION`；`SAVED_QUERY` 对 `CSV`/`XLSX` 支持最高 `1,000,000` 行，超过 `50,000` 行经临时 `Parquet` 流式传输），以创建者身份取数并强制执行 PII 脱敏与水印（`options.watermark = true` 生成 `"{username} YYYY-MM-DD HH:MM"`），完成后计算 `expires_at`、外发 `export.finished` 并写 `EXPORT_FILE` 审计；`RETENTION(EXPORT_FILE)` 自动删除过期产物并置为 `EXPIRED`。
+- `GET /api/xblueview/exports/{id}/download`（`EXPORT_DATA`）：仅允许创建者或具备 `DATA_ADMIN` 主体下载，采用 `ReaderStream` 流式传输并携带 RFC 5987 `Content-Disposition: attachment; filename*=UTF-8''...`。
+- `GET /api/xblueview/export-templates`（`EXPORT_DATA`）/ `POST /api/xblueview/export-templates`（`VIEW_EDIT` → `201 ExportTemplateRecord`，`multipart/form-data` 字段 `export_format("DOCX"|"PPTX")`、`name?`、`file`，自动解析 `{{key}}` 占位符）/ `DELETE /api/xblueview/export-templates/{id}`（`VIEW_EDIT` → `204`）。
+- `POST /api/xblueview/shares {target_kind, target_id, expires_in_hours(1..=720), max_views?, password?, locked_filters?, allow_filters?, allow_export?}`（`VIEW_SHARE` → `201 CreateShareResponse {id, token, url, expires_at}`）/ `GET /api/xblueview/shares?target_id=&limit=&cursor=` / `DELETE /api/xblueview/shares/{id}`（`VIEW_SHARE`）：签发一次性返回明文的 `axs_<prefix8>_<secret32>` 令牌（数据库仅存 `SHA-256` 哈希与 `argon2id` 口令哈希，`DASHBOARD` 要求 `PUBLISHED`），写 `SHARE_CREATE` 审计；`axs_` 令牌访问任何普通业务接口一律返回 `401 TOKEN_INVALID`。
+- 公开分享接口（`ShareContext`，无 `AuthPrincipal`，按 IP 限流 `120 rpm`、解锁 `10 rpm`，响应头强制 `Referrer-Policy: no-referrer` 与 `X-Robots-Tag: noindex`）：
+  - `GET /api/xblueview/share/{token}`：经 `ax_resolve_share` 解析，不存在/过期/撤销/超 `max_views`/创建者失去 `DATA_READ` 一律返回 `404 SHARE_NOT_FOUND`；受口令保护且未携带有效 `X-Share-Session` 时返回 `{password_required: true}`（不扣减次数），否则原子递增 `view_count`、写 `SHARE_ACCESS`（`username = "share:<prefix>"`）并返回目标只读元数据；
+  - `POST /api/xblueview/share/{token}/unlock {password}`：校验 `argon2id` 口令并返回 2 小时有效期的 HMAC 签名 `share_session`（超限返回 `429 RATE_LIMITED`）；
+  - `POST /api/xblueview/share/{token}/widgets/{widget_id}/data {filters, drill_path}`：校验组件属于被分享驾驶舱，`locked_filters` 强制覆盖同名筛选，`allow_filters=false` 时忽略其余筛选，以分享创建者身份取数；
+  - `GET /api/xblueview/share/{token}/download?format=`：`EXPORT_FILE` 目标直接流式下载；`DASHBOARD` / `SCENARIO` 目标在 `allow_export=true` 时支持 `?format=PDF|XLSX|CSV|DOCX|PPTX|MARKDOWN`（缺省 `PDF`）即时渲染带水印产物下载。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）
@@ -227,3 +239,8 @@
 - `POST /lake/commit_staging`：把 `/parse/unified` 生成的暂存 Parquet 原子提交入 DuckLake。
 - `POST /lake/preview` / `GET /lake/snapshots` / `POST /lake/maintenance` / `POST /lake/drop_table`：湖表快照预览、历史快照列表、小文件合并与快照清理、删表。
 - `POST /lake/materialize`（Step 04）：经 `sqlglot` 二次校验 SQL 仅引用 `lake."tenant_<id>".*` 且 `enable_external_access=false` 后，在写连接事务内执行 `CREATE OR REPLACE TABLE lake."tenant_<id>".<t> AS <sql>` 并返回 `SyncResult`。
+
+### 服务端图表渲染与全格式出品内部接口（Step 12）
+
+- `POST /render/chart {option, width, height, format: "svg"|"png", theme?}`：由常驻 Node.js 24 子进程池（`echarts` SSR + `@resvg/resvg-js` 2x 像素密度 + `NotoSansCJK` 字体，单次超时 15s 自动重启子进程并返回 `504 UPSTREAM_TIMEOUT`）直接输出 `image/svg+xml` 或 `image/png` 二进制流。
+- `POST /export/{format} {tenant_id, job_id, document}`（`format` 为 `xlsx | csv | pdf | docx | pptx | markdown`，大小写不敏感）：按 `ExportDocument`（兼容 `rows_parquet_path` 流式读取及用户 `DOCX`/`PPTX` 模板替换）先写 `.part` 再原子重命名至 `${AXPOINT_DATA_ROOT}/exports/<tenant>/<job_id>.<ext>`，返回 `SidecarExportResponse {file_path, file_size, sha256, file_name}`。

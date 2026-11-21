@@ -33,7 +33,13 @@ use crate::axhub::{
     SidecarSyncResult, SyncDatasetResponse, SyncJob, UnifiedParseResponse, UpdateColumnMetaRequest,
     UpdateConnectionInput, UpdateDatasetRequest, UploadRecord, WebhookBufferItem, WebhookConfig,
 };
-use crate::enums::{ConversationStatus, Environment, GraphAlgo, JobKind};
+use crate::enums::{ConversationStatus, Environment, ExportFormat, GraphAlgo, JobKind};
+use crate::export::{
+    CompleteExportJobParams, CreateExportJobParams, CreateExportTemplateParams,
+    CreateShareLinkParams, ExportJobRecord, ExportListQuery, ExportTemplateRecord,
+    RenderChartRequest, ResolvedShare, ShareLinkRecord, ShareListQuery, SidecarExportRequest,
+    SidecarExportResponse,
+};
 use crate::flow::{
     ActionListQuery, ActionLogRecord, ApprovalListQuery, ApprovalRecord, DecideApprovalParams,
     DeployFlowRequest, EventFlowItem, FlowDeploymentRecord, FlowListQuery, FlowVersionRecord,
@@ -792,6 +798,36 @@ pub trait SidecarPort: Send + Sync {
         timezone: &str,
         req: &MaterializeRequest,
     ) -> impl Future<Output = Result<SidecarSyncResult, AppError>> + Send;
+
+    /// Invokes `POST /render/chart` on the Sidecar to render an `ECharts` option as `SVG` or `PNG` (`10-STEP11-12` §12.3).
+    fn render_chart(
+        &self,
+        _tenant_id: &str,
+        _req: &RenderChartRequest,
+    ) -> impl Future<Output = Result<Vec<u8>, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "render_chart not implemented",
+            ))
+        }
+    }
+
+    /// Invokes `POST /export/{format}` on the Sidecar to generate an export file (`10-STEP11-12` §12.4).
+    fn export_document(
+        &self,
+        _tenant_id: &str,
+        _timezone: &str,
+        _format: ExportFormat,
+        _req: &SidecarExportRequest,
+    ) -> impl Future<Output = Result<SidecarExportResponse, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "export_document not implemented",
+            ))
+        }
+    }
 }
 
 /// Persistence port for `AxGraph` business nodes, links, hybrid search, and entity links (Step 03).
@@ -2947,4 +2983,239 @@ pub trait ViewRepository: Send + Sync {
         tenant_id: &str,
         params: ViewWriteNodeParams,
     ) -> impl Future<Output = Result<ViewWriteNodeOutcome, AppError>> + Send;
+
+    /// Lists uploaded `DOCX`/`PPTX` export templates in `tenant_id`.
+    fn list_export_templates(
+        &self,
+        _tenant_id: &str,
+        _query: SimplePageQuery,
+    ) -> impl Future<Output = Result<PaginatedList<ExportTemplateRecord>, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "list_export_templates not implemented",
+            ))
+        }
+    }
+
+    /// Inserts a new `DOCX`/`PPTX` export template record (`xv_export_templates`).
+    fn create_export_template(
+        &self,
+        _tenant_id: &str,
+        _params: CreateExportTemplateParams,
+    ) -> impl Future<Output = Result<ExportTemplateRecord, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "create_export_template not implemented",
+            ))
+        }
+    }
+
+    /// Fetches a single export template by UUID in `tenant_id`.
+    fn get_export_template(
+        &self,
+        _tenant_id: &str,
+        _template_id: Uuid,
+    ) -> impl Future<Output = Result<Option<ExportTemplateRecord>, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "get_export_template not implemented",
+            ))
+        }
+    }
+
+    /// Deletes an export template and returns the removed record for disk cleanup.
+    fn delete_export_template(
+        &self,
+        _tenant_id: &str,
+        _template_id: Uuid,
+    ) -> impl Future<Output = Result<Option<ExportTemplateRecord>, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "delete_export_template not implemented",
+            ))
+        }
+    }
+
+    /// Atomically inserts `xv_export_jobs(PENDING)` and enqueues `ax_jobs(kind = EXPORT, idempotency_key = export_id)`.
+    fn create_export_job(
+        &self,
+        _tenant_id: &str,
+        _params: CreateExportJobParams,
+    ) -> impl Future<Output = Result<ExportJobRecord, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "create_export_job not implemented",
+            ))
+        }
+    }
+
+    /// Fetches a single export job by UUID in `tenant_id`.
+    fn get_export_job(
+        &self,
+        _tenant_id: &str,
+        _export_id: Uuid,
+    ) -> impl Future<Output = Result<Option<ExportJobRecord>, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "get_export_job not implemented",
+            ))
+        }
+    }
+
+    /// Lists export jobs in `tenant_id` (optionally restricted to `created_by_filter`).
+    fn list_export_jobs(
+        &self,
+        _tenant_id: &str,
+        _created_by_filter: Option<Uuid>,
+        _query: ExportListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<ExportJobRecord>, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "list_export_jobs not implemented",
+            ))
+        }
+    }
+
+    /// Marks `xv_export_jobs` as `RUNNING` when picked up by `ExportJobHandler`.
+    fn mark_export_job_running(
+        &self,
+        _tenant_id: &str,
+        _export_id: Uuid,
+    ) -> impl Future<Output = Result<Option<ExportJobRecord>, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "mark_export_job_running not implemented",
+            ))
+        }
+    }
+
+    /// Marks `xv_export_jobs` as `SUCCEEDED`, writes artifact metadata & `expires_at`, and emits `export.finished`.
+    fn complete_export_job(
+        &self,
+        _tenant_id: &str,
+        _export_id: Uuid,
+        _params: CompleteExportJobParams,
+    ) -> impl Future<Output = Result<ExportJobRecord, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "complete_export_job not implemented",
+            ))
+        }
+    }
+
+    /// Marks `xv_export_jobs` as `FAILED` with `error_message`.
+    fn fail_export_job(
+        &self,
+        _tenant_id: &str,
+        _export_id: Uuid,
+        _error_message: &str,
+    ) -> impl Future<Output = Result<(), AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "fail_export_job not implemented",
+            ))
+        }
+    }
+
+    /// Deletes an export job record and returns the removed record for artifact cleanup.
+    fn delete_export_job(
+        &self,
+        _tenant_id: &str,
+        _export_id: Uuid,
+    ) -> impl Future<Output = Result<Option<ExportJobRecord>, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "delete_export_job not implemented",
+            ))
+        }
+    }
+
+    /// Reads the configured `EXPORT_FILE` retention `keep_days` for `tenant_id` (defaulting to `30`).
+    fn get_export_keep_days(
+        &self,
+        _tenant_id: &str,
+    ) -> impl Future<Output = Result<i32, AppError>> + Send {
+        async { Ok(30) }
+    }
+
+    /// Inserts a new `xv_share_links` row.
+    fn create_share_link(
+        &self,
+        _tenant_id: &str,
+        _params: CreateShareLinkParams,
+    ) -> impl Future<Output = Result<ShareLinkRecord, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "create_share_link not implemented",
+            ))
+        }
+    }
+
+    /// Lists share links in `tenant_id` (optionally filtered by `target_id`).
+    fn list_share_links(
+        &self,
+        _tenant_id: &str,
+        _query: ShareListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<ShareLinkRecord>, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "list_share_links not implemented",
+            ))
+        }
+    }
+
+    /// Revokes a share link immediately (`revoked_at = NOW()`).
+    fn revoke_share_link(
+        &self,
+        _tenant_id: &str,
+        _share_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "revoke_share_link not implemented",
+            ))
+        }
+    }
+
+    /// Resolves an active, non-revoked, non-expired share link via `ax_resolve_share(token_hash)`.
+    fn resolve_share_by_hash(
+        &self,
+        _token_hash: &str,
+    ) -> impl Future<Output = Result<Option<ResolvedShare>, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "resolve_share_by_hash not implemented",
+            ))
+        }
+    }
+
+    /// Atomically increments `view_count` inside a tenant transaction if below `max_views`.
+    /// Returns `true` if incremented, or `false` if `max_views` was already reached/revoked.
+    fn increment_share_view_count(
+        &self,
+        _tenant_id: &str,
+        _share_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send {
+        async {
+            Err(AppError::unprocessable(
+                "UNSUPPORTED",
+                "increment_share_view_count not implemented",
+            ))
+        }
+    }
 }

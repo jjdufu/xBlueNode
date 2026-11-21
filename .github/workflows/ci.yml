@@ -23,6 +23,7 @@ jobs:
               - 'axpoint-core/**'
               - 'deploy/migrations/**'
               - 'tests/cassettes/**'
+              - 'xbluenode-web/src/lib/chartSpec.json'
               - 'scripts/lint-guard.py'
               - '.github/workflows/ci.yml'
             python:
@@ -146,6 +147,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: axpoint-parser/charts/package-lock.json
+      - name: Install WeasyPrint & Noto CJK System Libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            fonts-noto-cjk libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 \
+            libgdk-pixbuf-2.0-0 libcairo2 shared-mime-info
       - name: Initialize PostgreSQL Roles & Schemas
         run: |
           for f in deploy/migrations/*.sql; do
@@ -154,11 +166,12 @@ jobs:
           psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 \
             -c "ALTER ROLE axpoint_app PASSWORD 'axpoint_app_secret'" \
             -c "ALTER ROLE axpoint_lake PASSWORD 'axpoint_lake_secret'"
-      - name: Install Dependencies & DuckDB Extensions
+      - name: Install Dependencies, Chart SSR Runtime & DuckDB Extensions
         working-directory: axpoint-parser
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+          npm --prefix charts ci --omit=dev
           python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL ducklake; INSTALL postgres; INSTALL mysql_scanner; INSTALL sqlite_scanner;')"
       - name: Lint, Typecheck & Tests
         working-directory: axpoint-parser

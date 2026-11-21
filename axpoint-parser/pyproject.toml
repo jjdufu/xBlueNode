@@ -55,6 +55,10 @@ dependencies = [
     "graphql-core>=3.2,<4",
     "reportlab>=4.2",
     "pillow>=10",
+    "xlsxwriter==3.3.*",
+    "jinja2>=3.1,<4",
+    "weasyprint==70.*",
+    "cairosvg>=2.7,<3",
 ]
 
 [project.optional-dependencies]
@@ -106,6 +110,7 @@ explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = [
+    "cairosvg.*",
     "cassandra.*",
     "clickhouse_connect.*",
     "confluent_kafka.*",
@@ -149,5 +154,7 @@ module = [
     "taos.*",
     "taosrest.*",
     "testcontainers.*",
+    "weasyprint.*",
+    "xlsxwriter.*",
 ]
 ignore_missing_imports = true
