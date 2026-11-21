@@ -56,6 +56,17 @@ use crate::graph::{
     SubgraphResponse, UpsertLinkRequest, WindowQuery, WindowQueryResponse, WriteMetricsRequest,
     WriteMetricsResponse,
 };
+use crate::guard::{
+    AuditLogEntry, AuditQueryFilter, AuditStatsResponse, AuditVerifyQuery, AuditVerifyResponse,
+    AuthSource, CedarPolicyRecord, ColumnPolicyRecord, CreateGrantRequest, CreateGuardRoleRequest,
+    CreateGuardUserRequest, DepartmentRecord, GrantRecord, GrantResourceKind,
+    GuardPrincipalProfile, GuardRoleRecord, GuardUserRecord, LoginLookupRow, OidcLoginState,
+    PatchGuardRoleRequest, PatchGuardUserRequest, PiiAnalyzeRequest, PiiAnalyzeResponse,
+    PiiAnonymizeRequest, PiiAnonymizeResponse, PutCedarPolicyRequest, PutColumnPolicyRequest,
+    PutRowPolicyDefaultRequest, ResolvedSessionRow, ResourceRef, RowPolicyDefaultRecord,
+    RowPolicyRecord, SaveRowPolicyRequest, SessionSummaryRecord, UpsertDepartmentRequest,
+    UpsertOidcUserParams,
+};
 use crate::platform::{
     ApiTokenRecord, AuditRecord, BoxFuture, JobListQuery, JobListResponse, JobRecord, LeasedJob,
     NewJob, OutboxEvent, PrincipalRecord,
@@ -814,6 +825,30 @@ pub trait SidecarPort: Send + Sync {
         format: ExportFormat,
         req: &SidecarExportRequest,
     ) -> impl Future<Output = Result<SidecarExportResponse, AppError>> + Send;
+
+    /// Invokes `POST /pii/analyze` on the Sidecar (`11-STEP13` §13.8.1).
+    fn analyze_pii(
+        &self,
+        _tenant_id: &str,
+        _req: &PiiAnalyzeRequest,
+    ) -> impl Future<Output = Result<PiiAnalyzeResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::unprocessable(
+            "UNSUPPORTED",
+            "analyze_pii not implemented",
+        )))
+    }
+
+    /// Invokes `POST /pii/anonymize` on the Sidecar (`11-STEP13` §13.8.1).
+    fn anonymize_pii(
+        &self,
+        _tenant_id: &str,
+        _req: &PiiAnonymizeRequest,
+    ) -> impl Future<Output = Result<PiiAnonymizeResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::unprocessable(
+            "UNSUPPORTED",
+            "anonymize_pii not implemented",
+        )))
+    }
 }
 
 /// Persistence port for `AxGraph` business nodes, links, hybrid search, and entity links (Step 03).
@@ -3090,4 +3125,349 @@ pub trait ViewRepository: Send + Sync {
         tenant_id: &str,
         share_id: Uuid,
     ) -> impl Future<Output = Result<bool, AppError>> + Send;
+}
+
+/// Persistence port for `AxGuard` authentication, sessions, OIDC states, departments, users, roles,
+/// Cedar ABAC policies, row/column policies, cross-department grants, and audit hash chains (`11-STEP13`).
+pub trait GuardRepository: Send + Sync {
+    /// Looks up a local user before authentication via `ax_lookup_login(tenant, username)`.
+    fn lookup_login(
+        &self,
+        tenant_id: &str,
+        username: &str,
+    ) -> impl Future<Output = Result<Option<LoginLookupRow>, AppError>> + Send;
+
+    /// Records a failed login attempt, setting `locked_until = NOW() + 15m` when `failed_logins` reaches `5`.
+    fn record_login_failure(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+    ) -> impl Future<Output = Result<i32, AppError>> + Send;
+
+    /// Resets `failed_logins = 0`, clears `locked_until`, updates `last_login_at`, and optionally upgrades `password_hash`.
+    fn record_login_success(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+        upgraded_password_hash: Option<&str>,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Loads the full [`GuardPrincipalProfile`] (clearance, `tokens_valid_after`, roles, permissions, attributes).
+    fn load_guard_principal(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+    ) -> impl Future<Output = Result<Option<GuardPrincipalProfile>, AppError>> + Send;
+
+    /// Creates a new refresh session row in `sec_sessions`.
+    fn create_session(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+        family_id: Uuid,
+        refresh_hash: &str,
+        auth_source: AuthSource,
+        meta: (&str, &str, chrono::DateTime<chrono::Utc>),
+    ) -> impl Future<Output = Result<Uuid, AppError>> + Send;
+
+    /// Resolves a refresh token hash via `ax_resolve_session(refresh_hash)`.
+    fn resolve_session_by_hash(
+        &self,
+        refresh_hash: &str,
+    ) -> impl Future<Output = Result<Option<ResolvedSessionRow>, AppError>> + Send;
+
+    /// Atomically marks `old_session_id` `rotated_at = NOW()` and inserts a successor session in the same `family_id`.
+    /// Returns `Ok(false)` if `old_session_id` was already rotated or revoked (concurrent replay).
+    fn rotate_session(
+        &self,
+        tenant_id: &str,
+        old_session_id: Uuid,
+        user_id: Uuid,
+        family_id: Uuid,
+        new_refresh_hash: &str,
+        meta: (&str, &str, chrono::DateTime<chrono::Utc>),
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Revokes every session in `family_id` (`revoked_at = NOW()`).
+    fn revoke_session_family(
+        &self,
+        tenant_id: &str,
+        family_id: Uuid,
+    ) -> impl Future<Output = Result<u64, AppError>> + Send;
+
+    /// Revokes all sessions of `user_id` and bumps `sec_users.tokens_valid_after = NOW()`.
+    fn revoke_all_user_sessions(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+    ) -> impl Future<Output = Result<u64, AppError>> + Send;
+
+    /// Updates `sec_users.password_hash`, sets `password_changed_at = NOW()`, `tokens_valid_after = NOW()`, and revokes all user sessions.
+    fn update_user_password(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+        new_password_hash: &str,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Inserts a 10-minute one-time OIDC PKCE state row into `sec_login_states`.
+    fn save_oidc_login_state(
+        &self,
+        state: &OidcLoginState,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Atomically deletes and returns a non-expired `sec_login_states` row (`DELETE ... RETURNING`).
+    fn consume_oidc_login_state(
+        &self,
+        state_key: &str,
+    ) -> impl Future<Output = Result<Option<OidcLoginState>, AppError>> + Send;
+
+    /// Finds or auto-provisions an OIDC user `(tenant_id, oidc_subject)` and syncs mapped department & roles.
+    fn upsert_oidc_user(
+        &self,
+        tenant_id: &str,
+        params: &UpsertOidcUserParams,
+    ) -> impl Future<Output = Result<GuardPrincipalProfile, AppError>> + Send;
+
+    /// Lists all departments in `tenant_id`.
+    fn list_departments(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<DepartmentRecord>, AppError>> + Send;
+
+    /// Creates or updates a department in `sec_departments` (validating acyclic parent hierarchy).
+    fn upsert_department(
+        &self,
+        tenant_id: &str,
+        dept_id: &str,
+        req: UpsertDepartmentRequest,
+    ) -> impl Future<Output = Result<DepartmentRecord, AppError>> + Send;
+
+    /// Deletes a department in `sec_departments` (forbidding `"default"` or departments with children/users).
+    fn delete_department(
+        &self,
+        tenant_id: &str,
+        dept_id: &str,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists users in `tenant_id`.
+    fn list_guard_users(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<GuardUserRecord>, AppError>> + Send;
+
+    /// Creates a local user in `sec_users` with initial roles and attributes.
+    fn create_guard_user(
+        &self,
+        tenant_id: &str,
+        password_hash: &str,
+        req: CreateGuardUserRequest,
+    ) -> impl Future<Output = Result<GuardUserRecord, AppError>> + Send;
+
+    /// Patches mutable user fields (`dept_id`, `clearance`, `status`, `roles`, lockout).
+    fn patch_guard_user(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+        req: PatchGuardUserRequest,
+    ) -> impl Future<Output = Result<Option<GuardUserRecord>, AppError>> + Send;
+
+    /// Replaces all `sec_user_attributes` entries for `user_id`.
+    fn put_user_attributes(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+        attributes: &BTreeMap<String, Vec<String>>,
+    ) -> impl Future<Output = Result<BTreeMap<String, Vec<String>>, AppError>> + Send;
+
+    /// Lists roles in `tenant_id`.
+    fn list_guard_roles(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<GuardRoleRecord>, AppError>> + Send;
+
+    /// Creates a custom role in `sec_roles`.
+    fn create_guard_role(
+        &self,
+        tenant_id: &str,
+        req: CreateGuardRoleRequest,
+    ) -> impl Future<Output = Result<GuardRoleRecord, AppError>> + Send;
+
+    /// Updates a role in `sec_roles`.
+    fn patch_guard_role(
+        &self,
+        tenant_id: &str,
+        role_id: Uuid,
+        req: PatchGuardRoleRequest,
+    ) -> impl Future<Output = Result<Option<GuardRoleRecord>, AppError>> + Send;
+
+    /// Deletes a non-builtin role in `sec_roles`.
+    fn delete_guard_role(
+        &self,
+        tenant_id: &str,
+        role_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists custom Cedar policies in `sec_policies`.
+    fn list_cedar_policies(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<CedarPolicyRecord>, AppError>> + Send;
+
+    /// Upserts a custom Cedar policy by `name` and emits `pg_notify('ax_policy_changed', tenant_id)`.
+    fn put_cedar_policy(
+        &self,
+        tenant_id: &str,
+        name: &str,
+        updated_by: Option<Uuid>,
+        req: PutCedarPolicyRequest,
+    ) -> impl Future<Output = Result<CedarPolicyRecord, AppError>> + Send;
+
+    /// Deletes a custom Cedar policy by `name` and emits `pg_notify('ax_policy_changed', tenant_id)`.
+    fn delete_cedar_policy(
+        &self,
+        tenant_id: &str,
+        name: &str,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists row policies in `sec_row_policies`.
+    fn list_row_policies(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<RowPolicyRecord>, AppError>> + Send;
+
+    /// Creates a row policy in `sec_row_policies`.
+    fn create_row_policy(
+        &self,
+        tenant_id: &str,
+        req: SaveRowPolicyRequest,
+    ) -> impl Future<Output = Result<RowPolicyRecord, AppError>> + Send;
+
+    /// Updates an existing row policy by UUID.
+    fn update_row_policy(
+        &self,
+        tenant_id: &str,
+        policy_id: Uuid,
+        req: SaveRowPolicyRequest,
+    ) -> impl Future<Output = Result<Option<RowPolicyRecord>, AppError>> + Send;
+
+    /// Deletes a row policy by UUID.
+    fn delete_row_policy(
+        &self,
+        tenant_id: &str,
+        policy_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists default-deny settings (`sec_row_policy_defaults`).
+    fn list_row_policy_defaults(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<RowPolicyDefaultRecord>, AppError>> + Send;
+
+    /// Upserts a default-deny setting (`sec_row_policy_defaults`).
+    fn put_row_policy_default(
+        &self,
+        tenant_id: &str,
+        req: PutRowPolicyDefaultRequest,
+    ) -> impl Future<Output = Result<RowPolicyDefaultRecord, AppError>> + Send;
+
+    /// Lists column masking policies (`sec_column_policies`).
+    fn list_column_policies(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<ColumnPolicyRecord>, AppError>> + Send;
+
+    /// Upserts a column masking policy (`(tenant_id, target_kind, target_ref, column_name)`).
+    fn put_column_policy(
+        &self,
+        tenant_id: &str,
+        req: PutColumnPolicyRequest,
+    ) -> impl Future<Output = Result<ColumnPolicyRecord, AppError>> + Send;
+
+    /// Deletes a column masking policy by UUID.
+    fn delete_column_policy(
+        &self,
+        tenant_id: &str,
+        policy_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Resolves `(owner_dept, sensitivity)` metadata for a governed resource (`DATASET`, `NODE_TYPE`, `SUBGRAPH`, `DASHBOARD`, `AGENT`).
+    fn resolve_resource_ref(
+        &self,
+        tenant_id: &str,
+        kind: GrantResourceKind,
+        resource_ref: &str,
+    ) -> impl Future<Output = Result<Option<ResourceRef>, AppError>> + Send;
+
+    /// Creates a `PENDING` cross-department grant and its paired `ax_approvals(source_kind='GRANT')` row.
+    fn create_grant(
+        &self,
+        tenant_id: &str,
+        requested_by: Uuid,
+        req: CreateGrantRequest,
+    ) -> impl Future<Output = Result<GrantRecord, AppError>> + Send;
+
+    /// Lists grants in `tenant_id` (optionally filtered to `only_requester_or_dept` for non-`GUARD_ADMIN` callers).
+    fn list_grants(
+        &self,
+        tenant_id: &str,
+        viewer_filter: Option<(Uuid, &str)>,
+    ) -> impl Future<Output = Result<Vec<GrantRecord>, AppError>> + Send;
+
+    /// Fetches the grant paired with `approval_id`.
+    fn get_grant_by_approval(
+        &self,
+        tenant_id: &str,
+        approval_id: Uuid,
+    ) -> impl Future<Output = Result<Option<GrantRecord>, AppError>> + Send;
+
+    /// Transitions a grant to `ACTIVE` or `REJECTED` upon approval decision and emits `pg_notify('ax_policy_changed', tenant_id)`.
+    fn apply_grant_decision(
+        &self,
+        tenant_id: &str,
+        approval_id: Uuid,
+        approved: bool,
+    ) -> impl Future<Output = Result<Option<GrantRecord>, AppError>> + Send;
+
+    /// Revokes a grant (`status = 'REVOKED'`) and emits `pg_notify('ax_policy_changed', tenant_id)`.
+    fn revoke_grant(
+        &self,
+        tenant_id: &str,
+        grant_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists currently active (`status = 'ACTIVE' AND expires_at > NOW()`) grants in `tenant_id`.
+    fn list_active_grants(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<GrantRecord>, AppError>> + Send;
+
+    /// Lists refresh sessions (`GET /api/axguard/sessions?user_id=`).
+    fn list_sessions(
+        &self,
+        tenant_id: &str,
+        user_id_filter: Option<Uuid>,
+    ) -> impl Future<Output = Result<Vec<SessionSummaryRecord>, AppError>> + Send;
+
+    /// Queries paginated audit logs (`GET /api/axguard/audit`).
+    fn query_audit_logs(
+        &self,
+        tenant_id: &str,
+        filter: &AuditQueryFilter,
+    ) -> impl Future<Output = Result<PaginatedList<AuditLogEntry>, AppError>> + Send;
+
+    /// Verifies tamper-evident SHA-256 hash chain integrity across `sec_audit_logs` (`§13.9.2`).
+    fn verify_audit_chain(
+        &self,
+        tenant_id: &str,
+        query: &AuditVerifyQuery,
+    ) -> impl Future<Output = Result<AuditVerifyResponse, AppError>> + Send;
+
+    /// Aggregates audit counts by action, user, and day (`GET /api/axguard/audit/stats`).
+    fn query_audit_stats(
+        &self,
+        tenant_id: &str,
+        from: Option<chrono::DateTime<chrono::Utc>>,
+        to: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> impl Future<Output = Result<AuditStatsResponse, AppError>> + Send;
 }

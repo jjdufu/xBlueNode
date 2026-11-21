@@ -1,0 +1,106 @@
+{
+  "subject": {
+    "user_id": "11111111-2222-3333-4444-555555555555",
+    "username": "analyst_east",
+    "dept": "east",
+    "attributes": {
+      "warehouses": [
+        "W-1",
+        "W-3"
+      ],
+      "empty_list": []
+    }
+  },
+  "dataset_columns": [
+    "order_id",
+    "warehouse_code",
+    "region",
+    "amount",
+    "is_vip",
+    "owner_id",
+    "owner_name",
+    "dept_code",
+    "note"
+  ],
+  "node_properties": [
+    "warehouse_code",
+    "region",
+    "tier",
+    "owner_dept"
+  ],
+  "valid_cases": [
+    {
+      "name": "in_user_attr_list",
+      "target_kind": "DATASET",
+      "predicate": "warehouse_code IN {{user.attr.warehouses}}",
+      "expected_duckdb": "\"warehouse_code\" IN ('W-1', 'W-3')"
+    },
+    {
+      "name": "in_missing_user_attr_becomes_false",
+      "target_kind": "DATASET",
+      "predicate": "warehouse_code IN {{user.attr.nonexistent}}",
+      "expected_duckdb": "FALSE"
+    },
+    {
+      "name": "not_in_empty_attr_becomes_true",
+      "target_kind": "DATASET",
+      "predicate": "warehouse_code NOT IN {{user.attr.empty_list}}",
+      "expected_duckdb": "TRUE"
+    },
+    {
+      "name": "user_placeholders_and_or",
+      "target_kind": "DATASET",
+      "predicate": "(dept_code = {{user.dept}} OR owner_name = {{user.username}}) AND amount >= 100",
+      "expected_duckdb": "((\"dept_code\" = 'east' OR \"owner_name\" = 'analyst_east') AND \"amount\" >= 100)"
+    },
+    {
+      "name": "null_like_and_not",
+      "target_kind": "DATASET",
+      "predicate": "note IS NOT NULL AND NOT region LIKE 'TEST_%' AND is_vip = TRUE",
+      "expected_duckdb": "((\"note\" IS NOT NULL AND NOT \"region\" LIKE 'TEST_%') AND \"is_vip\" = TRUE)"
+    },
+    {
+      "name": "node_type_properties_and_core_fields",
+      "target_kind": "NODE_TYPE",
+      "predicate": "owner_dept = {{user.dept}} AND warehouse_code IN {{user.attr.warehouses}} AND title <> 'DELETED'",
+      "expected_pg": "(((properties->>'owner_dept') = 'east' AND (properties->>'warehouse_code') IN ('W-1', 'W-3')) AND title <> 'DELETED')"
+    }
+  ],
+  "invalid_cases": [
+    {
+      "name": "sql_injection_semicolon",
+      "target_kind": "DATASET",
+      "predicate": "region = 'EAST'; DROP TABLE demo_orders"
+    },
+    {
+      "name": "function_call_forbidden",
+      "target_kind": "DATASET",
+      "predicate": "upper(region) = 'EAST'"
+    },
+    {
+      "name": "subquery_forbidden",
+      "target_kind": "DATASET",
+      "predicate": "warehouse_code IN (SELECT warehouse_code FROM demo_orders)"
+    },
+    {
+      "name": "unknown_column_rejected",
+      "target_kind": "DATASET",
+      "predicate": "secret_col = 'x'"
+    },
+    {
+      "name": "attr_placeholder_outside_in",
+      "target_kind": "DATASET",
+      "predicate": "warehouse_code = {{user.attr.warehouses}}"
+    },
+    {
+      "name": "unknown_placeholder_rejected",
+      "target_kind": "DATASET",
+      "predicate": "dept_code = {{user.password}}"
+    },
+    {
+      "name": "arithmetic_expr_forbidden",
+      "target_kind": "DATASET",
+      "predicate": "amount + 1 > 10"
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+namespace AxPoint {
+  entity Dept in [Dept];
+  entity User in [Dept] = {
+    permissions: Set<String>,
+    clearance: Long,
+    grant_keys: Set<String>,
+  };
+  entity Resource = {
+    kind: String,
+    owner_dept: Dept,
+    sensitivity: Long,
+    granted: Set<String>,
+  };
+  action "DATA_READ", "DATA_SYNC", "DATA_ADMIN", "STUDIO_EDIT", "STUDIO_PUBLISH", "FLOW_EDIT", "FLOW_RUN",
+         "FLOW_PUBLISH", "APPROVAL_DECIDE", "RULE_EDIT", "ALERT_ACK", "AGENT_EDIT", "AGENT_RUN", "SIM_RUN",
+         "SIM_APPLY", "VIEW_EDIT", "VIEW_SHARE", "EXPORT_DATA", "PII_RAW_READ", "GUARD_ADMIN", "OPS_ADMIN"
+    appliesTo { principal: User, resource: Resource,
+                context: { action: String, ip: String, hour: Long, env: String } };
+}

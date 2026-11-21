@@ -23,12 +23,14 @@ jobs:
               - 'axpoint-core/**'
               - 'deploy/migrations/**'
               - 'tests/cassettes/**'
+              - 'tests/data/**'
               - 'xbluenode-web/src/lib/chartSpec.json'
               - 'scripts/lint-guard.py'
               - '.github/workflows/ci.yml'
             python:
               - 'axpoint-parser/**'
               - 'deploy/migrations/**'
+              - 'tests/data/**'
               - '.github/workflows/ci.yml'
             web:
               - 'xbluenode-web/**'
@@ -171,6 +173,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+          pip install --no-deps "https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl"
           npm --prefix charts ci --omit=dev
           python -c "import duckdb; con = duckdb.connect(); con.execute('INSTALL ducklake; INSTALL postgres; INSTALL mysql_scanner; INSTALL sqlite_scanner;')"
       - name: Lint, Typecheck & Tests

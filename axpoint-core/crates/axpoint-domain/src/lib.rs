@@ -10,6 +10,7 @@ pub mod export;
 pub mod expr;
 pub mod flow;
 pub mod graph;
+pub mod guard;
 pub mod platform;
 pub mod ports;
 pub mod rollup;

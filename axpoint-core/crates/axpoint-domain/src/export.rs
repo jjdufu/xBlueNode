@@ -318,6 +318,9 @@ pub struct ExportOptions {
     /// Optional IANA timezone string (defaults to `"UTC"`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
+    /// Explicit request to export unmasked PII (`PII_RAW_READ` or column `exempt` required, `§13.7`).
+    #[serde(default)]
+    pub reveal_pii: bool,
 }
 
 /// Request payload for `POST /api/xblueview/exports`.
@@ -334,6 +337,9 @@ pub struct CreateExportRequest {
     /// Optional `DOCX` / `PPTX` template UUID (`xv_export_templates.id`).
     #[serde(default)]
     pub template_id: Option<Uuid>,
+    /// Explicit request to export unmasked PII (`PII_RAW_READ` or column `exempt` required, `§13.7`).
+    #[serde(default)]
+    pub reveal_pii: bool,
 }
 
 /// Stored export template record (`xv_export_templates`).

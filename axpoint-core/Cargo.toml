@@ -109,21 +109,25 @@ async-graphql = { version = "7.2", features = ["dynamic-schema", "dataloader"] }
 async-graphql-axum = "7.2"
 axum = { version = "0.8", features = ["multipart"] }
 base64 = "0.22"
+cedar-policy = "4.14"
 chrono = { version = "0.4", features = ["serde"] }
 cron = "0.17"
 dotenvy = "0.15"
-duckdb = { version = "1.20000", features = ["bundled", "parquet", "json", "vtab-arrow", "vscalar"] }
+duckdb = { version = "1.20000", features = ["bundled", "parquet", "json", "vtab-arrow", "vscalar", "vscalar-arrow"] }
 eventsource-stream = "0.2"
 futures = "0.3"
 hex = "0.4"
+hkdf = "0.12"
 hmac = "0.12"
 hyperloglogplus = "0.4"
 jsonschema = "0.61"
+jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 lettre = { version = "0.11", default-features = false, features = ["builder", "hostname", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
 lru = "0.16"
 metrics = "0.24"
 metrics-exporter-prometheus = "0.18"
 moka = { version = "0.12", features = ["future"] }
+openidconnect = "4.1"
 opentelemetry = "0.33"
 opentelemetry-otlp = { version = "0.33", features = ["grpc-tonic"] }
 opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }

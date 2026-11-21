@@ -495,3 +495,54 @@ class SidecarExportResponse(BaseModel):
     sha256: str
     file_name: str
 
+
+MaskRuleLiteral = Literal[
+    "NONE",
+    "MASK_PHONE",
+    "MASK_ID_CARD",
+    "MASK_EMAIL",
+    "MASK_BANK_CARD",
+    "MASK_NAME",
+    "MASK_ADDRESS",
+    "HMAC_HASH",
+    "REDACT",
+]
+
+
+class PiiSpanModel(BaseModel):
+    """Detected PII character span returned by POST /pii/analyze (Step 13 §13.8.1)."""
+
+    category: PiiCategory
+    start: int = Field(ge=0)
+    end: int = Field(ge=0)
+    score: float = Field(ge=0.0, le=1.0)
+
+
+class PiiAnalyzeRequest(BaseModel):
+    """Request body for POST /pii/analyze (Step 13 §13.8.1)."""
+
+    texts: list[str]
+    language: str = "zh"
+    score_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+
+
+class PiiAnalyzeResponse(BaseModel):
+    """Response body for POST /pii/analyze (Step 13 §13.8.1)."""
+
+    results: list[list[PiiSpanModel]]
+
+
+class PiiAnonymizeRequest(BaseModel):
+    """Request body for POST /pii/anonymize (Step 13 §13.8.1)."""
+
+    texts: list[str]
+    rules: dict[PiiCategory, MaskRuleLiteral] = Field(default_factory=dict)
+    language: str = "zh"
+    score_threshold: float = Field(default=0.6, ge=0.0, le=1.0)
+    tenant_id: str = "default"
+
+
+class PiiAnonymizeResponse(BaseModel):
+    """Response body for POST /pii/anonymize (Step 13 §13.8.1)."""
+
+    texts: list[str]
