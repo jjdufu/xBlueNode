@@ -214,6 +214,19 @@
   - `POST /api/xblueview/share/{token}/widgets/{widget_id}/data {filters, drill_path}`：校验组件属于被分享驾驶舱，`locked_filters` 强制覆盖同名筛选，`allow_filters=false` 时忽略其余筛选，以分享创建者身份取数；
   - `GET /api/xblueview/share/{token}/download?format=`：`EXPORT_FILE` 目标直接流式下载；`DASHBOARD` / `SCENARIO` 目标在 `allow_export=true` 时支持 `?format=PDF|XLSX|CSV|DOCX|PPTX|MARKDOWN`（缺省 `PDF`）即时渲染带水印产物下载。
 
+### `AxGuard` 认证会话与完整安全治理（`/api/auth/*`、`/api/axguard/*`，Step 13）
+
+- 认证与会话生命周期（`/api/auth/*`）：
+  - `GET /api/auth/config`（公开）→ `AuthConfigResponse {env, oidc_enabled, oidc_display_name?, default_tenant}`；`GET /api/auth/jwks.json`（公开）输出全部活跃 `Ed25519` 验证公钥（JWK Set）。
+  - `POST /api/auth/login {tenant?, username, password}`（公开，按 IP 限流 `10 rpm`）：经 `ax_lookup_login` 与 `Argon2id(m=19456, t=2, p=1)` 恒定耗时校验（连续 5 次失败锁定 15 分钟），签发 900s `EdDSA` 访问令牌并通过 `Set-Cookie: axp_refresh=...; HttpOnly; SameSite=Strict; Path=/api/auth` 下发 14 日刷新令牌，写 `LOGIN` 审计。
+  - `POST /api/auth/refresh`（按 IP 限流 `60 rpm`）：经 `ax_resolve_session` 执行单事务会话轮换；若检测到已轮换或已吊销令牌重放，立即熔断整条 `family_id` 并写 `TOKEN_REVOKE(reason="refresh_reuse")` 审计返回 `401 TOKEN_INVALID`。
+  - `POST /api/auth/logout` / `POST /api/auth/logout-all` / `POST /api/auth/password {old_password, new_password}`：分别吊销当前会话族、吊销用户全部会话并推进 `tokens_valid_after`、修改口令（≥12 位且不含用户名）并强制失效历史令牌。
+  - `GET /api/auth/oidc/start?tenant=&return_to=` / `GET /api/auth/oidc/callback?code=&state=`（按 IP 限流 `30 rpm`）：执行一次性 `state` + PKCE `S256` + ID Token 校验、自动开户与角色/部门映射同步。
+- 安全治理控制台（`/api/axguard/*`）：
+  - 用户、角色、部门与会话（`GUARD_ADMIN`）：`GET|POST /api/axguard/users`、`PATCH /api/axguard/users/{id}`、`POST /api/axguard/users/{id}/reset-password`、`PUT /api/axguard/users/{id}/attributes`；`GET|POST /api/axguard/roles`、`PATCH|DELETE /api/axguard/roles/{id}`；`GET /api/axguard/departments`、`PUT|DELETE /api/axguard/departments/{dept_id}`；`GET /api/axguard/sessions`、`DELETE /api/axguard/sessions/{family_id}`。
+  - Cedar ABAC 与行列级策略（`GUARD_ADMIN`）：`GET /api/axguard/policies`、`PUT|DELETE /api/axguard/policies/{name}`、`POST /api/axguard/policies/validate`、`POST /api/axguard/policies/simulate`；`GET|POST /api/axguard/row-policies`、`PUT|DELETE /api/axguard/row-policies/{id}`、`GET|PUT /api/axguard/row-policy-defaults`、`POST /api/axguard/row-policies/preview`；`GET|PUT /api/axguard/column-policies`、`DELETE /api/axguard/column-policies/{id}`。
+  - 跨部门授权与防篡改审计链：`GET|POST /api/axguard/grants`、`DELETE /api/axguard/grants/{id}`（`DATA_READ` / `GUARD_ADMIN`，关联 `ax_approvals(source_kind='GRANT')`）；`GET /api/axguard/audit`、`GET /api/axguard/audit/export.csv`、`GET /api/axguard/audit/verify`、`GET /api/axguard/audit/stats`（`GUARD_ADMIN`）。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）
@@ -244,3 +257,8 @@
 
 - `POST /render/chart {option, width, height, format: "svg"|"png", theme?}`：由常驻 Node.js 24 子进程池（`echarts` SSR + `@resvg/resvg-js` 2x 像素密度 + `NotoSansCJK` 字体，单次超时 15s 自动重启子进程并返回 `504 UPSTREAM_TIMEOUT`）直接输出 `image/svg+xml` 或 `image/png` 二进制流。
 - `POST /export/{format} {tenant_id, job_id, document}`（`format` 为 `xlsx | csv | pdf | docx | pptx | markdown`，大小写不敏感）：按 `ExportDocument`（兼容 `rows_parquet_path` 流式读取及用户 `DOCX`/`PPTX` 模板替换）先写 `.part` 再原子重命名至 `${AXPOINT_DATA_ROOT}/exports/<tenant>/<job_id>.<ext>`，返回 `SidecarExportResponse {file_path, file_size, sha256, file_name}`。
+
+### PII 智能识别与批量脱敏内部接口（Step 13）
+
+- `POST /pii/analyze {texts, language: "zh", score_threshold: 0.6}`：基于 Presidio + spaCy 中文模型与自定义校验识别器（GB 11643 身份证、Luhn 银行卡、中国手机号、邮箱、省市区门牌地址、人名、密钥/PEM 头），返回每段文本的 `PiiSpanModel[] {category, start, end, score}`。
+- `POST /pii/anonymize {texts, rules, language?, score_threshold?, tenant_id?}`：按 §13.7 统一脱敏规范对命中区间执行脱敏替换并返回 `PiiAnonymizeResponse {texts}`。

@@ -511,6 +511,9 @@ pub enum ApprovalSourceKind {
     /// `AxAgent` tool approval gate (Step 09).
     #[serde(rename = "AGENT")]
     Agent,
+    /// `AxGuard` cross-department access grant approval gate (Step 13).
+    #[serde(rename = "GRANT")]
+    Grant,
 }
 
 /// Lifecycle status of an `ax_approvals` row.

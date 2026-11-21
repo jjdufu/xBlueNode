@@ -123,3 +123,20 @@ export async function requestMultipart<T>(
     body: form,
   });
 }
+
+/** Sends an authenticated HTTP request and returns the raw response Blob. */
+export async function requestBlob(url: string, init?: RequestInit): Promise<Blob> {
+  const headers = buildAuthHeaders(init?.headers);
+  const resp = await fetch(url, {
+    ...init,
+    headers,
+  });
+  if (!resp.ok) {
+    const apiErr = await buildApiError(resp);
+    if (resp.status === 401) {
+      handleUnauthorizedRedirect();
+    }
+    throw apiErr;
+  }
+  return resp.blob();
+}

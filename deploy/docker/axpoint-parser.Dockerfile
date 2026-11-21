@@ -25,7 +25,9 @@ RUN if [ -f /app/charts/package.json ]; then \
     fi
 
 FROM base AS lite
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir . \
+ && pip install --no-cache-dir --no-deps \
+      "https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl"
 USER axp
 RUN python -c "import importlib.util as u; \
     d = __import__('duckdb').connect() if u.find_spec('duckdb') else None; \

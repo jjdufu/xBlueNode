@@ -21,7 +21,7 @@ export type OnFailure = "FAIL_RUN" | "CONTINUE";
 export type JoinMode = "ALL_SUCCESS" | "ALL_DONE" | "ANY_SUCCESS";
 export type FlowIssueSeverity = "ERROR" | "WARNING";
 
-export type ApprovalSourceKind = "FLOW" | "SIM_APPLY" | "AGENT";
+export type ApprovalSourceKind = "FLOW" | "SIM_APPLY" | "AGENT" | "GRANT";
 export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "EXPIRED";
 export type ApprovalDecision = "APPROVE" | "REJECT";
 

@@ -85,6 +85,7 @@ const fn approval_source_kind_as_str(kind: ApprovalSourceKind) -> &'static str {
         ApprovalSourceKind::Flow => "FLOW",
         ApprovalSourceKind::SimApply => "SIM_APPLY",
         ApprovalSourceKind::Agent => "AGENT",
+        ApprovalSourceKind::Grant => "GRANT",
     }
 }
 
@@ -93,6 +94,7 @@ fn parse_approval_source_kind(raw: &str) -> Result<ApprovalSourceKind, AppError>
         "FLOW" => Ok(ApprovalSourceKind::Flow),
         "SIM_APPLY" => Ok(ApprovalSourceKind::SimApply),
         "AGENT" => Ok(ApprovalSourceKind::Agent),
+        "GRANT" => Ok(ApprovalSourceKind::Grant),
         _ => Err(AppError::bad(
             "INVALID_ARGUMENT",
             format!("unknown ApprovalSourceKind value: {raw}"),

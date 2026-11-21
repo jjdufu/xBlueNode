@@ -1,0 +1,419 @@
+{
+  "meta": {
+    "description": "Shared Step 13 §13.7 golden masking vectors for Rust, DuckDB VScalar, and Python Sidecar",
+    "mask_keys_env": "1:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=",
+    "tenant_id": "default"
+  },
+  "cases": [
+    {
+      "rule": "MASK_PHONE",
+      "input": null,
+      "expected": null
+    },
+    {
+      "rule": "MASK_PHONE",
+      "input": "",
+      "expected": ""
+    },
+    {
+      "rule": "MASK_PHONE",
+      "input": "13812345678",
+      "expected": "138****5678"
+    },
+    {
+      "rule": "MASK_PHONE",
+      "input": "+8613812345678",
+      "expected": "+86138****5678"
+    },
+    {
+      "rule": "MASK_PHONE",
+      "input": "+86-13987654321",
+      "expected": "+86-139****4321"
+    },
+    {
+      "rule": "MASK_PHONE",
+      "input": "19900001111",
+      "expected": "199****1111"
+    },
+    {
+      "rule": "MASK_PHONE",
+      "input": "１３８１２３４５６７８",
+      "expected": "138****5678"
+    },
+    {
+      "rule": "MASK_PHONE",
+      "input": "021-62345678",
+      "expected": "021****5678"
+    },
+    {
+      "rule": "MASK_PHONE",
+      "input": "12345",
+      "expected": "****"
+    },
+    {
+      "rule": "MASK_PHONE",
+      "input": "not-a-phone",
+      "expected": "****"
+    },
+    {
+      "rule": "MASK_PHONE",
+      "input": "13812345678901234567890",
+      "expected": "138****************7890"
+    },
+    {
+      "rule": "MASK_ID_CARD",
+      "input": null,
+      "expected": null
+    },
+    {
+      "rule": "MASK_ID_CARD",
+      "input": "",
+      "expected": ""
+    },
+    {
+      "rule": "MASK_ID_CARD",
+      "input": "110101199003071234",
+      "expected": "110101********1234"
+    },
+    {
+      "rule": "MASK_ID_CARD",
+      "input": "31011519881122331X",
+      "expected": "310115********331X"
+    },
+    {
+      "rule": "MASK_ID_CARD",
+      "input": "44030520010506452x",
+      "expected": "440305********452x"
+    },
+    {
+      "rule": "MASK_ID_CARD",
+      "input": "110101900307123",
+      "expected": "110101*****7123"
+    },
+    {
+      "rule": "MASK_ID_CARD",
+      "input": "１１０１０１１９９００３０７１２３４",
+      "expected": "110101********1234"
+    },
+    {
+      "rule": "MASK_ID_CARD",
+      "input": "shortid",
+      "expected": "****"
+    },
+    {
+      "rule": "MASK_ID_CARD",
+      "input": "1234567890",
+      "expected": "****"
+    },
+    {
+      "rule": "MASK_ID_CARD",
+      "input": "9999991999123199990000",
+      "expected": "999999************0000"
+    },
+    {
+      "rule": "MASK_EMAIL",
+      "input": null,
+      "expected": null
+    },
+    {
+      "rule": "MASK_EMAIL",
+      "input": "",
+      "expected": ""
+    },
+    {
+      "rule": "MASK_EMAIL",
+      "input": "zhangsan@example.com",
+      "expected": "z*******@example.com"
+    },
+    {
+      "rule": "MASK_EMAIL",
+      "input": "a@example.com",
+      "expected": "a*@example.com"
+    },
+    {
+      "rule": "MASK_EMAIL",
+      "input": "ab@corp.cn",
+      "expected": "a*@corp.cn"
+    },
+    {
+      "rule": "MASK_EMAIL",
+      "input": "ops.team+alerts@sub.domain.org",
+      "expected": "o**************@sub.domain.org"
+    },
+    {
+      "rule": "MASK_EMAIL",
+      "input": "ｚｈａｎｇｓａｎ＠example.com",
+      "expected": "z*******@example.com"
+    },
+    {
+      "rule": "MASK_EMAIL",
+      "input": "invalid-email",
+      "expected": "****"
+    },
+    {
+      "rule": "MASK_EMAIL",
+      "input": "@nodomain",
+      "expected": "****"
+    },
+    {
+      "rule": "MASK_EMAIL",
+      "input": "verylonglocalpart1234567890@axpoint.io",
+      "expected": "v**************************@axpoint.io"
+    },
+    {
+      "rule": "MASK_BANK_CARD",
+      "input": null,
+      "expected": null
+    },
+    {
+      "rule": "MASK_BANK_CARD",
+      "input": "",
+      "expected": ""
+    },
+    {
+      "rule": "MASK_BANK_CARD",
+      "input": "6222020200112233445",
+      "expected": "***************3445"
+    },
+    {
+      "rule": "MASK_BANK_CARD",
+      "input": "6225880112345678",
+      "expected": "************5678"
+    },
+    {
+      "rule": "MASK_BANK_CARD",
+      "input": "4111 1111 1111 1234",
+      "expected": "************1234"
+    },
+    {
+      "rule": "MASK_BANK_CARD",
+      "input": "6222-0202-0011-8899",
+      "expected": "************8899"
+    },
+    {
+      "rule": "MASK_BANK_CARD",
+      "input": "６２２５８８０１１２３４５６７８",
+      "expected": "************5678"
+    },
+    {
+      "rule": "MASK_BANK_CARD",
+      "input": "1234",
+      "expected": "****"
+    },
+    {
+      "rule": "MASK_BANK_CARD",
+      "input": "invalidcard",
+      "expected": "****"
+    },
+    {
+      "rule": "MASK_BANK_CARD",
+      "input": "621226000000111122223333",
+      "expected": "********************3333"
+    },
+    {
+      "rule": "MASK_NAME",
+      "input": null,
+      "expected": null
+    },
+    {
+      "rule": "MASK_NAME",
+      "input": "",
+      "expected": ""
+    },
+    {
+      "rule": "MASK_NAME",
+      "input": "张三",
+      "expected": "张*"
+    },
+    {
+      "rule": "MASK_NAME",
+      "input": "李四光",
+      "expected": "李**"
+    },
+    {
+      "rule": "MASK_NAME",
+      "input": "欧阳娜娜",
+      "expected": "欧阳**"
+    },
+    {
+      "rule": "MASK_NAME",
+      "input": "司马相如",
+      "expected": "司马**"
+    },
+    {
+      "rule": "MASK_NAME",
+      "input": "诸葛亮",
+      "expected": "诸葛*"
+    },
+    {
+      "rule": "MASK_NAME",
+      "input": "上官婉儿",
+      "expected": "上官**"
+    },
+    {
+      "rule": "MASK_NAME",
+      "input": "王",
+      "expected": "*"
+    },
+    {
+      "rule": "MASK_NAME",
+      "input": "Alice",
+      "expected": "A****"
+    },
+    {
+      "rule": "MASK_NAME",
+      "input": "John Doe",
+      "expected": "J*******"
+    },
+    {
+      "rule": "MASK_ADDRESS",
+      "input": null,
+      "expected": null
+    },
+    {
+      "rule": "MASK_ADDRESS",
+      "input": "",
+      "expected": ""
+    },
+    {
+      "rule": "MASK_ADDRESS",
+      "input": "上海市浦东新区张江高科技园区科苑路88号",
+      "expected": "上海市浦东新区****"
+    },
+    {
+      "rule": "MASK_ADDRESS",
+      "input": "浙江省杭州市西湖区文三路90号东部软件园",
+      "expected": "浙江省杭州市西湖区****"
+    },
+    {
+      "rule": "MASK_ADDRESS",
+      "input": "江苏省昆山市花桥镇绿地大道100号",
+      "expected": "江苏省昆山市****"
+    },
+    {
+      "rule": "MASK_ADDRESS",
+      "input": "河北省正定县恒州南街12号",
+      "expected": "河北省正定县****"
+    },
+    {
+      "rule": "MASK_ADDRESS",
+      "input": "内蒙古自治区阿鲁科尔沁旗天山镇5号",
+      "expected": "内蒙古自治区阿鲁科尔沁旗****"
+    },
+    {
+      "rule": "MASK_ADDRESS",
+      "input": "北京市海淀区",
+      "expected": "北京市海淀区****"
+    },
+    {
+      "rule": "MASK_ADDRESS",
+      "input": "广东省",
+      "expected": "广东省****"
+    },
+    {
+      "rule": "MASK_ADDRESS",
+      "input": "科苑路88号3号楼501室",
+      "expected": "****"
+    },
+    {
+      "rule": "HMAC_HASH",
+      "input": null,
+      "expected": null
+    },
+    {
+      "rule": "HMAC_HASH",
+      "input": "",
+      "expected": ""
+    },
+    {
+      "rule": "HMAC_HASH",
+      "input": "13812345678",
+      "expected": "8afb4ccda60213a1"
+    },
+    {
+      "rule": "HMAC_HASH",
+      "input": "110101199003071234",
+      "expected": "e3cacd6bc7f24ac0"
+    },
+    {
+      "rule": "HMAC_HASH",
+      "input": "zhangsan@example.com",
+      "expected": "86c7e72a92d6d0a7"
+    },
+    {
+      "rule": "HMAC_HASH",
+      "input": "张三",
+      "expected": "7def220274cf0aca"
+    },
+    {
+      "rule": "HMAC_HASH",
+      "input": "CUST-0001",
+      "expected": "3bb5bcd0acb6cb1f"
+    },
+    {
+      "rule": "HMAC_HASH",
+      "input": "CUST-0002",
+      "expected": "0ca977f8d350419a"
+    },
+    {
+      "rule": "HMAC_HASH",
+      "input": "  whitespace  ",
+      "expected": "d20dc0bdd7bd709a"
+    },
+    {
+      "rule": "HMAC_HASH",
+      "input": "long-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "expected": "d084da9add3da27a"
+    },
+    {
+      "rule": "REDACT",
+      "input": null,
+      "expected": null
+    },
+    {
+      "rule": "REDACT",
+      "input": "",
+      "expected": "[REDACTED]"
+    },
+    {
+      "rule": "REDACT",
+      "input": "sk-secret-key-123456",
+      "expected": "[REDACTED]"
+    },
+    {
+      "rule": "REDACT",
+      "input": "13812345678",
+      "expected": "[REDACTED]"
+    },
+    {
+      "rule": "REDACT",
+      "input": "张三",
+      "expected": "[REDACTED]"
+    },
+    {
+      "rule": "REDACT",
+      "input": "-----BEGIN PRIVATE KEY-----",
+      "expected": "[REDACTED]"
+    },
+    {
+      "rule": "REDACT",
+      "input": "password=hunter2",
+      "expected": "[REDACTED]"
+    },
+    {
+      "rule": "REDACT",
+      "input": "0",
+      "expected": "[REDACTED]"
+    },
+    {
+      "rule": "REDACT",
+      "input": "全角ＡＢＣ１２３",
+      "expected": "[REDACTED]"
+    },
+    {
+      "rule": "REDACT",
+      "input": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "expected": "[REDACTED]"
+    }
+  ]
+}

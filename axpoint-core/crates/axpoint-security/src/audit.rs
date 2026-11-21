@@ -18,7 +18,7 @@ const BATCH_FLUSH_THRESHOLD: usize = 200;
 const FLUSH_INTERVAL: Duration = Duration::from_millis(500);
 
 enum AuditCommand {
-    Record(AuditRecord),
+    Record(Box<AuditRecord>),
     Flush(oneshot::Sender<Result<(), AppError>>),
 }
 
@@ -54,7 +54,7 @@ impl AuditWriter {
     ///
     /// Logs a warning if the audit channel is full or closed.
     pub fn record(&self, entry: AuditRecord) {
-        if let Err(err) = self.tx.try_send(AuditCommand::Record(entry)) {
+        if let Err(err) = self.tx.try_send(AuditCommand::Record(Box::new(entry))) {
             tracing::warn!(error = %err, "audit writer channel saturated or closed");
         }
     }
@@ -65,7 +65,7 @@ impl AuditWriter {
     /// Returns [`AppError::Database`] if the background audit worker has shut down.
     pub async fn record_async(&self, entry: AuditRecord) -> Result<(), AppError> {
         self.tx
-            .send(AuditCommand::Record(entry))
+            .send(AuditCommand::Record(Box::new(entry)))
             .await
             .map_err(|_| AppError::Database(String::from("audit writer worker closed")))
     }
@@ -99,7 +99,7 @@ where
             maybe_cmd = rx.recv() => {
                 match maybe_cmd {
                     Some(AuditCommand::Record(entry)) => {
-                        buffer.push(entry);
+                        buffer.push(*entry);
                         if buffer.len() >= BATCH_FLUSH_THRESHOLD {
                             let batch = std::mem::replace(
                                 &mut buffer,
@@ -114,7 +114,7 @@ where
                         let mut waiters = vec![ack_tx];
                         while let Ok(pending) = rx.try_recv() {
                             match pending {
-                                AuditCommand::Record(entry) => buffer.push(entry),
+                                AuditCommand::Record(entry) => buffer.push(*entry),
                                 AuditCommand::Flush(other_ack) => waiters.push(other_ack),
                             }
                         }
