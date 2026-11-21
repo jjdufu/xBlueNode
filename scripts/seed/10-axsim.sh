@@ -88,8 +88,8 @@ for var_name in F1_ID W1_ID O1_ID O2_ID SANDBOX_ID SIM_S1_ID SIM_S2_ID; do
   fi
 done
 
-wait_scenario "$SIM_S1_ID"
-wait_scenario "$SIM_S2_ID"
+wait_scenario "$SIM_S1_ID" >/dev/null
+wait_scenario "$SIM_S2_ID" >/dev/null
 
 echo "FACTORY1_NODE_ID=$F1_ID"
 echo "WAREHOUSE_NODE_ID=$W1_ID"
