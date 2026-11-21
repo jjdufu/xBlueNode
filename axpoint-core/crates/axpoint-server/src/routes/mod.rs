@@ -1,10 +1,11 @@
 //! `/api/*` router aggregation and JSON `404 ROUTE_NOT_FOUND` fallback.
 
 pub(crate) mod analytics;
-mod auth;
+pub(crate) mod auth;
 mod axagent;
 mod axflow;
 mod axflow_rules;
+mod axguard;
 mod axhub;
 mod axops;
 pub(crate) mod axsim;
@@ -27,6 +28,7 @@ pub(crate) fn api_router(state: AppState) -> Router {
     let api = Router::new()
         .merge(system::router())
         .merge(auth::router())
+        .merge(axguard::router())
         .merge(documents::router())
         .merge(axhub::router())
         .merge(analytics::router())

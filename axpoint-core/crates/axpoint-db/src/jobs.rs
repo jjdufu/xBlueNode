@@ -138,11 +138,19 @@ impl PgStore {
             }
         }
 
+        let grants_expired = expire_overdue_grants_tx(&mut tx, tenant_id).await?;
         let expired_exports =
             fetch_expired_exports_tx(&mut tx, tenant_id, export_keep_days).await?;
         tx.commit().await.map_err(|err| {
             AppError::Database(format!("commit run_retention_cleanup tx failed: {err}"))
         })?;
+
+        if let Err(err) = sqlx::query("DELETE FROM sec_login_states WHERE expires_at <= NOW()")
+            .execute(self.pool())
+            .await
+        {
+            tracing::warn!(error = %err, "delete expired sec_login_states failed");
+        }
 
         let export_files_expired = self
             .expire_export_files_after_commit(tenant_id, data_root, &expired_exports)
@@ -155,6 +163,7 @@ impl PgStore {
             "minute_rollups_deleted": minute_rollups_deleted,
             "metric_series_deleted": metric_series_deleted,
             "export_files_expired": export_files_expired,
+            "grants_expired": grants_expired,
         }))
     }
 
@@ -194,6 +203,32 @@ impl PgStore {
         })?;
         Ok(res.rows_affected())
     }
+}
+
+async fn expire_overdue_grants_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+) -> Result<u64, AppError> {
+    let res = sqlx::query(
+        "UPDATE sec_grants
+            SET status = 'EXPIRED'
+          WHERE tenant_id = $1
+            AND status = 'ACTIVE'
+            AND expires_at <= NOW()",
+    )
+    .bind(tenant_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("expire overdue sec_grants failed: {err}")))?;
+    let affected = res.rows_affected();
+    if affected > 0 {
+        sqlx::query("SELECT pg_notify('ax_policy_changed', $1)")
+            .bind(tenant_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(|err| AppError::Database(format!("notify ax_policy_changed failed: {err}")))?;
+    }
+    Ok(affected)
 }
 
 async fn fetch_expired_exports_tx(

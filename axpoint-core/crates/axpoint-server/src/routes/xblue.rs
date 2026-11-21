@@ -359,13 +359,28 @@ async fn merge_subgraph_handler(
 
 async fn get_schema_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiQuery(sub): ApiQuery<SubgraphQueryParam>,
 ) -> Result<Json<PublishedSchemaResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
+    let slug = sub.slug_or_main();
+    if slug != "main" {
+        let client_ip = crate::routes::auth::extract_client_ip(&headers);
+        let _ = axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            &principal,
+            Permission::DataRead,
+            axpoint_domain::guard::GrantResourceKind::Subgraph,
+            slug,
+            &client_ip,
+        )
+        .await?;
+    }
     let resp = state
         .store
-        .get_published_schema(&principal.tenant_id, sub.slug_or_main())
+        .get_published_schema(&principal.tenant_id, slug)
         .await?;
     Ok(Json(resp))
 }
@@ -977,8 +992,15 @@ async fn list_object_catalog_handler(
     }))
 }
 
+struct DomainMaskCtx<'a> {
+    policy: &'a axpoint_domain::guard::PolicyContext,
+    has_pii_raw: bool,
+    tenant_key: &'a [u8; 32],
+}
+
 async fn list_domain_objects_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(type_name): ApiPath<String>,
     ApiQuery(query): ApiQuery<DomainObjectListQuery>,
@@ -995,21 +1017,56 @@ async fn list_domain_objects_handler(
         .find(|n| n.name == type_name.trim())
         .ok_or(AppError::NotFound("TYPE_NOT_FOUND"))?;
 
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::DataRead,
+        axpoint_domain::guard::GrantResourceKind::NodeType,
+        &nt.name,
+        &client_ip,
+    )
+    .await?;
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
+    let tenant_key = state.mask_keys.tenant_key(&principal.tenant_id);
     let has_pii_raw = principal.has(Permission::PiiRawRead);
-    let (nodes, next_cursor) = state
+
+    let (mut nodes, next_cursor) = state
         .store
         .query_domain_objects_list(&principal.tenant_id, &nt.name, &query)
         .await?;
+    if !policy.bypass_row_policies && !nodes.is_empty() {
+        let ids: Vec<Uuid> = nodes.iter().map(|n| n.id).collect();
+        let visible = state
+            .store
+            .filter_visible_node_ids(&principal.tenant_id, &ids, &policy.node_types)
+            .await?;
+        nodes.retain(|n| visible.contains(&n.id));
+    }
 
+    let mask_ctx = DomainMaskCtx {
+        policy: &policy,
+        has_pii_raw,
+        tenant_key: &tenant_key,
+    };
     let items = nodes
         .iter()
-        .map(|n| blue_node_to_domain_record(n, Some(nt), has_pii_raw, None))
+        .map(|n| blue_node_to_domain_record(n, Some(nt), &mask_ctx, None))
         .collect();
     Ok(Json(DomainObjectListResponse { items, next_cursor }))
 }
 
 async fn get_domain_object_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath((type_name, node_key)): ApiPath<(String, String)>,
     ApiQuery(query): ApiQuery<DomainObjectItemQuery>,
@@ -1026,13 +1083,47 @@ async fn get_domain_object_handler(
         .find(|n| n.name == type_name.trim())
         .ok_or(AppError::NotFound("TYPE_NOT_FOUND"))?;
 
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::DataRead,
+        axpoint_domain::guard::GrantResourceKind::NodeType,
+        &nt.name,
+        &client_ip,
+    )
+    .await?;
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
+
     let node = state
         .store
         .get_domain_object_by_key(&principal.tenant_id, &nt.name, node_key.trim())
         .await?
         .ok_or(AppError::NotFound("NODE_NOT_FOUND"))?;
+    if !policy.bypass_row_policies {
+        let visible = state
+            .store
+            .filter_visible_node_ids(&principal.tenant_id, &[node.id], &policy.node_types)
+            .await?;
+        if !visible.contains(&node.id) {
+            return Err(AppError::NotFound("NODE_NOT_FOUND").into());
+        }
+    }
 
-    let has_pii_raw = principal.has(Permission::PiiRawRead);
+    let tenant_key = state.mask_keys.tenant_key(&principal.tenant_id);
+    let mask_ctx = DomainMaskCtx {
+        policy: &policy,
+        has_pii_raw: principal.has(Permission::PiiRawRead),
+        tenant_key: &tenant_key,
+    };
     let neighbors = if query.include_neighbors {
         Some(
             load_object_neighbors(
@@ -1041,7 +1132,7 @@ async fn get_domain_object_handler(
                 &node,
                 nt,
                 &published.doc,
-                has_pii_raw,
+                &mask_ctx,
             )
             .await?,
         )
@@ -1052,7 +1143,7 @@ async fn get_domain_object_handler(
     Ok(Json(blue_node_to_domain_record(
         &node,
         Some(nt),
-        has_pii_raw,
+        &mask_ctx,
         neighbors,
     )))
 }
@@ -1063,7 +1154,7 @@ async fn load_object_neighbors(
     node: &BlueNode,
     nt: &NodeTypeSpec,
     doc: &SchemaDoc,
-    has_pii_raw: bool,
+    mask_ctx: &DomainMaskCtx<'_>,
 ) -> Result<BTreeMap<String, Vec<DomainObjectRecord>>, AppError> {
     let sigs = xblue_graphql::compute_neighbor_sigs(nt, doc);
     if sigs.is_empty() {
@@ -1080,10 +1171,28 @@ async fn load_object_neighbors(
         })
         .collect();
 
-    let loaded = state
+    let mut loaded = state
         .store
         .batch_load_neighbors(tenant_id, &batch_keys)
         .await?;
+    if !mask_ctx.policy.bypass_row_policies {
+        let mut all_ids = Vec::new();
+        for list in loaded.values() {
+            for nb in list {
+                all_ids.push(nb.id);
+            }
+        }
+        if !all_ids.is_empty() {
+            let visible = state
+                .store
+                .filter_visible_node_ids(tenant_id, &all_ids, &mask_ctx.policy.node_types)
+                .await?;
+            for list in loaded.values_mut() {
+                list.retain(|nb| visible.contains(&nb.id));
+            }
+        }
+    }
+
     let nt_by_name: BTreeMap<&str, &NodeTypeSpec> = doc
         .node_types
         .iter()
@@ -1095,7 +1204,7 @@ async fn load_object_neighbors(
         let target_spec = nt_by_name.get(sig.target_type.as_str()).copied();
         let recs: Vec<DomainObjectRecord> = loaded.get(key).map_or_default(|list| {
             list.iter()
-                .map(|nb| blue_node_to_domain_record(nb, target_spec, has_pii_raw, None))
+                .map(|nb| blue_node_to_domain_record(nb, target_spec, mask_ctx, None))
                 .collect()
         });
         out.insert(sig.field_name.clone(), recs);
@@ -1106,7 +1215,7 @@ async fn load_object_neighbors(
 fn blue_node_to_domain_record(
     node: &BlueNode,
     nt: Option<&NodeTypeSpec>,
-    has_pii_raw: bool,
+    mask_ctx: &DomainMaskCtx<'_>,
     neighbors: Option<BTreeMap<String, Vec<DomainObjectRecord>>>,
 ) -> DomainObjectRecord {
     DomainObjectRecord {
@@ -1114,7 +1223,13 @@ fn blue_node_to_domain_record(
         type_name: node.type_name.clone(),
         node_key: node.node_key.clone(),
         title: node.title.clone(),
-        attributes: xblue_graphql::mask_node_attributes(node, nt, has_pii_raw),
+        attributes: xblue_graphql::mask_node_attributes_with_policy(
+            node,
+            nt,
+            Some(mask_ctx.policy),
+            mask_ctx.has_pii_raw,
+            mask_ctx.tenant_key,
+        ),
         metrics: node.metrics.clone(),
         geo: node.geo,
         updated_at: node.updated_at,
@@ -1128,11 +1243,76 @@ fn blue_node_to_domain_record(
 
 async fn list_nodes_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiQuery(query): ApiQuery<NodeListQuery>,
 ) -> Result<Json<NodeListResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let resp = state.store.list_nodes(&principal.tenant_id, query).await?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    if let Some(tn) = query
+        .type_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        let _ = axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            &principal,
+            Permission::DataRead,
+            axpoint_domain::guard::GrantResourceKind::NodeType,
+            tn,
+            &client_ip,
+        )
+        .await?;
+    }
+
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        query.reveal_pii,
+        &client_ip,
+    )
+    .await?;
+    let mut resp = state
+        .store
+        .list_nodes_with_row_policies(
+            &principal.tenant_id,
+            query.clone(),
+            (!policy.bypass_row_policies).then_some(&policy.node_types),
+        )
+        .await?;
+
+    let tenant_key = state.mask_keys.tenant_key(&principal.tenant_id);
+    for node in &mut resp.items {
+        axpoint_server::policy::apply_node_property_masks(node, &policy, &tenant_key);
+    }
+    for node in &mut resp.nodes {
+        axpoint_server::policy::apply_node_property_masks(node, &policy, &tenant_key);
+    }
+
+    if policy.reveal_pii_authorized {
+        state.audit.record(AuditRecord {
+            tenant_id: principal.tenant_id.clone(),
+            user_id: actor_uuid(&principal),
+            username: principal.username.clone(),
+            action: AuditAction::QuerySql,
+            resource_ref: format!("xblue:nodes:{}", query.type_name.as_deref().unwrap_or("*")),
+            status_code: 200,
+            client_ip,
+            trace_id: current_trace_id(),
+            detail_json: serde_json::json!({
+                "raw_pii": true,
+                "returned_rows": resp.items.len(),
+            }),
+            created_at: Utc::now(),
+        });
+        if let Err(err) = state.audit.flush().await {
+            tracing::warn!(error = %err, "xblue nodes reveal_pii audit flush failed");
+        }
+    }
+
     Ok(Json(resp))
 }
 
@@ -1178,6 +1358,7 @@ async fn bulk_upsert_nodes_handler(
 
 async fn search_nodes_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiQuery(query): ApiQuery<NodeSearchQuery>,
 ) -> Result<Json<NodeSearchResponse>, HttpError> {
@@ -1185,30 +1366,82 @@ async fn search_nodes_handler(
     if query.q.trim().is_empty() {
         return Ok(Json(NodeSearchResponse { items: Vec::new() }));
     }
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
     let query_vec = state
         .ai
         .embed_one(query.q.trim())
         .await
         .ok()
         .map(|(v, _)| v);
-    let resp = state
+    let mut resp = state
         .store
         .search_nodes(&principal.tenant_id, query, query_vec.as_deref())
         .await?;
+    if !policy.bypass_row_policies && !resp.items.is_empty() {
+        let ids: Vec<Uuid> = resp.items.iter().map(|h| h.id).collect();
+        let visible = state
+            .store
+            .filter_visible_node_ids(&principal.tenant_id, &ids, &policy.node_types)
+            .await?;
+        resp.items.retain(|h| visible.contains(&h.id));
+    }
+    let tenant_key = state.mask_keys.tenant_key(&principal.tenant_id);
+    for hit in &mut resp.items {
+        axpoint_server::policy::apply_search_hit_property_masks(hit, &policy, &tenant_key);
+    }
     Ok(Json(resp))
 }
 
 async fn get_node_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<BlueNode>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let node = state
+    let mut node = state
         .store
         .get_node(&principal.tenant_id, id)
         .await?
         .ok_or(AppError::NotFound("NODE_NOT_FOUND"))?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::DataRead,
+        axpoint_domain::guard::GrantResourceKind::NodeType,
+        &node.type_name,
+        &client_ip,
+    )
+    .await?;
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
+    if !policy.bypass_row_policies {
+        let visible = state
+            .store
+            .filter_visible_node_ids(&principal.tenant_id, &[node.id], &policy.node_types)
+            .await?;
+        if !visible.contains(&node.id) {
+            return Err(AppError::NotFound("NODE_NOT_FOUND").into());
+        }
+    }
+    let tenant_key = state.mask_keys.tenant_key(&principal.tenant_id);
+    axpoint_server::policy::apply_node_property_masks(&mut node, &policy, &tenant_key);
     Ok(Json(node))
 }
 
@@ -1328,42 +1561,129 @@ async fn list_metric_catalog_handler(
     Ok(Json(catalog))
 }
 
+async fn filter_and_mask_subgraph(
+    state: &AppState,
+    tenant_id: &str,
+    resp: &mut SubgraphResponse,
+    policy: &axpoint_domain::guard::PolicyContext,
+    tenant_key: &[u8; 32],
+) -> Result<(), AppError> {
+    if !policy.bypass_row_policies && !resp.nodes.is_empty() {
+        let ids: Vec<Uuid> = resp.nodes.iter().map(|n| n.id).collect();
+        let visible = state
+            .store
+            .filter_visible_node_ids(tenant_id, &ids, &policy.node_types)
+            .await?;
+        resp.nodes.retain(|n| visible.contains(&n.id));
+        resp.links
+            .retain(|l| visible.contains(&l.src_node_id) && visible.contains(&l.dst_node_id));
+    }
+    for node in &mut resp.nodes {
+        axpoint_server::policy::apply_node_property_masks(node, policy, tenant_key);
+    }
+    Ok(())
+}
+
 async fn query_neighbors_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiQuery(query): ApiQuery<NeighborQuery>,
 ) -> Result<Json<SubgraphResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let resp = state
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
+    let mut resp = state
         .store
         .query_neighbors(&principal.tenant_id, query)
         .await?;
+    let tenant_key = state.mask_keys.tenant_key(&principal.tenant_id);
+    filter_and_mask_subgraph(
+        &state,
+        &principal.tenant_id,
+        &mut resp,
+        &policy,
+        &tenant_key,
+    )
+    .await?;
     Ok(Json(resp))
 }
 
 async fn query_path_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiQuery(query): ApiQuery<PathQuery>,
 ) -> Result<Json<PathResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let resp = state
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
+    let mut resp = state
         .store
         .query_shortest_path(&principal.tenant_id, query)
         .await?;
+    if !policy.bypass_row_policies && !resp.path.is_empty() {
+        let visible = state
+            .store
+            .filter_visible_node_ids(&principal.tenant_id, &resp.path, &policy.node_types)
+            .await?;
+        if resp.path.iter().any(|id| !visible.contains(id)) {
+            resp.path.clear();
+            resp.nodes.clear();
+            resp.links.clear();
+            resp.total_cost = None;
+        }
+    }
+    let tenant_key = state.mask_keys.tenant_key(&principal.tenant_id);
+    for node in &mut resp.nodes {
+        axpoint_server::policy::apply_node_property_masks(node, &policy, &tenant_key);
+    }
     Ok(Json(resp))
 }
 
 async fn query_subgraph_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiQuery(query): ApiQuery<SubgraphQuery>,
 ) -> Result<Json<SubgraphResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let resp = state
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
+    let mut resp = state
         .store
         .query_subgraph(&principal.tenant_id, query)
         .await?;
+    let tenant_key = state.mask_keys.tenant_key(&principal.tenant_id);
+    filter_and_mask_subgraph(
+        &state,
+        &principal.tenant_id,
+        &mut resp,
+        &policy,
+        &tenant_key,
+    )
+    .await?;
     Ok(Json(resp))
 }
 

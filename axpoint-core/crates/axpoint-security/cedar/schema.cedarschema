@@ -15,5 +15,5 @@ namespace AxPoint {
          "FLOW_PUBLISH", "APPROVAL_DECIDE", "RULE_EDIT", "ALERT_ACK", "AGENT_EDIT", "AGENT_RUN", "SIM_RUN",
          "SIM_APPLY", "VIEW_EDIT", "VIEW_SHARE", "EXPORT_DATA", "PII_RAW_READ", "GUARD_ADMIN", "OPS_ADMIN"
     appliesTo { principal: User, resource: Resource,
-                context: { action: String, ip: String, hour: Long, env: String } };
+                context: { action: String, ip: String, hour: Long, env: String, mfa: Bool } };
 }

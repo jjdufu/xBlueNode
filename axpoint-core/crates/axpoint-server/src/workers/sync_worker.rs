@@ -581,6 +581,7 @@ impl ParseFileHandler {
             let ingest_res = ingest_text_with_deps(
                 &self.store,
                 &self.ai,
+                Some(self.sidecar.as_ref()),
                 &job.tenant_id,
                 IngestTextRequest {
                     title: parsed.title.clone(),

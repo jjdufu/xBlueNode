@@ -12,6 +12,7 @@ import {
   Bot,
   GitBranch,
   Monitor,
+  ShieldCheck,
 } from "lucide-react";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { AxHubPage } from "@/pages/AxHubPage";
@@ -27,6 +28,7 @@ import { AgentEmbedPage } from "@/pages/AgentEmbedPage";
 import { AxSimPage } from "@/pages/AxSimPage";
 import { XBlueViewPage } from "@/pages/XBlueViewPage";
 import { SharePage } from "@/pages/SharePage";
+import { AxGuardPage } from "@/pages/AxGuardPage";
 
 export type TabKey =
   | "dashboard"
@@ -42,7 +44,8 @@ export type TabKey =
   | "agent_embed"
   | "axsim"
   | "xblueview"
-  | "xblueview_share";
+  | "xblueview_share"
+  | "axguard";
 
 export interface ModuleRouteSpec {
   key: TabKey;
@@ -54,6 +57,7 @@ export interface ModuleRouteSpec {
   public?: boolean;
   wideLayout?: boolean;
   immersiveQueryParam?: string;
+  requiredAnyPermissions?: readonly string[];
 }
 
 export const MODULE_REGISTRY: ModuleRouteSpec[] = [
@@ -77,6 +81,15 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     component: XBlueViewPage,
     wideLayout: true,
     immersiveQueryParam: "screen",
+  },
+  {
+    key: "axguard",
+    path: "/guard",
+    label: "AxGuard · 安全治理",
+    icon: ShieldCheck,
+    component: AxGuardPage,
+    wideLayout: true,
+    requiredAnyPermissions: ["GUARD_ADMIN", "AUDIT_READ", "DATA_READ"],
   },
   { key: "agent_embed", path: "/share/agent/:token", label: "AxAgent 嵌入对话", icon: Bot, component: AgentEmbedPage, public: true },
   { key: "xblueview_share", path: "/share/:token", label: "xBlueView 安全分享", icon: Monitor, component: SharePage, public: true },

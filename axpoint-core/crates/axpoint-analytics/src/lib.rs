@@ -43,12 +43,13 @@ use uuid::Uuid;
 
 pub use nl2sql::{
     AskPipelineInput, AskPipelineOutput, MAX_REPAIR_ROUNDS, MAX_SUMMARY_ROWS, NL2SQL_MAX_ROWS,
-    run_ask_pipeline, run_ask_pipeline_conn, validate_corrected_sql,
+    run_ask_pipeline, run_ask_pipeline_conn, run_ask_pipeline_with_policy, validate_corrected_sql,
 };
 pub use pivot::{
     CompiledPivot, DEFAULT_PIVOT_COLUMN_LIMIT, DEFAULT_PIVOT_ROW_LIMIT, MAX_PIVOT_COL_DIMS,
     MAX_PIVOT_COLUMN_LIMIT, MAX_PIVOT_ROW_DIMS, MAX_PIVOT_ROW_LIMIT, MAX_PIVOT_VALUES,
-    PivotExecuteOptions, compile_pivot, execute_pivot, execute_pivot_conn,
+    PivotExecuteOptions, PivotRunOptions, compile_pivot, compile_pivot_with_policy, execute_pivot,
+    execute_pivot_conn,
 };
 pub use profiling::{
     CATEGORICAL_MAX_DISTINCT, FK_MIN_OVERLAP_RATIO, MAX_MAPPING_PREVIEW_ROWS,
@@ -61,20 +62,21 @@ pub use result::{
     mask_pii_str,
 };
 pub use semantic::{
-    CompiledMetricQuery, MAX_MULTI_METRICS, MetricExecuteOptions, check_metric_compatibility,
-    compile_metric_query, execute_metric_query, execute_metric_query_conn,
-    execute_multi_metric_query, execute_multi_metric_query_conn, is_aggregate_function_name,
-    is_metric_broken, is_metric_broken_for_dataset, validate_create_metric_request,
-    validate_metric_def,
+    CompiledMetricQuery, MAX_MULTI_METRICS, MetricExecuteOptions, SemanticQueryOptions,
+    check_metric_compatibility, compile_metric_query, compile_metric_query_with_policy,
+    execute_metric_query, execute_metric_query_conn, execute_multi_metric_query,
+    execute_multi_metric_query_conn, is_aggregate_function_name, is_metric_broken,
+    is_metric_broken_for_dataset, validate_create_metric_request, validate_metric_def,
 };
 pub use session::{
-    DEFAULT_QUERY_TIMEOUT_MS, LiveConnectionSpec, MAX_QUERY_TIMEOUT_MS, SessionPool, TenantDb,
-    TenantSession, postgres_dsn_to_libpq,
+    AnalyticsService, DEFAULT_QUERY_TIMEOUT_MS, LiveConnectionSpec, MAX_QUERY_TIMEOUT_MS,
+    PolicyQueryAccess, SessionPool, TenantDb, TenantSession, postgres_dsn_to_libpq,
+    register_mask_udfs,
 };
 pub use sql_guard::{
     CatalogDatasetEntry, DEFAULT_MAX_ROWS, GuardOptions, GuardedQuery, GuardedSql, HARD_MAX_ROWS,
     MAX_RESULT_ROWS, MAX_SQL_BYTES, OutputColumnOrigin, TenantCatalog, guard, guard_and_rewrite,
-    guard_for_materialize, inspect_sql_expression, json_value_to_sql_expr,
+    guard_for_materialize, guard_with_ceiling, inspect_sql_expression, json_value_to_sql_expr,
 };
 pub use transform::{
     TRANSFORM_PREVIEW_MAX_ROWS, TRANSFORM_SYSTEM_PROMPT, ValidatedTransformPlan,

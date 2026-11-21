@@ -763,6 +763,48 @@ async fn list_approvals_handler(
     Ok(Json(page))
 }
 
+async fn authorize_grant_approval_decision(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    approval_id: Uuid,
+) -> Result<(), AppError> {
+    use axpoint_domain::enums::Sensitivity;
+    use axpoint_domain::ports::GuardRepository as _;
+    use axpoint_security::cedar_authz::dept_lineage;
+
+    let grant = state
+        .store
+        .get_grant_by_approval(&principal.tenant_id, approval_id)
+        .await?
+        .ok_or(AppError::NotFound("GRANT_NOT_FOUND"))?;
+    let res_ref = state
+        .store
+        .resolve_resource_ref(
+            &principal.tenant_id,
+            grant.resource_kind,
+            &grant.resource_ref,
+        )
+        .await?
+        .ok_or(AppError::NotFound("RESOURCE_NOT_FOUND"))?;
+
+    if res_ref.sensitivity == Sensitivity::Secret {
+        return principal.require(Permission::GuardAdmin);
+    }
+    if principal.has(Permission::GuardAdmin) {
+        return Ok(());
+    }
+    let departments = state.store.list_departments(&principal.tenant_id).await?;
+    let owner_ancestors = dept_lineage(&res_ref.owner_dept, &departments);
+    if owner_ancestors
+        .iter()
+        .any(|d| d.eq_ignore_ascii_case(&principal.dept_id))
+    {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden("PERMISSION_DENIED"))
+    }
+}
+
 async fn decide_approval_handler(
     State(state): State<AppState>,
     principal: AuthPrincipal,
@@ -770,11 +812,26 @@ async fn decide_approval_handler(
     ApiJson(req): ApiJson<DecideApprovalRequest>,
 ) -> Result<Json<ApprovalRecord>, HttpError> {
     principal.require(Permission::ApprovalDecide)?;
-    if let Some(existing) = state.store.get_approval(&principal.tenant_id, id).await?
-        && existing.source_kind == axpoint_domain::flow::ApprovalSourceKind::SimApply
-    {
-        principal.require(Permission::SimApply)?;
+    let mut is_grant = false;
+    if let Some(existing) = state.store.get_approval(&principal.tenant_id, id).await? {
+        match existing.source_kind {
+            axpoint_domain::flow::ApprovalSourceKind::SimApply => {
+                principal.require(Permission::SimApply)?;
+            }
+            axpoint_domain::flow::ApprovalSourceKind::Grant => {
+                authorize_grant_approval_decision(&state, &principal, id).await?;
+                is_grant = true;
+            }
+            _ => {}
+        }
     }
+
+    let mut actor_roles = principal.roles.clone();
+    if is_grant && !actor_roles.iter().any(|r| r == "ADMIN") {
+        actor_roles.push(String::from("ADMIN"));
+    }
+
+    let decision = req.decision;
     let approval = state
         .store
         .decide_approval(
@@ -782,12 +839,45 @@ async fn decide_approval_handler(
             DecideApprovalParams {
                 approval_id: id,
                 actor_user_id: principal.user_id,
-                actor_roles: principal.roles.clone(),
-                decision: req.decision,
+                actor_roles,
+                decision,
                 comment: req.comment,
             },
         )
         .await?;
+
+    if is_grant {
+        use axpoint_domain::ports::GuardRepository as _;
+
+        let approved = decision == axpoint_domain::flow::ApprovalDecision::Approve;
+        let updated_grant = state
+            .store
+            .apply_grant_decision(&principal.tenant_id, id, approved)
+            .await?;
+        state.cedar.invalidate_tenant(&principal.tenant_id);
+        state.authenticator.invalidate_tenant(&principal.tenant_id);
+        state.view.cache.invalidate_tenant(&principal.tenant_id);
+
+        state.audit.record(AuditRecord {
+            tenant_id: principal.tenant_id.clone(),
+            user_id: (!principal.user_id.is_nil()).then_some(principal.user_id),
+            username: principal.username.clone(),
+            action: AuditAction::PolicyChange,
+            resource_ref: format!("grant:{}", updated_grant.as_ref().map_or(id, |g| g.id)),
+            status_code: 200,
+            client_ip: String::from("127.0.0.1"),
+            trace_id: current_trace_id(),
+            detail_json: serde_json::json!({
+                "approval_id": id,
+                "decision": if approved { "APPROVE" } else { "REJECT" },
+            }),
+            created_at: Utc::now(),
+        });
+        if let Err(err) = state.audit.flush().await {
+            tracing::warn!(error = %err, "grant approval audit flush failed");
+        }
+    }
+
     Ok(Json(approval))
 }
 

@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 axpoint-domain = { path = "../axpoint-domain" }
+axpoint-security = { path = "../axpoint-security" }
 chrono = { workspace = true }
 eventsource-stream = { workspace = true }
 futures = { workspace = true }

@@ -9,8 +9,11 @@ use std::time::{Duration, Instant};
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{LlmProviderRecord, LlmUsageDelta, ProviderTestResponse};
 use axpoint_domain::enums::Purpose;
+use axpoint_domain::guard::LlmEgressPreviewResponse;
 use axpoint_domain::platform::BoxFuture;
 use axpoint_domain::ports::{FlowCredentialUnsealPort, LlmProviderStore, OutboundUrlGuardPort};
+use axpoint_security::masking::MaskKeyRing;
+use axpoint_security::pii_local::{EgressSession, preview_llm_egress, restore_from_egress};
 use chrono::Utc;
 use moka::future::Cache;
 use reqwest::{Client, StatusCode};
@@ -29,6 +32,145 @@ use crate::tools::{
     extract_system_and_last_user, parse_chat_completion_response,
 };
 use crate::{EMBED_BATCH_CHUNK_SIZE, EmbeddingConfig, LlmConfig};
+
+/// Previews outbound LLM PII placeholder redaction (`⟨PHONE_1⟩`, etc.) and inbound raw/masked
+/// restoration for `POST /api/axguard/debug/llm-egress-preview` (`11-STEP13` §13.8.3, §13.10).
+#[must_use]
+pub fn preview_egress_filter(text: &str, tenant_id: &str) -> LlmEgressPreviewResponse {
+    let key = resolve_tenant_mask_key(tenant_id);
+    preview_llm_egress(text, &key)
+}
+
+pub(crate) fn resolve_tenant_mask_key(tenant_id: &str) -> [u8; 32] {
+    MaskKeyRing::from_env()
+        .unwrap_or_else(|_| MaskKeyRing::dev_default())
+        .tenant_key(tenant_id)
+}
+
+fn redact_json_strings(val: &mut serde_json::Value, session: &mut EgressSession) {
+    match val {
+        serde_json::Value::String(s) => {
+            *s = session.redact_text(s);
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                redact_json_strings(item, session);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for v in map.values_mut() {
+                redact_json_strings(v, session);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+fn restore_json_strings(
+    val: &mut serde_json::Value,
+    session: &EgressSession,
+    allow_raw: bool,
+    tenant_key: &[u8; 32],
+) {
+    match val {
+        serde_json::Value::String(s) => {
+            *s = restore_from_egress(s, session, allow_raw, tenant_key);
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                restore_json_strings(item, session, allow_raw, tenant_key);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for v in map.values_mut() {
+                restore_json_strings(v, session, allow_raw, tenant_key);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
+    }
+}
+
+pub(crate) fn redact_messages_for_egress(
+    messages: &[ToolChatMessage],
+) -> (Vec<ToolChatMessage>, EgressSession) {
+    let mut session = EgressSession::new();
+    let mut out = Vec::with_capacity(messages.len());
+    for msg in messages {
+        if msg.role.eq_ignore_ascii_case("system") {
+            out.push(msg.clone());
+            continue;
+        }
+        let mut cloned = msg.clone();
+        cloned.content = session.redact_text(&cloned.content);
+        for tc in &mut cloned.tool_calls {
+            redact_json_strings(&mut tc.arguments, &mut session);
+        }
+        out.push(cloned);
+    }
+    (out, session)
+}
+
+pub(crate) fn restore_turn_from_egress(
+    turn: &mut ToolChatTurn,
+    session: &EgressSession,
+    allow_raw: bool,
+    tenant_key: &[u8; 32],
+) {
+    if session.is_empty() {
+        return;
+    }
+    turn.content = restore_from_egress(&turn.content, session, allow_raw, tenant_key);
+    for tc in &mut turn.tool_calls {
+        restore_json_strings(&mut tc.arguments, session, allow_raw, tenant_key);
+    }
+}
+
+fn wrap_egress_stream_tx(
+    downstream_tx: Option<mpsc::Sender<String>>,
+    session: &EgressSession,
+    allow_raw: bool,
+    tenant_key: [u8; 32],
+) -> (
+    Option<mpsc::Sender<String>>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    if session.is_empty() {
+        return (downstream_tx, None);
+    }
+    let Some(user_tx) = downstream_tx else {
+        return (None, None);
+    };
+    let (inner_tx, mut inner_rx) = mpsc::channel::<String>(64);
+    let session_cloned = session.clone();
+    let handle = tokio::spawn(async move {
+        let mut pending = String::new();
+        while let Some(chunk) = inner_rx.recv().await {
+            pending.push_str(&chunk);
+            let flush_end = match pending.rfind('⟨') {
+                Some(open_idx) if !pending.get(open_idx..).unwrap_or("").contains('⟩') => {
+                    open_idx
+                }
+                _ => pending.len(),
+            };
+            if flush_end > 0
+                && let Some(ready) = pending.get(..flush_end).map(String::from)
+            {
+                pending = pending.get(flush_end..).unwrap_or("").to_owned();
+                let restored = restore_from_egress(&ready, &session_cloned, allow_raw, &tenant_key);
+                if user_tx.send(restored).await.is_err() {
+                    return;
+                }
+            }
+        }
+        if !pending.is_empty() {
+            let restored = restore_from_egress(&pending, &session_cloned, allow_raw, &tenant_key);
+            if user_tx.send(restored).await.is_err() {
+                warn!("SSE egress stream receiver dropped on final flush");
+            }
+        }
+    });
+    (Some(inner_tx), Some(handle))
+}
 
 /// Default TTL in seconds for cached per-tenant `ax_llm_providers` lists.
 pub const DEFAULT_PROVIDER_CACHE_TTL_SECS: u64 = 30;
@@ -124,6 +266,8 @@ pub struct RouterTurnRequest {
     pub max_tokens: Option<i32>,
     /// Whether candidate selection requires `supports_tools == true`.
     pub require_tools: bool,
+    /// Whether inbound placeholder restoration may reveal raw PII (`Permission::PiiRawRead`, `11-STEP13` §13.8.3).
+    pub caller_can_read_raw_pii: bool,
 }
 
 impl RouterTurnRequest {
@@ -138,6 +282,7 @@ impl RouterTurnRequest {
             temperature: None,
             max_tokens: None,
             require_tools: purpose == Purpose::Agent,
+            caller_can_read_raw_pii: false,
         }
     }
 
@@ -176,6 +321,13 @@ impl RouterTurnRequest {
     #[must_use]
     pub const fn with_require_tools(mut self, require_tools: bool) -> Self {
         self.require_tools = require_tools;
+        self
+    }
+
+    /// Configures whether restored `⟨CATEGORY_N⟩` placeholders emit plaintext PII (`true`) or masked PII (`false`).
+    #[must_use]
+    pub const fn with_raw_pii(mut self, allow: bool) -> Self {
+        self.caller_can_read_raw_pii = allow;
         self
     }
 }
@@ -742,7 +894,7 @@ impl LlmRouter {
         }
 
         if candidates.is_empty() {
-            let turn = self.call_default_llm(&req, token_tx).await?;
+            let turn = self.call_default_llm(tenant_id, &req, token_tx).await?;
             self.maybe_record_cassette_turn(&transcript, &turn)?;
             return Ok(RoutedTurnOutcome {
                 turn,
@@ -912,10 +1064,29 @@ impl LlmRouter {
                 counts_toward_breaker: false,
             })?;
 
-        let is_stream = token_tx.is_some();
+        let (wire_msgs, egress_session) = if provider.flags.allow_pii {
+            (
+                req.messages.iter().map(ToolChatMessage::to_wire).collect(),
+                EgressSession::new(),
+            )
+        } else {
+            let (redacted, sess) = redact_messages_for_egress(&req.messages);
+            (
+                redacted.iter().map(ToolChatMessage::to_wire).collect(),
+                sess,
+            )
+        };
+        let tenant_key = resolve_tenant_mask_key(tenant_id);
+        let (eff_tx, stream_join) = wrap_egress_stream_tx(
+            token_tx,
+            &egress_session,
+            req.caller_can_read_raw_pii,
+            tenant_key,
+        );
+        let is_stream = eff_tx.is_some();
         let body = WireChatCompletionRequest {
             model: provider.model.clone(),
-            messages: req.messages.iter().map(ToolChatMessage::to_wire).collect(),
+            messages: wire_msgs,
             temperature: req.temperature.unwrap_or(provider.temperature),
             max_tokens: Some(req.max_tokens.unwrap_or(provider.max_tokens)),
             tools: req.tools.clone(),
@@ -927,12 +1098,29 @@ impl LlmRouter {
 
         let timeout_dur =
             Duration::from_secs(u64::try_from(provider.timeout_s.max(1)).unwrap_or(60));
-        self.send_completion_http(&url, api_key.as_deref(), &body, timeout_dur, token_tx)
-            .await
+        let res = self
+            .send_completion_http(&url, api_key.as_deref(), &body, timeout_dur, eff_tx)
+            .await;
+        if let Some(jh) = stream_join
+            && let Err(err) = jh.await
+        {
+            warn!(error = %err, "egress stream forwarder join failed");
+        }
+        let mut turn = res?;
+        if !provider.flags.allow_pii {
+            restore_turn_from_egress(
+                &mut turn,
+                &egress_session,
+                req.caller_can_read_raw_pii,
+                &tenant_key,
+            );
+        }
+        Ok(turn)
     }
 
     async fn call_default_llm(
         &self,
+        tenant_id: &str,
         req: &RouterTurnRequest,
         token_tx: Option<mpsc::Sender<String>>,
     ) -> Result<ToolChatTurn, AppError> {
@@ -940,10 +1128,18 @@ impl LlmRouter {
             "{}/chat/completions",
             self.default_llm.api_base.trim_end_matches('/')
         );
-        let is_stream = token_tx.is_some();
+        let (redacted, egress_session) = redact_messages_for_egress(&req.messages);
+        let tenant_key = resolve_tenant_mask_key(tenant_id);
+        let (eff_tx, stream_join) = wrap_egress_stream_tx(
+            token_tx,
+            &egress_session,
+            req.caller_can_read_raw_pii,
+            tenant_key,
+        );
+        let is_stream = eff_tx.is_some();
         let body = WireChatCompletionRequest {
             model: self.default_llm.model.clone(),
-            messages: req.messages.iter().map(ToolChatMessage::to_wire).collect(),
+            messages: redacted.iter().map(ToolChatMessage::to_wire).collect(),
             temperature: req.temperature.unwrap_or(0.2),
             max_tokens: req.max_tokens,
             tools: req.tools.clone(),
@@ -954,9 +1150,22 @@ impl LlmRouter {
         };
         let key =
             (!self.default_llm.api_key.is_empty()).then_some(self.default_llm.api_key.as_str());
-        self.send_completion_http(&url, key, &body, Duration::from_secs(60), token_tx)
-            .await
-            .map_err(|f| f.error)
+        let res = self
+            .send_completion_http(&url, key, &body, Duration::from_secs(60), eff_tx)
+            .await;
+        if let Some(jh) = stream_join
+            && let Err(err) = jh.await
+        {
+            warn!(error = %err, "default llm egress stream forwarder join failed");
+        }
+        let mut turn = res.map_err(|f| f.error)?;
+        restore_turn_from_egress(
+            &mut turn,
+            &egress_session,
+            req.caller_can_read_raw_pii,
+            &tenant_key,
+        );
+        Ok(turn)
     }
 
     async fn send_completion_http(
@@ -1474,6 +1683,7 @@ mod tests {
             flags: LlmProviderFlags {
                 supports_tools,
                 allow_private_network: true,
+                allow_pii: false,
             },
             enabled: true,
             created_at: Utc
@@ -1715,6 +1925,124 @@ mod tests {
             .await?;
         assert_eq!(reply, "env_default_ok");
         assert_eq!(hits_default.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    async fn spawn_capturing_llm_server(
+        reply_text: &'static str,
+        captured: Arc<Mutex<Vec<String>>>,
+    ) -> Result<String, AppError> {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| AppError::Config(e.to_string()))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|e| AppError::Config(e.to_string()))?;
+
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut raw_buf = vec![0_u8; 16_384];
+                let n = sock.read(&mut raw_buf).await.unwrap_or(0);
+                let req_str = String::from_utf8_lossy(raw_buf.get(..n).unwrap_or(&[])).into_owned();
+                if let Ok(mut guard) = captured.lock() {
+                    guard.push(req_str);
+                }
+                let body = serde_json::json!({
+                    "model": "mock-egress",
+                    "choices": [{ "message": { "role": "assistant", "content": reply_text } }],
+                    "usage": { "prompt_tokens": 10, "completion_tokens": 8 }
+                })
+                .to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                if sock.write_all(resp.as_bytes()).await.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(format!("http://{addr}"))
+    }
+
+    #[tokio::test]
+    async fn step13_router_strips_pii_on_outbound_and_restores_masked_or_raw_inbound()
+    -> Result<(), AppError> {
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let url = spawn_capturing_llm_server(
+            "请联系 ⟨PHONE_1⟩ 并核验身份证 ⟨ID_CARD_1⟩",
+            Arc::clone(&captured),
+        )
+        .await?;
+
+        let store = Arc::new(MockProviderStore::default());
+        store.set_providers(
+            "t_router",
+            vec![make_provider(
+                "strict_ext",
+                url,
+                vec![Purpose::Chat],
+                10,
+                true,
+                None,
+            )],
+        );
+        let router = LlmRouter::new(dead_default_llm())
+            .with_store(store)
+            .with_cassette(None);
+
+        let msgs = vec![
+            ToolChatMessage::system("系统提示保留参考号 13900001111"),
+            ToolChatMessage::user("客户手机 13812345678，身份证 110101199003077516"),
+        ];
+
+        // 1. Caller without PII_RAW_READ gets masked values; outbound HTTP never contains raw user PII
+        let masked_turn = router
+            .complete_tool_turn(
+                "t_router",
+                RouterTurnRequest::new(Purpose::Chat, msgs.clone()).with_raw_pii(false),
+            )
+            .await?;
+        assert_eq!(
+            masked_turn.content,
+            "请联系 138****5678 并核验身份证 110101********7516"
+        );
+
+        // 2. Caller with PII_RAW_READ gets restored plaintext
+        let raw_turn = router
+            .complete_tool_turn(
+                "t_router",
+                RouterTurnRequest::new(Purpose::Chat, msgs).with_raw_pii(true),
+            )
+            .await?;
+        assert_eq!(
+            raw_turn.content,
+            "请联系 13812345678 并核验身份证 110101199003077516"
+        );
+
+        let payloads = captured
+            .lock()
+            .map_err(|_| AppError::Config(String::from("lock poisoned")))?
+            .clone();
+        assert_eq!(payloads.len(), 2);
+        for req_payload in &payloads {
+            assert!(!req_payload.contains("13812345678"));
+            assert!(!req_payload.contains("110101199003077516"));
+            assert!(req_payload.contains("PHONE_1"));
+            assert!(req_payload.contains("ID_CARD_1"));
+            // System prompt is NOT redacted per §13.8.3
+            assert!(req_payload.contains("13900001111"));
+        }
+
+        let preview =
+            preview_egress_filter("手机号 13812345678 身份证 110101199003077516", "t_router");
+        assert!(preview.outbound.contains("⟨PHONE_1⟩"));
+        assert!(preview.outbound.contains("⟨ID_CARD_1⟩"));
+        assert!(preview.masked.contains("138****5678"));
+        assert!(preview.restored.contains("13812345678"));
         Ok(())
     }
 }

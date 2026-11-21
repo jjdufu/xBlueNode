@@ -9,6 +9,7 @@ pub mod axhub_repo;
 pub mod entity_link;
 pub mod flow_repo;
 pub mod graph_query;
+pub mod guard_repo;
 pub mod jobs;
 pub mod knowledge_sync;
 pub mod mapping_exec;
@@ -31,6 +32,7 @@ pub use jobs::enqueue_job_tx;
 pub use outbox::insert_outbox_tx;
 pub use tenant::begin_tenant_tx;
 
+use axpoint_domain::guard::PiiSpan;
 use axpoint_domain::{
     AppError, ChannelCandidate, ExtractedTriple, RecallChannel, SystemStats, TopologyEdge,
     TopologyGraph, TopologyNode,
@@ -51,6 +53,8 @@ pub struct ParaIngestInput {
     pub triples: Vec<ExtractedTriple>,
     /// Embedding vector for this paragraph.
     pub embedding: Vec<f32>,
+    /// Detected PII spans (`11-STEP13` §13.8.2).
+    pub pii_spans: Vec<PiiSpan>,
 }
 
 /// Ingestion counters returned after committing a document.
@@ -205,9 +209,12 @@ impl PgStore {
         para: ParaIngestInput,
     ) -> Result<(Uuid, usize, usize), AppError> {
         let density = i32::try_from(para.triples.len()).unwrap_or(i32::MAX);
+        let pii_spans_json = serde_json::to_value(&para.pii_spans).map_err(|err| {
+            AppError::Database(format!("serialize hg_paras.pii_spans failed: {err}"))
+        })?;
         let para_row = sqlx::query(
-            "INSERT INTO hg_paras (doc_id, tenant_id, seq_no, content, entity_density)
-             VALUES ($1, $2, $3, $4, $5)
+            "INSERT INTO hg_paras (doc_id, tenant_id, seq_no, content, entity_density, pii_spans)
+             VALUES ($1, $2, $3, $4, $5, $6)
              RETURNING id",
         )
         .bind(doc_id)
@@ -215,6 +222,7 @@ impl PgStore {
         .bind(para.seq_no)
         .bind(&para.content)
         .bind(density)
+        .bind(pii_spans_json)
         .fetch_one(&mut **tx)
         .await
         .map_err(|err| AppError::Database(format!("insert para failed: {err}")))?;
@@ -260,8 +268,20 @@ impl PgStore {
             edge_count = edge_count.saturating_add(1);
         }
 
+        let (entity_count, rel_edges) =
+            Self::insert_para_triples_tx(tx, tenant_id, para_id, para.triples).await?;
+        Ok((para_id, entity_count, edge_count.saturating_add(rel_edges)))
+    }
+
+    async fn insert_para_triples_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: &str,
+        para_id: Uuid,
+        triples: Vec<ExtractedTriple>,
+    ) -> Result<(usize, usize), AppError> {
         let mut entity_count: usize = 0;
-        for triple in para.triples {
+        let mut edge_count: usize = 0;
+        for triple in triples {
             let subj_id = Self::upsert_entity(
                 tx,
                 tenant_id,
@@ -309,7 +329,7 @@ impl PgStore {
             edge_count = edge_count.saturating_add(1);
         }
 
-        Ok((para_id, entity_count, edge_count))
+        Ok((entity_count, edge_count))
     }
 
     async fn upsert_entity(
@@ -562,6 +582,46 @@ impl PgStore {
             let f: String = r.try_get("fact").unwrap_or_default();
             Some(format!("{s} -> {o}: {f}"))
         }))
+    }
+
+    /// Loads stored `hg_paras.pii_spans` JSONB arrays for a batch of paragraph IDs (`11-STEP13` §13.6.3, §13.8.2).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if querying `hg_paras` fails.
+    pub async fn load_para_pii_spans(
+        &self,
+        tenant_id: &str,
+        para_ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, Vec<PiiSpan>>, AppError> {
+        if para_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT id, pii_spans
+               FROM hg_paras
+              WHERE tenant_id = $1
+                AND id = ANY($2)",
+        )
+        .bind(tenant_id)
+        .bind(para_ids)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("load hg_paras.pii_spans failed: {err}")))?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit load_para_pii_spans tx failed: {err}"))
+        })?;
+
+        let mut map = std::collections::HashMap::with_capacity(rows.len());
+        for row in rows {
+            let id: Uuid = row.get("id");
+            let raw: serde_json::Value = row.get("pii_spans");
+            let spans: Vec<PiiSpan> = serde_json::from_value(raw).unwrap_or_default();
+            if !spans.is_empty() {
+                map.insert(id, spans);
+            }
+        }
+        Ok(map)
     }
 
     /// Returns hypergraph counts and active embedding dimensions for the dashboard.

@@ -15,7 +15,8 @@ use arrow::datatypes::{DataType as ArrowDataType, Field, SchemaRef, TimeUnit};
 use arrow::util::display::{ArrayFormatter, FormatOptions};
 use axpoint_domain::AppError;
 use axpoint_domain::analytics::{QueryColumn, QueryResult};
-use axpoint_domain::enums::{DataType, PiiCategory};
+use axpoint_domain::enums::{DataType, MaskRule, PiiCategory};
+use axpoint_security::masking::apply_mask_rule;
 use chrono::{DateTime, NaiveDate, SecondsFormat, Utc};
 
 use crate::sql_guard::{GuardedSql, OutputColumnOrigin, TenantCatalog};
@@ -101,97 +102,14 @@ pub fn map_arrow_data_type(dt: &ArrowDataType) -> DataType {
     }
 }
 
-/// Masks a string slice according to `05-STEP04` §04.3 dynamic PII rules.
+/// Masks a string slice according to canonical `AxGuard` `MaskRule` rules (`11-STEP13` §13.7).
 #[must_use]
 pub fn mask_pii_str(raw: &str, category: PiiCategory) -> String {
-    match category {
-        PiiCategory::None => String::from(raw),
-        PiiCategory::Phone => mask_phone(raw),
-        PiiCategory::IdCard => mask_id_card(raw),
-        PiiCategory::Email => mask_email(raw),
-        PiiCategory::BankCard => mask_bank_card(raw),
-        PiiCategory::Name => mask_person_name(raw),
-        PiiCategory::Address => mask_address(raw),
-        PiiCategory::Secret => String::from("[REDACTED]"),
-    }
-}
-
-fn mask_phone(raw: &str) -> String {
-    let chars: Vec<char> = raw.chars().collect();
-    let len = chars.len();
-    if len < 7 {
-        return String::from("****");
-    }
-    let prefix: String = chars.iter().take(3).copied().collect();
-    let suffix: String = chars.iter().skip(len.saturating_sub(4)).copied().collect();
-    format!("{prefix}****{suffix}")
-}
-
-fn mask_id_card(raw: &str) -> String {
-    let chars: Vec<char> = raw.chars().collect();
-    let len = chars.len();
-    if len < 7 {
-        return String::from("***********");
-    }
-    let prefix: String = chars.iter().take(3).copied().collect();
-    let suffix: String = chars.iter().skip(len.saturating_sub(4)).copied().collect();
-    format!("{prefix}***********{suffix}")
-}
-
-fn mask_email(raw: &str) -> String {
-    let Some((local, domain)) = raw.split_once('@') else {
-        return String::from("***");
-    };
-    if domain.is_empty() {
-        return String::from("***");
-    }
-    let first = local.chars().next().unwrap_or('*');
-    format!("{first}***@{domain}")
-}
-
-fn mask_bank_card(raw: &str) -> String {
-    let chars: Vec<char> = raw.chars().collect();
-    let len = chars.len();
-    if len < 4 {
-        return String::from("************");
-    }
-    let suffix: String = chars.iter().skip(len.saturating_sub(4)).copied().collect();
-    format!("************{suffix}")
-}
-
-fn mask_person_name(raw: &str) -> String {
-    let mut chars = raw.chars();
-    let Some(first) = chars.next() else {
-        return String::from("*");
-    };
-    let rest_count = chars.count();
-    if rest_count == 0 {
-        return String::from("*");
-    }
-    let stars = "*".repeat(rest_count);
-    format!("{first}{stars}")
-}
-
-fn mask_address(raw: &str) -> String {
-    for (byte_idx, ch) in raw.char_indices() {
-        if matches!(ch, '市' | '州' | '盟' | '区') {
-            let end = byte_idx.saturating_add(ch.len_utf8());
-            if let Some(prefix) = raw.get(..end) {
-                return format!("{prefix}***");
-            }
-        }
-    }
-    let chars: Vec<char> = raw.chars().collect();
-    if chars.len() > 6 {
-        let prefix: String = chars.into_iter().take(6).collect();
-        format!("{prefix}***")
-    } else {
-        String::from("***")
-    }
+    apply_mask_rule(MaskRule::from_pii_category(category), raw, &[0_u8; 32])
 }
 
 /// Converts Arrow [`RecordBatch`] slices into a [`SerializedQueryOutput`], enforcing `effective_max_rows`
-/// truncation and dynamic PII masking (`05-STEP04` §04.3).
+/// truncation and dynamic PII masking (`05-STEP04` §04.3, `11-STEP13` §13.7).
 ///
 /// # Errors
 /// - Returns `AppError::Forbidden("PERMISSION_DENIED")` if `opts.reveal_pii` is `true` while
@@ -267,7 +185,18 @@ fn build_columns_and_plans(
             pii_category = lookup_wildcard_pii(field.name(), catalog, guarded);
         }
 
-        let (masked, plan) = if pii_category == PiiCategory::None || revealed_pii {
+        let (masked, plan) = if guarded.sql_policy_applied {
+            let sql_masked = match origin {
+                Some(OutputColumnOrigin::Direct { column_name, .. }) => guarded
+                    .sql_masked_columns
+                    .contains(&column_name.to_ascii_lowercase()),
+                Some(OutputColumnOrigin::DerivedFromPii { .. }) => !revealed_pii,
+                _ => guarded
+                    .sql_masked_columns
+                    .contains(&field.name().to_ascii_lowercase()),
+            };
+            (sql_masked, ColumnMaskPlan::Plain)
+        } else if pii_category == PiiCategory::None || revealed_pii {
             (false, ColumnMaskPlan::Plain)
         } else if is_derived {
             (true, ColumnMaskPlan::RedactDerived(pii_category))
@@ -729,27 +658,27 @@ mod tests {
         assert_eq!(mask_pii_str("12345", PiiCategory::Phone), "****");
         assert_eq!(
             mask_pii_str("110101199001011234", PiiCategory::IdCard),
-            "110***********1234"
+            "110101********1234"
         );
         assert_eq!(
             mask_pii_str("alice@x.com", PiiCategory::Email),
-            "a***@x.com"
+            "a****@x.com"
         );
-        assert_eq!(mask_pii_str("not-an-email", PiiCategory::Email), "***");
+        assert_eq!(mask_pii_str("not-an-email", PiiCategory::Email), "****");
         assert_eq!(
             mask_pii_str("6222021234567890", PiiCategory::BankCard),
             "************7890"
         );
         assert_eq!(mask_pii_str("张三", PiiCategory::Name), "张*");
-        assert_eq!(mask_pii_str("欧阳修", PiiCategory::Name), "欧**");
+        assert_eq!(mask_pii_str("欧阳修", PiiCategory::Name), "欧阳*");
         assert_eq!(mask_pii_str("单", PiiCategory::Name), "*");
         assert_eq!(
             mask_pii_str("上海市浦东新区世纪大道1号", PiiCategory::Address),
-            "上海市***"
+            "上海市浦东新区****"
         );
         assert_eq!(
             mask_pii_str("NoDelimiterStreet999", PiiCategory::Address),
-            "NoDeli***"
+            "****"
         );
         assert_eq!(
             mask_pii_str("top-secret-key", PiiCategory::Secret),
@@ -768,6 +697,7 @@ mod tests {
                 max_rows: 2,
                 allow_live: false,
                 params: BTreeMap::new(),
+                policy: None,
             },
         )?;
 

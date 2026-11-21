@@ -6,7 +6,8 @@ use std::ops::ControlFlow;
 
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::{ColumnMeta, Dataset};
-use axpoint_domain::enums::{DataType, PiiCategory};
+use axpoint_domain::enums::{DataType, MaskRule, PiiCategory};
+use axpoint_domain::guard::{DatasetPolicySpec, PolicyContext};
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{
     ExcludeSelectItem, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Ident,
@@ -291,8 +292,8 @@ impl TenantCatalog {
     }
 }
 
-/// Options controlling [`guard`] execution (`05-STEP04` §04.3).
-#[derive(Debug, Clone)]
+/// Options controlling [`guard`] execution (`05-STEP04` §04.3, `11-STEP13` §13.6.3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardOptions {
     /// Maximum rows before truncation (`default = 10_000`, `cap = 100_000`).
     pub max_rows: u32,
@@ -300,6 +301,9 @@ pub struct GuardOptions {
     pub allow_live: bool,
     /// Named `:param` values substituted as validated SQL literals.
     pub params: BTreeMap<String, serde_json::Value>,
+    /// Optional compiled `AxGuard` row/column security context (`11-STEP13` §13.6.3).
+    #[serde(default)]
+    pub policy: Option<PolicyContext>,
 }
 
 impl Default for GuardOptions {
@@ -308,7 +312,17 @@ impl Default for GuardOptions {
             max_rows: DEFAULT_MAX_ROWS,
             allow_live: false,
             params: BTreeMap::new(),
+            policy: None,
         }
+    }
+}
+
+impl GuardOptions {
+    /// Builder helper attaching an optional [`PolicyContext`].
+    #[must_use]
+    pub fn with_policy(mut self, policy: Option<PolicyContext>) -> Self {
+        self.policy = policy;
+        self
     }
 }
 
@@ -361,6 +375,10 @@ pub struct GuardedSql {
     pub uses_platform_views: bool,
     /// Referenced `live_<conn>` connection names (without `live_` prefix).
     pub referenced_live_connections: Vec<String>,
+    /// `true` when SQL-level `PolicyContext` column/row governance was evaluated during rewrite.
+    pub sql_policy_applied: bool,
+    /// Lowercased column names masked directly inside `DuckDB` SQL via `ax_mask_*` UDFs.
+    pub sql_masked_columns: HashSet<String>,
 }
 
 /// Positional-parameter rewritten SQL output produced by [`guard_and_rewrite`].
@@ -403,6 +421,8 @@ enum GuardTarget {
 /// - Returns `AppError::PayloadTooLarge("PAYLOAD_TOO_LARGE")` if `sql.len() > 65_536`.
 /// - Returns `AppError::Forbidden("PERMISSION_DENIED")` if a `live_*` table is referenced with
 ///   `opts.allow_live = true` while `catalog.has_live_permission = false`.
+/// - Returns `AppError::Forbidden("POLICY_DENIED")` if any referenced dataset appears in
+///   `opts.policy.denied_datasets`.
 /// - Returns `AppError::BadRequest { code: "SQL_REJECTED", .. }` on any syntax, statement,
 ///   relation, function, parameter, or post-rewrite verification violation.
 pub fn guard(
@@ -417,7 +437,7 @@ pub fn guard(
 /// `EXPORT_SAVED_QUERY_MAX_ROWS = 1_000_000` for internal `CSV`/`XLSX` export jobs, `10-STEP11-12` §12.2).
 ///
 /// # Errors
-/// Returns `PAYLOAD_TOO_LARGE`, `PERMISSION_DENIED`, or `SQL_REJECTED` on any guard violation.
+/// Returns `PAYLOAD_TOO_LARGE`, `PERMISSION_DENIED`, `POLICY_DENIED`, or `SQL_REJECTED` on any guard violation.
 pub fn guard_with_ceiling(
     sql: &str,
     catalog: &TenantCatalog,
@@ -440,6 +460,7 @@ pub fn guard_with_ceiling(
             allow_live: opts.allow_live,
         },
         ParamBindMode::Literal(&opts.params),
+        opts.policy.as_ref(),
     );
     if let ControlFlow::Break(err) = VisitMut::visit(&mut query, &mut visitor) {
         return Err(*err);
@@ -467,6 +488,8 @@ pub fn guard_with_ceiling(
         output_lineage,
         uses_platform_views: visitor.uses_platform_views,
         referenced_live_connections: visitor.referenced_live_connections,
+        sql_policy_applied: visitor.sql_policy_applied,
+        sql_masked_columns: visitor.sql_masked_columns,
     })
 }
 
@@ -494,6 +517,7 @@ pub fn guard_and_rewrite(
             allow_live: catalog.has_live_permission,
         },
         ParamBindMode::PositionalPlaceholder,
+        None,
     );
     if let ControlFlow::Break(err) = VisitMut::visit(&mut query, &mut visitor) {
         return Err(*err);
@@ -538,6 +562,7 @@ pub fn guard_for_materialize(sql: &str, catalog: &TenantCatalog) -> Result<Guard
         catalog,
         GuardTarget::MaterializeView,
         ParamBindMode::ForbidParams,
+        None,
     );
     if let ControlFlow::Break(err) = VisitMut::visit(&mut query, &mut visitor) {
         return Err(*err);
@@ -556,6 +581,8 @@ pub fn guard_for_materialize(sql: &str, catalog: &TenantCatalog) -> Result<Guard
         output_lineage,
         uses_platform_views: false,
         referenced_live_connections: Vec::new(),
+        sql_policy_applied: false,
+        sql_masked_columns: HashSet::new(),
     })
 }
 
@@ -841,12 +868,110 @@ fn check_allowed_table_function_name(name: &ObjectName) -> Result<(), AppError> 
     Ok(())
 }
 
+enum PendingTableRewrite {
+    None,
+    Subquery {
+        subquery_sql: String,
+        alias: TableAlias,
+    },
+}
+
+const fn mask_rule_udf_name(rule: MaskRule) -> Option<&'static str> {
+    match rule {
+        MaskRule::None => None,
+        MaskRule::MaskPhone => Some("ax_mask_phone"),
+        MaskRule::MaskIdCard => Some("ax_mask_id_card"),
+        MaskRule::MaskEmail => Some("ax_mask_email"),
+        MaskRule::MaskBankCard => Some("ax_mask_bank_card"),
+        MaskRule::MaskName => Some("ax_mask_name"),
+        MaskRule::MaskAddress => Some("ax_mask_address"),
+        MaskRule::HmacHash => Some("ax_mask_hmac_hash"),
+        MaskRule::Redact => Some("ax_mask_redact"),
+    }
+}
+
+fn quote_policy_ident(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
+}
+
+fn is_dataset_denied(
+    policy: Option<&PolicyContext>,
+    raw_name: &str,
+    lower_name: &str,
+    dataset_id: Option<Uuid>,
+) -> bool {
+    let Some(pol) = policy else {
+        return false;
+    };
+    if pol.denied_datasets.contains(raw_name) || pol.denied_datasets.contains(lower_name) {
+        return true;
+    }
+    if let Some(id) = dataset_id
+        && pol.denied_datasets.contains(&id.to_string())
+    {
+        return true;
+    }
+    pol.denied_datasets
+        .iter()
+        .any(|d| d.eq_ignore_ascii_case(lower_name))
+}
+
+fn lookup_dataset_policy<'a>(
+    pol: &'a PolicyContext,
+    ds: &CatalogDatasetEntry,
+    lower_name: &str,
+) -> Option<&'a DatasetPolicySpec> {
+    pol.datasets
+        .get(&ds.id.to_string())
+        .or_else(|| pol.datasets.get(lower_name))
+        .or_else(|| pol.datasets.get(&ds.name))
+}
+
+fn build_node_types_case_filter(pol: &PolicyContext) -> Option<String> {
+    let mut branches = Vec::new();
+    for (type_name, spec) in &pol.node_types {
+        if let Some(ref filter) = spec.duckdb_row_filter {
+            let escaped = type_name.replace('\'', "''");
+            branches.push(format!("WHEN '{escaped}' THEN ({filter})"));
+        }
+    }
+    if branches.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "CASE \"type_name\" {} ELSE TRUE END",
+            branches.join(" ")
+        ))
+    }
+}
+
+fn parse_policy_subquery(subquery_sql: &str) -> Result<Box<Query>, AppError> {
+    let mut stmts = Parser::parse_sql(&DuckDbDialect {}, subquery_sql).map_err(|err| {
+        rejected(format!(
+            "failed to parse compiled row/column policy subquery: {err}"
+        ))
+    })?;
+    if stmts.len() != 1 {
+        return Err(rejected(
+            "compiled row/column policy subquery produced multiple statements",
+        ));
+    }
+    match stmts.pop() {
+        Some(Statement::Query(q)) => Ok(q),
+        _ => Err(rejected(
+            "compiled row/column policy subquery must be a SELECT query",
+        )),
+    }
+}
+
 struct GuardVisitor<'a> {
     catalog: &'a TenantCatalog,
     target: GuardTarget,
     param_mode: ParamBindMode<'a>,
+    policy: Option<&'a PolicyContext>,
     cte_stack: Vec<BTreeSet<String>>,
     saved_with_stack: Vec<Option<With>>,
+    pending_rewrites: Vec<PendingTableRewrite>,
     in_allowed_table_func_expr: usize,
     param_order: Vec<String>,
     referenced_dataset_ids: Vec<Uuid>,
@@ -855,16 +980,25 @@ struct GuardVisitor<'a> {
     uses_platform_views: bool,
     referenced_live_connections: Vec<String>,
     referenced_live_set: HashSet<String>,
+    sql_policy_applied: bool,
+    sql_masked_columns: HashSet<String>,
 }
 
 impl<'a> GuardVisitor<'a> {
-    fn new(catalog: &'a TenantCatalog, target: GuardTarget, param_mode: ParamBindMode<'a>) -> Self {
+    fn new(
+        catalog: &'a TenantCatalog,
+        target: GuardTarget,
+        param_mode: ParamBindMode<'a>,
+        policy: Option<&'a PolicyContext>,
+    ) -> Self {
         Self {
             catalog,
             target,
             param_mode,
+            policy,
             cte_stack: vec![BTreeSet::new()],
             saved_with_stack: Vec::new(),
+            pending_rewrites: Vec::new(),
             in_allowed_table_func_expr: 0,
             param_order: Vec::new(),
             referenced_dataset_ids: Vec::new(),
@@ -873,6 +1007,8 @@ impl<'a> GuardVisitor<'a> {
             uses_platform_views: false,
             referenced_live_connections: Vec::new(),
             referenced_live_set: HashSet::new(),
+            sql_policy_applied: false,
+            sql_masked_columns: HashSet::new(),
         }
     }
 
@@ -895,60 +1031,175 @@ impl<'a> GuardVisitor<'a> {
         }
     }
 
+    fn rewrite_dataset_relation(
+        &mut self,
+        raw_ident: String,
+        name: &mut ObjectName,
+        alias: &mut Option<TableAlias>,
+    ) -> Result<PendingTableRewrite, AppError> {
+        let lower = raw_ident.to_ascii_lowercase();
+        if self.current_ctes().contains(&lower) {
+            return Ok(PendingTableRewrite::None);
+        }
+        if FORBIDDEN_BARE_RELATIONS.contains(&lower.as_str())
+            || lower.starts_with("duckdb_")
+            || lower.starts_with("pragma_")
+        {
+            return Err(rejected(format!("system relation '{lower}' is forbidden")));
+        }
+        if is_dataset_denied(self.policy, &raw_ident, &lower, None) {
+            return Err(AppError::Forbidden("POLICY_DENIED"));
+        }
+        let Some(ds) = self.catalog.dataset(&lower) else {
+            return Err(rejected(format!(
+                "unknown or unauthorized dataset '{raw_ident}'"
+            )));
+        };
+        let ds_clone = ds.clone();
+        if is_dataset_denied(self.policy, &ds_clone.name, &lower, Some(ds_clone.id)) {
+            return Err(AppError::Forbidden("POLICY_DENIED"));
+        }
+        self.record_dataset(&ds_clone);
+        let default_alias = TableAlias {
+            explicit: true,
+            name: Ident::with_quote('"', raw_ident),
+            columns: Vec::new(),
+            at: None,
+        };
+        let effective_alias = alias.clone().unwrap_or_else(|| default_alias.clone());
+        if alias.is_none() {
+            *alias = Some(default_alias);
+        }
+        let tenant_schema = format!("tenant_{}", self.catalog.tenant_id);
+        *name = ObjectName::from(vec![
+            Ident::new("lake"),
+            Ident::with_quote('"', tenant_schema.clone()),
+            Ident::with_quote('"', ds_clone.lake_table.clone()),
+        ]);
+        Ok(self.build_dataset_subquery(&ds_clone, &lower, &tenant_schema, effective_alias))
+    }
+
+    fn build_dataset_subquery(
+        &mut self,
+        ds: &CatalogDatasetEntry,
+        lower_name: &str,
+        tenant_schema: &str,
+        effective_alias: TableAlias,
+    ) -> PendingTableRewrite {
+        let Some(pol) = self.policy else {
+            return PendingTableRewrite::None;
+        };
+        let Some(spec) = lookup_dataset_policy(pol, ds, lower_name) else {
+            return PendingTableRewrite::None;
+        };
+        self.sql_policy_applied = true;
+
+        let row_filter = if pol.bypass_row_policies {
+            None
+        } else {
+            spec.duckdb_row_filter.as_deref()
+        };
+
+        let mut replace_clauses = Vec::new();
+        for (col_key, &rule) in &spec.column_masks {
+            let Some(udf_name) = mask_rule_udf_name(rule) else {
+                continue;
+            };
+            let canonical_col = if ds.columns.is_empty() {
+                Some(col_key.clone())
+            } else {
+                ds.columns
+                    .get(&col_key.to_ascii_lowercase())
+                    .map(|m| m.column_name.clone())
+            };
+            if let Some(col_name) = canonical_col {
+                self.sql_masked_columns
+                    .insert(col_name.to_ascii_lowercase());
+                let qcol = quote_policy_ident(&col_name);
+                replace_clauses.push(format!("{udf_name}(CAST({qcol} AS VARCHAR)) AS {qcol}"));
+            }
+        }
+
+        if row_filter.is_none() && replace_clauses.is_empty() {
+            return PendingTableRewrite::None;
+        }
+
+        let proj = if replace_clauses.is_empty() {
+            String::from("*")
+        } else {
+            format!("* REPLACE ({})", replace_clauses.join(", "))
+        };
+        let lake_rel = format!(
+            "lake.{}.{}",
+            quote_policy_ident(tenant_schema),
+            quote_policy_ident(&ds.lake_table)
+        );
+        let where_part = row_filter.map_or_else(String::new, |f| format!(" WHERE ({f})"));
+        PendingTableRewrite::Subquery {
+            subquery_sql: format!("SELECT {proj} FROM {lake_rel}{where_part}"),
+            alias: effective_alias,
+        }
+    }
+
+    fn rewrite_platform_view_relation(
+        &mut self,
+        view_name: String,
+        name: &mut ObjectName,
+        alias: Option<&TableAlias>,
+    ) -> Result<PendingTableRewrite, AppError> {
+        if self.target == GuardTarget::MaterializeView {
+            return Err(rejected(
+                "platform views ax.* are not allowed in materialized derived views",
+            ));
+        }
+        self.uses_platform_views = true;
+        *name = ObjectName::from(vec![Ident::new("ax"), Ident::new(view_name.clone())]);
+
+        let Some(pol) = self.policy else {
+            return Ok(PendingTableRewrite::None);
+        };
+        if pol.bypass_row_policies {
+            return Ok(PendingTableRewrite::None);
+        }
+        let Some(case_sql) = build_node_types_case_filter(pol) else {
+            return Ok(PendingTableRewrite::None);
+        };
+        self.sql_policy_applied = true;
+
+        let sub_sql = match view_name.as_str() {
+            "nodes" => format!("SELECT * FROM ax.nodes WHERE {case_sql}"),
+            "links" => format!(
+                "SELECT * FROM ax.links WHERE \"src_node_id\" IN (SELECT \"id\" FROM ax.nodes WHERE {case_sql}) AND \"dst_node_id\" IN (SELECT \"id\" FROM ax.nodes WHERE {case_sql})"
+            ),
+            _ => format!(
+                "SELECT * FROM ax.{view_name} WHERE \"node_id\" IN (SELECT \"id\" FROM ax.nodes WHERE {case_sql})"
+            ),
+        };
+        let effective_alias = alias.cloned().unwrap_or_else(|| TableAlias {
+            explicit: true,
+            name: Ident::with_quote('"', view_name),
+            columns: Vec::new(),
+            at: None,
+        });
+        Ok(PendingTableRewrite::Subquery {
+            subquery_sql: sub_sql,
+            alias: effective_alias,
+        })
+    }
+
     fn rewrite_table_relation(
         &mut self,
         name: &mut ObjectName,
         alias: &mut Option<TableAlias>,
-    ) -> Result<(), AppError> {
+    ) -> Result<PendingTableRewrite, AppError> {
         let parts = extract_ident_parts(name)?;
         match parts.as_slice() {
-            [single] => {
-                let raw_ident = single.value.clone();
-                let lower = raw_ident.to_ascii_lowercase();
-                if self.current_ctes().contains(&lower) {
-                    return Ok(());
-                }
-                if FORBIDDEN_BARE_RELATIONS.contains(&lower.as_str())
-                    || lower.starts_with("duckdb_")
-                    || lower.starts_with("pragma_")
-                {
-                    return Err(rejected(format!("system relation '{lower}' is forbidden")));
-                }
-                let Some(ds) = self.catalog.dataset(&lower) else {
-                    return Err(rejected(format!(
-                        "unknown or unauthorized dataset '{raw_ident}'"
-                    )));
-                };
-                let ds_clone = ds.clone();
-                self.record_dataset(&ds_clone);
-                if alias.is_none() {
-                    *alias = Some(TableAlias {
-                        explicit: true,
-                        name: Ident::with_quote('"', raw_ident),
-                        columns: Vec::new(),
-                        at: None,
-                    });
-                }
-                let tenant_schema = format!("tenant_{}", self.catalog.tenant_id);
-                *name = ObjectName::from(vec![
-                    Ident::new("lake"),
-                    Ident::with_quote('"', tenant_schema),
-                    Ident::with_quote('"', ds_clone.lake_table),
-                ]);
-                Ok(())
-            }
+            [single] => self.rewrite_dataset_relation(single.value.clone(), name, alias),
             [first, second] => {
                 let s0 = first.value.to_ascii_lowercase();
                 let s1 = second.value.to_ascii_lowercase();
                 if s0 == "ax" && ALLOWED_PLATFORM_VIEWS.contains(&s1.as_str()) {
-                    if self.target == GuardTarget::MaterializeView {
-                        return Err(rejected(
-                            "platform views ax.* are not allowed in materialized derived views",
-                        ));
-                    }
-                    self.uses_platform_views = true;
-                    *name = ObjectName::from(vec![Ident::new("ax"), Ident::new(s1)]);
-                    return Ok(());
+                    return self.rewrite_platform_view_relation(s1, name, alias.as_ref());
                 }
                 Err(rejected(format!(
                     "unauthorized relation '{s0}.{s1}'; only registered datasets or ax.* views are allowed"
@@ -990,7 +1241,7 @@ impl<'a> GuardVisitor<'a> {
                     )));
                 }
                 self.record_live_connection(conn_name);
-                Ok(())
+                Ok(PendingTableRewrite::None)
             }
             _ => Err(rejected(format!("invalid multi-part relation '{name}'"))),
         }
@@ -1152,6 +1403,7 @@ impl VisitorMut for GuardVisitor<'_> {
     }
 
     fn pre_visit_table_factor(&mut self, tf: &mut TableFactor) -> ControlFlow<Self::Break> {
+        let mut pending = PendingTableRewrite::None;
         match tf {
             TableFactor::Table {
                 name,
@@ -1185,8 +1437,11 @@ impl VisitorMut for GuardVisitor<'_> {
                     if let Err(err) = check_allowed_table_function_name(name) {
                         return break_err(err);
                     }
-                } else if let Err(err) = self.rewrite_table_relation(name, alias) {
-                    return break_err(err);
+                } else {
+                    match self.rewrite_table_relation(name, alias) {
+                        Ok(p) => pending = p,
+                        Err(err) => return break_err(err),
+                    }
                 }
             }
             TableFactor::Derived { sample, .. } => {
@@ -1213,12 +1468,30 @@ impl VisitorMut for GuardVisitor<'_> {
                 return break_err(rejected("unsupported FROM table factor construct"));
             }
         }
+        self.pending_rewrites.push(pending);
         ControlFlow::Continue(())
     }
 
     fn post_visit_table_factor(&mut self, tf: &mut TableFactor) -> ControlFlow<Self::Break> {
         if matches!(tf, TableFactor::TableFunction { .. }) {
             self.in_allowed_table_func_expr = self.in_allowed_table_func_expr.saturating_sub(1);
+        }
+        if let Some(PendingTableRewrite::Subquery {
+            subquery_sql,
+            alias,
+        }) = self.pending_rewrites.pop()
+        {
+            match parse_policy_subquery(&subquery_sql) {
+                Ok(subquery) => {
+                    *tf = TableFactor::Derived {
+                        lateral: false,
+                        subquery,
+                        alias: Some(alias),
+                        sample: None,
+                    };
+                }
+                Err(err) => return break_err(err),
+            }
         }
         ControlFlow::Continue(())
     }

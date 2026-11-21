@@ -112,6 +112,7 @@ async fn cleanup_tenants(owner_pool: &PgPool, tenants: &[String]) -> TestResult 
         "DELETE FROM hg_docs WHERE tenant_id = ANY($1)",
         "DELETE FROM ax_jobs WHERE tenant_id = ANY($1)",
         "DELETE FROM ax_outbox WHERE tenant_id = ANY($1)",
+        "DELETE FROM sec_audit_chain_heads WHERE tenant_id = ANY($1)",
         "DELETE FROM sec_audit_logs WHERE tenant_id = ANY($1)",
     ] {
         sqlx::query(sql).bind(tenants).execute(owner_pool).await?;
@@ -513,6 +514,7 @@ async fn verify_bulk_bbox_and_search(store: &PgStore, tenant: &str, w1_id: Uuid)
                 bbox: Some(String::from("120,30,122,32")),
                 limit: None,
                 cursor: None,
+                reveal_pii: false,
             },
         )
         .await?;

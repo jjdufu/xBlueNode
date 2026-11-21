@@ -575,7 +575,9 @@ async fn audit_sink_writes_batches_and_blocks_delete() -> TestResult {
     };
 
     let tenant = unique_tenant("t_audit");
+    let tenant_b = unique_tenant("t_audit_b");
     ensure_tenant(&owner_pool, &tenant).await?;
+    ensure_tenant(&owner_pool, &tenant_b).await?;
 
     let store = PgStore::new(app_pool.clone());
     store
@@ -593,7 +595,7 @@ async fn audit_sink_writes_batches_and_blocks_delete() -> TestResult {
                 created_at: Utc::now(),
             },
             AuditRecord {
-                tenant_id: String::from("default"),
+                tenant_id: tenant_b.clone(),
                 user_id: None,
                 username: String::from("dev"),
                 action: AuditAction::RagAsk,
@@ -618,7 +620,14 @@ async fn audit_sink_writes_batches_and_blocks_delete() -> TestResult {
     );
     drop(audit_tx);
 
-    sqlx::query("DELETE FROM sec_audit_logs WHERE trace_id IN ('tr-1', 'tr-2')")
+    sqlx::query("DELETE FROM sec_audit_chain_heads WHERE tenant_id IN ($1, $2)")
+        .bind(&tenant)
+        .bind(&tenant_b)
+        .execute(&owner_pool)
+        .await?;
+    sqlx::query("DELETE FROM sec_audit_logs WHERE tenant_id IN ($1, $2)")
+        .bind(&tenant)
+        .bind(&tenant_b)
         .execute(&owner_pool)
         .await?;
 

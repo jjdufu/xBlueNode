@@ -10,7 +10,6 @@ use async_graphql::dynamic::{
 };
 use async_graphql::{Error as GqlError, Request as GqlRequest, Value as GqlValue, Variables};
 use async_graphql_axum::GraphQLResponse;
-use axpoint_analytics::mask_pii_str;
 use axpoint_db::PgStore;
 use axpoint_db::studio_repo::NeighborBatchKey;
 use axpoint_domain::AppError;
@@ -47,12 +46,15 @@ pub(crate) struct GraphqlHttpPayload {
 struct GqlRequestCtx {
     tenant_id: String,
     has_pii_raw: bool,
+    policy: std::sync::Arc<axpoint_domain::guard::PolicyContext>,
+    tenant_hmac_key: [u8; 32],
     store: PgStore,
 }
 
 /// Per-request `async_graphql` `DataLoader` eliminating 1-hop neighbor N+1 queries.
 struct NeighborBatchLoader {
     tenant_id: String,
+    policy: std::sync::Arc<axpoint_domain::guard::PolicyContext>,
     store: PgStore,
 }
 
@@ -64,10 +66,35 @@ impl Loader<NeighborBatchKey> for NeighborBatchLoader {
         &self,
         keys: &[NeighborBatchKey],
     ) -> Result<HashMap<NeighborBatchKey, Self::Value>, Self::Error> {
-        self.store
+        let mut raw_map = self
+            .store
             .batch_load_neighbors(&self.tenant_id, keys)
             .await
-            .map_err(|err| err.client_message())
+            .map_err(|err| err.client_message())?;
+
+        if !self.policy.bypass_row_policies {
+            let mut candidate_ids = Vec::new();
+            for list in raw_map.values() {
+                for n in list {
+                    candidate_ids.push(n.id);
+                }
+            }
+            if !candidate_ids.is_empty() {
+                let visible = self
+                    .store
+                    .filter_visible_node_ids(
+                        &self.tenant_id,
+                        &candidate_ids,
+                        &self.policy.node_types,
+                    )
+                    .await
+                    .map_err(|err| err.client_message())?;
+                for list in raw_map.values_mut() {
+                    list.retain(|n| visible.contains(&n.id));
+                }
+            }
+        }
+        Ok(raw_map)
     }
 }
 
@@ -131,10 +158,24 @@ fn get_or_build_cached_schema(
 /// Axum handler for `POST /api/xblue/graphql`.
 pub(crate) async fn graphql_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiJson(payload): ApiJson<GraphqlHttpPayload>,
 ) -> Result<GraphQLResponse, HttpError> {
     principal.require(Permission::DataRead)?;
+
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let policy = std::sync::Arc::new(
+        axpoint_server::policy::build_policy_context_for_store(
+            &state.store,
+            &state.cedar,
+            &principal,
+            false,
+            &client_ip,
+        )
+        .await?,
+    );
+    let tenant_hmac_key = state.mask_keys.tenant_key(&principal.tenant_id);
 
     let published = axpoint_domain::ports::StudioRepository::get_published_schema(
         &state.store,
@@ -157,11 +198,14 @@ pub(crate) async fn graphql_handler(
     let req_ctx = GqlRequestCtx {
         tenant_id: principal.tenant_id.clone(),
         has_pii_raw: principal.has(Permission::PiiRawRead),
+        policy: std::sync::Arc::clone(&policy),
+        tenant_hmac_key,
         store: state.store.clone(),
     };
     let loader = DataLoader::new(
         NeighborBatchLoader {
             tenant_id: principal.tenant_id,
+            policy,
             store: state.store,
         },
         tokio::spawn,
@@ -321,7 +365,24 @@ fn build_root_single_field(field_name: &str, type_name: &str) -> Field {
                 .get_domain_object_by_key(&req_ctx.tenant_id, &tname, &node_key)
                 .await
                 .map_err(|e| GqlError::new(e.client_message()))?;
-            Ok(node_opt.map(FieldValue::owned_any))
+            let Some(node) = node_opt else {
+                return Ok(None);
+            };
+            if !req_ctx.policy.bypass_row_policies {
+                let visible = req_ctx
+                    .store
+                    .filter_visible_node_ids(
+                        &req_ctx.tenant_id,
+                        &[node.id],
+                        &req_ctx.policy.node_types,
+                    )
+                    .await
+                    .map_err(|e| GqlError::new(e.client_message()))?;
+                if !visible.contains(&node.id) {
+                    return Ok(None);
+                }
+            }
+            Ok(Some(FieldValue::owned_any(node)))
         })
     })
     .argument(InputValue::new(
@@ -366,7 +427,7 @@ fn build_root_list_field(field_name: &str, page_type_name: &str, type_name: &str
                 None => None,
             };
 
-            let (items, next_cursor) = req_ctx
+            let (mut items, next_cursor) = req_ctx
                 .store
                 .query_domain_objects_list(
                     &req_ctx.tenant_id,
@@ -380,6 +441,16 @@ fn build_root_list_field(field_name: &str, page_type_name: &str, type_name: &str
                 )
                 .await
                 .map_err(|e| GqlError::new(e.client_message()))?;
+
+            if !req_ctx.policy.bypass_row_policies && !items.is_empty() {
+                let ids: Vec<uuid::Uuid> = items.iter().map(|n| n.id).collect();
+                let visible = req_ctx
+                    .store
+                    .filter_visible_node_ids(&req_ctx.tenant_id, &ids, &req_ctx.policy.node_types)
+                    .await
+                    .map_err(|e| GqlError::new(e.client_message()))?;
+                items.retain(|n| visible.contains(&n.id));
+            }
 
             Ok(Some(FieldValue::owned_any(PageEnvelope {
                 items,
@@ -481,7 +552,7 @@ fn build_property_field(field_name: &str, prop: &PropertySpec) -> Field {
         FieldFuture::new(async move {
             let req_ctx = ctx.data::<GqlRequestCtx>()?;
             let node = ctx.parent_value.try_downcast_ref::<BlueNode>()?;
-            Ok(resolve_property_gql_value(node, &p, req_ctx.has_pii_raw))
+            Ok(resolve_property_gql_value(node, &p, req_ctx))
         })
     })
 }
@@ -504,7 +575,7 @@ fn graphql_type_for_property(prop: &PropertySpec) -> TypeRef {
 fn resolve_property_gql_value(
     node: &BlueNode,
     prop: &PropertySpec,
-    has_pii_raw: bool,
+    req_ctx: &GqlRequestCtx,
 ) -> Option<GqlValue> {
     if prop.kind == PropertyKind::Metric {
         let val = node.metrics.get(&prop.name).copied()?;
@@ -514,11 +585,34 @@ fn resolve_property_gql_value(
     if raw_val.is_null() {
         return None;
     }
-    if prop.pii_category != PiiCategory::None && !has_pii_raw {
-        let text = match raw_val {
-            serde_json::Value::String(s) => mask_pii_str(s, prop.pii_category),
-            other => mask_pii_str(&other.to_string(), prop.pii_category),
+
+    let mask_rule = if let Some(spec) = req_ctx.policy.node_types.get(&node.type_name) {
+        spec.property_masks
+            .get(&prop.name)
+            .copied()
+            .or_else(|| {
+                spec.property_masks
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(&prop.name))
+                    .map(|(_, &r)| r)
+            })
+            .unwrap_or(axpoint_domain::enums::MaskRule::None)
+    } else if prop.pii_category != PiiCategory::None && !req_ctx.has_pii_raw {
+        axpoint_domain::enums::MaskRule::from_pii_category(prop.pii_category)
+    } else {
+        axpoint_domain::enums::MaskRule::None
+    };
+
+    if mask_rule != axpoint_domain::enums::MaskRule::None {
+        let raw_text = match raw_val {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
         };
+        let text = axpoint_security::masking::apply_mask_rule(
+            mask_rule,
+            &raw_text,
+            &req_ctx.tenant_hmac_key,
+        );
         return match prop.data_type {
             DataType::String
             | DataType::Date
@@ -640,33 +734,19 @@ pub(crate) fn compute_neighbor_sigs(nt: &NodeTypeSpec, doc: &SchemaDoc) -> Vec<O
     out
 }
 
-/// Applies `AxGuard` PII masking to a runtime node's static attributes based on `NodeTypeSpec`.
-pub(crate) fn mask_node_attributes(
+/// Applies `AxGuard` `PolicyContext` property masking (including `sec_column_policies` overrides
+/// and `HMAC_HASH`) to a runtime node's static attributes.
+pub(crate) fn mask_node_attributes_with_policy(
     node: &BlueNode,
     nt: Option<&NodeTypeSpec>,
+    policy: Option<&axpoint_domain::guard::PolicyContext>,
     has_pii_raw: bool,
+    tenant_hmac_key: &[u8; 32],
 ) -> serde_json::Map<String, serde_json::Value> {
     let mut attrs = node.properties.clone();
-    if has_pii_raw {
-        return attrs;
-    }
-    let Some(spec) = nt else {
-        return attrs;
-    };
-    for prop in &spec.properties {
-        if prop.pii_category == PiiCategory::None {
-            continue;
-        }
-        if let Some(val) = attrs.get_mut(&prop.name)
-            && !val.is_null()
-        {
-            let masked = match &*val {
-                serde_json::Value::String(s) => mask_pii_str(s, prop.pii_category),
-                other => mask_pii_str(&other.to_string(), prop.pii_category),
-            };
-            *val = serde_json::Value::String(masked);
-        }
-    }
+    let masks =
+        axpoint_server::policy::effective_property_masks(&node.type_name, nt, policy, has_pii_raw);
+    axpoint_security::masking::mask_json_properties(&mut attrs, &masks, tenant_hmac_key);
     attrs
 }
 

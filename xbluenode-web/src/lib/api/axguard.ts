@@ -243,8 +243,14 @@ export interface PaginatedItems<T> {
   next_cursor?: string | null;
 }
 
-function unwrapItems<T>(res: T[] | PaginatedItems<T>): T[] {
-  return Array.isArray(res) ? res : res.items;
+function unwrapItems<T>(res: T[] | PaginatedItems<T> | Record<string, unknown>): T[] {
+  if (Array.isArray(res)) {
+    return res;
+  }
+  if (res && typeof res === "object" && "items" in res && Array.isArray(res.items)) {
+    return res.items as T[];
+  }
+  return [];
 }
 
 function buildQuery(params: Record<string, string | number | undefined>): string {
@@ -489,7 +495,7 @@ export const axguardApi = {
     });
   },
 
-  queryAuditLogs(params: {
+  async queryAuditLogs(params: {
     action?: string;
     username?: string;
     resource?: string;
@@ -499,7 +505,16 @@ export const axguardApi = {
     limit?: number;
     cursor?: string;
   }): Promise<PaginatedItems<AuditLogEntry>> {
-    return requestJson<PaginatedItems<AuditLogEntry>>(`/api/axguard/audit${buildQuery(params)}`);
+    const res = await requestJson<PaginatedItems<AuditLogEntry> | AuditLogEntry[]>(
+      `/api/axguard/audit${buildQuery(params)}`
+    );
+    if (Array.isArray(res)) {
+      return { items: res, next_cursor: null };
+    }
+    return {
+      items: Array.isArray(res?.items) ? res.items : [],
+      next_cursor: res?.next_cursor ?? null,
+    };
   },
 
   exportAuditCsv(params: {
@@ -513,11 +528,30 @@ export const axguardApi = {
     return requestBlob(`/api/axguard/audit/export.csv${buildQuery(params)}`);
   },
 
-  verifyAuditChain(params?: { from_id?: number; to_id?: number }): Promise<AuditVerifyResponse> {
-    return requestJson<AuditVerifyResponse>(`/api/axguard/audit/verify${buildQuery(params ?? {})}`);
+  async verifyAuditChain(params?: {
+    from_id?: number;
+    to_id?: number;
+  }): Promise<AuditVerifyResponse> {
+    const res = await requestJson<Partial<AuditVerifyResponse>>(
+      `/api/axguard/audit/verify${buildQuery(params ?? {})}`
+    );
+    return {
+      ok: typeof res?.ok === "boolean" ? res.ok : true,
+      checked_count: typeof res?.checked_count === "number" ? res.checked_count : 0,
+      first_broken_id:
+        typeof res?.first_broken_id === "number" ? res.first_broken_id : null,
+    };
   },
 
-  queryAuditStats(params?: { from?: string; to?: string }): Promise<AuditStatsResponse> {
-    return requestJson<AuditStatsResponse>(`/api/axguard/audit/stats${buildQuery(params ?? {})}`);
+  async queryAuditStats(params?: { from?: string; to?: string }): Promise<AuditStatsResponse> {
+    const res = await requestJson<Partial<AuditStatsResponse>>(
+      `/api/axguard/audit/stats${buildQuery(params ?? {})}`
+    );
+    return {
+      by_action:
+        res?.by_action && typeof res.by_action === "object" ? res.by_action : {},
+      by_user: Array.isArray(res?.by_user) ? res.by_user : [],
+      by_day: Array.isArray(res?.by_day) ? res.by_day : [],
+    };
   },
 };

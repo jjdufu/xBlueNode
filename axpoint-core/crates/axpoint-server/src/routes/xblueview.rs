@@ -275,6 +275,7 @@ async fn ai_generate_dashboard_handler(
 
 async fn get_dashboard_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<DashboardDetail>, HttpError> {
@@ -285,11 +286,23 @@ async fn get_dashboard_handler(
         .get_dashboard(&principal.tenant_id, id, require_published)
         .await?
         .ok_or(AppError::NotFound("DASHBOARD_NOT_FOUND"))?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::DataRead,
+        axpoint_domain::guard::GrantResourceKind::Dashboard,
+        &detail.dashboard.id.to_string(),
+        &client_ip,
+    )
+    .await?;
     Ok(Json(detail))
 }
 
 async fn get_dashboard_by_slug_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiPath(slug): ApiPath<String>,
 ) -> Result<Json<DashboardDetail>, HttpError> {
@@ -302,6 +315,17 @@ async fn get_dashboard_by_slug_handler(
         .get_dashboard_by_slug(&principal.tenant_id, trimmed, require_published)
         .await?
         .ok_or(AppError::NotFound("DASHBOARD_NOT_FOUND"))?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::DataRead,
+        axpoint_domain::guard::GrantResourceKind::Dashboard,
+        &detail.dashboard.id.to_string(),
+        &client_ip,
+    )
+    .await?;
     Ok(Json(detail))
 }
 
@@ -526,6 +550,7 @@ async fn delete_widget_handler(
 
 async fn widget_data_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiPath(widget_id): ApiPath<Uuid>,
     body: Bytes,
@@ -546,11 +571,32 @@ async fn widget_data_handler(
         .await?
         .ok_or(AppError::NotFound("DASHBOARD_NOT_FOUND"))?;
 
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::DataRead,
+        axpoint_domain::guard::GrantResourceKind::Dashboard,
+        &detail.dashboard.id.to_string(),
+        &client_ip,
+    )
+    .await?;
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
+
     let env = WidgetExecEnv {
         store: &state.store,
         analytics_pool: &state.analytics_pool,
         cache: &state.view.cache,
         principal: &principal,
+        policy: Some(&policy),
     };
     let resp = execute_widget_data(&env, &detail.dashboard, &widget, &req).await?;
     Ok(Json(resp))
@@ -558,15 +604,26 @@ async fn widget_data_handler(
 
 async fn widget_preview_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<WidgetPreviewRequest>,
 ) -> Result<Json<WidgetDataResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
     let env = WidgetExecEnv {
         store: &state.store,
         analytics_pool: &state.analytics_pool,
         cache: &state.view.cache,
         principal: &principal,
+        policy: Some(&policy),
     };
     let resp = execute_widget_preview(&env, &req).await?;
     Ok(Json(resp))
@@ -601,6 +658,7 @@ struct SseStreamState {
 
 async fn stream_dashboard_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiPath(dashboard_id): ApiPath<Uuid>,
 ) -> Result<Response, HttpError> {
@@ -611,6 +669,17 @@ async fn stream_dashboard_handler(
         .get_dashboard(&principal.tenant_id, dashboard_id, require_published)
         .await?
         .ok_or(AppError::NotFound("DASHBOARD_NOT_FOUND"))?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::DataRead,
+        axpoint_domain::guard::GrantResourceKind::Dashboard,
+        &detail.dashboard.id.to_string(),
+        &client_ip,
+    )
+    .await?;
 
     let widget_ids: HashSet<Uuid> = detail.widgets.iter().map(|w| w.id).collect();
     let stream_state = SseStreamState {
@@ -2232,12 +2301,125 @@ struct SharedDownloadQuery {
     format: Option<ExportFormat>,
 }
 
+fn explicit_export_dataset_ref(
+    principal: &AuthPrincipal,
+    id: String,
+) -> axpoint_domain::guard::ResourceRef {
+    axpoint_domain::guard::ResourceRef {
+        kind: axpoint_domain::guard::GrantResourceKind::Dataset,
+        id,
+        owner_dept: principal.dept_id.clone(),
+        sensitivity: axpoint_domain::enums::Sensitivity::Internal,
+    }
+}
+
+async fn authorize_export_source(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    source: &axpoint_domain::export::ExportSource,
+    client_ip: &str,
+) -> Result<(), AppError> {
+    use axpoint_domain::export::ExportSource;
+    use axpoint_domain::guard::GrantResourceKind;
+
+    match source {
+        ExportSource::Dashboard { dashboard_id, .. } => {
+            let _ = axpoint_server::policy::authorize_resource_for_store(
+                &state.store,
+                &state.cedar,
+                principal,
+                Permission::ExportData,
+                GrantResourceKind::Dashboard,
+                &dashboard_id.to_string(),
+                client_ip,
+            )
+            .await?;
+        }
+        ExportSource::Widget { widget_id, .. } => {
+            let widget = state
+                .store
+                .get_widget(&principal.tenant_id, *widget_id)
+                .await?
+                .ok_or(AppError::NotFound("WIDGET_NOT_FOUND"))?;
+            let _ = axpoint_server::policy::authorize_resource_for_store(
+                &state.store,
+                &state.cedar,
+                principal,
+                Permission::ExportData,
+                GrantResourceKind::Dashboard,
+                &widget.dashboard_id.to_string(),
+                client_ip,
+            )
+            .await?;
+        }
+        ExportSource::Pivot { spec } => {
+            let ds_ref = spec
+                .get("dataset")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("pivot");
+            let _ = axpoint_server::policy::authorize_resource_for_store(
+                &state.store,
+                &state.cedar,
+                principal,
+                Permission::ExportData,
+                GrantResourceKind::Dataset,
+                ds_ref,
+                client_ip,
+            )
+            .await?;
+        }
+        ExportSource::SavedQuery { saved_query_id } => {
+            let resource = explicit_export_dataset_ref(principal, saved_query_id.to_string());
+            axpoint_server::policy::authorize_explicit_resource_for_store(
+                &state.store,
+                &state.cedar,
+                principal,
+                Permission::ExportData,
+                &resource,
+                client_ip,
+            )
+            .await?;
+        }
+        ExportSource::Scenario { scenario_ids } => {
+            let id_str = scenario_ids
+                .first()
+                .map_or_else(|| String::from("scenario"), ToString::to_string);
+            let resource = explicit_export_dataset_ref(principal, id_str);
+            axpoint_server::policy::authorize_explicit_resource_for_store(
+                &state.store,
+                &state.cedar,
+                principal,
+                Permission::ExportData,
+                &resource,
+                client_ip,
+            )
+            .await?;
+        }
+        ExportSource::Conversation { conversation_id } => {
+            let resource = explicit_export_dataset_ref(principal, conversation_id.to_string());
+            axpoint_server::policy::authorize_explicit_resource_for_store(
+                &state.store,
+                &state.cedar,
+                principal,
+                Permission::ExportData,
+                &resource,
+                client_ip,
+            )
+            .await?;
+        }
+    }
+    Ok(())
+}
+
 async fn create_export_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<CreateExportRequest>,
 ) -> Result<(StatusCode, Json<ExportJobRecord>), HttpError> {
     validate_create_export_request(&state.store, &principal, &req).await?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    authorize_export_source(&state, &principal, &req.source, &client_ip).await?;
     let created = state
         .store
         .create_export_job(
@@ -2652,6 +2834,7 @@ fn build_public_share_env(state: &AppState) -> PublicShareEnv<'_, axpoint_db::Pg
         store: &state.store,
         analytics_pool: &state.analytics_pool,
         cache: &state.view.cache,
+        cedar: &state.cedar,
         keyring: &state.keyring,
         audit: &state.audit,
         limiters: &state.view.share_limiters,

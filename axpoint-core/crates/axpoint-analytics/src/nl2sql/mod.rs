@@ -15,6 +15,7 @@ use axpoint_domain::analytics::{
     AskIntent, AskRequest, AskResponse, AskTurnRecord, FewShotTurn, QueryHistoryStatus,
     QueryResult, SchemaRecallBundle,
 };
+use axpoint_domain::guard::PolicyContext;
 use axpoint_domain::ports::AiPort;
 use chrono::{SecondsFormat, Utc};
 use uuid::Uuid;
@@ -101,6 +102,7 @@ pub fn validate_corrected_sql(
             max_rows: NL2SQL_MAX_ROWS,
             allow_live: false,
             params: BTreeMap::new(),
+            policy: None,
         },
     )?;
     Ok(clean)
@@ -115,6 +117,20 @@ pub async fn run_ask_pipeline<A: AiPort>(
     ai: &A,
     session: &TenantDb,
     input: &AskPipelineInput<'_>,
+) -> Result<AskPipelineOutput, AppError> {
+    run_ask_pipeline_with_policy(ai, session, input, None).await
+}
+
+/// Executes the full 7-stage NL2SQL pipeline against an async [`TenantDb`] session under an
+/// optional compiled `AxGuard` [`PolicyContext`] (`11-STEP13` §13.6.3).
+///
+/// # Errors
+/// Propagates [`AppError`] on empty question, `POLICY_DENIED`, upstream LLM failure, or `DuckDB` timeout.
+pub async fn run_ask_pipeline_with_policy<A: AiPort>(
+    ai: &A,
+    session: &TenantDb,
+    input: &AskPipelineInput<'_>,
+    policy: Option<&PolicyContext>,
 ) -> Result<AskPipelineOutput, AppError> {
     let started = Instant::now();
     let question = input.request.question.trim();
@@ -151,9 +167,9 @@ pub async fn run_ask_pipeline<A: AiPort>(
         ai,
         session,
         input.catalog,
-        &sys_prompt,
-        &user_prompt,
+        (&sys_prompt, &user_prompt),
         initial_draft,
+        policy,
     )
     .await?;
 
@@ -443,14 +459,16 @@ async fn guard_and_explain_session_loop<A: AiPort>(
     ai: &A,
     session: &TenantDb,
     catalog: &TenantCatalog,
-    sys_prompt: &str,
-    user_prompt: &str,
+    prompts: (&str, &str),
     mut current_draft: LlmSqlDraft,
+    policy: Option<&PolicyContext>,
 ) -> Result<ValidatedDraftOutcome, AppError> {
+    let (sys_prompt, user_prompt) = prompts;
     let guard_opts = GuardOptions {
         max_rows: NL2SQL_MAX_ROWS,
         allow_live: false,
         params: BTreeMap::new(),
+        policy: policy.cloned(),
     };
 
     for round in 0..=MAX_REPAIR_ROUNDS {
@@ -466,6 +484,7 @@ async fn guard_and_explain_session_loop<A: AiPort>(
                 }
                 Err(explain_err) => Some(first_error_line(&explain_err)),
             },
+            Err(AppError::Forbidden(code)) => return Err(AppError::Forbidden(code)),
             Err(guard_err) => Some(first_error_line(&guard_err)),
         };
 
@@ -507,6 +526,7 @@ async fn guard_and_explain_conn_loop<A: AiPort>(
         max_rows: NL2SQL_MAX_ROWS,
         allow_live: false,
         params: BTreeMap::new(),
+        policy: None,
     };
 
     for round in 0..=MAX_REPAIR_ROUNDS {

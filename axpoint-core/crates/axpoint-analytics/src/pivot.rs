@@ -11,6 +11,8 @@ use axpoint_domain::analytics::{
     SortDir, ValueSpec,
 };
 use axpoint_domain::enums::{AggFn, DataType, PiiCategory, RollupGrain};
+use axpoint_domain::guard::PolicyContext;
+use serde::{Deserialize, Serialize};
 
 use crate::result::{ResultSerializeOptions, batches_to_query_result, mask_pii_str};
 use crate::session::TenantDb;
@@ -46,7 +48,7 @@ const ALLOWED_PLATFORM_VIEWS: &[&str] = &[
 ];
 
 /// Execution options for [`execute_pivot`] and [`execute_pivot_conn`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PivotExecuteOptions {
     /// Optional query execution timeout in milliseconds.
     pub timeout_ms: Option<u64>,
@@ -54,6 +56,21 @@ pub struct PivotExecuteOptions {
     pub reveal_pii: bool,
     /// Whether the caller holds `Permission::PiiRawRead`.
     pub has_pii_raw_read: bool,
+    /// Optional compiled `AxGuard` row/column security context (`11-STEP13` §13.6.3).
+    #[serde(default)]
+    pub policy: Option<PolicyContext>,
+}
+
+/// Alias for [`PivotExecuteOptions`].
+pub type PivotRunOptions = PivotExecuteOptions;
+
+impl PivotExecuteOptions {
+    /// Builder helper attaching an optional [`PolicyContext`].
+    #[must_use]
+    pub fn with_policy(mut self, policy: Option<PolicyContext>) -> Self {
+        self.policy = policy;
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -246,6 +263,19 @@ fn ensure_scalar_non_null(val: &serde_json::Value, op: FilterOp) -> Result<(), A
 /// - Returns `AppError::BadRequest` (`INVALID_ARGUMENT` or `SQL_REJECTED`) if dimension/measure
 ///   bounds, column names, filter operands, or SQL guard checks fail.
 pub fn compile_pivot(spec: &PivotSpec, catalog: &TenantCatalog) -> Result<CompiledPivot, AppError> {
+    compile_pivot_with_policy(spec, catalog, None)
+}
+
+/// Validates a [`PivotSpec`] against `catalog` and compiles it into a guarded [`CompiledPivot`]
+/// under an optional `AxGuard` [`PolicyContext`] (`11-STEP13` §13.6.3).
+///
+/// # Errors
+/// Returns `POLICY_DENIED`, `DATASET_NOT_FOUND`, `INVALID_ARGUMENT`, or `SQL_REJECTED`.
+pub fn compile_pivot_with_policy(
+    spec: &PivotSpec,
+    catalog: &TenantCatalog,
+    policy: Option<&PolicyContext>,
+) -> Result<CompiledPivot, AppError> {
     validate_pivot_bounds(spec)?;
 
     let effective_row_limit_u32 = if spec.row_limit == 0 {
@@ -299,6 +329,7 @@ pub fn compile_pivot(spec: &PivotSpec, catalog: &TenantCatalog) -> Result<Compil
             max_rows: sql_max_rows,
             allow_live: false,
             params,
+            policy: policy.cloned(),
         },
     )?;
 
@@ -384,10 +415,10 @@ fn resolve_pivot_axes(
     Ok((row_dims, col_dims))
 }
 
-/// Compiles and executes `spec` against a hardened [`TenantDb`] session (`05-STEP04` §04.4).
+/// Compiles and executes `spec` against a hardened [`TenantDb`] session (`05-STEP04` §04.4, `11-STEP13` §13.6.3).
 ///
 /// # Errors
-/// Returns `PERMISSION_DENIED`, `DATASET_NOT_FOUND`, `INVALID_ARGUMENT`, `SQL_REJECTED`,
+/// Returns `PERMISSION_DENIED`, `POLICY_DENIED`, `DATASET_NOT_FOUND`, `INVALID_ARGUMENT`, `SQL_REJECTED`,
 /// `QUERY_TIMEOUT`, or `Database`.
 pub async fn execute_pivot(
     session: &TenantDb,
@@ -395,20 +426,25 @@ pub async fn execute_pivot(
     spec: &PivotSpec,
     opts: PivotExecuteOptions,
 ) -> Result<PivotResult, AppError> {
-    if opts.reveal_pii && !opts.has_pii_raw_read {
+    let pii_reveal_allowed = opts.has_pii_raw_read
+        || opts
+            .policy
+            .as_ref()
+            .is_some_and(|pol| pol.reveal_pii_authorized);
+    if opts.reveal_pii && !pii_reveal_allowed {
         return Err(AppError::Forbidden("PERMISSION_DENIED"));
     }
-    let compiled = compile_pivot(spec, catalog)?;
+    let compiled = compile_pivot_with_policy(spec, catalog, opts.policy.as_ref())?;
     let out = session
         .execute_guarded(
             &compiled.guarded,
             catalog,
             opts.timeout_ms,
             opts.reveal_pii,
-            opts.has_pii_raw_read,
+            pii_reveal_allowed,
         )
         .await?;
-    let revealed_pii = opts.reveal_pii && opts.has_pii_raw_read;
+    let revealed_pii = opts.reveal_pii && pii_reveal_allowed;
     Ok(materialize_pivot_matrix(
         &compiled,
         &out.result,
@@ -420,17 +456,25 @@ pub async fn execute_pivot(
 /// (with `lake."tenant_<id>"` attached), enforcing `sql_guard` and dynamic PII masking.
 ///
 /// # Errors
-/// Returns `PERMISSION_DENIED`, `DATASET_NOT_FOUND`, `INVALID_ARGUMENT`, `SQL_REJECTED`, or `Database`.
+/// Returns `PERMISSION_DENIED`, `POLICY_DENIED`, `DATASET_NOT_FOUND`, `INVALID_ARGUMENT`, `SQL_REJECTED`, or `Database`.
 pub fn execute_pivot_conn(
     conn: &duckdb::Connection,
     catalog: &TenantCatalog,
     spec: &PivotSpec,
     opts: PivotExecuteOptions,
 ) -> Result<PivotResult, AppError> {
-    if opts.reveal_pii && !opts.has_pii_raw_read {
+    let PivotExecuteOptions {
+        reveal_pii,
+        has_pii_raw_read,
+        policy,
+        ..
+    } = opts;
+    let pii_reveal_allowed =
+        has_pii_raw_read || policy.as_ref().is_some_and(|pol| pol.reveal_pii_authorized);
+    if reveal_pii && !pii_reveal_allowed {
         return Err(AppError::Forbidden("PERMISSION_DENIED"));
     }
-    let compiled = compile_pivot(spec, catalog)?;
+    let compiled = compile_pivot_with_policy(spec, catalog, policy.as_ref())?;
     let started = Instant::now();
     let mut stmt = conn
         .prepare(&compiled.guarded.sql)
@@ -449,13 +493,13 @@ pub fn execute_pivot_conn(
             effective_max_rows: compiled.guarded.effective_max_rows,
             sql: compiled.guarded.sql.clone(),
             duration_ms,
-            reveal_pii: opts.reveal_pii,
-            has_pii_raw_read: opts.has_pii_raw_read,
+            reveal_pii,
+            has_pii_raw_read: pii_reveal_allowed,
             catalog,
             guarded: &compiled.guarded,
         },
     )?;
-    let revealed_pii = opts.reveal_pii && opts.has_pii_raw_read;
+    let revealed_pii = reveal_pii && pii_reveal_allowed;
     Ok(materialize_pivot_matrix(
         &compiled,
         &out.result,
@@ -1040,7 +1084,13 @@ fn extract_row_header(
                 header.push(String::new());
             }
         } else {
-            let formatted = format_dim_value(sql_row, dim, col_masked_flags, revealed_pii);
+            let formatted = format_dim_value(
+                sql_row,
+                dim,
+                col_masked_flags,
+                revealed_pii,
+                compiled.guarded.sql_policy_applied,
+            );
             dim_values.push(formatted.clone());
             header.push(formatted);
         }
@@ -1065,7 +1115,15 @@ fn extract_col_tuple(
     compiled
         .col_dims
         .iter()
-        .map(|dim| format_dim_value(sql_row, dim, col_masked_flags, revealed_pii))
+        .map(|dim| {
+            format_dim_value(
+                sql_row,
+                dim,
+                col_masked_flags,
+                revealed_pii,
+                compiled.guarded.sql_policy_applied,
+            )
+        })
         .collect()
 }
 
@@ -1074,6 +1132,7 @@ fn format_dim_value(
     dim: &ResolvedDim,
     col_masked_flags: &HashMap<&str, bool>,
     revealed_pii: bool,
+    sql_policy_applied: bool,
 ) -> String {
     let Some(val) = sql_row.get(&dim.alias) else {
         return String::new();
@@ -1082,10 +1141,11 @@ fn format_dim_value(
         return String::new();
     }
     let raw = json_scalar_to_string(val);
-    let already_masked = col_masked_flags
-        .get(dim.alias.as_str())
-        .copied()
-        .unwrap_or(false);
+    let already_masked = sql_policy_applied
+        || col_masked_flags
+            .get(dim.alias.as_str())
+            .copied()
+            .unwrap_or(false);
     if !already_masked && !revealed_pii && dim.pii_category != PiiCategory::None {
         mask_pii_str(&raw, dim.pii_category)
     } else {

@@ -278,6 +278,33 @@ fn load_analytics_config(
     })
 }
 
+struct GuardServices {
+    jwt_keys: Arc<axpoint_security::jwt::JwtKeyManager>,
+    oidc: Option<Arc<axpoint_security::oidc::OidcService>>,
+    cedar: Arc<axpoint_security::cedar_authz::CedarAuthorizer>,
+    mask_keys: Arc<axpoint_security::masking::MaskKeyRing>,
+    auth_limiters: Arc<routes::auth::AuthRateLimiters>,
+}
+
+fn load_guard_services() -> Result<GuardServices, AppError> {
+    let env_mode = env::var("AXPOINT_ENV").unwrap_or_else(|_| String::from("development"));
+    let jwt_keys = Arc::new(axpoint_security::jwt::JwtKeyManager::from_env());
+    if env_mode.eq_ignore_ascii_case("production") {
+        let _ = jwt_keys.jwks_json()?;
+    }
+    let oidc = axpoint_security::oidc::OidcService::from_env()?.map(Arc::new);
+    let cedar = Arc::new(axpoint_security::cedar_authz::CedarAuthorizer::new()?);
+    let mask_keys = Arc::new(axpoint_security::masking::MaskKeyRing::from_env()?);
+    let auth_limiters = Arc::new(routes::auth::AuthRateLimiters::new());
+    Ok(GuardServices {
+        jwt_keys,
+        oidc,
+        cedar,
+        mask_keys,
+        auth_limiters,
+    })
+}
+
 async fn assemble_runtime_state(
     database_url: &str,
     parser_base_url: String,
@@ -286,6 +313,7 @@ async fn assemble_runtime_state(
     let http = build_sidecar_http_client()?;
     let (llm_cfg, embed_cfg) = load_ai_configs()?;
     let keyring = Arc::new(CredentialKeyring::from_env()?);
+    let guard = load_guard_services()?;
     let sidecar = Arc::new(HttpSidecarClient::new(&parser_base_url, http.clone()));
     let analytics_pool = Arc::new(SessionPool::new(load_analytics_config(
         &data_root,
@@ -304,7 +332,8 @@ async fn assemble_runtime_state(
         tracing::warn!(error = %err, "startup ensure_metric_partitions skipped");
     }
 
-    let authenticator = Arc::new(Authenticator::from_env(store.clone())?);
+    let authenticator =
+        Arc::new(Authenticator::from_env(store.clone())?.with_jwt(Arc::clone(&guard.jwt_keys)));
     let audit = AuditWriter::new(store.clone());
     let llm_router = build_llm_router(&store, &keyring, llm_cfg.clone(), embed_cfg.clone());
     let ai = AiGateway::new(llm_cfg, embed_cfg).with_router(Arc::clone(&llm_router));
@@ -326,6 +355,11 @@ async fn assemble_runtime_state(
         llm_router,
         axagent: Arc::clone(&axagent),
         authenticator,
+        jwt_keys: guard.jwt_keys,
+        oidc: guard.oidc,
+        cedar: guard.cedar,
+        mask_keys: guard.mask_keys,
+        auth_limiters: guard.auth_limiters,
         audit,
         keyring,
         sidecar,
@@ -371,11 +405,14 @@ mod tests {
             .connect_lazy("postgres://axpoint_app:secret@127.0.0.1:5432/xbluenode")
             .map_err(|err| AppError::Database(err.to_string()))?;
         let store = PgStore::new(pool);
-        let authenticator = Arc::new(Authenticator::new(
-            store.clone(),
-            "test",
-            Some(String::from(TEST_DEV_TOKEN)),
-        )?);
+        let jwt_keys = Arc::new(axpoint_security::jwt::JwtKeyManager::from_env());
+        let authenticator = Arc::new(
+            Authenticator::new(store.clone(), "test", Some(String::from(TEST_DEV_TOKEN)))?
+                .with_jwt(Arc::clone(&jwt_keys)),
+        );
+        let cedar = Arc::new(axpoint_security::cedar_authz::CedarAuthorizer::new()?);
+        let mask_keys = Arc::new(axpoint_security::masking::MaskKeyRing::dev_default());
+        let auth_limiters = Arc::new(crate::routes::auth::AuthRateLimiters::new());
         let audit = AuditWriter::new(store.clone());
         let llm_cfg = LlmConfig {
             api_base: String::from("http://127.0.0.1:9"),
@@ -413,6 +450,11 @@ mod tests {
             llm_router,
             axagent: Arc::clone(&axagent),
             authenticator,
+            jwt_keys,
+            oidc: None,
+            cedar,
+            mask_keys,
+            auth_limiters,
             audit,
             keyring,
             sidecar,

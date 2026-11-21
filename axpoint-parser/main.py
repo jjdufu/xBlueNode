@@ -27,6 +27,7 @@ from lake.writer import (
     sync_dataset,
 )
 from parsers.engine import parse_bytes_to_markdown, parse_unified
+from pii import analyze_texts, anonymize_texts
 from schemas import (
     CommitStagingRequest,
     ConnectorActionRequest,
@@ -40,6 +41,10 @@ from schemas import (
     LakeSnapshotInfo,
     MaterializeRequest,
     ParseResponse,
+    PiiAnalyzeRequest,
+    PiiAnalyzeResponse,
+    PiiAnonymizeRequest,
+    PiiAnonymizeResponse,
     PreviewResponse,
     RenderChartRequest,
     SidecarExportRequest,
@@ -405,3 +410,29 @@ async def post_export_document(
                 "x-axpoint-tenant header does not match request tenant_id",
             )
     return await asyncio.to_thread(export_document, fmt, req)
+
+
+@app.post("/pii/analyze", response_model=PiiAnalyzeResponse)
+async def post_pii_analyze(request: Request, req: PiiAnalyzeRequest) -> PiiAnalyzeResponse:
+    _header_tenant(request)
+    return await asyncio.to_thread(analyze_texts, req)
+
+
+@app.post("/pii/anonymize", response_model=PiiAnonymizeResponse)
+async def post_pii_anonymize(request: Request, req: PiiAnonymizeRequest) -> PiiAnonymizeResponse:
+    raw_hdr_tenant = request.headers.get("x-axpoint-tenant", "").strip()
+    if raw_hdr_tenant:
+        hdr_tenant = validate_tenant_id(raw_hdr_tenant)
+        if "tenant_id" in req.model_fields_set:
+            body_tenant = validate_tenant_id(req.tenant_id)
+            if hdr_tenant != body_tenant:
+                raise SidecarError(
+                    403,
+                    "PERMISSION_DENIED",
+                    "x-axpoint-tenant header does not match request tenant_id",
+                )
+        eff_tenant = hdr_tenant
+    else:
+        eff_tenant = validate_tenant_id(req.tenant_id)
+    return await asyncio.to_thread(anonymize_texts, req, eff_tenant)
+

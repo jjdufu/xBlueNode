@@ -154,7 +154,7 @@ async fn validate_and_build_provider_input(
     is_create: bool,
 ) -> Result<SaveLlmProviderInput, AppError> {
     principal.require(Permission::AgentEdit)?;
-    if req.flags.allow_private_network {
+    if req.flags.allow_private_network || req.flags.allow_pii {
         principal.require(Permission::GuardAdmin)?;
     }
 
@@ -523,10 +523,22 @@ async fn list_agents_handler(
 
 async fn get_agent_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<AgentRecord>, HttpError> {
     let rec = state.axagent.runtime.get_agent(&principal, id).await?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let _res_ref = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::DataRead,
+        axpoint_domain::guard::GrantResourceKind::Agent,
+        &id.to_string(),
+        &client_ip,
+    )
+    .await?;
     Ok(Json(rec))
 }
 
@@ -578,6 +590,19 @@ async fn chat_agent_handler(
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<AgentChatRequest>,
 ) -> Result<Response, HttpError> {
+    principal.require(Permission::AgentRun)?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let _res_ref = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::AgentRun,
+        axpoint_domain::guard::GrantResourceKind::Agent,
+        &id.to_string(),
+        &client_ip,
+    )
+    .await?;
+
     if !wants_sse(&headers) {
         let resp = state.axagent.runtime.chat(&principal, id, req).await?;
         if let Err(err) = state.audit.flush().await {
@@ -585,8 +610,6 @@ async fn chat_agent_handler(
         }
         return Ok((StatusCode::OK, Json(resp)).into_response());
     }
-
-    principal.require(Permission::AgentRun)?;
     if req.draft {
         principal.require(Permission::AgentEdit)?;
     }

@@ -1,17 +1,51 @@
-//! `AxGuard` authentication, principal verification, and buffered security audit writer.
+//! `AxGuard` authentication, `EdDSA` `JWT` & `OIDC` sessions, `Cedar` `ABAC`, row/column policies,
+//! dynamic `PII` masking, outbound `LLM` egress filtering, and tamper-evident audit chains.
 #![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
 pub mod audit;
+pub mod audit_chain;
 pub mod authenticator;
+pub mod cedar_authz;
+pub mod jwt;
 pub mod keyring;
+pub mod masking;
 pub mod net_guard;
+pub mod oidc;
+pub mod password;
+pub mod pii_local;
 pub mod principal;
+pub mod row_policy;
+pub mod session;
 
 pub use audit::AuditWriter;
+pub use audit_chain::{
+    AuditHashFields, compute_audit_row_hash, truncate_to_micros, verify_audit_chain,
+};
 pub use authenticator::{Authenticator, sha256_hex};
+pub use cedar_authz::{CedarAuthorizer, CedarContext, dept_lineage};
+pub use jwt::{AccessClaims, JwtKeyManager, generate_ed25519_keypair_pem};
 pub use keyring::{CREDENTIAL_KEYS_ENV_VAR, CredentialKeyring, Keyring};
+pub use masking::{
+    MASK_KEYS_ENV_VAR, MaskKeyRing, apply_mask_rule, derive_tenant_hmac_key, mask_json_properties,
+    mask_text_spans,
+};
 pub use net_guard::NetGuard;
+pub use oidc::{OidcConfig, OidcRoleMapConfig, OidcService};
+pub use password::{
+    hash_password, needs_rehash, validate_password_policy, verify_dummy_password, verify_password,
+};
+pub use pii_local::{
+    EgressSession, analyze_pii_local, preview_llm_egress, redact_for_egress, restore_from_egress,
+};
 pub use principal::{AuthPrincipal, TokenKind};
+pub use row_policy::{
+    CompiledPredicate, DatasetPolicyInput, NodePropertyMeta, NodeTypePolicyInput,
+    compile_predicate, resolve_dataset_policy, resolve_node_type_policy, validate_predicate_syntax,
+};
+pub use session::{
+    REFRESH_COOKIE_NAME, REFRESH_MAX_AGE_SECS, REFRESH_TTL_DAYS, build_clear_refresh_cookie,
+    build_set_refresh_cookie, extract_refresh_cookie, generate_refresh_token, hash_refresh_token,
+};
 
 #[cfg(test)]
 mod tests {
@@ -19,7 +53,7 @@ mod tests {
     use std::sync::Arc;
 
     use axpoint_domain::AppError;
-    use axpoint_domain::enums::{AuditAction, Permission, TokenKind};
+    use axpoint_domain::enums::{AuditAction, Permission, Sensitivity, TokenKind};
     use axpoint_domain::platform::{ApiTokenRecord, AuditRecord, PrincipalRecord};
     use axpoint_domain::ports::{AuditSink, CredentialStore};
     use chrono::Utc;
@@ -80,7 +114,6 @@ mod tests {
         let res = Authenticator::new(store.clone(), "production", Some(dev_token.clone()));
         assert!(matches!(res, Err(AppError::Config(_))));
 
-        // Empty or None dev_token in production is allowed, and presenting a dev token fails with TOKEN_INVALID.
         let prod_auth = Authenticator::new(store.clone(), "production", None)?;
         let header = format!("Bearer {dev_token}");
         let auth_res = prod_auth.authenticate(Some(&header)).await;
@@ -107,7 +140,6 @@ mod tests {
         let secret = String::from("0123456789abcdef0123456789abcdef_dev_tok");
         let auth = Authenticator::new(store, "test", Some(secret.clone()))?;
 
-        // Missing or malformed header -> TOKEN_MISSING
         let missing = auth.authenticate(None).await;
         assert!(matches!(
             missing,
@@ -126,7 +158,6 @@ mod tests {
             Err(AppError::Unauthorized("TOKEN_MISSING"))
         ));
 
-        // Wrong token -> TOKEN_INVALID
         let wrong = auth
             .authenticate(Some("Bearer wrong_token_value_that_does_not_match"))
             .await;
@@ -135,7 +166,6 @@ mod tests {
             Err(AppError::Unauthorized("TOKEN_INVALID"))
         ));
 
-        // Valid dev token -> ADMIN principal in default tenant
         let header = format!("Bearer {secret}");
         let principal: AuthPrincipal = auth.authenticate(Some(&header)).await?;
         assert_eq!(principal.user_id, Uuid::nil());
@@ -182,6 +212,8 @@ mod tests {
                     dept_id: String::from("supply_chain"),
                     roles: vec![String::from("ANALYST")],
                     permissions: BTreeSet::from([Permission::DataRead, Permission::StudioEdit]),
+                    clearance: Sensitivity::Internal,
+                    tokens_valid_after: chrono::DateTime::UNIX_EPOCH,
                 },
             );
         }
@@ -195,7 +227,6 @@ mod tests {
         assert_eq!(principal.username, "alice");
         assert_eq!(principal.token_kind, TokenKind::ApiToken);
 
-        // Intersection of {DataRead, StudioEdit} and {DataRead, GuardAdmin} == {DataRead}.
         assert_eq!(
             principal.permissions,
             BTreeSet::from([Permission::DataRead])
@@ -210,7 +241,6 @@ mod tests {
             Err(AppError::Forbidden("PERMISSION_DENIED"))
         ));
 
-        // Yield briefly so spawned touch_api_token completes.
         tokio::task::yield_now().await;
         let touched = store.touched.lock().await;
         assert_eq!(touched.len(), 1);

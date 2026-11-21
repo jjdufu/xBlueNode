@@ -288,6 +288,9 @@ pub struct NodeListQuery {
     /// Opaque pagination cursor.
     #[serde(default)]
     pub cursor: Option<String>,
+    /// Explicitly request unmasked PII properties (`403 PERMISSION_DENIED` unless authorized, `11-STEP13` §13.7).
+    #[serde(default)]
+    pub reveal_pii: bool,
 }
 
 impl NodeListQuery {

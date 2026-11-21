@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{NewApiTokenInput, PersonalAccessTokenSummary};
-use axpoint_domain::enums::Permission;
+use axpoint_domain::enums::{Permission, Sensitivity};
 use axpoint_domain::platform::{ApiTokenRecord, PrincipalRecord};
 use axpoint_domain::ports::{ApiTokenRepository, CredentialStore};
 use chrono::{DateTime, Utc};
@@ -210,7 +210,7 @@ impl CredentialStore for PgStore {
         let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
 
         let user_opt = sqlx::query(
-            "SELECT id, tenant_id, username, display_name, dept_id
+            "SELECT id, tenant_id, username, display_name, dept_id, clearance, tokens_valid_after
                FROM sec_users
               WHERE id = $1 AND status = 'ACTIVE'",
         )
@@ -263,6 +263,14 @@ impl CredentialStore for PgStore {
         let resolved_tenant: String = user_row
             .try_get("tenant_id")
             .map_err(|err| AppError::Database(format!("decode tenant_id failed: {err}")))?;
+        let raw_clearance: String = user_row
+            .try_get("clearance")
+            .map_err(|err| AppError::Database(format!("decode clearance failed: {err}")))?;
+        let clearance: Sensitivity = raw_clearance.parse()?;
+        let tokens_valid_after: DateTime<Utc> =
+            user_row.try_get("tokens_valid_after").map_err(|err| {
+                AppError::Database(format!("decode tokens_valid_after failed: {err}"))
+            })?;
 
         tx.commit()
             .await
@@ -276,6 +284,8 @@ impl CredentialStore for PgStore {
             dept_id,
             roles,
             permissions,
+            clearance,
+            tokens_valid_after,
         }))
     }
 

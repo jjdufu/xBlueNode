@@ -140,6 +140,7 @@ fn sample_provider_input(
         flags: LlmProviderFlags {
             supports_tools: true,
             allow_private_network: false,
+            allow_pii: false,
         },
         enabled: true,
     }

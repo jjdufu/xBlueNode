@@ -186,15 +186,21 @@ pub fn compute_principal_fingerprint(
     hex::encode(hasher.finalize())
 }
 
-/// Computes the security scope fingerprint for an authenticated [`AuthPrincipal`].
+/// Computes the security scope fingerprint for an authenticated [`AuthPrincipal`], incorporating
+/// `user_id` so per-user `sec_user_attributes` and `sec_grants` never share cached widget rows.
 #[must_use]
 pub fn principal_fingerprint_from_auth(principal: &AuthPrincipal) -> String {
-    compute_principal_fingerprint(
+    let base = compute_principal_fingerprint(
         &principal.roles,
         &principal.dept_id,
         None,
         &principal.permissions,
-    )
+    );
+    let mut hasher = Sha256::new();
+    hasher.update(base.as_bytes());
+    hasher.update(b"|uid:");
+    hasher.update(principal.user_id.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 /// Computes the deterministic SHA-256 digest of `(filters, drill_path, principal_fingerprint)`.

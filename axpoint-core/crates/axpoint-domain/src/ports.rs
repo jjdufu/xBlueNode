@@ -829,26 +829,16 @@ pub trait SidecarPort: Send + Sync {
     /// Invokes `POST /pii/analyze` on the Sidecar (`11-STEP13` §13.8.1).
     fn analyze_pii(
         &self,
-        _tenant_id: &str,
-        _req: &PiiAnalyzeRequest,
-    ) -> impl Future<Output = Result<PiiAnalyzeResponse, AppError>> + Send {
-        std::future::ready(Err(AppError::unprocessable(
-            "UNSUPPORTED",
-            "analyze_pii not implemented",
-        )))
-    }
+        tenant_id: &str,
+        req: &PiiAnalyzeRequest,
+    ) -> impl Future<Output = Result<PiiAnalyzeResponse, AppError>> + Send;
 
     /// Invokes `POST /pii/anonymize` on the Sidecar (`11-STEP13` §13.8.1).
     fn anonymize_pii(
         &self,
-        _tenant_id: &str,
-        _req: &PiiAnonymizeRequest,
-    ) -> impl Future<Output = Result<PiiAnonymizeResponse, AppError>> + Send {
-        std::future::ready(Err(AppError::unprocessable(
-            "UNSUPPORTED",
-            "anonymize_pii not implemented",
-        )))
-    }
+        tenant_id: &str,
+        req: &PiiAnonymizeRequest,
+    ) -> impl Future<Output = Result<PiiAnonymizeResponse, AppError>> + Send;
 }
 
 /// Persistence port for `AxGraph` business nodes, links, hybrid search, and entity links (Step 03).

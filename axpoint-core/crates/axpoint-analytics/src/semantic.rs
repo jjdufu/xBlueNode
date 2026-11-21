@@ -12,9 +12,11 @@ use axpoint_domain::analytics::{
     MetricQueryResult, MetricTimeRange, MultiMetricQuery, QueryColumn, QueryResult,
 };
 use axpoint_domain::enums::{DataType, PiiCategory, RollupGrain};
+use axpoint_domain::guard::PolicyContext;
 use chrono::{
     DateTime, Datelike, Duration as ChronoDuration, Months, NaiveDate, SecondsFormat, Timelike, Utc,
 };
+use serde::{Deserialize, Serialize};
 use sqlparser::ast::{BinaryOperator, Expr, Function, VisitMut, VisitorMut};
 
 use crate::pivot::{compile_filters_with_resolver, quote_ident, rollup_grain_sql};
@@ -59,7 +61,7 @@ const ALLOWED_AGGREGATE_FUNCTIONS: &[&str] = &[
 ];
 
 /// Execution options for [`execute_metric_query`] and [`execute_multi_metric_query`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MetricExecuteOptions {
     /// Optional execution timeout in milliseconds.
     pub timeout_ms: Option<u64>,
@@ -67,6 +69,21 @@ pub struct MetricExecuteOptions {
     pub reveal_pii: bool,
     /// Whether caller holds `Permission::PiiRawRead`.
     pub has_pii_raw_read: bool,
+    /// Optional compiled `AxGuard` row/column security context (`11-STEP13` §13.6.3).
+    #[serde(default)]
+    pub policy: Option<PolicyContext>,
+}
+
+/// Alias for [`MetricExecuteOptions`].
+pub type SemanticQueryOptions = MetricExecuteOptions;
+
+impl MetricExecuteOptions {
+    /// Builder helper attaching an optional [`PolicyContext`].
+    #[must_use]
+    pub fn with_policy(mut self, policy: Option<PolicyContext>) -> Self {
+        self.policy = policy;
+        self
+    }
 }
 
 /// Validated and guarded SQL plan compiled from a single [`MetricDef`] + [`MetricQuery`].
@@ -323,7 +340,20 @@ pub fn compile_metric_query(
     query: &MetricQuery,
     catalog: &TenantCatalog,
 ) -> Result<CompiledMetricQuery, AppError> {
-    compile_metric_query_with_range(metric, query, query.time_range.as_ref(), catalog)
+    compile_metric_query_with_policy(metric, query, catalog, None)
+}
+
+/// Compiles a single-metric [`MetricQuery`] under an optional `AxGuard` [`PolicyContext`] (`11-STEP13` §13.6.3).
+///
+/// # Errors
+/// Returns `POLICY_DENIED`, `SCHEMA_BREAKING_CHANGE`, `DATASET_NOT_FOUND`, `INVALID_ARGUMENT`, or `SQL_REJECTED`.
+pub fn compile_metric_query_with_policy(
+    metric: &MetricDef,
+    query: &MetricQuery,
+    catalog: &TenantCatalog,
+    policy: Option<&PolicyContext>,
+) -> Result<CompiledMetricQuery, AppError> {
+    compile_metric_query_with_range(metric, query, query.time_range.as_ref(), catalog, policy)
 }
 
 fn compile_metric_query_with_range(
@@ -331,6 +361,7 @@ fn compile_metric_query_with_range(
     query: &MetricQuery,
     range_override: Option<&MetricTimeRange>,
     catalog: &TenantCatalog,
+    policy: Option<&PolicyContext>,
 ) -> Result<CompiledMetricQuery, AppError> {
     let dataset = check_metric_compatibility(metric, catalog)?;
     let (expr_ast, _, _) = inspect_sql_expression(&metric.expression, true)?;
@@ -390,6 +421,7 @@ fn compile_metric_query_with_range(
             max_rows: HARD_MAX_ROWS,
             allow_live: false,
             params,
+            policy: policy.cloned(),
         },
     )?;
 
@@ -463,8 +495,8 @@ fn build_metric_group_order(has_period: bool, resolved_dims: &[ResolvedMetricDim
 /// Compiles and executes a single-metric [`MetricQuery`] against a [`TenantDb`] session (`05-STEP04` §04.5.2).
 ///
 /// # Errors
-/// Returns `PERMISSION_DENIED`, `SCHEMA_BREAKING_CHANGE`, `DATASET_NOT_FOUND`, `INVALID_ARGUMENT`,
-/// `SQL_REJECTED`, `QUERY_TIMEOUT`, or `Database`.
+/// Returns `PERMISSION_DENIED`, `POLICY_DENIED`, `SCHEMA_BREAKING_CHANGE`, `DATASET_NOT_FOUND`,
+/// `INVALID_ARGUMENT`, `SQL_REJECTED`, `QUERY_TIMEOUT`, or `Database`.
 pub async fn execute_metric_query(
     session: &TenantDb,
     catalog: &TenantCatalog,
@@ -472,17 +504,23 @@ pub async fn execute_metric_query(
     query: &MetricQuery,
     opts: MetricExecuteOptions,
 ) -> Result<MetricQueryResult, AppError> {
-    if opts.reveal_pii && !opts.has_pii_raw_read {
+    let pii_reveal_allowed = opts.has_pii_raw_read
+        || opts
+            .policy
+            .as_ref()
+            .is_some_and(|pol| pol.reveal_pii_authorized);
+    if opts.reveal_pii && !pii_reveal_allowed {
         return Err(AppError::Forbidden("PERMISSION_DENIED"));
     }
-    let primary_compiled = compile_metric_query(metric, query, catalog)?;
+    let primary_compiled =
+        compile_metric_query_with_policy(metric, query, catalog, opts.policy.as_ref())?;
     let primary_out = session
         .execute_guarded(
             &primary_compiled.guarded,
             catalog,
             opts.timeout_ms,
             opts.reveal_pii,
-            opts.has_pii_raw_read,
+            pii_reveal_allowed,
         )
         .await?;
 
@@ -501,15 +539,20 @@ pub async fn execute_metric_query(
             .effective_grain
             .unwrap_or(metric.default_grain);
         let shift = compute_range_shift(tr, compare_mode, grain)?;
-        let cmp_compiled =
-            compile_metric_query_with_range(metric, query, Some(&shift.shifted_range), catalog)?;
+        let cmp_compiled = compile_metric_query_with_range(
+            metric,
+            query,
+            Some(&shift.shifted_range),
+            catalog,
+            opts.policy.as_ref(),
+        )?;
         let cmp_out = session
             .execute_guarded(
                 &cmp_compiled.guarded,
                 catalog,
                 opts.timeout_ms,
                 opts.reveal_pii,
-                opts.has_pii_raw_read,
+                pii_reveal_allowed,
             )
             .await?;
         Ok(merge_compared_results(
@@ -533,8 +576,8 @@ pub async fn execute_metric_query(
 /// Synchronously compiles and executes a single-metric [`MetricQuery`] on an open `duckdb::Connection`.
 ///
 /// # Errors
-/// Returns `PERMISSION_DENIED`, `SCHEMA_BREAKING_CHANGE`, `DATASET_NOT_FOUND`, `INVALID_ARGUMENT`,
-/// `SQL_REJECTED`, or `Database`.
+/// Returns `PERMISSION_DENIED`, `POLICY_DENIED`, `SCHEMA_BREAKING_CHANGE`, `DATASET_NOT_FOUND`,
+/// `INVALID_ARGUMENT`, `SQL_REJECTED`, or `Database`.
 pub fn execute_metric_query_conn(
     conn: &duckdb::Connection,
     catalog: &TenantCatalog,
@@ -542,11 +585,26 @@ pub fn execute_metric_query_conn(
     query: &MetricQuery,
     opts: MetricExecuteOptions,
 ) -> Result<MetricQueryResult, AppError> {
-    if opts.reveal_pii && !opts.has_pii_raw_read {
+    let MetricExecuteOptions {
+        reveal_pii,
+        has_pii_raw_read,
+        policy,
+        ..
+    } = opts;
+    let pii_reveal_allowed =
+        has_pii_raw_read || policy.as_ref().is_some_and(|pol| pol.reveal_pii_authorized);
+    if reveal_pii && !pii_reveal_allowed {
         return Err(AppError::Forbidden("PERMISSION_DENIED"));
     }
-    let primary_compiled = compile_metric_query(metric, query, catalog)?;
-    let primary_qr = run_guarded_conn(conn, catalog, &primary_compiled.guarded, opts)?;
+    let primary_compiled =
+        compile_metric_query_with_policy(metric, query, catalog, policy.as_ref())?;
+    let primary_qr = run_guarded_conn(
+        conn,
+        catalog,
+        &primary_compiled.guarded,
+        reveal_pii,
+        pii_reveal_allowed,
+    )?;
 
     let Some(compare_mode) = query.compare else {
         return Ok(MetricQueryResult {
@@ -563,9 +621,20 @@ pub fn execute_metric_query_conn(
             .effective_grain
             .unwrap_or(metric.default_grain);
         let shift = compute_range_shift(tr, compare_mode, grain)?;
-        let cmp_compiled =
-            compile_metric_query_with_range(metric, query, Some(&shift.shifted_range), catalog)?;
-        let cmp_qr = run_guarded_conn(conn, catalog, &cmp_compiled.guarded, opts)?;
+        let cmp_compiled = compile_metric_query_with_range(
+            metric,
+            query,
+            Some(&shift.shifted_range),
+            catalog,
+            policy.as_ref(),
+        )?;
+        let cmp_qr = run_guarded_conn(
+            conn,
+            catalog,
+            &cmp_compiled.guarded,
+            reveal_pii,
+            pii_reveal_allowed,
+        )?;
         Ok(merge_compared_results(
             &metric.name,
             &primary_compiled,
@@ -591,8 +660,8 @@ pub fn execute_metric_query_conn(
 /// individually and outer-joined deterministically on `(period, dimensions...)`.
 ///
 /// # Errors
-/// Returns `PERMISSION_DENIED`, `NOT_FOUND`, `SCHEMA_BREAKING_CHANGE`, `INVALID_ARGUMENT`,
-/// `SQL_REJECTED`, `QUERY_TIMEOUT`, or `Database`.
+/// Returns `PERMISSION_DENIED`, `POLICY_DENIED`, `NOT_FOUND`, `SCHEMA_BREAKING_CHANGE`,
+/// `INVALID_ARGUMENT`, `SQL_REJECTED`, `QUERY_TIMEOUT`, or `Database`.
 pub async fn execute_multi_metric_query(
     session: &TenantDb,
     catalog: &TenantCatalog,
@@ -600,13 +669,19 @@ pub async fn execute_multi_metric_query(
     query: &MultiMetricQuery,
     opts: MetricExecuteOptions,
 ) -> Result<MetricQueryResult, AppError> {
-    if opts.reveal_pii && !opts.has_pii_raw_read {
+    let pii_reveal_allowed = opts.has_pii_raw_read
+        || opts
+            .policy
+            .as_ref()
+            .is_some_and(|pol| pol.reveal_pii_authorized);
+    if opts.reveal_pii && !pii_reveal_allowed {
         return Err(AppError::Forbidden("PERMISSION_DENIED"));
     }
     let resolved_list = select_multi_metrics(available_metrics, &query.metric_names, catalog)?;
 
     if query.compare.is_none()
-        && let Some(fused_guarded) = try_compile_same_dataset_multi(&resolved_list, query, catalog)?
+        && let Some(fused_guarded) =
+            try_compile_same_dataset_multi(&resolved_list, query, catalog, opts.policy.as_ref())?
     {
         let out = session
             .execute_guarded(
@@ -614,7 +689,7 @@ pub async fn execute_multi_metric_query(
                 catalog,
                 opts.timeout_ms,
                 opts.reveal_pii,
-                opts.has_pii_raw_read,
+                pii_reveal_allowed,
             )
             .await?;
         return Ok(MetricQueryResult {
@@ -635,7 +710,7 @@ pub async fn execute_multi_metric_query(
             grain: query.grain,
             compare: query.compare,
         };
-        let res = execute_metric_query(session, catalog, m, &single_q, opts).await?;
+        let res = execute_metric_query(session, catalog, m, &single_q, opts.clone()).await?;
         per_metric_results.push((m.name.clone(), res));
     }
     Ok(outer_join_metric_results(
@@ -648,8 +723,8 @@ pub async fn execute_multi_metric_query(
 /// Synchronously evaluates a [`MultiMetricQuery`] against an open `duckdb::Connection`.
 ///
 /// # Errors
-/// Returns `PERMISSION_DENIED`, `NOT_FOUND`, `SCHEMA_BREAKING_CHANGE`, `INVALID_ARGUMENT`,
-/// `SQL_REJECTED`, or `Database`.
+/// Returns `PERMISSION_DENIED`, `POLICY_DENIED`, `NOT_FOUND`, `SCHEMA_BREAKING_CHANGE`,
+/// `INVALID_ARGUMENT`, `SQL_REJECTED`, or `Database`.
 pub fn execute_multi_metric_query_conn(
     conn: &duckdb::Connection,
     catalog: &TenantCatalog,
@@ -657,15 +732,30 @@ pub fn execute_multi_metric_query_conn(
     query: &MultiMetricQuery,
     opts: MetricExecuteOptions,
 ) -> Result<MetricQueryResult, AppError> {
-    if opts.reveal_pii && !opts.has_pii_raw_read {
+    let MetricExecuteOptions {
+        timeout_ms,
+        reveal_pii,
+        has_pii_raw_read,
+        policy,
+    } = opts;
+    let pii_reveal_allowed =
+        has_pii_raw_read || policy.as_ref().is_some_and(|pol| pol.reveal_pii_authorized);
+    if reveal_pii && !pii_reveal_allowed {
         return Err(AppError::Forbidden("PERMISSION_DENIED"));
     }
     let resolved_list = select_multi_metrics(available_metrics, &query.metric_names, catalog)?;
 
     if query.compare.is_none()
-        && let Some(fused_guarded) = try_compile_same_dataset_multi(&resolved_list, query, catalog)?
+        && let Some(fused_guarded) =
+            try_compile_same_dataset_multi(&resolved_list, query, catalog, policy.as_ref())?
     {
-        let qr = run_guarded_conn(conn, catalog, &fused_guarded, opts)?;
+        let qr = run_guarded_conn(
+            conn,
+            catalog,
+            &fused_guarded,
+            reveal_pii,
+            pii_reveal_allowed,
+        )?;
         return Ok(MetricQueryResult {
             metrics: resolved_list.iter().map(|m| m.name.clone()).collect(),
             columns: qr.columns,
@@ -684,7 +774,13 @@ pub fn execute_multi_metric_query_conn(
             grain: query.grain,
             compare: query.compare,
         };
-        let res = execute_metric_query_conn(conn, catalog, m, &single_q, opts)?;
+        let child_opts = MetricExecuteOptions {
+            timeout_ms,
+            reveal_pii,
+            has_pii_raw_read,
+            policy: policy.clone(),
+        };
+        let res = execute_metric_query_conn(conn, catalog, m, &single_q, child_opts)?;
         per_metric_results.push((m.name.clone(), res));
     }
     Ok(outer_join_metric_results(
@@ -698,7 +794,8 @@ fn run_guarded_conn(
     conn: &duckdb::Connection,
     catalog: &TenantCatalog,
     guarded: &GuardedSql,
-    opts: MetricExecuteOptions,
+    reveal_pii: bool,
+    pii_reveal_allowed: bool,
 ) -> Result<QueryResult, AppError> {
     let started = Instant::now();
     let mut stmt = conn
@@ -718,8 +815,8 @@ fn run_guarded_conn(
             effective_max_rows: guarded.effective_max_rows,
             sql: guarded.sql.clone(),
             duration_ms,
-            reveal_pii: opts.reveal_pii,
-            has_pii_raw_read: opts.has_pii_raw_read,
+            reveal_pii,
+            has_pii_raw_read: pii_reveal_allowed,
             catalog,
             guarded,
         },
@@ -1300,6 +1397,7 @@ fn try_compile_same_dataset_multi(
     metrics: &[MetricDef],
     query: &MultiMetricQuery,
     catalog: &TenantCatalog,
+    policy: Option<&PolicyContext>,
 ) -> Result<Option<GuardedSql>, AppError> {
     let Some(first) = metrics.first() else {
         return Ok(None);
@@ -1367,6 +1465,7 @@ fn try_compile_same_dataset_multi(
             max_rows: HARD_MAX_ROWS,
             allow_live: false,
             params,
+            policy: policy.cloned(),
         },
     )?;
     Ok(Some(guarded))

@@ -539,6 +539,8 @@ impl AiGateway {
     }
 
     async fn chat_live(&self, system_prompt: &str, user_prompt: &str) -> Result<String, AppError> {
+        let (safe_user_prompt, egress_session) =
+            axpoint_security::pii_local::redact_for_egress(user_prompt);
         let url = format!(
             "{}/chat/completions",
             self.llm.api_base.trim_end_matches('/')
@@ -552,7 +554,7 @@ impl AiGateway {
                 },
                 ChatMessage {
                     role: "user",
-                    content: user_prompt,
+                    content: &safe_user_prompt,
                 },
             ],
             temperature: 0.1,
@@ -578,12 +580,22 @@ impl AiGateway {
             .await
             .map_err(|err| AppError::Llm(format!("invalid chat JSON: {err}")))?;
 
-        parsed
+        let raw_content = parsed
             .choices
             .into_iter()
             .next()
             .map(|c| c.message.content)
-            .ok_or_else(|| AppError::Llm(String::from("chat API returned zero choices")))
+            .ok_or_else(|| AppError::Llm(String::from("chat API returned zero choices")))?;
+        if egress_session.is_empty() {
+            return Ok(raw_content);
+        }
+        let tenant_key = router::resolve_tenant_mask_key(&self.default_tenant);
+        Ok(axpoint_security::pii_local::restore_from_egress(
+            &raw_content,
+            &egress_session,
+            false,
+            &tenant_key,
+        ))
     }
 
     /// Extracts knowledge triples from a paragraph via LLM (`Purpose::Extract`).

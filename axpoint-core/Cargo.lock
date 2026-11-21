@@ -570,6 +570,7 @@ name = "axpoint-db"
 version = "0.1.0"
 dependencies = [
  "axpoint-domain",
+ "axpoint-security",
  "base64 0.22.1",
  "chrono",
  "hex",
@@ -632,6 +633,7 @@ name = "axpoint-llm"
 version = "0.1.0"
 dependencies = [
  "axpoint-domain",
+ "axpoint-security",
  "chrono",
  "eventsource-stream",
  "futures",
