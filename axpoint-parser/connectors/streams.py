@@ -378,7 +378,10 @@ class PulsarConnector(BaseConnector):
     def test(self) -> tuple[bool, str]:
         try:
             cli = self._create_client()
-            cli.close()
+            try:
+                cli.get_topic_partitions("persistent://public/default/__axpoint_probe__")
+            finally:
+                cli.close()
             return True, "connected"
         except Exception as exc:
             return False, str(exc)
@@ -398,6 +401,8 @@ class PulsarConnector(BaseConnector):
         batch_rows: int = 50_000,
         stream_offsets: dict[str, str] | None = None,
     ) -> Iterator[ReadBatch]:
+        import pulsar
+
         topic = str(ref.get("topic") or "").strip()
         if not topic:
             raise SidecarError(400, "INVALID_ARGUMENT", "Pulsar ref missing 'topic'")
@@ -405,16 +410,24 @@ class PulsarConnector(BaseConnector):
         cli = self._create_client()
         try:
             sub = str(self.config.get("subscription") or f"axhub-{self.tenant_id}")
-            consumer = cli.subscribe(topic, subscription_name=sub)
+            consumer = cli.subscribe(
+                topic,
+                subscription_name=sub,
+                initial_position=pulsar.InitialPosition.Earliest,
+            )
             records: list[dict[str, Any]] = []
             max_msgs = min(int(self.config.get("max_messages_per_run") or 50_000), batch_rows)
-            max_wait_ms = int(float(self.config.get("max_wait_s") or 5.0) * 1000)
+            max_wait_s = max(float(self.config.get("max_wait_s") or 5.0), 0.1)
+            deadline = time.monotonic() + max_wait_s
             last_id_str = ""
-            while len(records) < max_msgs:
+            while len(records) < max_msgs and time.monotonic() < deadline:
+                rem_ms = max(50, int((deadline - time.monotonic()) * 1000))
                 try:
-                    msg = consumer.receive(timeout_millis=min(max_wait_ms, 500))
+                    msg = consumer.receive(timeout_millis=min(rem_ms, 500))
                 except Exception:
-                    break
+                    if records:
+                        break
+                    continue
                 mid = str(msg.message_id())
                 pub_ts = msg.publish_timestamp()
                 ts_dt = (
