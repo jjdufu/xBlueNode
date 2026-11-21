@@ -9,6 +9,7 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import parse_qsl, unquote, urlparse
 
 import psycopg
 
@@ -20,6 +21,35 @@ def _quote_ident(ident: str) -> str:
     if not _SAFE_IDENT_RE.match(ident):
         raise ValueError(f"unsafe SQL identifier: {ident!r}")
     return f'"{ident}"'
+
+
+def _libpq_quote(val: str) -> str:
+    if val != "" and all(ch.isalnum() or ch in "_.-" for ch in val):
+        return val
+    escaped = val.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+
+def _postgres_dsn_to_libpq(dsn: str) -> str:
+    trimmed = dsn.strip()
+    if not trimmed.startswith(("postgres://", "postgresql://")):
+        return trimmed
+    parsed = urlparse(trimmed)
+    parts: list[str] = []
+    dbname = unquote(parsed.path.lstrip("/"))
+    if dbname:
+        parts.append(f"dbname={_libpq_quote(dbname)}")
+    host = unquote(parsed.hostname) if parsed.hostname else "127.0.0.1"
+    parts.append(f"host={_libpq_quote(host)}")
+    parts.append(f"port={parsed.port if parsed.port is not None else 5432}")
+    if parsed.username:
+        parts.append(f"user={_libpq_quote(unquote(parsed.username))}")
+    if parsed.password is not None:
+        parts.append(f"password={_libpq_quote(unquote(parsed.password))}")
+    for key, val in parse_qsl(parsed.query, keep_blank_values=True):
+        if key:
+            parts.append(f"{key}={_libpq_quote(val)}")
+    return " ".join(parts)
 
 
 def _lookup_backup_cutoff(
@@ -126,36 +156,45 @@ def _reconcile_tables(
 
 def _reconcile_ducklake(tgt_dsn: str, lake_root: Path) -> list[str]:
     mismatches: list[str] = []
-    with psycopg.connect(tgt_dsn) as tgt_conn:
-        with tgt_conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT count(*)
-                  FROM information_schema.tables
-                 WHERE table_schema = 'lake_catalog'
-                   AND table_name = 'ducklake_snapshot'
-                """
-            )
-            has_catalog = bool(cur.fetchone()[0])  # type: ignore[index]
-            if not has_catalog:
-                return mismatches
+    with psycopg.connect(tgt_dsn) as tgt_conn, tgt_conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT count(*)
+              FROM information_schema.tables
+             WHERE table_schema = 'lake_catalog'
+               AND table_name = 'ducklake_snapshot'
+            """
+        )
+        cat_row = cur.fetchone()
+        has_catalog = bool(cat_row and cat_row[0])
+        if not has_catalog:
+            return mismatches
 
-            cur.execute(
-                """
-                SELECT d.id, d.tenant_id, d.lake_table, d.row_count,
-                       (SELECT sj.rows_written
-                          FROM ds_sync_jobs sj
-                         WHERE sj.dataset_id = d.id AND sj.status = 'SUCCEEDED'
-                         ORDER BY sj.finished_at DESC NULLS LAST, sj.started_at DESC
-                         LIMIT 1) AS latest_sync_rows,
-                       d.sync_mode
-                  FROM ds_datasets d
-                 WHERE d.status = 'READY'
-                   AND d.storage_mode = 'LAKE'
-                   AND d.lake_table <> ''
-                """
-            )
-            datasets = cur.fetchall()
+        cur.execute(
+            """
+            SELECT d.id, d.tenant_id, d.lake_schema, d.lake_table, d.row_count,
+                   (SELECT sj.rows_written
+                      FROM ds_sync_jobs sj
+                     WHERE sj.dataset_id = d.id AND sj.status = 'SUCCEEDED'
+                     ORDER BY sj.finished_at DESC NULLS LAST, sj.started_at DESC
+                     LIMIT 1) AS latest_sync_rows,
+                   d.sync_mode
+              FROM ds_datasets d
+             WHERE d.status = 'READY'
+               AND d.sync_mode <> 'DIRECT'
+               AND d.lake_table <> ''
+               AND EXISTS (
+                   SELECT 1
+                     FROM lake_catalog.ducklake_table dt
+                     JOIN lake_catalog.ducklake_schema ds ON ds.schema_id = dt.schema_id
+                    WHERE ds.schema_name = d.lake_schema
+                      AND dt.table_name = d.lake_table
+                      AND dt.end_snapshot IS NULL
+                      AND ds.end_snapshot IS NULL
+               )
+            """
+        )
+        datasets = cur.fetchall()
 
     if not datasets:
         return mismatches
@@ -164,33 +203,37 @@ def _reconcile_ducklake(tgt_dsn: str, lake_root: Path) -> list[str]:
 
     lake_data_dir = (lake_root / "lake").resolve()
     lake_data_dir.mkdir(parents=True, exist_ok=True)
-    pg_spec = tgt_dsn
-    for prefix in ("postgresql://", "postgres://"):
-        if pg_spec.startswith(prefix):
-            pg_spec = pg_spec[len(prefix) :]
-            break
+    pg_libpq = _postgres_dsn_to_libpq(tgt_dsn)
 
     con = duckdb.connect()
     try:
         con.execute("LOAD postgres; LOAD ducklake;")
-    except Exception:
+    except duckdb.Error:
         con.execute("INSTALL postgres; INSTALL ducklake; LOAD postgres; LOAD ducklake;")
 
     escaped_path = str(lake_data_dir).replace("'", "''") + os.sep
-    escaped_dsn = f"ducklake:postgres:{pg_spec}".replace("'", "''")
+    escaped_dsn = f"ducklake:postgres:{pg_libpq}".replace("'", "''")
     con.execute(
         f"ATTACH '{escaped_dsn}' AS lake "
         f"(DATA_PATH '{escaped_path}', METADATA_SCHEMA 'lake_catalog', "
         "OVERRIDE_DATA_PATH true, READ_ONLY)"
     )
 
-    for ds_id, tenant_id, lake_table, ds_row_count, latest_sync_rows, sync_mode in datasets:
-        schema_ident = _quote_ident(f"tenant_{tenant_id}")
+    for (
+        ds_id,
+        tenant_id,
+        lake_schema,
+        lake_table,
+        ds_row_count,
+        latest_sync_rows,
+        sync_mode,
+    ) in datasets:
+        schema_ident = _quote_ident(str(lake_schema))
         table_ident = _quote_ident(str(lake_table))
         try:
             res = con.execute(f"SELECT count(*) FROM lake.{schema_ident}.{table_ident}").fetchone()
             actual_rows = int(res[0]) if res is not None else 0
-        except Exception as exc:
+        except duckdb.Error as exc:
             mismatches.append(
                 f"dataset {ds_id} ({tenant_id}.{lake_table}) unreadable in DuckLake: {exc}"
             )

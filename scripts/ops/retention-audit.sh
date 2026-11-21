@@ -10,9 +10,10 @@ if [[ -n "$FORCE_KEEP" && ! "$FORCE_KEEP" =~ ^[0-9]+$ ]]; then
 fi
 
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -v force_keep="${FORCE_KEEP}" <<'SQL' >/dev/null
+SELECT set_config('axpoint.force_keep', :'force_keep', false);
 DO $$
 DECLARE
-    v_force_raw   TEXT := NULLIF(:'force_keep', '');
+    v_force_raw   TEXT := NULLIF(current_setting('axpoint.force_keep', true), '');
     r             RECORD;
     v_keep_days   INT;
     v_deleted     BIGINT;

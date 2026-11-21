@@ -11,15 +11,34 @@ if [[ ! -f "$GLB_PATH" ]]; then
 fi
 
 WAREHOUSE_NODE_ID="${WAREHOUSE_NODE_ID:-$(sql_app default "SELECT id FROM xb_nodes WHERE node_key = 'W-1' LIMIT 1")}"
-if [[ -z "${SIM_S1_ID:-}" || -z "${SIM_S2_ID:-}" ]] && [[ -n "${SANDBOX_ID:-}" ]]; then
+[[ "${SANDBOX_ID:-}" == "null" ]] && SANDBOX_ID=""
+[[ "${SIM_S1_ID:-}" == "null" ]] && SIM_S1_ID=""
+[[ "${SIM_S2_ID:-}" == "null" ]] && SIM_S2_ID=""
+if [[ -z "${SANDBOX_ID:-}" ]]; then
+  SANDBOX_ID=$(api GET /api/axsim/sandboxes 2>/dev/null | jq -r 'if type == "array" then ((.[] | select(.name=="供应链抗压演练沙盘") | .id) // .[0].id // empty) else empty end' | head -n 1 || true)
+fi
+if [[ -z "${SIM_S1_ID:-}" || -z "${SIM_S2_ID:-}" ]] && [[ -n "${SANDBOX_ID:-}" && "${SANDBOX_ID}" != "null" ]]; then
   SCENARIOS_RESP=$(api GET "/api/axsim/sandboxes/$SANDBOX_ID/scenarios" 2>/dev/null || echo "[]")
-  SIM_S1_ID="${SIM_S1_ID:-$(printf '%s' "$SCENARIOS_RESP" | jq -r 'if type == "array" then (.[0].id // empty) else empty end')}"
-  SIM_S2_ID="${SIM_S2_ID:-$(printf '%s' "$SCENARIOS_RESP" | jq -r 'if type == "array" then (.[1].id // empty) else empty end')}"
+  if [[ -z "${SIM_S1_ID:-}" ]]; then
+    SIM_S1_ID=$(printf '%s' "$SCENARIOS_RESP" | jq -r 'if type == "array" then (.[0].id // empty) else empty end')
+  fi
+  if [[ -z "${SIM_S2_ID:-}" ]]; then
+    SIM_S2_ID=$(printf '%s' "$SCENARIOS_RESP" | jq -r 'if type == "array" then (.[1].id // empty) else empty end')
+  fi
+  [[ "${SIM_S1_ID:-}" == "null" ]] && SIM_S1_ID=""
+  [[ "${SIM_S2_ID:-}" == "null" ]] && SIM_S2_ID=""
+fi
+
+SCENARIO_ARRAY="[]"
+if [[ -n "${SIM_S1_ID:-}" && "${SIM_S1_ID}" != "null" && -n "${SIM_S2_ID:-}" && "${SIM_S2_ID}" != "null" ]]; then
+  SCENARIO_ARRAY="[\"$SIM_S1_ID\",\"$SIM_S2_ID\"]"
+elif [[ -n "${SIM_S1_ID:-}" && "${SIM_S1_ID}" != "null" ]]; then
+  SCENARIO_ARRAY="[\"$SIM_S1_ID\"]"
 fi
 
 # 1. Upload or reuse warehouse_twin.glb (MODEL_3D) and bind W-1 to mesh Rack_A.
 MODEL3D_ASSET_ID=$(api GET "/api/xblueview/assets?asset_kind=MODEL_3D" | jq -r '.items[] | select(.name=="warehouse_twin.glb") | .id' | head -n 1)
-if [[ -z "$MODEL3D_ASSET_ID" ]]; then
+if [[ -z "$MODEL3D_ASSET_ID" || "$MODEL3D_ASSET_ID" == "null" ]]; then
   MODEL3D_ASSET_ID=$(curl -sSf -X POST \
     -H "Authorization: Bearer $AXPOINT_DEV_TOKEN" \
     -F "asset_kind=MODEL_3D" \
@@ -28,7 +47,7 @@ if [[ -z "$MODEL3D_ASSET_ID" ]]; then
     "$CORE_BASE_URL/api/xblueview/assets" | jq -r '.id')
 fi
 
-if [[ -n "$WAREHOUSE_NODE_ID" ]]; then
+if [[ -n "$WAREHOUSE_NODE_ID" && "$WAREHOUSE_NODE_ID" != "null" ]]; then
   api PUT "/api/xblueview/assets/$MODEL3D_ASSET_ID/bindings3d" \
     "{\"bindings\":[{\"node_id\":\"$WAREHOUSE_NODE_ID\",\"mesh_name\":\"Rack_A\",\"pos_x\":0,\"pos_y\":0,\"pos_z\":0,\"scale\":1.0}]}" >/dev/null
 fi
@@ -37,7 +56,7 @@ fi
 EXISTING=$(api GET "/api/xblueview/dashboards/by-slug/supply-overview" 2>/dev/null || true)
 DASHBOARD_ID=$(printf '%s' "$EXISTING" | jq -r 'if type == "object" then (.id // empty) else empty end' 2>/dev/null || true)
 
-if [[ -z "$DASHBOARD_ID" ]]; then
+if [[ -z "$DASHBOARD_ID" || "$DASHBOARD_ID" == "null" ]]; then
   DASHBOARD_ID=$(api POST /api/xblueview/dashboards '{
     "name":"供应链全景驾驶舱",
     "slug":"supply-overview",
@@ -93,18 +112,12 @@ if [[ -z "$DASHBOARD_ID" ]]; then
     "data_source":{"kind":"ALERTS","status":["OPEN","ACK"],"limit":20}
   }' >/dev/null
 
-  SCENARIO_ARRAY="[]"
-  if [[ -n "${SIM_S1_ID:-}" && -n "${SIM_S2_ID:-}" ]]; then
-    SCENARIO_ARRAY="[\"$SIM_S1_ID\",\"$SIM_S2_ID\"]"
-  elif [[ -n "${SIM_S1_ID:-}" ]]; then
-    SCENARIO_ARRAY="[\"$SIM_S1_ID\"]"
-  fi
-  api POST "/api/xblueview/dashboards/$DASHBOARD_ID/widgets" "{
+  SIM_COMPARE_WIDGET_ID=$(api POST "/api/xblueview/dashboards/$DASHBOARD_ID/widgets" "{
     \"widget_kind\":\"SIM_COMPARE\",
     \"title\":\"推演方案对比\",
     \"position\":{\"x\":0,\"y\":10,\"w\":6,\"h\":4},
     \"data_source\":{\"kind\":\"SIM_SCENARIOS\",\"scenario_ids\":$SCENARIO_ARRAY,\"metrics\":[\"fulfillment\"]}
-  }" >/dev/null
+  }" | jq -r '.id')
 
   ACTION_WIDGET_ID=$(api POST "/api/xblueview/dashboards/$DASHBOARD_ID/widgets" "{
     \"widget_kind\":\"ACTION_FORM\",
@@ -123,15 +136,25 @@ else
   KPI_WIDGET_ID=$(printf '%s' "$EXISTING" | jq -r '.widgets[] | select(.widget_kind=="KPI_CARD") | .id' | head -n 1)
   BAR_WIDGET_ID=$(printf '%s' "$EXISTING" | jq -r '.widgets[] | select(.widget_kind=="BAR_CHART") | .id' | head -n 1)
   SCENE3D_WIDGET_ID=$(printf '%s' "$EXISTING" | jq -r '.widgets[] | select(.widget_kind=="SCENE_3D") | .id' | head -n 1)
+  SIM_COMPARE_WIDGET_ID=$(printf '%s' "$EXISTING" | jq -r '.widgets[] | select(.widget_kind=="SIM_COMPARE") | .id' | head -n 1)
   ACTION_WIDGET_ID=$(printf '%s' "$EXISTING" | jq -r '.widgets[] | select(.widget_kind=="ACTION_FORM") | .id' | head -n 1)
 
   DASH_STATUS=$(printf '%s' "$EXISTING" | jq -r '.status // "DRAFT"')
+  if [[ -z "$SIM_COMPARE_WIDGET_ID" || "$SIM_COMPARE_WIDGET_ID" == "null" ]] && [[ -n "${SIM_S1_ID:-}" && "${SIM_S1_ID}" != "null" ]]; then
+    SIM_COMPARE_WIDGET_ID=$(api POST "/api/xblueview/dashboards/$DASHBOARD_ID/widgets" "{
+      \"widget_kind\":\"SIM_COMPARE\",
+      \"title\":\"推演方案对比\",
+      \"position\":{\"x\":0,\"y\":10,\"w\":6,\"h\":4},
+      \"data_source\":{\"kind\":\"SIM_SCENARIOS\",\"scenario_ids\":$SCENARIO_ARRAY,\"metrics\":[\"fulfillment\"]}
+    }" | jq -r '.id')
+    DASH_STATUS="DRAFT"
+  fi
   if [[ "$DASH_STATUS" != "PUBLISHED" ]]; then
     api POST "/api/xblueview/dashboards/$DASHBOARD_ID/publish" '{}' >/dev/null
   fi
 fi
 
-for var_name in MODEL3D_ASSET_ID DASHBOARD_ID KPI_WIDGET_ID BAR_WIDGET_ID SCENE3D_WIDGET_ID ACTION_WIDGET_ID; do
+for var_name in MODEL3D_ASSET_ID DASHBOARD_ID KPI_WIDGET_ID BAR_WIDGET_ID SCENE3D_WIDGET_ID SIM_COMPARE_WIDGET_ID ACTION_WIDGET_ID; do
   val="${!var_name:-}"
   if [[ -z "$val" || "$val" == "null" ]]; then
     echo "11-xblueview.sh: failed to seed required variable $var_name (got '$val')" >&2

@@ -7,9 +7,12 @@ source "$(dirname "$0")/lib.sh"
 SANDBOX_ID="${SANDBOX_ID:-$(api GET /api/axsim/sandboxes | jq -r '.[0].id // empty')}"
 WAREHOUSE_NODE_ID="${WAREHOUSE_NODE_ID:-$(sql_app default "SELECT id FROM xb_nodes WHERE node_key = 'W-1' LIMIT 1")}"
 FACTORY1_NODE_ID="${FACTORY1_NODE_ID:-$(sql_app default "SELECT id FROM xb_nodes WHERE node_key = 'F-1' LIMIT 1")}"
-if [[ -z "$SANDBOX_ID" || -z "$WAREHOUSE_NODE_ID" || -z "$FACTORY1_NODE_ID" ]]; then
+if [[ -z "$SANDBOX_ID" || "$SANDBOX_ID" == "null" || -z "$WAREHOUSE_NODE_ID" || -z "$FACTORY1_NODE_ID" ]]; then
   eval "$(bash "$(dirname "$0")/../seed/10-axsim.sh")"
 fi
+
+api POST "/api/axsim/sandboxes/$SANDBOX_ID/reset" '{}' >/dev/null || true
+RUN_TAG="$(date +%s)-$$"
 
 PROD_BEFORE=$(sql_app default "SELECT md5(string_agg(id::text || metrics::text, ',' ORDER BY id)) FROM xb_nodes")
 
@@ -17,8 +20,8 @@ PROD_BEFORE=$(sql_app default "SELECT md5(string_agg(id::text || metrics::text, 
 api PATCH "/api/axsim/sandboxes/$SANDBOX_ID/nodes/$WAREHOUSE_NODE_ID" '{"metrics":{"inventory":1}}' >/dev/null
 
 # 场景：简写与完整写法等价
-S1=$(api POST "/api/axsim/sandboxes/$SANDBOX_ID/scenarios" "{\"name\":\"s1\",\"actions\":[{\"target_node_id\":\"$FACTORY1_NODE_ID\",\"metric_key\":\"output\",\"delta_ratio\":-0.3}],\"params\":{}}" | jq -r .id)
-S2=$(api POST "/api/axsim/sandboxes/$SANDBOX_ID/scenarios" "{\"name\":\"s2\",\"actions\":[{\"target_node_id\":\"$FACTORY1_NODE_ID\",\"metric_key\":\"output\",\"mode\":\"RATIO\",\"value\":-0.3}],\"params\":{}}" | jq -r .id)
+S1=$(api POST "/api/axsim/sandboxes/$SANDBOX_ID/scenarios" "{\"name\":\"s1-$RUN_TAG\",\"actions\":[{\"target_node_id\":\"$FACTORY1_NODE_ID\",\"metric_key\":\"output\",\"delta_ratio\":-0.3}],\"params\":{}}" | jq -r .id)
+S2=$(api POST "/api/axsim/sandboxes/$SANDBOX_ID/scenarios" "{\"name\":\"s2-$RUN_TAG\",\"actions\":[{\"target_node_id\":\"$FACTORY1_NODE_ID\",\"metric_key\":\"output\",\"mode\":\"RATIO\",\"value\":-0.3}],\"params\":{}}" | jq -r .id)
 wait_scenario "$S1"; wait_scenario "$S2"
 expect_eq "shorthand-equal" "$(api GET "/api/axsim/scenarios/$S1/impacts?limit=500" | jq -c '[.items[] | [.node_id,.metric,.after_val]] | sort')" \
                             "$(api GET "/api/axsim/scenarios/$S2/impacts?limit=500" | jq -c '[.items[] | [.node_id,.metric,.after_val]] | sort')"
@@ -29,7 +32,7 @@ expect_json "missing-metric" "$(api POST "/api/axsim/sandboxes/$SANDBOX_ID/simul
 
 # 对比与回放
 expect_json "compare" "$(api GET "/api/axsim/scenarios/compare?ids=$S1,$S2&briefing=true")" '(.kpis | length) > 0 and (.briefing.recommended_scenario_id as $r | ["'"$S1"'","'"$S2"'"] | index($r) != null)'
-S3=$(api POST "/api/axsim/sandboxes/$SANDBOX_ID/scenarios" "{\"name\":\"s3\",\"actions\":[{\"target_node_id\":\"$FACTORY1_NODE_ID\",\"metric_key\":\"output\",\"delta_ratio\":-0.3}],\"params\":{\"mode\":\"STEPPED\",\"horizon_steps\":6}}" | jq -r .id)
+S3=$(api POST "/api/axsim/sandboxes/$SANDBOX_ID/scenarios" "{\"name\":\"s3-$RUN_TAG\",\"actions\":[{\"target_node_id\":\"$FACTORY1_NODE_ID\",\"metric_key\":\"output\",\"delta_ratio\":-0.3}],\"params\":{\"mode\":\"STEPPED\",\"horizon_steps\":6}}" | jq -r .id)
 wait_scenario "$S3"
 expect_json "checkpoints" "$(api GET "/api/axsim/scenarios/$S3/checkpoints")" '(.items | length) == 7'
 
@@ -46,5 +49,8 @@ DEC2=$(api POST "/api/axsim/scenarios/$S1/decisions" '{"title":"重复下发","t
 APR2=$(api GET "/api/axsim/decisions/$DEC2" | jq -r .approval_id)
 api POST "/api/axflow/approvals/$APR2/decide" '{"decision":"APPROVE"}' >/dev/null
 wait_until "conflict" 60 "api GET /api/axsim/decisions/$DEC2 | jq -e '.status == \"CONFLICT\"'"
+
+# 恢复 F-1 生产基线指标，避免影响后续门禁
+api PATCH "/api/xblue/nodes/$FACTORY1_NODE_ID" '{"metrics":{"output":1000.0}}' >/dev/null
 
 gate_pass step10

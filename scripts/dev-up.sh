@@ -4,6 +4,10 @@ cd "$(dirname "$0")/.."
 for _pg_bin in /usr/lib/postgresql/*/bin; do
   [[ -d "$_pg_bin" ]] && export PATH="$_pg_bin:$PATH"
 done
+if [[ -d "$HOME/workspace/.python" && -z "${UV_PYTHON:-}" ]]; then
+  export UV_PYTHON_INSTALL_DIR="$HOME/workspace/.python"
+  export UV_PYTHON=3.11
+fi
 test -f deploy/.env || cp deploy/.env.example deploy/.env
 
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
@@ -70,9 +74,19 @@ mkdir -p "$AXPOINT_DATA_ROOT"/{lake,assets,exports,tenants} "$AXPOINT_MODEL_PATH
 
 (cd axpoint-parser \
   && (uv sync --extra dev 2>/dev/null || (test -d .venv || uv venv .venv; uv pip install -e ".[dev]")) \
+  && (.venv/bin/python -c "import spacy.util, sys; sys.exit(0 if spacy.util.is_package('zh_core_web_sm') else 1)" \
+      || uv pip install --python .venv/bin/python --no-deps "https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl") \
   && (test -f charts/package.json && npm --prefix charts ci --omit=dev >/dev/null || true) \
   && .venv/bin/python -c "import importlib.util as u; d=__import__('duckdb').connect() if u.find_spec('duckdb') else None; [d.execute(f'INSTALL {e}') for e in ('ducklake','postgres','mysql_scanner','sqlite_scanner')] if d else None" \
   && .venv/bin/python tests/fixtures/make_fixtures.py)
+
+if [[ ! -f "$HOME/.duckdb/extensions/v2.0.0/linux_amd64/ducklake.duckdb_extension" && ! -f "$HOME/.duckdb/extensions/v2.0.0/linux_amd64_gcc4/ducklake.duckdb_extension" ]]; then
+  if [[ -x ./axpoint-core/target/debug/axpoint-server ]]; then
+    ./axpoint-core/target/debug/axpoint-server install-duckdb-extensions
+  else
+    (cd axpoint-core && cargo run -q -p axpoint-server -- install-duckdb-extensions)
+  fi
+fi
 
 psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -c "ALTER ROLE axpoint_app PASSWORD 'axpoint_app_secret'" \
   -c "ALTER ROLE axpoint_lake PASSWORD 'axpoint_lake_secret'" 2>/dev/null || true
