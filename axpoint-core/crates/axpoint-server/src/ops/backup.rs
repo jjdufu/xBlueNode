@@ -193,97 +193,114 @@ mod tests {
             Ok(Uuid::new_v4())
         }
 
-        async fn lease(
+        fn lease(
             &self,
             _worker: &str,
             _kinds: &[JobKind],
             _limit: u32,
             _lease_secs: u32,
-        ) -> Result<Vec<LeasedJob>, AppError> {
-            Ok(Vec::new())
+        ) -> impl std::future::Future<Output = Result<Vec<LeasedJob>, AppError>> + Send {
+            std::future::ready(Ok(Vec::new()))
         }
 
-        async fn heartbeat(&self, _job: &LeasedJob, _lease_secs: u32) -> Result<(), AppError> {
-            Ok(())
+        fn heartbeat(
+            &self,
+            _job: &LeasedJob,
+            _lease_secs: u32,
+        ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
+            std::future::ready(Ok(()))
         }
 
-        async fn complete(
+        fn complete(
             &self,
             _job: &LeasedJob,
             _result: serde_json::Value,
-        ) -> Result<(), AppError> {
-            Ok(())
+        ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
+            std::future::ready(Ok(()))
         }
 
-        async fn fail(&self, _job: &LeasedJob, _error: &str) -> Result<(), AppError> {
-            Ok(())
+        fn fail(
+            &self,
+            _job: &LeasedJob,
+            _error: &str,
+        ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
+            std::future::ready(Ok(()))
         }
 
-        async fn list_jobs(
+        fn list_jobs(
             &self,
             _tenant_id: &str,
             _query: JobListQuery,
-        ) -> Result<JobListResponse, AppError> {
-            Ok(JobListResponse {
+        ) -> impl std::future::Future<Output = Result<JobListResponse, AppError>> + Send {
+            std::future::ready(Ok(JobListResponse {
                 items: Vec::new(),
                 next_cursor: None,
-            })
+            }))
         }
 
-        async fn get_job(
+        fn get_job(
             &self,
             _tenant_id: &str,
             _job_id: Uuid,
-        ) -> Result<Option<JobRecord>, AppError> {
-            Ok(None)
+        ) -> impl std::future::Future<Output = Result<Option<JobRecord>, AppError>> + Send {
+            std::future::ready(Ok(None))
         }
     }
 
     impl OpsRepository for MockBackupStore {
-        async fn probe_database_health(&self) -> Result<DatabaseHealth, AppError> {
-            Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK"))
+        fn probe_database_health(
+            &self,
+        ) -> impl std::future::Future<Output = Result<DatabaseHealth, AppError>> + Send {
+            std::future::ready(Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK")))
         }
 
-        async fn query_jobs_health_stats(
+        fn query_jobs_health_stats(
             &self,
             _tenant_id: &str,
-        ) -> Result<JobsHealthStats, AppError> {
-            Ok(JobsHealthStats::default())
+        ) -> impl std::future::Future<Output = Result<JobsHealthStats, AppError>> + Send {
+            std::future::ready(Ok(JobsHealthStats::default()))
         }
 
-        async fn query_outbox_stats(&self, _tenant_id: &str) -> Result<OutboxStats, AppError> {
-            Ok(OutboxStats::default())
+        fn query_outbox_stats(
+            &self,
+            _tenant_id: &str,
+        ) -> impl std::future::Future<Output = Result<OutboxStats, AppError>> + Send {
+            std::future::ready(Ok(OutboxStats::default()))
         }
 
-        async fn query_migrations_health(
+        fn query_migrations_health(
             &self,
             _expected_total: usize,
-        ) -> Result<MigrationsHealth, AppError> {
-            Ok(MigrationsHealth {
+        ) -> impl std::future::Future<Output = Result<MigrationsHealth, AppError>> + Send {
+            std::future::ready(Ok(MigrationsHealth {
                 ok: true,
                 current: 14,
                 pending: 0,
-            })
+            }))
         }
 
-        async fn list_retention_policies(
+        fn list_retention_policies(
             &self,
             _tenant_id: &str,
-        ) -> Result<Vec<RetentionPolicyRecord>, AppError> {
-            Ok(Vec::new())
+        ) -> impl std::future::Future<Output = Result<Vec<RetentionPolicyRecord>, AppError>> + Send
+        {
+            std::future::ready(Ok(Vec::new()))
         }
 
-        async fn upsert_retention_policy(
+        fn upsert_retention_policy(
             &self,
             _tenant_id: &str,
             target: RetentionTarget,
             keep_days: i32,
-        ) -> Result<RetentionPolicyRecord, AppError> {
-            Ok(RetentionPolicyRecord { target, keep_days })
+        ) -> impl std::future::Future<Output = Result<RetentionPolicyRecord, AppError>> + Send
+        {
+            std::future::ready(Ok(RetentionPolicyRecord { target, keep_days }))
         }
 
-        async fn drop_expired_metric_partitions(&self) -> Result<i64, AppError> {
-            Ok(0)
+        fn drop_expired_metric_partitions(
+            &self,
+        ) -> impl std::future::Future<Output = Result<i64, AppError>> + Send {
+            std::future::ready(Ok(0))
         }
 
         async fn create_backup(&self, backup_kind: BackupKind) -> Result<BackupRecord, AppError> {
@@ -321,95 +338,102 @@ mod tests {
             Ok(guard.iter().find(|b| b.id == backup_id).cloned())
         }
 
-        async fn create_template_install(
+        fn create_template_install(
             &self,
             _tenant_id: &str,
             _input: NewTemplateInstallInput,
-        ) -> Result<TemplateInstallRecord, AppError> {
-            Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK"))
+        ) -> impl std::future::Future<Output = Result<TemplateInstallRecord, AppError>> + Send
+        {
+            std::future::ready(Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK")))
         }
 
-        async fn list_template_installs(
+        fn list_template_installs(
             &self,
             _tenant_id: &str,
-        ) -> Result<Vec<TemplateInstallRecord>, AppError> {
-            Ok(Vec::new())
+        ) -> impl std::future::Future<Output = Result<Vec<TemplateInstallRecord>, AppError>> + Send
+        {
+            std::future::ready(Ok(Vec::new()))
         }
 
-        async fn get_template_install(
+        fn get_template_install(
             &self,
             _tenant_id: &str,
             _install_id: Uuid,
-        ) -> Result<Option<TemplateInstallRecord>, AppError> {
-            Ok(None)
+        ) -> impl std::future::Future<Output = Result<Option<TemplateInstallRecord>, AppError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
-        async fn update_template_install_progress(
+        fn update_template_install_progress(
             &self,
             _tenant_id: &str,
             _install_id: Uuid,
             _status: TemplateInstallStatus,
             _object_map: &BTreeMap<String, TemplateCreatedObject>,
             _error_message: Option<&str>,
-        ) -> Result<TemplateInstallRecord, AppError> {
-            Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK"))
+        ) -> impl std::future::Future<Output = Result<TemplateInstallRecord, AppError>> + Send
+        {
+            std::future::ready(Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK")))
         }
 
-        async fn create_work_item(
+        fn create_work_item(
             &self,
             _tenant_id: &str,
             _created_by: Option<Uuid>,
             _req: CreateWorkItemRequest,
-        ) -> Result<WorkItem, AppError> {
-            Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK"))
+        ) -> impl std::future::Future<Output = Result<WorkItem, AppError>> + Send {
+            std::future::ready(Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK")))
         }
 
-        async fn list_work_items(
+        fn list_work_items(
             &self,
             _tenant_id: &str,
             _query: WorkItemListQuery,
-        ) -> Result<PaginatedList<WorkItem>, AppError> {
-            Ok(PaginatedList {
+        ) -> impl std::future::Future<Output = Result<PaginatedList<WorkItem>, AppError>> + Send
+        {
+            std::future::ready(Ok(PaginatedList {
                 items: Vec::new(),
                 next_cursor: None,
-            })
+            }))
         }
 
-        async fn get_work_item_detail(
+        fn get_work_item_detail(
             &self,
             _tenant_id: &str,
             _item_id: Uuid,
-        ) -> Result<Option<WorkItemDetail>, AppError> {
-            Ok(None)
+        ) -> impl std::future::Future<Output = Result<Option<WorkItemDetail>, AppError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
-        async fn patch_work_item(
+        fn patch_work_item(
             &self,
             _tenant_id: &str,
             _item_id: Uuid,
             _actor: Option<Uuid>,
             _req: PatchWorkItemRequest,
-        ) -> Result<Option<WorkItem>, AppError> {
-            Ok(None)
+        ) -> impl std::future::Future<Output = Result<Option<WorkItem>, AppError>> + Send {
+            std::future::ready(Ok(None))
         }
 
-        async fn add_work_item_event(
+        fn add_work_item_event(
             &self,
             _tenant_id: &str,
             _item_id: Uuid,
             _event_kind: WorkItemEventKind,
             _actor: Option<Uuid>,
             _detail: serde_json::Value,
-        ) -> Result<Option<WorkItemEvent>, AppError> {
-            Ok(None)
+        ) -> impl std::future::Future<Output = Result<Option<WorkItemEvent>, AppError>> + Send
+        {
+            std::future::ready(Ok(None))
         }
 
-        async fn link_resolved_alert_work_items(
+        fn link_resolved_alert_work_items(
             &self,
             _tenant_id: &str,
             _alert_id: Uuid,
-        ) -> Result<u64, AppError> {
-            Ok(0)
+        ) -> impl std::future::Future<Output = Result<u64, AppError>> + Send {
+            std::future::ready(Ok(0))
         }
     }
 

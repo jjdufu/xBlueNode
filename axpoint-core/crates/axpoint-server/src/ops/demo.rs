@@ -440,9 +440,9 @@ mod tests {
     fn demo_presets_cover_all_three_scenarios() {
         for scenario in DemoScenario::ALL {
             let preset = demo_scenario_preset(*scenario);
-            assert!(!preset.sandbox_name.is_empty());
-            assert!(!preset.scenario_name.is_empty());
-            assert!(!preset.preferred_metric.is_empty());
+            assert_ne!(preset.sandbox_name, "");
+            assert_ne!(preset.scenario_name, "");
+            assert_ne!(preset.preferred_metric, "");
         }
         assert_eq!(
             demo_scenario_preset(DemoScenario::SupplyChain).scenario_name,

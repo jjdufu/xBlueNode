@@ -87,9 +87,7 @@ struct PlanCollector<'a> {
 impl PlanCollector<'_> {
     fn push(&mut self, category: &str, key: &str, source_name: &str, existing: &BTreeSet<String>) {
         let is_conflict = existing.contains(source_name);
-        let (target_name, action) = if !is_conflict {
-            (String::from(source_name), String::from("CREATE"))
-        } else {
+        let (target_name, action) = if is_conflict {
             self.conflicts.push(format!("{category}:{source_name}"));
             match self.strategy {
                 TemplateConflictStrategy::Skip => (String::from(source_name), String::from("SKIP")),
@@ -107,6 +105,8 @@ impl PlanCollector<'_> {
                     (cand, String::from("RENAME"))
                 }
             }
+        } else {
+            (String::from(source_name), String::from("CREATE"))
         };
         self.objects.push(TemplatePlannedObject {
             category: String::from(category),
@@ -355,9 +355,10 @@ fn select_ref_value(
                 | "slug"
         )
     );
-    if wants_name || category == "node_type" {
-        target.target_name.clone()
-    } else if category == "metric" && parent_field != Some("target_id") {
+    if wants_name
+        || category == "node_type"
+        || (category == "metric" && parent_field != Some("target_id"))
+    {
         target.target_name.clone()
     } else {
         target.id.clone()
@@ -1341,7 +1342,7 @@ where
                 continue;
             }
             if let Some(p) = planned {
-                spec.name = p.target_name.clone();
+                spec.name.clone_from(&p.target_name);
             }
             merged_doc.mappings.retain(|m| m.name != spec.name);
             merged_doc.mappings.push(spec.clone());
@@ -2381,11 +2382,11 @@ fn merge_pack_schema(
         let mut cloned = nt.clone();
         cloned.id = None;
         if let Some(p) = planned {
-            cloned.name = p.target_name.clone();
+            cloned.name.clone_from(&p.target_name);
         }
         for agg in &mut cloned.agg_rules {
             if let Some(renamed) = session.node_type_renames.get(&agg.source_type_name) {
-                agg.source_type_name = renamed.clone();
+                agg.source_type_name.clone_from(renamed);
             }
         }
         merged
@@ -2398,10 +2399,10 @@ fn merge_pack_schema(
         let mut cloned = et.clone();
         cloned.id = None;
         if let Some(renamed) = session.node_type_renames.get(&cloned.src_type_name) {
-            cloned.src_type_name = renamed.clone();
+            cloned.src_type_name.clone_from(renamed);
         }
         if let Some(renamed) = session.node_type_renames.get(&cloned.dst_type_name) {
-            cloned.dst_type_name = renamed.clone();
+            cloned.dst_type_name.clone_from(renamed);
         }
         let already_exists = merged.edge_types.iter().any(|existing| {
             existing.name == cloned.name
