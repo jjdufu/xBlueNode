@@ -4,8 +4,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-export RUSTUP_HOME="${RUSTUP_HOME:-/home/antigravity/.rustup}"
-export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/home/antigravity/.cargo-target}"
+export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/axpoint-core/target}"
 export CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}"
 export CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}"
 

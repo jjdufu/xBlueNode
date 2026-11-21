@@ -76,6 +76,7 @@ async fn setup_tenant(owner_pool: &PgPool, tenant_id: &str) -> TestResult {
 
 async fn cleanup_tenant(owner_pool: &PgPool, tenant_id: &str) -> TestResult {
     for stmt in [
+        "DELETE FROM ax_outbox WHERE tenant_id = $1",
         "DELETE FROM ax_notify_deliveries WHERE tenant_id = $1",
         "DELETE FROM ax_alert_events WHERE tenant_id = $1",
         "DELETE FROM ax_alerts WHERE tenant_id = $1",
@@ -88,7 +89,6 @@ async fn cleanup_tenant(owner_pool: &PgPool, tenant_id: &str) -> TestResult {
         "DELETE FROM xb_metric_series WHERE tenant_id = $1",
         "DELETE FROM xb_nodes WHERE tenant_id = $1",
         "DELETE FROM ax_flows WHERE tenant_id = $1",
-        "DELETE FROM ax_outbox WHERE tenant_id = $1",
         "DELETE FROM sec_tenants WHERE tenant_id = $1",
     ] {
         sqlx::query(stmt)
