@@ -11,7 +11,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import orjson
 import polars as pl
 
-from schemas import ColumnProfile, DataType, PiiCategory
+from pii.engine import (
+    CATEGORY_PRIORITY,
+    DEFAULT_MASK_RULES,
+    apply_mask_rule,
+    get_pii_engine,
+)
+from schemas import ColumnProfile, DataType, PiiAnalyzeRequest, PiiCategory
 
 _BOOL_TRUE = frozenset({"true", "yes"})
 _BOOL_FALSE = frozenset({"false", "no"})
@@ -51,96 +57,17 @@ _ADDRESS_COL_RE = re.compile(
     r"(?i)^(?:address|street_address|home_address|shipping_address|地址|详细地址|收货地址|联系地址|家庭住址)$"
 )
 
+PII_PROFILE_SAMPLE_LIMIT = 200
+
+_NON_PERSON_COL_RE = re.compile(
+    r"(?i)(?:city|province|region|country|warehouse|status|category|factory|product|material|"
+    r"城市|省份|地区|区域|大区|仓库|状态|类别|类型|工厂|物料|商品|产品)"
+)
+_LATIN_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z .'\-]{1,48}$")
+_PLACEHOLDER_STRS = frozenset({"n/a", "na", "null", "none", "unknown", "nil", "true", "false"})
+
 _ID_WEIGHTS = (7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2)
 _ID_CHECK_MAP = "10X98765432"
-
-_COMPOUND_SURNAMES = frozenset(
-    {
-        "欧阳",
-        "太史",
-        "端木",
-        "上官",
-        "司马",
-        "东方",
-        "独孤",
-        "南宫",
-        "万俟",
-        "闻人",
-        "夏侯",
-        "诸葛",
-        "尉迟",
-        "公羊",
-        "赫连",
-        "澹台",
-        "皇甫",
-        "宗政",
-        "濮阳",
-        "公冶",
-        "太叔",
-        "申屠",
-        "公孙",
-        "慕容",
-        "仲孙",
-        "钟离",
-        "长孙",
-        "宇文",
-        "司徒",
-        "鲜于",
-        "司空",
-        "闾丘",
-        "子车",
-        "亓官",
-        "司寇",
-        "巫马",
-        "公西",
-        "颛孙",
-        "壤驷",
-        "公良",
-        "漆雕",
-        "乐正",
-        "宰父",
-        "谷梁",
-        "拓跋",
-        "夹谷",
-        "轩辕",
-        "令狐",
-        "段干",
-        "百里",
-        "呼延",
-        "东郭",
-        "南门",
-        "羊舌",
-        "微生",
-        "公户",
-        "公玉",
-        "公仪",
-        "梁丘",
-        "公仲",
-        "公上",
-        "公门",
-        "公山",
-        "公坚",
-        "左丘",
-        "公伯",
-        "西门",
-        "公祖",
-        "第五",
-        "公乘",
-        "贯丘",
-        "公皙",
-        "南荣",
-        "东里",
-        "东宫",
-        "仲长",
-        "子书",
-        "子桑",
-        "即墨",
-        "达奚",
-        "褚师",
-    }
-)
-
-_ADDR_ADMIN_RE = re.compile(r"^(.+?(?:省|自治区|市|区|县|旗))(.*)$")
 
 
 def _resolve_tz(tz_name: str) -> ZoneInfo:
@@ -163,7 +90,7 @@ def is_valid_cn_phone(raw: str) -> bool:
 def is_valid_cn_id_card(raw: str) -> bool:
     """Validate 18-digit GB 11643-1999 resident ID number including checksum and birth date."""
     s = raw.strip().upper()
-    if len(s) != 18 or not s[:17].isdigit():
+    if len(s) != 18 or not s[:17].isdigit() or s[0] == "0":
         return False
     try:
         year = int(s[6:10])
@@ -184,7 +111,7 @@ def is_valid_bank_card(raw: str) -> bool:
     s = re.sub(r"[\s\-]", "", raw.strip())
     if not (13 <= len(s) <= 19) or not s.isdigit():
         return False
-    if not (s.startswith("62") or s[0] in {"3", "4", "5"}):
+    if not (s.startswith("62") or s[0] in {"3", "4", "5", "6"}):
         return False
     total = 0
     reverse_digits = s[::-1]
@@ -207,37 +134,71 @@ def is_valid_email(raw: str) -> bool:
 def detect_pii_category(
     col_name: str, non_null_samples: Sequence[str]
 ) -> tuple[PiiCategory, float]:
-    """Detect column PII category and hit ratio over up to 1,000 non-null samples."""
+    """Detect column PII category and hit ratio over up to 200 non-null string samples."""
     if _SECRET_COL_RE.search(col_name):
         return "SECRET", 1.0
 
-    sample = list(non_null_samples[:1000])
+    sample = [v for v in non_null_samples if v and v.strip()][:PII_PROFILE_SAMPLE_LIMIT]
     n = len(sample)
+    suppress_name = bool(_NON_PERSON_COL_RE.search(col_name))
+
     if n > 0:
-        secret_hits = sum(1 for v in sample if _SECRET_VAL_RE.fullmatch(v.strip()))
-        if secret_hits / n >= 0.30:
-            return "SECRET", round(secret_hits / n, 4)
+        engine = get_pii_engine()
+        analyzed = engine.analyze_texts(
+            PiiAnalyzeRequest(texts=sample, language="zh", score_threshold=0.6)
+        )
+        hits: dict[PiiCategory, int] = {}
 
-        id_hits = sum(1 for v in sample if is_valid_cn_id_card(v))
-        if id_hits / n >= 0.30:
-            return "ID_CARD", round(id_hits / n, 4)
+        for val, spans in zip(sample, analyzed.results, strict=True):
+            row_cats: set[PiiCategory] = {
+                sp.category for sp in spans if sp.category != "NONE"
+            }
+            stripped = val.strip()
+            if not row_cats:
+                if _SECRET_VAL_RE.fullmatch(stripped):
+                    row_cats.add("SECRET")
+                elif is_valid_cn_id_card(stripped):
+                    row_cats.add("ID_CARD")
+                elif is_valid_bank_card(stripped):
+                    row_cats.add("BANK_CARD")
+                elif is_valid_cn_phone(stripped):
+                    row_cats.add("PHONE")
+                elif is_valid_email(stripped):
+                    row_cats.add("EMAIL")
 
-        bank_hits = sum(1 for v in sample if is_valid_bank_card(v))
-        if bank_hits / n >= 0.30:
-            return "BANK_CARD", round(bank_hits / n, 4)
+            if suppress_name:
+                row_cats.discard("NAME")
 
-        phone_hits = sum(1 for v in sample if is_valid_cn_phone(v))
-        if phone_hits / n >= 0.30:
-            return "PHONE", round(phone_hits / n, 4)
+            for cat in row_cats:
+                hits[cat] = hits.get(cat, 0) + 1
 
-        email_hits = sum(1 for v in sample if is_valid_email(v))
-        if email_hits / n >= 0.30:
-            return "EMAIL", round(email_hits / n, 4)
+        qualifying = [
+            cat for cat, count in hits.items() if count / n >= 0.30
+        ]
+        if qualifying:
+            best_cat = max(
+                qualifying,
+                key=lambda c: (hits[c], CATEGORY_PRIORITY.get(c, 0)),
+            )
+            return best_cat, round(hits[best_cat] / n, 4)
 
-    if _NAME_COL_RE.fullmatch(col_name.strip()):
-        return "NAME", 1.0 if n > 0 else 0.0
-    if _ADDRESS_COL_RE.fullmatch(col_name.strip()):
-        return "ADDRESS", 1.0 if n > 0 else 0.0
+        # Support Latin person names when column name explicitly denotes a person name.
+        if _NAME_COL_RE.fullmatch(col_name.strip()) and hits.get("NAME", 0) == 0:
+            latin_hits = sum(
+                1
+                for v in sample
+                if v.strip().lower() not in _PLACEHOLDER_STRS
+                and _LATIN_NAME_RE.fullmatch(v.strip()) is not None
+            )
+            if latin_hits / n >= 0.30:
+                return "NAME", round(latin_hits / n, 4)
+
+    # Preserve column-name hints when values are empty or sparse (n <= 5).
+    if n <= 5:
+        if _NAME_COL_RE.fullmatch(col_name.strip()):
+            return "NAME", 1.0 if n > 0 else 0.0
+        if _ADDRESS_COL_RE.fullmatch(col_name.strip()):
+            return "ADDRESS", 1.0 if n > 0 else 0.0
 
     return "NONE", 0.0
 
@@ -246,63 +207,9 @@ def mask_pii_value(value: str, category: PiiCategory) -> str:
     """Mask a single string value according to Step 13 §13.7 MaskRule conventions."""
     if not value or category == "NONE":
         return value
-
-    s = value.strip()
-    if category == "SECRET":
-        return "[REDACTED]"
-
-    if category == "PHONE":
-        prefix = ""
-        cleaned = _PHONE_CLEAN_RE.sub("", s)
-        if cleaned.startswith("+86"):
-            prefix = "+86"
-            cleaned = cleaned[3:]
-        elif cleaned.startswith("0086"):
-            prefix = "0086"
-            cleaned = cleaned[4:]
-        if len(cleaned) >= 7:
-            return f"{prefix}{cleaned[:3]}****{cleaned[-4:]}"
-        return "****"
-
-    if category == "ID_CARD":
-        if len(s) >= 10:
-            return f"{s[:6]}{'*' * (len(s) - 10)}{s[-4:]}"
-        return "********"
-
-    if category == "EMAIL":
-        at_idx = s.find("@")
-        if at_idx > 0:
-            local = s[:at_idx]
-            domain = s[at_idx:]
-            masked_local = local[0] + ("*" * max(len(local) - 1, 1))
-            return f"{masked_local}{domain}"
-        return "*@***"
-
-    if category == "BANK_CARD":
-        digits = re.sub(r"[\s\-]", "", s)
-        if len(digits) > 4:
-            return f"{'*' * (len(digits) - 4)}{digits[-4:]}"
-        return "****"
-
-    if category == "NAME":
-        if len(s) >= 3 and s[:2] in _COMPOUND_SURNAMES:
-            return s[:2] + ("*" * (len(s) - 2))
-        if any("\u4e00" <= ch <= "\u9fff" for ch in s):
-            return s[0] + ("*" * max(len(s) - 1, 1))
-        parts = s.split()
-        if parts:
-            return " ".join(p[0] + ("*" * max(len(p) - 1, 1)) for p in parts)
-        return s[0] + "*"
-
-    if category == "ADDRESS":
-        m = _ADDR_ADMIN_RE.match(s)
-        if m and m.group(2):
-            return f"{m.group(1)}****"
-        if len(s) > 6:
-            return f"{s[:6]}****"
-        return "****"
-
-    return value
+    rule = DEFAULT_MASK_RULES.get(category, "NONE")
+    masked = apply_mask_rule(value, rule)
+    return masked if masked is not None else value
 
 
 def _clean_numeric_str(s: str) -> tuple[str, bool] | None:
@@ -894,7 +801,12 @@ def profile_polars_df(
         dt = overrides.get(col) or _polars_dtype_to_datatype(s.dtype)
         non_null = s.drop_nulls()
         raw_samples = [_stringify_for_sample(v) for v in non_null.head(1000).to_list()]
-        pii_cat, pii_ratio = detect_pii_category(col, raw_samples)
+        if dt in {"STRING", "INT64"}:
+            pii_cat, pii_ratio = detect_pii_category(col, raw_samples)
+        elif _SECRET_COL_RE.search(col):
+            pii_cat, pii_ratio = "SECRET", 1.0
+        else:
+            pii_cat, pii_ratio = "NONE", 0.0
         total = s.len()
         null_cnt = int(s.null_count())
         null_ratio = round(null_cnt / total, 6) if total > 0 else 0.0

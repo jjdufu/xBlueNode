@@ -28,8 +28,8 @@ use axpoint_domain::export::{
 use axpoint_domain::platform::{AuditRecord, BoxFuture, JobHandler, LeasedJob};
 use axpoint_domain::ports::{
     AgentRepository, AnalyticsRepository, ConnectionRepository, CredentialStore, DatasetRepository,
-    GraphQueryPort, MetricStorePort, RulesRepository, SidecarPort, SimRepository, StudioRepository,
-    ViewRepository,
+    GraphQueryPort, GuardRepository, MetricStorePort, RulesRepository, SidecarPort, SimRepository,
+    StudioRepository, ViewRepository,
 };
 use axpoint_domain::sim::ScenarioRecord;
 use axpoint_domain::view::{
@@ -70,6 +70,8 @@ pub struct ExportBuildDeps<'a, S: ?Sized> {
     pub analytics_pool: &'a Arc<SessionPool>,
     /// Widget response cache.
     pub cache: &'a ViewCache,
+    /// `Cedar` `ABAC` policy authorizer.
+    pub cedar: &'a axpoint_security::cedar_authz::CedarAuthorizer,
     /// `AXPOINT_DATA_ROOT` directory for templates and temporary `Parquet` spill files.
     pub data_root: &'a Path,
 }
@@ -82,6 +84,8 @@ pub struct ExportJobHandler<S, P> {
     pub analytics_pool: Arc<SessionPool>,
     /// `xBlueView` widget cache.
     pub cache: Arc<ViewCache>,
+    /// `Cedar` `ABAC` policy authorizer.
+    pub cedar: Arc<axpoint_security::cedar_authz::CedarAuthorizer>,
     /// `Sidecar` HTTP client.
     pub sidecar: Arc<P>,
     /// Asynchronous security audit writer.
@@ -94,6 +98,7 @@ impl<S, P> JobHandler for ExportJobHandler<S, P>
 where
     S: ViewRepository
         + CredentialStore
+        + GuardRepository
         + AnalyticsRepository
         + DatasetRepository
         + ConnectionRepository
@@ -145,6 +150,7 @@ impl<S, P> ExportJobHandler<S, P>
 where
     S: ViewRepository
         + CredentialStore
+        + GuardRepository
         + AnalyticsRepository
         + DatasetRepository
         + ConnectionRepository
@@ -187,6 +193,7 @@ where
             store: &self.store,
             analytics_pool: &self.analytics_pool,
             cache: &self.cache,
+            cedar: &self.cedar,
             data_root: &self.data_root,
         };
         let built = build_export_payload(
@@ -467,6 +474,7 @@ pub async fn build_export_payload<S>(
 ) -> Result<BuiltExportPayload, AppError>
 where
     S: ViewRepository
+        + GuardRepository
         + AnalyticsRepository
         + DatasetRepository
         + ConnectionRepository
@@ -604,6 +612,7 @@ async fn build_source_sections<S>(
 ) -> Result<(String, Vec<ExportSection>, Option<PathBuf>), AppError>
 where
     S: ViewRepository
+        + GuardRepository
         + AnalyticsRepository
         + DatasetRepository
         + ConnectionRepository
@@ -615,13 +624,22 @@ where
         + AgentRepository
         + ?Sized,
 {
+    let policy = crate::policy::build_policy_context_for_store(
+        deps.store,
+        deps.cedar,
+        creator,
+        false,
+        "127.0.0.1",
+    )
+    .await?;
+
     match source {
         ExportSource::Dashboard {
             dashboard_id,
             filters,
         } => {
             let (title, sections) =
-                build_dashboard_sections(deps, creator, *dashboard_id, filters).await?;
+                build_dashboard_sections(deps, creator, &policy, *dashboard_id, filters).await?;
             Ok((title, sections, None))
         }
         ExportSource::Widget {
@@ -629,16 +647,18 @@ where
             filters,
             drill_path,
         } => {
-            let (title, sections) =
-                build_single_widget_sections(deps, creator, *widget_id, filters, drill_path)
-                    .await?;
+            let (title, sections) = build_single_widget_sections(
+                deps, creator, &policy, *widget_id, filters, drill_path,
+            )
+            .await?;
             Ok((title, sections, None))
         }
         ExportSource::SavedQuery { saved_query_id } => {
-            build_saved_query_sections(deps, creator, export_id, format, *saved_query_id).await
+            build_saved_query_sections(deps, creator, &policy, export_id, format, *saved_query_id)
+                .await
         }
         ExportSource::Pivot { spec } => {
-            let section = build_pivot_section(deps, creator, spec, "透视分析").await?;
+            let section = build_pivot_section(deps, creator, &policy, spec, "透视分析").await?;
             Ok((String::from("透视分析"), vec![section], None))
         }
         ExportSource::Scenario { scenario_ids } => {
@@ -657,6 +677,7 @@ where
 async fn build_dashboard_sections<S>(
     deps: &ExportBuildDeps<'_, S>,
     creator: &AuthPrincipal,
+    policy: &axpoint_domain::guard::PolicyContext,
     dashboard_id: Uuid,
     raw_filters: &BTreeMap<String, serde_json::Value>,
 ) -> Result<(String, Vec<ExportSection>), AppError>
@@ -709,6 +730,7 @@ where
         analytics_pool: deps.analytics_pool,
         cache: deps.cache,
         principal: creator,
+        policy: Some(policy),
     };
 
     let mut sections = Vec::with_capacity(sorted_widgets.len());
@@ -741,6 +763,7 @@ where
 async fn build_single_widget_sections<S>(
     deps: &ExportBuildDeps<'_, S>,
     creator: &AuthPrincipal,
+    policy: &axpoint_domain::guard::PolicyContext,
     widget_id: Uuid,
     filters: &BTreeMap<String, serde_json::Value>,
     drill_path: &[DrillPathItem],
@@ -791,6 +814,7 @@ where
         analytics_pool: deps.analytics_pool,
         cache: deps.cache,
         principal: creator,
+        policy: Some(policy),
     };
     let data = execute_widget_data(
         &env,
@@ -815,6 +839,7 @@ where
 async fn build_saved_query_sections<S>(
     deps: &ExportBuildDeps<'_, S>,
     creator: &AuthPrincipal,
+    policy: &axpoint_domain::guard::PolicyContext,
     export_id: Uuid,
     format: ExportFormat,
     saved_query_id: Uuid,
@@ -846,7 +871,7 @@ where
 
     match sq.kind {
         SavedQueryKind::Sql | SavedQueryKind::Ask => {
-            let qr = execute_saved_sql_for_export(deps, creator, &sq, max_rows).await?;
+            let qr = execute_saved_sql_for_export(deps, creator, policy, &sq, max_rows).await?;
             let (section, spill_path) = query_result_to_table_or_parquet(
                 deps.data_root,
                 &creator.tenant_id,
@@ -858,7 +883,7 @@ where
             Ok((sq.name, vec![section], spill_path))
         }
         SavedQueryKind::Pivot => {
-            let section = build_pivot_section(deps, creator, &sq.spec, &sq.name).await?;
+            let section = build_pivot_section(deps, creator, policy, &sq.spec, &sq.name).await?;
             Ok((sq.name, vec![section], None))
         }
         SavedQueryKind::Metric => {
@@ -867,6 +892,7 @@ where
                 analytics_pool: deps.analytics_pool,
                 cache: deps.cache,
                 principal: creator,
+                policy: Some(policy),
             };
             let preview = execute_widget_preview(
                 &env,
@@ -892,6 +918,7 @@ where
 async fn execute_saved_sql_for_export<S>(
     deps: &ExportBuildDeps<'_, S>,
     creator: &AuthPrincipal,
+    policy: &axpoint_domain::guard::PolicyContext,
     sq: &SavedQuery,
     max_rows_ceiling: u32,
 ) -> Result<QueryResult, AppError>
@@ -929,6 +956,7 @@ where
             max_rows: max_rows_ceiling,
             allow_live: has_live,
             params,
+            policy: Some(policy.clone()),
         },
         max_rows_ceiling,
     )?;
@@ -1112,6 +1140,7 @@ fn append_rows_to_duckdb(
 async fn build_pivot_section<S>(
     deps: &ExportBuildDeps<'_, S>,
     creator: &AuthPrincipal,
+    policy: &axpoint_domain::guard::PolicyContext,
     spec_json: &serde_json::Value,
     title: &str,
 ) -> Result<ExportSection, AppError>
@@ -1134,6 +1163,7 @@ where
             timeout_ms: Some(60_000),
             reveal_pii: false,
             has_pii_raw_read: false,
+            policy: Some(policy.clone()),
         },
     )
     .await?;

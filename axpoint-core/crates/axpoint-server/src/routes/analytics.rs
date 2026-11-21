@@ -9,7 +9,7 @@ use axpoint_analytics::{
     AskPipelineInput, CatalogDatasetEntry, LiveConnectionSpec, MetricExecuteOptions,
     PivotExecuteOptions, TenantCatalog, TenantDb, ensure_no_dependency_cycle, execute_metric_query,
     execute_multi_metric_query, execute_pivot, generate_transform_sql, preview_transform_sql,
-    run_ask_pipeline, validate_corrected_sql, validate_create_metric_request, validate_metric_def,
+    validate_corrected_sql, validate_create_metric_request, validate_metric_def,
     validate_target_dataset_name,
 };
 use axpoint_domain::AppError;
@@ -302,7 +302,7 @@ fn classify_history_status(err: &AppError) -> QueryHistoryStatus {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct CallerCtx<'a> {
     tenant_id: &'a str,
     user_id: Uuid,
@@ -310,10 +310,17 @@ struct CallerCtx<'a> {
     has_live: bool,
     has_pii_raw: bool,
     has_data_admin: bool,
+    client_ip: String,
+    auth: Option<&'a AuthPrincipal>,
+    analytics: Option<&'a AnalyticsPrincipal>,
 }
 
 impl<'a> CallerCtx<'a> {
     fn from_auth(p: &'a AuthPrincipal) -> Self {
+        Self::from_auth_with_ip(p, String::from("127.0.0.1"))
+    }
+
+    fn from_auth_with_ip(p: &'a AuthPrincipal, client_ip: String) -> Self {
         Self {
             tenant_id: &p.tenant_id,
             user_id: p.user_id,
@@ -321,6 +328,9 @@ impl<'a> CallerCtx<'a> {
             has_live: p.has(Permission::DataSync),
             has_pii_raw: p.has(Permission::PiiRawRead),
             has_data_admin: p.has(Permission::DataAdmin),
+            client_ip,
+            auth: Some(p),
+            analytics: None,
         }
     }
 
@@ -332,26 +342,59 @@ impl<'a> CallerCtx<'a> {
             has_live: p.has_permission(Permission::DataSync),
             has_pii_raw: p.has_permission(Permission::PiiRawRead),
             has_data_admin: p.has_permission(Permission::DataAdmin),
+            client_ip: String::from("127.0.0.1"),
+            auth: None,
+            analytics: Some(p),
         }
     }
 }
 
+async fn build_caller_policy(
+    state: &AppState,
+    caller: &CallerCtx<'_>,
+    reveal_pii: bool,
+) -> Result<axpoint_domain::guard::PolicyContext, AppError> {
+    if let Some(auth) = caller.auth {
+        return axpoint_server::policy::build_policy_context_for_store(
+            &state.store,
+            &state.cedar,
+            auth,
+            reveal_pii,
+            &caller.client_ip,
+        )
+        .await;
+    }
+    if let Some(ap) = caller.analytics {
+        let resolved = crate::agent_bridge::resolve_auth_principal(state, ap).await?;
+        return axpoint_server::policy::build_policy_context_for_store(
+            &state.store,
+            &state.cedar,
+            &resolved,
+            reveal_pii,
+            &caller.client_ip,
+        )
+        .await;
+    }
+    Err(AppError::Unauthorized("TOKEN_INVALID"))
+}
+
 async fn record_audit_and_flush(
     state: &AppState,
-    caller: CallerCtx<'_>,
+    caller: &CallerCtx<'_>,
     action: AuditAction,
     resource_ref: String,
     status_code: i32,
     detail_json: serde_json::Value,
 ) {
+    let user_id = (!caller.user_id.is_nil()).then_some(caller.user_id);
     state.audit.record(AuditRecord {
         tenant_id: String::from(caller.tenant_id),
-        user_id: Some(caller.user_id),
+        user_id,
         username: String::from(caller.username),
         action,
         resource_ref,
         status_code,
-        client_ip: String::from("127.0.0.1"),
+        client_ip: caller.client_ip.clone(),
         trace_id: current_trace_id(),
         detail_json,
         created_at: Utc::now(),
@@ -398,17 +441,29 @@ async fn execute_sql_with_telemetry(
     let started = Instant::now();
     let (session, _) = acquire_tenant_session(state, caller.tenant_id, caller.has_live).await?;
 
-    match session
-        .execute_sql(&req, caller.has_live, caller.has_pii_raw)
-        .await
-    {
-        Ok(out) => {
+    let exec_outcome = async {
+        let policy = build_caller_policy(state, &caller, req.reveal_pii).await?;
+        let raw_pii = policy.reveal_pii_authorized;
+        let out = session
+            .execute_sql_with_policy(
+                &req,
+                caller.has_live,
+                caller.has_pii_raw || raw_pii,
+                Some(&policy),
+            )
+            .await?;
+        Ok::<_, AppError>((out, raw_pii))
+    }
+    .await;
+
+    match exec_outcome {
+        Ok((out, raw_pii)) => {
             if let Err(err) = state
                 .store
                 .record_query_history(
                     caller.tenant_id,
                     NewQueryHistoryEntry {
-                        user_id: Some(caller.user_id),
+                        user_id: (!caller.user_id.is_nil()).then_some(caller.user_id),
                         kind: QueryHistoryKind::Sql,
                         sql_text: req.sql.clone(),
                         status: QueryHistoryStatus::Succeeded,
@@ -423,7 +478,7 @@ async fn execute_sql_with_telemetry(
             }
             record_audit_and_flush(
                 state,
-                caller,
+                &caller,
                 AuditAction::QuerySql,
                 String::from("analytics:sql"),
                 200,
@@ -431,6 +486,7 @@ async fn execute_sql_with_telemetry(
                     "row_count": out.result.row_count,
                     "truncated": out.result.truncated,
                     "reveal_pii": req.reveal_pii,
+                    "raw_pii": raw_pii,
                 }),
             )
             .await;
@@ -443,7 +499,7 @@ async fn execute_sql_with_telemetry(
                 .record_query_history(
                     caller.tenant_id,
                     NewQueryHistoryEntry {
-                        user_id: Some(caller.user_id),
+                        user_id: (!caller.user_id.is_nil()).then_some(caller.user_id),
                         kind: QueryHistoryKind::Sql,
                         sql_text: req.sql,
                         status: classify_history_status(&err),
@@ -458,7 +514,7 @@ async fn execute_sql_with_telemetry(
             }
             record_audit_and_flush(
                 state,
-                caller,
+                &caller,
                 AuditAction::QuerySql,
                 String::from("analytics:sql"),
                 error_http_status_i32(&err),
@@ -472,54 +528,77 @@ async fn execute_sql_with_telemetry(
 
 async fn run_sql_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<QueryRequest>,
 ) -> Result<Json<QueryResult>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let res = execute_sql_with_telemetry(&state, CallerCtx::from_auth(&principal), req).await?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let res = execute_sql_with_telemetry(
+        &state,
+        CallerCtx::from_auth_with_ip(&principal, client_ip),
+        req,
+    )
+    .await?;
     Ok(Json(res))
 }
 
 async fn explain_sql_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<QueryRequest>,
 ) -> Result<Json<ExplainResult>, HttpError> {
     principal.require(Permission::DataRead)?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
     let has_live = principal.has(Permission::DataSync);
     let (session, _) = acquire_tenant_session(&state, &principal.tenant_id, has_live).await?;
-    let explained = session.explain_sql(&req, has_live).await?;
+    let explained = session
+        .explain_sql_with_policy(&req, has_live, Some(&policy))
+        .await?;
     Ok(Json(explained))
 }
 
 async fn execute_pivot_with_telemetry(
     state: &AppState,
-    tenant_id: &str,
-    user_id: Uuid,
-    has_pii_raw_read: bool,
+    caller: CallerCtx<'_>,
     spec: PivotSpec,
 ) -> Result<PivotResult, AppError> {
     let started = Instant::now();
-    let (session, catalog) = acquire_tenant_session(state, tenant_id, false).await?;
-    match execute_pivot(
-        &session,
-        &catalog,
-        &spec,
-        PivotExecuteOptions {
-            timeout_ms: None,
-            reveal_pii: false,
-            has_pii_raw_read,
-        },
-    )
-    .await
-    {
+    let (session, catalog) = acquire_tenant_session(state, caller.tenant_id, false).await?;
+    let exec_outcome = async {
+        let policy = build_caller_policy(state, &caller, false).await?;
+        execute_pivot(
+            &session,
+            &catalog,
+            &spec,
+            PivotExecuteOptions {
+                timeout_ms: None,
+                reveal_pii: false,
+                has_pii_raw_read: caller.has_pii_raw,
+                policy: Some(policy),
+            },
+        )
+        .await
+    }
+    .await;
+
+    match exec_outcome {
         Ok(res) => {
             if let Err(err) = state
                 .store
                 .record_query_history(
-                    tenant_id,
+                    caller.tenant_id,
                     NewQueryHistoryEntry {
-                        user_id: Some(user_id),
+                        user_id: (!caller.user_id.is_nil()).then_some(caller.user_id),
                         kind: QueryHistoryKind::Pivot,
                         sql_text: res.sql.clone(),
                         status: QueryHistoryStatus::Succeeded,
@@ -538,9 +617,9 @@ async fn execute_pivot_with_telemetry(
             if let Err(hist_err) = state
                 .store
                 .record_query_history(
-                    tenant_id,
+                    caller.tenant_id,
                     NewQueryHistoryEntry {
-                        user_id: Some(user_id),
+                        user_id: (!caller.user_id.is_nil()).then_some(caller.user_id),
                         kind: QueryHistoryKind::Pivot,
                         sql_text: format!("PIVOT {}", spec.dataset),
                         status: classify_history_status(&err),
@@ -560,15 +639,15 @@ async fn execute_pivot_with_telemetry(
 
 async fn run_pivot_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiJson(spec): ApiJson<PivotSpec>,
 ) -> Result<Json<PivotResult>, HttpError> {
     principal.require(Permission::DataRead)?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
     let res = execute_pivot_with_telemetry(
         &state,
-        &principal.tenant_id,
-        principal.user_id,
-        principal.has(Permission::PiiRawRead),
+        CallerCtx::from_auth_with_ip(&principal, client_ip),
         spec,
     )
     .await?;
@@ -695,13 +774,12 @@ async fn delete_metric_handler(
 
 async fn execute_metric_def_with_telemetry(
     state: &AppState,
-    tenant_id: &str,
-    user_id: Uuid,
-    has_pii_raw_read: bool,
+    caller: &CallerCtx<'_>,
     metric: &MetricDef,
     query: MetricQuery,
 ) -> Result<MetricQueryResult, AppError> {
-    let (session, catalog) = acquire_tenant_session(state, tenant_id, false).await?;
+    let policy = build_caller_policy(state, caller, false).await?;
+    let (session, catalog) = acquire_tenant_session(state, caller.tenant_id, false).await?;
     let res = execute_metric_query(
         &session,
         &catalog,
@@ -710,16 +788,17 @@ async fn execute_metric_def_with_telemetry(
         MetricExecuteOptions {
             timeout_ms: None,
             reveal_pii: false,
-            has_pii_raw_read,
+            has_pii_raw_read: caller.has_pii_raw,
+            policy: Some(policy),
         },
     )
     .await?;
     if let Err(err) = state
         .store
         .record_query_history(
-            tenant_id,
+            caller.tenant_id,
             NewQueryHistoryEntry {
-                user_id: Some(user_id),
+                user_id: (!caller.user_id.is_nil()).then_some(caller.user_id),
                 kind: QueryHistoryKind::Metric,
                 sql_text: res.sql.clone(),
                 status: QueryHistoryStatus::Succeeded,
@@ -737,19 +816,16 @@ async fn execute_metric_def_with_telemetry(
 
 async fn execute_single_metric_with_telemetry(
     state: &AppState,
-    tenant_id: &str,
-    user_id: Uuid,
-    has_pii_raw_read: bool,
+    caller: &CallerCtx<'_>,
     name: &str,
     query: MetricQuery,
 ) -> Result<MetricQueryResult, AppError> {
     let metric = state
         .store
-        .get_metric_by_name(tenant_id, name)
+        .get_metric_by_name(caller.tenant_id, name)
         .await?
         .ok_or(AppError::NotFound("METRIC_NOT_FOUND"))?;
-    execute_metric_def_with_telemetry(state, tenant_id, user_id, has_pii_raw_read, &metric, query)
-        .await
+    execute_metric_def_with_telemetry(state, caller, &metric, query).await
 }
 
 /// Executes a semantic metric against either a `PROD`-pinned [`MetricDef`] snapshot or live `an_metrics`.
@@ -763,54 +839,43 @@ pub(crate) async fn execute_published_metric(
     if !principal.has_permission(Permission::DataRead) {
         return Err(AppError::Forbidden("PERMISSION_DENIED"));
     }
-    let has_pii_raw = principal.has_permission(Permission::PiiRawRead);
+    let caller = CallerCtx::from_analytics(principal);
     if let Some(pinned) = pinned_snapshot {
-        return execute_metric_def_with_telemetry(
-            state,
-            &principal.tenant_id,
-            principal.user_id,
-            has_pii_raw,
-            pinned,
-            query,
-        )
-        .await;
+        return execute_metric_def_with_telemetry(state, &caller, pinned, query).await;
     }
-    execute_single_metric_with_telemetry(
-        state,
-        &principal.tenant_id,
-        principal.user_id,
-        has_pii_raw,
-        metric_name,
-        query,
-    )
-    .await
+    execute_single_metric_with_telemetry(state, &caller, metric_name, query).await
 }
 
 async fn query_metric_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(name): ApiPath<String>,
     ApiJson(query): ApiJson<MetricQuery>,
 ) -> Result<Json<MetricQueryResult>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let res = execute_single_metric_with_telemetry(
-        &state,
-        &principal.tenant_id,
-        principal.user_id,
-        principal.has(Permission::PiiRawRead),
-        &name,
-        query,
-    )
-    .await?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let caller = CallerCtx::from_auth_with_ip(&principal, client_ip);
+    let res = execute_single_metric_with_telemetry(&state, &caller, &name, query).await?;
     Ok(Json(res))
 }
 
 async fn query_multi_metrics_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiJson(query): ApiJson<MultiMetricQuery>,
 ) -> Result<Json<MetricQueryResult>, HttpError> {
     principal.require(Permission::DataRead)?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
     let all_metrics = state.store.list_metrics(&principal.tenant_id).await?;
     let (session, catalog) = acquire_tenant_session(&state, &principal.tenant_id, false).await?;
     let res = execute_multi_metric_query(
@@ -822,6 +887,7 @@ async fn query_multi_metrics_handler(
             timeout_ms: None,
             reveal_pii: false,
             has_pii_raw_read: principal.has(Permission::PiiRawRead),
+            policy: Some(policy),
         },
     )
     .await?;
@@ -984,14 +1050,7 @@ async fn execute_saved_query_def(
             let spec: PivotSpec = serde_json::from_value(sq.spec).map_err(|err| {
                 AppError::bad("INVALID_ARGUMENT", format!("invalid pivot spec: {err}"))
             })?;
-            let pr = execute_pivot_with_telemetry(
-                state,
-                caller.tenant_id,
-                caller.user_id,
-                caller.has_pii_raw,
-                spec,
-            )
-            .await?;
+            let pr = execute_pivot_with_telemetry(state, caller, spec).await?;
             serde_json::to_value(pr)
                 .map_err(|err| AppError::Config(format!("serialize PivotResult failed: {err}")))
         }
@@ -1014,15 +1073,8 @@ async fn execute_saved_query_def(
                     AppError::bad("INVALID_ARGUMENT", format!("invalid metric query: {err}"))
                 })?
                 .unwrap_or_default();
-            let mr = execute_single_metric_with_telemetry(
-                state,
-                caller.tenant_id,
-                caller.user_id,
-                caller.has_pii_raw,
-                &metric_name,
-                query,
-            )
-            .await?;
+            let mr =
+                execute_single_metric_with_telemetry(state, &caller, &metric_name, query).await?;
             serde_json::to_value(mr).map_err(|err| {
                 AppError::Config(format!("serialize MetricQueryResult failed: {err}"))
             })
@@ -1072,13 +1124,20 @@ pub(crate) async fn execute_published_saved_query(
 
 async fn run_saved_query_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<RunSavedQueryRequest>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let val =
-        run_saved_query_inner(&state, CallerCtx::from_auth(&principal), id, req.params).await?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let val = run_saved_query_inner(
+        &state,
+        CallerCtx::from_auth_with_ip(&principal, client_ip),
+        id,
+        req.params,
+    )
+    .await?;
     Ok(Json(val))
 }
 
@@ -1086,11 +1145,19 @@ async fn collect_sample_rows_by_dataset(
     session: &TenantDb,
     catalog: &TenantCatalog,
     restrict_ids: &[Uuid],
+    policy: &axpoint_domain::guard::PolicyContext,
 ) -> HashMap<Uuid, Vec<serde_json::Map<String, serde_json::Value>>> {
     let mut out = HashMap::new();
     let mut count = 0_usize;
     for entry in catalog.datasets.values() {
         if !restrict_ids.is_empty() && !restrict_ids.contains(&entry.id) {
+            continue;
+        }
+        if policy.denied_datasets.contains(&entry.id.to_string())
+            || policy
+                .denied_datasets
+                .contains(&entry.name.to_ascii_lowercase())
+        {
             continue;
         }
         if entry.row_count <= 0 {
@@ -1107,7 +1174,10 @@ async fn collect_sample_rows_by_dataset(
             allow_live: false,
             reveal_pii: false,
         };
-        if let Ok(res) = session.execute_sql(&sample_req, false, false).await {
+        if let Ok(res) = session
+            .execute_sql_with_policy(&sample_req, false, false, Some(policy))
+            .await
+        {
             out.insert(entry.id, res.result.rows);
         }
         count = count.saturating_add(1);
@@ -1142,7 +1212,7 @@ async fn persist_ask_turn_and_history(
                 &principal.tenant_id,
                 NewAskTurnInput {
                     session_id: resp.session_id,
-                    user_id: Some(principal.user_id),
+                    user_id: (!principal.user_id.is_nil()).then_some(principal.user_id),
                     question: question.trim().to_owned(),
                     intent: resp.intent,
                     linked_objects: resp.linked_objects.clone(),
@@ -1163,7 +1233,7 @@ async fn persist_ask_turn_and_history(
             .record_query_history(
                 &principal.tenant_id,
                 NewQueryHistoryEntry {
-                    user_id: Some(principal.user_id),
+                    user_id: (!principal.user_id.is_nil()).then_some(principal.user_id),
                     kind: QueryHistoryKind::Ask,
                     sql_text: if resp.sql.is_empty() {
                         String::from(question)
@@ -1182,9 +1252,10 @@ async fn persist_ask_turn_and_history(
         tracing::warn!(error = %err, "record_query_history failed");
     }
 
+    let caller = CallerCtx::from_auth(principal);
     record_audit_and_flush(
         state,
-        CallerCtx::from_auth(principal),
+        &caller,
         AuditAction::AskData,
         format!("ask_turn:{}", resp.turn_id),
         200,
@@ -1215,6 +1286,14 @@ pub(crate) async fn execute_ask_for_principal(
         ));
     }
 
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        principal,
+        false,
+        "127.0.0.1",
+    )
+    .await?;
     let (session, catalog) = acquire_tenant_session(state, &principal.tenant_id, false).await?;
     let restrict_ids: Vec<Uuid> = req
         .context
@@ -1253,7 +1332,7 @@ pub(crate) async fn execute_ask_for_principal(
     };
 
     let sample_rows_by_dataset =
-        collect_sample_rows_by_dataset(&session, &catalog, &restrict_ids).await;
+        collect_sample_rows_by_dataset(&session, &catalog, &restrict_ids, &policy).await;
     let link_extras = SchemaLinkExtras {
         all_metrics,
         sample_rows_by_dataset,
@@ -1265,7 +1344,7 @@ pub(crate) async fn execute_ask_for_principal(
         .ai
         .for_tenant(&principal.tenant_id)
         .with_purpose_override(axpoint_domain::enums::Purpose::Nl2Sql);
-    let out = run_ask_pipeline(
+    let out = axpoint_analytics::nl2sql::run_ask_pipeline_with_policy(
         &nl2sql_ai,
         &session,
         &AskPipelineInput {
@@ -1280,6 +1359,7 @@ pub(crate) async fn execute_ask_for_principal(
             timeout_ms: None,
             force_intent,
         },
+        Some(&policy),
     )
     .await?;
 
@@ -1624,15 +1704,8 @@ impl AnalyticsQueryPort for AppState {
         if !principal.has_permission(Permission::DataRead) {
             return Err(AppError::Forbidden("PERMISSION_DENIED"));
         }
-        execute_single_metric_with_telemetry(
-            self,
-            &principal.tenant_id,
-            principal.user_id,
-            principal.has_permission(Permission::PiiRawRead),
-            name,
-            query,
-        )
-        .await
+        let caller = CallerCtx::from_analytics(principal);
+        execute_single_metric_with_telemetry(self, &caller, name, query).await
     }
 
     async fn run_pivot(
@@ -1643,14 +1716,7 @@ impl AnalyticsQueryPort for AppState {
         if !principal.has_permission(Permission::DataRead) {
             return Err(AppError::Forbidden("PERMISSION_DENIED"));
         }
-        execute_pivot_with_telemetry(
-            self,
-            &principal.tenant_id,
-            principal.user_id,
-            principal.has_permission(Permission::PiiRawRead),
-            spec,
-        )
-        .await
+        execute_pivot_with_telemetry(self, CallerCtx::from_analytics(principal), spec).await
     }
 }
 

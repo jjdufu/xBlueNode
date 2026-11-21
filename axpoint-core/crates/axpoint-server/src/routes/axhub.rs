@@ -879,6 +879,7 @@ async fn list_sync_jobs_handler(
 
 async fn preview_dataset_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
     ApiQuery(query): ApiQuery<DatasetPreviewQuery>,
@@ -896,13 +897,59 @@ async fn preview_dataset_handler(
         .get_dataset(&principal.tenant_id, id)
         .await?
         .ok_or(AppError::NotFound("DATASET_NOT_FOUND"))?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::DataRead,
+        axpoint_domain::guard::GrantResourceKind::Dataset,
+        &id.to_string(),
+        &client_ip,
+    )
+    .await?;
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
+
     if ds.last_snapshot_id.is_none() && ds.row_count == 0 {
         return Ok(Json(PreviewResponse {
             columns: ds.schema_json,
             rows: Vec::new(),
         }));
     }
-    let resp = state
+
+    if query.snapshot_id.is_none() && !policy.bypass_row_policies {
+        let (session, _) =
+            crate::routes::analytics::acquire_tenant_session(&state, &principal.tenant_id, false)
+                .await?;
+        let out = session
+            .execute_sql_with_policy(
+                &axpoint_domain::analytics::QueryRequest {
+                    sql: format!("SELECT * FROM \"{}\"", ds.name.replace('"', "\"\"")),
+                    params: BTreeMap::new(),
+                    max_rows: Some(limit),
+                    timeout_ms: None,
+                    allow_live: false,
+                    reveal_pii: false,
+                },
+                false,
+                principal.has(Permission::PiiRawRead),
+                Some(&policy),
+            )
+            .await?;
+        return Ok(Json(PreviewResponse {
+            columns: ds.schema_json,
+            rows: out.result.rows,
+        }));
+    }
+
+    let mut resp = state
         .sidecar
         .preview_lake(
             &principal.tenant_id,
@@ -914,6 +961,14 @@ async fn preview_dataset_handler(
             },
         )
         .await?;
+    if let Some(ds_pol) = policy.datasets.get(&id.to_string())
+        && !ds_pol.column_masks.is_empty()
+    {
+        let tenant_key = state.mask_keys.tenant_key(&principal.tenant_id);
+        for row in &mut resp.rows {
+            axpoint_security::masking::mask_json_properties(row, &ds_pol.column_masks, &tenant_key);
+        }
+    }
     Ok(Json(resp))
 }
 
@@ -958,6 +1013,8 @@ async fn update_column_meta_handler(
         .await?
         .ok_or(AppError::NotFound("COLUMN_NOT_FOUND"))?;
     crate::routes::analytics::refresh_cached_tenant_catalog(&state, &principal.tenant_id).await;
+    state.view.cache.invalidate_tenant(&principal.tenant_id);
+    state.view.cache.run_pending_tasks().await;
     if let Err(err) = state
         .store
         .enqueue(

@@ -1088,3 +1088,24 @@ pub struct PolicyContext {
     /// Explicit set of dataset names/IDs denied by Cedar ABAC (`403 POLICY_DENIED` when referenced in SQL!).
     pub denied_datasets: BTreeSet<String>,
 }
+
+/// Request body for `POST /api/axguard/debug/llm-egress-preview` (`11-STEP13` §13.10, `step13.sh:62`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LlmEgressPreviewRequest {
+    /// Sample user prompt text containing potential PII.
+    pub text: String,
+}
+
+/// Response body returned by `POST /api/axguard/debug/llm-egress-preview` (`11-STEP13` §13.8.3, `§13.10`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmEgressPreviewResponse {
+    /// Outbound prompt after replacing detected PII spans with `⟨CATEGORY_N⟩` placeholders.
+    pub outbound: String,
+    /// Restored text when caller holds `PII_RAW_READ`.
+    pub restored: String,
+    /// Masked text when caller lacks `PII_RAW_READ`.
+    pub masked: String,
+    /// Mapping from placeholder token (`⟨PHONE_1⟩`) to original matched substring.
+    pub placeholders: BTreeMap<String, String>,
+}

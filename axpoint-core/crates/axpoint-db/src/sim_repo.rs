@@ -1682,28 +1682,32 @@ async fn apply_decision_writeback_tx(
         "node_ids": node_ids,
         "changes": decision.changes,
     });
-    sqlx::query(
-        "INSERT INTO sec_audit_logs (
-             tenant_id, user_id, username, action, resource_ref, status_code, detail_json
-         )
-         VALUES (
-             $1,
-             $2,
-             COALESCE((SELECT username FROM sec_users WHERE id = $2), COALESCE($2::text, 'system')),
-             $3,
-             $4,
-             200,
-             $5
-         )",
+    let actor_username = match decided_by {
+        Some(uid) => sqlx::query("SELECT username FROM sec_users WHERE id = $1")
+            .bind(uid)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|err| AppError::Database(format!("lookup sim actor username failed: {err}")))?
+            .and_then(|r| r.try_get("username").ok())
+            .unwrap_or_else(|| uid.to_string()),
+        None => String::from("system"),
+    };
+    crate::audit::insert_chained_audit_tx(
+        tx,
+        &axpoint_domain::platform::AuditRecord {
+            tenant_id: String::from(tenant_id),
+            user_id: decided_by,
+            username: actor_username,
+            action: AuditAction::SimApply,
+            resource_ref: format!("decision:{}", decision.id),
+            status_code: 200,
+            client_ip: String::new(),
+            trace_id: String::new(),
+            detail_json: audit_detail,
+            created_at: Utc::now(),
+        },
     )
-    .bind(tenant_id)
-    .bind(decided_by)
-    .bind(AuditAction::SimApply.as_str())
-    .bind(format!("decision:{}", decision.id))
-    .bind(audit_detail)
-    .execute(&mut **tx)
-    .await
-    .map_err(|err| AppError::Database(format!("insert SIM_APPLY audit log failed: {err}")))?;
+    .await?;
 
     Ok(())
 }

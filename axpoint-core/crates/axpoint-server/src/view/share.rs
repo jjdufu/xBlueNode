@@ -21,8 +21,8 @@ use axpoint_domain::export::{
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::{
     AgentRepository, AnalyticsRepository, ConnectionRepository, CredentialStore, DatasetRepository,
-    GraphQueryPort, MetricStorePort, RulesRepository, SidecarPort, SimRepository, StudioRepository,
-    ViewRepository,
+    GraphQueryPort, GuardRepository, MetricStorePort, RulesRepository, SidecarPort, SimRepository,
+    StudioRepository, ViewRepository,
 };
 use axpoint_domain::view::{
     AssetRecord, DashboardDetail, DashboardStatus, WidgetDataRequest, WidgetDataResponse,
@@ -114,6 +114,8 @@ pub struct PublicShareEnv<'a, S: ?Sized> {
     pub analytics_pool: &'a Arc<SessionPool>,
     /// `xBlueView` widget cache.
     pub cache: &'a Arc<ViewCache>,
+    /// `Cedar` `ABAC` policy authorizer.
+    pub cedar: &'a Arc<axpoint_security::cedar_authz::CedarAuthorizer>,
     /// Versioned AES-256-GCM keyring used to seal and open `X-Share-Session` tokens.
     pub keyring: &'a Arc<CredentialKeyring>,
     /// Security audit log writer.
@@ -437,6 +439,7 @@ pub async fn execute_shared_widget_data<S>(
 where
     S: ViewRepository
         + CredentialStore
+        + GuardRepository
         + AnalyticsRepository
         + DatasetRepository
         + ConnectionRepository
@@ -474,12 +477,21 @@ where
         return Err(AppError::Forbidden("PERMISSION_DENIED"));
     }
 
+    let policy = crate::policy::build_policy_context_for_store(
+        env.store,
+        env.cedar,
+        &creator,
+        false,
+        &meta.client_ip,
+    )
+    .await?;
     req.filters = enforce_share_filters(&req.filters, &share.locked_filters, share.allow_filters);
     let exec_env = WidgetExecEnv {
         store: env.store,
         analytics_pool: env.analytics_pool,
         cache: env.cache,
         principal: &creator,
+        policy: Some(&policy),
     };
     execute_widget_data(&exec_env, &detail.dashboard, &widget, &req).await
 }
@@ -536,6 +548,7 @@ pub async fn prepare_shared_download<S, P>(
 where
     S: ViewRepository
         + CredentialStore
+        + GuardRepository
         + AnalyticsRepository
         + DatasetRepository
         + ConnectionRepository
@@ -617,6 +630,7 @@ async fn render_ephemeral_share_export<S, P>(
 ) -> Result<PreparedShareDownload, AppError>
 where
     S: ViewRepository
+        + GuardRepository
         + AnalyticsRepository
         + DatasetRepository
         + ConnectionRepository
@@ -644,6 +658,7 @@ where
         store: env.store,
         analytics_pool: env.analytics_pool,
         cache: env.cache,
+        cedar: env.cedar,
         data_root: env.data_root,
     };
     let built =

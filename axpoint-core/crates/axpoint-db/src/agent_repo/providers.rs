@@ -144,6 +144,9 @@ fn decode_provider_row(row: &PgRow) -> Result<LlmProviderRecord, AppError> {
             "decode ax_llm_providers.allow_private_network: {e}"
         ))
     })?;
+    let allow_pii: bool = row
+        .try_get("allow_pii")
+        .map_err(|e| AppError::Database(format!("decode ax_llm_providers.allow_pii: {e}")))?;
     let enabled: bool = row
         .try_get("enabled")
         .map_err(|e| AppError::Database(format!("decode ax_llm_providers.enabled: {e}")))?;
@@ -169,6 +172,7 @@ fn decode_provider_row(row: &PgRow) -> Result<LlmProviderRecord, AppError> {
         flags: LlmProviderFlags {
             supports_tools,
             allow_private_network,
+            allow_pii,
         },
         enabled,
         created_at,
@@ -297,9 +301,9 @@ pub(super) async fn create_llm_provider_impl(
         "INSERT INTO ax_llm_providers (
             tenant_id, name, base_url, model, purposes, credential_id, priority,
             temperature, max_tokens, timeout_s, rpm_limit, supports_tools, embedding_dim,
-            allow_private_network, enabled
+            allow_private_network, allow_pii, enabled
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
          RETURNING *",
     )
     .bind(tenant_id)
@@ -316,6 +320,7 @@ pub(super) async fn create_llm_provider_impl(
     .bind(input.flags.supports_tools)
     .bind(input.embedding_dim)
     .bind(input.flags.allow_private_network)
+    .bind(input.flags.allow_pii)
     .bind(input.enabled)
     .fetch_one(&mut *tx)
     .await
@@ -394,7 +399,8 @@ pub(super) async fn update_llm_provider_impl(
                 supports_tools        = $12,
                 embedding_dim         = $13,
                 allow_private_network = $14,
-                enabled               = $15
+                allow_pii             = $15,
+                enabled               = $16
           WHERE id = $1
          RETURNING *",
     )
@@ -412,6 +418,7 @@ pub(super) async fn update_llm_provider_impl(
     .bind(input.flags.supports_tools)
     .bind(input.embedding_dim)
     .bind(input.flags.allow_private_network)
+    .bind(input.flags.allow_pii)
     .bind(input.enabled)
     .fetch_one(&mut *tx)
     .await

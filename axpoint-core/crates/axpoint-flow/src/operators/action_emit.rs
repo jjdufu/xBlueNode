@@ -409,6 +409,7 @@ where
                     bbox: None,
                     limit: Some(200),
                     cursor: None,
+                    reveal_pii: false,
                 },
             )
             .await
@@ -429,6 +430,7 @@ where
                         bbox: None,
                         limit: Some(500),
                         cursor: cursor.clone(),
+                        reveal_pii: false,
                     },
                 )
                 .await?;

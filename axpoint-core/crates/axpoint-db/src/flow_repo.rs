@@ -2116,28 +2116,30 @@ impl FlowRepository for PgStore {
         )
         .await?;
 
-        sqlx::query(
-            "INSERT INTO sec_audit_logs (
-                 tenant_id, user_id, username, action, resource_ref, status_code, detail_json
-             )
-             VALUES (
-                 $1,
-                 $2,
-                 COALESCE((SELECT username FROM sec_users WHERE id = $2), $2::text),
-                 $3,
-                 $4,
-                 200,
-                 $5
-             )",
+        let actor_username: String = sqlx::query("SELECT username FROM sec_users WHERE id = $1")
+            .bind(params.actor_user_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|err| AppError::Database(format!("lookup actor username failed: {err}")))?
+            .and_then(|r| r.try_get("username").ok())
+            .unwrap_or_else(|| params.actor_user_id.to_string());
+
+        crate::audit::insert_chained_audit_tx(
+            &mut tx,
+            &axpoint_domain::platform::AuditRecord {
+                tenant_id: String::from(tenant_id),
+                user_id: Some(params.actor_user_id),
+                username: actor_username,
+                action: AuditAction::ApprovalDecide,
+                resource_ref: format!("approval:{}", updated.id),
+                status_code: 200,
+                client_ip: String::new(),
+                trace_id: String::new(),
+                detail_json: outbox_payload,
+                created_at: Utc::now(),
+            },
         )
-        .bind(tenant_id)
-        .bind(params.actor_user_id)
-        .bind(AuditAction::ApprovalDecide.as_str())
-        .bind(format!("approval:{}", updated.id))
-        .bind(outbox_payload)
-        .execute(&mut *tx)
-        .await
-        .map_err(|err| AppError::Database(format!("insert APPROVAL_DECIDE audit failed: {err}")))?;
+        .await?;
 
         tx.commit().await.map_err(|err| {
             AppError::Database(format!("commit decide_approval tx failed: {err}"))
@@ -2548,6 +2550,7 @@ mod tests {
             "DELETE FROM ds_credentials WHERE tenant_id = ANY($1)",
             "DELETE FROM ax_jobs WHERE tenant_id = ANY($1)",
             "DELETE FROM ax_outbox WHERE tenant_id = ANY($1)",
+            "DELETE FROM sec_audit_chain_heads WHERE tenant_id = ANY($1)",
             "DELETE FROM sec_audit_logs WHERE tenant_id = ANY($1)",
             "DELETE FROM sec_tenants WHERE tenant_id = ANY($1)",
         ] {

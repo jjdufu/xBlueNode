@@ -17,6 +17,7 @@ when { principal.permissions.contains(context.action)
 permit (principal, action in [AxPoint::Action::"GUARD_ADMIN", AxPoint::Action::"OPS_ADMIN"], resource)
 when { principal.permissions.contains(context.action) };
 
-// 5. 数据管理员对全部数据资源执行其具备的动作（与行策略对 DATA_ADMIN 的豁免一致）
+// 5. 数据管理员与安全管理员对全部数据资源执行其具备的动作（与行策略对 DATA_ADMIN / GUARD_ADMIN 的豁免一致）
 permit (principal, action, resource)
-when { principal.permissions.contains("DATA_ADMIN") && principal.permissions.contains(context.action) };
+when { (principal.permissions.contains("DATA_ADMIN") || principal.permissions.contains("GUARD_ADMIN"))
+       && principal.permissions.contains(context.action) };

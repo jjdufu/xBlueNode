@@ -134,13 +134,21 @@ async fn run_ingest_pipeline(
     tenant_id: &str,
     req: IngestTextRequest,
 ) -> Result<IngestResponse, AppError> {
-    ingest_text_with_deps(&state.store, &state.ai, tenant_id, req).await
+    ingest_text_with_deps(
+        &state.store,
+        &state.ai,
+        Some(state.sidecar.as_ref()),
+        tenant_id,
+        req,
+    )
+    .await
 }
 
-/// Runs the hypergraph text ingestion pipeline (`split_paragraphs` -> `embed_batch` -> `extract_triples` -> `ingest_document`).
+/// Runs the hypergraph text ingestion pipeline (`split_paragraphs` -> `/pii/analyze` -> `embed_batch` -> `extract_triples` -> `ingest_document`).
 pub(crate) async fn ingest_text_with_deps(
     store: &axpoint_db::PgStore,
     ai: &axpoint_llm::AiGateway,
+    sidecar: Option<&crate::sidecar::HttpSidecarClient>,
     tenant_id: &str,
     req: IngestTextRequest,
 ) -> Result<IngestResponse, AppError> {
@@ -159,6 +167,29 @@ pub(crate) async fn ingest_text_with_deps(
         ));
     }
 
+    let detected_spans: Vec<Vec<axpoint_domain::guard::PiiSpan>> = if let Some(sc) = sidecar {
+        use axpoint_domain::ports::SidecarPort as _;
+        match sc
+            .analyze_pii(
+                tenant_id,
+                &axpoint_domain::guard::PiiAnalyzeRequest {
+                    texts: chunks.clone(),
+                    language: String::from("zh"),
+                    score_threshold: 0.6,
+                },
+            )
+            .await
+        {
+            Ok(resp) => resp.results,
+            Err(err) => {
+                warn!("sidecar pii/analyze skipped during document ingest: {err}");
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+
     let (vectors, embed_dim) = ai.embed_batch(&chunks).await?;
     let mut para_inputs = Vec::with_capacity(chunks.len());
 
@@ -170,12 +201,14 @@ pub(crate) async fn ingest_text_with_deps(
                 Vec::new()
             }
         };
+        let pii_spans = detected_spans.get(idx).cloned().unwrap_or_default();
         let seq_no = i32::try_from(idx).unwrap_or(i32::MAX);
         para_inputs.push(ParaIngestInput {
             seq_no,
             content: chunk,
             triples,
             embedding: vec,
+            pii_spans,
         });
     }
 
@@ -223,6 +256,41 @@ struct DocRagOutcome {
     hits: Vec<FusedHit>,
     seeds: Vec<String>,
     citations: Vec<AskCitation>,
+}
+
+/// Masks `hg_paras.pii_spans` character ranges across recalled [`FusedHit`] items when `has_pii_raw` is `false` (`§13.6.3`, `§13.8.2`).
+pub(crate) async fn mask_recalled_hits(
+    state: &AppState,
+    tenant_id: &str,
+    hits: &mut [FusedHit],
+    has_pii_raw: bool,
+) -> Result<(), AppError> {
+    if has_pii_raw || hits.is_empty() {
+        return Ok(());
+    }
+    let para_ids: Vec<Uuid> = hits.iter().map(|h| h.para_id).collect();
+    let spans_map = state
+        .store
+        .load_para_pii_spans(tenant_id, &para_ids)
+        .await?;
+    if spans_map.is_empty() {
+        return Ok(());
+    }
+    let tenant_key = state.mask_keys.tenant_key(tenant_id);
+    let empty_rules = std::collections::BTreeMap::new();
+    for hit in hits.iter_mut() {
+        if let Some(spans) = spans_map.get(&hit.para_id)
+            && !spans.is_empty()
+        {
+            hit.content = axpoint_security::masking::mask_text_spans(
+                &hit.content,
+                spans,
+                &empty_rules,
+                &tenant_key,
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Executes 5-channel hypergraph document recall (`vector + bm25 + entity_link + multi_hop + context`)
@@ -289,8 +357,10 @@ async fn run_doc_rag_pipeline(
     tenant_id: &str,
     query: &str,
     top_k: usize,
+    has_pii_raw: bool,
 ) -> Result<DocRagOutcome, AppError> {
-    let (hits, seeds) = recall_knowledge_hits(state, tenant_id, query, top_k, None).await?;
+    let (mut hits, seeds) = recall_knowledge_hits(state, tenant_id, query, top_k, None).await?;
+    mask_recalled_hits(state, tenant_id, &mut hits, has_pii_raw).await?;
     let answer = state
         .ai
         .for_tenant(tenant_id)
@@ -451,7 +521,8 @@ async fn handle_doc_chat_query(
     started: Instant,
 ) -> Result<ChatQueryResponse, AppError> {
     let tenant_id = &principal.tenant_id;
-    let doc = run_doc_rag_pipeline(state, tenant_id, &req.query, req.top_k).await?;
+    let has_pii_raw = principal.has(Permission::PiiRawRead);
+    let doc = run_doc_rag_pipeline(state, tenant_id, &req.query, req.top_k, has_pii_raw).await?;
     let hit_para_ids: Vec<Uuid> = doc.hits.iter().map(|h| h.para_id).collect();
     let related_nodes = state
         .store
@@ -493,13 +564,14 @@ async fn handle_hybrid_chat_query(
     started: Instant,
 ) -> Result<ChatQueryResponse, AppError> {
     let tenant_id = &principal.tenant_id;
+    let has_pii_raw = principal.has(Permission::PiiRawRead);
     let ask_req = AskRequest {
         question: req.query.clone(),
         session_id: req.session_id,
         context: None,
     };
     let (doc_res, data_res) = tokio::join!(
-        run_doc_rag_pipeline(state, tenant_id, &req.query, req.top_k),
+        run_doc_rag_pipeline(state, tenant_id, &req.query, req.top_k, has_pii_raw),
         execute_ask_for_principal(state, principal, ask_req, Some(AskIntent::Data), false)
     );
     let doc = doc_res?;

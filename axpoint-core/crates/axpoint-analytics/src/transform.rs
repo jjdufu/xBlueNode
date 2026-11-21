@@ -400,6 +400,7 @@ fn prepare_transform_guards(
             max_rows: TRANSFORM_PREVIEW_MAX_ROWS,
             allow_live: false,
             params: BTreeMap::new(),
+            policy: None,
         },
     )?;
 

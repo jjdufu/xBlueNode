@@ -318,6 +318,7 @@ fn guard_bare_dataset_rewrites_to_tenant_lake_schema_and_wraps_limit() -> Result
         max_rows: 500_000,
         allow_live: false,
         params: BTreeMap::new(),
+        policy: None,
     };
     let join_res = guard(
         "SELECT o.id, c.region FROM demo_orders o JOIN customers c ON o.customer_id = c.id",
@@ -348,6 +349,7 @@ fn guard_whitelisted_table_functions_are_permitted_and_wrapped() -> Result<(), A
         max_rows: 10,
         allow_live: false,
         params: BTreeMap::new(),
+        policy: None,
     };
 
     for sql in [
@@ -443,6 +445,7 @@ fn guard_live_federated_connection_enforces_allow_live_permission_and_registrati
         max_rows: 100,
         allow_live: false,
         params: BTreeMap::new(),
+        policy: None,
     };
     assert_sql_rejected(
         "SELECT * FROM live_erp.public.orders",
@@ -455,6 +458,7 @@ fn guard_live_federated_connection_enforces_allow_live_permission_and_registrati
         max_rows: 100,
         allow_live: true,
         params: BTreeMap::new(),
+        policy: None,
     };
     let denied = guard(
         "SELECT * FROM live_erp.public.orders",
@@ -503,6 +507,7 @@ fn guard_named_parameters_payload_size_and_output_pii_lineage_work_accurately()
         max_rows: 50,
         allow_live: false,
         params,
+        policy: None,
     };
     let bound = guard(
         "SELECT id FROM demo_orders WHERE status = :status AND amount > :min_amt AND :active AND id IN (:ids)",
@@ -809,5 +814,217 @@ fn guard_nested_subqueries_union_and_cte_propagate_pii_lineage() -> Result<(), A
         ]
     );
 
+    Ok(())
+}
+
+fn simple_sql_req(sql: &str) -> axpoint_analytics::QueryRequest {
+    axpoint_analytics::QueryRequest {
+        sql: String::from(sql),
+        params: BTreeMap::new(),
+        max_rows: Some(10),
+        timeout_ms: None,
+        allow_live: false,
+        reveal_pii: false,
+    }
+}
+
+#[tokio::test]
+async fn step13_policy_rewriting_blocks_side_channel_probing_and_denied_datasets()
+-> Result<(), AppError> {
+    use std::collections::BTreeSet;
+
+    use axpoint_analytics::TenantDb;
+    use axpoint_domain::enums::MaskRule;
+    use axpoint_domain::guard::{DatasetPolicySpec, PolicyContext};
+
+    let conn = duckdb::Connection::open_in_memory().map_err(|e| AppError::Config(e.to_string()))?;
+    conn.execute_batch(
+        "ATTACH ':memory:' AS lake;
+         CREATE SCHEMA lake.\"tenant_default\";
+         CREATE TABLE lake.\"tenant_default\".\"demo_orders\" (
+             id BIGINT, customer_id BIGINT, status VARCHAR, amount DECIMAL(18,2),
+             phone VARCHAR, email VARCHAR, created_at TIMESTAMP
+         );
+         INSERT INTO lake.\"tenant_default\".\"demo_orders\" VALUES
+             (1, 10, 'PAID', 120.50, '13812345678', 'alice@x.com', TIMESTAMP '2026-01-01 00:00:00'),
+             (2, 20, 'PENDING', 80.00, '13987654321', NULL, TIMESTAMP '2026-01-02 00:00:00');",
+    )
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let session = TenantDb::from_connection("default", conn)?;
+    session.refresh_catalog(demo_catalog());
+
+    let masks = BTreeMap::from([
+        (String::from("phone"), MaskRule::MaskPhone),
+        (String::from("email"), MaskRule::MaskEmail),
+    ]);
+    let datasets = BTreeMap::from([(
+        String::from("demo_orders"),
+        DatasetPolicySpec {
+            duckdb_row_filter: Some(String::from("\"status\" = 'PAID'")),
+            column_masks: masks,
+        },
+    )]);
+    let policy = PolicyContext {
+        bypass_row_policies: false,
+        reveal_pii_authorized: false,
+        datasets,
+        node_types: BTreeMap::new(),
+        denied_datasets: BTreeSet::from([String::from("customers")]),
+    };
+
+    let denied_res = session
+        .execute_sql_with_policy(
+            &simple_sql_req("SELECT * FROM customers"),
+            false,
+            false,
+            Some(&policy),
+        )
+        .await;
+    assert!(matches!(
+        denied_res,
+        Err(AppError::Forbidden("POLICY_DENIED"))
+    ));
+
+    let probe_res = session
+        .execute_sql_with_policy(
+            &simple_sql_req("SELECT * FROM demo_orders WHERE phone = '13812345678'"),
+            false,
+            false,
+            Some(&policy),
+        )
+        .await?;
+    assert_eq!(probe_res.result.row_count, 0);
+
+    let ok_res = session
+        .execute_sql_with_policy(
+            &simple_sql_req("SELECT id, phone, email FROM demo_orders"),
+            false,
+            false,
+            Some(&policy),
+        )
+        .await?;
+    assert_eq!(ok_res.result.row_count, 1);
+    let Some(row0) = ok_res.result.rows.first() else {
+        return Err(AppError::bad("TEST_FAIL", "expected 1 row"));
+    };
+    assert_eq!(row0.get("id"), Some(&json!(1)));
+    assert_eq!(row0.get("phone"), Some(&json!("138****5678")));
+    assert_eq!(row0.get("email"), Some(&json!("a****@x.com")));
+    Ok(())
+}
+
+#[test]
+fn step13_all_eight_duckdb_mask_udfs_match_canonical_rules() -> Result<(), AppError> {
+    use axpoint_analytics::register_mask_udfs;
+    use axpoint_domain::enums::MaskRule;
+    use axpoint_security::masking::{MaskKeyRing, apply_mask_rule};
+
+    let keyring = MaskKeyRing::from_env_str("1:MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")?;
+    let expected_hmac = apply_mask_rule(
+        MaskRule::HmacHash,
+        "13812345678",
+        &keyring.tenant_key("default"),
+    );
+    let udf_conn =
+        duckdb::Connection::open_in_memory().map_err(|e| AppError::Config(e.to_string()))?;
+    register_mask_udfs(&udf_conn, "default", Some(&keyring))?;
+
+    let row: Vec<String> = udf_conn
+        .query_row(
+            "SELECT
+                ax_mask_phone('13812345678'),
+                ax_mask_id_card('110101199003071234'),
+                ax_mask_email('zhangsan@example.com'),
+                ax_mask_bank_card('6222021234567890'),
+                ax_mask_name('欧阳娜娜'),
+                ax_mask_address('浙江省杭州市西湖区文三路90号'),
+                ax_mask_redact('secret'),
+                ax_mask_hmac_hash('13812345678')",
+            [],
+            |r| {
+                Ok(vec![
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, String>(6)?,
+                    r.get::<_, String>(7)?,
+                ])
+            },
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+    assert_eq!(
+        row,
+        vec![
+            String::from("138****5678"),
+            String::from("110101********1234"),
+            String::from("z*******@example.com"),
+            String::from("************7890"),
+            String::from("欧阳**"),
+            String::from("浙江省杭州市西湖区****"),
+            String::from("[REDACTED]"),
+            expected_hmac,
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn step13_ax_nodes_policy_case_filter_executes_cleanly() -> Result<(), AppError> {
+    use axpoint_analytics::TenantDb;
+    use axpoint_domain::guard::{NodeTypePolicySpec, PolicyContext};
+
+    let conn = duckdb::Connection::open_in_memory().map_err(|e| AppError::Config(e.to_string()))?;
+    conn.execute_batch(
+        "CREATE SCHEMA ax;
+         CREATE TABLE ax.nodes (
+             id VARCHAR, type_name VARCHAR, node_key VARCHAR, title VARCHAR,
+             properties VARCHAR, metrics VARCHAR, geo_lng DOUBLE, geo_lat DOUBLE, updated_at TIMESTAMP
+         );
+         INSERT INTO ax.nodes VALUES
+             ('n1', 'Order', 'O-1', 'Sales Order', '{\"dept\":\"sales\"}', '{}', NULL, NULL, TIMESTAMP '2026-01-01 00:00:00'),
+             ('n2', 'Order', 'O-2', 'Finance Order', '{\"dept\":\"finance\"}', '{}', NULL, NULL, TIMESTAMP '2026-01-01 00:00:00'),
+             ('n3', 'Region', 'R-1', 'East', '{}', '{}', NULL, NULL, TIMESTAMP '2026-01-01 00:00:00');",
+    )
+    .map_err(|e| AppError::Database(e.to_string()))?;
+
+    let session = TenantDb::from_connection("default", conn)?;
+    session.refresh_catalog(demo_catalog());
+
+    let node_types = BTreeMap::from([(
+        String::from("Order"),
+        NodeTypePolicySpec {
+            duckdb_row_filter: Some(String::from(
+                "json_extract_string(\"properties\", '$.dept') = 'sales'",
+            )),
+            pg_row_filter: None,
+            property_masks: BTreeMap::new(),
+        },
+    )]);
+    let node_policy = PolicyContext {
+        bypass_row_policies: false,
+        reveal_pii_authorized: false,
+        datasets: BTreeMap::new(),
+        node_types,
+        denied_datasets: std::collections::BTreeSet::new(),
+    };
+    let nodes_out = session
+        .execute_sql_with_policy(
+            &simple_sql_req("SELECT id, node_key FROM ax.nodes ORDER BY id"),
+            false,
+            false,
+            Some(&node_policy),
+        )
+        .await?;
+    let keys: Vec<Option<&str>> = nodes_out
+        .result
+        .rows
+        .iter()
+        .map(|r| r.get("node_key").and_then(serde_json::Value::as_str))
+        .collect();
+    assert_eq!(keys, vec![Some("O-1"), Some("R-1")]);
     Ok(())
 }

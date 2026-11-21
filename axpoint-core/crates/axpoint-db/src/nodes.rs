@@ -1,6 +1,6 @@
 //! Business graph node & link persistence, bulk `UNNEST` ingestion, bbox queries, and hybrid search (`GraphStorePort`).
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use axpoint_domain::AppError;
 use axpoint_domain::enums::{JobKind, OutboxTopic};
@@ -11,12 +11,13 @@ use axpoint_domain::graph::{
     NodeSearchQuery, NodeSearchResponse, PatchNodeRequest, ResolveEntitiesRequest,
     ResolveEntitiesResponse, UnresolvedLink, UpsertLinkRequest, build_node_embed_text,
 };
+use axpoint_domain::guard::NodeTypePolicySpec;
 use axpoint_domain::platform::{NewJob, NewOutboxEvent};
 use axpoint_domain::ports::GraphStorePort;
 use axpoint_domain::topology::{BlueLink, BlueNode, UpsertBlueNodeRequest};
 use chrono::{DateTime, Utc};
 use pgvector::Vector;
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{Postgres, QueryBuilder, Row, Transaction};
 use uuid::Uuid;
 
 use crate::PgStore;
@@ -240,13 +241,17 @@ impl PgStore {
         })?;
         Ok(())
     }
-}
 
-impl GraphStorePort for PgStore {
-    async fn list_nodes(
+    /// Lists `xb_nodes` with optional compiled per-`type_name` PostgreSQL row-policy predicates (`11-STEP13` §13.6.3).
+    ///
+    /// # Errors
+    /// Returns [`AppError::BadRequest`] if `query` pagination/bbox arguments are invalid, or
+    /// [`AppError::Database`] if querying `xb_nodes` fails.
+    pub async fn list_nodes_with_row_policies(
         &self,
         tenant_id: &str,
         query: NodeListQuery,
+        node_type_policies: Option<&BTreeMap<String, NodeTypePolicySpec>>,
     ) -> Result<NodeListResponse, AppError> {
         let bbox = query.parse_bbox()?;
         let default_limit: u32 = if bbox.is_some() { 10_000 } else { 200 };
@@ -262,63 +267,20 @@ impl GraphStorePort for PgStore {
         let fetch_limit = i64::from(limit).saturating_add(1);
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
-        let (cursor_ts, cursor_id) = match query.cursor.as_deref().filter(|s| !s.trim().is_empty())
-        {
-            Some(c) => {
-                let (ts, id) = resolve_node_cursor_tx(&mut tx, c.trim()).await?;
-                (Some(ts), Some(id))
-            }
-            None => (None, None),
+        let cursor_pair = match query.cursor.as_deref().filter(|s| !s.trim().is_empty()) {
+            Some(c) => Some(resolve_node_cursor_tx(&mut tx, c.trim()).await?),
+            None => None,
         };
 
-        let type_filter = query
-            .type_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from);
-        let q_filter = query
-            .q
-            .as_deref()
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(String::from);
-        let like_pattern = q_filter.as_ref().map(|q| format!("%{q}%"));
-        let (min_lng, min_lat, max_lng, max_lat) = match bbox {
-            Some([x0, y0, x1, y1]) => (Some(x0), Some(y0), Some(x1), Some(y1)),
-            None => (None, None, None, None),
-        };
+        let mut qb = build_list_nodes_query(&query, bbox, cursor_pair, node_type_policies);
+        qb.push(" ORDER BY updated_at DESC, id DESC LIMIT ");
+        qb.push_bind(fetch_limit);
 
-        let rows = sqlx::query(
-            "SELECT id, type_name, node_key, title, properties, metrics,
-                    geo_lng, geo_lat, source_dataset_id, source_row_key,
-                    row_version, created_at, updated_at
-               FROM xb_nodes
-              WHERE ($1::text IS NULL OR type_name = $1)
-                AND ($2::text IS NULL OR fts @@ plainto_tsquery('simple', $2)
-                     OR title ILIKE $3 OR node_key ILIKE $3)
-                AND ($4::float8 IS NULL OR (
-                     geo_lng IS NOT NULL AND geo_lat IS NOT NULL
-                     AND geo_lng BETWEEN $4 AND $6
-                     AND geo_lat BETWEEN $5 AND $7
-                ))
-                AND ($8::timestamptz IS NULL OR (updated_at, id) < ($8, $9::uuid))
-              ORDER BY updated_at DESC, id DESC
-              LIMIT $10",
-        )
-        .bind(type_filter)
-        .bind(q_filter)
-        .bind(like_pattern)
-        .bind(min_lng)
-        .bind(min_lat)
-        .bind(max_lng)
-        .bind(max_lat)
-        .bind(cursor_ts)
-        .bind(cursor_id)
-        .bind(fetch_limit)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|err| AppError::Database(format!("list xb_nodes failed: {err}")))?;
+        let rows = qb
+            .build()
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|err| AppError::Database(format!("list xb_nodes failed: {err}")))?;
 
         let mut nodes: Vec<BlueNode> = rows.iter().map(decode_blue_node).collect();
         let next_cursor = if nodes.len() > limit_usize {
@@ -343,6 +305,134 @@ impl GraphStorePort for PgStore {
             links,
             next_cursor,
         })
+    }
+
+    /// Evaluates compiled PostgreSQL row-policy predicates against a candidate `node_ids` slice,
+    /// returning the subset of node IDs visible to the caller (`11-STEP13` §13.6.3).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if evaluating the predicate query against `xb_nodes` fails.
+    pub async fn filter_visible_node_ids(
+        &self,
+        tenant_id: &str,
+        node_ids: &[Uuid],
+        node_type_policies: &BTreeMap<String, NodeTypePolicySpec>,
+    ) -> Result<HashSet<Uuid>, AppError> {
+        if node_ids.is_empty() {
+            return Ok(HashSet::new());
+        }
+        let has_any_filter = node_type_policies
+            .values()
+            .any(|spec| spec.pg_row_filter.is_some());
+        if !has_any_filter {
+            return Ok(node_ids.iter().copied().collect());
+        }
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let mut qb: QueryBuilder<Postgres> =
+            QueryBuilder::new("SELECT id FROM xb_nodes WHERE id = ANY(");
+        qb.push_bind(node_ids.to_vec());
+        qb.push(")");
+        append_pg_row_policy_case(&mut qb, node_type_policies);
+
+        let rows =
+            qb.build().fetch_all(&mut *tx).await.map_err(|err| {
+                AppError::Database(format!("filter_visible_node_ids failed: {err}"))
+            })?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit filter_visible_node_ids tx failed: {err}"))
+        })?;
+
+        Ok(rows.into_iter().map(|r| r.get("id")).collect())
+    }
+}
+
+fn build_list_nodes_query(
+    query: &NodeListQuery,
+    bbox: Option<[f64; 4]>,
+    cursor_pair: Option<(DateTime<Utc>, Uuid)>,
+    node_type_policies: Option<&BTreeMap<String, NodeTypePolicySpec>>,
+) -> QueryBuilder<Postgres> {
+    let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+        "SELECT id, type_name, node_key, title, properties, metrics,
+                geo_lng, geo_lat, source_dataset_id, source_row_key,
+                row_version, created_at, updated_at
+           FROM xb_nodes
+          WHERE TRUE",
+    );
+
+    if let Some(tf) = query
+        .type_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        qb.push(" AND type_name = ");
+        qb.push_bind(String::from(tf));
+    }
+    if let Some(qf) = query.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        let like_pat = format!("%{qf}%");
+        qb.push(" AND (fts @@ plainto_tsquery('simple', ");
+        qb.push_bind(String::from(qf));
+        qb.push(") OR title ILIKE ");
+        qb.push_bind(like_pat.clone());
+        qb.push(" OR node_key ILIKE ");
+        qb.push_bind(like_pat);
+        qb.push(")");
+    }
+    if let Some([min_lng, min_lat, max_lng, max_lat]) = bbox {
+        qb.push(" AND geo_lng IS NOT NULL AND geo_lat IS NOT NULL AND geo_lng BETWEEN ");
+        qb.push_bind(min_lng);
+        qb.push(" AND ");
+        qb.push_bind(max_lng);
+        qb.push(" AND geo_lat BETWEEN ");
+        qb.push_bind(min_lat);
+        qb.push(" AND ");
+        qb.push_bind(max_lat);
+    }
+    if let Some((cursor_ts, cursor_id)) = cursor_pair {
+        qb.push(" AND (updated_at, id) < (");
+        qb.push_bind(cursor_ts);
+        qb.push(", ");
+        qb.push_bind(cursor_id);
+        qb.push(")");
+    }
+    if let Some(policies) = node_type_policies {
+        append_pg_row_policy_case(&mut qb, policies);
+    }
+    qb
+}
+
+fn append_pg_row_policy_case(
+    qb: &mut QueryBuilder<Postgres>,
+    policies: &BTreeMap<String, NodeTypePolicySpec>,
+) {
+    let active: Vec<(&String, &String)> = policies
+        .iter()
+        .filter_map(|(tname, spec)| spec.pg_row_filter.as_ref().map(|pred| (tname, pred)))
+        .collect();
+    if active.is_empty() {
+        return;
+    }
+    qb.push(" AND (CASE");
+    for (tname, pred) in active {
+        qb.push(" WHEN type_name = ");
+        qb.push_bind(tname.clone());
+        qb.push(" THEN (");
+        qb.push(pred.as_str());
+        qb.push(")");
+    }
+    qb.push(" ELSE TRUE END)");
+}
+
+impl GraphStorePort for PgStore {
+    async fn list_nodes(
+        &self,
+        tenant_id: &str,
+        query: NodeListQuery,
+    ) -> Result<NodeListResponse, AppError> {
+        self.list_nodes_with_row_policies(tenant_id, query, None)
+            .await
     }
 
     async fn get_node(&self, tenant_id: &str, node_id: Uuid) -> Result<Option<BlueNode>, AppError> {

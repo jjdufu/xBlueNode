@@ -219,6 +219,16 @@ pub struct PrincipalRecord {
     pub roles: Vec<String>,
     /// Union of permissions granted by assigned roles.
     pub permissions: BTreeSet<Permission>,
+    /// User clearance classification (`sec_users.clearance`, default `INTERNAL`).
+    #[serde(default = "default_clearance")]
+    pub clearance: crate::enums::Sensitivity,
+    /// Minimum valid `iat` cutoff (`sec_users.tokens_valid_after`, default Unix epoch).
+    #[serde(default)]
+    pub tokens_valid_after: DateTime<Utc>,
+}
+
+const fn default_clearance() -> crate::enums::Sensitivity {
+    crate::enums::Sensitivity::Internal
 }
 
 /// Response payload for `GET /api/auth/me`.

@@ -93,6 +93,7 @@ async fn cleanup_tenant(owner_pool: &PgPool, tenant_id: &str) -> TestResult {
         "DELETE FROM ax_approvals WHERE tenant_id = $1",
         "DELETE FROM ax_action_log WHERE tenant_id = $1",
         "DELETE FROM ax_outbox WHERE tenant_id = $1",
+        "DELETE FROM sec_audit_chain_heads WHERE tenant_id = $1",
         "DELETE FROM sec_audit_logs WHERE tenant_id = $1",
         "DELETE FROM ax_jobs WHERE tenant_id = $1",
         "DELETE FROM xb_links WHERE tenant_id = $1",

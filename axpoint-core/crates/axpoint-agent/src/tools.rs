@@ -424,6 +424,7 @@ where
                         bbox: None,
                         limit: Some(50),
                         cursor: None,
+                        reveal_pii: false,
                     },
                 )
                 .await?;

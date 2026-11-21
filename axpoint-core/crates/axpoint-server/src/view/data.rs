@@ -52,6 +52,8 @@ pub struct WidgetExecEnv<'a, S: ?Sized> {
     pub cache: &'a ViewCache,
     /// Authenticated caller identity.
     pub principal: &'a AuthPrincipal,
+    /// Optional compiled `AxGuard` row/column security context (`11-STEP13` §13.6.3).
+    pub policy: Option<&'a axpoint_domain::guard::PolicyContext>,
 }
 
 #[derive(Debug, Clone)]
@@ -456,7 +458,7 @@ where
     let final_sql = if needs_wrap {
         let probe_sql = format!("SELECT * FROM ({clean_sql}) AS _w LIMIT 0");
         let probe_res = session
-            .execute_sql(
+            .execute_sql_with_policy(
                 &QueryRequest {
                     sql: probe_sql,
                     params: params.clone(),
@@ -467,6 +469,7 @@ where
                 },
                 has_live,
                 has_pii_raw,
+                env.policy,
             )
             .await?;
         build_wrapped_sql(clean_sql, &probe_res.result.columns, spec, &mut params)?
@@ -475,7 +478,7 @@ where
     };
 
     let out = session
-        .execute_sql(
+        .execute_sql_with_policy(
             &QueryRequest {
                 sql: final_sql,
                 params,
@@ -486,6 +489,7 @@ where
             },
             has_live,
             has_pii_raw,
+            env.policy,
         )
         .await?;
 
@@ -905,6 +909,7 @@ where
             timeout_ms: None,
             reveal_pii: false,
             has_pii_raw_read: env.principal.has(Permission::PiiRawRead),
+            policy: env.policy.cloned(),
         },
     )
     .await?;
@@ -947,6 +952,7 @@ where
             timeout_ms: None,
             reveal_pii: false,
             has_pii_raw_read: env.principal.has(Permission::PiiRawRead),
+            policy: env.policy.cloned(),
         },
     )
     .await?;

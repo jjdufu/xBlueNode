@@ -13,6 +13,9 @@ use axpoint_domain::axhub::{
 };
 use axpoint_domain::enums::ExportFormat;
 use axpoint_domain::export::{RenderChartRequest, SidecarExportRequest, SidecarExportResponse};
+use axpoint_domain::guard::{
+    PiiAnalyzeRequest, PiiAnalyzeResponse, PiiAnonymizeRequest, PiiAnonymizeResponse,
+};
 use axpoint_domain::ports::SidecarPort;
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -22,6 +25,7 @@ use crate::telemetry::outbound_traceparent;
 
 const SIDECAR_CHART_TIMEOUT: Duration = Duration::from_secs(30);
 const SIDECAR_EXPORT_TIMEOUT: Duration = Duration::from_secs(180);
+const SIDECAR_PII_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Deserialize)]
 struct SidecarErrorEnvelope {
@@ -437,6 +441,56 @@ impl SidecarPort for HttpSidecarClient {
                     AppError::Timeout("UPSTREAM_TIMEOUT")
                 } else {
                     AppError::Parser(format!("sidecar {path} failed: {err}"))
+                }
+            })?;
+
+        Self::decode_response(resp).await
+    }
+
+    async fn analyze_pii(
+        &self,
+        tenant_id: &str,
+        req: &PiiAnalyzeRequest,
+    ) -> Result<PiiAnalyzeResponse, AppError> {
+        let resp = self
+            .http
+            .post(self.endpoint("/pii/analyze"))
+            .header("X-AxPoint-Tenant", tenant_id)
+            .header("traceparent", outbound_traceparent())
+            .timeout(SIDECAR_PII_TIMEOUT)
+            .json(req)
+            .send()
+            .await
+            .map_err(|err| {
+                if err.is_timeout() {
+                    AppError::Timeout("UPSTREAM_TIMEOUT")
+                } else {
+                    AppError::Parser(format!("sidecar /pii/analyze failed: {err}"))
+                }
+            })?;
+
+        Self::decode_response(resp).await
+    }
+
+    async fn anonymize_pii(
+        &self,
+        tenant_id: &str,
+        req: &PiiAnonymizeRequest,
+    ) -> Result<PiiAnonymizeResponse, AppError> {
+        let resp = self
+            .http
+            .post(self.endpoint("/pii/anonymize"))
+            .header("X-AxPoint-Tenant", tenant_id)
+            .header("traceparent", outbound_traceparent())
+            .timeout(SIDECAR_PII_TIMEOUT)
+            .json(req)
+            .send()
+            .await
+            .map_err(|err| {
+                if err.is_timeout() {
+                    AppError::Timeout("UPSTREAM_TIMEOUT")
+                } else {
+                    AppError::Parser(format!("sidecar /pii/anonymize failed: {err}"))
                 }
             })?;
 

@@ -208,6 +208,8 @@ pub async fn populate_enterprise_seed(store: &MockStep09Store) -> Result<(), App
             dept_id: String::from("east_china"),
             roles: vec![String::from("ADMIN")],
             permissions: Permission::ALL.iter().copied().collect(),
+            clearance: axpoint_domain::enums::Sensitivity::Secret,
+            tokens_valid_after: chrono::DateTime::UNIX_EPOCH,
         },
     );
     Ok(())

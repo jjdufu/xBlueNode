@@ -526,6 +526,7 @@ fn register_domain_job_handlers(
             store: store.clone(),
             analytics_pool: Arc::clone(&state.analytics_pool),
             cache: Arc::clone(&state.view.cache),
+            cedar: Arc::clone(&state.cedar),
             sidecar: Arc::clone(&state.sidecar),
             audit: state.audit.clone(),
             data_root: state.data_root.clone(),
@@ -616,7 +617,15 @@ pub(crate) fn spawn_background_workers(
         run_outbox_dispatcher(outbox_worker_id, outbox_store, subscribers, outbox_shutdown).await;
     });
 
-    let view_pool = store.pool().clone();
+    spawn_pg_listeners(state, shutdown_rx);
+    spawn_singleton_schedulers(store, store_arc, notify_dispatcher, shutdown_rx);
+}
+
+fn spawn_pg_listeners(
+    state: &crate::state::AppState,
+    shutdown_rx: &tokio::sync::watch::Receiver<bool>,
+) {
+    let view_pool = state.store.pool().clone();
     let view_bus = Arc::clone(&state.view.event_bus);
     let view_cache = Arc::clone(&state.view.cache);
     let view_shutdown = shutdown_rx.clone();
@@ -630,7 +639,21 @@ pub(crate) fn spawn_background_workers(
         .await;
     });
 
-    spawn_singleton_schedulers(store, store_arc, notify_dispatcher, shutdown_rx);
+    let policy_pool = state.store.pool().clone();
+    let policy_cedar = Arc::clone(&state.cedar);
+    let policy_auth = Arc::clone(&state.authenticator);
+    let policy_cache = Arc::clone(&state.view.cache);
+    let policy_shutdown = shutdown_rx.clone();
+    tokio::spawn(async move {
+        run_policy_changed_listener(
+            policy_pool,
+            policy_cedar,
+            policy_auth,
+            policy_cache,
+            policy_shutdown,
+        )
+        .await;
+    });
 }
 
 fn spawn_singleton_schedulers(
@@ -1048,4 +1071,55 @@ where
     }
 
     result.map(|()| true)
+}
+
+async fn run_policy_changed_listener(
+    pool: sqlx::PgPool,
+    cedar: Arc<axpoint_security::cedar_authz::CedarAuthorizer>,
+    authenticator: Arc<axpoint_security::Authenticator<PgStore>>,
+    cache: Arc<axpoint_server::view::cache::ViewCache>,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    while !*shutdown_rx.borrow_and_update() {
+        let mut listener = match PgListener::connect_with(&pool).await {
+            Ok(l) => l,
+            Err(err) => {
+                tracing::warn!(error = %err, "ax_policy_changed PgListener connect failed");
+                tokio::select! {
+                    () = tokio::time::sleep(Duration::from_secs(2)) => continue,
+                    _ = shutdown_rx.changed() => break,
+                }
+            }
+        };
+        if let Err(err) = listener.listen("ax_policy_changed").await {
+            tracing::warn!(error = %err, "LISTEN ax_policy_changed failed");
+            tokio::select! {
+                () = tokio::time::sleep(Duration::from_secs(2)) => continue,
+                _ = shutdown_rx.changed() => break,
+            }
+        }
+
+        loop {
+            tokio::select! {
+                _ = shutdown_rx.changed() => return,
+                msg = listener.recv() => {
+                    match msg {
+                        Ok(notification) => {
+                            let tenant_id = notification.payload().trim();
+                            if !tenant_id.is_empty() {
+                                cedar.invalidate_tenant(tenant_id);
+                                authenticator.invalidate_tenant(tenant_id);
+                                cache.invalidate_tenant(tenant_id);
+                                cache.run_pending_tasks().await;
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!(error = %err, "ax_policy_changed recv error; reconnecting");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

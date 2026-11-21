@@ -132,7 +132,7 @@ pub struct NewApiTokenInput {
     pub expires_at: Option<DateTime<Utc>>,
 }
 
-/// Tool-calling and network security capability flags on an LLM provider.
+/// Tool-calling, network security, and outbound PII capability flags on an LLM provider.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct LlmProviderFlags {
     /// Whether `OpenAI` tool/function calling is supported (default `true`).
@@ -141,6 +141,9 @@ pub struct LlmProviderFlags {
     /// Whether private/loopback network targets are permitted (`GUARD_ADMIN` required to set `true`).
     #[serde(default)]
     pub allow_private_network: bool,
+    /// Whether outbound `User`/`Tool` prompts may include raw PII (`false` replaces PII with placeholders, `11-STEP13` §13.8.3).
+    #[serde(default)]
+    pub allow_pii: bool,
 }
 
 impl Default for LlmProviderFlags {
@@ -148,6 +151,7 @@ impl Default for LlmProviderFlags {
         Self {
             supports_tools: true,
             allow_private_network: false,
+            allow_pii: false,
         }
     }
 }

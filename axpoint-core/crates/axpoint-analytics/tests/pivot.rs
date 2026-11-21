@@ -457,6 +457,7 @@ fn pivot_masks_pii_dimensions_unless_reveal_pii_permitted() -> Result<(), AppErr
             timeout_ms: None,
             reveal_pii: true,
             has_pii_raw_read: false,
+            policy: None,
         },
     );
     assert!(matches!(
@@ -472,6 +473,7 @@ fn pivot_masks_pii_dimensions_unless_reveal_pii_permitted() -> Result<(), AppErr
             timeout_ms: None,
             reveal_pii: true,
             has_pii_raw_read: true,
+            policy: None,
         },
     )?;
     assert_eq!(unmasked_res.row_headers, vec![vec!["13987654321"]]);

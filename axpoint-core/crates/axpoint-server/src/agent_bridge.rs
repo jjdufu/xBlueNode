@@ -33,9 +33,11 @@ use crate::routes::analytics::{
     execute_ask_for_principal, execute_published_metric, execute_published_saved_query,
     load_tenant_catalog_and_live,
 };
-use crate::routes::documents::recall_knowledge_hits;
+use crate::routes::documents::{mask_recalled_hits, recall_knowledge_hits};
 use crate::routes::open_secret_map;
-use crate::routes::xblue::xblue_graphql::{compute_neighbor_sigs, mask_node_attributes};
+use crate::routes::xblue::xblue_graphql::{
+    compute_neighbor_sigs, mask_node_attributes_with_policy,
+};
 use crate::state::AppState;
 
 /// Unseals `ds_credentials` rows using `PgStore` and `CredentialKeyring` without circular `AppState` references.
@@ -202,8 +204,9 @@ impl AgentCapabilityPort for ServerAgentCapability {
     ) -> BoxFuture<'a, Vec<FusedHit>> {
         Box::pin(async move {
             let state = self.require_state()?;
-            let (hits, _seeds) =
+            let (mut hits, _seeds) =
                 recall_knowledge_hits(state, tenant_id, query, top_k, doc_title_prefix).await?;
+            mask_recalled_hits(state, tenant_id, &mut hits, false).await?;
             Ok(hits)
         })
     }
@@ -221,7 +224,7 @@ impl AgentCapabilityPort for ServerAgentCapability {
             let state = self.require_state()?;
             let context =
                 resolve_ask_dataset_context(state, &principal.tenant_id, dataset_names).await?;
-            let auth = analytics_to_auth_principal(principal);
+            let auth = resolve_auth_principal(state, principal).await?;
             let resp = execute_ask_for_principal(
                 state,
                 &auth,
@@ -330,8 +333,29 @@ async fn resolve_ask_dataset_context(
     }
 }
 
-fn analytics_to_auth_principal(p: &AnalyticsPrincipal) -> AuthPrincipal {
-    AuthPrincipal {
+pub(crate) async fn resolve_auth_principal(
+    state: &AppState,
+    p: &AnalyticsPrincipal,
+) -> Result<AuthPrincipal, AppError> {
+    if !p.user_id.is_nil()
+        && let Some(rec) = axpoint_domain::ports::CredentialStore::load_principal(
+            &state.store,
+            &p.tenant_id,
+            p.user_id,
+        )
+        .await?
+    {
+        return Ok(AuthPrincipal {
+            user_id: p.user_id,
+            tenant_id: p.tenant_id.clone(),
+            username: p.username.clone(),
+            dept_id: rec.dept_id,
+            roles: rec.roles,
+            permissions: p.permissions.clone(),
+            token_kind: TokenKind::Access,
+        });
+    }
+    Ok(AuthPrincipal {
         user_id: p.user_id,
         tenant_id: p.tenant_id.clone(),
         username: p.username.clone(),
@@ -339,7 +363,7 @@ fn analytics_to_auth_principal(p: &AnalyticsPrincipal) -> AuthPrincipal {
         roles: Vec::new(),
         permissions: p.permissions.clone(),
         token_kind: TokenKind::Access,
-    }
+    })
 }
 
 struct ParsedObjectFilter {
@@ -452,6 +476,12 @@ fn node_matches_extra_filters(node: &BlueNode, filter: &ParsedObjectFilter) -> b
     true
 }
 
+struct AgentNodeMaskCtx<'a> {
+    policy: &'a axpoint_domain::guard::PolicyContext,
+    has_pii_raw: bool,
+    tenant_key: &'a [u8; 32],
+}
+
 async fn execute_domain_object_query(
     state: &AppState,
     principal: &AnalyticsPrincipal,
@@ -475,11 +505,44 @@ async fn execute_domain_object_query(
             .ok_or(AppError::NotFound("TYPE_NOT_FOUND"))?,
     };
 
-    let filter = parse_object_filter(payload);
-    let (matched_nodes, next_cursor) =
-        fetch_filtered_domain_nodes(state, tenant_id, &active_nt.name, &filter).await?;
+    let auth_principal = resolve_auth_principal(state, principal).await?;
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &auth_principal,
+        Permission::DataRead,
+        axpoint_domain::guard::GrantResourceKind::NodeType,
+        &active_nt.name,
+        "127.0.0.1",
+    )
+    .await?;
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &auth_principal,
+        false,
+        "127.0.0.1",
+    )
+    .await?;
+    let tenant_key = state.mask_keys.tenant_key(tenant_id);
 
-    let has_pii_raw = principal.has_permission(Permission::PiiRawRead);
+    let filter = parse_object_filter(payload);
+    let (mut matched_nodes, next_cursor) =
+        fetch_filtered_domain_nodes(state, tenant_id, &active_nt.name, &filter).await?;
+    if !policy.bypass_row_policies && !matched_nodes.is_empty() {
+        let ids: Vec<Uuid> = matched_nodes.iter().map(|n| n.id).collect();
+        let visible = state
+            .store
+            .filter_visible_node_ids(tenant_id, &ids, &policy.node_types)
+            .await?;
+        matched_nodes.retain(|n| visible.contains(&n.id));
+    }
+
+    let mask_ctx = AgentNodeMaskCtx {
+        policy: &policy,
+        has_pii_raw: principal.has_permission(Permission::PiiRawRead),
+        tenant_key: &tenant_key,
+    };
     let neighbors_by_parent = if filter.include_links.is_empty() || matched_nodes.is_empty() {
         BTreeMap::new()
     } else {
@@ -490,7 +553,7 @@ async fn execute_domain_object_query(
             &active_nt,
             &published.doc,
             &filter.include_links,
-            has_pii_raw,
+            &mask_ctx,
         )
         .await?
     };
@@ -502,7 +565,7 @@ async fn execute_domain_object_query(
                 n,
                 &active_nt,
                 pinned_snapshot.is_some(),
-                has_pii_raw,
+                &mask_ctx,
                 neighbors_by_parent.get(&n.id).cloned(),
             )
         })
@@ -603,7 +666,7 @@ async fn load_selected_neighbors(
     nt: &NodeTypeSpec,
     doc: &SchemaDoc,
     include_links: &BTreeSet<String>,
-    has_pii_raw: bool,
+    mask_ctx: &AgentNodeMaskCtx<'_>,
 ) -> Result<BTreeMap<Uuid, BTreeMap<String, Vec<DomainObjectRecord>>>, AppError> {
     let sigs: Vec<_> = compute_neighbor_sigs(nt, doc)
         .into_iter()
@@ -626,10 +689,28 @@ async fn load_selected_neighbors(
         }
     }
 
-    let loaded = state
+    let mut loaded = state
         .store
         .batch_load_neighbors(tenant_id, &batch_keys)
         .await?;
+    if !mask_ctx.policy.bypass_row_policies {
+        let mut all_ids = Vec::new();
+        for list in loaded.values() {
+            for nb in list {
+                all_ids.push(nb.id);
+            }
+        }
+        if !all_ids.is_empty() {
+            let visible = state
+                .store
+                .filter_visible_node_ids(tenant_id, &all_ids, &mask_ctx.policy.node_types)
+                .await?;
+            for list in loaded.values_mut() {
+                list.retain(|nb| visible.contains(&nb.id));
+            }
+        }
+    }
+
     let nt_by_name: BTreeMap<&str, &NodeTypeSpec> = doc
         .node_types
         .iter()
@@ -655,7 +736,13 @@ async fn load_selected_neighbors(
                         type_name: nb.type_name.clone(),
                         node_key: nb.node_key.clone(),
                         title: nb.title.clone(),
-                        attributes: mask_node_attributes(nb, target_spec, has_pii_raw),
+                        attributes: mask_node_attributes_with_policy(
+                            nb,
+                            target_spec,
+                            Some(mask_ctx.policy),
+                            mask_ctx.has_pii_raw,
+                            mask_ctx.tenant_key,
+                        ),
                         metrics: nb.metrics.clone(),
                         geo: nb.geo,
                         updated_at: nb.updated_at,
@@ -674,10 +761,16 @@ fn project_domain_record(
     node: &BlueNode,
     nt: &NodeTypeSpec,
     strict_snapshot_projection: bool,
-    has_pii_raw: bool,
+    mask_ctx: &AgentNodeMaskCtx<'_>,
     neighbors: Option<BTreeMap<String, Vec<DomainObjectRecord>>>,
 ) -> DomainObjectRecord {
-    let mut attributes = mask_node_attributes(node, Some(nt), has_pii_raw);
+    let mut attributes = mask_node_attributes_with_policy(
+        node,
+        Some(nt),
+        Some(mask_ctx.policy),
+        mask_ctx.has_pii_raw,
+        mask_ctx.tenant_key,
+    );
     let mut metrics = node.metrics.clone();
 
     if strict_snapshot_projection && !nt.properties.is_empty() {

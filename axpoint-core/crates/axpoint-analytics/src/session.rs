@@ -7,14 +7,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 
-use arrow::array::RecordBatch;
+use arrow::array::{
+    Array, LargeStringArray, NullArray, RecordBatch, StringArray, StringBuilder, StringViewArray,
+};
+use arrow::datatypes::DataType as ArrowDataType;
 use arrow::util::display::{ArrayFormatter, FormatOptions};
 use axpoint_domain::AppError;
 use axpoint_domain::analytics::{ExplainResult, QueryRequest, QueryResult};
 use axpoint_domain::axhub::{Connection, SealedCredential};
-use axpoint_domain::enums::ConnectorType;
+use axpoint_domain::enums::{ConnectorType, MaskRule};
+use axpoint_domain::guard::PolicyContext;
 use axpoint_domain::ports::LakeInternalQueryPort;
 use axpoint_security::CredentialKeyring;
+use axpoint_security::masking::{MaskKeyRing, apply_mask_rule};
+use duckdb::vscalar::{ArrowFunctionSignature, VArrowScalar};
 use lru::LruCache;
 use tokio::sync::{Mutex as AsyncMutex, oneshot};
 use tracing::{debug, warn};
@@ -23,6 +29,226 @@ use uuid::Uuid;
 use crate::AnalyticsConfig;
 use crate::result::{ResultSerializeOptions, SerializedQueryOutput, batches_to_query_result};
 use crate::sql_guard::{GuardOptions, GuardedSql, TenantCatalog, guard};
+
+#[derive(Clone, Default)]
+struct HmacMaskState {
+    tenant_key: [u8; 32],
+}
+
+fn unary_utf8_signature() -> Vec<ArrowFunctionSignature> {
+    vec![ArrowFunctionSignature::exact(
+        vec![ArrowDataType::Utf8],
+        ArrowDataType::Utf8,
+    )]
+}
+
+fn invoke_mask_arrow(
+    input: &RecordBatch,
+    rule: MaskRule,
+    tenant_key: &[u8; 32],
+) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+    let num_rows = input.num_rows();
+    let Some(col) = input.columns().first() else {
+        return Err(std::io::Error::other("ax_mask_* expected 1 column argument").into());
+    };
+    let mut builder = StringBuilder::with_capacity(num_rows, num_rows.saturating_mul(16));
+
+    if col.as_any().downcast_ref::<NullArray>().is_some() {
+        for _ in 0..num_rows {
+            builder.append_null();
+        }
+    } else if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
+        for idx in 0..num_rows {
+            if arr.is_null(idx) {
+                builder.append_null();
+            } else {
+                builder.append_value(apply_mask_rule(rule, arr.value(idx), tenant_key));
+            }
+        }
+    } else if let Some(arr) = col.as_any().downcast_ref::<LargeStringArray>() {
+        for idx in 0..num_rows {
+            if arr.is_null(idx) {
+                builder.append_null();
+            } else {
+                builder.append_value(apply_mask_rule(rule, arr.value(idx), tenant_key));
+            }
+        }
+    } else if let Some(arr) = col.as_any().downcast_ref::<StringViewArray>() {
+        for idx in 0..num_rows {
+            if arr.is_null(idx) {
+                builder.append_null();
+            } else {
+                builder.append_value(apply_mask_rule(rule, arr.value(idx), tenant_key));
+            }
+        }
+    } else {
+        let fmt = ArrayFormatter::try_new(col.as_ref(), &FormatOptions::default())?;
+        for idx in 0..num_rows {
+            if col.is_null(idx) {
+                builder.append_null();
+            } else {
+                let text = fmt.value(idx).to_string();
+                builder.append_value(apply_mask_rule(rule, &text, tenant_key));
+            }
+        }
+    }
+
+    let out: Arc<dyn Array> = Arc::new(builder.finish());
+    Ok(out)
+}
+
+struct AxMaskPhoneScalar;
+impl VArrowScalar for AxMaskPhoneScalar {
+    type State = ();
+    fn invoke(
+        (): &Self::State,
+        input: RecordBatch,
+    ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        invoke_mask_arrow(&input, MaskRule::MaskPhone, &[0_u8; 32])
+    }
+    fn signatures() -> Vec<ArrowFunctionSignature> {
+        unary_utf8_signature()
+    }
+}
+
+struct AxMaskIdCardScalar;
+impl VArrowScalar for AxMaskIdCardScalar {
+    type State = ();
+    fn invoke(
+        (): &Self::State,
+        input: RecordBatch,
+    ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        invoke_mask_arrow(&input, MaskRule::MaskIdCard, &[0_u8; 32])
+    }
+    fn signatures() -> Vec<ArrowFunctionSignature> {
+        unary_utf8_signature()
+    }
+}
+
+struct AxMaskEmailScalar;
+impl VArrowScalar for AxMaskEmailScalar {
+    type State = ();
+    fn invoke(
+        (): &Self::State,
+        input: RecordBatch,
+    ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        invoke_mask_arrow(&input, MaskRule::MaskEmail, &[0_u8; 32])
+    }
+    fn signatures() -> Vec<ArrowFunctionSignature> {
+        unary_utf8_signature()
+    }
+}
+
+struct AxMaskBankCardScalar;
+impl VArrowScalar for AxMaskBankCardScalar {
+    type State = ();
+    fn invoke(
+        (): &Self::State,
+        input: RecordBatch,
+    ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        invoke_mask_arrow(&input, MaskRule::MaskBankCard, &[0_u8; 32])
+    }
+    fn signatures() -> Vec<ArrowFunctionSignature> {
+        unary_utf8_signature()
+    }
+}
+
+struct AxMaskNameScalar;
+impl VArrowScalar for AxMaskNameScalar {
+    type State = ();
+    fn invoke(
+        (): &Self::State,
+        input: RecordBatch,
+    ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        invoke_mask_arrow(&input, MaskRule::MaskName, &[0_u8; 32])
+    }
+    fn signatures() -> Vec<ArrowFunctionSignature> {
+        unary_utf8_signature()
+    }
+}
+
+struct AxMaskAddressScalar;
+impl VArrowScalar for AxMaskAddressScalar {
+    type State = ();
+    fn invoke(
+        (): &Self::State,
+        input: RecordBatch,
+    ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        invoke_mask_arrow(&input, MaskRule::MaskAddress, &[0_u8; 32])
+    }
+    fn signatures() -> Vec<ArrowFunctionSignature> {
+        unary_utf8_signature()
+    }
+}
+
+struct AxMaskRedactScalar;
+impl VArrowScalar for AxMaskRedactScalar {
+    type State = ();
+    fn invoke(
+        (): &Self::State,
+        input: RecordBatch,
+    ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        invoke_mask_arrow(&input, MaskRule::Redact, &[0_u8; 32])
+    }
+    fn signatures() -> Vec<ArrowFunctionSignature> {
+        unary_utf8_signature()
+    }
+}
+
+struct AxMaskHmacScalar;
+impl VArrowScalar for AxMaskHmacScalar {
+    type State = HmacMaskState;
+    fn invoke(
+        state: &Self::State,
+        input: RecordBatch,
+    ) -> Result<Arc<dyn Array>, Box<dyn std::error::Error>> {
+        invoke_mask_arrow(&input, MaskRule::HmacHash, &state.tenant_key)
+    }
+    fn signatures() -> Vec<ArrowFunctionSignature> {
+        unary_utf8_signature()
+    }
+}
+
+/// Registers all 8 `AxGuard` column-masking vectorized scalar UDFs (`ax_mask_*`) on `conn`
+/// (`11-STEP13` §13.7), binding `tenant_id`'s HKDF-derived key into `ax_mask_hmac_hash`'s Rust state.
+///
+/// # Errors
+/// Returns [`AppError::Config`] if `mask_keyring` is `None` and `AXPOINT_MASK_KEYS` fails validation,
+/// or if `DuckDB` scalar UDF registration fails.
+pub fn register_mask_udfs(
+    conn: &duckdb::Connection,
+    tenant_id: &str,
+    mask_keyring: Option<&MaskKeyRing>,
+) -> Result<(), AppError> {
+    let tenant_key = if let Some(kr) = mask_keyring {
+        kr.tenant_key(tenant_id)
+    } else {
+        MaskKeyRing::from_env()?.tenant_key(tenant_id)
+    };
+    let map_reg = |name: &str, err: duckdb::Error| {
+        AppError::Config(format!("failed to register DuckDB UDF '{name}': {err}"))
+    };
+    conn.register_scalar_function::<AxMaskPhoneScalar>("ax_mask_phone")
+        .map_err(|e| map_reg("ax_mask_phone", e))?;
+    conn.register_scalar_function::<AxMaskIdCardScalar>("ax_mask_id_card")
+        .map_err(|e| map_reg("ax_mask_id_card", e))?;
+    conn.register_scalar_function::<AxMaskEmailScalar>("ax_mask_email")
+        .map_err(|e| map_reg("ax_mask_email", e))?;
+    conn.register_scalar_function::<AxMaskBankCardScalar>("ax_mask_bank_card")
+        .map_err(|e| map_reg("ax_mask_bank_card", e))?;
+    conn.register_scalar_function::<AxMaskNameScalar>("ax_mask_name")
+        .map_err(|e| map_reg("ax_mask_name", e))?;
+    conn.register_scalar_function::<AxMaskAddressScalar>("ax_mask_address")
+        .map_err(|e| map_reg("ax_mask_address", e))?;
+    conn.register_scalar_function::<AxMaskRedactScalar>("ax_mask_redact")
+        .map_err(|e| map_reg("ax_mask_redact", e))?;
+    conn.register_scalar_function_with_state::<AxMaskHmacScalar>(
+        "ax_mask_hmac_hash",
+        &HmacMaskState { tenant_key },
+    )
+    .map_err(|e| map_reg("ax_mask_hmac_hash", e))?;
+    Ok(())
+}
 
 /// Default interactive SQL execution timeout in milliseconds (`30s`).
 pub const DEFAULT_QUERY_TIMEOUT_MS: u64 = 30_000;
@@ -144,6 +370,7 @@ impl TenantDb {
             catalog.insert_live_connection(live_name);
         }
 
+        register_mask_udfs(&conn, tenant_id, None)?;
         lock_duckdb_security(&conn, cfg, &allowed_dirs)?;
 
         let interrupt_handle = conn.interrupt_handle();
@@ -183,9 +410,11 @@ impl TenantDb {
     /// (intended for pure in-memory `DuckDB` unit tests without `DuckLake` filesystem bootstrap).
     ///
     /// # Errors
-    /// Returns [`AppError::BadRequest`] (`INVALID_ARGUMENT`) if `tenant_id` is invalid.
+    /// Returns [`AppError::BadRequest`] (`INVALID_ARGUMENT`) if `tenant_id` is invalid or
+    /// [`AppError::Config`] if UDF registration fails.
     pub fn from_connection(tenant_id: &str, conn: duckdb::Connection) -> Result<Self, AppError> {
         validate_tenant_ident(tenant_id)?;
+        register_mask_udfs(&conn, tenant_id, None)?;
         let interrupt_handle = conn.interrupt_handle();
         Ok(Self {
             conn: Arc::new(StdMutex::new(conn)),
@@ -243,7 +472,26 @@ impl TenantDb {
         has_live_permission: bool,
         has_pii_raw_read: bool,
     ) -> Result<SerializedQueryOutput, AppError> {
-        if req.reveal_pii && !has_pii_raw_read {
+        self.execute_sql_with_policy(req, has_live_permission, has_pii_raw_read, None)
+            .await
+    }
+
+    /// Guards and executes a [`QueryRequest`] under an optional compiled `AxGuard` [`PolicyContext`]
+    /// (`11-STEP13` §13.6.3, §13.7).
+    ///
+    /// # Errors
+    /// Returns `PAYLOAD_TOO_LARGE`, `PERMISSION_DENIED`, `POLICY_DENIED`, `SQL_REJECTED`,
+    /// `QUERY_TIMEOUT`, or `Database`.
+    pub async fn execute_sql_with_policy(
+        &self,
+        req: &QueryRequest,
+        has_live_permission: bool,
+        has_pii_raw_read: bool,
+        policy: Option<&PolicyContext>,
+    ) -> Result<SerializedQueryOutput, AppError> {
+        let pii_reveal_allowed =
+            has_pii_raw_read || policy.is_some_and(|pol| pol.reveal_pii_authorized);
+        if req.reveal_pii && !pii_reveal_allowed {
             return Err(AppError::Forbidden("PERMISSION_DENIED"));
         }
         let mut cat = self.catalog();
@@ -253,6 +501,7 @@ impl TenantDb {
             max_rows: req.max_rows.unwrap_or(0),
             allow_live: req.allow_live,
             params: req.params.clone(),
+            policy: policy.cloned(),
         };
         let guarded = guard(&req.sql, &cat, &guard_opts)?;
         self.execute_guarded(
@@ -260,7 +509,7 @@ impl TenantDb {
             &cat,
             req.timeout_ms,
             req.reveal_pii,
-            has_pii_raw_read,
+            pii_reveal_allowed,
         )
         .await
     }
@@ -320,6 +569,21 @@ impl TenantDb {
         req: &QueryRequest,
         has_live_permission: bool,
     ) -> Result<ExplainResult, AppError> {
+        self.explain_sql_with_policy(req, has_live_permission, None)
+            .await
+    }
+
+    /// Guards `req.sql` under an optional `AxGuard` [`PolicyContext`] and executes `EXPLAIN <guarded_sql>`.
+    ///
+    /// # Errors
+    /// Returns `PAYLOAD_TOO_LARGE`, `PERMISSION_DENIED`, `POLICY_DENIED`, `SQL_REJECTED`,
+    /// `QUERY_TIMEOUT`, or `Database`.
+    pub async fn explain_sql_with_policy(
+        &self,
+        req: &QueryRequest,
+        has_live_permission: bool,
+        policy: Option<&PolicyContext>,
+    ) -> Result<ExplainResult, AppError> {
         let mut cat = self.catalog();
         cat.has_live_permission = has_live_permission;
 
@@ -327,30 +591,10 @@ impl TenantDb {
             max_rows: req.max_rows.unwrap_or(0),
             allow_live: req.allow_live,
             params: req.params.clone(),
+            policy: policy.cloned(),
         };
         let guarded = guard(&req.sql, &cat, &guard_opts)?;
-
-        let started = Instant::now();
-        let budget = resolve_timeout_duration(req.timeout_ms);
-        let _gate = tokio::time::timeout(budget, self.exec_gate.lock())
-            .await
-            .map_err(|_| AppError::Timeout("QUERY_TIMEOUT"))?;
-
-        let remaining = budget.saturating_sub(started.elapsed());
-        if remaining.is_zero() {
-            return Err(AppError::Timeout("QUERY_TIMEOUT"));
-        }
-
-        let explain_stmt = format!("EXPLAIN {}", guarded.sql);
-        let (_, batches) = self.run_arrow_with_timeout(explain_stmt, remaining).await?;
-        let plan = format_explain_batches(&batches)?;
-
-        Ok(ExplainResult {
-            sql: guarded.sql,
-            plan,
-            referenced_datasets: guarded.referenced_datasets,
-            uses_platform_views: guarded.uses_platform_views,
-        })
+        self.explain_guarded(&guarded, req.timeout_ms).await
     }
 
     /// Executes `EXPLAIN <guarded.sql>` on an already-validated [`GuardedSql`] (`05-STEP04` §04.6.5, §04.7).
@@ -447,6 +691,8 @@ impl TenantDb {
             output_lineage: Vec::new(),
             uses_platform_views: false,
             referenced_live_connections: Vec::new(),
+            sql_policy_applied: false,
+            sql_masked_columns: HashSet::new(),
         };
 
         let serialized = batches_to_query_result(
@@ -527,6 +773,20 @@ impl TenantDb {
 pub struct SessionPool {
     inner: AsyncMutex<LruCache<String, Arc<TenantDb>>>,
     cfg: AnalyticsConfig,
+}
+
+/// Type alias for [`SessionPool`] used by higher-level `AxAnalytics` consumers.
+pub type AnalyticsService = SessionPool;
+
+/// Authorization context bundled into [`SessionPool::query_with_policy`] to keep parameter arity concise.
+#[derive(Debug, Clone, Copy)]
+pub struct PolicyQueryAccess<'a> {
+    /// Whether `live_*` federated connections are permitted for the caller.
+    pub has_live_permission: bool,
+    /// Whether the caller holds global `Permission::PiiRawRead`.
+    pub has_pii_raw_read: bool,
+    /// Optional compiled `AxGuard` row/column security context.
+    pub policy: Option<&'a PolicyContext>,
 }
 
 impl std::fmt::Debug for SessionPool {
@@ -690,6 +950,33 @@ impl SessionPool {
             .await
     }
 
+    /// Convenience entrypoint acquiring/initializing `tenant_id`'s session and executing `req`
+    /// under an optional compiled `AxGuard` [`PolicyContext`].
+    ///
+    /// # Errors
+    /// Returns `PAYLOAD_TOO_LARGE`, `PERMISSION_DENIED`, `POLICY_DENIED`, `SQL_REJECTED`,
+    /// `QUERY_TIMEOUT`, or `Database`.
+    pub async fn query_with_policy(
+        &self,
+        tenant_id: &str,
+        catalog: TenantCatalog,
+        live_sources: &[LiveConnectionSpec],
+        req: &QueryRequest,
+        access: PolicyQueryAccess<'_>,
+    ) -> Result<SerializedQueryOutput, AppError> {
+        let session = self
+            .get_or_try_init(tenant_id, catalog, live_sources)
+            .await?;
+        session
+            .execute_sql_with_policy(
+                req,
+                access.has_live_permission,
+                access.has_pii_raw_read,
+                access.policy,
+            )
+            .await
+    }
+
     /// Convenience entrypoint acquiring/initializing `tenant_id`'s session and running `EXPLAIN`.
     ///
     /// # Errors
@@ -702,10 +989,38 @@ impl SessionPool {
         req: &QueryRequest,
         has_live_permission: bool,
     ) -> Result<ExplainResult, AppError> {
+        self.explain_with_policy(
+            tenant_id,
+            catalog,
+            live_sources,
+            req,
+            has_live_permission,
+            None,
+        )
+        .await
+    }
+
+    /// Convenience entrypoint acquiring/initializing `tenant_id`'s session and running `EXPLAIN`
+    /// under an optional compiled `AxGuard` [`PolicyContext`].
+    ///
+    /// # Errors
+    /// Returns `PAYLOAD_TOO_LARGE`, `PERMISSION_DENIED`, `POLICY_DENIED`, `SQL_REJECTED`,
+    /// `QUERY_TIMEOUT`, or `Database`.
+    pub async fn explain_with_policy(
+        &self,
+        tenant_id: &str,
+        catalog: TenantCatalog,
+        live_sources: &[LiveConnectionSpec],
+        req: &QueryRequest,
+        has_live_permission: bool,
+        policy: Option<&PolicyContext>,
+    ) -> Result<ExplainResult, AppError> {
         let session = self
             .get_or_try_init(tenant_id, catalog, live_sources)
             .await?;
-        session.explain_sql(req, has_live_permission).await
+        session
+            .explain_sql_with_policy(req, has_live_permission, policy)
+            .await
     }
 }
 

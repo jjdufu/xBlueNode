@@ -427,20 +427,22 @@ async fn insert_system_audit_tx(
     resource_ref: &str,
     detail: serde_json::Value,
 ) -> Result<(), AppError> {
-    sqlx::query(
-        "INSERT INTO sec_audit_logs (
-             tenant_id, user_id, username, action, resource_ref, status_code, detail_json
-         )
-         VALUES ($1, NULL, 'system', $2, $3, 200, $4)",
+    crate::audit::insert_chained_audit_tx(
+        tx,
+        &axpoint_domain::platform::AuditRecord {
+            tenant_id: String::from(tenant_id),
+            user_id: None,
+            username: String::from("system"),
+            action,
+            resource_ref: String::from(resource_ref),
+            status_code: 200,
+            client_ip: String::new(),
+            trace_id: String::new(),
+            detail_json: detail,
+            created_at: Utc::now(),
+        },
     )
-    .bind(tenant_id)
-    .bind(action.as_str())
-    .bind(resource_ref)
-    .bind(detail)
-    .execute(&mut **tx)
     .await
-    .map_err(|err| AppError::Database(format!("insert sec_audit_logs failed: {err}")))?;
-    Ok(())
 }
 
 async fn fetch_connection_by_id_tx(

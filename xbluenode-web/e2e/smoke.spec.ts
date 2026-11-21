@@ -6,6 +6,27 @@ interface SmokeRouteAssertion {
   readonly heading: string;
 }
 
+function makeSmokeJwt(): string {
+  const encodeSeg = (obj: Record<string, unknown>): string =>
+    btoa(JSON.stringify(obj))
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/g, "");
+  const nowSec = Math.floor(Date.now() / 1000);
+  return `${encodeSeg({ alg: "EdDSA", typ: "JWT", kid: "k1" })}.${encodeSeg({
+    iss: "axpoint",
+    aud: "axpoint-api",
+    sub: "00000000-0000-0000-0000-000000000000",
+    tid: "default",
+    dept: "default",
+    roles: ["ADMIN"],
+    typ: "access",
+    iat: nowSec,
+    exp: nowSec + 900,
+    jti: "smoke-jti-1",
+  })}.smoke_eddsa_sig`;
+}
+
 const SHELL_SMOKE_ROUTES: readonly SmokeRouteAssertion[] = [
   { path: "/", sidebarLabel: "系统概览", heading: "系统概览" },
   {
@@ -42,6 +63,11 @@ const SHELL_SMOKE_ROUTES: readonly SmokeRouteAssertion[] = [
     path: "/view",
     sidebarLabel: "xBlueView · 孪生驾驶舱",
     heading: "xBlueView · 孪生驾驶舱",
+  },
+  {
+    path: "/guard",
+    sidebarLabel: "AxGuard · 安全治理",
+    heading: "AxGuard · 安全治理中心",
   },
 ];
 
@@ -87,6 +113,55 @@ async function installDeterministicApiMocks(
       return;
     }
 
+    if (pathname === "/api/auth/config") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          env: "development",
+          oidc_enabled: true,
+          oidc_display_name: "企业单点登录 (OIDC)",
+          default_tenant: "default",
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/auth/login" && request.method() === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          access_token: makeSmokeJwt(),
+          token_type: "Bearer",
+          expires_in: 900,
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/auth/refresh" && request.method() === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          access_token: makeSmokeJwt(),
+          token_type: "Bearer",
+          expires_in: 900,
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/auth/logout" && request.method() === "POST") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true }),
+      });
+      return;
+    }
+
     const authHeader = request.headers()["authorization"] ?? "";
     if (!authHeader.startsWith("Bearer ") || authHeader.slice(7).trim().length === 0) {
       missingAuthUrls.push(request.url());
@@ -120,6 +195,7 @@ async function installDeterministicApiMocks(
             "FLOW_EDIT",
             "FLOW_RUN",
             "SIM_RUN",
+            "GUARD_ADMIN",
           ],
           token_kind: "DEV_STATIC",
         }),
@@ -360,7 +436,7 @@ async function installDeterministicApiMocks(
   });
 }
 
-test("all registered routes and /login render cleanly with Bearer auth and zero console errors", async ({
+test("all registered routes and /login (password + OIDC + PAT accordion) render cleanly with zero console errors", async ({
   page,
 }) => {
   const consoleErrors: string[] = [];
@@ -390,11 +466,26 @@ test("all registered routes and /login render cleanly with Bearer auth and zero 
     ).toBeVisible();
   }
 
+  // 1. Primary Username + Password login flow & dynamic OIDC button
   await page.goto("/login");
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxGuard · 访问令牌认证" })
+    page.getByRole("heading", { level: 1, name: "AxGuard · 统一身份认证" })
+  ).toBeVisible();
+  await expect(page.getByTestId("oidc-login-btn")).toContainText(
+    "企业单点登录 (OIDC)"
+  );
+
+  await page.getByTestId("login-username-input").fill("ops_admin");
+  await page.getByTestId("login-password-input").fill("Ops#Admin2026!Safe");
+  await page.getByTestId("login-submit-btn").click();
+  await expect(page).toHaveURL(/\/$/);
+  await expect(
+    page.getByRole("heading", { level: 1, name: "系统概览" })
   ).toBeVisible();
 
+  // 2. Collapsible PAT login flow
+  await page.goto("/login");
+  await page.getByTestId("pat-accordion-toggle").click();
   await page.locator("#access-token-input").fill("smoke-candidate-token-0000000000000000");
   await page.getByRole("button", { name: "验证并进入工作台" }).click();
   await expect(page).toHaveURL(/\/$/);
