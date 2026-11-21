@@ -82,14 +82,19 @@ impl JobHandlerRegistry {
     }
 }
 
-/// Step 00 `RETENTION` handler cleaning expired `ax_jobs` and `ax_outbox` rows per tenant policy.
+/// Step 00 & Step 12 `RETENTION` handler cleaning expired `ax_jobs`, `ax_outbox`, and `EXPORT_FILE` artifacts.
 struct RetentionJobHandler {
     store: PgStore,
+    data_root: std::path::PathBuf,
 }
 
 impl JobHandler for RetentionJobHandler {
     fn handle<'a>(&'a self, job: &'a LeasedJob) -> BoxFuture<'a, serde_json::Value> {
-        Box::pin(async move { self.store.run_retention_cleanup(&job.tenant_id).await })
+        Box::pin(async move {
+            self.store
+                .run_retention_cleanup_with_data_root(&job.tenant_id, &self.data_root)
+                .await
+        })
     }
 }
 
@@ -425,6 +430,7 @@ fn build_job_registry(
         JobKind::Retention,
         Arc::new(RetentionJobHandler {
             store: store.clone(),
+            data_root: state.data_root.clone(),
         }),
     );
     registry.register(
@@ -464,6 +470,17 @@ fn build_job_registry(
             store: store.clone(),
         }),
     );
+    register_domain_job_handlers(&mut registry, state, flow_engine, rule_evaluator);
+    Arc::new(registry)
+}
+
+fn register_domain_job_handlers(
+    registry: &mut JobHandlerRegistry,
+    state: &crate::state::AppState,
+    flow_engine: &Arc<axpoint_flow::FlowEngine<PgStore>>,
+    rule_evaluator: &Arc<axpoint_flow::RuleEvaluator<PgStore>>,
+) {
+    let store = &state.store;
     registry.register(
         JobKind::EmbedNodes,
         Arc::new(crate::workers::EmbedNodesHandler {
@@ -503,7 +520,17 @@ fn build_job_registry(
             rule_evaluator,
         ))),
     );
-    Arc::new(registry)
+    registry.register(
+        JobKind::Export,
+        Arc::new(axpoint_server::view::export::ExportJobHandler {
+            store: store.clone(),
+            analytics_pool: Arc::clone(&state.analytics_pool),
+            cache: Arc::clone(&state.view.cache),
+            sidecar: Arc::clone(&state.sidecar),
+            audit: state.audit.clone(),
+            data_root: state.data_root.clone(),
+        }),
+    );
 }
 
 /// Spawns `JobWorker` tasks (`AXPOINT_WORKERS`, default `4`), `OutboxDispatcher`, and singleton schedulers.
@@ -779,7 +806,7 @@ async fn execute_leased_job(store: &PgStore, registry: &JobHandlerRegistry, job:
 
     let is_long_sync = matches!(
         job.kind,
-        JobKind::SyncDataset | JobKind::ParseFile | JobKind::MapMaterialize
+        JobKind::SyncDataset | JobKind::ParseFile | JobKind::MapMaterialize | JobKind::Export
     );
     let (lease_secs, hb_interval) = if is_long_sync {
         if let Err(err) = store.heartbeat(job, SYNC_JOB_LEASE_SECS).await {

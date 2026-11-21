@@ -26,6 +26,7 @@ import { AxAgentPage } from "@/pages/AxAgentPage";
 import { AgentEmbedPage } from "@/pages/AgentEmbedPage";
 import { AxSimPage } from "@/pages/AxSimPage";
 import { XBlueViewPage } from "@/pages/XBlueViewPage";
+import { SharePage } from "@/pages/SharePage";
 
 export type TabKey =
   | "dashboard"
@@ -40,7 +41,8 @@ export type TabKey =
   | "axagent"
   | "agent_embed"
   | "axsim"
-  | "xblueview";
+  | "xblueview"
+  | "xblueview_share";
 
 export interface ModuleRouteSpec {
   key: TabKey;
@@ -77,4 +79,5 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     immersiveQueryParam: "screen",
   },
   { key: "agent_embed", path: "/share/agent/:token", label: "AxAgent 嵌入对话", icon: Bot, component: AgentEmbedPage, public: true },
+  { key: "xblueview_share", path: "/share/:token", label: "xBlueView 安全分享", icon: Monitor, component: SharePage, public: true },
 ];

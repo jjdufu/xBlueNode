@@ -4,7 +4,9 @@ import {
   ArrowLeft,
   CheckCircle2,
   Copy,
+  Download,
   Edit3,
+  FileArchive,
   FolderKanban,
   Layers,
   MessageSquare,
@@ -15,6 +17,7 @@ import {
   Save,
   Search,
   Settings2,
+  Share2,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -36,14 +39,24 @@ import { AssetManagerPanel } from "@/components/xblueview/AssetManagerPanel";
 import { BigScreen } from "@/components/xblueview/BigScreen";
 import { DashboardGrid } from "@/components/xblueview/DashboardGrid";
 import { DashboardSettingsModal } from "@/components/xblueview/DashboardSettingsModal";
+import {
+  ExportDialog,
+  type ExportDialogTarget,
+} from "@/components/xblueview/ExportDialog";
+import { ExportList } from "@/components/xblueview/ExportList";
 import { FilterBar } from "@/components/xblueview/FilterBar";
 import {
   buildWidgetFilters as computeScopedWidgetFilters,
   resolveLeafDrillNodeKey,
+  sanitizeExportFilters,
 } from "@/components/xblueview/logic";
 import { NodeDrawer } from "@/components/xblueview/NodeDrawer";
+import {
+  ShareDialog,
+  type ShareDialogTarget,
+} from "@/components/xblueview/ShareDialog";
 import { WidgetEditor } from "@/components/xblueview/WidgetEditor";
-import { DEFAULT_CANVAS, type SelectedNodeContext } from "@/components/xblueview/utils";
+import { DEFAULT_CANVAS, WIDGET_KIND_LABELS, type SelectedNodeContext } from "@/components/xblueview/utils";
 
 type GalleryTab = "dashboards" | "assets";
 
@@ -203,6 +216,16 @@ export function XBlueViewPage() {
   );
   const [askOpen, setAskOpen] = useState(false);
   const [sseConnected, setSseConnected] = useState(false);
+  const [exportTarget, setExportTarget] = useState<ExportDialogTarget | null>(
+    null
+  );
+  const [exportListOpen, setExportListOpen] = useState(false);
+  const [highlightExportJobId, setHighlightExportJobId] = useState<
+    string | null
+  >(null);
+  const [shareTarget, setShareTarget] = useState<ShareDialogTarget | null>(
+    null
+  );
 
   const lastFetchAtRef = useRef<Record<string, number>>({});
   const throttleTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>(
@@ -976,6 +999,49 @@ export function XBlueViewPage() {
                 <Button
                   type="button"
                   variant="outline"
+                  onClick={() =>
+                    setExportTarget({
+                      kind: "DASHBOARD",
+                      dashboardId: dashboard.id,
+                      dashboardName: dashboard.name,
+                      filters: sanitizeExportFilters(filterValues),
+                    })
+                  }
+                  data-testid="open-export-dialog-btn"
+                >
+                  <Download className="h-3.5 w-3.5 text-xblue" />
+                  出品导出
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setExportListOpen(true)}
+                  data-testid="open-export-list-btn"
+                >
+                  <FileArchive className="h-3.5 w-3.5 text-xblue" />
+                  出品中心
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() =>
+                    setShareTarget({
+                      targetKind: "DASHBOARD",
+                      targetId: dashboard.id,
+                      targetName: dashboard.name,
+                      dashboardStatus: dashboard.status,
+                      dashboardFilters: dashboard.filters,
+                      activeFilterValues: filterValues,
+                    })
+                  }
+                  data-testid="open-share-dialog-btn"
+                >
+                  <Share2 className="h-3.5 w-3.5 text-xblue" />
+                  安全分享
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
                   onClick={() => setSearchParams({ screen: "1" })}
                   data-testid="enter-big-screen-btn"
                 >
@@ -1099,6 +1165,17 @@ export function XBlueViewPage() {
                 setEditorOpen(true);
               }}
               onDeleteWidget={(wid) => void handleDeleteWidget(wid)}
+              onExportWidget={(w) =>
+                setExportTarget({
+                  kind: "WIDGET",
+                  dashboardId: dashboard.id,
+                  dashboardName: dashboard.name,
+                  widgetId: w.id,
+                  widgetTitle: w.title || WIDGET_KIND_LABELS[w.widget_kind],
+                  filters: buildWidgetFilters(w.id, dashboard, filterValues),
+                  drillPath: drillMap[w.id] ?? [],
+                })
+              }
               onDrill={handleDrill}
               onPopDrill={handlePopDrill}
               onCrossFilter={handleCrossFilter}
@@ -1178,6 +1255,53 @@ export function XBlueViewPage() {
               );
               void fetchWidgetData(created.id, dashboard);
             }}
+          />
+
+          <ExportDialog
+            open={Boolean(exportTarget)}
+            target={exportTarget}
+            onClose={() => setExportTarget(null)}
+            onExportCreated={(job) => {
+              setExportTarget(null);
+              setHighlightExportJobId(job.id);
+              setExportListOpen(true);
+            }}
+          />
+
+          <ExportList
+            open={exportListOpen}
+            highlightJobId={highlightExportJobId}
+            onClose={() => {
+              setExportListOpen(false);
+              setHighlightExportJobId(null);
+            }}
+            onShareExportFile={(job) => {
+              setExportListOpen(false);
+              setShareTarget({
+                targetKind: "EXPORT_FILE",
+                targetId: job.id,
+                targetName:
+                  job.file_name ||
+                  job.options?.title ||
+                  `导出文件 · ${job.export_format}`,
+              });
+            }}
+          />
+
+          <ShareDialog
+            open={Boolean(shareTarget)}
+            target={
+              shareTarget?.targetKind === "DASHBOARD"
+                ? {
+                    ...shareTarget,
+                    dashboardStatus: dashboard.status,
+                    dashboardFilters: dashboard.filters,
+                    activeFilterValues: filterValues,
+                  }
+                : shareTarget
+            }
+            onClose={() => setShareTarget(null)}
+            onPublishDashboard={handlePublish}
           />
         </>
       ) : null}

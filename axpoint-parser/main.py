@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 import orjson
 from fastapi import FastAPI, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from charts import render_chart_bytes, shutdown_chart_pool
 from connectors.base import arrow_table_to_preview
 from connectors.registry import create_connector, list_connector_specs
+from exporters import export_document, normalize_export_format
 from lake.maintenance import run_maintenance
 from lake.writer import (
     commit_staging,
@@ -37,6 +41,9 @@ from schemas import (
     MaterializeRequest,
     ParseResponse,
     PreviewResponse,
+    RenderChartRequest,
+    SidecarExportRequest,
+    SidecarExportResponse,
     SyncRequest,
     SyncResult,
     TestResult,
@@ -70,9 +77,17 @@ _STATUS_ERROR_CODES: dict[int, str] = {
     504: "UPSTREAM_TIMEOUT",
 }
 
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    yield
+    await asyncio.to_thread(shutdown_chart_pool)
+
+
 app = FastAPI(
     title="AxPoint Document & Data Parser Sidecar",
     version="0.2.0",
+    lifespan=_lifespan,
 )
 app.add_middleware(InternalTokenMiddleware)
 
@@ -363,3 +378,30 @@ async def delete_lake_table_by_path(
     eff_tenant = validate_tenant_id(tenant_id) if tenant_id else _header_tenant(request)
     dropped = drop_lake_table(eff_tenant, lake_table)
     return {"dropped": dropped}
+
+
+@app.post("/render/chart")
+async def post_render_chart(request: Request, req: RenderChartRequest) -> Response:
+    _header_tenant(request)
+    img_bytes, mime = await asyncio.to_thread(render_chart_bytes, req)
+    return Response(content=img_bytes, media_type=mime)
+
+
+@app.post("/export/{export_format}", response_model=SidecarExportResponse)
+async def post_export_document(
+    export_format: str,
+    request: Request,
+    req: SidecarExportRequest,
+) -> SidecarExportResponse:
+    fmt = normalize_export_format(export_format)
+    raw_hdr_tenant = request.headers.get("x-axpoint-tenant", "").strip()
+    body_tenant = validate_tenant_id(req.tenant_id)
+    if raw_hdr_tenant:
+        hdr_tenant = validate_tenant_id(raw_hdr_tenant)
+        if hdr_tenant != body_tenant:
+            raise SidecarError(
+                403,
+                "PERMISSION_DENIED",
+                "x-axpoint-tenant header does not match request tenant_id",
+            )
+    return await asyncio.to_thread(export_document, fmt, req)

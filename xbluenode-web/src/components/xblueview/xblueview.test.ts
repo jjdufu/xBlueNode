@@ -2,13 +2,18 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   buildAskFilterSpecs,
+  buildEChartsOption,
   buildWidgetFilters,
+  chartSpec,
   classifyPivotRow,
+  containsFunctionValue,
   detectImplicitNodeMetricGrouping,
+  mergeLockedShareFilters,
   parseGraphTopologyData,
   parseNodesGeoData,
   resolveActionTargetNodeId,
   resolveLeafDrillNodeKey,
+  sanitizeExportFilters,
   sanitizeOptionalUuid,
   type LogicFilterDef,
 } from "./logic.ts";
@@ -331,5 +336,177 @@ describe("xBlueView contract logic", () => {
       seriesField: "group_key",
       yField: "value",
     });
+  });
+
+  it("buildEChartsOption applies chartSpec light/dark palettes, Chinese labels, pie/gauge geometry, and encodingFallbacks", () => {
+    const barData = {
+      columns: [
+        { name: "region", data_type: "STRING" },
+        { name: "total_amount", data_type: "DECIMAL" },
+      ],
+      rows: [
+        ["华东战区", "12800.50"],
+        ["华南战区", "9400.00"],
+      ],
+    };
+
+    const lightBar = buildEChartsOption({
+      kind: "BAR_CHART",
+      title: "战区订单营收",
+      encoding: {},
+      data: barData,
+      isDark: false,
+    });
+    assert.equal(lightBar.clickField, "region");
+    assert.deepEqual(lightBar.option.color, chartSpec.palette.light);
+    assert.deepEqual(lightBar.option.grid, chartSpec.grid);
+    assert.deepEqual(lightBar.option.textStyle, {
+      fontFamily: chartSpec.fontFamily,
+      color: chartSpec.tokens.light.text,
+    });
+    const xAxisLight = lightBar.option.xAxis as Record<string, unknown>;
+    assert.deepEqual(xAxisLight.data, ["华东战区", "华南战区"]);
+
+    const darkPie = buildEChartsOption({
+      kind: "PIE_CHART",
+      title: "订单结构占比",
+      encoding: {},
+      data: {
+        columns: [
+          { name: "status", data_type: "STRING" },
+          { name: "amt", data_type: "DECIMAL" },
+        ],
+        rows: [
+          ["已支付订单", 8200],
+          ["待发货订单", 1800],
+        ],
+      },
+      isDark: true,
+    });
+    assert.equal(darkPie.clickField, "status");
+    assert.deepEqual(darkPie.option.color, chartSpec.palette.dark);
+    const pieSeries = (darkPie.option.series as Record<string, unknown>[])[0];
+    assert.deepEqual(pieSeries?.radius, [
+      chartSpec.pie.innerRadius,
+      chartSpec.pie.outerRadius,
+    ]);
+
+    const gaugeRes = buildEChartsOption({
+      kind: "GAUGE",
+      title: "履约达成率",
+      options: { unit: "%" },
+      data: {
+        columns: [{ name: "metric_value", data_type: "FLOAT64" }],
+        rows: [[96.5]],
+      },
+      isDark: false,
+    });
+    const gaugeSeries = (gaugeRes.option.series as Record<string, unknown>[])[0];
+    assert.equal(gaugeSeries?.min, chartSpec.gauge.defaultMin);
+    assert.equal(gaugeSeries?.max, chartSpec.gauge.defaultMax);
+  });
+
+  it("buildEChartsOption precomputes numeric SCATTER symbolSize and round-trips JSON.stringify with zero functions across all chart kinds", () => {
+    const scatterRes = buildEChartsOption({
+      kind: "SCATTER",
+      title: "仓库吞吐散点",
+      encoding: { x: "orders", y: "latency", size: "weight" },
+      data: {
+        columns: [
+          { name: "orders", data_type: "INT64" },
+          { name: "latency", data_type: "FLOAT64" },
+          { name: "weight", data_type: "FLOAT64" },
+        ],
+        rows: [
+          [100, 12.5, 2],    // clamped up to minSymbolSize (6)
+          [240, 18.0, 20],   // within [6, 36] -> 20
+          [500, 31.2, 999],  // clamped down to maxSymbolSize (36)
+          [80, 9.1, null],   // fallback to defaultSymbolSize (12)
+        ],
+      },
+      isDark: false,
+    });
+
+    assert.equal(containsFunctionValue(scatterRes.option), false);
+    const scatterSeries = (scatterRes.option.series as Record<string, unknown>[])[0];
+    assert.equal(scatterSeries?.symbolSize, chartSpec.scatter.defaultSymbolSize);
+    const points = scatterSeries?.data as { value: number[]; symbolSize: number }[];
+    assert.equal(points[0]?.symbolSize, chartSpec.scatter.minSymbolSize);
+    assert.equal(points[1]?.symbolSize, 20);
+    assert.equal(points[2]?.symbolSize, chartSpec.scatter.maxSymbolSize);
+    assert.equal(points[3]?.symbolSize, chartSpec.scatter.defaultSymbolSize);
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(scatterRes.option)),
+      scatterRes.option
+    );
+
+    const allKinds = [
+      "LINE_CHART",
+      "BAR_CHART",
+      "PIE_CHART",
+      "SCATTER",
+      "SANKEY",
+      "HEATMAP",
+      "GAUGE",
+      "RADAR",
+      "GRAPH_TOPOLOGY",
+    ];
+    const sampleData = {
+      columns: [
+        { name: "source", data_type: "STRING" },
+        { name: "target", data_type: "STRING" },
+        { name: "value", data_type: "FLOAT64" },
+      ],
+      rows: [
+        ["苏州工厂", "上海一号仓", 68],
+        ["杭州工厂", "南京分拨仓", 42],
+      ],
+    };
+
+    for (const kind of allKinds) {
+      for (const isDark of [false, true]) {
+        const built = buildEChartsOption({
+          kind,
+          title: `测试图表 · ${kind}`,
+          data: sampleData,
+          isDark,
+        });
+        assert.equal(
+          containsFunctionValue(built.option),
+          false,
+          `${kind} (dark=${String(isDark)}) must not contain any JS function`
+        );
+        const roundTripped = JSON.parse(JSON.stringify(built.option)) as Record<
+          string,
+          unknown
+        >;
+        assert.deepEqual(roundTripped, built.option);
+      }
+    }
+  });
+
+  it("sanitizeExportFilters and mergeLockedShareFilters strip blanks and enforce locked share filters", () => {
+    assert.deepEqual(
+      sanitizeExportFilters({
+        status: "PAID",
+        emptyStr: "   ",
+        nullVal: null,
+        undefVal: undefined,
+        emptyArr: [],
+        region: ["华东", "华南"],
+      }),
+      {
+        status: "PAID",
+        region: ["华东", "华南"],
+      }
+    );
+
+    assert.deepEqual(
+      mergeLockedShareFilters(
+        { status: "PENDING", warehouse: "W-2" },
+        { status: "PAID" }
+      ),
+      { status: "PAID", warehouse: "W-2" }
+    );
   });
 });

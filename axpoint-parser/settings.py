@@ -104,6 +104,7 @@ class Settings(BaseSettings):
     axpoint_ocr_enabled: bool = True
     axpoint_parse_timeout_s: int = 300
     axpoint_pdf_max_pages: int = 2000
+    axpoint_chart_workers: int = 2
     axpoint_lake_catalog_dsn: str = ""
 
     def effective_upload_max_bytes(self) -> int:
@@ -183,6 +184,19 @@ def get_parse_timeout_s() -> int:
         return settings.axpoint_parse_timeout_s
     except ValidationError:
         return int(os.getenv("AXPOINT_PARSE_TIMEOUT_S", "300"))
+
+
+def get_chart_workers() -> int:
+    """Resolve chart SSR worker count from env or Settings safely (clamped >= 1)."""
+    try:
+        val = settings.axpoint_chart_workers
+    except ValidationError:
+        raw = os.getenv("AXPOINT_CHART_WORKERS", "2").strip()
+        try:
+            val = int(raw)
+        except ValueError:
+            val = 2
+    return max(1, val)
 
 
 class _SettingsProxy:

@@ -105,6 +105,10 @@ where
             .filter(|t| !t.is_empty())
             .ok_or(AppError::Unauthorized("TOKEN_MISSING"))?;
 
+        if token.starts_with("axs_") || token.starts_with("axe_") {
+            return Err(AppError::Unauthorized("TOKEN_INVALID"));
+        }
+
         if !self.env_mode.eq_ignore_ascii_case("production")
             && let Some(ref expected_dev) = self.dev_token
             && constant_time_token_eq(token, expected_dev)
@@ -178,4 +182,68 @@ fn constant_time_token_eq(supplied: &str, expected: &str) -> bool {
 pub fn sha256_hex(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     hex::encode(digest)
+}
+
+#[cfg(test)]
+mod tests {
+    use axpoint_domain::AppError;
+    use axpoint_domain::platform::{ApiTokenRecord, PrincipalRecord};
+    use axpoint_domain::ports::CredentialStore;
+    use uuid::Uuid;
+
+    use super::Authenticator;
+
+    #[derive(Clone, Default)]
+    struct StubCredentialStore;
+
+    impl CredentialStore for StubCredentialStore {
+        fn resolve_api_token(
+            &self,
+            _token_hash: &str,
+        ) -> impl Future<Output = Result<Option<ApiTokenRecord>, AppError>> + Send {
+            std::future::ready(Ok(None))
+        }
+
+        fn load_principal(
+            &self,
+            _tenant_id: &str,
+            _user_id: Uuid,
+        ) -> impl Future<Output = Result<Option<PrincipalRecord>, AppError>> + Send {
+            std::future::ready(Ok(None))
+        }
+
+        fn touch_api_token(
+            &self,
+            _tenant_id: &str,
+            _token_id: Uuid,
+        ) -> impl Future<Output = Result<(), AppError>> + Send {
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn share_and_embed_tokens_are_rejected_as_api_bearer_tokens() -> Result<(), AppError> {
+        let auth = Authenticator::new(
+            StubCredentialStore,
+            "development",
+            Some(String::from("axs_abcd1234_0123456789abcdef0123456789ab")),
+        )?;
+
+        let share_res = auth
+            .authenticate(Some("Bearer axs_abcd1234_0123456789abcdef0123456789ab"))
+            .await;
+        assert!(matches!(
+            share_res,
+            Err(AppError::Unauthorized("TOKEN_INVALID"))
+        ));
+
+        let embed_res = auth
+            .authenticate(Some("Bearer axe_0123456789abcdef0123456789abcdef"))
+            .await;
+        assert!(matches!(
+            embed_res,
+            Err(AppError::Unauthorized("TOKEN_INVALID"))
+        ));
+        Ok(())
+    }
 }

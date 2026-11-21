@@ -1,9 +1,8 @@
-//! SPA static asset hosting, `Cache-Control` policy, upload body limits, and router unit tests.
+//! SPA static asset hosting, `Cache-Control` policy, share no-leak headers, and upload body limits.
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Request};
-use axum::http::HeaderValue;
-use axum::http::header::CACHE_CONTROL;
+use axum::http::header::{CACHE_CONTROL, HeaderName, HeaderValue, REFERRER_POLICY};
 use axum::middleware::{self, Next};
 use axum::response::Response;
 use tower_http::compression::CompressionLayer;
@@ -18,6 +17,9 @@ use crate::telemetry::http_telemetry_middleware;
 const CACHE_IMMUTABLE: HeaderValue =
     HeaderValue::from_static("public, max-age=31536000, immutable");
 const CACHE_NO_CACHE: HeaderValue = HeaderValue::from_static("no-cache");
+const NO_REFERRER: HeaderValue = HeaderValue::from_static("no-referrer");
+const NOINDEX: HeaderValue = HeaderValue::from_static("noindex");
+const X_ROBOTS_TAG: HeaderName = HeaderName::from_static("x-robots-tag");
 
 /// Builds the complete `AxPoint` Core HTTP application router with API routes, SPA fallback, and middleware.
 pub(crate) fn build_app(state: AppState, web_dist_dir: &str, max_upload_bytes: usize) -> Router {
@@ -36,15 +38,24 @@ pub(crate) fn build_app(state: AppState, web_dist_dir: &str, max_upload_bytes: u
 }
 
 async fn cache_control_middleware(req: Request, next: Next) -> Response {
-    let is_immutable_asset = req.uri().path().starts_with("/assets/");
+    let path = req.uri().path();
+    let is_immutable_asset = path.starts_with("/assets/");
+    let is_share_route = path == "/share"
+        || path.starts_with("/share/")
+        || path.starts_with("/api/xblueview/share/");
     let mut resp = next.run(req).await;
-    if !resp.headers().contains_key(CACHE_CONTROL) {
+    let headers = resp.headers_mut();
+    if !headers.contains_key(CACHE_CONTROL) {
         let header_val = if is_immutable_asset {
             CACHE_IMMUTABLE
         } else {
             CACHE_NO_CACHE
         };
-        resp.headers_mut().insert(CACHE_CONTROL, header_val);
+        headers.insert(CACHE_CONTROL, header_val);
+    }
+    if is_share_route {
+        headers.insert(REFERRER_POLICY, NO_REFERRER);
+        headers.insert(X_ROBOTS_TAG, NOINDEX);
     }
     resp
 }

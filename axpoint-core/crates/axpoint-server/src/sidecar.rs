@@ -11,12 +11,17 @@ use axpoint_domain::axhub::{
     PreviewResponse, SidecarConnectorRequest, SidecarPreviewRequest, SidecarSyncRequest,
     SidecarSyncResult, UnifiedParseResponse,
 };
+use axpoint_domain::enums::ExportFormat;
+use axpoint_domain::export::{RenderChartRequest, SidecarExportRequest, SidecarExportResponse};
 use axpoint_domain::ports::SidecarPort;
 use reqwest::StatusCode;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 use crate::telemetry::outbound_traceparent;
+
+const SIDECAR_CHART_TIMEOUT: Duration = Duration::from_secs(30);
+const SIDECAR_EXPORT_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Deserialize)]
 struct SidecarErrorEnvelope {
@@ -64,6 +69,9 @@ impl HttpSidecarClient {
 fn map_sidecar_error(status: StatusCode, raw_body: &str) -> AppError {
     let parsed = serde_json::from_str::<SidecarErrorEnvelope>(raw_body).ok();
     let code = parsed.as_ref().map_or_default(|e| e.error_code.trim());
+    if code == "UPSTREAM_TIMEOUT" {
+        return AppError::Timeout("UPSTREAM_TIMEOUT");
+    }
     let msg = parsed
         .as_ref()
         .map(|e| e.message.trim())
@@ -104,8 +112,19 @@ fn map_sidecar_error(status: StatusCode, raw_body: &str) -> AppError {
             },
         },
         StatusCode::TOO_MANY_REQUESTS => AppError::RateLimited,
-        StatusCode::GATEWAY_TIMEOUT => AppError::Timeout("SIDECAR_TIMEOUT"),
+        StatusCode::GATEWAY_TIMEOUT => AppError::Timeout("UPSTREAM_TIMEOUT"),
         _ => AppError::Parser(format!("sidecar HTTP {status}: {msg}")),
+    }
+}
+
+const fn export_format_slug(format: ExportFormat) -> &'static str {
+    match format {
+        ExportFormat::Xlsx => "xlsx",
+        ExportFormat::Csv => "csv",
+        ExportFormat::Pdf => "pdf",
+        ExportFormat::Docx => "docx",
+        ExportFormat::Pptx => "pptx",
+        ExportFormat::Markdown => "markdown",
     }
 }
 
@@ -356,6 +375,70 @@ impl SidecarPort for HttpSidecarClient {
             .send()
             .await
             .map_err(|err| AppError::Parser(format!("sidecar /lake/materialize failed: {err}")))?;
+
+        Self::decode_response(resp).await
+    }
+
+    async fn render_chart(
+        &self,
+        tenant_id: &str,
+        req: &RenderChartRequest,
+    ) -> Result<Vec<u8>, AppError> {
+        let resp = self
+            .http
+            .post(self.endpoint("/render/chart"))
+            .header("X-AxPoint-Tenant", tenant_id)
+            .header("traceparent", outbound_traceparent())
+            .timeout(SIDECAR_CHART_TIMEOUT)
+            .json(req)
+            .send()
+            .await
+            .map_err(|err| {
+                if err.is_timeout() {
+                    AppError::Timeout("UPSTREAM_TIMEOUT")
+                } else {
+                    AppError::Parser(format!("sidecar /render/chart failed: {err}"))
+                }
+            })?;
+
+        let status = resp.status();
+        if status.is_success() {
+            let bytes = resp
+                .bytes()
+                .await
+                .map_err(|err| AppError::Parser(format!("sidecar chart bytes failed: {err}")))?;
+            return Ok(bytes.to_vec());
+        }
+
+        let raw_text = resp.text().await.unwrap_or_default();
+        Err(map_sidecar_error(status, &raw_text))
+    }
+
+    async fn export_document(
+        &self,
+        tenant_id: &str,
+        timezone: &str,
+        format: ExportFormat,
+        req: &SidecarExportRequest,
+    ) -> Result<SidecarExportResponse, AppError> {
+        let path = format!("/export/{}", export_format_slug(format));
+        let resp = self
+            .http
+            .post(self.endpoint(&path))
+            .header("X-AxPoint-Tenant", tenant_id)
+            .header("X-AxPoint-Timezone", timezone)
+            .header("traceparent", outbound_traceparent())
+            .timeout(SIDECAR_EXPORT_TIMEOUT)
+            .json(req)
+            .send()
+            .await
+            .map_err(|err| {
+                if err.is_timeout() {
+                    AppError::Timeout("UPSTREAM_TIMEOUT")
+                } else {
+                    AppError::Parser(format!("sidecar {path} failed: {err}"))
+                }
+            })?;
 
         Self::decode_response(resp).await
     }
