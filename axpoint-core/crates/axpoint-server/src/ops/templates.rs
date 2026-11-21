@@ -177,15 +177,15 @@ pub fn discover_packs_count() -> usize {
     list_templates_in_dir(&dir).map_or(0, |v| v.len())
 }
 
-/// Lists all valid [`TemplateManifest`]s inside `packs_dir` sorted by `id`.
+/// Lists all valid [`TemplateManifest`]s inside `catalog_dir` sorted by `id`.
 ///
 /// # Errors
 /// Returns [`AppError::Config`] or [`AppError::Unprocessable`] if a discovered `manifest.json` is malformed.
-pub fn list_templates_in_dir(packs_dir: &Path) -> Result<Vec<TemplateManifest>, AppError> {
-    if !packs_dir.is_dir() {
+pub fn list_templates_in_dir(catalog_dir: &Path) -> Result<Vec<TemplateManifest>, AppError> {
+    if !catalog_dir.is_dir() {
         return Ok(Vec::new());
     }
-    let entries = std::fs::read_dir(packs_dir)
+    let entries = std::fs::read_dir(catalog_dir)
         .map_err(|err| AppError::Config(format!("read templates dir failed: {err}")))?;
     let mut manifests = Vec::new();
     for entry_res in entries {
@@ -200,15 +200,15 @@ pub fn list_templates_in_dir(packs_dir: &Path) -> Result<Vec<TemplateManifest>, 
     Ok(manifests)
 }
 
-/// Loads [`TemplatePackDetail`] (`manifest.json` + `README.md`) for `pack_id` inside `packs_dir`.
+/// Loads [`TemplatePackDetail`] (`manifest.json` + `README.md`) for `pack_id` inside `catalog_dir`.
 ///
 /// # Errors
 /// Returns `TEMPLATE_NOT_FOUND` if `pack_id` is invalid or missing, or parse errors on invalid `JSON`.
 pub fn get_template_detail_in_dir(
-    packs_dir: &Path,
+    catalog_dir: &Path,
     pack_id: &str,
 ) -> Result<TemplatePackDetail, AppError> {
-    let pack_dir = resolve_pack_dir(packs_dir, pack_id)?;
+    let pack_dir = resolve_pack_dir(catalog_dir, pack_id)?;
     let manifest = read_manifest(&pack_dir)?;
     let readme_path = pack_dir.join("README.md");
     let readme = if readme_path.is_file() {
@@ -687,9 +687,9 @@ where
         on_conflict: Option<TemplateConflictStrategy>,
     ) -> BoxFuture<'a, TemplateInstallRecord> {
         Box::pin(async move {
-            let packs_dir =
+            let catalog_dir =
                 resolve_templates_dir().ok_or(AppError::NotFound("TEMPLATE_NOT_FOUND"))?;
-            let pack_dir = resolve_pack_dir(&packs_dir, pack_id)?;
+            let pack_dir = resolve_pack_dir(&catalog_dir, pack_id)?;
             let manifest = read_manifest(&pack_dir)?;
             let existing = self.collect_existing_tenant_names(tenant_id).await?;
             let strategy = on_conflict.unwrap_or(TemplateConflictStrategy::Rename);
@@ -730,9 +730,9 @@ where
                 return Err(AppError::Conflict("TEMPLATE_ALREADY_UNINSTALLED"));
             }
 
-            let packs_dir =
+            let catalog_dir =
                 resolve_templates_dir().ok_or(AppError::NotFound("TEMPLATE_NOT_FOUND"))?;
-            let pack_dir = resolve_pack_dir(&packs_dir, &record.pack_id)?;
+            let pack_dir = resolve_pack_dir(&catalog_dir, &record.pack_id)?;
             let manifest = read_manifest(&pack_dir)?;
             verify_manifest_checksums(&pack_dir, &manifest)?;
 
@@ -2694,7 +2694,7 @@ pub fn canonical_work_item_hash(wi: &WorkItem) -> String {
     }))
 }
 
-fn resolve_pack_dir(packs_dir: &Path, pack_id: &str) -> Result<PathBuf, AppError> {
+fn resolve_pack_dir(catalog_dir: &Path, pack_id: &str) -> Result<PathBuf, AppError> {
     let trimmed = pack_id.trim();
     if trimmed.is_empty()
         || trimmed.len() > 64
@@ -2704,7 +2704,7 @@ fn resolve_pack_dir(packs_dir: &Path, pack_id: &str) -> Result<PathBuf, AppError
     {
         return Err(AppError::NotFound("TEMPLATE_NOT_FOUND"));
     }
-    let dir = packs_dir.join(trimmed);
+    let dir = catalog_dir.join(trimmed);
     if !dir.join("manifest.json").is_file() {
         return Err(AppError::NotFound("TEMPLATE_NOT_FOUND"));
     }

@@ -156,7 +156,7 @@ mod tests {
     use std::sync::Arc;
 
     use axpoint_analytics::{AnalyticsConfig, SessionPool};
-    use axpoint_domain::enums::{RetentionTarget, Sensitivity, TokenKind};
+    use axpoint_domain::enums::{RetentionTarget, TokenKind};
     use axpoint_domain::ops::{
         BackupStatus, CreateWorkItemRequest, DatabaseHealth, JobsHealthStats, MigrationsHealth,
         NewTemplateInstallInput, OutboxStats, PatchWorkItemRequest, RetentionPolicyRecord,
@@ -421,10 +421,7 @@ mod tests {
             dept_id: String::from("default"),
             roles: vec![String::from("ADMIN")],
             permissions: perms,
-            clearance: Sensitivity::Secret,
-            attributes: BTreeMap::new(),
             token_kind: TokenKind::Access,
-            token_id: None,
         }
     }
 

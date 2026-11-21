@@ -396,15 +396,15 @@ fn select_demo_sim_action(graph: &SimGraph, preset: &DemoPreset) -> Option<AxSim
     let target_node: &SimNode = preset
         .preferred_keys
         .iter()
-        .find_map(|key| graph.nodes.values().find(|n| n.node_key == *key))
+        .find_map(|key| graph.nodes.iter().find(|n| n.node_key == *key))
         .or_else(|| {
             graph
                 .nodes
-                .values()
+                .iter()
                 .find(|n| n.type_name.starts_with(preset.preferred_type) && !n.metrics.is_empty())
         })
-        .or_else(|| graph.nodes.values().find(|n| !n.metrics.is_empty()))
-        .or_else(|| graph.nodes.values().next())?;
+        .or_else(|| graph.nodes.iter().find(|n| !n.metrics.is_empty()))
+        .or_else(|| graph.nodes.first())?;
 
     let (metric_key, baseline_opt) =
         if let Some(&v) = target_node.metrics.get(preset.preferred_metric) {
