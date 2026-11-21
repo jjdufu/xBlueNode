@@ -9,7 +9,8 @@ COPY --from=node24 /usr/local/bin/node /usr/local/bin/node
 COPY --from=node24 /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
  && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
- && apt-get update && apt-get install -y --no-install-recommends \
+ && apt-get -o Acquire::Retries=5 update \
+ && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       libpango-1.0-0 libpangocairo-1.0-0 libpangoft2-1.0-0 libcairo2 \
       libharfbuzz-subset0 libgdk-pixbuf-2.0-0 shared-mime-info \
       fonts-noto-cjk libgomp1 libxml2 libxslt1.1 \
@@ -20,13 +21,14 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 WORKDIR /app
 COPY axpoint-parser/pyproject.toml ./
 COPY axpoint-parser/ ./
-RUN if [ -f /app/charts/package.json ]; then \
+RUN rm -rf /app/.venv /app/.pytest_cache /app/.mypy_cache /app/.ruff_cache \
+ && if [ -f /app/charts/package.json ]; then \
       npm --prefix /app/charts ci --omit=dev && npm cache clean --force; \
     fi
 
 FROM base AS lite
-RUN pip install --no-cache-dir . \
- && pip install --no-cache-dir --no-deps \
+RUN pip install --no-cache-dir --timeout 120 --retries 10 . \
+ && pip install --no-cache-dir --timeout 120 --retries 10 --no-deps \
       "https://github.com/explosion/spacy-models/releases/download/zh_core_web_sm-3.8.0/zh_core_web_sm-3.8.0-py3-none-any.whl"
 USER axp
 RUN python -c "import importlib.util as u; \
@@ -39,11 +41,17 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", 
 FROM lite AS full
 USER root
 ENV AXPOINT_OCR_ENABLED=true
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 update \
+ && apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
       libreoffice-core libreoffice-writer libreoffice-calc libreoffice-impress \
       freetds-dev libsasl2-dev libkrb5-dev unixodbc \
- && rm -rf /var/lib/apt/lists/* \
- && if python -c "import tomllib,sys; d=tomllib.load(open('pyproject.toml','rb')); sys.exit(0 if 'full' in d.get('project',{}).get('optional-dependencies',{}) else 1)"; then \
-      pip install --no-cache-dir ".[full]"; \
+ && rm -rf /var/lib/apt/lists/*
+RUN if python -c "import tomllib,sys; d=tomllib.load(open('pyproject.toml','rb')); sys.exit(0 if 'full' in d.get('project',{}).get('optional-dependencies',{}) else 1)"; then \
+      pip install --no-cache-dir --timeout 120 --retries 10 \
+        --index-url https://download.pytorch.org/whl/cpu \
+        "torch>=2.2.2,<3" "torchvision<1" \
+      && pip install --no-cache-dir --timeout 120 --retries 10 \
+        --extra-index-url https://download.pytorch.org/whl/cpu \
+        ".[full]"; \
     fi
 USER axp
