@@ -95,6 +95,7 @@ async fn cleanup_tenant(owner_pool: &PgPool, tenant_id: &str) -> TestResult {
         "DELETE FROM xb_metric_series WHERE tenant_id = $1",
         "DELETE FROM xb_links WHERE tenant_id = $1",
         "DELETE FROM xb_nodes WHERE tenant_id = $1",
+        "DELETE FROM xb_edge_types WHERE tenant_id = $1",
         "DELETE FROM xb_node_types WHERE tenant_id = $1",
         "DELETE FROM xb_schema_versions WHERE tenant_id = $1",
         "DELETE FROM xb_schema_heads WHERE tenant_id = $1",
@@ -179,6 +180,15 @@ async fn seed_warehouse_schema(owner_pool: &PgPool, tenant_id: &str) -> TestResu
         "INSERT INTO xb_node_types (tenant_id, subgraph_slug, name, display_name)
          VALUES ($1, 'main', 'Warehouse', '仓库')
          ON CONFLICT (tenant_id, subgraph_slug, name) DO NOTHING",
+    )
+    .bind(tenant_id)
+    .execute(owner_pool)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO xb_edge_types (tenant_id, subgraph_slug, name, src_type_name, dst_type_name)
+         VALUES ($1, 'main', 'SUPPLIES', 'Warehouse', 'Warehouse')
+         ON CONFLICT (tenant_id, subgraph_slug, name, src_type_name, dst_type_name) DO NOTHING",
     )
     .bind(tenant_id)
     .execute(owner_pool)
