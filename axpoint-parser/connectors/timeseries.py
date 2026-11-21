@@ -9,6 +9,7 @@ import pyarrow as pa
 from connectors.base import (
     BaseConnector,
     ReadBatch,
+    coerce_cursor_param,
     format_cursor_value,
     records_to_arrow_table,
     validate_select_only_sql,
@@ -20,6 +21,7 @@ from security import (
     SidecarError,
     check_outbound_host,
     check_outbound_url,
+    quote_sql_ident,
     validate_sql_ident,
 )
 
@@ -80,6 +82,30 @@ IOTDB_SPEC = ConnectorSpecModel(
 )
 
 
+def _normalize_influx_v3_table(tbl: pa.Table) -> pa.Table:
+    """Normalize InfluxDB 3 FlightSQL table (decode dictionary tags, rename time -> ts)."""
+    if tbl.num_columns == 0:
+        return tbl
+    has_ts = "ts" in tbl.column_names
+    arrays: list[pa.Array[Any] | pa.ChunkedArray[Any]] = []
+    fields: list[pa.Field[Any]] = []
+    for i, field in enumerate(tbl.schema):
+        col = tbl.column(i)
+        name = "ts" if (field.name == "time" and not has_ts) else field.name
+        if pa.types.is_dictionary(field.type):
+            col = col.cast(field.type.value_type)
+            out_type = col.type
+        elif pa.types.is_timestamp(field.type):
+            tz = field.type.tz or "UTC"
+            out_type = pa.timestamp("us", tz=tz)
+            col = col.cast(out_type)
+        else:
+            out_type = field.type
+        arrays.append(col)
+        fields.append(pa.field(name, out_type, nullable=field.nullable))
+    return pa.Table.from_arrays(arrays, schema=pa.schema(fields))
+
+
 class InfluxDbConnector(BaseConnector):
     """InfluxDB 2.x / 3.x time-series connector."""
 
@@ -101,20 +127,30 @@ class InfluxDbConnector(BaseConnector):
             raise SidecarError(400, "INVALID_ARGUMENT", "InfluxDB config missing 'url'")
         check_outbound_url(url, allow_private_network=allow_private_network)
 
-    def test(self) -> tuple[bool, str]:
-        ver = str(self.config.get("version") or "2")
-        try:
-            if ver == "3":
-                import influxdb_client_3 as ic3_mod
+    def _is_v3(self) -> bool:
+        return str(self.config.get("version") or "2").strip() == "3"
 
-                cls3: Any = ic3_mod.InfluxDBClient3
-                cli3 = cls3(
-                    host=str(self.config["url"]),
-                    token=str(self.secrets.get("token") or ""),
-                    org=str(self.config.get("org") or ""),
-                    database=str(self.config.get("bucket") or ""),
-                )
-                cli3.close()
+    def _open_v3_client(self) -> Any:
+        import influxdb_client_3 as ic3_mod
+
+        cls3: Any = ic3_mod.InfluxDBClient3
+        db_name = str(self.config.get("bucket") or self.config.get("database") or "").strip()
+        org_name = str(self.config.get("org") or "").strip()
+        return cls3(
+            host=str(self.config["url"]),
+            token=str(self.secrets.get("token") or ""),
+            org=org_name or None,
+            database=db_name or None,
+        )
+
+    def test(self) -> tuple[bool, str]:
+        try:
+            if self._is_v3():
+                cli3 = self._open_v3_client()
+                try:
+                    cli3.query("SELECT 1")
+                finally:
+                    cli3.close()
                 return True, "connected (InfluxDB 3)"
 
             from influxdb_client.client.influxdb_client import InfluxDBClient
@@ -130,7 +166,69 @@ class InfluxDbConnector(BaseConnector):
         except Exception as exc:
             return False, str(exc)
 
+    def _discover_v3(self) -> list[DiscoveredObject]:
+        cli3 = self._open_v3_client()
+        try:
+            tbl_res: pa.Table = cli3.query(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'iox' ORDER BY table_name"
+            )
+            col_res: pa.Table = cli3.query(
+                "SELECT table_name, column_name, data_type, is_nullable "
+                "FROM information_schema.columns "
+                "WHERE table_schema = 'iox' ORDER BY table_name, ordinal_position"
+            )
+        finally:
+            cli3.close()
+
+        cols_by_tbl: dict[str, list[DiscoveredColumn]] = {}
+        for row in col_res.to_pylist():
+            t_str = str(row.get("table_name") or "")
+            raw_col = str(row.get("column_name") or "")
+            raw_type = str(row.get("data_type") or "")
+            is_null = str(row.get("is_nullable") or "YES").upper() == "YES"
+            c_name = "ts" if raw_col == "time" else raw_col
+            dt = "TIMESTAMP" if raw_col == "time" else map_native_type(raw_type)
+            cols_by_tbl.setdefault(t_str, []).append(
+                DiscoveredColumn(
+                    name=c_name,
+                    native_type=raw_type,
+                    data_type=dt,
+                    nullable=False if raw_col == "time" else is_null,
+                )
+            )
+
+        out: list[DiscoveredObject] = []
+        for row in tbl_res.to_pylist():
+            m_name = str(row.get("table_name") or "")
+            try:
+                validate_sql_ident(m_name)
+            except SidecarError:
+                continue
+            cols = cols_by_tbl.get(m_name) or [
+                DiscoveredColumn(
+                    name="ts",
+                    native_type="Timestamp(ns)",
+                    data_type="TIMESTAMP",
+                    nullable=False,
+                )
+            ]
+            out.append(
+                DiscoveredObject(
+                    ref={"measurement": m_name},
+                    display_name=m_name,
+                    source_kind="TIMESERIES",
+                    columns=cols,
+                    primary_key=[],
+                    suggested_cursor="ts",
+                )
+            )
+        return out
+
     def discover(self) -> list[DiscoveredObject]:
+        if self._is_v3():
+            return self._discover_v3()
+
         bucket = str(self.config.get("bucket") or "")
         from influxdb_client.client.influxdb_client import InfluxDBClient
 
@@ -164,6 +262,49 @@ class InfluxDbConnector(BaseConnector):
                         )
                     )
         return out
+
+    def _query_v3_table(
+        self,
+        ref: dict[str, Any],
+        *,
+        cursor_column: str | None,
+        cursor_from: str | None,
+        limit: int | None,
+    ) -> pa.Table:
+        raw_sql = str(ref.get("sql") or ref.get("query") or "").strip()
+        params: dict[str, Any] | None = None
+        if raw_sql:
+            sql = validate_select_only_sql(raw_sql, dialect="postgres")
+            if limit is not None:
+                sql = f"SELECT * FROM ({sql}) AS _ax_q LIMIT {int(limit)}"
+        else:
+            meas = str(ref.get("measurement") or ref.get("table") or "").strip()
+            if not meas:
+                raise SidecarError(
+                    400, "INVALID_ARGUMENT", "InfluxDB v3 ref missing 'measurement' or 'sql'"
+                )
+            q_meas = quote_sql_ident(meas, dialect="postgres")
+            sql_cur = "time" if (not cursor_column or cursor_column == "ts") else cursor_column
+            q_cur = quote_sql_ident(sql_cur, dialect="postgres")
+            where_sql = ""
+            if cursor_from:
+                where_sql = f" WHERE {q_cur} > $cur"
+                params = {
+                    "cur": cursor_from if sql_cur == "time" else coerce_cursor_param(cursor_from)
+                }
+            lim_sql = f" LIMIT {int(limit)}" if limit is not None else ""
+            sql = f"SELECT * FROM {q_meas}{where_sql} ORDER BY {q_cur} ASC{lim_sql}"
+
+        cli3 = self._open_v3_client()
+        try:
+            tbl: pa.Table = (
+                cli3.query(sql, query_parameters=params)
+                if params is not None
+                else cli3.query(sql)
+            )
+        finally:
+            cli3.close()
+        return _normalize_influx_v3_table(tbl)
 
     def _query_records(
         self, ref: dict[str, Any], start_expr: str, limit: int | None
@@ -206,7 +347,12 @@ class InfluxDbConnector(BaseConnector):
         return rows
 
     def preview(self, ref: dict[str, Any], limit: int) -> pa.Table:
-        rows = self._query_records(ref, "-30d", min(max(limit, 1), 1000))
+        bounded = min(max(limit, 1), 1000)
+        if self._is_v3():
+            return self._query_v3_table(
+                ref, cursor_column=None, cursor_from=None, limit=bounded
+            )
+        rows = self._query_records(ref, "-30d", bounded)
         return records_to_arrow_table(rows)
 
     def read(
@@ -218,13 +364,28 @@ class InfluxDbConnector(BaseConnector):
         batch_rows: int = 50_000,
         stream_offsets: dict[str, str] | None = None,
     ) -> Iterator[ReadBatch]:
+        cur_key = cursor_column or "ts"
+        if self._is_v3():
+            eff_from = cursor_from if (mode.upper() == "APPEND" and cursor_from) else None
+            tbl3 = self._query_v3_table(
+                ref, cursor_column=cur_key, cursor_from=eff_from, limit=None
+            )
+            if tbl3.num_rows == 0:
+                return
+            max_c3: str | None = None
+            if cur_key in tbl3.column_names:
+                last_val = tbl3.column(cur_key)[-1].as_py()
+                max_c3 = format_cursor_value(last_val)
+            for rb in tbl3.to_batches(max_chunksize=max(batch_rows, 1)):
+                yield ReadBatch(batch=rb, cursor_to=max_c3)
+            return
+
         start_expr = (
             cursor_from if (mode.upper() == "APPEND" and cursor_from) else "1970-01-01T00:00:00Z"
         )
         rows = self._query_records(ref, start_expr, None)
         if not rows:
             return
-        cur_key = cursor_column or "ts"
         max_c = format_cursor_value(rows[-1].get(cur_key)) if rows[-1].get(cur_key) else None
         tbl = records_to_arrow_table(rows)
         for rb in tbl.to_batches(max_chunksize=max(batch_rows, 1)):

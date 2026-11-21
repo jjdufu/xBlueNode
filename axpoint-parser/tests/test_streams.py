@@ -94,3 +94,78 @@ def test_stream_connectors_block_private_brokers_by_default(
 ) -> None:
     with pytest.raises(OutboundBlocked):
         create_connector(ctype, dict(cfg), {}, allow_private_network=False)
+
+
+def test_pulsar_connector_probes_broker_and_subscribes_from_earliest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from typing import Any
+
+    import pulsar
+
+    from connectors.streams import PulsarConnector
+
+    sub_calls: list[dict[str, Any]] = []
+    probed_topics: list[str] = []
+
+    class _FakeMsg:
+        def message_id(self) -> str:
+            return "(1,0,-1,-1)"
+
+        def publish_timestamp(self) -> int:
+            return 1767225600000
+
+        def data(self) -> bytes:
+            return b'{"ev":1,"status":"OPEN"}'
+
+    class _FakeConsumer:
+        def __init__(self) -> None:
+            self._sent = False
+
+        def receive(self, timeout_millis: int = 500) -> _FakeMsg:
+            if not self._sent:
+                self._sent = True
+                return _FakeMsg()
+            raise TimeoutError("no more messages")
+
+        def acknowledge(self, _msg: Any) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    class _FakePulsarClient:
+        def __init__(self, _url: str, **_kwargs: Any) -> None:
+            pass
+
+        def get_topic_partitions(self, topic: str) -> list[str]:
+            probed_topics.append(topic)
+            return [topic]
+
+        def subscribe(
+            self, topic: str, subscription_name: str, **kwargs: Any
+        ) -> _FakeConsumer:
+            sub_calls.append(
+                {"topic": topic, "subscription_name": subscription_name, **kwargs}
+            )
+            return _FakeConsumer()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(pulsar, "Client", _FakePulsarClient)
+
+    conn = PulsarConnector(
+        config={"service_url": "pulsar://93.184.216.34:6650", "max_wait_s": 0.2},
+        secrets={},
+    )
+    ok, _ = conn.test()
+    assert ok is True
+    assert len(probed_topics) == 1
+
+    batches = list(
+        conn.read({"topic": "persistent://public/default/orders"}, "APPEND", None, None)
+    )
+    assert sum(b.batch.num_rows for b in batches) == 1
+    assert batches[-1].offsets == {"0": "(1,0,-1,-1)"}
+    assert sub_calls[0]["initial_position"] == pulsar.InitialPosition.Earliest

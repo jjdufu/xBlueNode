@@ -28,8 +28,8 @@ services:
       - "127.0.0.1:16650:6650"
 
   minio:
-    image: minio/minio:RELEASE.2024-11-07T00-52-20Z
-    command: server /data --console-address ":9001"
+    image: cgr.dev/chainguard/minio:latest
+    command: server /tmp/data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: axpoint
       MINIO_ROOT_PASSWORD: axpoint_minio_secret
@@ -70,7 +70,7 @@ services:
       - "127.0.0.1:13306:3306"
 
   clickhouse:
-    image: clickhouse/clickhouse-server:25
+    image: clickhouse/clickhouse-server:25.8
     environment:
       CLICKHOUSE_DB: demo_src
       CLICKHOUSE_USER: axpoint
