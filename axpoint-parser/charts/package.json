@@ -1,0 +1,10 @@
+{
+  "name": "axpoint-parser-charts",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "@resvg/resvg-js": "^2.6.2",
+    "echarts": "^6.1.0"
+  }
+}

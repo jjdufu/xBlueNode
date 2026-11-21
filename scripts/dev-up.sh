@@ -67,6 +67,7 @@ mkdir -p "$AXPOINT_DATA_ROOT"/{lake,assets,exports,tenants} "$AXPOINT_MODEL_PATH
 
 (cd axpoint-parser \
   && (uv sync --extra dev 2>/dev/null || (test -d .venv || uv venv .venv; uv pip install -e ".[dev]")) \
+  && (test -f charts/package.json && npm --prefix charts ci --omit=dev >/dev/null || true) \
   && .venv/bin/python -c "import importlib.util as u; d=__import__('duckdb').connect() if u.find_spec('duckdb') else None; [d.execute(f'INSTALL {e}') for e in ('ducklake','postgres','mysql_scanner','sqlite_scanner')] if d else None" \
   && .venv/bin/python tests/fixtures/make_fixtures.py)
 

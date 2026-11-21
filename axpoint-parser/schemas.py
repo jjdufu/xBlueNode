@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-# Shared Pydantic v2 schemas for AxPoint Parser & Connector Sidecar (Steps 01 & 02).
-from typing import Any, Literal
+# Shared Pydantic v2 schemas for AxPoint Sidecar (Steps 01, 02, 04, 12).
+from datetime import datetime
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -388,3 +389,109 @@ class MaterializeRequest(BaseModel):
     lake_table: str
     sql: str
     batch_id: str
+
+
+ExportFormatLiteral = Literal["XLSX", "CSV", "PDF", "DOCX", "PPTX", "MARKDOWN"]
+ChartRenderFormatLiteral = Literal["svg", "png"]
+PageSizeLiteral = Literal["A4", "A3"]
+OrientationLiteral = Literal["portrait", "landscape"]
+
+
+class ExportColumnSpec(BaseModel):
+    """Column metadata inside ExportTable (Step 12 §12.2)."""
+
+    name: str
+    data_type: DataType
+    format: str | None = None
+
+
+class ExportTable(BaseModel):
+    """Tabular section inside ExportDocument (Step 12 §12.2)."""
+
+    kind: Literal["TABLE"] = "TABLE"
+    title: str = ""
+    columns: list[ExportColumnSpec]
+    rows: list[list[Any]] = Field(default_factory=list)
+    totals: list[Any] | None = None
+    rows_parquet_path: str | None = None
+    row_kinds: list[str] = Field(default_factory=list)
+
+
+class ExportChart(BaseModel):
+    """Chart section inside ExportDocument (Step 12 §12.2)."""
+
+    kind: Literal["CHART"] = "CHART"
+    title: str = ""
+    widget_kind: str
+    echarts_option: dict[str, Any]
+    data_table: ExportTable | None = None
+    width_px: int = Field(default=960, ge=100, le=4096)
+    height_px: int = Field(default=540, ge=100, le=4096)
+
+
+class ExportKpi(BaseModel):
+    """KPI card section inside ExportDocument (Step 12 §12.2)."""
+
+    kind: Literal["KPI"] = "KPI"
+    label: str
+    value: str
+    compare: str | None = None
+
+
+class ExportText(BaseModel):
+    """Heading, paragraph, or Markdown section inside ExportDocument (Step 12 §12.2)."""
+
+    kind: Literal["HEADING", "PARAGRAPH", "MARKDOWN"]
+    text: str
+    level: int = Field(default=1, ge=1, le=6)
+
+
+ExportSectionUnion = Annotated[
+    ExportTable | ExportChart | ExportKpi | ExportText,
+    Field(discriminator="kind"),
+]
+
+
+class ExportDocument(BaseModel):
+    """Unified multi-format export document model shared with Rust axpoint-domain::export."""
+
+    title: str
+    subtitle: str = ""
+    generated_at: datetime
+    generated_by: str
+    timezone: str = "UTC"
+    watermark: str | None = None
+    sections: list[ExportSectionUnion] = Field(default_factory=list)
+    template_path: str | None = None
+    placeholders: dict[str, str] = Field(default_factory=dict)
+    csv_bom: bool = False
+    page_size: PageSizeLiteral = "A4"
+    orientation: OrientationLiteral = "portrait"
+
+
+class RenderChartRequest(BaseModel):
+    """Request body for POST /render/chart (Step 12 §12.3)."""
+
+    option: dict[str, Any]
+    width: int = Field(default=960, ge=64, le=4096)
+    height: int = Field(default=540, ge=64, le=4096)
+    format: ChartRenderFormatLiteral = "png"
+    theme: Literal["light", "dark"] | None = None
+
+
+class SidecarExportRequest(BaseModel):
+    """Request body for POST /export/{format} (Step 12 §12.4)."""
+
+    tenant_id: str
+    job_id: str
+    document: ExportDocument
+
+
+class SidecarExportResponse(BaseModel):
+    """Response body for POST /export/{format} (Step 12 §12.4)."""
+
+    file_path: str
+    file_size: int
+    sha256: str
+    file_name: str
+
