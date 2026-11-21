@@ -227,11 +227,23 @@ pub fn build_dashboard_gen_prompts(
     let sys = format!(
         "{VIEW_AI_GEN_PURPOSE_TAG}\n\
 You design xBlueView digital-twin monitoring dashboards. Output ONLY valid JSON matching:\n\
-{{\"name\":\"...\",\"slug\":\"lowercase-slug\",\"theme\":\"light|dark|screen\",\"description\":\"...\",\"filters\":[],\"widgets\":[{{\"widget_kind\":\"KPI_CARD|TABLE|PIVOT_TABLE|LINE_CHART|BAR_CHART|PIE_CHART|SCATTER|SANKEY|HEATMAP|GAUGE|RADAR|GRAPH_TOPOLOGY|MAP|FLOOR_PLAN|SCENE_3D|ALERT_LIST|SIM_COMPARE|ACTION_BUTTON|ACTION_FORM|MARKDOWN_NOTE\",\"title\":\"...\",\"position\":{{\"x\":0,\"y\":0,\"w\":6,\"h\":4}},\"data_source\":{{...}},\"encoding\":{{}},\"options\":{{}},\"drill\":[]}}]}}\n\
+{{\"name\":\"...\",\"slug\":\"lowercase-slug\",\"theme\":\"light|dark|screen\",\"description\":\"...\",\"filters\":[],\"widgets\":[{{\"widget_kind\":\"KPI_CARD|TABLE|PIVOT_TABLE|LINE_CHART|BAR_CHART|PIE_CHART|SCATTER|SANKEY|HEATMAP|GAUGE|RADAR|GRAPH_TOPOLOGY|MAP|FLOOR_PLAN|SCENE_3D|ALERT_LIST|SIM_COMPARE|ACTION_BUTTON|ACTION_FORM|MARKDOWN_NOTE\",\"title\":\"...\",\"position\":{{\"x\":0,\"y\":0,\"w\":6,\"h\":4}},\"data_source\":{{\"kind\":\"...\"}},\"encoding\":{{}},\"options\":{{}},\"drill\":[]}}]}}\n\
+Valid widget data_source shapes (\"kind\" discriminator is REQUIRED):\n\
+- {{\"kind\":\"METRIC\",\"metric\":\"<metric_name>\",\"dimensions\":[]}}\n\
+- {{\"kind\":\"SQL\",\"sql\":\"SELECT ... FROM <dataset_name>\"}}\n\
+- {{\"kind\":\"NODE_METRIC\",\"type_name\":\"<NodeType>\",\"metric\":\"<node_metric>\",\"agg\":\"SUM|AVG|MIN|MAX|LAST|COUNT\",\"grain\":\"MINUTE|HOUR|DAY|MONTH\",\"time_range\":\"LAST_7_DAYS|LAST_30_DAYS\",\"group_by\":\"node|time\"}}\n\
+- {{\"kind\":\"ALERTS\",\"status\":[\"OPEN\",\"ACK\"],\"severity\":[\"WARN\",\"CRITICAL\"],\"limit\":20}}\n\
+- {{\"kind\":\"NODES_GEO\",\"type_names\":[\"<NodeType>\"],\"color_metric\":\"<node_metric>\",\"link_types\":[\"<EdgeType>\"]}}\n\
+- {{\"kind\":\"GRAPH\",\"type_names\":[\"<NodeType>\"],\"link_types\":[\"<EdgeType>\"],\"color_metric\":\"<node_metric>\",\"limit\":500}}\n\
+- {{\"kind\":\"SCENE_3D\",\"asset_id\":\"<model_3d_uuid>\",\"color_metric\":\"<node_metric>\"}}\n\
+- {{\"kind\":\"FLOOR_PLAN\",\"asset_id\":\"<floor_plan_uuid>\",\"color_metric\":\"<node_metric>\"}}\n\
+- {{\"kind\":\"ACTION\",\"action_type\":\"RUN_FLOW\",\"flow_id\":\"<prod_flow_uuid>\"}}\n\
+- {{\"kind\":\"STATIC\",\"columns\":[],\"rows\":[]}}\n\
 Rules:\n\
 1. 24-column grid: x >= 0, w >= 1, x + w <= 24, y >= 0, h >= 1.\n\
-2. Use ONLY existing metrics, datasets/columns (valid DuckDB SELECT SQL), node types, PROD flows, and assets listed below.\n\
-3. slug must match ^[a-z0-9][a-z0-9-]{{0,62}}$."
+2. SQL data_source MUST query ONLY tables listed under datasets: (never query node_types: in SQL; query node_types: via NODE_METRIC, GRAPH, or NODES_GEO).\n\
+3. Use ONLY existing metrics, datasets/columns, node_types, prod_flows, and assets listed below.\n\
+4. slug must match ^[a-z0-9][a-z0-9-]{{0,62}}$."
     );
 
     let mut usr = String::new();
@@ -353,19 +365,27 @@ fn collect_node_metric_names(nt: &NodeTypeSpec) -> BTreeSet<String> {
 /// Returns [`AppError::BadRequest`] (`PARSE_ERROR`) if no valid draft JSON object can be decoded.
 pub fn parse_ai_dashboard_draft(raw: &str) -> Result<AiDashboardDraft, AppError> {
     let trimmed = raw.trim();
-    if let Ok(draft) = decode_normalized_draft(trimmed) {
-        return Ok(draft);
-    }
+    let direct_err = match decode_normalized_draft(trimmed) {
+        Ok(draft) => return Ok(draft),
+        Err(err) => err,
+    };
     if let (Some(start), Some(end)) = (trimmed.find('{'), trimmed.rfind('}'))
         && start < end
         && let Some(slice) = trimmed.get(start..=end)
-        && let Ok(draft) = decode_normalized_draft(slice)
     {
-        return Ok(draft);
+        match decode_normalized_draft(slice) {
+            Ok(draft) => return Ok(draft),
+            Err(slice_err) => {
+                return Err(AppError::bad(
+                    "PARSE_ERROR",
+                    format!("failed to decode AiDashboardDraft JSON: {slice_err}"),
+                ));
+            }
+        }
     }
     Err(AppError::bad(
         "PARSE_ERROR",
-        "failed to decode AiDashboardDraft JSON",
+        format!("failed to decode AiDashboardDraft JSON: {direct_err}"),
     ))
 }
 
@@ -376,14 +396,74 @@ fn decode_normalized_draft(raw: &str) -> Result<AiDashboardDraft, serde_json::Er
         .and_then(serde_json::Value::as_array_mut)
     {
         for w in widgets {
-            if let Some(kind_val) = w.get_mut("data_source").and_then(|ds| ds.get_mut("kind"))
-                && kind_val.as_str() == Some("SCENE3D")
+            if let Some(ds) = w
+                .get_mut("data_source")
+                .and_then(serde_json::Value::as_object_mut)
             {
-                *kind_val = serde_json::Value::String(String::from("SCENE_3D"));
+                normalize_widget_data_source(ds);
             }
         }
     }
     serde_json::from_value(val)
+}
+
+fn canonical_data_source_kind(raw_kind: &str) -> String {
+    let upper = raw_kind.trim().to_ascii_uppercase().replace('-', "_");
+    match upper.as_str() {
+        "SCENE3D" => String::from("SCENE_3D"),
+        "FLOORPLAN" => String::from("FLOOR_PLAN"),
+        "NODEMETRIC" => String::from("NODE_METRIC"),
+        "NODESGEO" => String::from("NODES_GEO"),
+        "SAVEDQUERY" => String::from("SAVED_QUERY"),
+        "SIMSCENARIOS" | "SIM_COMPARE" => String::from("SIM_SCENARIOS"),
+        _ => upper,
+    }
+}
+
+fn normalize_widget_data_source(ds: &mut serde_json::Map<String, serde_json::Value>) {
+    if !ds.contains_key("kind")
+        && let Some(type_str) = ds
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .map(canonical_data_source_kind)
+    {
+        ds.remove("type");
+        ds.insert(String::from("kind"), serde_json::Value::String(type_str));
+    } else if let Some(kind_val) = ds.get_mut("kind")
+        && let Some(existing) = kind_val.as_str()
+    {
+        *kind_val = serde_json::Value::String(canonical_data_source_kind(existing));
+    }
+
+    let kind = ds
+        .get("kind")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    match kind {
+        "SQL" => promote_alias_field(ds, "sql", &["query", "statement"]),
+        "METRIC" => promote_alias_field(ds, "metric", &["metric_name", "name"]),
+        "NODE_METRIC" => {
+            promote_alias_field(ds, "type_name", &["node_type"]);
+            promote_alias_field(ds, "metric", &["metric_name", "name"]);
+        }
+        _ => {}
+    }
+}
+
+fn promote_alias_field(
+    ds: &mut serde_json::Map<String, serde_json::Value>,
+    canonical: &str,
+    aliases: &[&str],
+) {
+    if ds.contains_key(canonical) {
+        return;
+    }
+    for &alias in aliases {
+        if let Some(val) = ds.remove(alias) {
+            ds.insert(String::from(canonical), val);
+            return;
+        }
+    }
 }
 
 /// Validates an [`AiDashboardDraft`] against 24-column bounds, schema bindings, `PROD` flows,
@@ -770,7 +850,8 @@ fn parse_and_validate(
 
 fn build_repair_prompt(previous_raw: &str, errors: &[String]) -> String {
     let mut out = String::from(
-        "The previous AiDashboardDraft JSON failed validation. Fix every issue listed below and output ONLY valid JSON.\nErrors:\n",
+        "The previous AiDashboardDraft JSON failed validation. Fix every issue listed below and output ONLY valid JSON.\n\
+Remember: every widget data_source MUST specify \"kind\" (e.g. {\"kind\":\"METRIC\",\"metric\":\"...\"}, {\"kind\":\"SQL\",\"sql\":\"SELECT ... FROM <dataset>\"}, {\"kind\":\"NODE_METRIC\",\"type_name\":\"<NodeType>\",\"metric\":\"<metric>\"}), and SQL queries ONLY datasets: tables (never node_types:).\nErrors:\n",
     );
     for (idx, err) in errors.iter().enumerate() {
         let num = idx.saturating_add(1);
@@ -1068,6 +1149,61 @@ mod tests {
         );
         assert!(usr.contains("- demo_orders cols=[order_id,amount]"));
         assert!(!usr.contains("staging_raw"));
+        Ok(())
+    }
+
+    #[test]
+    fn parse_draft_normalizes_llm_data_source_aliases_and_surfaces_parse_error()
+    -> Result<(), AppError> {
+        let raw_aliases = serde_json::json!({
+            "name": "供应链看板",
+            "slug": "supply-ai-dash",
+            "widgets": [
+                {
+                    "widget_kind": "KPI_CARD",
+                    "title": "已支付金额",
+                    "position": {"x": 0, "y": 0, "w": 6, "h": 4},
+                    "data_source": {"type": "metric", "metric_name": "paid_amount"}
+                },
+                {
+                    "widget_kind": "PIE_CHART",
+                    "title": "订单状态分布",
+                    "position": {"x": 6, "y": 0, "w": 9, "h": 6},
+                    "data_source": {"type": "sql", "query": "SELECT status, COUNT(*) AS cnt FROM demo_orders GROUP BY status"}
+                },
+                {
+                    "widget_kind": "BAR_CHART",
+                    "title": "仓库库存监控",
+                    "position": {"x": 15, "y": 0, "w": 9, "h": 6},
+                    "data_source": {"type": "node-metric", "node_type": "Warehouse", "metric_name": "inventory"}
+                }
+            ]
+        })
+        .to_string();
+
+        let parsed = parse_ai_dashboard_draft(&raw_aliases)?;
+        assert_eq!(parsed.widgets.len(), 3);
+        assert!(matches!(
+            parsed.widgets.first().map(|w| &w.data_source),
+            Some(WidgetDataSource::Metric { metric, .. }) if metric == "paid_amount"
+        ));
+        assert!(matches!(
+            parsed.widgets.get(1).map(|w| &w.data_source),
+            Some(WidgetDataSource::Sql { sql }) if sql.contains("FROM demo_orders")
+        ));
+        assert!(matches!(
+            parsed.widgets.get(2).map(|w| &w.data_source),
+            Some(WidgetDataSource::NodeMetric { type_name, metric, .. })
+                if type_name == "Warehouse" && metric == "inventory"
+        ));
+
+        let bad_raw = r#"{"name":"坏看板","slug":"bad","widgets":[{"widget_kind":"KPI_CARD","title":"x","position":{"x":0,"y":0,"w":6,"h":4},"data_source":{"kind":"NOT_A_REAL_KIND"}}]}"#;
+        let err_msg = match parse_ai_dashboard_draft(bad_raw) {
+            Ok(_) => return Err(AppError::Config(String::from("expected parse error"))),
+            Err(err) => err.client_message(),
+        };
+        assert!(err_msg.contains("failed to decode AiDashboardDraft JSON:"));
+        assert!(err_msg.contains("NOT_A_REAL_KIND"));
         Ok(())
     }
 }
