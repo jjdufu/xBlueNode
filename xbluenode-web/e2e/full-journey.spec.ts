@@ -1247,12 +1247,32 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
     timeout: 15_000,
   });
 
-  // Discard any stale open draft left by prior gate steps so base_version matches latest main
+  // Discard all stale open drafts left by prior gate steps so base_version matches latest main
   const discardDraftBtn = page.getByRole("button", { name: "丢弃草案" });
-  if ((await discardDraftBtn.count()) > 0) {
+  for (let i = 0; i < 10 && (await discardDraftBtn.count()) > 0; i += 1) {
+    const discardResp = page.waitForResponse(
+      (res) =>
+        res.url().includes("/api/xblue/drafts/") &&
+        res.url().endsWith("/discard") &&
+        res.request().method() === "POST"
+    );
+    const reloadDraftsResp = page.waitForResponse(
+      (res) =>
+        new URL(res.url()).pathname === "/api/xblue/drafts" &&
+        res.request().method() === "GET"
+    );
     await discardDraftBtn.first().click();
-    await expect(discardDraftBtn).toHaveCount(0, { timeout: 10_000 });
+    await Promise.all([discardResp, reloadDraftsResp]);
+    await expect
+      .poll(
+        async () =>
+          (await discardDraftBtn.count()) === 0 ||
+          (await discardDraftBtn.first().isEnabled()),
+        { timeout: 10_000 }
+      )
+      .toBe(true);
   }
+  await expect(discardDraftBtn).toHaveCount(0, { timeout: 10_000 });
 
   await page.getByTestId("publish-summary-input").fill("全旅程终验模型发布");
   await page.getByTestId("publish-schema-btn").click();
