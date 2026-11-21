@@ -80,20 +80,33 @@ export function SimCompareWidget({
   useEffect(() => {
     const el = chartContainerRef.current;
     if (!el) return;
-    const chart = echarts.init(el);
+    const chart = echarts.init(el, undefined, {
+      width: el.clientWidth > 0 ? el.clientWidth : 320,
+      height: el.clientHeight > 0 ? el.clientHeight : 180,
+    });
     chartRef.current = chart;
-    const ro = new ResizeObserver(() => chart.resize());
+    const ro = new ResizeObserver(() => {
+      if (!chart.isDisposed() && el.clientWidth > 0 && el.clientHeight > 0) {
+        chart.resize({ width: el.clientWidth, height: el.clientHeight });
+      }
+    });
     ro.observe(el);
     return () => {
       ro.disconnect();
-      chart.dispose();
       chartRef.current = null;
+      try {
+        if (!chart.isDisposed()) {
+          chart.dispose();
+        }
+      } catch {
+        // Ignore ZRender 0x0 canvas dispose error during unmount
+      }
     };
   }, []);
 
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chart || parsed.metrics.length === 0) return;
+    if (!chart || chart.isDisposed() || parsed.metrics.length === 0) return;
 
     const muted = isDark ? "#a1a1aa" : "#71717a";
     const gridLine = isDark ? "#27272a" : "#e4e4e7";

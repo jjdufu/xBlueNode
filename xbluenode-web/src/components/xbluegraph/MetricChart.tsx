@@ -118,24 +118,35 @@ export function MetricChart({ nodeId, nodeTitle, metric }: MetricChartProps) {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const chart = echarts.init(el);
+    const chart = echarts.init(el, undefined, {
+      width: el.clientWidth > 0 ? el.clientWidth : 320,
+      height: el.clientHeight > 0 ? el.clientHeight : 180,
+    });
     chartRef.current = chart;
 
     const resizeObserver = new ResizeObserver(() => {
-      chart.resize();
+      if (!chart.isDisposed() && el.clientWidth > 0 && el.clientHeight > 0) {
+        chart.resize({ width: el.clientWidth, height: el.clientHeight });
+      }
     });
     resizeObserver.observe(el);
 
     return () => {
       resizeObserver.disconnect();
-      chart.dispose();
       chartRef.current = null;
+      try {
+        if (!chart.isDisposed()) {
+          chart.dispose();
+        }
+      } catch {
+        // Ignore ZRender 0x0 canvas dispose error during unmount
+      }
     };
   }, []);
 
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chart) return;
+    if (!chart || chart.isDisposed()) return;
 
     const fgColor = isDark ? "#fafafa" : "#09090b";
     const mutedColor = isDark ? "#a1a1aa" : "#71717a";

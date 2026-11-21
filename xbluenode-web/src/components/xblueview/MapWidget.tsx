@@ -209,7 +209,10 @@ export function MapWidget({
     if (useMaplibre) return;
     const el = echartsContainerRef.current;
     if (!el) return;
-    const chart = echarts.init(el);
+    const chart = echarts.init(el, undefined, {
+      width: el.clientWidth > 0 ? el.clientWidth : 320,
+      height: el.clientHeight > 0 ? el.clientHeight : 180,
+    });
     echartsRef.current = chart;
 
     chart.on("click", (params) => {
@@ -230,18 +233,28 @@ export function MapWidget({
       }
     });
 
-    const ro = new ResizeObserver(() => chart.resize());
+    const ro = new ResizeObserver(() => {
+      if (!chart.isDisposed() && el.clientWidth > 0 && el.clientHeight > 0) {
+        chart.resize({ width: el.clientWidth, height: el.clientHeight });
+      }
+    });
     ro.observe(el);
     return () => {
       ro.disconnect();
-      chart.dispose();
       echartsRef.current = null;
+      try {
+        if (!chart.isDisposed()) {
+          chart.dispose();
+        }
+      } catch {
+        // Ignore ZRender motionBlur 0x0 back-buffer canvas InvalidStateError on unmount
+      }
     };
   }, [useMaplibre]);
 
   useEffect(() => {
     const chart = echartsRef.current;
-    if (!chart || useMaplibre) return;
+    if (!chart || chart.isDisposed() || useMaplibre) return;
 
     const fg = isDark ? "#fafafa" : "#09090b";
     const muted = isDark ? "#a1a1aa" : "#71717a";
