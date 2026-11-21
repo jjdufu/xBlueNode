@@ -1,0 +1,63 @@
+{
+  "id": "manufacturing_equipment",
+  "name": "离散制造产线与设备健康",
+  "version": "1.0.0",
+  "industry": "装备制造 / 工业物联",
+  "description": "产线—机台—传感器—工单四层模型，含 OEE 综合效率、主轴超温告警转工单与设备健康驾驶舱",
+  "contents": {
+    "schema": "schema.json",
+    "datasets": [
+      {
+        "key": "lines",
+        "name": "lines",
+        "file": "sample_data/lines.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "machines",
+        "name": "machines",
+        "file": "sample_data/machines.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "sensors",
+        "name": "sensors",
+        "file": "sample_data/sensors.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "work_orders",
+        "name": "work_orders",
+        "file": "sample_data/work_orders.csv",
+        "sync_mode": "SNAPSHOT"
+      }
+    ],
+    "mappings": "mappings.json",
+    "metrics": "metrics.json",
+    "rules": "rules.json",
+    "flows": [
+      "flows/overheat_dispatch.json"
+    ],
+    "dashboards": [
+      "dashboards/overview.json"
+    ],
+    "agents": [
+      "agents/equipment_advisor.json"
+    ],
+    "export_templates": []
+  },
+  "sha256": {
+    "README.md": "d083d7a40d97c3e5ee08cd7b409ee0e02615bf7c3452778cc8fa5ff4ef00160f",
+    "agents/equipment_advisor.json": "ac70635c9b35ba1b5cd69f3b9634ee1b80d0a8414289beaa20d2bbc20bce43ed",
+    "dashboards/overview.json": "7debf8b89300b6eb89a4c572628d6f8516e004246e5849582f81c6876ecfeb9a",
+    "flows/overheat_dispatch.json": "527d79d4ad6b397f978a592df6adf8f967b8e1869e8b1dc34ca7c269142cb7e5",
+    "mappings.json": "d21504ca010d64b717186b9a21c64cdac813726b46b69a165a020fabfbb7e59e",
+    "metrics.json": "47ce17672bd960e2b0f47dccaaaabdae29a5dd6489ec57307aef65b5ea88564a",
+    "rules.json": "7cbb16b9d3f6dec72eaf92340f94c2b194113cd3273fc32767789c78dc14c85d",
+    "sample_data/lines.csv": "012d309411c3990531aba1fc6b29ab89fa568555dd2ef5f1cf084685e5edabef",
+    "sample_data/machines.csv": "8e9599a0bb9c78cb96f9ed691d9abac92e6bbc17c354b8e647686dc0143b3e9e",
+    "sample_data/sensors.csv": "eeb684bbee2856171cd8d2f685e0e313207b65cc7c877e67f6581304d28eb8a1",
+    "sample_data/work_orders.csv": "1ecc16c3db108f2cd15806db5fca795c19c5ddac082f532a753588f1ee4a9f08",
+    "schema.json": "f642a7c9aeb2e529ddaf27b2bffe8f8ff3b02f67e5c48e08ebe564f971e3c609"
+  }
+}

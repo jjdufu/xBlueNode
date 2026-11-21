@@ -42,11 +42,13 @@ async fn main() -> Result<(), AppError> {
     match env::args().nth(1).as_deref() {
         Some("healthcheck") => return run_cli_healthcheck().await,
         Some("install-duckdb-extensions") => return axpoint_analytics::install_duckdb_extensions(),
+        Some("migrate") => return run_cli_migrate().await,
         _ => {}
     }
 
     let _dotenv_loaded = dotenvy::dotenv().is_ok();
     let otel_provider = telemetry::init_telemetry()?;
+    axpoint_server::ops::validate_production_env()?;
 
     let database_url = env::var("DATABASE_URL")
         .map_err(|_| AppError::Config(String::from("DATABASE_URL must be set")))?;
@@ -114,6 +116,36 @@ async fn run_cli_healthcheck() -> Result<(), AppError> {
             resp.status()
         )))
     }
+}
+
+async fn run_cli_migrate() -> Result<(), AppError> {
+    let _dotenv_loaded = dotenvy::dotenv().is_ok();
+    let otel_provider = telemetry::init_telemetry()?;
+    let migration_url = env::var("MIGRATION_DATABASE_URL").map_err(|_| {
+        AppError::Config(String::from(
+            "MIGRATION_DATABASE_URL must be set for `axpoint-server migrate`",
+        ))
+    })?;
+
+    let mut conn = PgConnection::connect(&migration_url)
+        .await
+        .map_err(|err| AppError::Database(format!("migration connection failed: {err}")))?;
+
+    sqlx::migrate!("../../../deploy/migrations")
+        .run(&mut conn)
+        .await
+        .map_err(|err| AppError::Database(format!("CLI migration failed: {err}")))?;
+
+    if let Err(err) = conn.close().await {
+        tracing::warn!(error = %err, "migration connection close failed");
+    }
+    info!("Applied embedded SQL migrations via `axpoint-server migrate`");
+    if let Some(provider) = otel_provider
+        && let Err(err) = provider.shutdown()
+    {
+        tracing::warn!(error = %err, "opentelemetry provider shutdown failed");
+    }
+    Ok(())
 }
 
 async fn maybe_run_migrations_on_start() -> Result<(), AppError> {
@@ -348,6 +380,17 @@ async fn assemble_runtime_state(
         Arc::clone(&llm_router),
         data_root.clone(),
     ));
+    let ops = Arc::new(axpoint_server::ops::OpsServices::new(
+        store.clone(),
+        Arc::clone(&sidecar),
+        Arc::clone(&analytics_pool),
+        audit.clone(),
+        http.clone(),
+        axpoint_server::ops::OpsConfig {
+            parser_base_url: parser_base_url.clone(),
+            data_root: data_root.clone(),
+        },
+    ));
 
     let state = AppState {
         store,
@@ -365,6 +408,7 @@ async fn assemble_runtime_state(
         sidecar,
         analytics_pool,
         view,
+        ops,
         data_root,
         parser_base_url,
         http,
@@ -444,6 +488,17 @@ mod tests {
             Arc::clone(&llm_router),
             data_root.clone(),
         ));
+        let ops = Arc::new(axpoint_server::ops::OpsServices::new(
+            store.clone(),
+            Arc::clone(&sidecar),
+            Arc::clone(&analytics_pool),
+            audit.clone(),
+            http.clone(),
+            axpoint_server::ops::OpsConfig {
+                parser_base_url: parser_base_url.clone(),
+                data_root: data_root.clone(),
+            },
+        ));
         let state = AppState {
             store,
             ai,
@@ -460,6 +515,7 @@ mod tests {
             sidecar,
             analytics_pool,
             view,
+            ops,
             data_root,
             parser_base_url,
             http,

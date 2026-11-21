@@ -2,6 +2,9 @@
 # 用法：restore-drill.sh <备份目录>；在独立的临时 PostgreSQL 实例与临时数据目录中恢复并对账
 set -euo pipefail
 : "${MIGRATION_DATABASE_URL:?MIGRATION_DATABASE_URL is required}"
+for _pg_bin in /usr/lib/postgresql/*/bin; do
+  [[ -d "$_pg_bin" ]] && export PATH="$_pg_bin:$PATH"
+done
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SRC_ARG=${1:?backup dir required}

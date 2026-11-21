@@ -1,0 +1,50 @@
+{
+  "rules": [
+    {
+      "name": "machine_spindle_overheat",
+      "description": "机台主轴温度超过 85℃ 安全上限时触发超温告警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "Machine",
+        "metric": "spindle_temp"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GT",
+        "value": 85.0,
+        "for_minutes": 0
+      },
+      "severity": "CRITICAL",
+      "title_template": "机台主轴超温告警：{{node.title}}",
+      "body_template": "机台 {{node.title}} 当前主轴温度为 {{value}} ℃，超过安全阈值 {{threshold}} ℃，请立即派发设备巡检工单。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    },
+    {
+      "name": "machine_vibration_high",
+      "description": "机台主轴振动速度有效值偏高预警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "Machine",
+        "metric": "vibration_rms"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GT",
+        "value": 4.5,
+        "for_minutes": 0
+      },
+      "severity": "WARN",
+      "title_template": "机台振动异常预警：{{node.title}}",
+      "body_template": "机台 {{node.title}} 当前振动有效值为 {{value}} mm/s，超过预警阈值 {{threshold}} mm/s。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    }
+  ]
+}

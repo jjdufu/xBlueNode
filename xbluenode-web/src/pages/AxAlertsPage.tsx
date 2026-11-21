@@ -1,11 +1,14 @@
 import { useCallback, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router";
 import {
   Activity,
   AlertTriangle,
   Bell,
   BellOff,
   CheckCircle2,
+  ExternalLink,
+  Kanban,
   Send,
   ShieldCheck,
   SlidersHorizontal,
@@ -46,12 +49,13 @@ import {
   type UpdateRuleRequest,
 } from "@/lib/api";
 import { axhubApi, type Dataset } from "@/lib/api/axhub";
+import { axopsApi } from "@/lib/api/axops";
 import { AlertDetail } from "@/components/axalerts/AlertDetail";
 import { AlertTable } from "@/components/axalerts/AlertTable";
 import { ChannelForm } from "@/components/axalerts/ChannelForm";
 import { RuleEditor } from "@/components/axalerts/RuleEditor";
 import { SilenceForm } from "@/components/axalerts/SilenceForm";
-import { Badge, Card } from "@/components/ui/primitives";
+import { Badge, Button, Card } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 type AlertsTabKey = "alerts" | "rules" | "channels" | "silences";
@@ -84,6 +88,13 @@ export function AxAlertsPage() {
 
   // Action loading states
   const [actingAlertId, setActingAlertId] = useState<string | null>(null);
+  const [convertingAlertId, setConvertingAlertId] = useState<string | null>(
+    null
+  );
+  const [createdWorkItem, setCreatedWorkItem] = useState<{
+    code: string;
+    alertId: string;
+  } | null>(null);
   const [batchAcking, setBatchAcking] = useState(false);
   const [savingRule, setSavingRule] = useState(false);
   const [dryRunningId, setDryRunningId] = useState<string | null>(null);
@@ -100,6 +111,29 @@ export function AxAlertsPage() {
   // Feedback banners
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
+
+  const handleConvertAlertToWorkItem = useCallback(async (alert: AlertRecord) => {
+    setErrorMessage(null);
+    setNoticeMessage(null);
+    setConvertingAlertId(alert.id);
+    try {
+      const created = await axopsApi.createWorkItem({
+        title: `[告警处置] ${alert.title}`,
+        description: alert.body || `告警去重键 ${alert.dedup_key} 转入交付追踪`,
+        item_kind: "ISSUE",
+        priority: alert.severity === "CRITICAL" ? "P0" : "P1",
+        source_kind: "ALERT",
+        source_ref: alert.id,
+        node_ids: alert.node_id ? [alert.node_id] : [],
+      });
+      const code = created.code?.trim() || `WI-${created.item_no}`;
+      setCreatedWorkItem({ code, alertId: alert.id });
+    } catch (err) {
+      setErrorMessage(formatErrorMessage(err, "转工作项失败"));
+    } finally {
+      setConvertingAlertId(null);
+    }
+  }, []);
 
   const hasActiveFilters = Boolean(
     filters.status ||
@@ -779,6 +813,35 @@ export function AxAlertsPage() {
         </div>
       )}
 
+      {createdWorkItem && (
+        <div
+          data-testid="axalerts-workitem-banner"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-xblue/40 bg-xblue-soft px-3.5 py-2.5 text-xs text-xblue"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Kanban className="h-3.5 w-3.5" />
+            <span className="font-medium">
+              已创建工作项 {createdWorkItem.code}
+            </span>
+            <Link
+              to="/ops"
+              data-testid="axalerts-workitem-ops-link"
+              className="inline-flex items-center gap-1 underline font-semibold"
+            >
+              前往 AxOps 查看交付进度 (/ops)
+              <ExternalLink className="h-3 w-3" />
+            </Link>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCreatedWorkItem(null)}
+            className="text-[11px] underline cursor-pointer shrink-0"
+          >
+            关闭
+          </button>
+        </div>
+      )}
+
       {/* Workspace Tabs Navigation */}
       <div
         role="tablist"
@@ -850,16 +913,102 @@ export function AxAlertsPage() {
             }}
           />
 
+          {alerts.length > 0 && (
+            <Card
+              className="p-3.5 space-y-2.5"
+              data-testid="axalerts-workitem-dispatch-card"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2 font-medium">
+                  <Kanban className="h-3.5 w-3.5 text-xblue" />
+                  <span>告警协同转工作项（写入 AxOps 交付看板 · ISSUE）</span>
+                </div>
+                <span className="text-[11px] text-muted-foreground">
+                  告警恢复时将自动在关联工作项上追加 LINK 事件
+                </span>
+              </div>
+
+              <div className="divide-y divide-border/60">
+                {alerts.slice(0, 10).map((alert) => {
+                  const isConverting = convertingAlertId === alert.id;
+                  return (
+                    <div
+                      key={alert.id}
+                      data-testid={`alert-workitem-row-${alert.id}`}
+                      className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs"
+                    >
+                      <div className="flex flex-wrap items-center gap-2 min-w-0">
+                        <Badge
+                          variant={
+                            alert.severity === "CRITICAL" ? "xblue" : "outline"
+                          }
+                        >
+                          {alert.severity}
+                        </Badge>
+                        <Badge variant="outline">{alert.status}</Badge>
+                        <span className="font-medium truncate">
+                          {alert.title}
+                        </span>
+                      </div>
+
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="h-7 px-2.5 text-[11px] border-xblue/40 text-xblue hover:bg-xblue-soft"
+                        data-testid={`convert-alert-workitem-btn-${alert.id}`}
+                        disabled={isConverting}
+                        onClick={() => void handleConvertAlertToWorkItem(alert)}
+                      >
+                        <Kanban className="h-3 w-3" />
+                        {isConverting ? "创建中..." : "转工作项"}
+                      </Button>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
           {selectedAlert && (
-            <AlertDetail
-              alert={selectedAlert}
-              rule={selectedAlertRule}
-              channels={channels}
-              acting={actingAlertId === selectedAlert.id}
-              onClose={() => setSelectedAlertId(null)}
-              onAck={handleAckAlert}
-              onResolve={handleResolveAlert}
-            />
+            <>
+              <AlertDetail
+                alert={selectedAlert}
+                rule={selectedAlertRule}
+                channels={channels}
+                acting={actingAlertId === selectedAlert.id}
+                onClose={() => setSelectedAlertId(null)}
+                onAck={handleAckAlert}
+                onResolve={handleResolveAlert}
+              />
+              <div className="fixed top-4 right-14 z-[60] flex items-center gap-2">
+                {createdWorkItem &&
+                  createdWorkItem.alertId === selectedAlert.id && (
+                    <Link
+                      to="/ops"
+                      data-testid="alert-detail-workitem-link"
+                      className="inline-flex items-center gap-1 rounded-md border border-xblue/40 bg-xblue-soft px-2.5 py-1.5 text-[11px] font-mono-tech font-semibold text-xblue shadow-sm"
+                    >
+                      已创建工作项 {createdWorkItem.code}
+                      <ExternalLink className="h-3 w-3" />
+                    </Link>
+                  )}
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-8 px-2.5 text-xs bg-background border-xblue/40 text-xblue hover:bg-xblue-soft shadow-sm"
+                  data-testid="alert-detail-convert-workitem-btn"
+                  disabled={convertingAlertId === selectedAlert.id}
+                  onClick={() =>
+                    void handleConvertAlertToWorkItem(selectedAlert)
+                  }
+                >
+                  <Kanban className="h-3.5 w-3.5" />
+                  {convertingAlertId === selectedAlert.id
+                    ? "创建中..."
+                    : "转工作项"}
+                </Button>
+              </div>
+            </>
           )}
         </>
       )}

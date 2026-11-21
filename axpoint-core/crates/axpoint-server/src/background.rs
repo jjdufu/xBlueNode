@@ -82,18 +82,158 @@ impl JobHandlerRegistry {
     }
 }
 
-/// Step 00 & Step 12 `RETENTION` handler cleaning expired `ax_jobs`, `ax_outbox`, and `EXPORT_FILE` artifacts.
+/// Step 00, Step 12 & Step 14 `RETENTION` handler cleaning expired DB rows, `EXPORT_FILE` artifacts, and `DuckLake` snapshots.
 struct RetentionJobHandler {
     store: PgStore,
+    sidecar: Arc<crate::sidecar::HttpSidecarClient>,
     data_root: std::path::PathBuf,
 }
 
 impl JobHandler for RetentionJobHandler {
     fn handle<'a>(&'a self, job: &'a LeasedJob) -> BoxFuture<'a, serde_json::Value> {
         Box::pin(async move {
-            self.store
+            let mut report = self
+                .store
                 .run_retention_cleanup_with_data_root(&job.tenant_id, &self.data_root)
+                .await?;
+
+            let keep_days = resolve_lake_keep_days(&self.store, &job.tenant_id).await;
+            let maint_req = axpoint_domain::axhub::LakeMaintenanceRequest {
+                tenant_id: job.tenant_id.clone(),
+                keep_days,
+            };
+            match axpoint_domain::ports::SidecarPort::run_maintenance(
+                self.sidecar.as_ref(),
+                &job.tenant_id,
+                &maint_req,
+            )
+            .await
+            {
+                Ok(lake_res) => {
+                    if let (serde_json::Value::Object(map), Ok(val)) =
+                        (&mut report, serde_json::to_value(&lake_res))
+                    {
+                        map.insert(String::from("lake_maintenance"), val);
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        tenant_id = %job.tenant_id,
+                        error = %err,
+                        "sidecar lake maintenance skipped during retention"
+                    );
+                }
+            }
+            Ok(report)
+        })
+    }
+}
+
+async fn resolve_lake_keep_days(store: &PgStore, tenant_id: &str) -> i32 {
+    if let Ok(policies) =
+        axpoint_domain::ports::OpsRepository::list_retention_policies(store, tenant_id).await
+        && let Some(found) = policies
+            .iter()
+            .find(|p| p.target == axpoint_domain::enums::RetentionTarget::LakeSnapshot)
+    {
+        return found.keep_days.max(1);
+    }
+    axpoint_domain::ports::DatasetRepository::get_lake_snapshot_keep_days(store, tenant_id)
+        .await
+        .unwrap_or(30)
+        .max(1)
+}
+
+/// Step 14 `JobKind::Backup` handler executing `AXPOINT_BACKUP_CMD` when configured (`§14.3.1`).
+struct BackupJobHandler;
+
+impl JobHandler for BackupJobHandler {
+    fn handle<'a>(&'a self, job: &'a LeasedJob) -> BoxFuture<'a, serde_json::Value> {
+        Box::pin(async move {
+            let backup_id = job
+                .payload
+                .get("backup_id")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok())
+                .ok_or_else(|| {
+                    AppError::bad("INVALID_ARGUMENT", "missing valid backup_id in payload")
+                })?;
+            let backup_kind = job
+                .payload
+                .get("backup_kind")
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| s.parse::<axpoint_domain::ops::BackupKind>().ok())
+                .unwrap_or(axpoint_domain::ops::BackupKind::Full);
+
+            let Some(cmd) = env::var("AXPOINT_BACKUP_CMD")
+                .ok()
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+            else {
+                return Ok(serde_json::json!({
+                    "backup_id": backup_id,
+                    "backup_kind": backup_kind,
+                    "skipped": true,
+                }));
+            };
+
+            let shell_line = format!("{cmd} {} {backup_id}", backup_kind.as_str());
+            let output = tokio::process::Command::new("bash")
+                .arg("-c")
+                .arg(&shell_line)
+                .env("BACKUP_ID", backup_id.to_string())
+                .env("BACKUP_KIND", backup_kind.as_str())
+                .output()
                 .await
+                .map_err(|err| {
+                    AppError::Config(format!("spawn AXPOINT_BACKUP_CMD failed: {err}"))
+                })?;
+
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(AppError::Config(format!(
+                    "AXPOINT_BACKUP_CMD exited with {}: {}",
+                    output.status,
+                    stderr.trim()
+                )));
+            }
+
+            Ok(serde_json::json!({
+                "backup_id": backup_id,
+                "backup_kind": backup_kind,
+                "executed": true,
+            }))
+        })
+    }
+}
+
+/// Step 14 `alert.resolved` subscriber appending `LINK(ALERT_RESOLVED)` timeline events to linked work items (`§14.7`).
+struct AlertResolvedWorkItemSubscriber {
+    store: PgStore,
+}
+
+impl OutboxSubscriber for AlertResolvedWorkItemSubscriber {
+    fn on_event<'a>(&'a self, event: &'a OutboxEvent) -> BoxFuture<'a, ()> {
+        Box::pin(async move {
+            if event.topic != axpoint_domain::enums::OutboxTopic::AlertResolved {
+                return Ok(());
+            }
+            let Some(alert_id) = event
+                .payload
+                .get("alert_id")
+                .or_else(|| event.payload.get("id"))
+                .and_then(serde_json::Value::as_str)
+                .and_then(|s| Uuid::parse_str(s).ok())
+            else {
+                return Ok(());
+            };
+            let _linked = axpoint_domain::ports::OpsRepository::link_resolved_alert_work_items(
+                &self.store,
+                &event.tenant_id,
+                alert_id,
+            )
+            .await?;
+            Ok(())
         })
     }
 }
@@ -430,6 +570,7 @@ fn build_job_registry(
         JobKind::Retention,
         Arc::new(RetentionJobHandler {
             store: store.clone(),
+            sidecar: Arc::clone(&state.sidecar),
             data_root: state.data_root.clone(),
         }),
     );
@@ -532,6 +673,7 @@ fn register_domain_job_handlers(
             data_root: state.data_root.clone(),
         }),
     );
+    registry.register(JobKind::Backup, Arc::new(BackupJobHandler));
 }
 
 /// Spawns `JobWorker` tasks (`AXPOINT_WORKERS`, default `4`), `OutboxDispatcher`, and singleton schedulers.
@@ -576,6 +718,24 @@ pub(crate) fn spawn_background_workers(
 
     let outbox_worker_id = format!("core-{instance_id}-outbox");
     let outbox_store = store.clone();
+    let subscribers =
+        build_outbox_subscribers(state, &store, &store_arc, flow_engine, &notify_dispatcher);
+    let outbox_shutdown = shutdown_rx.clone();
+    tokio::spawn(async move {
+        run_outbox_dispatcher(outbox_worker_id, outbox_store, subscribers, outbox_shutdown).await;
+    });
+
+    spawn_pg_listeners(state, shutdown_rx);
+    spawn_singleton_schedulers(store, store_arc, notify_dispatcher, shutdown_rx);
+}
+
+fn build_outbox_subscribers(
+    state: &crate::state::AppState,
+    store: &PgStore,
+    store_arc: &Arc<PgStore>,
+    flow_engine: Arc<axpoint_flow::FlowEngine>,
+    notify_dispatcher: &Arc<axpoint_flow::NotificationDispatcher<PgStore, crate::state::AppState>>,
+) -> Arc<[Arc<dyn OutboxSubscriber>]> {
     let ds_subscriber: Arc<dyn OutboxSubscriber> = Arc::new(DatasetSyncedSubscriber {
         store: store.clone(),
         analytics_pool: Arc::clone(&state.analytics_pool),
@@ -586,7 +746,7 @@ pub(crate) fn spawn_background_workers(
             store.pool().clone(),
             Arc::clone(&state.view.cache),
         ));
-    let subscribers: Arc<[Arc<dyn OutboxSubscriber>]> = Arc::from([
+    Arc::from([
         ds_subscriber,
         Arc::new(NodeMetricsChangedSubscriber {
             store: store.clone(),
@@ -602,23 +762,19 @@ pub(crate) fn spawn_background_workers(
             Arc::clone(&state.axagent.runtime),
         )),
         Arc::new(axpoint_flow::FlowOutboxTriggerSubscriber::new(Arc::clone(
-            &store_arc,
+            store_arc,
         ))),
         Arc::new(axpoint_flow::RuleTriggerSubscriber::new(Arc::clone(
-            &store_arc,
+            store_arc,
         ))),
         Arc::new(axpoint_flow::AlertNotifySubscriber::new(Arc::clone(
-            &notify_dispatcher,
+            notify_dispatcher,
         ))),
+        Arc::new(AlertResolvedWorkItemSubscriber {
+            store: store.clone(),
+        }),
         view_sub,
-    ]);
-    let outbox_shutdown = shutdown_rx.clone();
-    tokio::spawn(async move {
-        run_outbox_dispatcher(outbox_worker_id, outbox_store, subscribers, outbox_shutdown).await;
-    });
-
-    spawn_pg_listeners(state, shutdown_rx);
-    spawn_singleton_schedulers(store, store_arc, notify_dispatcher, shutdown_rx);
+    ])
 }
 
 fn spawn_pg_listeners(
@@ -829,7 +985,11 @@ async fn execute_leased_job(store: &PgStore, registry: &JobHandlerRegistry, job:
 
     let is_long_sync = matches!(
         job.kind,
-        JobKind::SyncDataset | JobKind::ParseFile | JobKind::MapMaterialize | JobKind::Export
+        JobKind::SyncDataset
+            | JobKind::ParseFile
+            | JobKind::MapMaterialize
+            | JobKind::Export
+            | JobKind::Backup
     );
     let (lease_secs, hb_interval) = if is_long_sync {
         if let Err(err) = store.heartbeat(job, SYNC_JOB_LEASE_SECS).await {
@@ -1024,12 +1184,17 @@ async fn run_retention_scheduler(
 }
 
 async fn enqueue_daily_retention(store: &PgStore) -> Result<(), AppError> {
-    let day_key = Utc::now().format("retention:%Y-%m-%d").to_string();
+    if let Err(err) =
+        axpoint_domain::ports::OpsRepository::drop_expired_metric_partitions(store).await
+    {
+        tracing::warn!(error = %err, "drop_expired_metric_partitions skipped");
+    }
+    let hour_key = Utc::now().format("retention:%Y-%m-%dT%H").to_string();
     let tenants = store.list_active_tenants().await?;
     for tenant_id in tenants {
         let job = NewJob::new(JobKind::Retention, serde_json::json!({}))
-            .with_idempotency_key(day_key.clone());
-        store.enqueue(&tenant_id, job).await?;
+            .with_idempotency_key(hour_key.clone());
+        let _job_id = store.enqueue(&tenant_id, job).await?;
     }
     Ok(())
 }

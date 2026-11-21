@@ -1,0 +1,50 @@
+{
+  "rules": [
+    {
+      "name": "warehouse_low_inventory",
+      "description": "区域分拨仓可用库存低于安全水位线时触发补货预警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "Warehouse",
+        "metric": "inventory_qty"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "LT",
+        "value": 200.0,
+        "for_minutes": 0
+      },
+      "severity": "WARN",
+      "title_template": "仓库低库存预警：{{node.title}}",
+      "body_template": "仓库 {{node.title}} 当前可用库存为 {{value}} 件，低于安全库存阈值 {{threshold}} 件，请及时安排上游工厂调拨补货。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    },
+    {
+      "name": "warehouse_fill_rate_drop",
+      "description": "区域仓库订单履约率跌破警戒阈值时触发红色告警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "Warehouse",
+        "metric": "fill_rate"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "LT",
+        "value": 0.5,
+        "for_minutes": 0
+      },
+      "severity": "CRITICAL",
+      "title_template": "仓库履约率严重不足：{{node.title}}",
+      "body_template": "仓库 {{node.title}} 当前履约率为 {{value}}，低于目标下限 {{threshold}}，存在下游订单延期风险。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    }
+  ]
+}

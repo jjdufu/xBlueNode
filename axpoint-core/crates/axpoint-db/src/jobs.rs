@@ -88,8 +88,8 @@ impl PgStore {
             .await
     }
 
-    /// Executes `RETENTION` cleanup using an explicit `data_root` directory for safe `EXPORT_FILE`
-    /// artifact removal (`10-STEP11-12` §12.5.1).
+    /// Executes full Step 14 `RETENTION` cleanup using an explicit `data_root` directory for safe
+    /// `EXPORT_FILE` artifact removal (`10-STEP11-12` §12.5.1, `12-STEP14` §14.4.1).
     ///
     /// # Errors
     /// Returns [`AppError::Database`] if reading policies or updating/deleting expired rows fails.
@@ -102,43 +102,30 @@ impl PgStore {
         let policy_rows = sqlx::query(
             "SELECT target, keep_days
                FROM ax_retention_policies
-              WHERE tenant_id = $1
-                AND target IN (
-                    'JOB', 'OUTBOX', 'MESSAGE', 'METRIC_ROLLUP_MINUTE', 'METRIC_SERIES', 'EXPORT_FILE'
-                )",
+              WHERE tenant_id = $1",
         )
         .bind(tenant_id)
         .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("query ax_retention_policies failed: {err}")))?;
 
-        let mut jobs_deleted: u64 = 0;
-        let mut outbox_deleted: u64 = 0;
-        let mut webhook_buffer_deleted: u64 = 0;
-        let mut minute_rollups_deleted: u64 = 0;
-        let mut metric_series_deleted: u64 = 0;
-        let mut export_keep_days: i32 = 30;
-
+        let mut counters = RetentionCleanupCounters::default();
         for row in policy_rows {
             let target: String = row.get("target");
             let keep_days: i32 = row.get("keep_days");
-            if target == "EXPORT_FILE" {
-                export_keep_days = keep_days.max(1);
-                continue;
-            }
-            let affected =
-                delete_expired_target_tx(&mut tx, tenant_id, target.as_str(), keep_days).await?;
-            match target.as_str() {
-                "JOB" => jobs_deleted = affected,
-                "OUTBOX" => outbox_deleted = affected,
-                "MESSAGE" => webhook_buffer_deleted = affected,
-                "METRIC_ROLLUP_MINUTE" => minute_rollups_deleted = affected,
-                "METRIC_SERIES" => metric_series_deleted = affected,
-                _ => {}
-            }
+            apply_retention_policy_tx(
+                &mut tx,
+                tenant_id,
+                target.as_str(),
+                keep_days.max(1),
+                &mut counters,
+            )
+            .await?;
         }
 
-        let grants_expired = expire_overdue_grants_tx(&mut tx, tenant_id).await?;
+        counters.sessions_deleted = delete_expired_sessions_tx(&mut tx, tenant_id).await?;
+        counters.grants_expired = expire_overdue_grants_tx(&mut tx, tenant_id).await?;
+        let export_keep_days = counters.export_keep_days.unwrap_or(30);
         let expired_exports =
             fetch_expired_exports_tx(&mut tx, tenant_id, export_keep_days).await?;
         tx.commit().await.map_err(|err| {
@@ -155,15 +142,23 @@ impl PgStore {
         let export_files_expired = self
             .expire_export_files_after_commit(tenant_id, data_root, &expired_exports)
             .await?;
+        let lake_keep_days = counters.lake_snapshot_keep_days.unwrap_or(30);
 
         Ok(serde_json::json!({
-            "jobs_deleted": jobs_deleted,
-            "outbox_deleted": outbox_deleted,
-            "webhook_buffer_deleted": webhook_buffer_deleted,
-            "minute_rollups_deleted": minute_rollups_deleted,
-            "metric_series_deleted": metric_series_deleted,
+            "jobs_deleted": counters.jobs_deleted,
+            "outbox_deleted": counters.outbox_deleted,
+            "webhook_buffer_deleted": counters.webhook_buffer_deleted,
+            "messages_deleted": counters.messages_deleted,
+            "conversations_deleted": counters.conversations_deleted,
+            "flow_step_logs_deleted": counters.flow_step_logs_deleted,
+            "query_history_deleted": counters.query_history_deleted,
+            "ask_turns_deleted": counters.ask_turns_deleted,
+            "minute_rollups_deleted": counters.minute_rollups_deleted,
+            "metric_series_deleted": counters.metric_series_deleted,
             "export_files_expired": export_files_expired,
-            "grants_expired": grants_expired,
+            "grants_expired": counters.grants_expired,
+            "sessions_deleted": counters.sessions_deleted,
+            "lake_snapshot_keep_days": lake_keep_days,
         }))
     }
 
@@ -294,51 +289,211 @@ fn remove_export_file_safely(data_root: &std::path::Path, raw_path: &str) {
     }
 }
 
-async fn delete_expired_target_tx(
+#[derive(Default)]
+struct RetentionCleanupCounters {
+    jobs_deleted: u64,
+    outbox_deleted: u64,
+    webhook_buffer_deleted: u64,
+    messages_deleted: u64,
+    conversations_deleted: u64,
+    flow_step_logs_deleted: u64,
+    query_history_deleted: u64,
+    ask_turns_deleted: u64,
+    minute_rollups_deleted: u64,
+    metric_series_deleted: u64,
+    sessions_deleted: u64,
+    grants_expired: u64,
+    export_keep_days: Option<i32>,
+    lake_snapshot_keep_days: Option<i32>,
+}
+
+async fn exec_retention_sql_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    label: &str,
+    sql: &'static str,
     tenant_id: &str,
-    target: &str,
     keep_days: i32,
 ) -> Result<u64, AppError> {
-    let sql: &'static str = match target {
-        "JOB" => {
-            "DELETE FROM ax_jobs
-              WHERE tenant_id = $1
-                AND status IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'EXPIRED')
-                AND updated_at < NOW() - make_interval(days => $2::int)"
-        }
-        "OUTBOX" => {
-            "DELETE FROM ax_outbox
-              WHERE tenant_id = $1
-                AND processed_at IS NOT NULL
-                AND processed_at < NOW() - make_interval(days => $2::int)"
-        }
-        "MESSAGE" => {
-            "DELETE FROM ds_webhook_buffer
-              WHERE tenant_id = $1
-                AND flushed_at IS NOT NULL
-                AND flushed_at < NOW() - make_interval(days => $2::int)"
-        }
-        "METRIC_ROLLUP_MINUTE" => {
-            "DELETE FROM xb_metric_rollups
-              WHERE tenant_id = $1
-                AND grain = 'MINUTE'
-                AND bucket_start < NOW() - make_interval(days => $2::int)"
-        }
-        "METRIC_SERIES" => {
-            "DELETE FROM xb_metric_series
-              WHERE tenant_id = $1
-                AND ts < NOW() - make_interval(days => $2::int)"
-        }
-        _ => return Ok(0),
-    };
-
     let res = sqlx::query(sql)
         .bind(tenant_id)
         .bind(keep_days)
         .execute(&mut **tx)
         .await
-        .map_err(|err| AppError::Database(format!("retention delete {target} failed: {err}")))?;
+        .map_err(|err| AppError::Database(format!("retention delete {label} failed: {err}")))?;
+    Ok(res.rows_affected())
+}
+
+async fn apply_retention_policy_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    target: &str,
+    keep_days: i32,
+    counters: &mut RetentionCleanupCounters,
+) -> Result<(), AppError> {
+    match target {
+        "EXPORT_FILE" => counters.export_keep_days = Some(keep_days),
+        "LAKE_SNAPSHOT" => counters.lake_snapshot_keep_days = Some(keep_days),
+        "AUDIT" => {}
+        "JOB" => {
+            counters.jobs_deleted = exec_retention_sql_tx(
+                tx,
+                "JOB",
+                "DELETE FROM ax_jobs
+                  WHERE tenant_id = $1
+                    AND status IN ('SUCCEEDED', 'FAILED', 'CANCELED', 'EXPIRED')
+                    AND updated_at < NOW() - make_interval(days => $2::int)",
+                tenant_id,
+                keep_days,
+            )
+            .await?;
+        }
+        "OUTBOX" => {
+            counters.outbox_deleted = exec_retention_sql_tx(
+                tx,
+                "OUTBOX",
+                "DELETE FROM ax_outbox
+                  WHERE tenant_id = $1
+                    AND processed_at IS NOT NULL
+                    AND processed_at < NOW() - make_interval(days => $2::int)",
+                tenant_id,
+                keep_days,
+            )
+            .await?;
+        }
+        "FLOW_STEP_LOG" => {
+            counters.flow_step_logs_deleted = exec_retention_sql_tx(
+                tx,
+                "FLOW_STEP_LOG",
+                "DELETE FROM ax_flow_step_logs
+                  USING ax_flow_runs r
+                  WHERE ax_flow_step_logs.tenant_id = $1
+                    AND ax_flow_step_logs.run_id = r.id
+                    AND r.status IN ('SUCCEEDED', 'FAILED', 'CANCELED')
+                    AND COALESCE(
+                            ax_flow_step_logs.finished_at,
+                            ax_flow_step_logs.started_at,
+                            r.created_at
+                        ) < NOW() - make_interval(days => $2::int)",
+                tenant_id,
+                keep_days,
+            )
+            .await?;
+        }
+        other => {
+            apply_domain_retention_target_tx(tx, tenant_id, other, keep_days, counters).await?;
+        }
+    }
+    Ok(())
+}
+
+async fn apply_domain_retention_target_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    target: &str,
+    keep_days: i32,
+    counters: &mut RetentionCleanupCounters,
+) -> Result<(), AppError> {
+    match target {
+        "MESSAGE" => {
+            counters.webhook_buffer_deleted = exec_retention_sql_tx(
+                tx,
+                "ds_webhook_buffer",
+                "DELETE FROM ds_webhook_buffer
+                  WHERE tenant_id = $1
+                    AND flushed_at IS NOT NULL
+                    AND flushed_at < NOW() - make_interval(days => $2::int)",
+                tenant_id,
+                keep_days,
+            )
+            .await?;
+            counters.messages_deleted = exec_retention_sql_tx(
+                tx,
+                "ax_messages",
+                "DELETE FROM ax_messages
+                  WHERE tenant_id = $1
+                    AND created_at < NOW() - make_interval(days => $2::int)",
+                tenant_id,
+                keep_days,
+            )
+            .await?;
+        }
+        "CONVERSATION" => {
+            counters.conversations_deleted = exec_retention_sql_tx(
+                tx,
+                "CONVERSATION",
+                "DELETE FROM ax_conversations
+                  WHERE tenant_id = $1
+                    AND updated_at < NOW() - make_interval(days => $2::int)",
+                tenant_id,
+                keep_days,
+            )
+            .await?;
+        }
+        "QUERY_HISTORY" => {
+            counters.query_history_deleted = exec_retention_sql_tx(
+                tx,
+                "an_query_history",
+                "DELETE FROM an_query_history
+                  WHERE tenant_id = $1
+                    AND created_at < NOW() - make_interval(days => $2::int)",
+                tenant_id,
+                keep_days,
+            )
+            .await?;
+            counters.ask_turns_deleted = exec_retention_sql_tx(
+                tx,
+                "an_ask_turns",
+                "DELETE FROM an_ask_turns
+                  WHERE tenant_id = $1
+                    AND created_at < NOW() - make_interval(days => $2::int)",
+                tenant_id,
+                keep_days,
+            )
+            .await?;
+        }
+        "METRIC_ROLLUP_MINUTE" => {
+            counters.minute_rollups_deleted = exec_retention_sql_tx(
+                tx,
+                "METRIC_ROLLUP_MINUTE",
+                "DELETE FROM xb_metric_rollups
+                  WHERE tenant_id = $1
+                    AND grain = 'MINUTE'
+                    AND bucket_start < NOW() - make_interval(days => $2::int)",
+                tenant_id,
+                keep_days,
+            )
+            .await?;
+        }
+        "METRIC_SERIES" => {
+            counters.metric_series_deleted = exec_retention_sql_tx(
+                tx,
+                "METRIC_SERIES",
+                "DELETE FROM xb_metric_series
+                  WHERE tenant_id = $1
+                    AND ts < NOW() - make_interval(days => $2::int)",
+                tenant_id,
+                keep_days,
+            )
+            .await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn delete_expired_sessions_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+) -> Result<u64, AppError> {
+    let res = sqlx::query(
+        "DELETE FROM sec_sessions
+          WHERE tenant_id = $1
+            AND expires_at <= NOW()",
+    )
+    .bind(tenant_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("delete expired sec_sessions failed: {err}")))?;
     Ok(res.rows_affected())
 }
 
@@ -561,6 +716,118 @@ impl JobQueuePort for PgStore {
             .map_err(|err| AppError::Database(format!("commit get ax_job tx failed: {err}")))?;
 
         maybe_row.as_ref().map(decode_job_record).transpose()
+    }
+
+    async fn retry_job(
+        &self,
+        tenant_id: &str,
+        job_id: Uuid,
+    ) -> Result<Option<JobRecord>, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM ax_jobs WHERE id = $1 FOR UPDATE")
+                .bind(job_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|err| {
+                    AppError::Database(format!("lock ax_jobs for retry failed: {err}"))
+                })?;
+
+        let Some(status_raw) = maybe_status else {
+            tx.commit().await.map_err(|err| {
+                AppError::Database(format!("commit missing retry_job tx failed: {err}"))
+            })?;
+            return Ok(None);
+        };
+
+        let current_status = JobStatus::from_str(&status_raw)?;
+        if !matches!(current_status, JobStatus::Failed | JobStatus::Canceled) {
+            return Err(AppError::Conflict("CONFLICT"));
+        }
+
+        let row = sqlx::query(
+            "UPDATE ax_jobs
+                SET status = 'PENDING',
+                    attempt = 0,
+                    next_run_at = NOW(),
+                    last_error = NULL,
+                    lease_owner = NULL,
+                    lease_until = NULL,
+                    updated_at = NOW()
+              WHERE id = $1
+             RETURNING id, kind, status, attempt, max_attempts, next_run_at,
+                       last_error, result, created_at, updated_at",
+        )
+        .bind(job_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| {
+            let is_unique = err
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::code)
+                .as_deref()
+                == Some("23505");
+            if is_unique {
+                AppError::Conflict("CONFLICT")
+            } else {
+                AppError::Database(format!("retry ax_jobs update failed: {err}"))
+            }
+        })?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit retry_job tx failed: {err}")))?;
+
+        Ok(Some(decode_job_record(&row)?))
+    }
+
+    async fn cancel_job(
+        &self,
+        tenant_id: &str,
+        job_id: Uuid,
+    ) -> Result<Option<JobRecord>, AppError> {
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_status: Option<String> =
+            sqlx::query_scalar("SELECT status FROM ax_jobs WHERE id = $1 FOR UPDATE")
+                .bind(job_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|err| {
+                    AppError::Database(format!("lock ax_jobs for cancel failed: {err}"))
+                })?;
+
+        let Some(status_raw) = maybe_status else {
+            tx.commit().await.map_err(|err| {
+                AppError::Database(format!("commit missing cancel_job tx failed: {err}"))
+            })?;
+            return Ok(None);
+        };
+
+        let current_status = JobStatus::from_str(&status_raw)?;
+        if !matches!(current_status, JobStatus::Pending | JobStatus::Running) {
+            return Err(AppError::Conflict("CONFLICT"));
+        }
+
+        let row = sqlx::query(
+            "UPDATE ax_jobs
+                SET status = 'CANCELED',
+                    lease_owner = NULL,
+                    lease_until = NULL,
+                    updated_at = NOW()
+              WHERE id = $1
+             RETURNING id, kind, status, attempt, max_attempts, next_run_at,
+                       last_error, result, created_at, updated_at",
+        )
+        .bind(job_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("cancel ax_jobs update failed: {err}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit cancel_job tx failed: {err}")))?;
+
+        Ok(Some(decode_job_record(&row)?))
     }
 }
 

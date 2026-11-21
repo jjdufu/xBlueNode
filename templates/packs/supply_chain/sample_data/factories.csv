@@ -1,0 +1,9 @@
+factory_id,name,supplier_id,city,status,capacity_units,utilization_rate
+F-1,华东一号工厂,SUP-01,苏州,RUNNING,5200,0.88
+F-2,华东二号工厂,SUP-02,宁波,RUNNING,4600,0.84
+F-3,华南一号工厂,SUP-03,深圳,RUNNING,6000,0.91
+F-4,华南二号工厂,SUP-04,东莞,RUNNING,4100,0.79
+F-5,华中制造基地,SUP-05,武汉,RUNNING,3800,0.82
+F-6,西南总装工厂,SUP-06,成都,MAINTENANCE,2900,0.65
+F-7,华北一号工厂,SUP-07,天津,RUNNING,4400,0.86
+F-8,胶东分装工厂,SUP-08,青岛,RUNNING,3500,0.77

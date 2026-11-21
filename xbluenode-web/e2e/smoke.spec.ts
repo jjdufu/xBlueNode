@@ -69,6 +69,11 @@ const SHELL_SMOKE_ROUTES: readonly SmokeRouteAssertion[] = [
     sidebarLabel: "AxGuard · 安全治理",
     heading: "AxGuard · 安全治理中心",
   },
+  {
+    path: "/ops",
+    sidebarLabel: "AxOps · 运维与交付",
+    heading: "AxOps · 运维与交付中心",
+  },
 ];
 
 async function installDeterministicApiMocks(
@@ -196,6 +201,7 @@ async function installDeterministicApiMocks(
             "FLOW_RUN",
             "SIM_RUN",
             "GUARD_ADMIN",
+            "OPS_ADMIN",
           ],
           token_kind: "DEV_STATIC",
         }),
@@ -424,6 +430,67 @@ async function installDeterministicApiMocks(
           ],
           next_cursor: null,
         }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/axops/health/deep") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          database: { ok: true, latency_ms: 2, replication_lag_s: 0 },
+          parser: { ok: true, version: "0.1.0" },
+          lake: { ok: true, snapshot_id: 1 },
+          llm: { ok: true, provider: "cassette" },
+          embed: { ok: true },
+          disk: { ok: true, data_root_free_bytes: 50_000_000_000 },
+          jobs: { pending: 0, running: 0, failed_24h: 0, oldest_pending_s: 0 },
+          outbox: { lag_s: 0, pending: 0 },
+          migrations: { ok: true, current: 14, pending: 0 },
+          version: "0.1.0",
+        }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/axops/outbox/stats") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ lag_s: 0, pending: 0 }),
+      });
+      return;
+    }
+
+    if (pathname === "/api/axops/system/info") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          version: "0.1.0",
+          env: "development",
+          tenant_id: "default",
+          uptime_s: 3600,
+          data_root: "/var/lib/axpoint",
+          template_packs_count: 3,
+        }),
+      });
+      return;
+    }
+
+    if (
+      pathname === "/api/axops/jobs" ||
+      pathname === "/api/axops/retention" ||
+      pathname === "/api/axops/backups" ||
+      pathname === "/api/axops/templates" ||
+      pathname === "/api/axops/templates/installs" ||
+      pathname === "/api/axops/work-items"
+    ) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: [], next_cursor: null }),
       });
       return;
     }

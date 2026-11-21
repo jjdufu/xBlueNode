@@ -1,5 +1,7 @@
-//! `ACTION_EMIT` operator executing idempotent node writebacks (`DRY_RUN` in `TEST`) (`07-STEP07-08` §07.3.3 & §07.4).
+//! `ACTION_EMIT` operator executing idempotent node writebacks and `WORK_ITEM` creation
+//! (`DRY_RUN` in `TEST`) (`07-STEP07-08` §07.3.3, §07.4 & `12-STEP14` §14.7).
 
+use std::str::FromStr;
 use std::sync::Arc;
 
 use axpoint_domain::AppError;
@@ -12,14 +14,16 @@ use axpoint_domain::graph::{
     MetricPointInput, NodeListQuery, NodeListResponse, NodeRef, PatchNodeRequest,
     WriteMetricsRequest,
 };
+use axpoint_domain::ops::{FlowWorkItemInput, WorkItemKind, WorkItemPriority};
 use axpoint_domain::platform::BoxFuture;
 use axpoint_domain::ports::{FlowRepository, GraphStorePort, MetricStorePort};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use super::{
-    parse_optional_bool, parse_optional_f64, parse_optional_string_any, parse_optional_uuid_any,
-    parse_required_string_any, templated_bool_schema, templated_uuid_schema,
+    TEMPLATE_EXPR_PATTERN, parse_optional_bool, parse_optional_f64, parse_optional_string_any,
+    parse_optional_uuid_any, parse_optional_uuid_vec, parse_required_string_any,
+    templated_bool_schema, templated_uuid_schema,
 };
 
 /// Studio palette display name for `ACTION_EMIT`.
@@ -27,72 +31,109 @@ pub const DISPLAY_NAME: &str = "动作回写下发";
 
 /// Studio palette short description for `ACTION_EMIT`.
 pub const DESCRIPTION: &str =
-    "幂等回写业务节点指标、节点属性或通知流水；TEST 环境自动记录为 DRY_RUN";
+    "幂等回写业务节点指标、节点属性、通知流水或交付工作项；TEST 环境自动记录为 DRY_RUN";
 
 /// Returns the JSON Schema validating `ACTION_EMIT` node `config`.
 #[must_use]
 pub fn config_schema() -> serde_json::Value {
-    let node_obj = node_object_schema();
-    let node_ref = node_ref_schema();
-    let action_item = serde_json::json!({
-        "type": "object",
-        "properties": {
-            "kind": { "type": "string", "minLength": 1 },
-            "action_kind": { "type": "string", "minLength": 1 },
-            "node_id": templated_uuid_schema(),
-            "target_node_id": templated_uuid_schema(),
-            "node_ref": node_ref.clone(),
-            "node": node_obj.clone(),
-            "metric": { "type": "string", "minLength": 1 },
-            "metric_key": { "type": "string", "minLength": 1 },
-            "value": {},
-            "value_text": { "type": "string" },
-            "ts": { "type": "string" },
-            "properties": { "type": "object" },
-            "property": { "type": "string", "minLength": 1 },
-            "key": { "type": "string", "minLength": 1 },
-            "target": { "type": "string" },
-            "channel": { "type": "string" },
-            "payload": {},
-            "message": { "type": "string" },
-            "dry_run": templated_bool_schema()
-        }
-    });
-
+    let action_item = action_item_schema();
+    let props = action_properties_map(Some(action_item));
     serde_json::json!({
         "type": "object",
-        "properties": {
-            "actions": {
-                "type": "array",
-                "minItems": 1,
-                "items": action_item
-            },
-            "kind": { "type": "string", "minLength": 1 },
-            "action_kind": { "type": "string", "minLength": 1 },
-            "node_id": templated_uuid_schema(),
-            "target_node_id": templated_uuid_schema(),
-            "node_ref": node_ref,
-            "node": node_obj,
-            "metric": { "type": "string", "minLength": 1 },
-            "metric_key": { "type": "string", "minLength": 1 },
-            "value": {},
-            "value_text": { "type": "string" },
-            "ts": { "type": "string" },
-            "properties": { "type": "object" },
-            "property": { "type": "string", "minLength": 1 },
-            "key": { "type": "string", "minLength": 1 },
-            "target": { "type": "string" },
-            "channel": { "type": "string" },
-            "payload": {},
-            "message": { "type": "string" },
-            "dry_run": templated_bool_schema()
-        },
+        "properties": props,
+        "allOf": [work_item_title_rule()],
         "anyOf": [
             { "required": ["actions"] },
             { "required": ["kind"] },
             { "required": ["action_kind"] },
             { "required": ["dry_run"] }
         ]
+    })
+}
+
+fn action_item_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": action_properties_map(None),
+        "allOf": [work_item_title_rule()]
+    })
+}
+
+fn action_properties_map(actions_item: Option<serde_json::Value>) -> serde_json::Value {
+    let node_obj = node_object_schema();
+    let node_ref = node_ref_schema();
+    let node_refs_arr = serde_json::json!({
+        "oneOf": [
+            { "type": "array", "items": node_ref.clone() },
+            { "type": "string", "pattern": TEMPLATE_EXPR_PATTERN }
+        ]
+    });
+    let node_ids_arr = serde_json::json!({
+        "oneOf": [
+            { "type": "array", "items": templated_uuid_schema() },
+            { "type": "string", "pattern": TEMPLATE_EXPR_PATTERN }
+        ]
+    });
+
+    let mut map = serde_json::json!({
+        "kind": { "type": "string", "minLength": 1 },
+        "action_kind": { "type": "string", "minLength": 1 },
+        "node_id": templated_uuid_schema(),
+        "target_node_id": templated_uuid_schema(),
+        "node_ref": node_ref,
+        "node_refs": node_refs_arr,
+        "node_ids": node_ids_arr,
+        "node": node_obj,
+        "metric": { "type": "string", "minLength": 1 },
+        "metric_key": { "type": "string", "minLength": 1 },
+        "value": {},
+        "value_text": { "type": "string" },
+        "ts": { "type": "string" },
+        "properties": { "type": "object" },
+        "property": { "type": "string", "minLength": 1 },
+        "key": { "type": "string", "minLength": 1 },
+        "target": { "type": "string" },
+        "channel": { "type": "string" },
+        "payload": {},
+        "message": { "type": "string" },
+        "title": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "description": { "type": "string" },
+        "item_kind": { "type": "string", "minLength": 1 },
+        "priority": { "type": "string", "minLength": 1 },
+        "assignee": templated_uuid_schema(),
+        "due_at": { "type": "string", "minLength": 1 },
+        "dry_run": templated_bool_schema()
+    });
+    if let (Some(item_schema), Some(obj)) = (actions_item, map.as_object_mut()) {
+        obj.insert(
+            String::from("actions"),
+            serde_json::json!({
+                "type": "array",
+                "minItems": 1,
+                "items": item_schema
+            }),
+        );
+    }
+    map
+}
+
+fn work_item_title_rule() -> serde_json::Value {
+    serde_json::json!({
+        "if": {
+            "anyOf": [
+                {
+                    "properties": { "kind": { "type": "string", "pattern": "^[Ww][Oo][Rr][Kk]_[Ii][Tt][Ee][Mm]$" } },
+                    "required": ["kind"]
+                },
+                {
+                    "properties": { "action_kind": { "type": "string", "pattern": "^[Ww][Oo][Rr][Kk]_[Ii][Tt][Ee][Mm]$" } },
+                    "required": ["action_kind"]
+                }
+            ]
+        },
+        "then": {
+            "required": ["title"]
+        }
     })
 }
 
@@ -117,23 +158,13 @@ fn node_ref_schema() -> serde_json::Value {
     })
 }
 
-/// Checks whether `config` contains any `WORK_ITEM` action (deferred to Step 14 per `07-STEP07-08` §07.4).
+/// Checks whether `config` contains any unsupported `WORK_ITEM` action.
+///
+/// Starting in Step 14 (`12-STEP14` §14.7), `WORK_ITEM` is fully enabled in `ACTION_EMIT`,
+/// so this helper always returns `false`.
 #[must_use]
-pub fn contains_unsupported_work_item(config: &serde_json::Value) -> bool {
-    let check_item = |item: &serde_json::Value| -> bool {
-        item.get("kind")
-            .or_else(|| item.get("action_kind"))
-            .and_then(serde_json::Value::as_str)
-            .is_some_and(|s| s.trim().eq_ignore_ascii_case("WORK_ITEM"))
-    };
-
-    if check_item(config) {
-        return true;
-    }
-    config
-        .get("actions")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|arr| arr.iter().any(check_item))
+pub const fn contains_unsupported_work_item(_config: &serde_json::Value) -> bool {
+    false
 }
 
 /// `ACTION_EMIT` operator implementation generic over [`FlowRepository`], [`GraphStorePort`], and [`MetricStorePort`].
@@ -162,9 +193,6 @@ where
     async fn run(&self, ctx: &OperatorContext) -> Result<OperatorOutcome, AppError> {
         if ctx.is_canceled() {
             return Err(AppError::Conflict("RUN_CANCELED"));
-        }
-        if contains_unsupported_work_item(&ctx.config) {
-            return Err(AppError::Unsupported("UNSUPPORTED_FORMAT"));
         }
 
         let node_dry_run = parse_optional_bool(&ctx.config, "dry_run")?.unwrap_or(false);
@@ -245,10 +273,9 @@ where
         let exec_res = match action_kind {
             ActionKind::WriteNodeMetric => self.apply_write_metric(&ctx.tenant_id, item).await,
             ActionKind::WriteNodeProperty => self.apply_write_property(&ctx.tenant_id, item).await,
+            ActionKind::WorkItem => self.apply_work_item(ctx, item).await,
             ActionKind::Notify => Ok(()),
-            ActionKind::WorkItem | ActionKind::Http => {
-                Err(AppError::Unsupported("UNSUPPORTED_FORMAT"))
-            }
+            ActionKind::Http => Err(AppError::Unsupported("UNSUPPORTED_FORMAT")),
         };
 
         match exec_res {
@@ -296,6 +323,96 @@ where
         }
     }
 
+    async fn apply_work_item(
+        &self,
+        ctx: &OperatorContext,
+        item: &serde_json::Value,
+    ) -> Result<(), AppError> {
+        let title = parse_required_string_any(item, &["title"])?;
+        let description = parse_optional_string_any(item, &["description"])?.unwrap_or_default();
+        let item_kind = match parse_optional_string_any(item, &["item_kind"])? {
+            Some(raw) => WorkItemKind::from_str(&raw.to_ascii_uppercase())?,
+            None => WorkItemKind::Task,
+        };
+        let priority = match parse_optional_string_any(item, &["priority"])? {
+            Some(raw) => WorkItemPriority::from_str(&raw.to_ascii_uppercase())?,
+            None => WorkItemPriority::P2,
+        };
+        let assignee = parse_optional_uuid_any(item, &["assignee"])?;
+        let due_at = match parse_optional_string_any(item, &["due_at"])? {
+            Some(raw_due) => Some(
+                DateTime::parse_from_rfc3339(&raw_due)
+                    .map_err(|err| {
+                        AppError::bad("INVALID_ARGUMENT", format!("invalid due_at: {err}"))
+                    })?
+                    .with_timezone(&Utc),
+            ),
+            None => None,
+        };
+
+        let node_ids = self.resolve_work_item_nodes(&ctx.tenant_id, item).await?;
+        let actor = if ctx.principal.user_id.is_nil() && ctx.principal.username == "axflow" {
+            None
+        } else {
+            Some(ctx.principal.user_id)
+        };
+
+        let _created = self
+            .flow_repo
+            .create_work_item_from_flow(
+                &ctx.tenant_id,
+                FlowWorkItemInput {
+                    title,
+                    description,
+                    item_kind,
+                    priority,
+                    assignee,
+                    run_id: ctx.run_id,
+                    node_ids,
+                    due_at,
+                    actor,
+                },
+            )
+            .await?;
+        Ok(())
+    }
+
+    async fn resolve_work_item_nodes(
+        &self,
+        tenant_id: &str,
+        item: &serde_json::Value,
+    ) -> Result<Vec<Uuid>, AppError> {
+        let mut node_ids = parse_optional_uuid_vec(item, "node_ids")?;
+
+        let (single_id, single_ref) = parse_node_selector(item)?;
+        if let Some(uid) = single_id {
+            push_unique_uuid(&mut node_ids, uid);
+        } else if let Some(nr) = single_ref {
+            let resolved = self.resolve_node_ref(tenant_id, &nr).await?;
+            push_unique_uuid(&mut node_ids, resolved);
+        }
+
+        if let Some(raw_refs) = item.get("node_refs")
+            && !raw_refs.is_null()
+        {
+            let arr = raw_refs.as_array().ok_or_else(|| {
+                AppError::bad("INVALID_ARGUMENT", "'node_refs' must be a JSON array")
+            })?;
+            for entry in arr {
+                match parse_flexible_node_ref(entry)? {
+                    FlexibleNodeRef::Id(uid) => push_unique_uuid(&mut node_ids, uid),
+                    FlexibleNodeRef::Key(nr) => {
+                        let resolved = self.resolve_node_ref(tenant_id, &nr).await?;
+                        push_unique_uuid(&mut node_ids, resolved);
+                    }
+                    FlexibleNodeRef::Empty => {}
+                }
+            }
+        }
+
+        Ok(node_ids)
+    }
+
     async fn apply_write_metric(
         &self,
         tenant_id: &str,
@@ -333,7 +450,7 @@ where
             None => Utc::now(),
         };
 
-        let _ = self
+        let _written = self
             .metric_store
             .write_metrics(
                 tenant_id,
@@ -384,7 +501,7 @@ where
             map
         };
 
-        let _ = self
+        let _patched = self
             .graph_store
             .patch_node(
                 tenant_id,
@@ -444,6 +561,12 @@ where
         }
 
         Err(AppError::NotFound("NODE_NOT_FOUND"))
+    }
+}
+
+fn push_unique_uuid(list: &mut Vec<Uuid>, uid: Uuid) {
+    if !list.contains(&uid) {
+        list.push(uid);
     }
 }
 
@@ -598,7 +721,11 @@ fn classify_action_and_target(
                 .unwrap_or_else(|| String::from("notify"));
             Ok((ActionKind::Notify, target))
         }
-        "WORK_ITEM" => Err(AppError::Unsupported("UNSUPPORTED_FORMAT")),
+        "WORK_ITEM" => {
+            let title = parse_required_string_any(item, &["title"])?;
+            let target = parse_optional_string_any(item, &["target"])?.unwrap_or(title);
+            Ok((ActionKind::WorkItem, target))
+        }
         other => Err(AppError::bad(
             "INVALID_ARGUMENT",
             format!("unsupported ACTION_EMIT kind '{other}'"),

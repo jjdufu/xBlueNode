@@ -1,0 +1,63 @@
+{
+  "id": "supply_chain",
+  "name": "供应链协同",
+  "version": "1.0.0",
+  "industry": "制造 / 流通",
+  "description": "供应商—工厂—仓库—订单四层网络，含库存监控、断供推演与履约驾驶舱",
+  "contents": {
+    "schema": "schema.json",
+    "datasets": [
+      {
+        "key": "suppliers",
+        "name": "suppliers",
+        "file": "sample_data/suppliers.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "factories",
+        "name": "factories",
+        "file": "sample_data/factories.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "warehouses",
+        "name": "warehouses",
+        "file": "sample_data/warehouses.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "orders",
+        "name": "orders",
+        "file": "sample_data/orders.csv",
+        "sync_mode": "SNAPSHOT"
+      }
+    ],
+    "mappings": "mappings.json",
+    "metrics": "metrics.json",
+    "rules": "rules.json",
+    "flows": [
+      "flows/daily_refresh.json"
+    ],
+    "dashboards": [
+      "dashboards/overview.json"
+    ],
+    "agents": [
+      "agents/supply_analyst.json"
+    ],
+    "export_templates": []
+  },
+  "sha256": {
+    "README.md": "261eb55d2535d48b5ddb39920919e0156c83e2450f4d06118b51e641d63d6697",
+    "agents/supply_analyst.json": "2947240f90b9e49fb6ee781da960e1f82fbf34d51853e196da246eb055d39cf3",
+    "dashboards/overview.json": "3aa12a39fc49dd765d15f00c714b58ebb1cbc1240a6d1f8be31befc4faba3d08",
+    "flows/daily_refresh.json": "c688d626ce072940811f29dc7cdab37b6d88a4a0dafaf47435205ae8ab1e5eb5",
+    "mappings.json": "ac2b32ed0df78a34e0e01717890551a63f42191916bebf8e976e886362b2b99c",
+    "metrics.json": "b0a314be316efa6ead4f2bf080c5b7f827a299b1f408f54b188ce815bb98f51c",
+    "rules.json": "f384eb83c649ee1ddab8b381033f94c0ce503997e84e8ab10902b7da0e5ba950",
+    "sample_data/factories.csv": "0f9f5bc9c8c0dd08a5cb76d860f180fff3571afc14f3e29e7a15678b18c46a4f",
+    "sample_data/orders.csv": "b426ce3bc2ef2e18c8e5306e07ac0218d88a862947fbd76f3dbfd24ea3ef7a3b",
+    "sample_data/suppliers.csv": "d9060da7199042f3cb6e178e05cc659dca9c0bdc732152754990f5708da9e9d4",
+    "sample_data/warehouses.csv": "47f0da20604c8d947a8dd6e02068234dcdb43a0ca0fde396dce5e8bedb4d7661",
+    "schema.json": "bd7570a167be88674c186e21dc6d9081e04ae24d563de6b184b28a4c30530e6c"
+  }
+}

@@ -1,0 +1,283 @@
+{
+  "node_types": [
+    {
+      "name": "Line",
+      "display_name": "生产产线",
+      "description": "离散或流程制造车间自动化产线",
+      "icon": "layers",
+      "color": "#2563eb",
+      "title_template": "{prop.line_name}",
+      "properties": [
+        {
+          "name": "line_name",
+          "display_name": "产线名称",
+          "description": "产线标准名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "workshop",
+          "display_name": "所属车间",
+          "description": "产线所在厂房车间",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "availability",
+          "display_name": "时间稼动率",
+          "description": "设备实际运行时间占计划工作时间比例",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "performance",
+          "display_name": "性能稼动率",
+          "description": "实际加工节拍相对于标准节拍效率",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "quality",
+          "display_name": "良品率",
+          "description": "一次交检合格品占比",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "oee",
+          "display_name": "设备综合效率",
+          "description": "产线 OEE（availability * performance * quality）",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "max_spindle_temp",
+          "display_name": "产线最高主轴温度",
+          "description": "下属机台主轴温度最大值聚合",
+          "unit": "℃",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [
+        {
+          "target_metric": "max_spindle_temp",
+          "op": "MAX",
+          "via_link_type": "HAS_MACHINE",
+          "direction": "OUT",
+          "source_type_name": "Machine",
+          "source_metric": "spindle_temp",
+          "weight_by_link": false
+        }
+      ],
+      "derived_rules": [
+        {
+          "target_metric": "oee",
+          "expression": "availability * performance * quality",
+          "enabled": true
+        }
+      ],
+      "sync_to_knowledge": true,
+      "pos_x": 120.0,
+      "pos_y": 180.0
+    },
+    {
+      "name": "Machine",
+      "display_name": "机台设备",
+      "description": "数控加工中心、冲压机或装配专机设备",
+      "icon": "cpu",
+      "color": "#0891b2",
+      "title_template": "{prop.machine_name}",
+      "properties": [
+        {
+          "name": "machine_name",
+          "display_name": "机台名称",
+          "description": "设备台账名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "model_code",
+          "display_name": "设备型号",
+          "description": "设备规格型号编码",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "spindle_temp",
+          "display_name": "主轴温度",
+          "description": "机台主轴实时温度",
+          "unit": "℃",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "vibration_rms",
+          "display_name": "振动有效值",
+          "description": "主轴轴承振动速度均方根值",
+          "unit": "mm/s",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "sync_to_knowledge": true,
+      "pos_x": 420.0,
+      "pos_y": 180.0
+    },
+    {
+      "name": "Sensor",
+      "display_name": "物联传感器",
+      "description": "挂载于机台的温度、振动或电流采集传感器",
+      "icon": "activity",
+      "color": "#16a34a",
+      "title_template": "{prop.sensor_name}",
+      "properties": [
+        {
+          "name": "sensor_name",
+          "display_name": "传感器名称",
+          "description": "测点显示名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "sensor_kind",
+          "display_name": "传感类别",
+          "description": "传感器物理量类型（TEMP / VIBRATION / CURRENT）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "reading_value",
+          "display_name": "最新采样读数",
+          "description": "传感器最近一次上报数值",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "sync_to_knowledge": false,
+      "pos_x": 720.0,
+      "pos_y": 90.0
+    },
+    {
+      "name": "WorkOrder",
+      "display_name": "生产工单",
+      "description": "排程派发至指定机台执行的制造工单",
+      "icon": "clipboard",
+      "color": "#d97706",
+      "title_template": "{prop.wo_name}",
+      "properties": [
+        {
+          "name": "wo_name",
+          "display_name": "工单名称",
+          "description": "生产批次工单标题",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "product_code",
+          "display_name": "物料编码",
+          "description": "加工成品编码",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "status",
+          "display_name": "工单状态",
+          "description": "执行状态（RUNNING / QUEUED / COMPLETED）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "planned_units",
+          "display_name": "计划产量",
+          "description": "本批次计划加工件数",
+          "unit": "件",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "sync_to_knowledge": false,
+      "pos_x": 720.0,
+      "pos_y": 280.0
+    }
+  ],
+  "edge_types": [
+    {
+      "name": "HAS_MACHINE",
+      "src_type_name": "Line",
+      "dst_type_name": "Machine",
+      "impact_weight": 0.9,
+      "cardinality": "MANY_TO_MANY",
+      "description": "产线下辖机台设备",
+      "properties": [],
+      "propagation": {}
+    },
+    {
+      "name": "MONITORS",
+      "src_type_name": "Sensor",
+      "dst_type_name": "Machine",
+      "impact_weight": 0.7,
+      "cardinality": "MANY_TO_MANY",
+      "description": "传感器实时监测目标机台",
+      "properties": [],
+      "propagation": {}
+    },
+    {
+      "name": "ASSIGNED_TO",
+      "src_type_name": "WorkOrder",
+      "dst_type_name": "Machine",
+      "impact_weight": 0.8,
+      "cardinality": "MANY_TO_MANY",
+      "description": "生产工单排程分派至机台执行",
+      "properties": [],
+      "propagation": {}
+    }
+  ],
+  "mappings": []
+}

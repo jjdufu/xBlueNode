@@ -1,0 +1,50 @@
+{
+  "rules": [
+    {
+      "name": "sku_high_stockout",
+      "description": "主力零售单品货架断货率高于 15% 时触发补货预警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "Sku",
+        "metric": "stockout_rate"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GT",
+        "value": 0.15,
+        "for_minutes": 0
+      },
+      "severity": "WARN",
+      "title_template": "商品断货率偏高预警：{{node.title}}",
+      "body_template": "单品 {{node.title}} 当前断货率为 {{value}}，高于警戒线 {{threshold}}，请及时安排门店补货。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    },
+    {
+      "name": "store_low_inventory",
+      "description": "门店总在库件数跌破安全库存线时触发预警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "Store",
+        "metric": "inventory_units"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "LT",
+        "value": 300.0,
+        "for_minutes": 0
+      },
+      "severity": "WARN",
+      "title_template": "门店在库水位不足：{{node.title}}",
+      "body_template": "门店 {{node.title}} 当前在库件数为 {{value}} 件，低于安全水位 {{threshold}} 件。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    }
+  ]
+}

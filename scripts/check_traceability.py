@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import sys
 from pathlib import Path
 
 _CAP_ROW_RE = re.compile(r"^\|\s*(C\d{2})\s*\|")
@@ -72,11 +71,13 @@ def verify_traceability(matrix_path: Path, gate_dir: Path) -> list[str]:
 
     if len(cap_ids) != 59 or len(set(cap_ids)) != 59:
         errors.append(
-            f"capability count mismatch: total={len(cap_ids)} unique={len(set(cap_ids))} (expected 59)"
+            f"capability count mismatch: total={len(cap_ids)} "
+            f"unique={len(set(cap_ids))} (expected 59)"
         )
     if len(ds_ids) != 26 or len(set(ds_ids)) != 26:
         errors.append(
-            f"datasource count mismatch: total={len(ds_ids)} unique={len(set(ds_ids))} (expected 26)"
+            f"datasource count mismatch: total={len(ds_ids)} "
+            f"unique={len(set(ds_ids))} (expected 26)"
         )
 
     gate_cache: dict[str, str | None] = {}

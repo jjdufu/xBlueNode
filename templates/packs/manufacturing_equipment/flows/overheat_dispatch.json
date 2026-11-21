@@ -1,0 +1,30 @@
+{
+  "key": "overheat_dispatch",
+  "name": "设备超温巡检工单派发",
+  "slug": "overheat-dispatch",
+  "description": "当机台触发超温风险时自动派发 P1 级现场巡检工单",
+  "nodes": [
+    {
+      "id": "emit_wi",
+      "kind": "ACTION_EMIT",
+      "label": "派发机台超温巡检工单",
+      "pos": {
+        "x": 120,
+        "y": 120
+      },
+      "config": {
+        "actions": [
+          {
+            "kind": "WORK_ITEM",
+            "title": "机台超温巡检工单",
+            "priority": "P1"
+          }
+        ]
+      }
+    }
+  ],
+  "edges": [],
+  "trigger_cfg": {
+    "type": "MANUAL"
+  }
+}

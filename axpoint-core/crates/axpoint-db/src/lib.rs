@@ -15,6 +15,7 @@ pub mod knowledge_sync;
 pub mod mapping_exec;
 pub mod metrics;
 pub mod nodes;
+pub mod ops_repo;
 pub mod outbox;
 pub mod rollup;
 pub mod rules_repo;

@@ -1,0 +1,48 @@
+{
+  "metrics": [
+    {
+      "name": "total_order_amount",
+      "display_name": "订单履约总金额",
+      "description": "供应链全渠道客户订单金额汇总",
+      "dataset_id": { "$ref": "dataset:orders" },
+      "expression": "SUM(order_amount)",
+      "time_column": "order_date",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "status",
+          "column": "status",
+          "display_name": "履约状态"
+        },
+        {
+          "name": "warehouse_id",
+          "column": "warehouse_id",
+          "display_name": "发货仓库"
+        }
+      ],
+      "unit": "元",
+      "format": "0,0.00",
+      "synonyms": ["订单总额", "订单金额", "销售履约额"],
+      "certified": true
+    },
+    {
+      "name": "avg_warehouse_inventory",
+      "display_name": "仓库平均可用库存",
+      "description": "各区域分拨仓当前平均现货库存件数",
+      "dataset_id": { "$ref": "dataset:warehouses" },
+      "expression": "AVG(inventory_qty)",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "city",
+          "column": "city",
+          "display_name": "所在城市"
+        }
+      ],
+      "unit": "件",
+      "format": "0,0",
+      "synonyms": ["平均库存", "仓均库存"],
+      "certified": true
+    }
+  ]
+}

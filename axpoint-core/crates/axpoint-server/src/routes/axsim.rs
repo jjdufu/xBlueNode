@@ -68,15 +68,7 @@ pub(crate) fn router() -> Router<AppState> {
             post(create_overlay_node_handler),
         )
         .route(
-            "/axsim/sandboxes/{id}/overlay/nodes",
-            post(create_overlay_node_handler),
-        )
-        .route(
             "/axsim/sandboxes/{id}/nodes/{nid}",
-            patch(patch_overlay_node_handler).delete(delete_overlay_node_handler),
-        )
-        .route(
-            "/axsim/sandboxes/{id}/overlay/nodes/{nid}",
             patch(patch_overlay_node_handler).delete(delete_overlay_node_handler),
         )
         .route(
@@ -84,15 +76,7 @@ pub(crate) fn router() -> Router<AppState> {
             post(create_overlay_link_handler),
         )
         .route(
-            "/axsim/sandboxes/{id}/overlay/links",
-            post(create_overlay_link_handler),
-        )
-        .route(
             "/axsim/sandboxes/{id}/links/{lid}",
-            patch(patch_overlay_link_handler).delete(delete_overlay_link_handler),
-        )
-        .route(
-            "/axsim/sandboxes/{id}/overlay/links/{lid}",
             patch(patch_overlay_link_handler).delete(delete_overlay_link_handler),
         )
         .route(

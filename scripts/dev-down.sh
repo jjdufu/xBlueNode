@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+for _pg_bin in /usr/lib/postgresql/*/bin; do
+  [[ -d "$_pg_bin" ]] && export PATH="$_pg_bin:$PATH"
+done
 
 if [[ -d .gate/pids ]]; then
   for pidfile in .gate/pids/*; do

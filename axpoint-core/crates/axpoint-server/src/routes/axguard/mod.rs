@@ -151,10 +151,6 @@ fn grants_sessions_audit_router() -> Router<AppState> {
             delete(grants_audit::revoke_grant_handler),
         )
         .route(
-            "/axguard/grants/{id}/revoke",
-            post(grants_audit::revoke_grant_handler),
-        )
-        .route(
             "/axguard/sessions",
             get(grants_audit::list_sessions_handler),
         )

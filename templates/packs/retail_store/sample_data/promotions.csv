@@ -1,0 +1,9 @@
+promo_id,name,sku_id,channel,discount_rate,start_date
+PRM-01,早春咖啡唤醒满减季,SKU-102,OMNI,0.20,2026-03-01
+PRM-02,会员日鲜奶第二件半价,SKU-101,MEMBER,0.25,2026-03-03
+PRM-03,周末生鲜到家闪促,SKU-104,OMNI,0.15,2026-03-05
+PRM-04,春日出游饮品整箱购,SKU-105,OFFLINE,0.18,2026-03-06
+PRM-05,下午茶烘焙组合立减,SKU-106,OFFLINE,0.12,2026-03-07
+PRM-06,礼遇春茶专享折扣,SKU-107,MEMBER,0.10,2026-03-08
+PRM-07,零食囤货节限时特惠,SKU-108,OMNI,0.22,2026-03-09
+PRM-08,健康轻食厨房焕新季,SKU-110,MEMBER,0.15,2026-03-10
