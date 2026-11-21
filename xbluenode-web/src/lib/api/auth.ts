@@ -43,6 +43,33 @@ export const DEFAULT_AUTH_CONFIG: AuthConfigResponse = {
 };
 
 const PAT_SESSION_STORAGE_KEY = "axpoint_pat_token";
+export const AXPOINT_LOGGED_OUT_KEY = "axpoint_logged_out";
+
+export function readLoggedOutFlag(): boolean {
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      const raw = sessionStorage.getItem(AXPOINT_LOGGED_OUT_KEY)?.trim() ?? "";
+      return raw === "1" || raw.toLowerCase() === "true";
+    }
+  } catch {
+    // Ignore storage security errors in sandboxed/non-browser environments.
+  }
+  return false;
+}
+
+export function writeLoggedOutFlag(loggedOut: boolean): void {
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      if (loggedOut) {
+        sessionStorage.setItem(AXPOINT_LOGGED_OUT_KEY, "1");
+      } else {
+        sessionStorage.removeItem(AXPOINT_LOGGED_OUT_KEY);
+      }
+    }
+  } catch {
+    // Ignore storage security errors in sandboxed/non-browser environments.
+  }
+}
 
 function readSessionPat(): string | null {
   try {
@@ -117,15 +144,19 @@ export function computeProactiveRefreshDelayMs(
 }
 
 const persistedPat = readSessionPat();
+const loggedOutAtBoot = readLoggedOutFlag();
 const initialDevToken = import.meta.env?.VITE_DEV_TOKEN?.trim() ?? "";
 
 let memoryToken: string | null =
-  persistedPat ?? (initialDevToken.length > 0 ? initialDevToken : null);
+  persistedPat ??
+  (loggedOutAtBoot ? null : initialDevToken.length > 0 ? initialDevToken : null);
 let tokenMode: TokenMode = persistedPat
   ? "pat"
-  : initialDevToken.length > 0
-    ? "dev_static"
-    : "none";
+  : loggedOutAtBoot
+    ? "none"
+    : initialDevToken.length > 0
+      ? "dev_static"
+      : "none";
 let cachedMe: MeResponse | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let inflightRefresh: Promise<string | null> | null = null;
@@ -198,6 +229,7 @@ export function setSessionAccessToken(token: string): void {
   }
   memoryToken = trimmed;
   tokenMode = "jwt";
+  writeLoggedOutFlag(false);
   writeSessionPat(null);
   scheduleProactiveRefresh(trimmed);
   notifyAuthListeners();
@@ -213,6 +245,7 @@ export function setPatAccessToken(token: string): void {
   clearRefreshTimer();
   memoryToken = trimmed;
   tokenMode = "pat";
+  writeLoggedOutFlag(false);
   writeSessionPat(trimmed);
   notifyAuthListeners();
 }
@@ -442,6 +475,7 @@ export async function logout(): Promise<void> {
   } catch {
     // Best-effort network call; always clear local session state below.
   } finally {
+    writeLoggedOutFlag(true);
     clearAccessToken();
   }
 }
@@ -454,6 +488,7 @@ export async function logoutAll(): Promise<void> {
       credentials: "include",
     });
   } finally {
+    writeLoggedOutFlag(true);
     clearAccessToken();
   }
 }

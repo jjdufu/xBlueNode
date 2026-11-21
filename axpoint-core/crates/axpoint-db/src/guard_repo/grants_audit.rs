@@ -544,12 +544,25 @@ pub(super) async fn verify_audit_chain_impl(
             .map_err(|err| AppError::Database(format!("find min chained audit id: {err}")))?
             .get("min_id");
 
-    let head_opt = sqlx::query("SELECT last_id FROM sec_audit_chain_heads WHERE tenant_id = $1")
-        .bind(tenant_id)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(|err| AppError::Database(format!("read sec_audit_chain_heads: {err}")))?;
-    let head_last_id = head_opt.map_or(0_i64, |r| r.get("last_id"));
+    let head_opt = sqlx::query(
+        "SELECT last_id, anchor_id, anchor_hash
+           FROM sec_audit_chain_heads
+          WHERE tenant_id = $1",
+    )
+    .bind(tenant_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(|err| AppError::Database(format!("read sec_audit_chain_heads: {err}")))?;
+
+    let (head_last_id, anchor_id, anchor_hash) = match head_opt {
+        Some(row) => {
+            let lid: i64 = row.get("last_id");
+            let aid: Option<i64> = row.try_get("anchor_id").unwrap_or(None);
+            let ahash: Option<String> = row.try_get("anchor_hash").unwrap_or(None);
+            (lid, aid, ahash)
+        }
+        None => (0_i64, None, None),
+    };
 
     let Some(first_chained_id) = first_chained_opt else {
         tx.commit()
@@ -569,19 +582,22 @@ pub(super) async fn verify_audit_chain_impl(
         });
     };
 
+    let chain_start_id = anchor_id.unwrap_or(first_chained_id).max(first_chained_id);
     let effective_from = query
         .from_id
-        .map_or(first_chained_id, |f| f.max(first_chained_id));
-    let expected_prev: String = if effective_from > first_chained_id {
+        .map_or(chain_start_id, |f| f.max(chain_start_id));
+    let expected_prev: String = if effective_from > chain_start_id {
         sqlx::query(
             "SELECT row_hash FROM sec_audit_logs WHERE id < $1 AND id >= $2 ORDER BY id DESC LIMIT 1",
         )
         .bind(effective_from)
-        .bind(first_chained_id)
+        .bind(chain_start_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("load predecessor audit hash: {err}")))?
         .map_or_else(String::new, |r| r.get("row_hash"))
+    } else if anchor_id == Some(chain_start_id) {
+        anchor_hash.unwrap_or_default()
     } else {
         String::new()
     };

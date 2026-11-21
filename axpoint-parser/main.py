@@ -167,6 +167,7 @@ def health() -> dict[str, object]:
     return {
         "status": "ok",
         "service": "axpoint-parser",
+        "version": app.version,
         "model_path": str(model_path),
         "model_dir": str(model_path),
         "easyocr_models_present": easyocr_ready,

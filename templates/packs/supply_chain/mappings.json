@@ -1,0 +1,102 @@
+{
+  "mappings": [
+    {
+      "name": "map_suppliers",
+      "dataset": { "$ref": "dataset:suppliers" },
+      "node_type": "Supplier",
+      "key_column": "supplier_id",
+      "title": "{name}",
+      "attributes": {
+        "supplier_name": "name",
+        "region": "region",
+        "tier": "tier"
+      },
+      "metrics": {
+        "lead_days": "lead_days",
+        "on_time_rate": "on_time_rate"
+      },
+      "links": [],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_factories",
+      "dataset": { "$ref": "dataset:factories" },
+      "node_type": "Factory",
+      "key_column": "factory_id",
+      "title": "{name}",
+      "attributes": {
+        "factory_name": "name",
+        "city": "city",
+        "status": "status"
+      },
+      "metrics": {
+        "capacity_units": "capacity_units",
+        "utilization_rate": "utilization_rate"
+      },
+      "links": [
+        {
+          "link_type": "SUPPLIES",
+          "direction": "IN",
+          "target_type": "Supplier",
+          "target_key_column": "supplier_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_warehouses",
+      "dataset": { "$ref": "dataset:warehouses" },
+      "node_type": "Warehouse",
+      "key_column": "warehouse_id",
+      "title": "{name}",
+      "attributes": {
+        "warehouse_name": "name",
+        "city": "city"
+      },
+      "metrics": {
+        "inventory_qty": "inventory_qty",
+        "demand_qty": "demand_qty"
+      },
+      "links": [
+        {
+          "link_type": "REPLENISHES",
+          "direction": "IN",
+          "target_type": "Factory",
+          "target_key_column": "factory_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_orders",
+      "dataset": { "$ref": "dataset:orders" },
+      "node_type": "Order",
+      "key_column": "order_id",
+      "title": "{order_title}",
+      "attributes": {
+        "order_label": "order_title",
+        "customer_phone": "phone",
+        "status": "status"
+      },
+      "metrics": {
+        "order_amount": "order_amount"
+      },
+      "links": [
+        {
+          "link_type": "FULFILLS",
+          "direction": "IN",
+          "target_type": "Warehouse",
+          "target_key_column": "warehouse_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    }
+  ]
+}

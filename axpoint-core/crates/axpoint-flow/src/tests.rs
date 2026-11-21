@@ -184,6 +184,13 @@ fn static_validation_checks_all_eight_rules() {
                 FlowOperator::ActionEmit,
                 serde_json::json!({ "actions": [{ "kind": "WORK_ITEM" }] }),
             ),
+            make_node(
+                "wi_ok",
+                FlowOperator::ActionEmit,
+                serde_json::json!({
+                    "actions": [{ "kind": "WORK_ITEM", "title": "门禁工作项", "priority": "P1" }]
+                }),
+            ),
         ],
         edges: Vec::new(),
     };
@@ -199,7 +206,7 @@ fn static_validation_checks_all_eight_rules() {
             .iter()
             .filter(|i| i.code == "UNSUPPORTED_FORMAT")
             .count(),
-        2
+        1
     );
     let r5_step09 = validate_flow_default(&g_unsupported, &TriggerCfg::default(), None);
     assert_eq!(
@@ -208,7 +215,7 @@ fn static_validation_checks_all_eight_rules() {
             .iter()
             .filter(|i| i.code == "UNSUPPORTED_FORMAT")
             .count(),
-        1
+        0
     );
     assert!(
         r5_step09
@@ -216,7 +223,23 @@ fn static_validation_checks_all_eight_rules() {
             .iter()
             .any(|i| i.node_id.as_deref() == Some("ag") && i.code == "SCHEMA_INVALID")
     );
+    assert!(
+        r5_step09
+            .issues
+            .iter()
+            .any(|i| i.node_id.as_deref() == Some("wi") && i.code == "SCHEMA_INVALID")
+    );
+    assert!(
+        !r5_step09
+            .issues
+            .iter()
+            .any(|i| i.node_id.as_deref() == Some("wi_ok"))
+    );
 
+    assert_rule6_7_8_validation();
+}
+
+fn assert_rule6_7_8_validation() {
     let g_schema_tpl = FlowGraph {
         nodes: vec![
             make_node("n1", FlowOperator::SourceIngest, serde_json::json!({})),

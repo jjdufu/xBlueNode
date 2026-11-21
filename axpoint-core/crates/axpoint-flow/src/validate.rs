@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 use std::str::FromStr;
 
-use axpoint_domain::enums::{FlowOperator, OutboxTopic, TriggerType};
+use axpoint_domain::enums::{OutboxTopic, TriggerType};
 use axpoint_domain::expr::parser as expr_parser;
 use axpoint_domain::flow::{
     FlowEdge, FlowGraph, FlowIssue, FlowIssueSeverity, FlowNode, OperatorRegistry, TriggerCfg,
@@ -11,7 +11,6 @@ use axpoint_domain::flow::{
 };
 
 use crate::graph::{ancestors, root_nodes, topological_order_or_cycle};
-use crate::operators::action_emit::contains_unsupported_work_item;
 use crate::operators::step09_schema_only_registry;
 use crate::scheduler::{parse_timezone_offset, to_six_field_cron};
 use crate::template::collect_config_template_errors;
@@ -204,15 +203,6 @@ fn check_rule5_and_6_operators(
             ));
             continue;
         };
-
-        if node.kind == FlowOperator::ActionEmit && contains_unsupported_work_item(&node.config) {
-            issues.push(error_issue(
-                "UNSUPPORTED_FORMAT",
-                "WORK_ITEM action is deferred until Step 14",
-                Some(node.id.clone()),
-            ));
-            continue;
-        }
 
         let schema = op.config_schema();
         match jsonschema::validator_for(&schema) {

@@ -1,0 +1,107 @@
+{
+  "key": "overview",
+  "name": "产线设备健康与 OEE 驾驶舱",
+  "slug": "equipment-overview",
+  "description": "车间产线 OEE 综合效率、机台主轴温振状态与超温告警实时监控看板",
+  "theme": "light",
+  "widgets": [
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "全厂产线平均 OEE",
+      "position": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "Line",
+        "metric": "oee",
+        "agg": "AVG",
+        "grain": "DAY",
+        "time_range": "LAST_30_DAYS"
+      },
+      "encoding": {},
+      "options": {
+        "unit": "ratio",
+        "decimals": 2
+      },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "LINE_CHART",
+      "title": "各机台主轴实时温度分布",
+      "position": {
+        "x": 8,
+        "y": 0,
+        "w": 16,
+        "h": 8
+      },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "Machine",
+        "metric": "spindle_temp",
+        "agg": "LAST",
+        "grain": "HOUR",
+        "time_range": "LAST_7_DAYS",
+        "group_by": "node"
+      },
+      "encoding": {
+        "x": "node_title",
+        "y": "value"
+      },
+      "options": {
+        "unit": "℃"
+      },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "GRAPH_TOPOLOGY",
+      "title": "产线—机台—传感器—工单关联拓扑",
+      "position": {
+        "x": 0,
+        "y": 8,
+        "w": 14,
+        "h": 10
+      },
+      "data_source": {
+        "kind": "GRAPH",
+        "type_names": ["Line", "Machine", "Sensor", "WorkOrder"],
+        "link_types": ["HAS_MACHINE", "MONITORS", "ASSIGNED_TO"],
+        "color_metric": "spindle_temp",
+        "limit": 200
+      },
+      "encoding": {},
+      "options": {},
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "ALERT_LIST",
+      "title": "机台超温与振动异常告警",
+      "position": {
+        "x": 14,
+        "y": 8,
+        "w": 10,
+        "h": 10
+      },
+      "data_source": {
+        "kind": "ALERTS",
+        "status": ["OPEN", "ACK"],
+        "severity": ["WARN", "CRITICAL"],
+        "limit": 20
+      },
+      "encoding": {},
+      "options": {},
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    }
+  ]
+}

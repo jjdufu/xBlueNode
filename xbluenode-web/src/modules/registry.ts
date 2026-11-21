@@ -13,6 +13,7 @@ import {
   GitBranch,
   Monitor,
   ShieldCheck,
+  ServerCog,
 } from "lucide-react";
 import { DashboardPage } from "@/pages/DashboardPage";
 import { AxHubPage } from "@/pages/AxHubPage";
@@ -29,6 +30,7 @@ import { AxSimPage } from "@/pages/AxSimPage";
 import { XBlueViewPage } from "@/pages/XBlueViewPage";
 import { SharePage } from "@/pages/SharePage";
 import { AxGuardPage } from "@/pages/AxGuardPage";
+import { AxOpsPage } from "@/pages/AxOpsPage";
 
 export type TabKey =
   | "dashboard"
@@ -45,7 +47,8 @@ export type TabKey =
   | "axsim"
   | "xblueview"
   | "xblueview_share"
-  | "axguard";
+  | "axguard"
+  | "axops";
 
 export interface ModuleRouteSpec {
   key: TabKey;
@@ -90,6 +93,15 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     component: AxGuardPage,
     wideLayout: true,
     requiredAnyPermissions: ["GUARD_ADMIN", "AUDIT_READ", "DATA_READ"],
+  },
+  {
+    key: "axops",
+    path: "/ops",
+    label: "AxOps · 运维与交付",
+    icon: ServerCog,
+    component: AxOpsPage,
+    wideLayout: true,
+    requiredAnyPermissions: ["OPS_ADMIN", "DATA_READ", "FLOW_RUN"],
   },
   { key: "agent_embed", path: "/share/agent/:token", label: "AxAgent 嵌入对话", icon: Bot, component: AgentEmbedPage, public: true },
   { key: "xblueview_share", path: "/share/:token", label: "xBlueView 安全分享", icon: Monitor, component: SharePage, public: true },

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+for _pg_bin in /usr/lib/postgresql/*/bin; do
+  [[ -d "$_pg_bin" ]] && export PATH="$_pg_bin:$PATH"
+done
 test -f deploy/.env || cp deploy/.env.example deploy/.env
 
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then

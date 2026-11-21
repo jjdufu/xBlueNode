@@ -2274,10 +2274,6 @@ fn public_share_router() -> Router<AppState> {
             post(shared_widget_data_handler),
         )
         .route(
-            "/xblueview/share/{token}/assets/{asset_id}/raw",
-            get(shared_asset_raw_handler),
-        )
-        .route(
             "/xblueview/share/{token}/assets/{asset_id}/content",
             get(shared_asset_raw_handler),
         )

@@ -1,0 +1,282 @@
+{
+  "node_types": [
+    {
+      "name": "Supplier",
+      "display_name": "供应商",
+      "description": "上游原材料与零部件核心供应商",
+      "icon": "truck",
+      "color": "#0891b2",
+      "title_template": "{prop.supplier_name}",
+      "properties": [
+        {
+          "name": "supplier_name",
+          "display_name": "供应商名称",
+          "description": "供应商标准企业简称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "region",
+          "display_name": "所属区域",
+          "description": "供应商所在大区",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "tier",
+          "display_name": "供应层级",
+          "description": "供应商分级（T1 / T2）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "lead_days",
+          "display_name": "平均交期",
+          "description": "采购订单平均交付天数",
+          "unit": "天",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "on_time_rate",
+          "display_name": "准时交付率",
+          "description": "近30日供应商准时交付比例",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "sync_to_knowledge": true,
+      "pos_x": 80.0,
+      "pos_y": 180.0
+    },
+    {
+      "name": "Factory",
+      "display_name": "工厂",
+      "description": "负责生产制造与向下游仓库补货的自有或委外工厂",
+      "icon": "factory",
+      "color": "#2563eb",
+      "title_template": "{prop.factory_name}",
+      "properties": [
+        {
+          "name": "factory_name",
+          "display_name": "工厂名称",
+          "description": "工厂显示名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "city",
+          "display_name": "所在城市",
+          "description": "工厂所在城市",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "status",
+          "display_name": "运行状态",
+          "description": "排产运行状态",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "capacity_units",
+          "display_name": "日产能",
+          "description": "标准日产出件数上限",
+          "unit": "件",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "utilization_rate",
+          "display_name": "产能负荷率",
+          "description": "当前排产负荷占总产能比例",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "sync_to_knowledge": true,
+      "pos_x": 340.0,
+      "pos_y": 180.0
+    },
+    {
+      "name": "Warehouse",
+      "display_name": "仓库",
+      "description": "区域分拨与订单履约中心仓",
+      "icon": "warehouse",
+      "color": "#16a34a",
+      "title_template": "{prop.warehouse_name}",
+      "properties": [
+        {
+          "name": "warehouse_name",
+          "display_name": "仓库名称",
+          "description": "区域仓标准名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "city",
+          "display_name": "所在城市",
+          "description": "仓库所在城市",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "inventory_qty",
+          "display_name": "可用库存量",
+          "description": "当前可分配现货件数",
+          "unit": "件",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "demand_qty",
+          "display_name": "待履约需求量",
+          "description": "未出库订单需求总件数",
+          "unit": "件",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "fill_rate",
+          "display_name": "订单履约率",
+          "description": "可用库存对当前待履约需求的满足率",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [
+        {
+          "target_metric": "fill_rate",
+          "expression": "if(demand_qty > 0, inventory_qty / demand_qty, 1.0)",
+          "enabled": true
+        }
+      ],
+      "sync_to_knowledge": true,
+      "pos_x": 600.0,
+      "pos_y": 180.0
+    },
+    {
+      "name": "Order",
+      "display_name": "客户订单",
+      "description": "下游渠道及终端客户履约订单",
+      "icon": "shopping-cart",
+      "color": "#d97706",
+      "title_template": "{prop.order_label}",
+      "properties": [
+        {
+          "name": "order_label",
+          "display_name": "订单标题",
+          "description": "客户订单摘要标识",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "customer_phone",
+          "display_name": "客户联系电话",
+          "description": "收货联系人手机号（受动态脱敏保护）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "PHONE"
+        },
+        {
+          "name": "status",
+          "display_name": "履约状态",
+          "description": "订单状态（PENDING / SHIPPED / DELAYED）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "order_amount",
+          "display_name": "订单金额",
+          "description": "订单含税总金额",
+          "unit": "元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "sync_to_knowledge": false,
+      "pos_x": 860.0,
+      "pos_y": 180.0
+    }
+  ],
+  "edge_types": [
+    {
+      "name": "SUPPLIES",
+      "src_type_name": "Supplier",
+      "dst_type_name": "Factory",
+      "impact_weight": 0.75,
+      "cardinality": "MANY_TO_MANY",
+      "description": "供应商向工厂供应核心物料",
+      "properties": [],
+      "propagation": {}
+    },
+    {
+      "name": "REPLENISHES",
+      "src_type_name": "Factory",
+      "dst_type_name": "Warehouse",
+      "impact_weight": 0.85,
+      "cardinality": "MANY_TO_MANY",
+      "description": "工厂向区域仓库调拨补货",
+      "properties": [],
+      "propagation": {}
+    },
+    {
+      "name": "FULFILLS",
+      "src_type_name": "Warehouse",
+      "dst_type_name": "Order",
+      "impact_weight": 0.9,
+      "cardinality": "MANY_TO_MANY",
+      "description": "区域仓库向客户订单拣货发运",
+      "properties": [],
+      "propagation": {}
+    }
+  ],
+  "mappings": []
+}

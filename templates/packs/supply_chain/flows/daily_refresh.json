@@ -1,0 +1,24 @@
+{
+  "key": "daily_refresh",
+  "name": "供应链每日汇总刷新",
+  "slug": "supply-daily-refresh",
+  "description": "全图重算区域分拨仓订单履约率与多级网络传导指标",
+  "nodes": [
+    {
+      "id": "agg1",
+      "kind": "AGG_TRIGGER",
+      "label": "全图重算汇总",
+      "pos": {
+        "x": 120,
+        "y": 120
+      },
+      "config": {
+        "full": true
+      }
+    }
+  ],
+  "edges": [],
+  "trigger_cfg": {
+    "type": "MANUAL"
+  }
+}

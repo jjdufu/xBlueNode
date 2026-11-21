@@ -1,0 +1,101 @@
+{
+  "mappings": [
+    {
+      "name": "map_lines",
+      "dataset": { "$ref": "dataset:lines" },
+      "node_type": "Line",
+      "key_column": "line_id",
+      "title": "{name}",
+      "attributes": {
+        "line_name": "name",
+        "workshop": "workshop"
+      },
+      "metrics": {
+        "availability": "availability",
+        "performance": "performance",
+        "quality": "quality"
+      },
+      "links": [],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_machines",
+      "dataset": { "$ref": "dataset:machines" },
+      "node_type": "Machine",
+      "key_column": "machine_id",
+      "title": "{name}",
+      "attributes": {
+        "machine_name": "name",
+        "model_code": "model_code"
+      },
+      "metrics": {
+        "spindle_temp": "spindle_temp",
+        "vibration_rms": "vibration_rms"
+      },
+      "links": [
+        {
+          "link_type": "HAS_MACHINE",
+          "direction": "IN",
+          "target_type": "Line",
+          "target_key_column": "line_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_sensors",
+      "dataset": { "$ref": "dataset:sensors" },
+      "node_type": "Sensor",
+      "key_column": "sensor_id",
+      "title": "{name}",
+      "attributes": {
+        "sensor_name": "name",
+        "sensor_kind": "sensor_kind"
+      },
+      "metrics": {
+        "reading_value": "reading_value"
+      },
+      "metric_time_column": "sampled_at",
+      "links": [
+        {
+          "link_type": "MONITORS",
+          "direction": "OUT",
+          "target_type": "Machine",
+          "target_key_column": "machine_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_work_orders",
+      "dataset": { "$ref": "dataset:work_orders" },
+      "node_type": "WorkOrder",
+      "key_column": "wo_id",
+      "title": "{name}",
+      "attributes": {
+        "wo_name": "name",
+        "product_code": "product_code",
+        "status": "status"
+      },
+      "metrics": {
+        "planned_units": "planned_units"
+      },
+      "links": [
+        {
+          "link_type": "ASSIGNED_TO",
+          "direction": "OUT",
+          "target_type": "Machine",
+          "target_key_column": "machine_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    }
+  ]
+}

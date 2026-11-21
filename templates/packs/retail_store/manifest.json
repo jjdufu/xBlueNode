@@ -1,0 +1,63 @@
+{
+  "id": "retail_store",
+  "name": "连锁零售门店经营",
+  "version": "1.0.0",
+  "industry": "连锁零售 / 商超百货",
+  "description": "大区—门店—单品—促销四维经营图谱，含区域营收汇总、单品断货预警与门店经营驾驶舱",
+  "contents": {
+    "schema": "schema.json",
+    "datasets": [
+      {
+        "key": "regions",
+        "name": "regions",
+        "file": "sample_data/regions.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "stores",
+        "name": "stores",
+        "file": "sample_data/stores.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "skus",
+        "name": "skus",
+        "file": "sample_data/skus.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "promotions",
+        "name": "promotions",
+        "file": "sample_data/promotions.csv",
+        "sync_mode": "SNAPSHOT"
+      }
+    ],
+    "mappings": "mappings.json",
+    "metrics": "metrics.json",
+    "rules": "rules.json",
+    "flows": [
+      "flows/store_daily_sync.json"
+    ],
+    "dashboards": [
+      "dashboards/overview.json"
+    ],
+    "agents": [
+      "agents/retail_copilot.json"
+    ],
+    "export_templates": []
+  },
+  "sha256": {
+    "README.md": "2a20db44cd8d5ae5369c2c17d67098ccb168aeb3f62a6ad8cf0b835cb28b4e16",
+    "agents/retail_copilot.json": "4981a88bc8aeed14d09c4c250f29b2a3d167f7ba62203bed348f63a0ca487515",
+    "dashboards/overview.json": "e4e1440af505d41ba46773207a62138d8612b1d68339035815d17700f24c7a60",
+    "flows/store_daily_sync.json": "278bd569609c4dd7b2d79dee5403a16f7a302b8e59dbf2c1d23ee052f4c6207d",
+    "mappings.json": "e1e13356b65e96d4abccaf2ca403229ab789847e1f3350217aab5727de710efe",
+    "metrics.json": "747b6f84328b004ee91e121b3a66aa54d3b9d3efc17d3ee43908cee947092c84",
+    "rules.json": "2126c3814565245c7c9c2d91c2e40d679ef14cbd9d19bdcae671443818622d8f",
+    "sample_data/promotions.csv": "0d0d27ba3ee345a964cccc4758fd21b8dabc9570476ee075c91bc66b8999bddf",
+    "sample_data/regions.csv": "b9bed73a3924e0be16700790db7fab2b119babd7904cf330c3f8e67cf6acea7a",
+    "sample_data/skus.csv": "7625dac7c85c292a2bec7b12a4bb90e183773dd321aff871fd41b24c096431fc",
+    "sample_data/stores.csv": "4315d2f7a996816d24c2e7641f0c84e83f47fdc7cb5d46e9afd413f944bec6a7",
+    "schema.json": "3b8ac19253aac8993cabc0c9542f0aadf03007932fcac694419242783f8b887a"
+  }
+}

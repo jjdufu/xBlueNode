@@ -1,0 +1,249 @@
+{
+  "node_types": [
+    {
+      "name": "Region",
+      "display_name": "经营大区",
+      "description": "连锁零售区域运营管理大区",
+      "icon": "globe",
+      "color": "#2563eb",
+      "title_template": "{prop.region_name}",
+      "properties": [
+        {
+          "name": "region_name",
+          "display_name": "大区名称",
+          "description": "经营大区标准名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "director",
+          "display_name": "区域负责人",
+          "description": "大区运营总监标识",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "total_revenue",
+          "display_name": "大区日营收总额",
+          "description": "下辖全部门店日销售额动态汇总",
+          "unit": "元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [
+        {
+          "target_metric": "total_revenue",
+          "op": "SUM",
+          "via_link_type": "OPERATES_STORE",
+          "direction": "OUT",
+          "source_type_name": "Store",
+          "source_metric": "daily_sales",
+          "weight_by_link": false
+        }
+      ],
+      "derived_rules": [],
+      "sync_to_knowledge": true,
+      "pos_x": 100.0,
+      "pos_y": 180.0
+    },
+    {
+      "name": "Store",
+      "display_name": "零售门店",
+      "description": "线下直营或加盟零售门店",
+      "icon": "store",
+      "color": "#16a34a",
+      "title_template": "{prop.store_name}",
+      "properties": [
+        {
+          "name": "store_name",
+          "display_name": "门店名称",
+          "description": "门店商业名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "city",
+          "display_name": "所在城市",
+          "description": "门店所在城市",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "daily_sales",
+          "display_name": "日销售额",
+          "description": "门店当日含税实收销售额",
+          "unit": "元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "inventory_units",
+          "display_name": "在库件数",
+          "description": "门店当前货架与后仓总库存件数",
+          "unit": "件",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "foot_traffic",
+          "display_name": "进店客流",
+          "description": "当日进店客流人次",
+          "unit": "人次",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "sync_to_knowledge": true,
+      "pos_x": 380.0,
+      "pos_y": 180.0
+    },
+    {
+      "name": "Sku",
+      "display_name": "商品单品",
+      "description": "门店在售标准单品（SKU）",
+      "icon": "package",
+      "color": "#0891b2",
+      "title_template": "{prop.sku_name}",
+      "properties": [
+        {
+          "name": "sku_name",
+          "display_name": "商品名称",
+          "description": "标准零售商品名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "category",
+          "display_name": "商品品类",
+          "description": "所属零售一级品类",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "unit_price",
+          "display_name": "零售单价",
+          "description": "标准挂牌零售价",
+          "unit": "元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "stockout_rate",
+          "display_name": "断货率",
+          "description": "货架缺货时长占比",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "sync_to_knowledge": true,
+      "pos_x": 660.0,
+      "pos_y": 180.0
+    },
+    {
+      "name": "Promotion",
+      "display_name": "促销活动",
+      "description": "针对主力单品开展的限时营销活动",
+      "icon": "tag",
+      "color": "#d97706",
+      "title_template": "{prop.promo_name}",
+      "properties": [
+        {
+          "name": "promo_name",
+          "display_name": "活动名称",
+          "description": "促销档期主题名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "channel",
+          "display_name": "投放渠道",
+          "description": "活动覆盖渠道（OFFLINE / OMNI / MEMBER）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE"
+        },
+        {
+          "name": "discount_rate",
+          "display_name": "让利折扣率",
+          "description": "促销减免折扣比例（如 0.15 代表 85 折让利 15%）",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "sync_to_knowledge": false,
+      "pos_x": 920.0,
+      "pos_y": 180.0
+    }
+  ],
+  "edge_types": [
+    {
+      "name": "OPERATES_STORE",
+      "src_type_name": "Region",
+      "dst_type_name": "Store",
+      "impact_weight": 0.85,
+      "cardinality": "MANY_TO_MANY",
+      "description": "经营大区管辖零售门店",
+      "properties": [],
+      "propagation": {}
+    },
+    {
+      "name": "STOCKS_SKU",
+      "src_type_name": "Store",
+      "dst_type_name": "Sku",
+      "impact_weight": 0.8,
+      "cardinality": "MANY_TO_MANY",
+      "description": "零售门店陈列销售商品单品",
+      "properties": [],
+      "propagation": {}
+    },
+    {
+      "name": "PROMOTES_SKU",
+      "src_type_name": "Promotion",
+      "dst_type_name": "Sku",
+      "impact_weight": 0.75,
+      "cardinality": "MANY_TO_MANY",
+      "description": "促销活动定向拉动目标商品单品",
+      "properties": [],
+      "propagation": {}
+    }
+  ],
+  "mappings": []
+}

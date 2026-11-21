@@ -1,0 +1,24 @@
+{
+  "key": "store_daily_sync",
+  "name": "门店经营大区日终汇总",
+  "slug": "retail-daily-sync",
+  "description": "按大区拓扑自动汇总下辖门店日销售额与经营指标",
+  "nodes": [
+    {
+      "id": "agg1",
+      "kind": "AGG_TRIGGER",
+      "label": "门店大区汇总",
+      "pos": {
+        "x": 120,
+        "y": 120
+      },
+      "config": {
+        "full": true
+      }
+    }
+  ],
+  "edges": [],
+  "trigger_cfg": {
+    "type": "MANUAL"
+  }
+}

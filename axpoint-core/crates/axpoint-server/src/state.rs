@@ -39,6 +39,7 @@ pub(crate) struct AppState {
     pub(crate) sidecar: Arc<HttpSidecarClient>,
     pub(crate) analytics_pool: Arc<SessionPool>,
     pub(crate) view: Arc<axpoint_server::view::ViewServices<PgStore>>,
+    pub(crate) ops: Arc<axpoint_server::ops::OpsServices<PgStore, HttpSidecarClient>>,
     pub(crate) data_root: PathBuf,
     pub(crate) parser_base_url: String,
     pub(crate) http: reqwest::Client,

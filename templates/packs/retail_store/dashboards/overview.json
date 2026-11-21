@@ -1,0 +1,107 @@
+{
+  "key": "overview",
+  "name": "零售门店经营驾驶舱",
+  "slug": "retail-overview",
+  "description": "经营大区营收汇总、核心门店日销排行、促销单品网络与缺货预警看板",
+  "theme": "light",
+  "widgets": [
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "各大区日营收汇总",
+      "position": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "Region",
+        "metric": "total_revenue",
+        "agg": "SUM",
+        "grain": "DAY",
+        "time_range": "LAST_30_DAYS"
+      },
+      "encoding": {},
+      "options": {
+        "unit": "元",
+        "decimals": 2
+      },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "BAR_CHART",
+      "title": "各零售门店日销售额对比",
+      "position": {
+        "x": 8,
+        "y": 0,
+        "w": 16,
+        "h": 8
+      },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "Store",
+        "metric": "daily_sales",
+        "agg": "LAST",
+        "grain": "DAY",
+        "time_range": "LAST_30_DAYS",
+        "group_by": "node"
+      },
+      "encoding": {
+        "x": "node_title",
+        "y": "value"
+      },
+      "options": {
+        "unit": "元"
+      },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "GRAPH_TOPOLOGY",
+      "title": "大区—门店—单品—促销经营网络",
+      "position": {
+        "x": 0,
+        "y": 8,
+        "w": 14,
+        "h": 10
+      },
+      "data_source": {
+        "kind": "GRAPH",
+        "type_names": ["Region", "Store", "Sku", "Promotion"],
+        "link_types": ["OPERATES_STORE", "STOCKS_SKU", "PROMOTES_SKU"],
+        "color_metric": "daily_sales",
+        "limit": 200
+      },
+      "encoding": {},
+      "options": {},
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "ALERT_LIST",
+      "title": "商品断货与门店低库存告警",
+      "position": {
+        "x": 14,
+        "y": 8,
+        "w": 10,
+        "h": 10
+      },
+      "data_source": {
+        "kind": "ALERTS",
+        "status": ["OPEN", "ACK"],
+        "severity": ["WARN", "CRITICAL"],
+        "limit": 20
+      },
+      "encoding": {},
+      "options": {},
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    }
+  ]
+}

@@ -1,0 +1,97 @@
+{
+  "mappings": [
+    {
+      "name": "map_regions",
+      "dataset": { "$ref": "dataset:regions" },
+      "node_type": "Region",
+      "key_column": "region_id",
+      "title": "{name}",
+      "attributes": {
+        "region_name": "name",
+        "director": "director"
+      },
+      "metrics": {},
+      "links": [],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_stores",
+      "dataset": { "$ref": "dataset:stores" },
+      "node_type": "Store",
+      "key_column": "store_id",
+      "title": "{name}",
+      "attributes": {
+        "store_name": "name",
+        "city": "city"
+      },
+      "metrics": {
+        "daily_sales": "daily_sales",
+        "inventory_units": "inventory_units",
+        "foot_traffic": "foot_traffic"
+      },
+      "links": [
+        {
+          "link_type": "OPERATES_STORE",
+          "direction": "IN",
+          "target_type": "Region",
+          "target_key_column": "region_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_skus",
+      "dataset": { "$ref": "dataset:skus" },
+      "node_type": "Sku",
+      "key_column": "sku_id",
+      "title": "{name}",
+      "attributes": {
+        "sku_name": "name",
+        "category": "category"
+      },
+      "metrics": {
+        "unit_price": "unit_price",
+        "stockout_rate": "stockout_rate"
+      },
+      "links": [
+        {
+          "link_type": "STOCKS_SKU",
+          "direction": "IN",
+          "target_type": "Store",
+          "target_key_column": "store_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_promotions",
+      "dataset": { "$ref": "dataset:promotions" },
+      "node_type": "Promotion",
+      "key_column": "promo_id",
+      "title": "{name}",
+      "attributes": {
+        "promo_name": "name",
+        "channel": "channel"
+      },
+      "metrics": {
+        "discount_rate": "discount_rate"
+      },
+      "links": [
+        {
+          "link_type": "PROMOTES_SKU",
+          "direction": "OUT",
+          "target_type": "Sku",
+          "target_key_column": "sku_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    }
+  ]
+}

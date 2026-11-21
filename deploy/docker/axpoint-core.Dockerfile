@@ -15,8 +15,10 @@ RUN mkdir -p /out/nonroot-home/.duckdb/extensions \
  && HOME=/out/nonroot-home ./target/release/axpoint-server install-duckdb-extensions
 
 FROM gcr.io/distroless/cc-debian12:nonroot
+WORKDIR /app
 COPY --from=core /src/axpoint-core/target/release/axpoint-server /app/axpoint-server
 COPY --from=web /src/xbluenode-web/dist /app/web
+COPY templates/ /app/templates/
 COPY --from=core --chown=65532:65532 /out/nonroot-home/ /home/nonroot/
 ENV HOME=/home/nonroot WEB_DIST_DIR=/app/web AXPOINT_BIND_ADDR=0.0.0.0:9995 AXPOINT_DATA_ROOT=/var/lib/axpoint
 EXPOSE 9995

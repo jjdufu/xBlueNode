@@ -1,0 +1,43 @@
+{
+  "metrics": [
+    {
+      "name": "avg_spindle_temp",
+      "display_name": "机台平均主轴温度",
+      "description": "全厂机台主轴温度均值监控",
+      "dataset_id": { "$ref": "dataset:machines" },
+      "expression": "AVG(spindle_temp)",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "line_id",
+          "column": "line_id",
+          "display_name": "产线编号"
+        }
+      ],
+      "unit": "℃",
+      "format": "0.0",
+      "synonyms": ["平均主轴温度", "机台平均温度"],
+      "certified": true
+    },
+    {
+      "name": "total_planned_units",
+      "display_name": "工单计划总产量",
+      "description": "排程生产工单计划加工件数汇总",
+      "dataset_id": { "$ref": "dataset:work_orders" },
+      "expression": "SUM(planned_units)",
+      "time_column": "scheduled_date",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "status",
+          "column": "status",
+          "display_name": "工单状态"
+        }
+      ],
+      "unit": "件",
+      "format": "0,0",
+      "synonyms": ["计划产量", "排产总数"],
+      "certified": true
+    }
+  ]
+}

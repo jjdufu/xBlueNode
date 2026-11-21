@@ -2467,6 +2467,30 @@ impl FlowRepository for PgStore {
     async fn list_active_tenants(&self) -> Result<Vec<String>, AppError> {
         Self::list_active_tenants(self).await
     }
+
+    async fn create_work_item_from_flow(
+        &self,
+        tenant_id: &str,
+        input: axpoint_domain::ops::FlowWorkItemInput,
+    ) -> Result<axpoint_domain::ops::WorkItem, AppError> {
+        <Self as axpoint_domain::ports::OpsRepository>::create_work_item(
+            self,
+            tenant_id,
+            input.actor,
+            axpoint_domain::ops::CreateWorkItemRequest {
+                title: input.title,
+                description: input.description,
+                item_kind: Some(input.item_kind),
+                priority: Some(input.priority),
+                assignee: input.assignee,
+                source_kind: Some(axpoint_domain::ops::WorkItemSourceKind::FlowAction),
+                source_ref: input.run_id.to_string(),
+                node_ids: input.node_ids,
+                due_at: input.due_at,
+            },
+        )
+        .await
+    }
 }
 
 #[cfg(test)]

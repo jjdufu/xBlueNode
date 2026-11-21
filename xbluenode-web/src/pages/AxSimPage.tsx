@@ -1,7 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router";
 import {
+  ExternalLink,
   GitBranch,
   GitCompare,
+  Kanban,
   Layers,
   Play,
   Plus,
@@ -20,6 +23,7 @@ import {
   type SandboxGraphNode,
   type ScenarioRecord,
 } from "@/lib/api/axsim";
+import { axopsApi } from "@/lib/api/axops";
 import { ActionList } from "@/components/axsim/ActionList";
 import { DecisionPanel } from "@/components/axsim/DecisionPanel";
 import { ImpactGraph } from "@/components/axsim/ImpactGraph";
@@ -33,6 +37,12 @@ import { Badge, Button, Card } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 type WorkbenchTab = "topology" | "simulate" | "compare" | "decisions";
+
+interface TrackedSimDecision {
+  readonly id: string;
+  readonly title: string;
+  readonly scenarioId: string;
+}
 
 const WORKBENCH_TABS: ReadonlyArray<{
   key: WorkbenchTab;
@@ -102,6 +112,77 @@ export function AxSimPage() {
   );
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const decisionContainerRef = useRef<HTMLDivElement | null>(null);
+  const [trackedDecisions, setTrackedDecisions] = useState<
+    TrackedSimDecision[]
+  >([]);
+  const [convertingRef, setConvertingRef] = useState<string | null>(null);
+  const [createdWorkItemCode, setCreatedWorkItemCode] = useState<string | null>(
+    null
+  );
+
+  // Sync created decision cards rendered inside DecisionPanel without extra network calls
+  useEffect(() => {
+    const root = decisionContainerRef.current;
+    if (!root || activeTab !== "decisions") return;
+
+    const syncFromDom = () => {
+      const detailCard = root.querySelector(
+        "[data-testid='decision-detail-card']"
+      );
+      if (!detailCard) return;
+      const text = detailCard.textContent ?? "";
+      const idMatch = /决策 ID:\s*([0-9a-fA-F-]{8,})/.exec(text);
+      const decisionId = idMatch?.[1]?.trim();
+      if (!decisionId) return;
+      const titleSpan = detailCard.querySelector(".text-sm.font-medium");
+      const decisionTitle =
+        titleSpan?.textContent?.trim() || "推演决策下发提案";
+      setTrackedDecisions((prev) => {
+        if (prev.some((d) => d.id === decisionId)) {
+          return prev;
+        }
+        return [
+          {
+            id: decisionId,
+            title: decisionTitle,
+            scenarioId: selectedScenarioId,
+          },
+          ...prev,
+        ];
+      });
+    };
+
+    syncFromDom();
+    const observer = new MutationObserver(syncFromDom);
+    observer.observe(root, { childList: true, subtree: true });
+    return () => observer.disconnect();
+  }, [activeTab, selectedScenarioId]);
+
+  const handleConvertSimToWorkItem = async (params: {
+    sourceRef: string;
+    title: string;
+    nodeIds: string[];
+  }) => {
+    setErrorMsg(null);
+    setConvertingRef(params.sourceRef);
+    try {
+      const wi = await axopsApi.createWorkItem({
+        title: `[推演决策] ${params.title}`,
+        description: `由因果推演方案/决策提案 (${params.sourceRef}) 转入交付追踪执行`,
+        item_kind: "CHANGE",
+        priority: "P1",
+        source_kind: "SIM_DECISION",
+        source_ref: params.sourceRef,
+        node_ids: params.nodeIds,
+      });
+      setCreatedWorkItemCode(wi.code?.trim() || `WI-${wi.item_no}`);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : "转工作项失败");
+    } finally {
+      setConvertingRef(null);
+    }
+  };
 
   const loadSandboxes = useCallback(async () => {
     try {
@@ -451,6 +532,35 @@ export function AxSimPage() {
         </Card>
       )}
 
+      {createdWorkItemCode && (
+        <div
+          data-testid="axsim-workitem-banner"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-xblue/40 bg-xblue-soft px-3.5 py-2.5 text-xs text-xblue"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <Kanban className="h-3.5 w-3.5" />
+            <span className="font-medium">
+              已创建工作项 {createdWorkItemCode}
+            </span>
+            <Link
+              to="/ops"
+              data-testid="axsim-workitem-ops-link"
+              className="inline-flex items-center gap-1 underline font-semibold"
+            >
+              前往 AxOps 查看交付进度 (/ops)
+              <ExternalLink className="h-3 w-3" />
+            </Link>
+          </div>
+          <button
+            type="button"
+            onClick={() => setCreatedWorkItemCode(null)}
+            className="text-[11px] underline cursor-pointer shrink-0"
+          >
+            关闭
+          </button>
+        </div>
+      )}
+
       {/* 4-Tab Workbench Navigation */}
       <div
         className="flex flex-wrap gap-1.5 border-b border-border pb-2"
@@ -555,6 +665,17 @@ export function AxSimPage() {
                   <div className="flex flex-wrap gap-2">
                     {scenarios.map((sc) => {
                       const active = sc.id === selectedScenarioId;
+                      const linkedDecision = trackedDecisions.find(
+                        (d) => d.scenarioId === sc.id
+                      );
+                      const refId = linkedDecision?.id ?? sc.id;
+                      const nodeIds = Array.from(
+                        new Set(
+                          (sc.actions ?? [])
+                            .map((a) => a.target_node_id)
+                            .filter((nid) => Boolean(nid))
+                        )
+                      );
                       return (
                         <div
                           key={sc.id}
@@ -578,6 +699,23 @@ export function AxSimPage() {
                           <Badge variant="outline">
                             {sc.params?.mode ?? "STEADY"} · {sc.status}
                           </Badge>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-6 px-2 text-[10px] border-xblue/40 text-xblue hover:bg-xblue-soft"
+                            data-testid={`scenario-to-workitem-btn-${sc.id}`}
+                            disabled={convertingRef === refId}
+                            onClick={() =>
+                              void handleConvertSimToWorkItem({
+                                sourceRef: refId,
+                                title: linkedDecision?.title ?? sc.name,
+                                nodeIds,
+                              })
+                            }
+                          >
+                            <Kanban className="h-2.5 w-2.5" />
+                            转工作项
+                          </Button>
                           {sc.is_stale && (
                             <Button
                               type="button"
@@ -656,10 +794,108 @@ export function AxSimPage() {
 
           {activeTab === "decisions" && (
             <div className="space-y-4">
-              <DecisionPanel
-                scenario={activeScenario}
-                nodes={graphNodes}
-              />
+              <div ref={decisionContainerRef}>
+                <DecisionPanel
+                  scenario={activeScenario}
+                  nodes={graphNodes}
+                />
+              </div>
+
+              {(trackedDecisions.length > 0 || activeScenario) && (
+                <Card
+                  className="p-3.5 space-y-2.5"
+                  data-testid="axsim-workitem-dispatch-card"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2 font-medium">
+                      <Kanban className="h-3.5 w-3.5 text-xblue" />
+                      <span>
+                        决策提案转交付工作项（写入 AxOps 看板 · CHANGE / SIM_DECISION）
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="divide-y divide-border/60">
+                    {trackedDecisions.map((dec) => {
+                      const sc = scenarios.find((s) => s.id === dec.scenarioId);
+                      const nodeIds = Array.from(
+                        new Set(
+                          (sc?.actions ?? activeScenario?.actions ?? [])
+                            .map((a) => a.target_node_id)
+                            .filter((nid) => Boolean(nid))
+                        )
+                      );
+                      return (
+                        <div
+                          key={dec.id}
+                          data-testid={`decision-workitem-row-${dec.id}`}
+                          className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs"
+                        >
+                          <div className="flex items-center gap-2">
+                            <Badge variant="xblue">SIM_DECISION</Badge>
+                            <span className="font-medium">{dec.title}</span>
+                            <span className="font-mono-tech text-[11px] text-muted-foreground">
+                              {dec.id}
+                            </span>
+                          </div>
+                          <Button
+                            type="button"
+                            variant="outline"
+                            className="h-7 px-2.5 text-[11px] border-xblue/40 text-xblue hover:bg-xblue-soft"
+                            data-testid={`convert-decision-workitem-btn-${dec.id}`}
+                            disabled={convertingRef === dec.id}
+                            onClick={() =>
+                              void handleConvertSimToWorkItem({
+                                sourceRef: dec.id,
+                                title: dec.title,
+                                nodeIds,
+                              })
+                            }
+                          >
+                            <Kanban className="h-3 w-3" />
+                            {convertingRef === dec.id ? "创建中..." : "转工作项"}
+                          </Button>
+                        </div>
+                      );
+                    })}
+
+                    {trackedDecisions.length === 0 && activeScenario && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs">
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline">SCENARIO</Badge>
+                          <span className="font-medium">
+                            {activeScenario.name}
+                          </span>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="h-7 px-2.5 text-[11px] border-xblue/40 text-xblue hover:bg-xblue-soft"
+                          data-testid="convert-active-scenario-workitem-btn"
+                          disabled={convertingRef === activeScenario.id}
+                          onClick={() =>
+                            void handleConvertSimToWorkItem({
+                              sourceRef: activeScenario.id,
+                              title: activeScenario.name,
+                              nodeIds: Array.from(
+                                new Set(
+                                  (activeScenario.actions ?? [])
+                                    .map((a) => a.target_node_id)
+                                    .filter((nid) => Boolean(nid))
+                                )
+                              ),
+                            })
+                          }
+                        >
+                          <Kanban className="h-3 w-3" />
+                          转工作项
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </Card>
+              )}
+
               <ImpactTable
                 scenario={activeScenario}
                 quickResult={effectiveQuickResult}

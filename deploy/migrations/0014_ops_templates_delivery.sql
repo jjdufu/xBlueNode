@@ -73,3 +73,10 @@ SELECT ax_enable_tenant_rls(t) FROM unnest(ARRAY[
 ]::regclass[]) AS t;
 
 GRANT USAGE, SELECT ON SEQUENCE ax_work_item_events_id_seq TO axpoint_app;
+
+DO $$
+BEGIN
+    IF to_regclass('public._sqlx_migrations') IS NOT NULL THEN
+        EXECUTE 'GRANT SELECT ON public._sqlx_migrations TO axpoint_app';
+    END IF;
+END $$;

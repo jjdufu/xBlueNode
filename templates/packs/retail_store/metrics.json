@@ -1,0 +1,49 @@
+{
+  "metrics": [
+    {
+      "name": "total_daily_sales",
+      "display_name": "全国门店日销售总额",
+      "description": "各经营大区下辖门店日销售额汇总",
+      "dataset_id": { "$ref": "dataset:stores" },
+      "expression": "SUM(daily_sales)",
+      "time_column": "report_date",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "city",
+          "column": "city",
+          "display_name": "所在城市"
+        },
+        {
+          "name": "region_id",
+          "column": "region_id",
+          "display_name": "大区编号"
+        }
+      ],
+      "unit": "元",
+      "format": "0,0.00",
+      "synonyms": ["日销售额", "门店总营收", "销售总额"],
+      "certified": true
+    },
+    {
+      "name": "avg_store_daily_sales",
+      "display_name": "单店日均销售额",
+      "description": "各城市门店平均单日实收销售额",
+      "dataset_id": { "$ref": "dataset:stores" },
+      "expression": "AVG(daily_sales)",
+      "time_column": "report_date",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "city",
+          "column": "city",
+          "display_name": "所在城市"
+        }
+      ],
+      "unit": "元",
+      "format": "0,0.00",
+      "synonyms": ["店均销售额", "单店营收"],
+      "certified": true
+    }
+  ]
+}

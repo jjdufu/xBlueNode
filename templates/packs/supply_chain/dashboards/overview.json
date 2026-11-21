@@ -1,0 +1,107 @@
+{
+  "key": "overview",
+  "name": "供应链协同履约驾驶舱",
+  "slug": "supply-overview",
+  "description": "供应商—工厂—仓库—订单四级协同网络实时履约率、库存水位与风险预警总览",
+  "theme": "light",
+  "widgets": [
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "全网平均订单履约率",
+      "position": {
+        "x": 0,
+        "y": 0,
+        "w": 8,
+        "h": 8
+      },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "Warehouse",
+        "metric": "fill_rate",
+        "agg": "AVG",
+        "grain": "DAY",
+        "time_range": "LAST_30_DAYS"
+      },
+      "encoding": {},
+      "options": {
+        "unit": "ratio",
+        "decimals": 2
+      },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "BAR_CHART",
+      "title": "各区域仓库可用库存量对比",
+      "position": {
+        "x": 8,
+        "y": 0,
+        "w": 16,
+        "h": 8
+      },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "Warehouse",
+        "metric": "inventory_qty",
+        "agg": "LAST",
+        "grain": "DAY",
+        "time_range": "LAST_30_DAYS",
+        "group_by": "node"
+      },
+      "encoding": {
+        "x": "node_title",
+        "y": "value"
+      },
+      "options": {
+        "unit": "件"
+      },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "GRAPH_TOPOLOGY",
+      "title": "供应链多级履约网络拓扑",
+      "position": {
+        "x": 0,
+        "y": 8,
+        "w": 14,
+        "h": 10
+      },
+      "data_source": {
+        "kind": "GRAPH",
+        "type_names": ["Supplier", "Factory", "Warehouse", "Order"],
+        "link_types": ["SUPPLIES", "REPLENISHES", "FULFILLS"],
+        "color_metric": "fill_rate",
+        "limit": 200
+      },
+      "encoding": {},
+      "options": {},
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "ALERT_LIST",
+      "title": "库存与履约风险告警",
+      "position": {
+        "x": 14,
+        "y": 8,
+        "w": 10,
+        "h": 10
+      },
+      "data_source": {
+        "kind": "ALERTS",
+        "status": ["OPEN", "ACK"],
+        "severity": ["WARN", "CRITICAL"],
+        "limit": 20
+      },
+      "encoding": {},
+      "options": {},
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    }
+  ]
+}

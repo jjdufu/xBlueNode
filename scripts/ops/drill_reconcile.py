@@ -29,7 +29,8 @@ def _lookup_backup_cutoff(
     with src_conn.cursor() as cur:
         if backup_location:
             cur.execute(
-                "SELECT started_at FROM ax_backups WHERE location = %s ORDER BY started_at DESC LIMIT 1",
+                "SELECT started_at FROM ax_backups "
+                "WHERE location = %s ORDER BY started_at DESC LIMIT 1",
                 (backup_location,),
             )
             row = cur.fetchone()
@@ -47,7 +48,7 @@ def _lookup_backup_cutoff(
 def _discover_governed_tables(
     conn: psycopg.Connection[tuple[object, ...]],
 ) -> dict[str, str | None]:
-    """Return mapping of table_name -> timestamp cutoff column ('created_at' | 'started_at' | None)."""
+    """Map table_name to timestamp cutoff column ('created_at' | 'started_at' | None)."""
     tables: dict[str, str | None] = {}
     with conn.cursor() as cur:
         cur.execute(
@@ -179,7 +180,8 @@ def _reconcile_ducklake(tgt_dsn: str, lake_root: Path) -> list[str]:
     escaped_dsn = f"ducklake:postgres:{pg_spec}".replace("'", "''")
     con.execute(
         f"ATTACH '{escaped_dsn}' AS lake "
-        f"(DATA_PATH '{escaped_path}', METADATA_SCHEMA 'lake_catalog', OVERRIDE_DATA_PATH true, READ_ONLY)"
+        f"(DATA_PATH '{escaped_path}', METADATA_SCHEMA 'lake_catalog', "
+        "OVERRIDE_DATA_PATH true, READ_ONLY)"
     )
 
     for ds_id, tenant_id, lake_table, ds_row_count, latest_sync_rows, sync_mode in datasets:
@@ -189,7 +191,9 @@ def _reconcile_ducklake(tgt_dsn: str, lake_root: Path) -> list[str]:
             res = con.execute(f"SELECT count(*) FROM lake.{schema_ident}.{table_ident}").fetchone()
             actual_rows = int(res[0]) if res is not None else 0
         except Exception as exc:
-            mismatches.append(f"dataset {ds_id} ({tenant_id}.{lake_table}) unreadable in DuckLake: {exc}")
+            mismatches.append(
+                f"dataset {ds_id} ({tenant_id}.{lake_table}) unreadable in DuckLake: {exc}"
+            )
             continue
 
         expected = int(ds_row_count) if isinstance(ds_row_count, int) else None
@@ -197,7 +201,8 @@ def _reconcile_ducklake(tgt_dsn: str, lake_root: Path) -> list[str]:
             expected = int(latest_sync_rows)
         if expected is not None and actual_rows != expected:
             mismatches.append(
-                f"dataset {ds_id} ({tenant_id}.{lake_table}): ducklake_rows={actual_rows} != expected={expected}"
+                f"dataset {ds_id} ({tenant_id}.{lake_table}): "
+                f"ducklake_rows={actual_rows} != expected={expected}"
             )
 
     con.close()
@@ -209,7 +214,9 @@ def main() -> int:
     parser.add_argument("--source", required=True, help="Source MIGRATION_DATABASE_URL")
     parser.add_argument("--target", required=True, help="Restored drill PostgreSQL DSN")
     parser.add_argument("--lake-root", required=True, help="Restored files root containing lake/")
-    parser.add_argument("--backup-location", default=None, help="Backup directory path in ax_backups")
+    parser.add_argument(
+        "--backup-location", default=None, help="Backup directory path in ax_backups"
+    )
     args = parser.parse_args()
 
     errors = _reconcile_tables(args.source, args.target, args.backup_location)
