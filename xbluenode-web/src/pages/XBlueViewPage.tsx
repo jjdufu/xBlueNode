@@ -14,6 +14,7 @@ import {
   RefreshCw,
   Save,
   Search,
+  Settings2,
   Sparkles,
   Trash2,
 } from "lucide-react";
@@ -34,7 +35,12 @@ import { AskSlideOver } from "@/components/xblueview/AskSlideOver";
 import { AssetManagerPanel } from "@/components/xblueview/AssetManagerPanel";
 import { BigScreen } from "@/components/xblueview/BigScreen";
 import { DashboardGrid } from "@/components/xblueview/DashboardGrid";
+import { DashboardSettingsModal } from "@/components/xblueview/DashboardSettingsModal";
 import { FilterBar } from "@/components/xblueview/FilterBar";
+import {
+  buildWidgetFilters as computeScopedWidgetFilters,
+  resolveLeafDrillNodeKey,
+} from "@/components/xblueview/logic";
 import { NodeDrawer } from "@/components/xblueview/NodeDrawer";
 import { WidgetEditor } from "@/components/xblueview/WidgetEditor";
 import { DEFAULT_CANVAS, type SelectedNodeContext } from "@/components/xblueview/utils";
@@ -190,6 +196,7 @@ export function XBlueViewPage() {
   const [errorMap, setErrorMap] = useState<Record<string, string | null>>({});
 
   const [editorOpen, setEditorOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [editingWidget, setEditingWidget] = useState<WidgetRecord | null>(null);
   const [selectedNode, setSelectedNode] = useState<SelectedNodeContext | null>(
     null
@@ -222,25 +229,8 @@ export function XBlueViewPage() {
       widgetId: string,
       dash: DashboardDetail,
       currentFilterValues: Record<string, unknown>
-    ): Record<string, unknown> => {
-      const out: Record<string, unknown> = {};
-      const definedKeys = new Set<string>();
-      for (const f of dash.filters) {
-        definedKeys.add(f.key);
-        const val = currentFilterValues[f.key];
-        if (val === undefined || val === null || val === "") continue;
-        const mappedField = f.field_map?.[widgetId];
-        if (mappedField) {
-          out[mappedField] = val;
-        }
-      }
-      for (const [k, v] of Object.entries(currentFilterValues)) {
-        if (!definedKeys.has(k) && v !== undefined && v !== null && v !== "") {
-          out[k] = v;
-        }
-      }
-      return out;
-    },
+    ): Record<string, unknown> =>
+      computeScopedWidgetFilters(widgetId, dash.filters, currentFilterValues),
     []
   );
 
@@ -458,9 +448,10 @@ export function XBlueViewPage() {
     const next = { ...filterValues, [key]: value };
     setFilterValues(next);
     if (!dashboard) return;
+    const fDef = dashboard.filters.find((f) => f.key === key);
+    if (!fDef) return;
     for (const w of dashboard.widgets) {
-      const fDef = dashboard.filters.find((f) => f.key === key);
-      if (!fDef || fDef.field_map?.[w.id]) {
+      if (fDef.field_map?.[w.id]) {
         void fetchWidgetData(w.id, dashboard, next, drillMap[w.id] ?? []);
       }
     }
@@ -482,7 +473,12 @@ export function XBlueViewPage() {
     handleFilterChange(filterKey, value);
   };
 
-  const handleDrill = (widgetId: string, field: string, value: unknown) => {
+  const handleDrill = (
+    widgetId: string,
+    field: string,
+    value: unknown,
+    rowObj?: Record<string, unknown>
+  ) => {
     if (!dashboard) return;
     const widget = dashboard.widgets.find((w) => w.id === widgetId);
     if (!widget || widget.drill.length === 0) return;
@@ -493,11 +489,25 @@ export function XBlueViewPage() {
 
     // If current drill level configures node_type (leaf entity), open NodeDrawer
     if (currentLevelDef.node_type) {
+      const resolvedKey = resolveLeafDrillNodeKey({
+        clickedField: field,
+        clickedValue: value,
+        levelField: currentLevelDef.field || field,
+        nodeKeyField: currentLevelDef.node_key_field,
+        rowObj,
+        widgetData: widgetDataMap[widgetId] ?? null,
+      });
+      const rawNodeId = rowObj?.node_id ?? rowObj?.id;
+      const resolvedNodeId =
+        typeof rawNodeId === "string" && rawNodeId.trim().length > 0
+          ? rawNodeId.trim()
+          : resolvedKey;
+
       setSelectedNode({
-        nodeId: String(value),
+        nodeId: resolvedNodeId,
         typeName: currentLevelDef.node_type,
-        nodeKey: String(value),
-        title: String(value),
+        nodeKey: resolvedKey,
+        title: String(value ?? resolvedKey),
       });
       return;
     }
@@ -868,6 +878,8 @@ export function XBlueViewPage() {
           errorMap={errorMap}
           drillMap={drillMap}
           sseConnected={sseConnected}
+          selectedNodeId={selectedNode?.nodeId ?? null}
+          filterValues={filterValues}
           onExitScreen={() => setSearchParams({})}
           onRefreshWidget={(wid) => void fetchWidgetData(wid)}
           onDrill={handleDrill}
@@ -885,6 +897,10 @@ export function XBlueViewPage() {
       </>
     );
   }
+
+  const forceDarkCanvas =
+    dashboard?.theme === "dark" || dashboard?.theme === "screen";
+  const effectiveDark = Boolean(isDark || forceDarkCanvas);
 
   // =========================================================================
   // Render: Dashboard Detail View / Edit (/view/:slug)
@@ -980,6 +996,15 @@ export function XBlueViewPage() {
                 <Button
                   type="button"
                   variant="outline"
+                  onClick={() => setSettingsOpen(true)}
+                  data-testid="open-dashboard-settings-btn"
+                >
+                  <Settings2 className="h-3.5 w-3.5 text-xblue" />
+                  驾驶舱设置
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
                   onClick={() => {
                     setEditingWidget(null);
                     setEditorOpen(true);
@@ -1039,45 +1064,79 @@ export function XBlueViewPage() {
         </Card>
       ) : dashboard ? (
         <>
-          {!isEditing && (
-            <FilterBar
-              filters={dashboard.filters}
-              values={filterValues}
-              onChange={handleFilterChange}
-              onReset={handleResetFilters}
+          <div
+            data-testid="dashboard-canvas-scope"
+            className={
+              forceDarkCanvas
+                ? "dark bg-zinc-950 text-zinc-100 rounded-lg border border-zinc-800 p-3 space-y-4"
+                : "space-y-4"
+            }
+          >
+            {!isEditing && (
+              <FilterBar
+                filters={dashboard.filters}
+                values={filterValues}
+                onChange={handleFilterChange}
+                onReset={handleResetFilters}
+              />
+            )}
+
+            <DashboardGrid
+              widgets={dashboard.widgets}
+              canvas={dashboard.canvas}
+              widgetDataMap={widgetDataMap}
+              loadingMap={loadingMap}
+              errorMap={errorMap}
+              drillMap={drillMap}
+              isEditing={isEditing}
+              isDark={effectiveDark}
+              selectedNodeId={selectedNode?.nodeId ?? null}
+              filterValues={filterValues}
+              onLayoutChange={(items) => setPendingLayout(items)}
+              onRefreshWidget={(wid) => void fetchWidgetData(wid)}
+              onEditWidget={(w) => {
+                setEditingWidget(w);
+                setEditorOpen(true);
+              }}
+              onDeleteWidget={(wid) => void handleDeleteWidget(wid)}
+              onDrill={handleDrill}
+              onPopDrill={handlePopDrill}
+              onCrossFilter={handleCrossFilter}
+              onSelectNode={setSelectedNode}
+              onActionSuccess={() => refreshAllWidgets()}
+            />
+          </div>
+
+          {settingsOpen && (
+            <DashboardSettingsModal
+              dashboard={dashboard}
+              onClose={() => setSettingsOpen(false)}
+              onSaved={(updatedRecord) => {
+                setSettingsOpen(false);
+                const nextDetail: DashboardDetail = {
+                  ...dashboard,
+                  name: updatedRecord.name,
+                  description: updatedRecord.description,
+                  theme: updatedRecord.theme,
+                  canvas: updatedRecord.canvas,
+                  filters: updatedRecord.filters,
+                  status: updatedRecord.status,
+                  version: updatedRecord.version,
+                  updated_at: updatedRecord.updated_at,
+                };
+                dashboardRef.current = nextDetail;
+                setDashboard(nextDetail);
+                refreshAllWidgets(nextDetail);
+              }}
             />
           )}
-
-          <DashboardGrid
-            widgets={dashboard.widgets}
-            canvas={dashboard.canvas}
-            widgetDataMap={widgetDataMap}
-            loadingMap={loadingMap}
-            errorMap={errorMap}
-            drillMap={drillMap}
-            isEditing={isEditing}
-            isDark={isDark || dashboard.theme === "dark"}
-            selectedNodeId={selectedNode?.nodeId ?? null}
-            onLayoutChange={(items) => setPendingLayout(items)}
-            onRefreshWidget={(wid) => void fetchWidgetData(wid)}
-            onEditWidget={(w) => {
-              setEditingWidget(w);
-              setEditorOpen(true);
-            }}
-            onDeleteWidget={(wid) => void handleDeleteWidget(wid)}
-            onDrill={handleDrill}
-            onPopDrill={handlePopDrill}
-            onCrossFilter={handleCrossFilter}
-            onSelectNode={setSelectedNode}
-            onActionSuccess={() => refreshAllWidgets()}
-          />
 
           {editorOpen && (
             <WidgetEditor
               dashboardId={dashboard.id}
               editingWidget={editingWidget}
               existingWidgets={dashboard.widgets}
-              isDark={isDark}
+              isDark={effectiveDark}
               onClose={() => {
                 setEditorOpen(false);
                 setEditingWidget(null);
@@ -1109,7 +1168,7 @@ export function XBlueViewPage() {
             dashboard={dashboard}
             filterValues={filterValues}
             drillMap={drillMap}
-            isDark={isDark}
+            isDark={effectiveDark}
             onClose={() => setAskOpen(false)}
             onAddedWidget={(created) => {
               setDashboard((prev) =>

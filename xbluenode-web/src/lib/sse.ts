@@ -31,6 +31,21 @@ export function subscribeDashboardSse(
   let retryDelayMs = 1000;
   let hadDisconnect = false;
 
+  const waitBackoff = async () => {
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, retryDelayMs);
+      controller.signal.addEventListener(
+        "abort",
+        () => {
+          clearTimeout(timer);
+          resolve();
+        },
+        { once: true }
+      );
+    });
+    retryDelayMs = Math.min(retryDelayMs * 2, 30000);
+  };
+
   const connect = async () => {
     while (!stopped && !controller.signal.aborted) {
       const token = getAccessToken();
@@ -99,24 +114,20 @@ export function subscribeDashboardSse(
             },
           }
         );
+
+        if (stopped || controller.signal.aborted) {
+          break;
+        }
+        hadDisconnect = true;
+        options.onError?.(new Error("SSE stream closed (EOF)"));
+        await waitBackoff();
       } catch (err) {
         if (stopped || controller.signal.aborted || err instanceof FatalSseError) {
           break;
         }
         hadDisconnect = true;
         options.onError?.(err);
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, retryDelayMs);
-          controller.signal.addEventListener(
-            "abort",
-            () => {
-              clearTimeout(timer);
-              resolve();
-            },
-            { once: true }
-          );
-        });
-        retryDelayMs = Math.min(retryDelayMs * 2, 30000);
+        await waitBackoff();
       }
     }
   };

@@ -1,22 +1,24 @@
-//! Offline 10-case evaluation suite for Step 11 `ai_gen` (`AiDashboardDraft` generation,
+//! Cassette-backed 10-case evaluation suite for Step 11 `ai_gen` (`AiDashboardDraft` generation,
 //! 24-column bounds, valid `WidgetKind`, entity/metric/dataset/asset/flow bindings, and
 //! 1-round LLM self-repair) enforcing >= 90% accuracy (`10-STEP11-12` §11.6, `A5` §4).
 
-use std::future::Future;
-use std::sync::Mutex;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 
 use axpoint_analytics::CatalogDatasetEntry;
+use axpoint_domain::AppError;
 use axpoint_domain::analytics::{MetricDef, MetricDimension};
 use axpoint_domain::axhub::{ColumnMeta, Dataset, DatasetStatus, SchemaPolicy};
 use axpoint_domain::enums::{
     AssetKind, DataType, PiiCategory, RollupGrain, SourceKind, SyncMode, TriggerType, WidgetKind,
 };
 use axpoint_domain::flow::TriggerCfg;
-use axpoint_domain::ports::AiPort;
 use axpoint_domain::studio::{EdgeTypeSpec, NodeTypeSpec, PropertyKind, PropertySpec};
 use axpoint_domain::topology::AxFlowDef;
 use axpoint_domain::view::{AiGenerateDashboardRequest, AssetRecord};
-use axpoint_domain::{AppError, ExtractedTriple, FusedHit};
+use axpoint_llm::{
+    AiGateway, CASSETTE_ENV_VAR, CassetteMode, EVAL_RECORD_ENV_VAR, EmbeddingConfig, LlmConfig,
+};
 use axpoint_server::view::ai_gen::{
     DashboardGenContext, draft_dashboard_with_ai, validate_ai_dashboard_draft,
 };
@@ -30,80 +32,92 @@ const MIN_EVAL_ACCURACY: f64 = 0.90;
 struct EvalCase {
     id: String,
     prompt: String,
-    llm_response: String,
-    #[serde(default)]
-    repair_response: Option<String>,
     expect_min_widgets: usize,
     #[serde(default)]
     expect_kinds: Vec<WidgetKind>,
 }
 
-struct ScriptedGenAi {
-    turns: Mutex<Vec<String>>,
+#[derive(Debug)]
+enum EvalMode {
+    Replay(PathBuf),
+    Record(PathBuf),
+    Live,
 }
 
-impl AiPort for ScriptedGenAi {
-    fn embedding_model_name(&self) -> &'static str {
-        "offline-eval"
-    }
+fn env_flag_enabled(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|v| {
+        let trimmed = v.trim();
+        trimmed == "1" || trimmed.eq_ignore_ascii_case("true")
+    })
+}
 
-    fn current_embedding_dim(&self) -> Option<usize> {
-        Some(4)
-    }
+fn env_non_empty(primary: &str, fallback: &str, default_val: &str) -> String {
+    std::env::var(primary)
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            std::env::var(fallback)
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+        })
+        .unwrap_or_else(|| String::from(default_val))
+}
 
-    fn embed_batch(
-        &self,
-        inputs: &[String],
-    ) -> impl Future<Output = Result<(Vec<Vec<f32>>, usize), AppError>> + Send {
-        std::future::ready(Ok((vec![vec![0.0; 4]; inputs.len()], 4)))
-    }
+fn resolve_cassette_path() -> PathBuf {
+    std::env::var(CASSETTE_ENV_VAR)
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .map_or_else(
+            || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../tests/cassettes/step11.jsonl"),
+            PathBuf::from,
+        )
+}
 
-    fn embed_one(
-        &self,
-        _text: &str,
-    ) -> impl Future<Output = Result<(Vec<f32>, usize), AppError>> + Send {
-        std::future::ready(Ok((vec![0.0; 4], 4)))
+fn resolve_eval_mode() -> EvalMode {
+    if env_flag_enabled(EVAL_RECORD_ENV_VAR) {
+        EvalMode::Record(resolve_cassette_path())
+    } else if env_flag_enabled("AXPOINT_EVAL_LIVE") {
+        EvalMode::Live
+    } else {
+        EvalMode::Replay(resolve_cassette_path())
     }
+}
 
-    fn extract_triples(
-        &self,
-        _paragraph: &str,
-    ) -> impl Future<Output = Result<Vec<ExtractedTriple>, AppError>> + Send {
-        std::future::ready(Ok(Vec::new()))
-    }
+fn build_eval_gateway(mode: &EvalMode) -> Result<(AiGateway, Option<PathBuf>), AppError> {
+    let llm = LlmConfig {
+        api_base: env_non_empty(
+            "AXPOINT_LLM_API_BASE",
+            "OPENAI_BASE_URL",
+            "http://127.0.0.1:9",
+        ),
+        api_key: env_non_empty("AXPOINT_LLM_API_KEY", "OPENAI_API_KEY", ""),
+        model: env_non_empty("AXPOINT_LLM_MODEL", "OPENAI_MODEL", "offline-eval-model"),
+    };
+    let embed = EmbeddingConfig {
+        api_base: String::from("http://127.0.0.1:9"),
+        api_key: String::new(),
+        model: String::from("offline-embed-model"),
+        configured_dim: Some(64),
+    };
 
-    fn extract_query_entities(
-        &self,
-        _query: &str,
-    ) -> impl Future<Output = Result<Vec<String>, AppError>> + Send {
-        std::future::ready(Ok(Vec::new()))
-    }
-
-    fn synthesize_answer(
-        &self,
-        _query: &str,
-        _hits: &[FusedHit],
-    ) -> impl Future<Output = Result<String, AppError>> + Send {
-        std::future::ready(Ok(String::new()))
-    }
-
-    fn chat(
-        &self,
-        _system_prompt: &str,
-        _user_prompt: &str,
-    ) -> impl Future<Output = Result<String, AppError>> + Send {
-        let reply = {
-            let mut guard = self
-                .turns
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if guard.is_empty() {
-                String::new()
-            } else {
-                guard.remove(0)
-            }
-        };
-        std::future::ready(Ok(reply))
+    match mode {
+        EvalMode::Replay(path) => Ok((
+            AiGateway::with_cassette(llm, embed, path, CassetteMode::Replay)?,
+            None,
+        )),
+        EvalMode::Record(path) => Ok((
+            AiGateway::with_cassette(llm, embed, path, CassetteMode::Record)?,
+            None,
+        )),
+        EvalMode::Live => {
+            let scratch = std::env::temp_dir().join(format!(
+                "axpoint_dashboard_gen_live_{}.jsonl",
+                Uuid::new_v4()
+            ));
+            let gw = AiGateway::with_cassette(llm, embed, &scratch, CassetteMode::Record)?;
+            Ok((gw, Some(scratch)))
+        }
     }
 }
 
@@ -313,14 +327,7 @@ fn make_node_type(name: &str, display_name: &str, metrics: &[&str]) -> NodeTypeS
     }
 }
 
-async fn run_single_case(case: &EvalCase, ctx: &DashboardGenContext) -> bool {
-    let mut turns = vec![case.llm_response.clone()];
-    if let Some(ref repair) = case.repair_response {
-        turns.push(repair.clone());
-    }
-    let ai = ScriptedGenAi {
-        turns: Mutex::new(turns),
-    };
+async fn run_single_case(ai: &AiGateway, case: &EvalCase, ctx: &DashboardGenContext) -> bool {
     let req = AiGenerateDashboardRequest {
         prompt: case.prompt.clone(),
         title: None,
@@ -328,7 +335,7 @@ async fn run_single_case(case: &EvalCase, ctx: &DashboardGenContext) -> bool {
         theme: None,
     };
 
-    let Ok(draft) = draft_dashboard_with_ai(&ai, ctx, &req).await else {
+    let Ok(draft) = draft_dashboard_with_ai(ai, ctx, &req).await else {
         return false;
     };
 
@@ -362,20 +369,38 @@ async fn dashboard_gen_eval_ten_cases_meet_accuracy_threshold() -> Result<(), Ap
         cases.len()
     );
 
+    let mode = resolve_eval_mode();
+    let (ai, temp_cassette) = build_eval_gateway(&mode)?;
     let ctx = build_eval_context();
+
     let mut passed = 0_usize;
     let mut failed_ids = Vec::new();
     for case in &cases {
-        if run_single_case(case, &ctx).await {
+        if run_single_case(&ai, case, &ctx).await {
             passed = passed.saturating_add(1);
         } else {
             failed_ids.push(case.id.clone());
         }
     }
 
+    if let Some(scratch) = temp_cassette {
+        drop(std::fs::remove_file(scratch));
+    }
+
     let total_f = f64::from(u32::try_from(cases.len()).unwrap_or(1));
     let passed_f = f64::from(u32::try_from(passed).unwrap_or(0));
     let accuracy = passed_f / total_f;
+
+    if matches!(mode, EvalMode::Live) {
+        let mut stderr = std::io::stderr();
+        drop(writeln!(
+            stderr,
+            "dashboard_gen_eval live accuracy: {accuracy:.3} ({passed}/{}); failed: {failed_ids:?}",
+            cases.len()
+        ));
+        return Ok(());
+    }
+
     assert!(
         accuracy >= MIN_EVAL_ACCURACY,
         "dashboard_gen_eval accuracy {accuracy:.3} ({passed}/{}) < {MIN_EVAL_ACCURACY}; failed: {:?}",

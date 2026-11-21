@@ -9,9 +9,11 @@ use axpoint_domain::axhub::{ColumnMeta, Dataset};
 use axpoint_domain::enums::{DataType, PiiCategory};
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{
-    Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Ident, InTarget, ObjectName,
-    ObjectNamePart, Query, Select, SelectItem, SetExpr, Statement, TableAlias, TableFactor,
-    TableWithJoins, Value, ValueWithSpan, Visit, VisitMut, Visitor, VisitorMut, With,
+    ExcludeSelectItem, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Ident,
+    IdentWithAlias, InTarget, ObjectName, ObjectNamePart, Query, RenameSelectItem, Select,
+    SelectItem, SelectItemQualifiedWildcardKind, SetExpr, SetQuantifier, Statement, TableAlias,
+    TableAliasColumnDef, TableFactor, TableWithJoins, Value, ValueWithSpan, Visit, VisitMut,
+    Visitor, VisitorMut, WildcardAdditionalOptions, With,
 };
 use sqlparser::dialect::DuckDbDialect;
 use sqlparser::parser::Parser;
@@ -353,7 +355,7 @@ pub struct GuardedSql {
     pub referenced_dataset_names: Vec<String>,
     /// Directly referenced `(dataset_id, column_name)` pairs tracked from outer projections.
     pub referenced_columns: Vec<(Uuid, String)>,
-    /// Ordered lineage descriptors for the outer `SELECT` list (empty when outer query is `UNION`/`VALUES`).
+    /// Ordered lineage descriptors for the outer query projection (empty when outer query is `VALUES`).
     pub output_lineage: Vec<OutputColumnOrigin>,
     /// `true` if any `ax.*` platform federation view is referenced.
     pub uses_platform_views: bool,
@@ -1501,83 +1503,236 @@ impl Visitor for PostRewriteVerifier<'_> {
     }
 }
 
-/// Analyzes the outer `SELECT` projection list before rewriting so `result.rs` knows whether
-/// each output column is a direct PII column (`MaskRule` by category) or a derived expression
-/// touching a PII column (`MaskRule::Redact`).
-fn analyze_outer_lineage(query: &Query, catalog: &TenantCatalog) -> Vec<OutputColumnOrigin> {
-    let SetExpr::Select(select) = query.body.as_ref() else {
-        return Vec::new();
-    };
-    let cte_names: BTreeSet<String> = query.with.as_ref().map_or_else(BTreeSet::new, |w| {
-        w.cte_tables
-            .iter()
-            .map(|c| c.alias.name.value.to_ascii_lowercase())
-            .collect()
-    });
+const MAX_LINEAGE_DEPTH: usize = 64;
 
-    let mut alias_to_dataset: HashMap<String, &CatalogDatasetEntry> = HashMap::new();
-    let mut base_datasets: Vec<&CatalogDatasetEntry> = Vec::new();
-    for twj in &select.from {
-        collect_from_datasets(
-            &twj.relation,
-            &cte_names,
-            catalog,
-            &mut alias_to_dataset,
-            &mut base_datasets,
-        );
-        for join in &twj.joins {
-            collect_from_datasets(
-                &join.relation,
-                &cte_names,
-                catalog,
-                &mut alias_to_dataset,
-                &mut base_datasets,
-            );
+#[derive(Debug, Clone, Default)]
+struct QueryLineage<'a> {
+    columns: Vec<OutputColumnOrigin>,
+    wildcard_datasets: Vec<&'a CatalogDatasetEntry>,
+}
+
+#[derive(Debug, Clone)]
+enum RelationKind<'a> {
+    Dataset(&'a CatalogDatasetEntry),
+    Derived(QueryLineage<'a>),
+    Opaque,
+}
+
+#[derive(Debug, Clone)]
+struct RelationEntry<'a> {
+    alias: Option<String>,
+    kind: RelationKind<'a>,
+}
+
+#[derive(Debug, Clone)]
+enum ResolvedColumn {
+    Direct {
+        dataset_id: Uuid,
+        column_name: String,
+        pii_category: PiiCategory,
+    },
+    DerivedPii {
+        pii_category: PiiCategory,
+    },
+    NonSensitive,
+}
+
+impl ResolvedColumn {
+    const fn pii_category(&self) -> Option<PiiCategory> {
+        match self {
+            Self::Direct {
+                pii_category: PiiCategory::None,
+                ..
+            }
+            | Self::DerivedPii {
+                pii_category: PiiCategory::None,
+            }
+            | Self::NonSensitive => None,
+            Self::Direct { pii_category, .. } | Self::DerivedPii { pii_category } => {
+                Some(*pii_category)
+            }
         }
     }
+}
 
-    let mut out = Vec::with_capacity(select.projection.len());
+#[derive(Debug, Clone)]
+enum OriginSensitivity {
+    DirectPii {
+        dataset_id: Uuid,
+        column_name: String,
+        pii_category: PiiCategory,
+    },
+    DerivedPii(PiiCategory),
+    Wildcard,
+    Clean,
+}
+
+#[derive(Clone, Copy)]
+struct LineageCtx<'a, 'b> {
+    catalog: &'a TenantCatalog,
+    cte_scope: &'b HashMap<String, QueryLineage<'a>>,
+    outer_scopes: &'b [Vec<RelationEntry<'a>>],
+    depth: usize,
+}
+
+/// Analyzes the outer query projection before rewriting so `result.rs` knows whether each output
+/// column is a direct PII column (`MaskRule` by category) or a derived expression touching a PII
+/// column (`MaskRule::Redact`), recursively resolving subqueries, CTEs, and `UNION` branches.
+fn analyze_outer_lineage(query: &Query, catalog: &TenantCatalog) -> Vec<OutputColumnOrigin> {
+    let empty_ctes = HashMap::new();
+    let ctx = LineageCtx {
+        catalog,
+        cte_scope: &empty_ctes,
+        outer_scopes: &[],
+        depth: 0,
+    };
+    analyze_query_lineage(query, ctx).columns
+}
+
+fn analyze_query_lineage<'a>(query: &Query, ctx: LineageCtx<'a, '_>) -> QueryLineage<'a> {
+    if ctx.depth > MAX_LINEAGE_DEPTH {
+        return QueryLineage::default();
+    }
+    let Some(ref with_clause) = query.with else {
+        return analyze_set_expr_lineage(&query.body, ctx);
+    };
+    let local_ctes = build_with_cte_scope(with_clause, ctx);
+    let body_ctx = LineageCtx {
+        cte_scope: &local_ctes,
+        ..ctx
+    };
+    analyze_set_expr_lineage(&query.body, body_ctx)
+}
+
+fn build_with_cte_scope<'a>(
+    with_clause: &With,
+    ctx: LineageCtx<'a, '_>,
+) -> HashMap<String, QueryLineage<'a>> {
+    let mut local_ctes = ctx.cte_scope.clone();
+    if with_clause.recursive {
+        for cte in &with_clause.cte_tables {
+            let cte_name = cte.alias.name.value.trim().to_ascii_lowercase();
+            if !cte_name.is_empty() {
+                local_ctes.insert(cte_name, QueryLineage::default());
+            }
+        }
+    }
+    let passes: usize = if with_clause.recursive { 2 } else { 1 };
+    for _ in 0..passes {
+        for cte in &with_clause.cte_tables {
+            let cte_name = cte.alias.name.value.trim().to_ascii_lowercase();
+            if cte_name.is_empty() {
+                continue;
+            }
+            let cte_ctx = LineageCtx {
+                catalog: ctx.catalog,
+                cte_scope: &local_ctes,
+                outer_scopes: ctx.outer_scopes,
+                depth: ctx.depth.saturating_add(1),
+            };
+            let mut cte_lineage = analyze_query_lineage(&cte.query, cte_ctx);
+            apply_table_column_aliases(&mut cte_lineage, &cte.alias.columns);
+            local_ctes.insert(cte_name, cte_lineage);
+        }
+    }
+    local_ctes
+}
+
+fn analyze_set_expr_lineage<'a>(set_expr: &SetExpr, ctx: LineageCtx<'a, '_>) -> QueryLineage<'a> {
+    if ctx.depth > MAX_LINEAGE_DEPTH {
+        return QueryLineage::default();
+    }
+    match set_expr {
+        SetExpr::Select(select) => analyze_select_lineage(select, ctx),
+        SetExpr::Query(inner_query) => {
+            let next_ctx = LineageCtx {
+                depth: ctx.depth.saturating_add(1),
+                ..ctx
+            };
+            analyze_query_lineage(inner_query, next_ctx)
+        }
+        SetExpr::SetOperation {
+            left,
+            set_quantifier,
+            right,
+            ..
+        } => {
+            let next_ctx = LineageCtx {
+                depth: ctx.depth.saturating_add(1),
+                ..ctx
+            };
+            let left_lineage = analyze_set_expr_lineage(left, next_ctx);
+            let right_lineage = analyze_set_expr_lineage(right, next_ctx);
+            merge_set_operation_lineage(left_lineage, right_lineage, *set_quantifier)
+        }
+        _ => QueryLineage::default(),
+    }
+}
+
+fn analyze_select_lineage<'a>(select: &Select, ctx: LineageCtx<'a, '_>) -> QueryLineage<'a> {
+    let relations = collect_select_relations(select, ctx);
+    let mut out = QueryLineage {
+        columns: Vec::with_capacity(select.projection.len()),
+        wildcard_datasets: Vec::new(),
+    };
+
     for item in &select.projection {
         match item {
-            SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => {
-                out.push(OutputColumnOrigin::Wildcard);
+            SelectItem::Wildcard(opts) => {
+                expand_unqualified_wildcard(opts, &relations, ctx, &mut out);
+            }
+            SelectItem::QualifiedWildcard(kind, opts) => {
+                expand_qualified_wildcard(kind, opts, &relations, ctx, &mut out);
             }
             SelectItem::UnnamedExpr(expr) => {
-                out.push(classify_projected_expr(
-                    expr,
-                    None,
-                    &alias_to_dataset,
-                    &base_datasets,
-                ));
+                out.columns
+                    .push(classify_projected_expr(expr, None, &relations, ctx));
             }
             SelectItem::ExprWithAlias { expr, alias } => {
-                out.push(classify_projected_expr(
+                out.columns.push(classify_projected_expr(
                     expr,
                     Some(alias.value.clone()),
-                    &alias_to_dataset,
-                    &base_datasets,
+                    &relations,
+                    ctx,
                 ));
             }
             SelectItem::ExprWithAliases { expr, aliases } => {
                 let first_alias = aliases.first().map(|a| a.value.clone());
-                out.push(classify_projected_expr(
-                    expr,
-                    first_alias,
-                    &alias_to_dataset,
-                    &base_datasets,
-                ));
+                out.columns
+                    .push(classify_projected_expr(expr, first_alias, &relations, ctx));
             }
         }
     }
+
     out
 }
 
-fn collect_from_datasets<'a>(
+fn collect_select_relations<'a>(
+    select: &Select,
+    ctx: LineageCtx<'a, '_>,
+) -> Vec<RelationEntry<'a>> {
+    let mut relations = Vec::new();
+    for twj in &select.from {
+        collect_table_with_joins(twj, ctx, &mut relations);
+    }
+    relations
+}
+
+fn collect_table_with_joins<'a>(
+    twj: &TableWithJoins,
+    ctx: LineageCtx<'a, '_>,
+    relations: &mut Vec<RelationEntry<'a>>,
+) {
+    collect_table_factor(&twj.relation, ctx, relations);
+    for join in &twj.joins {
+        collect_table_factor(&join.relation, ctx, relations);
+    }
+}
+
+fn collect_table_factor<'a>(
     tf: &TableFactor,
-    cte_names: &BTreeSet<String>,
-    catalog: &'a TenantCatalog,
-    alias_map: &mut HashMap<String, &'a CatalogDatasetEntry>,
-    base_list: &mut Vec<&'a CatalogDatasetEntry>,
+    ctx: LineageCtx<'a, '_>,
+    relations: &mut Vec<RelationEntry<'a>>,
 ) {
     match tf {
         TableFactor::Table {
@@ -1586,99 +1741,829 @@ fn collect_from_datasets<'a>(
             args: None,
             ..
         } => {
-            if let [ObjectNamePart::Identifier(ident)] = name.0.as_slice() {
-                let lower = ident.value.to_ascii_lowercase();
-                if !cte_names.contains(&lower)
-                    && let Some(ds) = catalog.dataset(&lower)
-                {
-                    let key = alias
-                        .as_ref()
-                        .map_or(lower, |a| a.name.value.to_ascii_lowercase());
-                    alias_map.insert(key, ds);
-                    base_list.push(ds);
-                }
-            }
+            collect_named_table_relation(name, alias.as_ref(), ctx, relations);
+        }
+        TableFactor::Derived {
+            subquery, alias, ..
+        } => {
+            collect_derived_relation(subquery, alias.as_ref(), ctx, relations);
         }
         TableFactor::NestedJoin {
-            table_with_joins, ..
+            table_with_joins,
+            alias,
+            ..
         } => {
-            collect_table_with_joins(table_with_joins, cte_names, catalog, alias_map, base_list);
+            if let Some(tbl_alias) = alias.as_ref() {
+                let mut nested_rels = Vec::new();
+                collect_table_with_joins(table_with_joins, ctx, &mut nested_rels);
+                let mut nested_ql =
+                    expand_relations_into_lineage(&nested_rels, !tbl_alias.columns.is_empty());
+                apply_table_column_aliases(&mut nested_ql, &tbl_alias.columns);
+                relations.push(RelationEntry {
+                    alias: Some(tbl_alias.name.value.to_ascii_lowercase()),
+                    kind: RelationKind::Derived(nested_ql),
+                });
+            } else {
+                collect_table_with_joins(table_with_joins, ctx, relations);
+            }
+        }
+        TableFactor::UNNEST { alias, .. }
+        | TableFactor::TableFunction { alias, .. }
+        | TableFactor::Function { alias, .. }
+        | TableFactor::Table {
+            alias,
+            args: Some(_),
+            ..
+        } => {
+            collect_function_relation(tf, alias.as_ref(), ctx, relations);
         }
         _ => {}
     }
 }
 
-fn collect_table_with_joins<'a>(
-    twj: &TableWithJoins,
-    cte_names: &BTreeSet<String>,
-    catalog: &'a TenantCatalog,
-    alias_map: &mut HashMap<String, &'a CatalogDatasetEntry>,
-    base_list: &mut Vec<&'a CatalogDatasetEntry>,
+fn collect_derived_relation<'a>(
+    subquery: &Query,
+    alias: Option<&TableAlias>,
+    ctx: LineageCtx<'a, '_>,
+    relations: &mut Vec<RelationEntry<'a>>,
 ) {
-    collect_from_datasets(&twj.relation, cte_names, catalog, alias_map, base_list);
-    for join in &twj.joins {
-        collect_from_datasets(&join.relation, cte_names, catalog, alias_map, base_list);
+    let mut sub_outer = ctx.outer_scopes.to_vec();
+    if !relations.is_empty() {
+        sub_outer.push(relations.clone());
+    }
+    let sub_ctx = LineageCtx {
+        catalog: ctx.catalog,
+        cte_scope: ctx.cte_scope,
+        outer_scopes: &sub_outer,
+        depth: ctx.depth.saturating_add(1),
+    };
+    let mut sub_ql = analyze_query_lineage(subquery, sub_ctx);
+    if let Some(tbl_alias) = alias {
+        apply_table_column_aliases(&mut sub_ql, &tbl_alias.columns);
+    }
+    relations.push(RelationEntry {
+        alias: alias.map(|a| a.name.value.to_ascii_lowercase()),
+        kind: RelationKind::Derived(sub_ql),
+    });
+}
+
+fn collect_function_relation<'a>(
+    tf: &TableFactor,
+    alias: Option<&TableAlias>,
+    ctx: LineageCtx<'a, '_>,
+    relations: &mut Vec<RelationEntry<'a>>,
+) {
+    let alias_key = alias.map(|a| a.name.value.to_ascii_lowercase());
+    if let Some(pii) = find_any_pii_in_ast(tf, relations, ctx) {
+        let mut fn_ql = QueryLineage {
+            columns: vec![OutputColumnOrigin::DerivedFromPii {
+                output_name: alias.map(|a| a.name.value.clone()),
+                pii_category: pii,
+            }],
+            wildcard_datasets: Vec::new(),
+        };
+        if let Some(tbl_alias) = alias {
+            apply_table_column_aliases(&mut fn_ql, &tbl_alias.columns);
+        }
+        relations.push(RelationEntry {
+            alias: alias_key,
+            kind: RelationKind::Derived(fn_ql),
+        });
+    } else {
+        relations.push(RelationEntry {
+            alias: alias_key,
+            kind: RelationKind::Opaque,
+        });
     }
 }
 
-fn classify_projected_expr(
+fn collect_named_table_relation<'a>(
+    name: &ObjectName,
+    alias: Option<&TableAlias>,
+    ctx: LineageCtx<'a, '_>,
+    relations: &mut Vec<RelationEntry<'a>>,
+) {
+    if let [ObjectNamePart::Identifier(ident)] = name.0.as_slice() {
+        let lower = ident.value.to_ascii_lowercase();
+        if let Some(cte_ql) = ctx.cte_scope.get(&lower) {
+            let mut local_ql = cte_ql.clone();
+            if let Some(tbl_alias) = alias {
+                apply_table_column_aliases(&mut local_ql, &tbl_alias.columns);
+            }
+            let key = alias.map_or(lower, |a| a.name.value.to_ascii_lowercase());
+            relations.push(RelationEntry {
+                alias: Some(key),
+                kind: RelationKind::Derived(local_ql),
+            });
+            return;
+        }
+        if let Some(ds) = ctx.catalog.dataset(&lower) {
+            let key = alias.map_or(lower, |a| a.name.value.to_ascii_lowercase());
+            if let Some(tbl_alias) = alias
+                && !tbl_alias.columns.is_empty()
+            {
+                let mut ds_ql = QueryLineage {
+                    columns: dataset_ordered_origins(ds),
+                    wildcard_datasets: Vec::new(),
+                };
+                apply_table_column_aliases(&mut ds_ql, &tbl_alias.columns);
+                relations.push(RelationEntry {
+                    alias: Some(key),
+                    kind: RelationKind::Derived(ds_ql),
+                });
+            } else {
+                relations.push(RelationEntry {
+                    alias: Some(key),
+                    kind: RelationKind::Dataset(ds),
+                });
+            }
+            return;
+        }
+    }
+    let fallback_alias = alias
+        .map(|a| a.name.value.to_ascii_lowercase())
+        .or_else(|| {
+            name.0
+                .last()
+                .and_then(ObjectNamePart::as_ident)
+                .map(|i| i.value.to_ascii_lowercase())
+        });
+    relations.push(RelationEntry {
+        alias: fallback_alias,
+        kind: RelationKind::Opaque,
+    });
+}
+
+const fn wildcard_opts_have_modifiers(opts: &WildcardAdditionalOptions) -> bool {
+    opts.opt_exclude.is_some()
+        || opts.opt_except.is_some()
+        || opts.opt_replace.is_some()
+        || opts.opt_rename.is_some()
+}
+
+fn push_origin_dedup_wildcard(out: &mut Vec<OutputColumnOrigin>, origin: OutputColumnOrigin) {
+    if matches!(origin, OutputColumnOrigin::Wildcard)
+        && matches!(out.last(), Some(OutputColumnOrigin::Wildcard))
+    {
+        return;
+    }
+    out.push(origin);
+}
+
+fn expand_single_relation<'a>(
+    rel: &RelationEntry<'a>,
+    force_expand_dataset: bool,
+    out: &mut QueryLineage<'a>,
+) {
+    match &rel.kind {
+        RelationKind::Derived(ql) => {
+            for col in &ql.columns {
+                push_origin_dedup_wildcard(&mut out.columns, col.clone());
+            }
+            append_unique_datasets(&mut out.wildcard_datasets, &ql.wildcard_datasets);
+        }
+        RelationKind::Dataset(ds) => {
+            if force_expand_dataset && !ds.columns.is_empty() {
+                for col in dataset_ordered_origins(ds) {
+                    out.columns.push(col);
+                }
+            } else {
+                push_origin_dedup_wildcard(&mut out.columns, OutputColumnOrigin::Wildcard);
+                append_unique_datasets(&mut out.wildcard_datasets, &[*ds]);
+            }
+        }
+        RelationKind::Opaque => {
+            push_origin_dedup_wildcard(&mut out.columns, OutputColumnOrigin::Wildcard);
+        }
+    }
+}
+
+fn expand_relations_into_lineage<'a>(
+    relations: &[RelationEntry<'a>],
+    force_expand_dataset: bool,
+) -> QueryLineage<'a> {
+    let mut out = QueryLineage::default();
+    if relations.is_empty() {
+        out.columns.push(OutputColumnOrigin::Wildcard);
+        return out;
+    }
+    for rel in relations {
+        expand_single_relation(rel, force_expand_dataset, &mut out);
+    }
+    out
+}
+
+fn expand_unqualified_wildcard<'a>(
+    opts: &WildcardAdditionalOptions,
+    relations: &[RelationEntry<'a>],
+    ctx: LineageCtx<'a, '_>,
+    out: &mut QueryLineage<'a>,
+) {
+    let has_mods = wildcard_opts_have_modifiers(opts);
+    let mut expanded = expand_relations_into_lineage(relations, has_mods);
+    if has_mods {
+        apply_wildcard_options(&mut expanded.columns, opts, relations, ctx);
+    }
+    for col in expanded.columns {
+        push_origin_dedup_wildcard(&mut out.columns, col);
+    }
+    append_unique_datasets(&mut out.wildcard_datasets, &expanded.wildcard_datasets);
+}
+
+fn expand_qualified_wildcard<'a>(
+    kind: &SelectItemQualifiedWildcardKind,
+    opts: &WildcardAdditionalOptions,
+    relations: &[RelationEntry<'a>],
+    ctx: LineageCtx<'a, '_>,
+    out: &mut QueryLineage<'a>,
+) {
+    match kind {
+        SelectItemQualifiedWildcardKind::ObjectName(obj_name) => {
+            let has_mods = wildcard_opts_have_modifiers(opts);
+            let mut matched_any = false;
+            let mut expanded = QueryLineage::default();
+            if let [ObjectNamePart::Identifier(tbl_ident)] = obj_name.0.as_slice() {
+                let tbl_lower = tbl_ident.value.to_ascii_lowercase();
+                for rel in relations {
+                    if rel.alias.as_deref() == Some(tbl_lower.as_str()) {
+                        matched_any = true;
+                        expand_single_relation(rel, has_mods, &mut expanded);
+                    }
+                }
+            }
+            if !matched_any {
+                push_origin_dedup_wildcard(&mut out.columns, OutputColumnOrigin::Wildcard);
+                return;
+            }
+            if has_mods {
+                apply_wildcard_options(&mut expanded.columns, opts, relations, ctx);
+            }
+            for col in expanded.columns {
+                push_origin_dedup_wildcard(&mut out.columns, col);
+            }
+            append_unique_datasets(&mut out.wildcard_datasets, &expanded.wildcard_datasets);
+        }
+        SelectItemQualifiedWildcardKind::Expr(expr) => {
+            if let Some(pii) = find_any_pii_in_ast(expr, relations, ctx) {
+                out.columns.push(OutputColumnOrigin::DerivedFromPii {
+                    output_name: None,
+                    pii_category: pii,
+                });
+            } else {
+                push_origin_dedup_wildcard(&mut out.columns, OutputColumnOrigin::Wildcard);
+            }
+        }
+    }
+}
+
+fn collect_excluded_wildcard_cols(opts: &WildcardAdditionalOptions) -> HashSet<String> {
+    let mut excluded = HashSet::new();
+    if let Some(excl) = &opts.opt_exclude {
+        match excl {
+            ExcludeSelectItem::Single(obj) => {
+                if let Some(ident) = obj.0.last().and_then(ObjectNamePart::as_ident) {
+                    excluded.insert(ident.value.to_ascii_lowercase());
+                }
+            }
+            ExcludeSelectItem::Multiple(objs) => {
+                for obj in objs {
+                    if let Some(ident) = obj.0.last().and_then(ObjectNamePart::as_ident) {
+                        excluded.insert(ident.value.to_ascii_lowercase());
+                    }
+                }
+            }
+        }
+    }
+    if let Some(exc) = &opts.opt_except {
+        excluded.insert(exc.first_element.value.to_ascii_lowercase());
+        for ident in &exc.additional_elements {
+            excluded.insert(ident.value.to_ascii_lowercase());
+        }
+    }
+    excluded
+}
+
+fn apply_wildcard_options<'a>(
+    cols: &mut Vec<OutputColumnOrigin>,
+    opts: &WildcardAdditionalOptions,
+    relations: &[RelationEntry<'a>],
+    ctx: LineageCtx<'a, '_>,
+) {
+    let excluded = collect_excluded_wildcard_cols(opts);
+    if !excluded.is_empty()
+        && !cols
+            .iter()
+            .any(|c| matches!(c, OutputColumnOrigin::Wildcard))
+    {
+        cols.retain(|c| {
+            origin_output_name(c).is_none_or(|name| !excluded.contains(&name.to_ascii_lowercase()))
+        });
+    }
+    if let Some(rep) = &opts.opt_replace {
+        for elem in &rep.items {
+            let new_origin = classify_projected_expr(
+                &elem.expr,
+                Some(elem.column_name.value.clone()),
+                relations,
+                ctx,
+            );
+            let target = elem.column_name.value.to_ascii_lowercase();
+            if let Some(slot) = cols
+                .iter_mut()
+                .find(|c| origin_output_name(c).is_some_and(|n| n.eq_ignore_ascii_case(&target)))
+            {
+                *slot = new_origin;
+            }
+        }
+    }
+    if let Some(ren) = &opts.opt_rename {
+        let pairs: &[IdentWithAlias] = match ren {
+            RenameSelectItem::Single(one) => std::slice::from_ref(one),
+            RenameSelectItem::Multiple(many) => many.as_slice(),
+        };
+        for pair in pairs {
+            let target = pair.ident.value.to_ascii_lowercase();
+            if let Some(slot) = cols
+                .iter_mut()
+                .find(|c| origin_output_name(c).is_some_and(|n| n.eq_ignore_ascii_case(&target)))
+            {
+                set_origin_output_name(slot, pair.alias.value.clone());
+            }
+        }
+    }
+}
+
+fn origin_output_name(origin: &OutputColumnOrigin) -> Option<&str> {
+    match origin {
+        OutputColumnOrigin::Direct { output_name, .. } => Some(output_name.as_str()),
+        OutputColumnOrigin::DerivedFromPii { output_name, .. }
+        | OutputColumnOrigin::NonSensitive { output_name } => output_name.as_deref(),
+        OutputColumnOrigin::Wildcard => None,
+    }
+}
+
+fn set_origin_output_name(origin: &mut OutputColumnOrigin, new_name: String) {
+    match origin {
+        OutputColumnOrigin::Direct { output_name, .. } => {
+            *output_name = new_name;
+        }
+        OutputColumnOrigin::DerivedFromPii { output_name, .. }
+        | OutputColumnOrigin::NonSensitive { output_name } => {
+            *output_name = Some(new_name);
+        }
+        OutputColumnOrigin::Wildcard => {}
+    }
+}
+
+fn dataset_ordered_origins(ds: &CatalogDatasetEntry) -> Vec<OutputColumnOrigin> {
+    if ds.columns.is_empty() {
+        return vec![OutputColumnOrigin::Wildcard];
+    }
+    let mut metas: Vec<&ColumnMeta> = ds.columns.values().collect();
+    metas.sort_by(|a, b| {
+        a.ordinal
+            .cmp(&b.ordinal)
+            .then_with(|| a.column_name.cmp(&b.column_name))
+    });
+    metas
+        .into_iter()
+        .map(|meta| OutputColumnOrigin::Direct {
+            dataset_id: ds.id,
+            column_name: meta.column_name.clone(),
+            output_name: meta.column_name.clone(),
+            pii_category: meta.pii_category,
+        })
+        .collect()
+}
+
+fn apply_table_column_aliases(ql: &mut QueryLineage<'_>, col_defs: &[TableAliasColumnDef]) {
+    if col_defs.is_empty() {
+        return;
+    }
+    if ql.columns.len() == 1
+        && matches!(ql.columns.first(), Some(OutputColumnOrigin::Wildcard))
+        && let [single_ds] = ql.wildcard_datasets.as_slice()
+        && !single_ds.columns.is_empty()
+    {
+        ql.columns = dataset_ordered_origins(single_ds);
+        ql.wildcard_datasets.clear();
+    }
+    for (origin, col_def) in ql.columns.iter_mut().zip(col_defs) {
+        set_origin_output_name(origin, col_def.name.value.clone());
+    }
+}
+
+fn append_unique_datasets<'a>(
+    dst: &mut Vec<&'a CatalogDatasetEntry>,
+    src: &[&'a CatalogDatasetEntry],
+) {
+    for ds in src {
+        if !dst.iter().any(|existing| existing.id == ds.id) {
+            dst.push(*ds);
+        }
+    }
+}
+
+fn first_pii_in_datasets(datasets: &[&CatalogDatasetEntry]) -> Option<PiiCategory> {
+    for ds in datasets {
+        for meta in ds.columns.values() {
+            if meta.pii_category != PiiCategory::None {
+                return Some(meta.pii_category);
+            }
+        }
+    }
+    None
+}
+
+fn classify_origin_sensitivity(origin: &OutputColumnOrigin) -> OriginSensitivity {
+    match origin {
+        OutputColumnOrigin::Direct {
+            dataset_id,
+            column_name,
+            pii_category,
+            ..
+        } if *pii_category != PiiCategory::None => OriginSensitivity::DirectPii {
+            dataset_id: *dataset_id,
+            column_name: column_name.clone(),
+            pii_category: *pii_category,
+        },
+        OutputColumnOrigin::DerivedFromPii { pii_category, .. }
+            if *pii_category != PiiCategory::None =>
+        {
+            OriginSensitivity::DerivedPii(*pii_category)
+        }
+        OutputColumnOrigin::Wildcard => OriginSensitivity::Wildcard,
+        OutputColumnOrigin::Direct { .. }
+        | OutputColumnOrigin::DerivedFromPii { .. }
+        | OutputColumnOrigin::NonSensitive { .. } => OriginSensitivity::Clean,
+    }
+}
+
+fn build_direct_origin(
+    dataset_id: Uuid,
+    column_name: String,
+    left_name: Option<String>,
+    pii_category: PiiCategory,
+) -> OutputColumnOrigin {
+    let output_name = left_name.unwrap_or_else(|| column_name.clone());
+    OutputColumnOrigin::Direct {
+        dataset_id,
+        column_name,
+        output_name,
+        pii_category,
+    }
+}
+
+fn merge_two_origins(left: &OutputColumnOrigin, right: &OutputColumnOrigin) -> OutputColumnOrigin {
+    let left_name = origin_output_name(left).map(String::from);
+    match (
+        classify_origin_sensitivity(left),
+        classify_origin_sensitivity(right),
+    ) {
+        (OriginSensitivity::Clean, OriginSensitivity::Clean) => left.clone(),
+        (OriginSensitivity::DerivedPii(left_pii), _)
+        | (
+            OriginSensitivity::DirectPii {
+                pii_category: left_pii,
+                ..
+            },
+            OriginSensitivity::DerivedPii(_),
+        ) => OutputColumnOrigin::DerivedFromPii {
+            output_name: left_name,
+            pii_category: left_pii,
+        },
+        (_, OriginSensitivity::DerivedPii(right_pii)) => OutputColumnOrigin::DerivedFromPii {
+            output_name: left_name,
+            pii_category: right_pii,
+        },
+        (
+            OriginSensitivity::DirectPii {
+                dataset_id,
+                column_name,
+                pii_category,
+            },
+            OriginSensitivity::Clean | OriginSensitivity::Wildcard,
+        ) => build_direct_origin(dataset_id, column_name, left_name, pii_category),
+        (
+            OriginSensitivity::Clean | OriginSensitivity::Wildcard,
+            OriginSensitivity::DirectPii {
+                dataset_id,
+                column_name,
+                pii_category,
+            },
+        ) => {
+            if left_name.is_some() {
+                build_direct_origin(dataset_id, column_name, left_name, pii_category)
+            } else {
+                OutputColumnOrigin::DerivedFromPii {
+                    output_name: None,
+                    pii_category,
+                }
+            }
+        }
+        (
+            OriginSensitivity::DirectPii {
+                dataset_id,
+                column_name,
+                pii_category: left_pii,
+            },
+            OriginSensitivity::DirectPii {
+                pii_category: right_pii,
+                ..
+            },
+        ) => {
+            if left_pii == right_pii {
+                build_direct_origin(dataset_id, column_name, left_name, left_pii)
+            } else {
+                OutputColumnOrigin::DerivedFromPii {
+                    output_name: left_name,
+                    pii_category: left_pii,
+                }
+            }
+        }
+        (OriginSensitivity::Wildcard, OriginSensitivity::Clean | OriginSensitivity::Wildcard)
+        | (OriginSensitivity::Clean, OriginSensitivity::Wildcard) => OutputColumnOrigin::Wildcard,
+    }
+}
+
+fn try_expand_wildcard_datasets(
+    cols: &[OutputColumnOrigin],
+    wildcard_datasets: &[&CatalogDatasetEntry],
+    target_len: usize,
+) -> Option<Vec<OutputColumnOrigin>> {
+    if cols.len() != 1 || !matches!(cols.first(), Some(OutputColumnOrigin::Wildcard)) {
+        return None;
+    }
+    if wildcard_datasets.is_empty() || wildcard_datasets.iter().any(|ds| ds.columns.is_empty()) {
+        return None;
+    }
+    let expanded: Vec<OutputColumnOrigin> = wildcard_datasets
+        .iter()
+        .copied()
+        .flat_map(dataset_ordered_origins)
+        .collect();
+    (expanded.len() == target_len).then_some(expanded)
+}
+
+fn upgrade_clean_columns_to_derived(
+    cols: &[OutputColumnOrigin],
+    pii_category: PiiCategory,
+) -> Vec<OutputColumnOrigin> {
+    cols.iter()
+        .map(|col| match classify_origin_sensitivity(col) {
+            OriginSensitivity::Clean => OutputColumnOrigin::DerivedFromPii {
+                output_name: origin_output_name(col).map(String::from),
+                pii_category,
+            },
+            OriginSensitivity::DirectPii { .. }
+            | OriginSensitivity::DerivedPii(_)
+            | OriginSensitivity::Wildcard => col.clone(),
+        })
+        .collect()
+}
+
+fn merge_set_operation_lineage<'a>(
+    left_ql: QueryLineage<'a>,
+    right_ql: QueryLineage<'a>,
+    quantifier: SetQuantifier,
+) -> QueryLineage<'a> {
+    let is_by_name = matches!(
+        quantifier,
+        SetQuantifier::ByName | SetQuantifier::AllByName | SetQuantifier::DistinctByName
+    );
+    if is_by_name {
+        let mut wildcard_datasets = left_ql.wildcard_datasets;
+        append_unique_datasets(&mut wildcard_datasets, &right_ql.wildcard_datasets);
+        let columns = merge_columns_by_name(left_ql.columns, right_ql.columns);
+        return QueryLineage {
+            columns,
+            wildcard_datasets,
+        };
+    }
+
+    let left_has_wild = left_ql
+        .columns
+        .iter()
+        .any(|c| matches!(c, OutputColumnOrigin::Wildcard));
+    let right_has_wild = right_ql
+        .columns
+        .iter()
+        .any(|c| matches!(c, OutputColumnOrigin::Wildcard));
+
+    let left_cols = if left_has_wild && !right_has_wild {
+        try_expand_wildcard_datasets(
+            &left_ql.columns,
+            &left_ql.wildcard_datasets,
+            right_ql.columns.len(),
+        )
+        .unwrap_or(left_ql.columns)
+    } else {
+        left_ql.columns
+    };
+    let right_cols = if right_has_wild && !left_has_wild {
+        try_expand_wildcard_datasets(
+            &right_ql.columns,
+            &right_ql.wildcard_datasets,
+            left_cols.len(),
+        )
+        .unwrap_or(right_ql.columns)
+    } else {
+        right_ql.columns
+    };
+
+    let right_wild_pii = first_pii_in_datasets(&right_ql.wildcard_datasets);
+    let left_wild_pii = first_pii_in_datasets(&left_ql.wildcard_datasets);
+    let mut wildcard_datasets = left_ql.wildcard_datasets;
+    append_unique_datasets(&mut wildcard_datasets, &right_ql.wildcard_datasets);
+
+    let columns = merge_columns_positional(&left_cols, &right_cols, left_wild_pii, right_wild_pii);
+    QueryLineage {
+        columns,
+        wildcard_datasets,
+    }
+}
+
+fn merge_columns_positional(
+    left: &[OutputColumnOrigin],
+    right: &[OutputColumnOrigin],
+    left_wild_pii: Option<PiiCategory>,
+    right_wild_pii: Option<PiiCategory>,
+) -> Vec<OutputColumnOrigin> {
+    let left_wild = left
+        .iter()
+        .any(|c| matches!(c, OutputColumnOrigin::Wildcard));
+    let right_wild = right
+        .iter()
+        .any(|c| matches!(c, OutputColumnOrigin::Wildcard));
+
+    if left_wild || right_wild {
+        let same_shape = left.len() == right.len()
+            && left.iter().zip(right).all(|(l, r)| {
+                matches!(l, OutputColumnOrigin::Wildcard)
+                    == matches!(r, OutputColumnOrigin::Wildcard)
+            });
+        if same_shape {
+            return left
+                .iter()
+                .zip(right)
+                .map(|(l, r)| merge_two_origins(l, r))
+                .collect();
+        }
+        if !left_wild {
+            if let Some(pii) = right_wild_pii {
+                return upgrade_clean_columns_to_derived(left, pii);
+            }
+            return left.to_vec();
+        }
+        if !right_wild && left_wild_pii.is_none() {
+            return right.to_vec();
+        }
+        return vec![OutputColumnOrigin::Wildcard];
+    }
+
+    let max_len = left.len().max(right.len());
+    let mut out = Vec::with_capacity(max_len);
+    for idx in 0..max_len {
+        match (left.get(idx), right.get(idx)) {
+            (Some(left_item), Some(right_item)) => {
+                out.push(merge_two_origins(left_item, right_item));
+            }
+            (Some(left_item), None) => out.push(left_item.clone()),
+            (None, Some(right_item)) => out.push(right_item.clone()),
+            (None, None) => {}
+        }
+    }
+    out
+}
+
+fn merge_columns_by_name(
+    left: Vec<OutputColumnOrigin>,
+    right: Vec<OutputColumnOrigin>,
+) -> Vec<OutputColumnOrigin> {
+    let mut out = left;
+    for right_item in right {
+        if matches!(right_item, OutputColumnOrigin::Wildcard) {
+            if !out
+                .iter()
+                .any(|c| matches!(c, OutputColumnOrigin::Wildcard))
+            {
+                out.push(OutputColumnOrigin::Wildcard);
+            }
+            continue;
+        }
+        if let Some(right_name) = origin_output_name(&right_item)
+            && let Some(existing) = out.iter_mut().find(|left_item| {
+                origin_output_name(left_item).is_some_and(|ln| ln.eq_ignore_ascii_case(right_name))
+            })
+        {
+            *existing = merge_two_origins(existing, &right_item);
+        } else {
+            out.push(right_item);
+        }
+    }
+    out
+}
+
+fn classify_projected_expr<'a>(
     expr: &Expr,
     explicit_alias: Option<String>,
-    alias_to_dataset: &HashMap<String, &CatalogDatasetEntry>,
-    base_datasets: &[&CatalogDatasetEntry],
+    relations: &[RelationEntry<'a>],
+    ctx: LineageCtx<'a, '_>,
 ) -> OutputColumnOrigin {
-    match expr {
+    let mut unwrapped = expr;
+    while let Expr::Nested(inner) = unwrapped {
+        unwrapped = inner;
+    }
+
+    match unwrapped {
         Expr::Identifier(ident) => {
             let col_lower = ident.value.to_ascii_lowercase();
-            if let Some((ds, meta)) = resolve_unqualified_col(&col_lower, base_datasets) {
-                return OutputColumnOrigin::Direct {
-                    dataset_id: ds.id,
-                    column_name: meta.column_name.clone(),
+            match resolve_unqualified(&col_lower, relations, ctx.outer_scopes) {
+                Some(ResolvedColumn::Direct {
+                    dataset_id,
+                    column_name,
+                    pii_category,
+                }) => OutputColumnOrigin::Direct {
+                    dataset_id,
+                    column_name,
                     output_name: explicit_alias.unwrap_or_else(|| ident.value.clone()),
-                    pii_category: meta.pii_category,
-                };
-            }
-            OutputColumnOrigin::NonSensitive {
-                output_name: explicit_alias.or_else(|| Some(ident.value.clone())),
+                    pii_category,
+                },
+                Some(ResolvedColumn::DerivedPii { pii_category }) => {
+                    OutputColumnOrigin::DerivedFromPii {
+                        output_name: explicit_alias.or_else(|| Some(ident.value.clone())),
+                        pii_category,
+                    }
+                }
+                Some(ResolvedColumn::NonSensitive) => OutputColumnOrigin::NonSensitive {
+                    output_name: explicit_alias.or_else(|| Some(ident.value.clone())),
+                },
+                None => {
+                    let out_name = explicit_alias.or_else(|| Some(ident.value.clone()));
+                    if let Some(pii) = relation_any_pii(&col_lower, relations, ctx.outer_scopes) {
+                        OutputColumnOrigin::DerivedFromPii {
+                            output_name: out_name,
+                            pii_category: pii,
+                        }
+                    } else {
+                        OutputColumnOrigin::NonSensitive {
+                            output_name: out_name,
+                        }
+                    }
+                }
             }
         }
         Expr::CompoundIdentifier(parts) => {
             if let [tbl_ident, col_ident] = parts.as_slice() {
                 let tbl_lower = tbl_ident.value.to_ascii_lowercase();
                 let col_lower = col_ident.value.to_ascii_lowercase();
-                if let Some(ds) = alias_to_dataset.get(&tbl_lower)
-                    && let Some(meta) = ds.columns.get(&col_lower)
-                {
-                    return OutputColumnOrigin::Direct {
-                        dataset_id: ds.id,
-                        column_name: meta.column_name.clone(),
-                        output_name: explicit_alias.unwrap_or_else(|| col_ident.value.clone()),
-                        pii_category: meta.pii_category,
-                    };
+                match resolve_qualified(&tbl_lower, &col_lower, relations, ctx.outer_scopes) {
+                    Some(ResolvedColumn::Direct {
+                        dataset_id,
+                        column_name,
+                        pii_category,
+                    }) => {
+                        return OutputColumnOrigin::Direct {
+                            dataset_id,
+                            column_name,
+                            output_name: explicit_alias.unwrap_or_else(|| col_ident.value.clone()),
+                            pii_category,
+                        };
+                    }
+                    Some(ResolvedColumn::DerivedPii { pii_category }) => {
+                        return OutputColumnOrigin::DerivedFromPii {
+                            output_name: explicit_alias.or_else(|| Some(col_ident.value.clone())),
+                            pii_category,
+                        };
+                    }
+                    Some(ResolvedColumn::NonSensitive) => {
+                        return OutputColumnOrigin::NonSensitive {
+                            output_name: explicit_alias.or_else(|| Some(col_ident.value.clone())),
+                        };
+                    }
+                    None => {}
                 }
             }
-            if let Some(pii) = find_any_pii_in_expr(expr, alias_to_dataset, base_datasets) {
-                OutputColumnOrigin::DerivedFromPii {
-                    output_name: explicit_alias,
-                    pii_category: pii,
-                }
-            } else {
-                OutputColumnOrigin::NonSensitive {
-                    output_name: explicit_alias,
-                }
-            }
+            classify_derived_or_clean_expr(expr, explicit_alias, relations, ctx)
         }
-        _ => {
-            if let Some(pii) = find_any_pii_in_expr(expr, alias_to_dataset, base_datasets) {
-                OutputColumnOrigin::DerivedFromPii {
-                    output_name: explicit_alias,
-                    pii_category: pii,
-                }
-            } else {
-                OutputColumnOrigin::NonSensitive {
-                    output_name: explicit_alias,
-                }
-            }
+        _ => classify_derived_or_clean_expr(expr, explicit_alias, relations, ctx),
+    }
+}
+
+fn classify_derived_or_clean_expr<'a>(
+    expr: &Expr,
+    explicit_alias: Option<String>,
+    relations: &[RelationEntry<'a>],
+    ctx: LineageCtx<'a, '_>,
+) -> OutputColumnOrigin {
+    if let Some(pii) = find_any_pii_in_ast(expr, relations, ctx) {
+        OutputColumnOrigin::DerivedFromPii {
+            output_name: explicit_alias,
+            pii_category: pii,
+        }
+    } else {
+        OutputColumnOrigin::NonSensitive {
+            output_name: explicit_alias,
         }
     }
 }
@@ -1701,57 +2586,398 @@ fn resolve_unqualified_col<'a>(
     found
 }
 
-fn find_any_pii_in_expr(
-    expr: &Expr,
-    alias_to_dataset: &HashMap<String, &CatalogDatasetEntry>,
-    base_datasets: &[&CatalogDatasetEntry],
-) -> Option<PiiCategory> {
-    struct ExprColCollector<'a> {
-        alias_to_dataset: &'a HashMap<String, &'a CatalogDatasetEntry>,
-        base_datasets: &'a [&'a CatalogDatasetEntry],
-        detected_pii: Option<PiiCategory>,
-    }
-
-    impl Visitor for ExprColCollector<'_> {
-        type Break = ();
-
-        fn pre_visit_expr(&mut self, e: &Expr) -> ControlFlow<Self::Break> {
-            match e {
-                Expr::Identifier(ident) => {
-                    let col_lower = ident.value.to_ascii_lowercase();
-                    if let Some((_, meta)) = resolve_unqualified_col(&col_lower, self.base_datasets)
-                        && meta.pii_category != PiiCategory::None
-                    {
-                        self.detected_pii = Some(meta.pii_category);
-                        return ControlFlow::Break(());
-                    }
+fn resolve_in_derived(col_lower: &str, ql: &QueryLineage<'_>) -> Option<ResolvedColumn> {
+    let mut fallback: Option<ResolvedColumn> = None;
+    for item in &ql.columns {
+        let Some(name) = origin_output_name(item) else {
+            continue;
+        };
+        if !name.eq_ignore_ascii_case(col_lower) {
+            continue;
+        }
+        match item {
+            OutputColumnOrigin::Direct {
+                dataset_id,
+                column_name,
+                pii_category,
+                ..
+            } => {
+                let candidate = ResolvedColumn::Direct {
+                    dataset_id: *dataset_id,
+                    column_name: column_name.clone(),
+                    pii_category: *pii_category,
+                };
+                if *pii_category != PiiCategory::None {
+                    return Some(candidate);
                 }
-                Expr::CompoundIdentifier(parts) => {
-                    if let [tbl, col] = parts.as_slice() {
-                        let t_low = tbl.value.to_ascii_lowercase();
-                        let c_low = col.value.to_ascii_lowercase();
-                        if let Some(ds) = self.alias_to_dataset.get(&t_low)
-                            && let Some(meta) = ds.columns.get(&c_low)
-                            && meta.pii_category != PiiCategory::None
-                        {
-                            self.detected_pii = Some(meta.pii_category);
-                            return ControlFlow::Break(());
-                        }
-                    }
+                if fallback.is_none() {
+                    fallback = Some(candidate);
                 }
-                _ => {}
             }
-            ControlFlow::Continue(())
+            OutputColumnOrigin::DerivedFromPii { pii_category, .. } => {
+                if *pii_category != PiiCategory::None {
+                    return Some(ResolvedColumn::DerivedPii {
+                        pii_category: *pii_category,
+                    });
+                }
+                if fallback.is_none() {
+                    fallback = Some(ResolvedColumn::NonSensitive);
+                }
+            }
+            OutputColumnOrigin::NonSensitive { .. } => {
+                if fallback.is_none() {
+                    fallback = Some(ResolvedColumn::NonSensitive);
+                }
+            }
+            OutputColumnOrigin::Wildcard => {}
         }
     }
 
-    let mut collector = ExprColCollector {
-        alias_to_dataset,
-        base_datasets,
+    if let Some((ds, meta)) = resolve_unqualified_col(col_lower, &ql.wildcard_datasets) {
+        let wild_col = ResolvedColumn::Direct {
+            dataset_id: ds.id,
+            column_name: meta.column_name.clone(),
+            pii_category: meta.pii_category,
+        };
+        if meta.pii_category != PiiCategory::None || fallback.is_none() {
+            return Some(wild_col);
+        }
+    }
+
+    fallback
+}
+
+fn resolve_in_relation(col_lower: &str, rel: &RelationEntry<'_>) -> Option<ResolvedColumn> {
+    match &rel.kind {
+        RelationKind::Dataset(ds) => ds
+            .columns
+            .get(col_lower)
+            .map(|meta| ResolvedColumn::Direct {
+                dataset_id: ds.id,
+                column_name: meta.column_name.clone(),
+                pii_category: meta.pii_category,
+            }),
+        RelationKind::Derived(ql) => resolve_in_derived(col_lower, ql),
+        RelationKind::Opaque => None,
+    }
+}
+
+fn resolve_unqualified_in_slice(
+    col_lower: &str,
+    relations: &[RelationEntry<'_>],
+) -> Option<ResolvedColumn> {
+    let mut fallback: Option<ResolvedColumn> = None;
+    for rel in relations {
+        if let Some(resolved) = resolve_in_relation(col_lower, rel) {
+            if resolved.pii_category().is_some() {
+                return Some(resolved);
+            }
+            if fallback.is_none() {
+                fallback = Some(resolved);
+            }
+        }
+    }
+    fallback
+}
+
+fn resolve_unqualified(
+    col_lower: &str,
+    relations: &[RelationEntry<'_>],
+    outer_scopes: &[Vec<RelationEntry<'_>>],
+) -> Option<ResolvedColumn> {
+    if let Some(local) = resolve_unqualified_in_slice(col_lower, relations) {
+        return Some(local);
+    }
+    for scope in outer_scopes.iter().rev() {
+        if let Some(outer) = resolve_unqualified_in_slice(col_lower, scope) {
+            return Some(outer);
+        }
+    }
+    None
+}
+
+fn resolve_qualified_in_slice(
+    tbl_lower: &str,
+    col_lower: &str,
+    relations: &[RelationEntry<'_>],
+) -> Option<(bool, Option<ResolvedColumn>)> {
+    let mut matched_table = false;
+    let mut fallback: Option<ResolvedColumn> = None;
+    for rel in relations {
+        if rel.alias.as_deref() == Some(tbl_lower) {
+            matched_table = true;
+            if let Some(resolved) = resolve_in_relation(col_lower, rel) {
+                if resolved.pii_category().is_some() {
+                    return Some((true, Some(resolved)));
+                }
+                if fallback.is_none() {
+                    fallback = Some(resolved);
+                }
+            }
+        }
+    }
+    matched_table.then_some((true, fallback))
+}
+
+fn resolve_qualified(
+    tbl_lower: &str,
+    col_lower: &str,
+    relations: &[RelationEntry<'_>],
+    outer_scopes: &[Vec<RelationEntry<'_>>],
+) -> Option<ResolvedColumn> {
+    if let Some((_, resolved)) = resolve_qualified_in_slice(tbl_lower, col_lower, relations) {
+        return resolved;
+    }
+    for scope in outer_scopes.iter().rev() {
+        if let Some((_, resolved)) = resolve_qualified_in_slice(tbl_lower, col_lower, scope) {
+            return resolved;
+        }
+    }
+    None
+}
+
+fn query_lineage_any_pii(ql: &QueryLineage<'_>) -> Option<PiiCategory> {
+    for col in &ql.columns {
+        match col {
+            OutputColumnOrigin::Direct { pii_category, .. }
+            | OutputColumnOrigin::DerivedFromPii { pii_category, .. }
+                if *pii_category != PiiCategory::None =>
+            {
+                return Some(*pii_category);
+            }
+            _ => {}
+        }
+    }
+    first_pii_in_datasets(&ql.wildcard_datasets)
+}
+
+fn relation_entry_any_pii(rel: &RelationEntry<'_>) -> Option<PiiCategory> {
+    match &rel.kind {
+        RelationKind::Dataset(ds) => first_pii_in_datasets(&[*ds]),
+        RelationKind::Derived(ql) => query_lineage_any_pii(ql),
+        RelationKind::Opaque => None,
+    }
+}
+
+fn relation_any_pii(
+    tbl_lower: &str,
+    relations: &[RelationEntry<'_>],
+    outer_scopes: &[Vec<RelationEntry<'_>>],
+) -> Option<PiiCategory> {
+    for rel in relations {
+        if rel.alias.as_deref() == Some(tbl_lower)
+            && let Some(pii) = relation_entry_any_pii(rel)
+        {
+            return Some(pii);
+        }
+    }
+    for scope in outer_scopes.iter().rev() {
+        for rel in scope {
+            if rel.alias.as_deref() == Some(tbl_lower)
+                && let Some(pii) = relation_entry_any_pii(rel)
+            {
+                return Some(pii);
+            }
+        }
+    }
+    None
+}
+
+struct ExprPiiFinder<'a, 'b> {
+    relations: &'b [RelationEntry<'a>],
+    ctx: LineageCtx<'a, 'b>,
+    subquery_depth: usize,
+    in_exists_head: bool,
+    detected_pii: Option<PiiCategory>,
+}
+
+impl Visitor for ExprPiiFinder<'_, '_> {
+    type Break = ();
+
+    fn pre_visit_query(&mut self, query: &Query) -> ControlFlow<Self::Break> {
+        if self.subquery_depth == 0 {
+            let is_exists = std::mem::replace(&mut self.in_exists_head, false);
+            if let Some(pii) = find_any_pii_in_subquery(query, self.relations, self.ctx, !is_exists)
+            {
+                self.detected_pii = Some(pii);
+                return ControlFlow::Break(());
+            }
+        }
+        self.subquery_depth = self.subquery_depth.saturating_add(1);
+        ControlFlow::Continue(())
+    }
+
+    fn post_visit_query(&mut self, _query: &Query) -> ControlFlow<Self::Break> {
+        self.subquery_depth = self.subquery_depth.saturating_sub(1);
+        ControlFlow::Continue(())
+    }
+
+    fn pre_visit_expr(&mut self, e: &Expr) -> ControlFlow<Self::Break> {
+        if self.subquery_depth > 0 {
+            return ControlFlow::Continue(());
+        }
+        match e {
+            Expr::Exists { .. } => {
+                self.in_exists_head = true;
+            }
+            Expr::Identifier(ident) => {
+                let col_lower = ident.value.to_ascii_lowercase();
+                if let Some(resolved) =
+                    resolve_unqualified(&col_lower, self.relations, self.ctx.outer_scopes)
+                {
+                    if let Some(pii) = resolved.pii_category() {
+                        self.detected_pii = Some(pii);
+                        return ControlFlow::Break(());
+                    }
+                } else if let Some(pii) =
+                    relation_any_pii(&col_lower, self.relations, self.ctx.outer_scopes)
+                {
+                    self.detected_pii = Some(pii);
+                    return ControlFlow::Break(());
+                }
+            }
+            Expr::CompoundIdentifier(parts) => {
+                if let [tbl, col, ..] = parts.as_slice() {
+                    let t_low = tbl.value.to_ascii_lowercase();
+                    let c_low = col.value.to_ascii_lowercase();
+                    if let Some(resolved) =
+                        resolve_qualified(&t_low, &c_low, self.relations, self.ctx.outer_scopes)
+                    {
+                        if let Some(pii) = resolved.pii_category() {
+                            self.detected_pii = Some(pii);
+                            return ControlFlow::Break(());
+                        }
+                    } else if let Some(resolved) =
+                        resolve_unqualified(&t_low, self.relations, self.ctx.outer_scopes)
+                        && let Some(pii) = resolved.pii_category()
+                    {
+                        self.detected_pii = Some(pii);
+                        return ControlFlow::Break(());
+                    }
+                }
+            }
+            _ => {}
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+fn find_any_pii_in_ast<'a, N: Visit>(
+    node: &N,
+    relations: &[RelationEntry<'a>],
+    ctx: LineageCtx<'a, '_>,
+) -> Option<PiiCategory> {
+    let mut finder = ExprPiiFinder {
+        relations,
+        ctx,
+        subquery_depth: 0,
+        in_exists_head: false,
         detected_pii: None,
     };
-    let _visit_flow = expr.visit(&mut collector);
-    collector.detected_pii
+    let _visit_flow = node.visit(&mut finder);
+    finder.detected_pii
+}
+
+fn find_any_pii_in_subquery<'a>(
+    subquery: &Query,
+    current_relations: &[RelationEntry<'a>],
+    ctx: LineageCtx<'a, '_>,
+    include_wildcard_datasets: bool,
+) -> Option<PiiCategory> {
+    if ctx.depth > MAX_LINEAGE_DEPTH {
+        return None;
+    }
+    let mut sub_outer = ctx.outer_scopes.to_vec();
+    if !current_relations.is_empty() {
+        sub_outer.push(current_relations.to_vec());
+    }
+    let sub_ctx = LineageCtx {
+        catalog: ctx.catalog,
+        cte_scope: ctx.cte_scope,
+        outer_scopes: &sub_outer,
+        depth: ctx.depth.saturating_add(1),
+    };
+    let sub_ql = analyze_query_lineage(subquery, sub_ctx);
+    for col in &sub_ql.columns {
+        match col {
+            OutputColumnOrigin::Direct { pii_category, .. }
+            | OutputColumnOrigin::DerivedFromPii { pii_category, .. }
+                if *pii_category != PiiCategory::None =>
+            {
+                return Some(*pii_category);
+            }
+            _ => {}
+        }
+    }
+    if include_wildcard_datasets && let Some(pii) = first_pii_in_datasets(&sub_ql.wildcard_datasets)
+    {
+        return Some(pii);
+    }
+    find_any_pii_in_query_predicates(subquery, sub_ctx)
+}
+
+fn find_any_pii_in_query_predicates(query: &Query, ctx: LineageCtx<'_, '_>) -> Option<PiiCategory> {
+    if ctx.depth > MAX_LINEAGE_DEPTH {
+        return None;
+    }
+    let Some(ref with_clause) = query.with else {
+        return find_any_pii_in_set_expr_predicates(&query.body, ctx);
+    };
+    let local_ctes = build_with_cte_scope(with_clause, ctx);
+    for cte in &with_clause.cte_tables {
+        let cte_ctx = LineageCtx {
+            cte_scope: &local_ctes,
+            depth: ctx.depth.saturating_add(1),
+            ..ctx
+        };
+        if let Some(pii) = find_any_pii_in_query_predicates(&cte.query, cte_ctx) {
+            return Some(pii);
+        }
+    }
+    let body_ctx = LineageCtx {
+        cte_scope: &local_ctes,
+        ..ctx
+    };
+    find_any_pii_in_set_expr_predicates(&query.body, body_ctx)
+}
+
+fn find_any_pii_in_set_expr_predicates(
+    set_expr: &SetExpr,
+    ctx: LineageCtx<'_, '_>,
+) -> Option<PiiCategory> {
+    if ctx.depth > MAX_LINEAGE_DEPTH {
+        return None;
+    }
+    match set_expr {
+        SetExpr::Select(select) => {
+            let relations = collect_select_relations(select, ctx);
+            for pred in [&select.selection, &select.having, &select.qualify]
+                .into_iter()
+                .flatten()
+            {
+                if let Some(pii) = find_any_pii_in_ast(pred, &relations, ctx) {
+                    return Some(pii);
+                }
+            }
+            None
+        }
+        SetExpr::Query(inner) => {
+            let next_ctx = LineageCtx {
+                depth: ctx.depth.saturating_add(1),
+                ..ctx
+            };
+            find_any_pii_in_query_predicates(inner, next_ctx)
+        }
+        SetExpr::SetOperation { left, right, .. } => {
+            let next_ctx = LineageCtx {
+                depth: ctx.depth.saturating_add(1),
+                ..ctx
+            };
+            find_any_pii_in_set_expr_predicates(left, next_ctx)
+                .or_else(|| find_any_pii_in_set_expr_predicates(right, next_ctx))
+        }
+        _ => None,
+    }
 }
 
 fn collect_direct_columns(lineage: &[OutputColumnOrigin]) -> Vec<(Uuid, String)> {

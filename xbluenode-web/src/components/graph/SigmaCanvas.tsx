@@ -338,6 +338,10 @@ export function SigmaCanvas({
     };
   }, [edges.length, fa2Running, graph]);
 
+  const projectedNodesRef = useRef<
+    { id: string; title: string; x: number; y: number; r: number }[]
+  >([]);
+
   // 2D Canvas fallback renderer when WebGL2 is unavailable (e.g. headless browser)
   useEffect(() => {
     if (webglReady) return;
@@ -356,7 +360,10 @@ export function SigmaCanvas({
       ctx.fillStyle = isDark ? "#09090b" : "#ffffff";
       ctx.fillRect(0, 0, w, h);
 
-      if (nodes.length === 0) return;
+      if (nodes.length === 0) {
+        projectedNodesRef.current = [];
+        return;
+      }
 
       let minX = Infinity;
       let maxX = -Infinity;
@@ -391,10 +398,20 @@ export function SigmaCanvas({
         ctx.stroke();
       });
 
-      // Draw nodes
+      // Draw nodes and record hit-testing targets
+      const nextProjected: {
+        id: string;
+        title: string;
+        x: number;
+        y: number;
+        r: number;
+      }[] = [];
       graph.forEachNode((id, attrs) => {
         const [px, py] = project(Number(attrs.x ?? 0), Number(attrs.y ?? 0));
         const r = Number(attrs.size ?? 10);
+        const title = String(attrs.label ?? id);
+        nextProjected.push({ id, title, x: px, y: py, r });
+
         ctx.fillStyle = String(attrs.color ?? "#2563eb");
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
@@ -407,8 +424,9 @@ export function SigmaCanvas({
         ctx.fillStyle = isDark ? "#fafafa" : "#09090b";
         ctx.font = "11px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText(String(attrs.label ?? id), px, py + r + 13);
+        ctx.fillText(title, px, py + r + 13);
       });
+      projectedNodesRef.current = nextProjected;
     };
 
     draw();
@@ -416,6 +434,35 @@ export function SigmaCanvas({
     if (canvas.parentElement) ro.observe(canvas.parentElement);
     return () => ro.disconnect();
   }, [graph, isDark, nodes.length, selectedNodeId, webglReady]);
+
+  const hitTestFallbackCanvas = (
+    e: React.MouseEvent<HTMLCanvasElement>
+  ): {
+    hit: { id: string; title: string; x: number; y: number; r: number } | null;
+    localX: number;
+    localY: number;
+  } => {
+    const canvas = fallbackCanvasRef.current;
+    if (!canvas) return { hit: null, localX: 0, localY: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const localX = e.clientX - rect.left;
+    const localY = e.clientY - rect.top;
+    const scaleX = rect.width > 0 ? canvas.width / rect.width : 1;
+    const scaleY = rect.height > 0 ? canvas.height / rect.height : 1;
+    const cx = localX * scaleX;
+    const cy = localY * scaleY;
+
+    const list = projectedNodesRef.current;
+    for (let i = list.length - 1; i >= 0; i -= 1) {
+      const item = list[i];
+      if (!item) continue;
+      const dist = Math.hypot(cx - item.x, cy - item.y);
+      if (dist <= Math.max(item.r + 4, 12)) {
+        return { hit: item, localX, localY };
+      }
+    }
+    return { hit: null, localX, localY };
+  };
 
   return (
     <div
@@ -428,8 +475,36 @@ export function SigmaCanvas({
       ) : (
         <canvas
           ref={fallbackCanvasRef}
-          className="w-full h-full block"
-          onClick={() => setContextMenu(null)}
+          className="w-full h-full block cursor-pointer"
+          onClick={(e) => {
+            const { hit } = hitTestFallbackCanvas(e);
+            setContextMenu(null);
+            if (hit) {
+              selectRef.current(hit.id);
+            }
+          }}
+          onDoubleClick={(e) => {
+            const { hit } = hitTestFallbackCanvas(e);
+            setContextMenu(null);
+            if (hit) {
+              selectRef.current(hit.id);
+              expandRef.current(hit.id);
+            }
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            const { hit, localX, localY } = hitTestFallbackCanvas(e);
+            if (hit) {
+              setContextMenu({
+                nodeId: hit.id,
+                title: hit.title,
+                x: localX,
+                y: localY,
+              });
+            } else {
+              setContextMenu(null);
+            }
+          }}
         />
       )}
 

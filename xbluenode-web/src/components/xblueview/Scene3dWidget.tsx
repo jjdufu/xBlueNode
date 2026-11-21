@@ -241,9 +241,18 @@ export function Scene3dWidget({
     scene.add(gridHelper);
 
     const interactiveObjects: THREE.Object3D[] = [];
+    const originalMaterials = new Map<
+      THREE.Mesh,
+      THREE.Material | THREE.Material[]
+    >();
+    const clonedMaterials: THREE.Material[] = [];
     const nodeAnchors = new Map<
       string,
-      { obj: THREE.Object3D; material: THREE.MeshStandardMaterial; node: Scene3dBindingNode }
+      {
+        obj: THREE.Object3D;
+        materials: THREE.MeshStandardMaterial[];
+        node: Scene3dBindingNode;
+      }
     >();
     const stakesGroup = new THREE.Group();
     scene.add(stakesGroup);
@@ -252,8 +261,20 @@ export function Scene3dWidget({
     let gltfGroup: THREE.Object3D | null = null;
     let activeBlobUrl: string | null = null;
 
+    const releaseClonedGltfMaterials = () => {
+      for (const [mesh, origMat] of originalMaterials.entries()) {
+        mesh.material = origMat;
+        delete mesh.userData.nodeId;
+      }
+      for (const mat of clonedMaterials) {
+        mat.dispose();
+      }
+      clonedMaterials.length = 0;
+    };
+
     const buildOrSyncBindings = () => {
       if (disposed) return;
+      releaseClonedGltfMaterials();
       while (stakesGroup.children.length > 0) {
         const child = stakesGroup.children[0];
         if (child) {
@@ -275,17 +296,38 @@ export function Scene3dWidget({
             ? gltfGroup.getObjectByName(n.meshName)
             : undefined;
 
-        if (matchedObj instanceof THREE.Mesh) {
-          const mat =
-            matchedObj.material instanceof THREE.MeshStandardMaterial
-              ? matchedObj.material.clone()
-              : new THREE.MeshStandardMaterial({ color: 0x71717a });
-          mat.emissive = new THREE.Color(colorHex);
-          mat.emissiveIntensity = n.openAlerts > 0 ? 0.9 : 0.45;
-          matchedObj.material = mat;
+        const boundMats: THREE.MeshStandardMaterial[] = [];
+        if (matchedObj) {
           matchedObj.userData.nodeId = n.nodeId;
-          interactiveObjects.push(matchedObj);
-          nodeAnchors.set(n.nodeId, { obj: matchedObj, material: mat, node: n });
+          matchedObj.traverse((sub) => {
+            if (sub instanceof THREE.Mesh) {
+              if (!originalMaterials.has(sub)) {
+                originalMaterials.set(sub, sub.material);
+              }
+              const baseMat = Array.isArray(sub.material)
+                ? sub.material[0]
+                : sub.material;
+              const mat =
+                baseMat instanceof THREE.MeshStandardMaterial
+                  ? baseMat.clone()
+                  : new THREE.MeshStandardMaterial({ color: 0x71717a });
+              mat.emissive = new THREE.Color(colorHex);
+              mat.emissiveIntensity = n.openAlerts > 0 ? 0.9 : 0.45;
+              sub.material = mat;
+              sub.userData.nodeId = n.nodeId;
+              clonedMaterials.push(mat);
+              boundMats.push(mat);
+              interactiveObjects.push(sub);
+            }
+          });
+        }
+
+        if (matchedObj && boundMats.length > 0) {
+          nodeAnchors.set(n.nodeId, {
+            obj: matchedObj,
+            materials: boundMats,
+            node: n,
+          });
         } else {
           const geom = new THREE.BoxGeometry(0.9 * n.scale, 1.2 * n.scale, 0.9 * n.scale);
           const mat = new THREE.MeshStandardMaterial({
@@ -300,7 +342,7 @@ export function Scene3dWidget({
           mesh.userData.nodeId = n.nodeId;
           stakesGroup.add(mesh);
           interactiveObjects.push(mesh);
-          nodeAnchors.set(n.nodeId, { obj: mesh, material: mat, node: n });
+          nodeAnchors.set(n.nodeId, { obj: mesh, materials: [mat], node: n });
         }
       }
     };
@@ -392,7 +434,9 @@ export function Scene3dWidget({
       const pulse = 0.55 + 0.45 * Math.sin(nowMs * 0.006);
       for (const anchor of nodeAnchors.values()) {
         if (anchor.node.openAlerts > 0) {
-          anchor.material.emissiveIntensity = 0.45 + pulse * 0.85;
+          for (const mat of anchor.materials) {
+            mat.emissiveIntensity = 0.45 + pulse * 0.85;
+          }
         }
       }
 
@@ -436,6 +480,8 @@ export function Scene3dWidget({
       ro.disconnect();
       renderer.domElement.removeEventListener("click", onPointerClick);
       controls.dispose();
+      releaseClonedGltfMaterials();
+      originalMaterials.clear();
       if (gltfGroup) {
         disposeObjectTree(gltfGroup);
       }

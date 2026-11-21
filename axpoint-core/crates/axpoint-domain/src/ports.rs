@@ -89,7 +89,7 @@ use crate::topology::{
 use crate::view::{
     AffectedWidgetRef, AssetRecord, CreateAssetParams, CreateDashboardRequest,
     CreateWidgetRecordParams, DashboardDetail, DashboardRecord, FloorPlacementRecord, FloorPlanRow,
-    LayoutUpdateItem, NodesGeoRow, PutFloorPlacementItem, PutScene3dBindingItem,
+    LayoutUpdateItem, NodesGeoLinkRow, NodesGeoRow, PutFloorPlacementItem, PutScene3dBindingItem,
     Scene3dBindingRecord, Scene3dRow, UpdateDashboardRequest, UpdateWidgetRecordParams,
     ViewWriteNodeOutcome, ViewWriteNodeParams, WidgetDeps, WidgetRecord,
 };
@@ -2893,6 +2893,13 @@ pub trait ViewRepository: Send + Sync {
         items: &[PutScene3dBindingItem],
     ) -> impl Future<Output = Result<Vec<Scene3dBindingRecord>, AppError>> + Send;
 
+    /// Lists widgets in `tenant_id` whose `FLOOR_PLAN` or `SCENE_3D` `data_source` references `asset_id`.
+    fn list_widgets_by_asset(
+        &self,
+        tenant_id: &str,
+        asset_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<WidgetRecord>, AppError>> + Send;
+
     /// Queries geo-located nodes with optional `color_metric` and active open alert counts.
     fn query_nodes_geo(
         &self,
@@ -2900,6 +2907,14 @@ pub trait ViewRepository: Send + Sync {
         type_names: &[String],
         color_metric: Option<&str>,
     ) -> impl Future<Output = Result<Vec<NodesGeoRow>, AppError>> + Send;
+
+    /// Queries geo-located relationships connecting `node_ids` filtered by `link_types` for fly-line rendering.
+    fn query_nodes_geo_links(
+        &self,
+        tenant_id: &str,
+        node_ids: &[Uuid],
+        link_types: &[String],
+    ) -> impl Future<Output = Result<Vec<NodesGeoLinkRow>, AppError>> + Send;
 
     /// Queries floor-plan placements joined with node titles, live metric, and alert counts.
     fn query_floor_plan_rows(

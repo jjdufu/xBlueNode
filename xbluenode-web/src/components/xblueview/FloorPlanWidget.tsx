@@ -19,6 +19,7 @@ import {
 export interface FloorPlanWidgetProps {
   widget: WidgetRecord;
   data: WidgetDataResponse | null;
+  editable?: boolean;
   onSelectNode?: (node: SelectedNodeContext) => void;
   onCrossFilter?: (field: string, value: unknown) => void;
 }
@@ -37,17 +38,29 @@ interface FloorMarker {
 export function FloorPlanWidget({
   widget,
   data,
+  editable = false,
   onSelectNode,
   onCrossFilter,
 }: FloorPlanWidgetProps) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [loadErr, setLoadErr] = useState(false);
   const blobUrlRef = useRef<string | null>(null);
+
+  const [dragOverrides, setDragOverrides] = useState<
+    Record<string, { xRatio: number; yRatio: number }>
+  >({});
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null);
+  const didDragRef = useRef(false);
 
   const assetId =
     widget.data_source.kind === "FLOOR_PLAN"
       ? widget.data_source.asset_id
       : readString(widget.options, "asset_id") ?? "";
+
+  useEffect(() => {
+    setDragOverrides({});
+  }, [data]);
 
   useEffect(() => {
     if (!assetId) {
@@ -98,8 +111,11 @@ export function FloorPlanWidget({
       const typeName = String(getCell(r, colMap, "type_name", 1) ?? "Node");
       const nodeKey = String(getCell(r, colMap, "node_key", 2) ?? nodeId);
       const title = String(getCell(r, colMap, "title", 3) ?? nodeKey);
-      const xRatio = toNumericValue(getCell(r, colMap, "x_ratio", 4)) ?? 0.5;
-      const yRatio = toNumericValue(getCell(r, colMap, "y_ratio", 5)) ?? 0.5;
+      const override = dragOverrides[nodeId];
+      const xRatio =
+        override?.xRatio ?? toNumericValue(getCell(r, colMap, "x_ratio", 4)) ?? 0.5;
+      const yRatio =
+        override?.yRatio ?? toNumericValue(getCell(r, colMap, "y_ratio", 5)) ?? 0.5;
       const metricValue = toNumericValue(getCell(r, colMap, "metric_value", 6));
       const openAlerts = toNumericValue(getCell(r, colMap, "open_alerts", 7)) ?? 0;
       return {
@@ -113,10 +129,64 @@ export function FloorPlanWidget({
         openAlerts,
       };
     });
-  }, [data]);
+  }, [data, dragOverrides]);
+
+  const computeRatioFromPointer = (
+    clientX: number,
+    clientY: number
+  ): { xRatio: number; yRatio: number } | null => {
+    const el = containerRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
+    const xRatio = Number(
+      Math.max(0.02, Math.min(0.98, (clientX - rect.left) / rect.width)).toFixed(4)
+    );
+    const yRatio = Number(
+      Math.max(0.02, Math.min(0.98, (clientY - rect.top) / rect.height)).toFixed(4)
+    );
+    return { xRatio, yRatio };
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!editable || !draggingNodeId) return;
+    const next = computeRatioFromPointer(e.clientX, e.clientY);
+    if (!next) return;
+    didDragRef.current = true;
+    setDragOverrides((prev) => ({
+      ...prev,
+      [draggingNodeId]: next,
+    }));
+  };
+
+  const handlePointerUp = async (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!editable || !draggingNodeId) return;
+    const targetNodeId = draggingNodeId;
+    setDraggingNodeId(null);
+    if (!didDragRef.current || !assetId) return;
+    const finalPos = computeRatioFromPointer(e.clientX, e.clientY);
+    const placements = markers.map((m) => ({
+      node_id: m.nodeId,
+      x_ratio: m.nodeId === targetNodeId && finalPos ? finalPos.xRatio : m.xRatio,
+      y_ratio: m.nodeId === targetNodeId && finalPos ? finalPos.yRatio : m.yRatio,
+    }));
+    try {
+      await xblueviewApi.putPlacements(assetId, placements);
+    } catch {
+      // Keep optimistic coordinates in UI if save fails transiently
+    }
+  };
 
   return (
     <div
+      ref={containerRef}
+      onPointerMove={handlePointerMove}
+      onPointerUp={(e) => void handlePointerUp(e)}
+      onPointerLeave={(e) => {
+        if (draggingNodeId) {
+          void handlePointerUp(e);
+        }
+      }}
       className="h-full relative rounded border border-border bg-muted/30 overflow-hidden select-none"
       data-testid={`widget-floorplan-${widget.id}`}
     >
@@ -147,7 +217,17 @@ export function FloorPlanWidget({
           <button
             key={m.nodeId}
             type="button"
+            onPointerDown={(e) => {
+              if (!editable) return;
+              e.stopPropagation();
+              didDragRef.current = false;
+              setDraggingNodeId(m.nodeId);
+            }}
             onClick={() => {
+              if (didDragRef.current) {
+                didDragRef.current = false;
+                return;
+              }
               onSelectNode?.({
                 nodeId: m.nodeId,
                 typeName: m.typeName,
@@ -162,9 +242,10 @@ export function FloorPlanWidget({
               top: `${m.yRatio * 100}%`,
               borderColor: color,
             }}
-            className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-md border-2 bg-background/95 px-2 py-1 text-[11px] shadow-sm transition-transform hover:scale-105 cursor-pointer ${
-              hasAlert ? "animate-pulse ring-2 ring-xblue" : ""
-            }`}
+            className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-md border-2 bg-background/95 px-2 py-1 text-[11px] shadow-sm transition-transform hover:scale-105 ${
+              editable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
+            } ${hasAlert ? "animate-pulse ring-2 ring-xblue" : ""}`}
+            data-testid={`floorplan-marker-${m.nodeId}`}
           >
             <div className="flex items-center gap-1 font-medium">
               <span

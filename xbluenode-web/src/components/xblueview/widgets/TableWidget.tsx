@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
 import {
@@ -22,9 +22,29 @@ interface ColumnFormatOption {
   align?: "left" | "right";
 }
 
+const VIRTUAL_ROW_HEIGHT = 32;
+const VIRTUAL_OVERSCAN = 10;
+
 export function TableWidget({ widget, data, onRowClick }: TableWidgetProps) {
   const [sortColIdx, setSortColIdx] = useState<number | null>(null);
   const [sortAsc, setSortAsc] = useState(true);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(400);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const updateSize = () => {
+      if (el.clientHeight > 0) {
+        setViewportHeight(el.clientHeight);
+      }
+    };
+    updateSize();
+    const ro = new ResizeObserver(updateSize);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [data]);
 
   const columnFormats = useMemo(() => {
     const map = new Map<string, ColumnFormatOption>();
@@ -91,9 +111,32 @@ export function TableWidget({ widget, data, onRowClick }: TableWidgetProps) {
     }
   };
 
+  const totalRows = sortedRows.length;
+  const startIndex = Math.max(
+    0,
+    Math.floor(scrollTop / VIRTUAL_ROW_HEIGHT) - VIRTUAL_OVERSCAN
+  );
+  const visibleCount =
+    Math.ceil(Math.max(viewportHeight, 320) / VIRTUAL_ROW_HEIGHT) +
+    VIRTUAL_OVERSCAN * 2;
+  const endIndex = Math.min(totalRows, startIndex + visibleCount);
+  const topSpacerHeight = startIndex * VIRTUAL_ROW_HEIGHT;
+  const bottomSpacerHeight = Math.max(
+    0,
+    (totalRows - endIndex) * VIRTUAL_ROW_HEIGHT
+  );
+  const visibleRows = sortedRows.slice(startIndex, endIndex);
+
   return (
-    <div className="h-full flex flex-col overflow-hidden" data-testid={`widget-table-${widget.id}`}>
-      <div className="flex-1 overflow-auto border border-border rounded">
+    <div
+      className="h-full flex flex-col overflow-hidden"
+      data-testid={`widget-table-${widget.id}`}
+    >
+      <div
+        ref={scrollRef}
+        onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+        className="flex-1 overflow-auto border border-border rounded"
+      >
         <table className="w-full border-collapse text-xs">
           <thead className="sticky top-0 bg-muted/90 backdrop-blur-xs z-10 border-b border-border">
             <tr>
@@ -123,7 +166,7 @@ export function TableWidget({ widget, data, onRowClick }: TableWidgetProps) {
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {sortedRows.length === 0 ? (
+            {totalRows === 0 ? (
               <tr>
                 <td
                   colSpan={data.columns.length}
@@ -133,45 +176,71 @@ export function TableWidget({ widget, data, onRowClick }: TableWidgetProps) {
                 </td>
               </tr>
             ) : (
-              sortedRows.slice(0, 500).map((row, rIdx) => (
-                <tr
-                  key={rIdx}
-                  onClick={() => {
-                    if (!onRowClick) return;
-                    const obj: Record<string, unknown> = {};
-                    data.columns.forEach((c, cIdx) => {
-                      obj[c.name] = row[cIdx];
-                    });
-                    onRowClick(obj);
-                  }}
-                  className={
-                    onRowClick
-                      ? "hover:bg-muted/60 cursor-pointer transition-colors"
-                      : "hover:bg-muted/30"
-                  }
-                >
-                  {data.columns.map((col, cIdx) => {
-                    const fmt = columnFormats.get(col.name);
-                    const val = row[cIdx];
-                    const isNum = toNumericValue(val) !== null;
-                    return (
-                      <td
-                        key={`${rIdx}-${col.name}`}
-                        className={`px-2.5 py-1.5 whitespace-nowrap ${
-                          isNum || fmt?.align === "right"
-                            ? "text-right font-mono-tech tabular-nums"
-                            : "text-left"
-                        }`}
-                      >
-                        {formatDisplayValue(val, {
-                          unit: fmt?.unit,
-                          decimals: fmt?.decimals,
-                        })}
-                      </td>
-                    );
-                  })}
-                </tr>
-              ))
+              <>
+                {topSpacerHeight > 0 && (
+                  <tr aria-hidden="true">
+                    <td
+                      colSpan={data.columns.length}
+                      style={{ height: `${topSpacerHeight}px`, padding: 0, border: 0 }}
+                    />
+                  </tr>
+                )}
+                {visibleRows.map((row, offset) => {
+                  const rIdx = startIndex + offset;
+                  return (
+                    <tr
+                      key={rIdx}
+                      style={{ height: `${VIRTUAL_ROW_HEIGHT}px` }}
+                      onClick={() => {
+                        if (!onRowClick) return;
+                        const obj: Record<string, unknown> = {};
+                        data.columns.forEach((c, cIdx) => {
+                          obj[c.name] = row[cIdx];
+                        });
+                        onRowClick(obj);
+                      }}
+                      className={
+                        onRowClick
+                          ? "hover:bg-muted/60 cursor-pointer transition-colors"
+                          : "hover:bg-muted/30"
+                      }
+                    >
+                      {data.columns.map((col, cIdx) => {
+                        const fmt = columnFormats.get(col.name);
+                        const val = row[cIdx];
+                        const isNum = toNumericValue(val) !== null;
+                        return (
+                          <td
+                            key={`${rIdx}-${col.name}`}
+                            className={`px-2.5 py-1 whitespace-nowrap ${
+                              isNum || fmt?.align === "right"
+                                ? "text-right font-mono-tech tabular-nums"
+                                : "text-left"
+                            }`}
+                          >
+                            {formatDisplayValue(val, {
+                              unit: fmt?.unit,
+                              decimals: fmt?.decimals,
+                            })}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+                {bottomSpacerHeight > 0 && (
+                  <tr aria-hidden="true">
+                    <td
+                      colSpan={data.columns.length}
+                      style={{
+                        height: `${bottomSpacerHeight}px`,
+                        padding: 0,
+                        border: 0,
+                      }}
+                    />
+                  </tr>
+                )}
+              </>
             )}
           </tbody>
         </table>

@@ -7,13 +7,11 @@ import {
   type WidgetDataResponse,
   type WidgetRecord,
 } from "@/lib/api/xblueview";
+import { parseNodesGeoData, type GeoNodePoint } from "./logic";
 import {
-  buildColumnIndexMap,
-  getCell,
   parseThresholds,
   readString,
   resolveThresholdColor,
-  toNumericValue,
   type SelectedNodeContext,
 } from "./utils";
 
@@ -23,16 +21,6 @@ export interface MapWidgetProps {
   isDark?: boolean;
   onSelectNode?: (node: SelectedNodeContext) => void;
   onCrossFilter?: (field: string, value: unknown) => void;
-}
-
-interface GeoNodeItem {
-  nodeId: string;
-  typeName: string;
-  nodeKey: string;
-  title: string;
-  lng: number;
-  lat: number;
-  metricValue: number | null;
 }
 
 function isWebGlSupported(): boolean {
@@ -61,9 +49,11 @@ export function MapWidget({
 
   const [geoJsonReady, setGeoJsonReady] = useState<string | null>(null);
 
+  const envTileUrl =
+    import.meta.env.AXPOINT_MAP_TILE_URL || import.meta.env.VITE_MAP_TILE_URL;
   const tileUrl =
     readString(widget.options, "tile_url") ??
-    (import.meta.env.VITE_MAP_TILE_URL as string | undefined);
+    (envTileUrl && envTileUrl.trim().length > 0 ? envTileUrl.trim() : undefined);
   const geojsonAssetId = readString(widget.options, "geojson_asset_id");
   const useMaplibre = Boolean(tileUrl && isWebGlSupported());
 
@@ -72,44 +62,10 @@ export function MapWidget({
     [widget.options]
   );
 
-  const points = useMemo<GeoNodeItem[]>(() => {
-    if (!data) return [];
-    const colMap = buildColumnIndexMap(data);
-    const items: GeoNodeItem[] = [];
-    for (const row of data.rows) {
-      const lng = toNumericValue(
-        getCell(row, colMap, "geo_lng", -1) ??
-          getCell(row, colMap, "lng", 4)
-      );
-      const lat = toNumericValue(
-        getCell(row, colMap, "geo_lat", -1) ??
-          getCell(row, colMap, "lat", 5)
-      );
-      if (lng === null || lat === null) continue;
-      const nodeId = String(
-        getCell(row, colMap, "node_id", 0) ??
-          getCell(row, colMap, "id", 0) ??
-          ""
-      );
-      const typeName = String(getCell(row, colMap, "type_name", 1) ?? "Node");
-      const nodeKey = String(getCell(row, colMap, "node_key", 2) ?? nodeId);
-      const title = String(getCell(row, colMap, "title", 3) ?? nodeKey);
-      const metricValue = toNumericValue(
-        getCell(row, colMap, "metric_value", 6) ??
-          getCell(row, colMap, "value", 6)
-      );
-      items.push({
-        nodeId,
-        typeName,
-        nodeKey,
-        title,
-        lng,
-        lat,
-        metricValue,
-      });
-    }
-    return items;
-  }, [data]);
+  const { points, flyLines } = useMemo(
+    () => parseNodesGeoData(data),
+    [data]
+  );
 
   // Load optional GEOJSON asset
   useEffect(() => {
@@ -154,18 +110,57 @@ export function MapWidget({
     if (!el) return;
 
     const first = points[0];
+    const sources: Record<string, maplibregl.SourceSpecification> = {
+      osm: {
+        type: "raster",
+        tiles: [tileUrl],
+        tileSize: 256,
+      },
+    };
+    const layers: maplibregl.LayerSpecification[] = [
+      { id: "osm", type: "raster", source: "osm" },
+    ];
+
+    if (flyLines.length > 0) {
+      sources["xv-fly-lines"] = {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: flyLines.map((lk, idx) => ({
+            type: "Feature" as const,
+            id: idx,
+            properties: {
+              link_type: lk.linkType,
+              weight: lk.weight,
+            },
+            geometry: {
+              type: "LineString" as const,
+              coordinates: [
+                [lk.srcLng, lk.srcLat],
+                [lk.dstLng, lk.dstLat],
+              ],
+            },
+          })),
+        },
+      };
+      layers.push({
+        id: "xv-fly-lines-layer",
+        type: "line",
+        source: "xv-fly-lines",
+        paint: {
+          "line-color": isDark ? "#3b82f6" : "#2563eb",
+          "line-width": 2,
+          "line-opacity": 0.85,
+        },
+      });
+    }
+
     const map = new maplibregl.Map({
       container: el,
       style: {
         version: 8,
-        sources: {
-          osm: {
-            type: "raster",
-            tiles: [tileUrl],
-            tileSize: 256,
-          },
-        },
-        layers: [{ id: "osm", type: "raster", source: "osm" }],
+        sources,
+        layers,
       },
       center: first ? [first.lng, first.lat] : [121.47, 31.23],
       zoom: 6,
@@ -207,7 +202,7 @@ export function MapWidget({
       map.remove();
       maplibreRef.current = null;
     };
-  }, [points, thresholds, tileUrl, useMaplibre]);
+  }, [flyLines, isDark, points, thresholds, tileUrl, useMaplibre]);
 
   // ECharts Geo / Cartesian mode
   useEffect(() => {
@@ -219,7 +214,7 @@ export function MapWidget({
 
     chart.on("click", (params) => {
       if (typeof params.data === "object" && params.data !== null) {
-        const rec = params.data as { node?: GeoNodeItem };
+        const rec = params.data as { node?: GeoNodePoint };
         if (rec.node) {
           if (rec.node.nodeId && selectRef.current) {
             selectRef.current({
@@ -252,6 +247,7 @@ export function MapWidget({
     const muted = isDark ? "#a1a1aa" : "#71717a";
     const gridLine = isDark ? "#27272a" : "#e4e4e7";
     const cardBg = isDark ? "#18181b" : "#ffffff";
+    const lineAccent = isDark ? "#3b82f6" : "#2563eb";
 
     const seriesData = points.map((pt) => ({
       name: pt.title,
@@ -264,7 +260,46 @@ export function MapWidget({
       },
     }));
 
+    const linesSeriesData = flyLines.map((lk) => ({
+      name: lk.linkType,
+      value: lk.weight,
+      coords: [
+        [lk.srcLng, lk.srcLat],
+        [lk.dstLng, lk.dstLat],
+      ] as [[number, number], [number, number]],
+    }));
+
     if (geoJsonReady) {
+      const geoSeries: echarts.SeriesOption[] = [
+        {
+          type: "effectScatter",
+          coordinateSystem: "geo",
+          symbolSize: 13,
+          data: seriesData,
+          label: {
+            show: seriesData.length <= 30,
+            formatter: "{b}",
+            position: "right",
+            color: fg,
+            fontSize: 10,
+          },
+        },
+      ];
+      if (linesSeriesData.length > 0) {
+        geoSeries.push({
+          type: "lines",
+          coordinateSystem: "geo",
+          zlevel: 1,
+          effect: { show: true, period: 4, trailLength: 0.2, symbolSize: 5 },
+          lineStyle: {
+            color: lineAccent,
+            width: 1.6,
+            opacity: 0.75,
+            curveness: 0.2,
+          },
+          data: linesSeriesData,
+        });
+      }
       chart.setOption(
         {
           animation: false,
@@ -285,33 +320,55 @@ export function MapWidget({
               itemStyle: { areaColor: isDark ? "#27272a" : "#e4e4e7" },
             },
           },
-          series: [
-            {
-              type: "effectScatter",
-              coordinateSystem: "geo",
-              symbolSize: 13,
-              data: seriesData,
-              label: {
-                show: seriesData.length <= 30,
-                formatter: "{b}",
-                position: "right",
-                color: fg,
-                fontSize: 10,
-              },
-            },
-          ],
+          series: geoSeries,
         },
         true
       );
       return;
     }
 
-    const lngs = points.map((p) => p.lng);
-    const lats = points.map((p) => p.lat);
+    const lngs = [
+      ...points.map((p) => p.lng),
+      ...flyLines.flatMap((lk) => [lk.srcLng, lk.dstLng]),
+    ];
+    const lats = [
+      ...points.map((p) => p.lat),
+      ...flyLines.flatMap((lk) => [lk.srcLat, lk.dstLat]),
+    ];
     const minLng = lngs.length > 0 ? Math.min(...lngs) - 0.5 : 100;
     const maxLng = lngs.length > 0 ? Math.max(...lngs) + 0.5 : 130;
     const minLat = lats.length > 0 ? Math.min(...lats) - 0.5 : 20;
     const maxLat = lats.length > 0 ? Math.max(...lats) + 0.5 : 45;
+
+    const cartesianSeries: echarts.SeriesOption[] = [
+      {
+        type: "effectScatter",
+        symbolSize: 14,
+        data: seriesData,
+        label: {
+          show: seriesData.length <= 30,
+          formatter: "{b}",
+          position: "right",
+          color: fg,
+          fontSize: 11,
+        },
+      },
+    ];
+    if (linesSeriesData.length > 0) {
+      cartesianSeries.push({
+        type: "lines",
+        coordinateSystem: "cartesian2d",
+        zlevel: 1,
+        effect: { show: true, period: 4, trailLength: 0.2, symbolSize: 5 },
+        lineStyle: {
+          color: lineAccent,
+          width: 1.6,
+          opacity: 0.75,
+          curveness: 0.2,
+        },
+        data: linesSeriesData,
+      });
+    }
 
     chart.setOption(
       {
@@ -322,9 +379,13 @@ export function MapWidget({
           borderColor: gridLine,
           textStyle: { color: fg, fontSize: 12 },
           formatter: (params: unknown) => {
-            const p = params as { data?: { node?: GeoNodeItem } };
+            const p = params as {
+              data?: { node?: GeoNodePoint; name?: string; value?: unknown };
+            };
             const node = p.data?.node;
-            if (!node) return "";
+            if (!node) {
+              return p.data?.name ? `${p.data.name}` : "";
+            }
             return `${node.title} (${node.nodeKey})<br/>经纬度: ${node.lng.toFixed(3)}, ${node.lat.toFixed(3)}${
               node.metricValue !== null ? `<br/>指标: ${node.metricValue}` : ""
             }`;
@@ -347,24 +408,11 @@ export function MapWidget({
           axisLabel: { color: muted, fontSize: 10 },
           splitLine: { lineStyle: { color: gridLine, type: "dashed" } },
         },
-        series: [
-          {
-            type: "effectScatter",
-            symbolSize: 14,
-            data: seriesData,
-            label: {
-              show: seriesData.length <= 30,
-              formatter: "{b}",
-              position: "right",
-              color: fg,
-              fontSize: 11,
-            },
-          },
-        ],
+        series: cartesianSeries,
       },
       true
     );
-  }, [geoJsonReady, isDark, points, thresholds, useMaplibre]);
+  }, [flyLines, geoJsonReady, isDark, points, thresholds, useMaplibre]);
 
   return (
     <div className="h-full relative" data-testid={`widget-map-${widget.id}`}>
@@ -373,7 +421,7 @@ export function MapWidget({
       ) : (
         <div ref={echartsContainerRef} className="h-full w-full min-h-[160px]" />
       )}
-      {points.length === 0 && (
+      {points.length === 0 && flyLines.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs text-muted-foreground">
           暂无带经纬度坐标的业务节点
         </div>

@@ -149,7 +149,7 @@ export function PathPanel({
             className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
             data-testid="path-max-depth-select"
           >
-            {[2, 3, 4, 5, 6, 7, 8].map((d) => (
+            {[1, 2, 3, 4, 5, 6].map((d) => (
               <option key={d} value={d}>
                 {d} 跳
               </option>

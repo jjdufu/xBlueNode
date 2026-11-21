@@ -13,6 +13,22 @@ export interface AlertListWidgetProps {
   onSelectNode?: (nodeId: string, title?: string) => void;
 }
 
+function formatAlertTime(raw: unknown): string {
+  if (raw === undefined || raw === null) return "";
+  const str = String(raw).trim();
+  if (!str) return "";
+  const parsed = new Date(str);
+  if (Number.isNaN(parsed.getTime())) {
+    return str;
+  }
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(
+    parsed.getDate()
+  )} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}:${pad(
+    parsed.getSeconds()
+  )}`;
+}
+
 export function AlertListWidget({
   widget,
   data,
@@ -64,16 +80,23 @@ export function AlertListWidget({
       {data.rows.map((row, idx) => {
         const id = String(getCell(row, colMap, "id", 0) ?? idx);
         const title = String(
-          getCell(row, colMap, "title", 1) ??
-            getCell(row, colMap, "message", 1) ??
+          getCell(row, colMap, "title", -1) ??
+            getCell(row, colMap, "message", -1) ??
+            row[4] ??
+            row[1] ??
             "未命名告警"
         );
         const severity = String(getCell(row, colMap, "severity", 2) ?? "WARN");
         const rawStatus = String(getCell(row, colMap, "status", 3) ?? "OPEN");
         const status = ackedIds.has(id) ? "ACK" : rawStatus;
-        const nodeIdRaw = getCell(row, colMap, "node_id", 4);
+        const nodeIdRaw = getCell(row, colMap, "node_id", -1);
         const nodeId = typeof nodeIdRaw === "string" && nodeIdRaw ? nodeIdRaw : null;
-        const createdAt = getCell(row, colMap, "created_at", 5);
+        const seenAtRaw =
+          getCell(row, colMap, "last_seen_at", -1) ??
+          getCell(row, colMap, "first_seen_at", -1) ??
+          getCell(row, colMap, "created_at", -1) ??
+          "";
+        const formattedTime = formatAlertTime(seenAtRaw);
 
         return (
           <div
@@ -100,9 +123,9 @@ export function AlertListWidget({
                 </Badge>
                 <Badge variant="outline">{status}</Badge>
               </div>
-              {createdAt !== undefined && createdAt !== null && (
+              {formattedTime.length > 0 && (
                 <div className="text-[10px] font-mono-tech text-muted-foreground mt-0.5 truncate">
-                  {String(createdAt)}
+                  {formattedTime}
                 </div>
               )}
             </div>

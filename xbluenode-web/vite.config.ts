@@ -9,6 +9,7 @@ const pkg = JSON.parse(readFileSync(path.resolve(__dirname, "package.json"), "ut
 };
 
 export default defineConfig({
+  envPrefix: ["VITE_", "AXPOINT_MAP_"],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
   },

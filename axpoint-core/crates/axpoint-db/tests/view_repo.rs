@@ -6,7 +6,7 @@ use axpoint_db::PgStore;
 use axpoint_domain::AppError;
 use axpoint_domain::enums::{AssetKind, DataType, PiiCategory, WidgetKind};
 use axpoint_domain::flow::{ActionKind, ActionLogStatus, ActionSourceKind};
-use axpoint_domain::graph::GeoPoint;
+use axpoint_domain::graph::{GeoPoint, UpsertLinkRequest};
 use axpoint_domain::ports::{GraphStorePort as _, ViewRepository as _};
 use axpoint_domain::rules::SimplePageQuery;
 use axpoint_domain::studio::{NodeTypeSpec, PropertyKind, PropertySpec, SchemaDoc};
@@ -93,7 +93,9 @@ async fn cleanup_tenant(owner_pool: &PgPool, tenant_id: &str) -> TestResult {
         "DELETE FROM ax_outbox WHERE tenant_id = $1",
         "DELETE FROM ax_jobs WHERE tenant_id = $1",
         "DELETE FROM xb_metric_series WHERE tenant_id = $1",
+        "DELETE FROM xb_links WHERE tenant_id = $1",
         "DELETE FROM xb_nodes WHERE tenant_id = $1",
+        "DELETE FROM xb_edge_types WHERE tenant_id = $1",
         "DELETE FROM xb_node_types WHERE tenant_id = $1",
         "DELETE FROM xb_schema_versions WHERE tenant_id = $1",
         "DELETE FROM xb_schema_heads WHERE tenant_id = $1",
@@ -178,6 +180,15 @@ async fn seed_warehouse_schema(owner_pool: &PgPool, tenant_id: &str) -> TestResu
         "INSERT INTO xb_node_types (tenant_id, subgraph_slug, name, display_name)
          VALUES ($1, 'main', 'Warehouse', '仓库')
          ON CONFLICT (tenant_id, subgraph_slug, name) DO NOTHING",
+    )
+    .bind(tenant_id)
+    .execute(owner_pool)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO xb_edge_types (tenant_id, subgraph_slug, name, src_type_name, dst_type_name)
+         VALUES ($1, 'main', 'SUPPLIES', 'Warehouse', 'Warehouse')
+         ON CONFLICT (tenant_id, subgraph_slug, name, src_type_name, dst_type_name) DO NOTHING",
     )
     .bind(tenant_id)
     .execute(owner_pool)
@@ -1145,5 +1156,321 @@ async fn view_repo_atomic_write_node_idempotency_and_outbox() -> TestResult {
 
     cleanup_tenant(&owner_pool, &tenant_a).await?;
     cleanup_tenant(&owner_pool, &tenant_b).await?;
+    Ok(())
+}
+
+async fn assert_bounds_and_canvas_rejected(
+    store: &PgStore,
+    tenant_a: &str,
+    dashboard_id: Uuid,
+) -> TestResult {
+    assert!(matches!(
+        store
+            .create_dashboard(
+                tenant_a,
+                None,
+                CreateDashboardRequest {
+                    name: String::from("Zero Cols"),
+                    slug: String::from("zero-cols"),
+                    description: String::new(),
+                    filters: Vec::new(),
+                    theme: DashboardTheme::Light,
+                    canvas: CanvasConfig {
+                        cols: 0,
+                        ..CanvasConfig::default()
+                    },
+                },
+            )
+            .await,
+        Err(AppError::BadRequest {
+            code: "INVALID_ARGUMENT",
+            ..
+        })
+    ));
+
+    assert!(matches!(
+        store
+            .create_widget(
+                tenant_a,
+                static_widget_params(
+                    dashboard_id,
+                    WidgetKind::KpiCard,
+                    "Overflow X+W",
+                    WidgetPosition {
+                        x: 20,
+                        y: 0,
+                        w: 6,
+                        h: 4,
+                    },
+                    WidgetDeps::default(),
+                ),
+            )
+            .await,
+        Err(AppError::BadRequest {
+            code: "INVALID_ARGUMENT",
+            ..
+        })
+    ));
+    Ok(())
+}
+
+async fn assert_asset_kind_and_widget_lookup(
+    store: &PgStore,
+    tenant_a: &str,
+    dashboard_id: Uuid,
+    floor_id: Uuid,
+    glb_id: Uuid,
+) -> TestResult {
+    assert!(matches!(
+        store
+            .replace_floor_placements(tenant_a, Uuid::new_v4(), &[])
+            .await,
+        Err(AppError::NotFound("ASSET_NOT_FOUND"))
+    ));
+    assert!(matches!(
+        store.replace_floor_placements(tenant_a, glb_id, &[]).await,
+        Err(AppError::BadRequest {
+            code: "INVALID_ARGUMENT",
+            ..
+        })
+    ));
+    assert!(matches!(
+        store
+            .replace_scene3d_bindings(tenant_a, floor_id, &[])
+            .await,
+        Err(AppError::BadRequest {
+            code: "INVALID_ARGUMENT",
+            ..
+        })
+    ));
+
+    let fp_widget = store
+        .create_widget(
+            tenant_a,
+            CreateWidgetRecordParams {
+                dashboard_id,
+                widget_kind: WidgetKind::FloorPlan,
+                title: String::from("Floor View"),
+                position: WidgetPosition {
+                    x: 0,
+                    y: 0,
+                    w: 12,
+                    h: 6,
+                },
+                data_source: WidgetDataSource::FloorPlan {
+                    asset_id: floor_id,
+                    color_metric: Some(String::from("inventory")),
+                },
+                encoding: json!({}),
+                options: json!({}),
+                drill: Vec::new(),
+                refresh_mode: RefreshMode::Live,
+                refresh_seconds: 60,
+                deps: WidgetDeps::default(),
+            },
+        )
+        .await?;
+    let s3d_widget = store
+        .create_widget(
+            tenant_a,
+            CreateWidgetRecordParams {
+                dashboard_id,
+                widget_kind: WidgetKind::Scene3d,
+                title: String::from("3D Scene"),
+                position: WidgetPosition {
+                    x: 12,
+                    y: 0,
+                    w: 12,
+                    h: 6,
+                },
+                data_source: WidgetDataSource::Scene3d {
+                    asset_id: glb_id,
+                    color_metric: None,
+                },
+                encoding: json!({}),
+                options: json!({}),
+                drill: Vec::new(),
+                refresh_mode: RefreshMode::Live,
+                refresh_seconds: 60,
+                deps: WidgetDeps::default(),
+            },
+        )
+        .await?;
+
+    let by_floor = store.list_widgets_by_asset(tenant_a, floor_id).await?;
+    assert_eq!(by_floor.len(), 1);
+    assert_eq!(by_floor.first().map(|w| w.id), Some(fp_widget.id));
+
+    let by_glb = store.list_widgets_by_asset(tenant_a, glb_id).await?;
+    assert_eq!(by_glb.len(), 1);
+    assert_eq!(by_glb.first().map(|w| w.id), Some(s3d_widget.id));
+    Ok(())
+}
+
+#[tokio::test]
+async fn view_repo_bounds_canvas_asset_kind_and_widgets_by_asset() -> TestResult {
+    let Some((app_pool, owner_pool)) = test_pools().await? else {
+        return Ok(());
+    };
+    let tenant_a = unique_tenant("t_view_bnd_a");
+    setup_tenant(&owner_pool, &tenant_a).await?;
+    let store = PgStore::new(app_pool);
+
+    let board = store
+        .create_dashboard(
+            &tenant_a,
+            None,
+            CreateDashboardRequest {
+                name: String::from("Bounds Board"),
+                slug: String::from("bounds-board"),
+                description: String::new(),
+                filters: Vec::new(),
+                theme: DashboardTheme::Light,
+                canvas: CanvasConfig::default(),
+            },
+        )
+        .await?;
+    assert_bounds_and_canvas_rejected(&store, &tenant_a, board.dashboard.id).await?;
+    let (floor_id, glb_id) = create_test_spatial_assets(&store, &tenant_a).await?;
+    assert_asset_kind_and_widget_lookup(&store, &tenant_a, board.dashboard.id, floor_id, glb_id)
+        .await?;
+
+    cleanup_tenant(&owner_pool, &tenant_a).await?;
+    Ok(())
+}
+
+async fn seed_two_geo_warehouses(
+    store: &PgStore,
+    tenant_a: &str,
+) -> Result<(Uuid, Uuid), Box<dyn std::error::Error>> {
+    let mut props = serde_json::Map::new();
+    props.insert(String::from("dept_id"), json!("supply"));
+    props.insert(String::from("status"), json!("ACTIVE"));
+    let mut metrics = BTreeMap::new();
+    metrics.insert(String::from("inventory"), 500.0);
+
+    let w1 = store
+        .upsert_blue_node(
+            tenant_a,
+            UpsertBlueNodeRequest {
+                type_name: String::from("Warehouse"),
+                node_key: String::from("W-SH"),
+                title: String::from("Shanghai Hub"),
+                properties: props.clone(),
+                metrics: metrics.clone(),
+                geo: Some(GeoPoint {
+                    lng: 121.4737,
+                    lat: 31.2304,
+                }),
+                ..UpsertBlueNodeRequest::default()
+            },
+        )
+        .await?;
+    let w2 = store
+        .upsert_blue_node(
+            tenant_a,
+            UpsertBlueNodeRequest {
+                type_name: String::from("Warehouse"),
+                node_key: String::from("W-SZ"),
+                title: String::from("Shenzhen Hub"),
+                properties: props,
+                metrics,
+                geo: Some(GeoPoint {
+                    lng: 114.0579,
+                    lat: 22.5431,
+                }),
+                ..UpsertBlueNodeRequest::default()
+            },
+        )
+        .await?;
+    Ok((w1.id, w2.id))
+}
+
+async fn assert_concurrent_and_cross_widget_idempotency(
+    store: &PgStore,
+    tenant_a: &str,
+    node_id: Uuid,
+) -> TestResult {
+    let widget_a = Uuid::new_v4();
+    let widget_b = Uuid::new_v4();
+    let params_a = ViewWriteNodeParams {
+        widget_id: widget_a,
+        node_id,
+        target_kind: WriteNodeTargetKind::Metric,
+        key: String::from("inventory"),
+        value: json!(750),
+        idempotency_key: String::from("idem-race-key"),
+        caller_dept_id: String::from("supply"),
+        numeric_value: Some(750.0),
+    };
+    let (res_1, res_2) = tokio::join!(
+        store.execute_view_write_node(tenant_a, params_a.clone()),
+        store.execute_view_write_node(tenant_a, params_a),
+    );
+    let out_1 = res_1?;
+    let out_2 = res_2?;
+    assert_eq!(out_1.action_log_id, out_2.action_log_id);
+    assert_ne!(out_1.idempotency_replay, out_2.idempotency_replay);
+
+    assert!(matches!(
+        store
+            .execute_view_write_node(
+                tenant_a,
+                ViewWriteNodeParams {
+                    widget_id: widget_b,
+                    node_id,
+                    target_kind: WriteNodeTargetKind::Metric,
+                    key: String::from("inventory"),
+                    value: json!(800),
+                    idempotency_key: String::from("idem-race-key"),
+                    caller_dept_id: String::from("supply"),
+                    numeric_value: Some(800.0),
+                },
+            )
+            .await,
+        Err(AppError::Conflict("CONFLICT"))
+    ));
+    Ok(())
+}
+
+#[tokio::test]
+async fn view_repo_geo_links_and_concurrent_write_idempotency() -> TestResult {
+    let Some((app_pool, owner_pool)) = test_pools().await? else {
+        return Ok(());
+    };
+    let tenant_a = unique_tenant("t_view_gl_a");
+    setup_tenant(&owner_pool, &tenant_a).await?;
+    seed_warehouse_schema(&owner_pool, &tenant_a).await?;
+    let store = PgStore::new(app_pool);
+
+    let (w1_id, w2_id) = seed_two_geo_warehouses(&store, &tenant_a).await?;
+    let link = store
+        .upsert_link(
+            &tenant_a,
+            UpsertLinkRequest {
+                link_type: String::from("SUPPLIES"),
+                src_node_id: w1_id,
+                dst_node_id: w2_id,
+                weight: Some(0.85),
+                properties: serde_json::Map::new(),
+                valid_from: None,
+                valid_to: None,
+            },
+        )
+        .await?;
+
+    let matched = store
+        .query_nodes_geo_links(&tenant_a, &[w1_id, w2_id], &[String::from("SUPPLIES")])
+        .await?;
+    assert_eq!(matched.len(), 1);
+    assert_eq!(matched.first().map(|r| r.link_id), Some(link.id));
+
+    let filtered_out = store
+        .query_nodes_geo_links(&tenant_a, &[w1_id, w2_id], &[String::from("TRANSPORTS")])
+        .await?;
+    assert!(filtered_out.is_empty());
+
+    assert_concurrent_and_cross_widget_idempotency(&store, &tenant_a, w1_id).await?;
+    cleanup_tenant(&owner_pool, &tenant_a).await?;
     Ok(())
 }

@@ -20,10 +20,16 @@ export interface WidgetFrameProps {
   readOnly?: boolean;
   drillPath: DrillPathItem[];
   selectedNodeId?: string | null;
+  filterValues?: Record<string, unknown>;
   onRefresh: (widgetId: string) => void;
   onEdit?: (widget: WidgetRecord) => void;
   onDelete?: (widgetId: string) => void;
-  onDrill?: (widgetId: string, field: string, value: unknown) => void;
+  onDrill?: (
+    widgetId: string,
+    field: string,
+    value: unknown,
+    rowObj?: Record<string, unknown>
+  ) => void;
   onPopDrill?: (widgetId: string, level: number) => void;
   onCrossFilter?: (filterKey: string, value: unknown) => void;
   onSelectNode?: (node: SelectedNodeContext) => void;
@@ -41,6 +47,7 @@ export function WidgetFrame({
   readOnly = false,
   drillPath,
   selectedNodeId,
+  filterValues,
   onRefresh,
   onEdit,
   onDelete,
@@ -154,8 +161,10 @@ export function WidgetFrame({
             widget={widget}
             data={data}
             isDark={isDark || isScreen}
+            isEditing={isEditing}
             readOnly={readOnly}
             selectedNodeId={selectedNodeId}
+            filterValues={filterValues}
             onDrill={onDrill}
             onCrossFilter={onCrossFilter}
             onSelectNode={onSelectNode}

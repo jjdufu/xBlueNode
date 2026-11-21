@@ -5,26 +5,29 @@ use std::sync::Arc;
 
 use axpoint_analytics::{
     CatalogDatasetEntry, LiveConnectionSpec, MetricExecuteOptions, PivotExecuteOptions,
-    SessionPool, TenantCatalog, TenantDb, execute_metric_query, execute_pivot,
+    SessionPool, TenantCatalog, TenantDb, execute_metric_query, execute_pivot, mask_pii_str,
 };
 use axpoint_domain::AppError;
 use axpoint_domain::analytics::{
-    FilterOp, FilterSpec, MetricDef, MetricQuery, MetricQueryResult, MetricTimeRange, PivotResult,
-    PivotSpec, QueryColumn, QueryRequest, QueryResult, SavedQueryKind,
+    FilterOp, FilterSpec, MetricCompareMode, MetricDef, MetricQuery, MetricQueryResult,
+    MetricTimeRange, PivotResult, PivotRowKind, PivotSpec, QueryColumn, QueryRequest, QueryResult,
+    SavedQueryKind,
 };
 use axpoint_domain::axhub::{DatasetListQuery, DatasetStatus};
 use axpoint_domain::enums::{
-    AggFn, AlertStatus, DataType, Permission, RollupGrain, Severity, WidgetKind,
+    AggFn, AlertStatus, DataType, Permission, PiiCategory, RollupGrain, Severity, WidgetKind,
 };
 use axpoint_domain::graph::{SubgraphQuery, WindowGroupBy, WindowKind, WindowQuery, WindowSpec};
 use axpoint_domain::ports::{
     AnalyticsRepository, ConnectionRepository, DatasetRepository, GraphQueryPort, MetricStorePort,
-    RulesRepository, SimRepository, ViewRepository,
+    RulesRepository, SimRepository, StudioRepository, ViewRepository,
 };
-use axpoint_domain::rules::AlertListQuery;
+use axpoint_domain::rules::{AlertListQuery, AlertRecord};
+use axpoint_domain::studio::SchemaDoc;
 use axpoint_domain::view::{
-    DashboardRecord, DrillLevel, DrillPathItem, FilterDef, FilterKind, WidgetColumn,
-    WidgetDataRequest, WidgetDataResponse, WidgetDataSource, WidgetPreviewRequest, WidgetRecord,
+    DashboardRecord, DrillLevel, DrillPathItem, FilterDef, FilterKind, NodesGeoLinkRow,
+    NodesGeoRow, WidgetColumn, WidgetDataRequest, WidgetDataResponse, WidgetDataSource,
+    WidgetPreviewRequest, WidgetRecord,
 };
 use axpoint_security::AuthPrincipal;
 use chrono::{Datelike as _, Duration as ChronoDuration, Utc};
@@ -88,11 +91,13 @@ where
         + MetricStorePort
         + RulesRepository
         + SimRepository
+        + StudioRepository
         + ?Sized,
 {
     let principal_fp = principal_fingerprint_from_auth(env.principal);
     let cache_key = env.cache.build_key(
         &env.principal.tenant_id,
+        Some(widget.dashboard_id),
         widget.id,
         &req.filters,
         &req.drill_path,
@@ -136,6 +141,7 @@ where
         + MetricStorePort
         + RulesRepository
         + SimRepository
+        + StudioRepository
         + ?Sized,
 {
     let filters = resolve_preview_filters(&req.filters);
@@ -241,6 +247,7 @@ where
         + MetricStorePort
         + RulesRepository
         + SimRepository
+        + StudioRepository
         + ?Sized,
 {
     let drill_level = spec.drill_path.len();
@@ -314,11 +321,34 @@ where
             scenario_ids,
             metrics,
         } => execute_sim_scenarios_widget(env, scenario_ids, metrics, drill_level).await,
+        other => execute_spatial_or_aux_widget(env, other, spec.widget_id, drill_level).await,
+    }
+}
+
+async fn execute_spatial_or_aux_widget<S>(
+    env: &WidgetExecEnv<'_, S>,
+    data_source: &WidgetDataSource,
+    widget_id: Option<Uuid>,
+    drill_level: usize,
+) -> Result<WidgetDataResponse, AppError>
+where
+    S: ViewRepository + StudioRepository + ?Sized,
+{
+    match data_source {
         WidgetDataSource::NodesGeo {
             type_names,
             color_metric,
-            link_types: _,
-        } => execute_nodes_geo_widget(env, type_names, color_metric.as_deref(), drill_level).await,
+            link_types,
+        } => {
+            execute_nodes_geo_widget(
+                env,
+                type_names,
+                color_metric.as_deref(),
+                link_types,
+                drill_level,
+            )
+            .await
+        }
         WidgetDataSource::FloorPlan {
             asset_id,
             color_metric,
@@ -328,11 +358,15 @@ where
             color_metric,
         } => execute_scene3d_widget(env, *asset_id, color_metric.as_deref(), drill_level).await,
         WidgetDataSource::Action { .. } => {
-            execute_action_logs_widget(env, spec.widget_id, drill_level).await
+            execute_action_logs_widget(env, widget_id, drill_level).await
         }
         WidgetDataSource::Static { columns, rows } => {
             Ok(build_static_response(columns, rows, drill_level))
         }
+        _ => Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            "unexpected non-spatial widget data source",
+        )),
     }
 }
 
@@ -739,20 +773,31 @@ where
                     format!("invalid saved metric query: {err}"),
                 )
             })?;
-            let dims = mq.dimensions;
-            let grain_str = mq.grain.map(|g| String::from(g.as_str()));
-            execute_metric_widget(
+            run_metric_widget_query(
                 env,
-                metric_name,
-                &dims,
-                grain_str.as_deref(),
-                None,
+                MetricWidgetParams {
+                    metric_name,
+                    dimensions: &mq.dimensions,
+                    base_filters: mq.filters,
+                    parsed_grain: mq.grain,
+                    parsed_range: mq.time_range,
+                    compare: mq.compare,
+                },
                 spec,
                 drill_level,
             )
             .await
         }
     }
+}
+
+struct MetricWidgetParams<'a> {
+    metric_name: &'a str,
+    dimensions: &'a [String],
+    base_filters: Vec<FilterSpec>,
+    parsed_grain: Option<RollupGrain>,
+    parsed_range: Option<MetricTimeRange>,
+    compare: Option<MetricCompareMode>,
 }
 
 async fn execute_metric_widget<S>(
@@ -767,32 +812,62 @@ async fn execute_metric_widget<S>(
 where
     S: AnalyticsRepository + DatasetRepository + ConnectionRepository + ?Sized,
 {
+    let parsed_grain = parse_rollup_grain_opt(time_grain)?;
+    let parsed_range = parse_metric_time_range_opt(time_range)?;
+    run_metric_widget_query(
+        env,
+        MetricWidgetParams {
+            metric_name,
+            dimensions,
+            base_filters: Vec::new(),
+            parsed_grain,
+            parsed_range,
+            compare: None,
+        },
+        spec,
+        drill_level,
+    )
+    .await
+}
+
+async fn run_metric_widget_query<S>(
+    env: &WidgetExecEnv<'_, S>,
+    params: MetricWidgetParams<'_>,
+    spec: &WidgetExecSpec<'_>,
+    drill_level: usize,
+) -> Result<WidgetDataResponse, AppError>
+where
+    S: AnalyticsRepository + DatasetRepository + ConnectionRepository + ?Sized,
+{
     let metric_def: MetricDef = env
         .store
-        .get_metric_by_name(&env.principal.tenant_id, metric_name.trim())
+        .get_metric_by_name(&env.principal.tenant_id, params.metric_name.trim())
         .await?
         .ok_or(AppError::NotFound("METRIC_NOT_FOUND"))?;
 
     let effective_dims = if !spec.drill.is_empty()
         && drill_level < spec.drill.len()
-        && (drill_level > 0 || dimensions.is_empty())
+        && (drill_level > 0 || params.dimensions.is_empty())
     {
         spec.drill
             .get(drill_level)
             .map_or_default(|d| vec![d.field.clone()])
     } else {
-        dimensions.to_vec()
+        params.dimensions.to_vec()
     };
 
-    let parsed_grain = parse_rollup_grain_opt(time_grain)?;
-    let parsed_range = parse_metric_time_range_opt(time_range)?;
-    let mut metric_filters = filters_to_specs(&spec.filters, spec.drill_path);
+    let mut metric_filters = params.base_filters;
+    metric_filters.extend(filters_to_specs(&spec.filters, spec.drill_path));
 
     let mut effective_def = metric_def.clone();
-    let effective_range = if parsed_grain.is_none()
+    let effective_range = if params.parsed_grain.is_none()
+        && params.compare.is_none()
         && !matches!(spec.widget_kind, WidgetKind::LineChart)
     {
-        if let (Some(tr), Some(tc)) = (parsed_range.as_ref(), metric_def.time_column.as_deref()) {
+        if let (Some(tr), Some(tc)) = (
+            params.parsed_range.as_ref(),
+            metric_def.time_column.as_deref(),
+        ) {
             metric_filters.push(FilterSpec {
                 field: tc.to_owned(),
                 op: FilterOp::Between,
@@ -802,15 +877,15 @@ where
         effective_def.time_column = None;
         None
     } else {
-        parsed_range
+        params.parsed_range
     };
 
     let query = MetricQuery {
         dimensions: effective_dims,
         filters: metric_filters,
         time_range: effective_range,
-        grain: parsed_grain,
-        compare: None,
+        grain: params.parsed_grain,
+        compare: params.compare,
     };
 
     let (session, catalog) = acquire_tenant_session(
@@ -892,6 +967,33 @@ struct NodeMetricInput<'a> {
     group_by: Option<&'a str>,
 }
 
+fn resolve_node_metric_window_size(grain: Option<&str>) -> Result<String, AppError> {
+    let Some(raw) = grain.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(String::from("1h"));
+    };
+    let mapped = match raw.to_ascii_uppercase().as_str() {
+        "MINUTE" => Some("1m"),
+        "HOUR" => Some("1h"),
+        "DAY" => Some("1d"),
+        "WEEK" => Some("7d"),
+        "MONTH" => Some("30d"),
+        "QUARTER" => Some("90d"),
+        "YEAR" => Some("365d"),
+        _ => None,
+    };
+    if let Some(unit) = mapped {
+        return Ok(String::from(unit));
+    }
+    let lower = raw.to_ascii_lowercase();
+    if WindowSpec::parse_duration(&lower).is_ok() {
+        return Ok(lower);
+    }
+    Err(AppError::bad(
+        "INVALID_ARGUMENT",
+        format!("unsupported node_metric grain '{raw}'"),
+    ))
+}
+
 async fn execute_node_metric_widget<S>(
     env: &WidgetExecEnv<'_, S>,
     input: &NodeMetricInput<'_>,
@@ -907,16 +1009,7 @@ where
             to,
         }
     });
-    let window_size = match input
-        .grain
-        .map_or("HOUR", str::trim)
-        .to_ascii_uppercase()
-        .as_str()
-    {
-        "MINUTE" => "1m",
-        "DAY" => "1d",
-        _ => "1h",
-    };
+    let window_size = resolve_node_metric_window_size(input.grain)?;
     let parsed_agg = parse_agg_fn(input.agg.unwrap_or("AVG"))?;
     let parsed_group_by = match input
         .group_by
@@ -941,7 +1034,7 @@ where
                 to: range.to,
                 window: WindowSpec {
                     kind: WindowKind::Tumbling,
-                    size: String::from(window_size),
+                    size: window_size,
                     step: None,
                 },
                 agg: parsed_agg,
@@ -1069,31 +1162,6 @@ async fn execute_alerts_widget<S>(
 where
     S: RulesRepository + ?Sized,
 {
-    let single_status = if statuses.len() == 1 {
-        statuses.first().and_then(|s| s.parse::<AlertStatus>().ok())
-    } else {
-        None
-    };
-    let single_sev = if severities.len() == 1 {
-        severities.first().and_then(|s| s.parse::<Severity>().ok())
-    } else {
-        None
-    };
-    let page_limit = u32::try_from(limit.unwrap_or(50).clamp(1, 500)).unwrap_or(50);
-
-    let page = env
-        .store
-        .list_alerts(
-            &env.principal.tenant_id,
-            AlertListQuery {
-                status: single_status,
-                severity: single_sev,
-                limit: Some(page_limit),
-                ..AlertListQuery::default()
-            },
-        )
-        .await?;
-
     let columns = vec![
         col_def("id", DataType::String),
         col_def("rule_id", DataType::String),
@@ -1107,41 +1175,123 @@ where
         col_def("occurrences", DataType::Int64),
     ];
 
-    let mut rows = Vec::new();
-    for alert in page.items {
-        if !statuses.is_empty()
-            && !statuses
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(alert.status.as_str()))
-        {
-            continue;
-        }
-        if !severities.is_empty()
-            && !severities
-                .iter()
-                .any(|s| s.eq_ignore_ascii_case(alert.severity.as_str()))
-        {
-            continue;
-        }
-        rows.push(vec![
-            serde_json::Value::String(alert.id.to_string()),
-            serde_json::Value::String(alert.rule_id.to_string()),
-            serde_json::Value::String(String::from(alert.severity.as_str())),
-            serde_json::Value::String(String::from(alert.status.as_str())),
-            serde_json::Value::String(alert.title),
-            alert.node_id.map_or(serde_json::Value::Null, |id| {
-                serde_json::Value::String(id.to_string())
-            }),
-            alert.dataset_id.map_or(serde_json::Value::Null, |id| {
-                serde_json::Value::String(id.to_string())
-            }),
-            serde_json::Value::String(alert.first_seen_at.to_rfc3339()),
-            serde_json::Value::String(alert.last_seen_at.to_rfc3339()),
-            serde_json::Value::Number(serde_json::Number::from(alert.occurrences)),
-        ]);
-    }
-    let truncated = cap_rows(&mut rows);
+    let Some(status_filters) = resolve_alert_status_filters(statuses) else {
+        return Ok(finalize_response(columns, Vec::new(), false, drill_level));
+    };
+    let Some(sev_filters) = resolve_alert_severity_filters(severities) else {
+        return Ok(finalize_response(columns, Vec::new(), false, drill_level));
+    };
+
+    let want = usize::try_from(limit.unwrap_or(50).clamp(1, 500)).unwrap_or(50);
+    let page_limit = u32::try_from(want).unwrap_or(50);
+
+    let (alerts, has_more) = fetch_merged_alerts(
+        env.store,
+        &env.principal.tenant_id,
+        &status_filters,
+        &sev_filters,
+        want,
+        page_limit,
+    )
+    .await?;
+
+    let mut rows: Vec<Vec<serde_json::Value>> = alerts
+        .into_iter()
+        .map(|alert| {
+            vec![
+                serde_json::Value::String(alert.id.to_string()),
+                serde_json::Value::String(alert.rule_id.to_string()),
+                serde_json::Value::String(String::from(alert.severity.as_str())),
+                serde_json::Value::String(String::from(alert.status.as_str())),
+                serde_json::Value::String(alert.title),
+                alert.node_id.map_or(serde_json::Value::Null, |id| {
+                    serde_json::Value::String(id.to_string())
+                }),
+                alert.dataset_id.map_or(serde_json::Value::Null, |id| {
+                    serde_json::Value::String(id.to_string())
+                }),
+                serde_json::Value::String(alert.first_seen_at.to_rfc3339()),
+                serde_json::Value::String(alert.last_seen_at.to_rfc3339()),
+                serde_json::Value::Number(serde_json::Number::from(alert.occurrences)),
+            ]
+        })
+        .collect();
+    let truncated = cap_rows(&mut rows) || has_more;
     Ok(finalize_response(columns, rows, truncated, drill_level))
+}
+
+fn resolve_alert_status_filters(statuses: &[String]) -> Option<Vec<Option<AlertStatus>>> {
+    if statuses.is_empty() {
+        return Some(vec![None]);
+    }
+    let mut out = Vec::new();
+    for raw in statuses {
+        if let Ok(st) = raw.trim().to_ascii_uppercase().parse::<AlertStatus>()
+            && !out.contains(&Some(st))
+        {
+            out.push(Some(st));
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+fn resolve_alert_severity_filters(severities: &[String]) -> Option<Vec<Option<Severity>>> {
+    if severities.is_empty() {
+        return Some(vec![None]);
+    }
+    let mut out = Vec::new();
+    for raw in severities {
+        if let Ok(sev) = raw.trim().to_ascii_uppercase().parse::<Severity>()
+            && !out.contains(&Some(sev))
+        {
+            out.push(Some(sev));
+        }
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+async fn fetch_merged_alerts<S: RulesRepository + ?Sized>(
+    store: &S,
+    tenant_id: &str,
+    status_filters: &[Option<AlertStatus>],
+    sev_filters: &[Option<Severity>],
+    want: usize,
+    page_limit: u32,
+) -> Result<(Vec<AlertRecord>, bool), AppError> {
+    let mut by_id = HashMap::new();
+    let mut any_more = false;
+    for st_opt in status_filters {
+        for sev_opt in sev_filters {
+            let page = store
+                .list_alerts(
+                    tenant_id,
+                    AlertListQuery {
+                        status: *st_opt,
+                        severity: *sev_opt,
+                        limit: Some(page_limit),
+                        ..AlertListQuery::default()
+                    },
+                )
+                .await?;
+            if page.next_cursor.is_some() {
+                any_more = true;
+            }
+            for item in page.items {
+                by_id.insert(item.id, item);
+            }
+        }
+    }
+    let mut merged: Vec<AlertRecord> = by_id.into_values().collect();
+    merged.sort_by(|a, b| {
+        b.last_seen_at
+            .cmp(&a.last_seen_at)
+            .then_with(|| b.id.cmp(&a.id))
+    });
+    let overflow = merged.len() > want;
+    if overflow {
+        merged.truncate(want);
+    }
+    Ok((merged, overflow || any_more))
 }
 
 async fn execute_sim_scenarios_widget<S>(
@@ -1205,6 +1355,7 @@ async fn execute_nodes_geo_widget<S>(
     env: &WidgetExecEnv<'_, S>,
     type_names: &[String],
     color_metric: Option<&str>,
+    link_types: &[String],
     drill_level: usize,
 ) -> Result<WidgetDataResponse, AppError>
 where
@@ -1214,7 +1365,29 @@ where
         .store
         .query_nodes_geo(&env.principal.tenant_id, type_names, color_metric)
         .await?;
-    let columns = vec![
+    let links = if link_types.is_empty() || items.is_empty() {
+        Vec::new()
+    } else {
+        let node_ids: Vec<Uuid> = items.iter().map(|r| r.node_id).collect();
+        env.store
+            .query_nodes_geo_links(&env.principal.tenant_id, &node_ids, link_types)
+            .await?
+    };
+    Ok(build_nodes_geo_response(
+        items,
+        links,
+        !link_types.is_empty(),
+        drill_level,
+    ))
+}
+
+fn build_nodes_geo_response(
+    items: Vec<NodesGeoRow>,
+    links: Vec<NodesGeoLinkRow>,
+    include_links: bool,
+    drill_level: usize,
+) -> WidgetDataResponse {
+    let mut columns = vec![
         col_def("node_id", DataType::String),
         col_def("type_name", DataType::String),
         col_def("node_key", DataType::String),
@@ -1224,23 +1397,69 @@ where
         col_def("metric_value", DataType::Float64),
         col_def("open_alerts", DataType::Int64),
     ];
-    let mut rows: Vec<Vec<serde_json::Value>> = items
-        .into_iter()
-        .map(|r| {
-            vec![
-                serde_json::Value::String(r.node_id.to_string()),
-                serde_json::Value::String(r.type_name),
-                serde_json::Value::String(r.node_key),
-                serde_json::Value::String(r.title),
-                opt_f64_json(Some(r.lng)),
-                opt_f64_json(Some(r.lat)),
-                opt_f64_json(r.metric_value),
-                serde_json::Value::Number(serde_json::Number::from(r.open_alerts)),
-            ]
-        })
-        .collect();
+    if include_links {
+        columns.extend([
+            col_def("record_kind", DataType::String),
+            col_def("link_type", DataType::String),
+            col_def("src_lng", DataType::Float64),
+            col_def("src_lat", DataType::Float64),
+            col_def("dst_lng", DataType::Float64),
+            col_def("dst_lat", DataType::Float64),
+            col_def("weight", DataType::Float64),
+        ]);
+    }
+
+    let mut rows: Vec<Vec<serde_json::Value>> =
+        Vec::with_capacity(items.len().saturating_add(links.len()));
+    for r in items {
+        let mut row = vec![
+            serde_json::Value::String(r.node_id.to_string()),
+            serde_json::Value::String(r.type_name),
+            serde_json::Value::String(r.node_key),
+            serde_json::Value::String(r.title),
+            opt_f64_json(Some(r.lng)),
+            opt_f64_json(Some(r.lat)),
+            opt_f64_json(r.metric_value),
+            serde_json::Value::Number(serde_json::Number::from(r.open_alerts)),
+        ];
+        if include_links {
+            row.extend([
+                serde_json::Value::String(String::from("NODE")),
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+            ]);
+        }
+        rows.push(row);
+    }
+
+    if include_links {
+        for l in links {
+            rows.push(vec![
+                serde_json::Value::String(l.link_id.to_string()),
+                serde_json::Value::String(l.link_type.clone()),
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::Null,
+                serde_json::Value::String(String::from("LINK")),
+                serde_json::Value::String(l.link_type),
+                opt_f64_json(Some(l.src_lng)),
+                opt_f64_json(Some(l.src_lat)),
+                opt_f64_json(Some(l.dst_lng)),
+                opt_f64_json(Some(l.dst_lat)),
+                opt_f64_json(Some(l.weight)),
+            ]);
+        }
+    }
+
     let truncated = cap_rows(&mut rows);
-    Ok(finalize_response(columns, rows, truncated, drill_level))
+    finalize_response(columns, rows, truncated, drill_level)
 }
 
 async fn execute_floor_plan_widget<S>(
@@ -1339,7 +1558,7 @@ async fn execute_action_logs_widget<S>(
     drill_level: usize,
 ) -> Result<WidgetDataResponse, AppError>
 where
-    S: ViewRepository + ?Sized,
+    S: ViewRepository + StudioRepository + ?Sized,
 {
     let logs = match widget_id {
         Some(wid) => {
@@ -1349,6 +1568,18 @@ where
         }
         None => Vec::new(),
     };
+    let has_pii_raw = env.principal.has(Permission::PiiRawRead);
+    let schema_doc = if !has_pii_raw && !logs.is_empty() {
+        Some(
+            env.store
+                .get_published_schema(&env.principal.tenant_id, "main")
+                .await?
+                .doc,
+        )
+    } else {
+        None
+    };
+
     let columns = vec![
         col_def("id", DataType::Int64),
         col_def("action_kind", DataType::String),
@@ -1361,12 +1592,16 @@ where
     let rows: Vec<Vec<serde_json::Value>> = logs
         .into_iter()
         .map(|log| {
+            let payload = match schema_doc.as_ref() {
+                Some(doc) => redact_action_log_payload(log.payload, doc),
+                None => log.payload,
+            };
             vec![
                 serde_json::Value::Number(serde_json::Number::from(log.id)),
                 serde_json::to_value(log.action_kind).unwrap_or(serde_json::Value::Null),
                 serde_json::Value::String(log.target),
                 serde_json::to_value(log.status).unwrap_or(serde_json::Value::Null),
-                log.payload,
+                payload,
                 log.error_message
                     .map_or(serde_json::Value::Null, serde_json::Value::String),
                 serde_json::Value::String(log.created_at.to_rfc3339()),
@@ -1374,6 +1609,123 @@ where
         })
         .collect();
     Ok(finalize_response(columns, rows, false, drill_level))
+}
+
+fn redact_action_log_payload(
+    mut payload: serde_json::Value,
+    schema_doc: &SchemaDoc,
+) -> serde_json::Value {
+    let mut by_type_key: HashMap<(String, String), PiiCategory> = HashMap::new();
+    let mut by_prop_name: HashMap<String, PiiCategory> = HashMap::new();
+    for nt in &schema_doc.node_types {
+        for prop in &nt.properties {
+            if prop.pii_category != PiiCategory::None {
+                by_type_key.insert(
+                    (nt.name.to_ascii_lowercase(), prop.name.to_ascii_lowercase()),
+                    prop.pii_category,
+                );
+                by_prop_name
+                    .entry(prop.name.to_ascii_lowercase())
+                    .or_insert(prop.pii_category);
+            }
+        }
+    }
+
+    if let serde_json::Value::Object(ref mut map) = payload {
+        let write_cat = resolve_write_node_pii(map, &by_type_key, &by_prop_name);
+        if let Some(cat) = write_cat
+            && let Some(val) = map.get_mut("value")
+        {
+            *val = mask_json_pii_value(val, cat);
+        }
+        redact_json_object_in_place(map, &by_prop_name);
+    }
+    payload
+}
+
+fn resolve_write_node_pii(
+    map: &serde_json::Map<String, serde_json::Value>,
+    by_type_key: &HashMap<(String, String), PiiCategory>,
+    by_prop_name: &HashMap<String, PiiCategory>,
+) -> Option<PiiCategory> {
+    let key = map.get("key").and_then(serde_json::Value::as_str)?.trim();
+    if key.is_empty() {
+        return None;
+    }
+    let key_lower = key.to_ascii_lowercase();
+    if let Some(tn) = map.get("type_name").and_then(serde_json::Value::as_str)
+        && let Some(cat) = by_type_key.get(&(tn.trim().to_ascii_lowercase(), key_lower.clone()))
+    {
+        return Some(*cat);
+    }
+    by_prop_name
+        .get(&key_lower)
+        .copied()
+        .or_else(|| infer_sensitive_key_pii(&key_lower))
+}
+
+fn redact_json_object_in_place(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    by_prop_name: &HashMap<String, PiiCategory>,
+) {
+    for (k, v) in map.iter_mut() {
+        let lower = k.to_ascii_lowercase();
+        if lower == "value" || lower == "idempotency_key" {
+            continue;
+        }
+        if is_secret_token_key(&lower) {
+            if !v.is_null() {
+                *v = serde_json::Value::String(String::from("[REDACTED]"));
+            }
+            continue;
+        }
+        if let Some(cat) = by_prop_name
+            .get(&lower)
+            .copied()
+            .or_else(|| infer_sensitive_key_pii(&lower))
+        {
+            *v = mask_json_pii_value(v, cat);
+            continue;
+        }
+        if let serde_json::Value::Object(nested) = v {
+            redact_json_object_in_place(nested, by_prop_name);
+        }
+    }
+}
+
+fn mask_json_pii_value(val: &serde_json::Value, category: PiiCategory) -> serde_json::Value {
+    if val.is_null() {
+        return serde_json::Value::Null;
+    }
+    match val.as_str() {
+        Some(raw) => serde_json::Value::String(mask_pii_str(raw, category)),
+        None => serde_json::Value::String(String::from("[REDACTED]")),
+    }
+}
+
+fn is_secret_token_key(lower_key: &str) -> bool {
+    lower_key.contains("password")
+        || lower_key.contains("passwd")
+        || lower_key.contains("secret")
+        || lower_key.contains("api_key")
+        || lower_key == "token"
+        || lower_key.ends_with("_token")
+}
+
+fn infer_sensitive_key_pii(lower_key: &str) -> Option<PiiCategory> {
+    if lower_key == "phone" || lower_key.ends_with("_phone") || lower_key == "mobile" {
+        Some(PiiCategory::Phone)
+    } else if lower_key == "email" || lower_key.ends_with("_email") {
+        Some(PiiCategory::Email)
+    } else if lower_key == "id_card" || lower_key == "ssn" || lower_key == "national_id" {
+        Some(PiiCategory::IdCard)
+    } else if lower_key == "bank_card" || lower_key == "card_no" {
+        Some(PiiCategory::BankCard)
+    } else if lower_key == "address" || lower_key.ends_with("_address") {
+        Some(PiiCategory::Address)
+    } else {
+        None
+    }
 }
 
 fn build_static_response(
@@ -1454,8 +1806,14 @@ fn pivot_result_to_widget_response(
     pr: PivotResult,
     drill_level: usize,
 ) -> WidgetDataResponse {
+    let has_row_kinds = !pr.row_kinds.is_empty();
     let row_dim_count = pr.row_headers.first().map_or(spec.rows.len(), Vec::len);
-    let mut columns = Vec::with_capacity(row_dim_count.saturating_add(pr.column_headers.len()));
+    let extra_cols = usize::from(has_row_kinds);
+    let mut columns = Vec::with_capacity(
+        row_dim_count
+            .saturating_add(pr.column_headers.len())
+            .saturating_add(extra_cols),
+    );
     for idx in 0..row_dim_count {
         let name = spec
             .rows
@@ -1471,15 +1829,26 @@ fn pivot_result_to_widget_response(
         };
         columns.push(col_def(&label, DataType::String));
     }
+    if has_row_kinds {
+        columns.push(col_def("_row_kind", DataType::String));
+    }
 
     let mut rows = Vec::with_capacity(pr.cells.len());
-    for (rh, cells) in pr.row_headers.into_iter().zip(pr.cells) {
+    for (idx, (rh, cells)) in pr.row_headers.into_iter().zip(pr.cells).enumerate() {
         let mut row = Vec::with_capacity(columns.len());
         for label in rh {
             row.push(serde_json::Value::String(label));
         }
         for cell in cells {
             row.push(serde_json::Value::String(cell));
+        }
+        if has_row_kinds {
+            let kind_str = match pr.row_kinds.get(idx).copied().unwrap_or(PivotRowKind::Data) {
+                PivotRowKind::Data => "DETAIL",
+                PivotRowKind::Subtotal => "SUBTOTAL",
+                PivotRowKind::GrandTotal => "TOTAL",
+            };
+            row.push(serde_json::Value::String(String::from(kind_str)));
         }
         rows.push(row);
     }
@@ -1777,5 +2146,136 @@ mod tests {
         let raw = BTreeMap::from([(String::from("status"), serde_json::json!(["PAID"]))]);
         assert_eq!(resolve_dashboard_filters(&dash, w1, &raw).len(), 1);
         assert!(resolve_dashboard_filters(&dash, w2, &raw).is_empty());
+    }
+
+    #[test]
+    fn pivot_row_kind_and_node_metric_grain_mapping() -> Result<(), AppError> {
+        assert_eq!(resolve_node_metric_window_size(Some("MONTH"))?, "30d");
+        assert_eq!(resolve_node_metric_window_size(Some("WEEK"))?, "7d");
+        assert_eq!(resolve_node_metric_window_size(Some("DAY"))?, "1d");
+        assert_eq!(resolve_node_metric_window_size(Some("MINUTE"))?, "1m");
+
+        let pivot_spec: PivotSpec = serde_json::from_value(serde_json::json!({
+            "dataset": "demo_orders",
+            "rows": [{"field": "status"}],
+            "values": [{"field": "amount", "agg": "SUM"}]
+        }))
+        .map_err(|err| AppError::Database(err.to_string()))?;
+        let pivot_res = pivot_result_to_widget_response(
+            &pivot_spec,
+            PivotResult {
+                row_headers: vec![vec![String::from("PAID")], vec![String::from("ALL")]],
+                column_headers: vec![vec![String::from("SUM(amount)")]],
+                cells: vec![vec![String::from("100")], vec![String::from("100")]],
+                row_kinds: vec![PivotRowKind::Data, PivotRowKind::GrandTotal],
+                columns_truncated: false,
+                sql: String::new(),
+                duration_ms: 1,
+            },
+            0,
+        );
+        assert_eq!(
+            pivot_res.columns.last().map(|c| c.name.as_str()),
+            Some("_row_kind")
+        );
+        assert_eq!(
+            pivot_res.rows.first().and_then(|r| r.last()),
+            Some(&serde_json::json!("DETAIL"))
+        );
+        assert_eq!(
+            pivot_res.rows.get(1).and_then(|r| r.last()),
+            Some(&serde_json::json!("TOTAL"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn nodes_geo_fly_lines_and_action_log_pii_redaction() {
+        let geo_no_links = build_nodes_geo_response(Vec::new(), Vec::new(), false, 0);
+        assert_eq!(geo_no_links.columns.len(), 8);
+        let n1 = Uuid::from_u128(1);
+        let l1 = Uuid::from_u128(99);
+        let geo_with_links = build_nodes_geo_response(
+            vec![NodesGeoRow {
+                node_id: n1,
+                type_name: String::from("Warehouse"),
+                node_key: String::from("W1"),
+                title: String::from("East"),
+                lng: 121.0,
+                lat: 31.0,
+                metric_value: Some(50.0),
+                open_alerts: 1,
+            }],
+            vec![NodesGeoLinkRow {
+                link_id: l1,
+                link_type: String::from("SUPPLIES"),
+                src_node_id: n1,
+                dst_node_id: Uuid::from_u128(2),
+                src_lng: 121.0,
+                src_lat: 31.0,
+                dst_lng: 114.0,
+                dst_lat: 22.5,
+                weight: 0.8,
+            }],
+            true,
+            0,
+        );
+        assert_eq!(geo_with_links.columns.len(), 15);
+        assert_eq!(geo_with_links.rows.len(), 2);
+        assert_eq!(
+            geo_with_links.rows.first().and_then(|r| r.get(8)),
+            Some(&serde_json::json!("NODE"))
+        );
+        assert_eq!(
+            geo_with_links.rows.get(1).and_then(|r| r.get(8)),
+            Some(&serde_json::json!("LINK"))
+        );
+
+        let mut doc = SchemaDoc::default();
+        doc.node_types.push(axpoint_domain::studio::NodeTypeSpec {
+            id: None,
+            name: String::from("Customer"),
+            display_name: String::from("客户"),
+            description: String::new(),
+            icon: String::from("user"),
+            color: String::from("#000000"),
+            title_template: String::from("{node_key}"),
+            properties: vec![axpoint_domain::studio::PropertySpec {
+                name: String::from("contact_phone"),
+                display_name: String::from("电话"),
+                description: String::new(),
+                unit: None,
+                data_type: DataType::String,
+                kind: axpoint_domain::studio::PropertyKind::Attribute,
+                required: false,
+                pii_category: PiiCategory::Phone,
+                allowed_values: None,
+            }],
+            agg_rules: Vec::new(),
+            derived_rules: Vec::new(),
+            sync_to_knowledge: false,
+            pos_x: 0.0,
+            pos_y: 0.0,
+        });
+        let redacted = redact_action_log_payload(
+            serde_json::json!({
+                "type_name": "Customer",
+                "key": "contact_phone",
+                "value": "13812345678",
+                "inputs": { "api_token": "sec_123" }
+            }),
+            &doc,
+        );
+        assert_ne!(
+            redacted.get("value").and_then(serde_json::Value::as_str),
+            Some("13812345678")
+        );
+        assert_eq!(
+            redacted
+                .get("inputs")
+                .and_then(|i| i.get("api_token"))
+                .and_then(serde_json::Value::as_str),
+            Some("[REDACTED]")
+        );
     }
 }

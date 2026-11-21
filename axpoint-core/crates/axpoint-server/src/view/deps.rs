@@ -6,7 +6,9 @@ use std::ops::ControlFlow;
 use axpoint_domain::AppError;
 use axpoint_domain::analytics::{MetricDef, PivotSpec, SavedQueryKind};
 use axpoint_domain::axhub::{Dataset, DatasetListQuery};
-use axpoint_domain::ports::{AnalyticsRepository, DatasetRepository, ViewRepository};
+use axpoint_domain::ports::{
+    AnalyticsRepository, DatasetRepository, StudioRepository, ViewRepository,
+};
 use axpoint_domain::view::{WidgetDataSource, WidgetDeps};
 use sqlparser::ast::{
     BinaryOperator, Expr, InTarget, ObjectName, Query, TableFactor, Value, Visit, Visitor,
@@ -24,6 +26,19 @@ use uuid::Uuid;
 /// # Errors
 /// Returns [`AppError::BadRequest`] (`SQL_REJECTED`) if `sql` cannot be parsed as `DuckDB` `SQL`.
 pub fn extract_sql_deps(sql: &str, datasets: &[Dataset]) -> Result<WidgetDeps, AppError> {
+    extract_sql_deps_with_schema(sql, datasets, &[])
+}
+
+/// Extracts `SQL` dependencies with fallback `schema_node_types` when `ax.nodes` is queried
+/// without an explicit `type_name` filter.
+///
+/// # Errors
+/// Returns [`AppError::BadRequest`] (`SQL_REJECTED`) if `sql` cannot be parsed as `DuckDB` `SQL`.
+pub fn extract_sql_deps_with_schema(
+    sql: &str,
+    datasets: &[Dataset],
+    schema_node_types: &[String],
+) -> Result<WidgetDeps, AppError> {
     let trimmed = sql.trim().trim_end_matches(';').trim();
     if trimmed.is_empty() {
         return Ok(WidgetDeps::default());
@@ -39,26 +54,27 @@ pub fn extract_sql_deps(sql: &str, datasets: &[Dataset]) -> Result<WidgetDeps, A
         let _flow = Visit::visit(stmt, &mut collector);
     }
 
-    Ok(collector.into_deps())
+    Ok(collector.into_deps(schema_node_types))
 }
 
 /// Computes normalized [`WidgetDeps`] for any [`WidgetDataSource`] variant.
 ///
 /// # Errors
-/// Propagates storage errors from `ViewRepository`, `AnalyticsRepository`, or `DatasetRepository`,
-/// or `SQL_REJECTED` when an inline `SQL` source fails parsing.
+/// Propagates storage errors from `ViewRepository`, `AnalyticsRepository`, `DatasetRepository`,
+/// or `StudioRepository`, or `SQL_REJECTED` when an inline `SQL` source fails parsing.
 pub async fn compute_widget_deps<S>(
     store: &S,
     tenant_id: &str,
     data_source: &WidgetDataSource,
 ) -> Result<WidgetDeps, AppError>
 where
-    S: ViewRepository + AnalyticsRepository + DatasetRepository + ?Sized,
+    S: ViewRepository + AnalyticsRepository + DatasetRepository + StudioRepository + ?Sized,
 {
     match data_source {
         WidgetDataSource::Sql { sql } => {
             let datasets = load_all_datasets(store, tenant_id).await?;
-            extract_sql_deps(sql, &datasets)
+            let schema_types = load_schema_node_types(store, tenant_id).await?;
+            extract_sql_deps_with_schema(sql, &datasets, &schema_types)
         }
         WidgetDataSource::SavedQuery { saved_query_id } => {
             compute_saved_query_deps(store, tenant_id, *saved_query_id).await
@@ -84,6 +100,11 @@ where
             color_metric,
             ..
         } => {
+            let resolved_types = if type_names.is_empty() {
+                load_schema_node_types(store, tenant_id).await?
+            } else {
+                type_names.clone()
+            };
             let mut metrics = Vec::new();
             if let Some(cm) = color_metric
                 && !cm.trim().is_empty()
@@ -91,7 +112,7 @@ where
                 metrics.push(cm.trim().to_owned());
             }
             Ok(normalize_deps(WidgetDeps {
-                type_names: type_names.clone(),
+                type_names: resolved_types,
                 metrics,
                 ..WidgetDeps::default()
             }))
@@ -112,45 +133,68 @@ where
             asset_id,
             color_metric,
         } => {
-            let rows = store
-                .query_floor_plan_rows(tenant_id, *asset_id, color_metric.as_deref())
-                .await?;
-            let type_names = rows.into_iter().map(|r| r.type_name).collect();
-            let metrics = color_metric
-                .iter()
-                .map(|m| m.trim().to_owned())
-                .filter(|m| !m.is_empty())
-                .collect();
-            Ok(normalize_deps(WidgetDeps {
-                type_names,
-                metrics,
-                ..WidgetDeps::default()
-            }))
+            compute_spatial_asset_deps(store, tenant_id, *asset_id, color_metric.as_deref(), false)
+                .await
         }
         WidgetDataSource::Scene3d {
             asset_id,
             color_metric,
         } => {
-            let rows = store
-                .query_scene3d_rows(tenant_id, *asset_id, color_metric.as_deref())
-                .await?;
-            let type_names = rows.into_iter().map(|r| r.type_name).collect();
-            let metrics = color_metric
-                .iter()
-                .map(|m| m.trim().to_owned())
-                .filter(|m| !m.is_empty())
-                .collect();
-            Ok(normalize_deps(WidgetDeps {
-                type_names,
-                metrics,
-                alerts: true,
-                ..WidgetDeps::default()
-            }))
+            compute_spatial_asset_deps(store, tenant_id, *asset_id, color_metric.as_deref(), true)
+                .await
         }
         WidgetDataSource::Action { .. } | WidgetDataSource::Static { .. } => {
             Ok(WidgetDeps::default())
         }
     }
+}
+
+async fn compute_spatial_asset_deps<S: ViewRepository + ?Sized>(
+    store: &S,
+    tenant_id: &str,
+    asset_id: Uuid,
+    color_metric: Option<&str>,
+    is_scene3d: bool,
+) -> Result<WidgetDeps, AppError> {
+    let type_names: Vec<String> = if is_scene3d {
+        store
+            .query_scene3d_rows(tenant_id, asset_id, color_metric)
+            .await?
+            .into_iter()
+            .map(|r| r.type_name)
+            .collect()
+    } else {
+        store
+            .query_floor_plan_rows(tenant_id, asset_id, color_metric)
+            .await?
+            .into_iter()
+            .map(|r| r.type_name)
+            .collect()
+    };
+    let metrics = color_metric
+        .iter()
+        .map(|m| m.trim().to_owned())
+        .filter(|m| !m.is_empty())
+        .collect();
+    Ok(normalize_deps(WidgetDeps {
+        type_names,
+        metrics,
+        alerts: is_scene3d,
+        ..WidgetDeps::default()
+    }))
+}
+
+async fn load_schema_node_types<S: StudioRepository + ?Sized>(
+    store: &S,
+    tenant_id: &str,
+) -> Result<Vec<String>, AppError> {
+    let published = store.get_published_schema(tenant_id, "main").await?;
+    Ok(published
+        .doc
+        .node_types
+        .into_iter()
+        .map(|nt| nt.name)
+        .collect())
 }
 
 async fn compute_saved_query_deps<S>(
@@ -159,7 +203,7 @@ async fn compute_saved_query_deps<S>(
     saved_query_id: Uuid,
 ) -> Result<WidgetDeps, AppError>
 where
-    S: AnalyticsRepository + DatasetRepository + ?Sized,
+    S: AnalyticsRepository + DatasetRepository + StudioRepository + ?Sized,
 {
     let Some(sq) = store.get_saved_query(tenant_id, saved_query_id).await? else {
         return Ok(WidgetDeps::default());
@@ -170,7 +214,8 @@ where
                 return Ok(WidgetDeps::default());
             };
             let datasets = load_all_datasets(store, tenant_id).await?;
-            extract_sql_deps(sql, &datasets)
+            let schema_types = load_schema_node_types(store, tenant_id).await?;
+            extract_sql_deps_with_schema(sql, &datasets, &schema_types)
         }
         SavedQueryKind::Metric => {
             let metric_name = sq
@@ -332,6 +377,8 @@ struct SqlDepsVisitor<'a> {
     dataset_ids: BTreeSet<Uuid>,
     type_names: BTreeSet<String>,
     metrics: BTreeSet<String>,
+    uses_ax_view: bool,
+    uses_ax_nodes: bool,
 }
 
 impl<'a> SqlDepsVisitor<'a> {
@@ -342,14 +389,33 @@ impl<'a> SqlDepsVisitor<'a> {
             dataset_ids: BTreeSet::new(),
             type_names: BTreeSet::new(),
             metrics: BTreeSet::new(),
+            uses_ax_view: false,
+            uses_ax_nodes: false,
         }
     }
 
-    fn into_deps(self) -> WidgetDeps {
+    fn into_deps(self, schema_node_types: &[String]) -> WidgetDeps {
+        let (type_names, metrics) = if self.uses_ax_view {
+            let resolved_types: Vec<String> = if self.uses_ax_nodes && self.type_names.is_empty() {
+                schema_node_types
+                    .iter()
+                    .map(|s| s.trim().to_owned())
+                    .filter(|s| !s.is_empty())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect()
+            } else {
+                self.type_names.into_iter().collect()
+            };
+            (resolved_types, self.metrics.into_iter().collect())
+        } else {
+            (Vec::new(), Vec::new())
+        };
+
         WidgetDeps {
             dataset_ids: self.dataset_ids.into_iter().collect(),
-            type_names: self.type_names.into_iter().collect(),
-            metrics: self.metrics.into_iter().collect(),
+            type_names,
+            metrics,
             alerts: false,
             scenario_ids: Vec::new(),
         }
@@ -371,10 +437,15 @@ impl<'a> SqlDepsVisitor<'a> {
                 }
             }
             [first, second] => {
-                if first.eq_ignore_ascii_case("lake")
-                    && let Some(id) = self.lookup.resolve_relation_name(second)
-                {
-                    self.dataset_ids.insert(id);
+                if first.eq_ignore_ascii_case("lake") {
+                    if let Some(id) = self.lookup.resolve_relation_name(second) {
+                        self.dataset_ids.insert(id);
+                    }
+                } else if first.eq_ignore_ascii_case("ax") && is_ax_platform_view(second) {
+                    self.uses_ax_view = true;
+                    if second.eq_ignore_ascii_case("nodes") {
+                        self.uses_ax_nodes = true;
+                    }
                 }
             }
             [first, _schema, table] => {
@@ -433,6 +504,14 @@ impl<'a> SqlDepsVisitor<'a> {
             self.metrics.insert(val.to_owned());
         }
     }
+}
+
+fn is_ax_platform_view(view: &str) -> bool {
+    view.eq_ignore_ascii_case("nodes")
+        || view.eq_ignore_ascii_case("links")
+        || view.eq_ignore_ascii_case("metric_points")
+        || view.eq_ignore_ascii_case("metric_series")
+        || view.eq_ignore_ascii_case("metric_rollups")
 }
 
 impl Visitor for SqlDepsVisitor<'_> {
@@ -550,6 +629,29 @@ mod tests {
             vec![String::from("inventory"), String::from("utilization")]
         );
         assert!(!deps.alerts);
+        Ok(())
+    }
+
+    #[test]
+    fn extract_sql_deps_ignores_non_ax_columns_and_hydrates_unfiltered_ax_nodes()
+    -> Result<(), AppError> {
+        let ds_orders = Uuid::from_u128(201);
+        let datasets = vec![sample_dataset(ds_orders, "demo_orders", "demo_orders")];
+        let schema_types = vec![String::from("Warehouse"), String::from("Factory")];
+
+        let lake_only =
+            "SELECT * FROM demo_orders WHERE type_name = 'B2B_ORDER' AND metric = 'gmv'";
+        let deps_lake = extract_sql_deps_with_schema(lake_only, &datasets, &schema_types)?;
+        assert_eq!(deps_lake.dataset_ids, vec![ds_orders]);
+        assert_eq!(deps_lake.type_names, Vec::<String>::new());
+        assert_eq!(deps_lake.metrics, Vec::<String>::new());
+
+        let unfiltered_nodes = "SELECT id, title FROM ax.nodes LIMIT 50";
+        let deps_nodes = extract_sql_deps_with_schema(unfiltered_nodes, &datasets, &schema_types)?;
+        assert_eq!(
+            deps_nodes.type_names,
+            vec![String::from("Factory"), String::from("Warehouse")]
+        );
         Ok(())
     }
 
