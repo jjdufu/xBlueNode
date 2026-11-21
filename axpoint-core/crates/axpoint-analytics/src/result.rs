@@ -248,23 +248,14 @@ fn build_columns_and_plans(
     guarded: &GuardedSql,
     revealed_pii: bool,
 ) -> (Vec<QueryColumn>, Vec<ColumnMaskPlan>) {
-    let has_wildcard = guarded
-        .output_lineage
-        .iter()
-        .any(|o| matches!(o, OutputColumnOrigin::Wildcard));
-    let exact_positional = !has_wildcard && guarded.output_lineage.len() == fields.len();
-
     let mut columns = Vec::with_capacity(fields.len());
     let mut plans = Vec::with_capacity(fields.len());
 
     for (idx, field) in fields.iter().enumerate() {
-        let origin = if exact_positional {
-            guarded.output_lineage.get(idx)
-        } else {
-            find_named_lineage(&guarded.output_lineage, field.name())
-        };
+        let (origin, in_wildcard_region) =
+            resolve_field_origin(&guarded.output_lineage, fields.len(), idx, field.name());
 
-        let (pii_category, is_derived) = match origin {
+        let (mut pii_category, is_derived) = match origin {
             Some(OutputColumnOrigin::Direct { pii_category, .. }) => (*pii_category, false),
             Some(OutputColumnOrigin::DerivedFromPii { pii_category, .. }) => (*pii_category, true),
             Some(OutputColumnOrigin::NonSensitive { .. }) => (PiiCategory::None, false),
@@ -272,6 +263,9 @@ fn build_columns_and_plans(
                 (lookup_wildcard_pii(field.name(), catalog, guarded), false)
             }
         };
+        if in_wildcard_region && pii_category == PiiCategory::None {
+            pii_category = lookup_wildcard_pii(field.name(), catalog, guarded);
+        }
 
         let (masked, plan) = if pii_category == PiiCategory::None || revealed_pii {
             (false, ColumnMaskPlan::Plain)
@@ -293,23 +287,101 @@ fn build_columns_and_plans(
     (columns, plans)
 }
 
+fn resolve_field_origin<'a>(
+    lineage: &'a [OutputColumnOrigin],
+    field_count: usize,
+    field_idx: usize,
+    field_name: &str,
+) -> (Option<&'a OutputColumnOrigin>, bool) {
+    let first_wildcard = lineage
+        .iter()
+        .position(|o| matches!(o, OutputColumnOrigin::Wildcard));
+    let Some(first_w) = first_wildcard else {
+        if lineage.len() == field_count {
+            return (lineage.get(field_idx), false);
+        }
+        if let Some(named) = find_named_lineage(lineage, field_name) {
+            return (Some(named), false);
+        }
+        let unnamed_derived = lineage.iter().find(|o| {
+            matches!(
+                o,
+                OutputColumnOrigin::DerivedFromPii {
+                    output_name: None,
+                    ..
+                }
+            )
+        });
+        return (unnamed_derived, unnamed_derived.is_none());
+    };
+
+    let last_w = lineage
+        .iter()
+        .rposition(|o| matches!(o, OutputColumnOrigin::Wildcard))
+        .unwrap_or(first_w);
+    let non_wild_count = lineage
+        .iter()
+        .filter(|o| !matches!(o, OutputColumnOrigin::Wildcard))
+        .count();
+
+    if field_count >= non_wild_count {
+        if field_idx < first_w {
+            return (lineage.get(field_idx), false);
+        }
+        let suffix_len = lineage.len().saturating_sub(1).saturating_sub(last_w);
+        let suffix_start = field_count.saturating_sub(suffix_len);
+        if field_idx >= suffix_start {
+            let offset_from_end = field_count.saturating_sub(field_idx);
+            let lin_idx = lineage.len().saturating_sub(offset_from_end);
+            return (lineage.get(lin_idx), false);
+        }
+        let mid_slice = lineage.get(first_w..=last_w).unwrap_or(&[]);
+        return (find_named_lineage(mid_slice, field_name), true);
+    }
+
+    (find_named_lineage(lineage, field_name), true)
+}
+
 fn find_named_lineage<'a>(
     lineage: &'a [OutputColumnOrigin],
     col_name: &str,
 ) -> Option<&'a OutputColumnOrigin> {
-    lineage.iter().find(|item| match item {
-        OutputColumnOrigin::Direct { output_name, .. } => {
-            output_name.eq_ignore_ascii_case(col_name)
+    let mut fallback: Option<&'a OutputColumnOrigin> = None;
+    for item in lineage {
+        let matches_name = match item {
+            OutputColumnOrigin::Direct { output_name, .. } => {
+                output_name.eq_ignore_ascii_case(col_name)
+            }
+            OutputColumnOrigin::DerivedFromPii {
+                output_name: Some(alias),
+                ..
+            }
+            | OutputColumnOrigin::NonSensitive {
+                output_name: Some(alias),
+            } => alias.eq_ignore_ascii_case(col_name),
+            OutputColumnOrigin::DerivedFromPii {
+                output_name: None, ..
+            }
+            | OutputColumnOrigin::NonSensitive { output_name: None }
+            | OutputColumnOrigin::Wildcard => false,
+        };
+        if matches_name {
+            match item {
+                OutputColumnOrigin::Direct { pii_category, .. }
+                | OutputColumnOrigin::DerivedFromPii { pii_category, .. }
+                    if *pii_category != PiiCategory::None =>
+                {
+                    return Some(item);
+                }
+                _ => {
+                    if fallback.is_none() {
+                        fallback = Some(item);
+                    }
+                }
+            }
         }
-        OutputColumnOrigin::DerivedFromPii {
-            output_name: Some(alias),
-            ..
-        }
-        | OutputColumnOrigin::NonSensitive {
-            output_name: Some(alias),
-        } => alias.eq_ignore_ascii_case(col_name),
-        _ => false,
-    })
+    }
+    fallback
 }
 
 fn lookup_wildcard_pii(
@@ -622,9 +694,13 @@ mod tests {
     fn pii_demo_catalog() -> TenantCatalog {
         let ds_id = Uuid::from_u128(1);
         let mut ds = CatalogDatasetEntry::simple(ds_id, "demo_orders", "demo_orders");
-        for (idx, (col, pii)) in [("phone", PiiCategory::Phone), ("email", PiiCategory::Email)]
-            .into_iter()
-            .enumerate()
+        for (idx, (col, pii)) in [
+            ("phone", PiiCategory::Phone),
+            ("email", PiiCategory::Email),
+            ("status", PiiCategory::None),
+        ]
+        .into_iter()
+        .enumerate()
         {
             ds.columns.insert(
                 String::from(col),
@@ -633,7 +709,7 @@ mod tests {
                     column_name: String::from(col),
                     data_type: DataType::String,
                     pii_category: pii,
-                    pii_confirmed: true,
+                    pii_confirmed: pii != PiiCategory::None,
                     description: String::new(),
                     business_term: String::new(),
                     unit: String::new(),
@@ -830,6 +906,92 @@ mod tests {
         };
         assert_eq!(first.get("phone"), Some(&json!("13812345678")));
         assert_eq!(first.get("em_sub"), Some(&json!("ali")));
+        Ok(())
+    }
+
+    #[test]
+    fn subquery_wrapped_and_cte_queries_enforce_pii_masking_and_redaction() -> Result<(), AppError>
+    {
+        let catalog = pii_demo_catalog();
+
+        // 1. xBlueView global filter wrapper around aliased direct PII + derived PII
+        let wrapped_guarded = guard(
+            "SELECT * FROM (SELECT phone AS contact_num, substring(email, 1, 4) AS em, status FROM demo_orders) AS _w WHERE status = 'PAID'",
+            &catalog,
+            &GuardOptions::default(),
+        )?;
+        let wrapped_schema = Arc::new(Schema::new(vec![
+            Field::new("contact_num", ArrowDataType::Utf8, true),
+            Field::new("em", ArrowDataType::Utf8, true),
+            Field::new("status", ArrowDataType::Utf8, true),
+        ]));
+        let wrapped_batch = RecordBatch::try_new(
+            Arc::clone(&wrapped_schema),
+            vec![
+                Arc::new(StringArray::from(vec![Some("13812345678")])),
+                Arc::new(StringArray::from(vec![Some("alic")])),
+                Arc::new(StringArray::from(vec![Some("PAID")])),
+            ],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let wrapped_out = batches_to_query_result(
+            &wrapped_schema,
+            &[wrapped_batch],
+            ResultSerializeOptions {
+                effective_max_rows: 100,
+                sql: wrapped_guarded.sql.clone(),
+                duration_ms: 2,
+                reveal_pii: false,
+                has_pii_raw_read: false,
+                catalog: &catalog,
+                guarded: &wrapped_guarded,
+            },
+        )?;
+        let Some(row0) = wrapped_out.result.rows.first() else {
+            return Err(AppError::bad("TEST_FAIL", "expected masked row"));
+        };
+        assert_eq!(row0.get("contact_num"), Some(&json!("138****5678")));
+        assert_eq!(row0.get("em"), Some(&json!("[REDACTED]")));
+        assert_eq!(row0.get("status"), Some(&json!("PAID")));
+
+        // 2. CTE passthrough + outer function over aliased PII column
+        let cte_guarded = guard(
+            "WITH sub AS (SELECT phone AS p FROM demo_orders) SELECT p, upper(p) AS loud_p FROM sub",
+            &catalog,
+            &GuardOptions::default(),
+        )?;
+        let cte_schema = Arc::new(Schema::new(vec![
+            Field::new("p", ArrowDataType::Utf8, true),
+            Field::new("loud_p", ArrowDataType::Utf8, true),
+        ]));
+        let cte_batch = RecordBatch::try_new(
+            Arc::clone(&cte_schema),
+            vec![
+                Arc::new(StringArray::from(vec![Some("13900001111")])),
+                Arc::new(StringArray::from(vec![Some("13900001111")])),
+            ],
+        )
+        .map_err(|e| AppError::Database(e.to_string()))?;
+
+        let cte_out = batches_to_query_result(
+            &cte_schema,
+            &[cte_batch],
+            ResultSerializeOptions {
+                effective_max_rows: 100,
+                sql: cte_guarded.sql.clone(),
+                duration_ms: 2,
+                reveal_pii: false,
+                has_pii_raw_read: false,
+                catalog: &catalog,
+                guarded: &cte_guarded,
+            },
+        )?;
+        let Some(cte_row) = cte_out.result.rows.first() else {
+            return Err(AppError::bad("TEST_FAIL", "expected CTE masked row"));
+        };
+        assert_eq!(cte_row.get("p"), Some(&json!("139****1111")));
+        assert_eq!(cte_row.get("loud_p"), Some(&json!("[REDACTED]")));
         Ok(())
     }
 }

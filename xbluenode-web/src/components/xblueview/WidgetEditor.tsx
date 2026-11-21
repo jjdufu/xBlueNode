@@ -112,6 +112,16 @@ export function WidgetEditor({
     if (!ds || typeof ds !== "object" || !("kind" in ds)) {
       throw new Error("data_source 必须包含 kind 字段");
     }
+    if (ds.kind === "ACTION") {
+      ds.flow_id =
+        typeof ds.flow_id === "string" && ds.flow_id.trim().length > 0
+          ? ds.flow_id.trim()
+          : undefined;
+      ds.node_id =
+        typeof ds.node_id === "string" && ds.node_id.trim().length > 0
+          ? ds.node_id.trim()
+          : undefined;
+    }
     if (!Array.isArray(drl)) {
       throw new Error("drill 必须是 JSON 数组");
     }

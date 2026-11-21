@@ -508,6 +508,19 @@ export const xblueviewApi = {
       }
     ),
 
+  putPlacements: (
+    assetId: string,
+    placements: Omit<FloorPlacementRecord, "asset_id">[]
+  ) =>
+    requestJson<FloorPlacementRecord[]>(
+      `/api/xblueview/assets/${assetId}/placements`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ placements }),
+      }
+    ),
+
   getScene3dBindings: (assetId: string) =>
     requestJson<Scene3dBindingRecord[]>(
       `/api/xblueview/assets/${assetId}/bindings3d`

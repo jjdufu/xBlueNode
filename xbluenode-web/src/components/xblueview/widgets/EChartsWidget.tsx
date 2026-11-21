@@ -3,6 +3,10 @@ import * as echarts from "echarts";
 import type { WidgetKind } from "@/lib/api/enums";
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
 import {
+  detectImplicitNodeMetricGrouping,
+  parseGraphTopologyData,
+} from "../logic";
+import {
   buildColumnIndexMap,
   findFirstNumericColIndex,
   getCell,
@@ -40,12 +44,17 @@ const CHART_PALETTE_DARK = [
 ];
 
 function extractClickValue(params: echarts.ECElementEvent): unknown {
+  if (typeof params.data === "object" && params.data !== null) {
+    const rec = params.data as Record<string, unknown>;
+    if (typeof rec.nodeId === "string" && rec.nodeId.trim().length > 0) {
+      return rec.nodeId;
+    }
+  }
   if (params.name && params.name.trim().length > 0) {
     return params.name;
   }
   if (typeof params.data === "object" && params.data !== null) {
     const rec = params.data as Record<string, unknown>;
-    if ("nodeId" in rec) return rec.nodeId;
     if ("name" in rec) return rec.name;
   }
   return params.value;
@@ -74,19 +83,26 @@ function buildChartOption(
   };
 
   if (kind === "LINE_CHART" || kind === "BAR_CHART") {
+    const explicitSeries = readString(widget.encoding, "series");
+    const implicitGroup = detectImplicitNodeMetricGrouping(data, explicitSeries);
     const xField =
-      readString(widget.encoding, "x") ?? data.columns[0]?.name ?? "x";
+      readString(widget.encoding, "x") ??
+      implicitGroup?.xField ??
+      data.columns[0]?.name ??
+      "x";
     const xIdx = colMap.get(xField) ?? 0;
-    const seriesField = readString(widget.encoding, "series");
+    const seriesField = explicitSeries ?? implicitGroup?.seriesField;
     const yFieldsEnc = readStringArray(widget.encoding, "y");
     const yFields =
       yFieldsEnc.length > 0
         ? yFieldsEnc
-        : [
-            data.columns[findFirstNumericColIndex(data, new Set([xIdx]))]?.name ??
-              data.columns[1]?.name ??
-              "y",
-          ];
+        : implicitGroup
+          ? [implicitGroup.yField]
+          : [
+              data.columns[findFirstNumericColIndex(data, new Set([xIdx]))]?.name ??
+                data.columns[1]?.name ??
+                "y",
+            ];
 
     if (seriesField && colMap.has(seriesField)) {
       const sIdx = colMap.get(seriesField) ?? -1;
@@ -465,67 +481,55 @@ function buildChartOption(
     };
   }
 
-  // GRAPH_TOPOLOGY fallback ECharts graph renderer
-  const nodesMap = new Map<
-    string,
-    { id: string; name: string; value: number; category: string }
-  >();
-  const links: { source: string; target: string; value?: number }[] = [];
-
-  for (const r of rows) {
-    const first = r[0];
-    if (typeof first === "string" && data.columns.length >= 2) {
-      const col0 = data.columns[0]?.name.toLowerCase() ?? "";
-      if (col0 === "source" || col0 === "src" || col0 === "src_node_id") {
-        const s = String(r[0] ?? "");
-        const t = String(r[1] ?? "");
-        if (s && t) {
-          if (!nodesMap.has(s)) nodesMap.set(s, { id: s, name: s, value: 1, category: "Node" });
-          if (!nodesMap.has(t)) nodesMap.set(t, { id: t, name: t, value: 1, category: "Node" });
-          const numEdge = toNumericValue(r[2]);
-          links.push({
-            source: s,
-            target: t,
-            value: numEdge ?? undefined,
-          });
-          continue;
-        }
-      }
-      const id = String(getCell(r, colMap, "id", 0) ?? getCell(r, colMap, "node_id", 0) ?? "");
-      const title = String(
-        getCell(r, colMap, "title", 1) ?? getCell(r, colMap, "label", 1) ?? id
-      );
-      const typeName = String(getCell(r, colMap, "type_name", 2) ?? "Node");
-      const val = toNumericValue(getCell(r, colMap, "metric_value", 3)) ?? 1;
-      if (id) {
-        nodesMap.set(id, { id, name: title, value: val, category: typeName });
-      }
-    }
-  }
-
-  const catList = Array.from(new Set(Array.from(nodesMap.values()).map((n) => n.category)));
+  // GRAPH_TOPOLOGY ECharts graph renderer (10-column record_kind NODE/LINK + 3-column preview)
+  const parsedGraph = parseGraphTopologyData(data);
+  const catList = parsedGraph.categories;
   return {
     clickField: "node_id",
     option: {
       animation: false,
       color: palette,
       tooltip: baseTooltip,
+      legend:
+        catList.length > 1
+          ? { top: 0, textStyle: { color: muted, fontSize: 10 } }
+          : undefined,
       series: [
         {
           type: "graph",
           layout: "force",
           roam: true,
+          edgeSymbol: ["none", "arrow"],
+          edgeSymbolSize: [4, 8],
           force: { repulsion: 160, edgeLength: 70 },
           categories: catList.map((name) => ({ name })),
-          label: { show: nodesMap.size <= 60, position: "bottom", color: fg, fontSize: 10 },
-          data: Array.from(nodesMap.values()).map((n) => ({
+          label: {
+            show: parsedGraph.nodes.length <= 60,
+            position: "bottom",
+            color: fg,
+            fontSize: 10,
+          },
+          data: parsedGraph.nodes.map((n) => ({
             id: n.id,
+            nodeId: n.id,
             name: n.name,
             value: n.value,
             category: catList.indexOf(n.category),
             symbolSize: 20,
           })),
-          links,
+          links: parsedGraph.links.map((lk) => ({
+            source: lk.source,
+            target: lk.target,
+            value: lk.value,
+            label: lk.label
+              ? {
+                  show: parsedGraph.links.length <= 40,
+                  formatter: lk.label,
+                  fontSize: 9,
+                  color: muted,
+                }
+              : undefined,
+          })),
         },
       ],
     },

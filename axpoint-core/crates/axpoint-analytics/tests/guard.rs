@@ -2,10 +2,14 @@
 //! and PII lineage test suite for `axpoint_analytics::sql_guard` (`05-STEP04` §04.3).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use axpoint_analytics::arrow::array::{RecordBatch, StringArray};
+use axpoint_analytics::arrow::datatypes::{DataType as ArrowDataType, Field, Schema};
 use axpoint_analytics::{
     CatalogDatasetEntry, DEFAULT_MAX_ROWS, GuardOptions, HARD_MAX_ROWS, MAX_SQL_BYTES,
-    OutputColumnOrigin, TenantCatalog, guard, guard_and_rewrite, guard_for_materialize,
+    OutputColumnOrigin, ResultSerializeOptions, TenantCatalog, batches_to_query_result, guard,
+    guard_and_rewrite, guard_for_materialize,
 };
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::ColumnMeta;
@@ -590,6 +594,220 @@ fn guard_named_parameters_payload_size_and_output_pii_lineage_work_accurately()
         &GuardOptions::default(),
     )?;
     assert_eq!(wild.output_lineage, vec![OutputColumnOrigin::Wildcard]);
+
+    Ok(())
+}
+
+#[test]
+fn guard_derived_subquery_wrapper_preserves_direct_and_derived_pii_lineage() -> Result<(), AppError>
+{
+    let catalog = demo_catalog();
+    let orders_id = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
+
+    // 1. Subquery filter wrapper over aliased direct PII column
+    let direct_wrapped = guard(
+        "SELECT * FROM (SELECT phone AS contact_num FROM demo_orders) AS _w WHERE status = 'PAID'",
+        &catalog,
+        &GuardOptions::default(),
+    )?;
+    assert_eq!(
+        direct_wrapped.output_lineage,
+        vec![OutputColumnOrigin::Direct {
+            dataset_id: orders_id,
+            column_name: String::from("phone"),
+            output_name: String::from("contact_num"),
+            pii_category: PiiCategory::Phone,
+        }]
+    );
+    assert_eq!(
+        direct_wrapped.referenced_columns,
+        vec![(orders_id, String::from("phone"))]
+    );
+
+    // 2. Subquery filter wrapper over derived PII expression -> DerivedFromPii -> [REDACTED]
+    let derived_wrapped = guard(
+        "SELECT * FROM (SELECT substring(email, 1, 4) AS em FROM demo_orders) AS _w WHERE status = 'PAID'",
+        &catalog,
+        &GuardOptions::default(),
+    )?;
+    assert_eq!(
+        derived_wrapped.output_lineage,
+        vec![OutputColumnOrigin::DerivedFromPii {
+            output_name: Some(String::from("em")),
+            pii_category: PiiCategory::Email,
+        }]
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "em",
+        ArrowDataType::Utf8,
+        true,
+    )]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(vec![Some("alic")]))],
+    )
+    .map_err(|e| AppError::Database(e.to_string()))?;
+    let serialized = batches_to_query_result(
+        &schema,
+        &[batch],
+        ResultSerializeOptions {
+            effective_max_rows: 100,
+            sql: derived_wrapped.sql.clone(),
+            duration_ms: 1,
+            reveal_pii: false,
+            has_pii_raw_read: false,
+            catalog: &catalog,
+            guarded: &derived_wrapped,
+        },
+    )?;
+    let Some(first_row) = serialized.result.rows.first() else {
+        return Err(AppError::bad("TEST_FAIL", "expected row"));
+    };
+    assert_eq!(first_row.get("em"), Some(&json!("[REDACTED]")));
+
+    Ok(())
+}
+
+#[test]
+fn guard_subquery_qualified_wildcard_and_drill_exprs_preserve_pii_lineage() -> Result<(), AppError>
+{
+    let catalog = demo_catalog();
+    let orders_id = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
+
+    let qwild = guard(
+        "SELECT _w.* FROM (SELECT phone AS contact_num FROM demo_orders) AS _w",
+        &catalog,
+        &GuardOptions::default(),
+    )?;
+    assert_eq!(
+        qwild.output_lineage,
+        vec![OutputColumnOrigin::Direct {
+            dataset_id: orders_id,
+            column_name: String::from("phone"),
+            output_name: String::from("contact_num"),
+            pii_category: PiiCategory::Phone,
+        }]
+    );
+
+    let drill = guard(
+        "SELECT _w.contact_num, upper(_w.contact_num) AS loud_num, SUM(amount) AS amount FROM (SELECT phone AS contact_num, amount, status FROM demo_orders) AS _w WHERE status = 'PAID' GROUP BY _w.contact_num",
+        &catalog,
+        &GuardOptions::default(),
+    )?;
+    let [d0, d1, d2] = drill.output_lineage.as_slice() else {
+        return Err(AppError::bad("TEST_FAIL", "expected 3 drill columns"));
+    };
+    assert_eq!(
+        d0,
+        &OutputColumnOrigin::Direct {
+            dataset_id: orders_id,
+            column_name: String::from("phone"),
+            output_name: String::from("contact_num"),
+            pii_category: PiiCategory::Phone,
+        }
+    );
+    assert_eq!(
+        d1,
+        &OutputColumnOrigin::DerivedFromPii {
+            output_name: Some(String::from("loud_num")),
+            pii_category: PiiCategory::Phone,
+        }
+    );
+    assert_eq!(
+        d2,
+        &OutputColumnOrigin::NonSensitive {
+            output_name: Some(String::from("amount")),
+        }
+    );
+
+    Ok(())
+}
+
+#[test]
+fn guard_nested_subqueries_union_and_cte_propagate_pii_lineage() -> Result<(), AppError> {
+    let catalog = demo_catalog();
+    let orders_id = Uuid::from_u128(0x1111_1111_1111_1111_1111_1111_1111_1111);
+
+    // 1. CTE explicit projection and CTE wildcard projection
+    let cte_direct = guard(
+        "WITH sub AS (SELECT phone AS p FROM demo_orders) SELECT p FROM sub",
+        &catalog,
+        &GuardOptions::default(),
+    )?;
+    assert_eq!(
+        cte_direct.output_lineage,
+        vec![OutputColumnOrigin::Direct {
+            dataset_id: orders_id,
+            column_name: String::from("phone"),
+            output_name: String::from("p"),
+            pii_category: PiiCategory::Phone,
+        }]
+    );
+
+    let cte_star = guard(
+        "WITH sub AS (SELECT phone AS p, substring(email, 1, 4) AS em FROM demo_orders) SELECT * FROM sub",
+        &catalog,
+        &GuardOptions::default(),
+    )?;
+    assert_eq!(
+        cte_star.output_lineage,
+        vec![
+            OutputColumnOrigin::Direct {
+                dataset_id: orders_id,
+                column_name: String::from("phone"),
+                output_name: String::from("p"),
+                pii_category: PiiCategory::Phone,
+            },
+            OutputColumnOrigin::DerivedFromPii {
+                output_name: Some(String::from("em")),
+                pii_category: PiiCategory::Email,
+            },
+        ]
+    );
+
+    // 2. CTE wildcard over physical dataset followed by outer alias + derived PII
+    let cte_wild_alias = guard(
+        "WITH base AS (SELECT * FROM demo_orders) SELECT phone AS contact_num, substring(email, 1, 3) AS em FROM base",
+        &catalog,
+        &GuardOptions::default(),
+    )?;
+    assert_eq!(
+        cte_wild_alias.output_lineage,
+        vec![
+            OutputColumnOrigin::Direct {
+                dataset_id: orders_id,
+                column_name: String::from("phone"),
+                output_name: String::from("contact_num"),
+                pii_category: PiiCategory::Phone,
+            },
+            OutputColumnOrigin::DerivedFromPii {
+                output_name: Some(String::from("em")),
+                pii_category: PiiCategory::Email,
+            },
+        ]
+    );
+
+    // 3. Multi-level nested subquery with inner UNION merging Direct PII + NonSensitive and Direct PII + DerivedFromPii
+    let union_nested = guard(
+        "SELECT * FROM (SELECT * FROM (SELECT phone AS contact_num, email AS msg FROM demo_orders UNION ALL SELECT 'N/A' AS contact_num, substring(email, 1, 4) AS msg FROM demo_orders) AS u) AS _w",
+        &catalog,
+        &GuardOptions::default(),
+    )?;
+    assert_eq!(
+        union_nested.output_lineage,
+        vec![
+            OutputColumnOrigin::Direct {
+                dataset_id: orders_id,
+                column_name: String::from("phone"),
+                output_name: String::from("contact_num"),
+                pii_category: PiiCategory::Phone,
+            },
+            OutputColumnOrigin::DerivedFromPii {
+                output_name: Some(String::from("msg")),
+                pii_category: PiiCategory::Email,
+            },
+        ]
+    );
 
     Ok(())
 }

@@ -15,10 +15,11 @@ use axpoint_domain::studio::{PropertyKind, PropertySpec, SchemaDoc};
 use axpoint_domain::view::{
     AffectedWidgetRef, AssetRecord, CanvasConfig, CreateAssetParams, CreateDashboardRequest,
     CreateWidgetRecordParams, DashboardDetail, DashboardRecord, DashboardStatus, DashboardTheme,
-    DrillLevel, FilterDef, FloorPlacementRecord, FloorPlanRow, LayoutUpdateItem, NodesGeoRow,
-    PutFloorPlacementItem, PutScene3dBindingItem, RefreshMode, Scene3dBindingRecord, Scene3dRow,
-    UpdateDashboardRequest, UpdateWidgetRecordParams, ViewWriteNodeOutcome, ViewWriteNodeParams,
-    WidgetDataSource, WidgetDeps, WidgetPosition, WidgetRecord, WriteNodeTargetKind,
+    DrillLevel, FilterDef, FloorPlacementRecord, FloorPlanRow, LayoutUpdateItem, NodesGeoLinkRow,
+    NodesGeoRow, PutFloorPlacementItem, PutScene3dBindingItem, RefreshMode, Scene3dBindingRecord,
+    Scene3dRow, UpdateDashboardRequest, UpdateWidgetRecordParams, ViewWriteNodeOutcome,
+    ViewWriteNodeParams, WidgetDataSource, WidgetDeps, WidgetPosition, WidgetRecord,
+    WriteNodeTargetKind,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, QueryBuilder, Row, Transaction};
@@ -108,12 +109,29 @@ fn parse_ts_uuid_cursor(raw_cursor: &str) -> Result<(DateTime<Utc>, Uuid), AppEr
 }
 
 fn validate_widget_position(pos: &WidgetPosition) -> Result<(), AppError> {
-    if pos.x < 0 || pos.y < 0 || pos.w < 1 || pos.h < 1 {
+    if pos.x < 0 || pos.y < 0 || pos.w < 1 || pos.h < 1 || pos.x.saturating_add(pos.w) > 24 {
         return Err(AppError::bad(
             "INVALID_ARGUMENT",
             format!(
-                "widget position must have x>=0, y>=0, w>=1, h>=1, got ({}, {}, {}, {})",
+                "widget position must satisfy x>=0, y>=0, w>=1, h>=1, x+w<=24, got ({}, {}, {}, {})",
                 pos.x, pos.y, pos.w, pos.h
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_canvas_config(canvas: &CanvasConfig) -> Result<(), AppError> {
+    if canvas.cols <= 0
+        || canvas.row_height <= 0
+        || canvas.screen_width <= 0
+        || canvas.screen_height <= 0
+    {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            format!(
+                "canvas cols, row_height, screen_width, and screen_height must be > 0, got ({}, {}, {}, {})",
+                canvas.cols, canvas.row_height, canvas.screen_width, canvas.screen_height
             ),
         ));
     }
@@ -317,6 +335,35 @@ async fn ensure_asset_exists_tx(
     .map_err(|err| AppError::Database(format!("check xv_assets exists failed: {err}")))?;
     if !exists {
         return Err(AppError::NotFound("ASSET_NOT_FOUND"));
+    }
+    Ok(())
+}
+
+async fn ensure_asset_kind_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    asset_id: Uuid,
+    expected: AssetKind,
+) -> Result<(), AppError> {
+    let kind_raw: Option<String> =
+        sqlx::query_scalar("SELECT asset_kind FROM xv_assets WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id)
+            .bind(asset_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|err| AppError::Database(format!("check xv_assets kind failed: {err}")))?;
+
+    let raw = kind_raw.ok_or(AppError::NotFound("ASSET_NOT_FOUND"))?;
+    let actual = AssetKind::from_str(&raw)?;
+    if actual != expected {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            format!(
+                "asset {asset_id} has kind {}, expected {}",
+                actual.as_str(),
+                expected.as_str()
+            ),
+        ));
     }
     Ok(())
 }
@@ -636,13 +683,22 @@ async fn validate_write_against_schema_tx(
     }
 }
 
+fn is_same_view_widget(source_kind: &str, target: &str, widget_id: Uuid) -> bool {
+    if source_kind != "VIEW" {
+        return false;
+    }
+    let exact = widget_id.to_string();
+    let legacy_prefix = format!("widget:{widget_id}:");
+    target == exact || target.starts_with(&legacy_prefix)
+}
+
 async fn check_write_idempotency_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
     params: &ViewWriteNodeParams,
 ) -> Result<Option<ViewWriteNodeOutcome>, AppError> {
     let existing = sqlx::query(
-        "SELECT id, node_id, payload
+        "SELECT id, source_kind, target, node_id, payload
            FROM ax_action_log
           WHERE tenant_id = $1 AND idempotency_key = $2",
     )
@@ -655,6 +711,12 @@ async fn check_write_idempotency_tx(
     let Some(row) = existing else {
         return Ok(None);
     };
+
+    let source_kind: String = row.get("source_kind");
+    let target: String = row.get("target");
+    if !is_same_view_widget(&source_kind, &target, params.widget_id) {
+        return Err(AppError::Conflict("CONFLICT"));
+    }
 
     let action_log_id: i64 = row.get("id");
     let payload: serde_json::Value = row.get("payload");
@@ -855,16 +917,56 @@ fn remap_filters_for_duplicate(
     id_remap
 }
 
-async fn record_view_write_log_and_outbox_tx(
+async fn try_insert_view_write_log_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
     type_name: &str,
     params: &ViewWriteNodeParams,
-) -> Result<i64, AppError> {
+) -> Result<Option<i64>, AppError> {
     let key = params.key.trim();
-    let (action_kind, outbox_topic, outbox_payload) = match params.target_kind {
+    let action_kind = match params.target_kind {
+        WriteNodeTargetKind::Property => "WRITE_NODE_PROPERTY",
+        WriteNodeTargetKind::Metric => "WRITE_NODE_METRIC",
+    };
+    let target = params.widget_id.to_string();
+    let action_payload = serde_json::json!({
+        "widget_id": params.widget_id,
+        "node_id": params.node_id,
+        "type_name": type_name,
+        "target_kind": params.target_kind,
+        "key": key,
+        "value": params.value,
+    });
+
+    sqlx::query_scalar(
+        "INSERT INTO ax_action_log (
+             tenant_id, run_id, node_id, source_kind, action_kind,
+             target, payload, status, idempotency_key
+         )
+         VALUES ($1, NULL, $2, 'VIEW', $3, $4, $5, 'DONE', $6)
+         ON CONFLICT (tenant_id, idempotency_key) DO NOTHING
+         RETURNING id",
+    )
+    .bind(tenant_id)
+    .bind(params.node_id.to_string())
+    .bind(action_kind)
+    .bind(target)
+    .bind(action_payload)
+    .bind(&params.idempotency_key)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("insert ax_action_log failed: {err}")))
+}
+
+async fn emit_view_write_outbox_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    type_name: &str,
+    params: &ViewWriteNodeParams,
+) -> Result<(), AppError> {
+    let key = params.key.trim();
+    let (outbox_topic, outbox_payload) = match params.target_kind {
         WriteNodeTargetKind::Property => (
-            "WRITE_NODE_PROPERTY",
             OutboxTopic::NodeUpserted,
             serde_json::json!({
                 "node_id": params.node_id,
@@ -875,7 +977,6 @@ async fn record_view_write_log_and_outbox_tx(
             }),
         ),
         WriteNodeTargetKind::Metric => (
-            "WRITE_NODE_METRIC",
             OutboxTopic::NodeMetricsChanged,
             serde_json::json!({
                 "node_id": params.node_id,
@@ -887,34 +988,6 @@ async fn record_view_write_log_and_outbox_tx(
         ),
     };
 
-    let target = format!("widget:{}:node:{}", params.widget_id, params.node_id);
-    let action_payload = serde_json::json!({
-        "widget_id": params.widget_id,
-        "node_id": params.node_id,
-        "type_name": type_name,
-        "target_kind": params.target_kind,
-        "key": key,
-        "value": params.value,
-    });
-
-    let action_log_id: i64 = sqlx::query_scalar(
-        "INSERT INTO ax_action_log (
-             tenant_id, run_id, node_id, source_kind, action_kind,
-             target, payload, status, idempotency_key
-         )
-         VALUES ($1, NULL, $2, 'VIEW', $3, $4, $5, 'DONE', $6)
-         RETURNING id",
-    )
-    .bind(tenant_id)
-    .bind(params.node_id.to_string())
-    .bind(action_kind)
-    .bind(target)
-    .bind(action_payload)
-    .bind(&params.idempotency_key)
-    .fetch_one(&mut **tx)
-    .await
-    .map_err(|err| AppError::Database(format!("insert ax_action_log failed: {err}")))?;
-
     insert_outbox_tx(
         tx,
         tenant_id,
@@ -923,9 +996,8 @@ async fn record_view_write_log_and_outbox_tx(
             payload: outbox_payload,
         },
     )
-    .await?;
-
-    Ok(action_log_id)
+    .await
+    .map(|_| ())
 }
 
 impl ViewRepository for PgStore {
@@ -999,6 +1071,7 @@ impl ViewRepository for PgStore {
         }
         let slug = req.slug.trim();
         validate_slug(slug)?;
+        validate_canvas_config(&req.canvas)?;
 
         let filters_json = serde_json::to_value(&req.filters).map_err(|err| {
             AppError::bad("INVALID_ARGUMENT", format!("serialize filters: {err}"))
@@ -1147,6 +1220,9 @@ impl ViewRepository for PgStore {
             }
             None => None,
         };
+        if let Some(ref c) = req.canvas {
+            validate_canvas_config(c)?;
+        }
         let filters_json = req
             .filters
             .as_ref()
@@ -1575,6 +1651,7 @@ impl ViewRepository for PgStore {
         }
         let slug = dashboard.slug.trim();
         validate_slug(slug)?;
+        validate_canvas_config(&dashboard.canvas)?;
         for w in &widgets {
             validate_widget_position(&w.position)?;
             validate_refresh_seconds(w.refresh_seconds)?;
@@ -1882,7 +1959,7 @@ impl ViewRepository for PgStore {
         }
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
-        ensure_asset_exists_tx(&mut tx, tenant_id, asset_id).await?;
+        ensure_asset_kind_tx(&mut tx, tenant_id, asset_id, AssetKind::FloorPlanImage).await?;
         ensure_nodes_exist_tx(&mut tx, tenant_id, &node_ids).await?;
 
         sqlx::query("DELETE FROM xv_floor_placements WHERE tenant_id = $1 AND asset_id = $2")
@@ -1998,7 +2075,7 @@ impl ViewRepository for PgStore {
         }
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
-        ensure_asset_exists_tx(&mut tx, tenant_id, asset_id).await?;
+        ensure_asset_kind_tx(&mut tx, tenant_id, asset_id, AssetKind::Model3d).await?;
         ensure_nodes_exist_tx(&mut tx, tenant_id, &node_ids).await?;
 
         sqlx::query("DELETE FROM xv_scene3d_bindings WHERE tenant_id = $1 AND asset_id = $2")
@@ -2051,6 +2128,33 @@ impl ViewRepository for PgStore {
             AppError::Database(format!("commit replace_scene3d_bindings tx failed: {err}"))
         })?;
         Ok(rows.iter().map(decode_scene3d_binding_row).collect())
+    }
+
+    async fn list_widgets_by_asset(
+        &self,
+        tenant_id: &str,
+        asset_id: Uuid,
+    ) -> Result<Vec<WidgetRecord>, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, dashboard_id, widget_kind, title, position, data_source,
+                    encoding, options, drill, refresh_mode, refresh_seconds, deps, created_at, updated_at
+               FROM xv_widgets
+              WHERE tenant_id = $1
+                AND data_source->>'asset_id' = $2
+                AND data_source->>'kind' IN ('FLOOR_PLAN', 'SCENE_3D', 'SCENE3D')
+              ORDER BY dashboard_id ASC, id ASC",
+        )
+        .bind(tenant_id)
+        .bind(asset_id.to_string())
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("list_widgets_by_asset failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit list_widgets_by_asset tx failed: {err}"))
+        })?;
+        rows.iter().map(decode_widget_row).collect()
     }
 
     async fn query_nodes_geo(
@@ -2111,6 +2215,71 @@ impl ViewRepository for PgStore {
                 lat: r.get("lat"),
                 metric_value: r.get("metric_value"),
                 open_alerts: r.get("open_alerts"),
+            })
+            .collect())
+    }
+
+    async fn query_nodes_geo_links(
+        &self,
+        tenant_id: &str,
+        node_ids: &[Uuid],
+        link_types: &[String],
+    ) -> Result<Vec<NodesGeoLinkRow>, AppError> {
+        if node_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let link_filter = normalize_type_names(link_types);
+        if !link_types.is_empty() && link_filter.is_none() {
+            return Ok(Vec::new());
+        }
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT l.id AS link_id,
+                    l.link_type,
+                    l.src_node_id,
+                    l.dst_node_id,
+                    src.geo_lng AS src_lng,
+                    src.geo_lat AS src_lat,
+                    dst.geo_lng AS dst_lng,
+                    dst.geo_lat AS dst_lat,
+                    l.weight
+               FROM xb_links l
+               JOIN xb_nodes src ON src.id = l.src_node_id AND src.tenant_id = l.tenant_id
+               JOIN xb_nodes dst ON dst.id = l.dst_node_id AND dst.tenant_id = l.tenant_id
+              WHERE l.tenant_id = $1
+                AND l.src_node_id = ANY($2::uuid[])
+                AND l.dst_node_id = ANY($2::uuid[])
+                AND src.geo_lng IS NOT NULL
+                AND src.geo_lat IS NOT NULL
+                AND dst.geo_lng IS NOT NULL
+                AND dst.geo_lat IS NOT NULL
+                AND ($3::text[] IS NULL OR l.link_type = ANY($3))
+              ORDER BY l.link_type ASC, l.id ASC",
+        )
+        .bind(tenant_id)
+        .bind(node_ids)
+        .bind(link_filter)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("query_nodes_geo_links failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit query_nodes_geo_links tx failed: {err}"))
+        })?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| NodesGeoLinkRow {
+                link_id: r.get("link_id"),
+                link_type: r.get("link_type"),
+                src_node_id: r.get("src_node_id"),
+                dst_node_id: r.get("dst_node_id"),
+                src_lng: r.get("src_lng"),
+                src_lat: r.get("src_lat"),
+                dst_lng: r.get("dst_lng"),
+                dst_lat: r.get("dst_lat"),
+                weight: r.get("weight"),
             })
             .collect())
     }
@@ -2332,10 +2501,18 @@ impl ViewRepository for PgStore {
         let metric_val =
             validate_write_against_schema_tx(&mut tx, tenant_id, &type_name, &params).await?;
 
+        let Some(action_log_id) =
+            try_insert_view_write_log_tx(&mut tx, tenant_id, &type_name, &params).await?
+        else {
+            tx.rollback().await.map_err(|err| {
+                AppError::Database(format!("rollback write_node conflict tx failed: {err}"))
+            })?;
+            return resolve_conflicted_write_replay(self, tenant_id, &params).await;
+        };
+
         apply_node_write_mutation_tx(&mut tx, tenant_id, &params, props, metrics, metric_val)
             .await?;
-        let action_log_id =
-            record_view_write_log_and_outbox_tx(&mut tx, tenant_id, &type_name, &params).await?;
+        emit_view_write_outbox_tx(&mut tx, tenant_id, &type_name, &params).await?;
 
         tx.commit().await.map_err(|err| {
             AppError::Database(format!("commit execute_view_write_node tx failed: {err}"))
@@ -2348,4 +2525,19 @@ impl ViewRepository for PgStore {
             idempotency_replay: false,
         })
     }
+}
+
+async fn resolve_conflicted_write_replay(
+    store: &PgStore,
+    tenant_id: &str,
+    params: &ViewWriteNodeParams,
+) -> Result<ViewWriteNodeOutcome, AppError> {
+    let mut replay_tx = begin_tenant_tx(store.pool(), tenant_id).await?;
+    let maybe_replay = check_write_idempotency_tx(&mut replay_tx, tenant_id, params).await?;
+    replay_tx.commit().await.map_err(|err| {
+        AppError::Database(format!(
+            "commit conflicted write_node replay tx failed: {err}"
+        ))
+    })?;
+    maybe_replay.ok_or(AppError::Conflict("CONFLICT"))
 }

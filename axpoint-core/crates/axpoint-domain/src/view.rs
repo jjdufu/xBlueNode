@@ -273,6 +273,26 @@ fn default_action_schema() -> serde_json::Value {
     serde_json::json!({"type": "object", "properties": {}})
 }
 
+fn deserialize_opt_uuid<'de, D>(deserializer: D) -> Result<Option<Uuid>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw: Option<String> = Option::deserialize(deserializer)?;
+    match raw {
+        None => Ok(None),
+        Some(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                Ok(None)
+            } else {
+                Uuid::parse_str(trimmed)
+                    .map(Some)
+                    .map_err(serde::de::Error::custom)
+            }
+        }
+    }
+}
+
 /// Declarative widget data source union (`xv_widgets.data_source`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "SCREAMING_SNAKE_CASE")]
@@ -382,6 +402,7 @@ pub enum WidgetDataSource {
         color_metric: Option<String>,
     },
     /// Loads 3D twin bindings joined with live node metric values and open alert counts.
+    #[serde(rename = "SCENE_3D", alias = "SCENE3D")]
     Scene3d {
         /// 3D model asset UUID (`MODEL_3D`).
         asset_id: Uuid,
@@ -394,10 +415,10 @@ pub enum WidgetDataSource {
         /// Action mode (`RUN_FLOW` or `WRITE_NODE`).
         action_type: WidgetActionType,
         /// Target workflow UUID when `action_type = RUN_FLOW`.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "deserialize_opt_uuid")]
         flow_id: Option<Uuid>,
         /// Default target node UUID when `action_type = WRITE_NODE`.
-        #[serde(default)]
+        #[serde(default, deserialize_with = "deserialize_opt_uuid")]
         node_id: Option<Uuid>,
         /// Node field target (`PROPERTY` or `METRIC`) when `action_type = WRITE_NODE`.
         #[serde(default)]
@@ -772,7 +793,7 @@ pub struct InvokeWidgetActionRequest {
     #[serde(default = "default_empty_obj")]
     pub inputs: serde_json::Value,
     /// Optional target node override (`WRITE_NODE` or `RUN_FLOW` context).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_uuid")]
     pub target_node_id: Option<Uuid>,
     /// Optional client idempotency key.
     #[serde(default)]
@@ -1109,4 +1130,88 @@ pub struct UpdateWidgetRecordParams {
     pub refresh_seconds: Option<i32>,
     /// Recomputed dependencies when `data_source` changes.
     pub deps: Option<WidgetDeps>,
+}
+
+/// Directed geo-located relationship row used to render map fly-lines (`NODES_GEO.link_types`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NodesGeoLinkRow {
+    /// Link UUID (`xb_links.id`).
+    pub link_id: Uuid,
+    /// Relationship type name (`xb_links.link_type`).
+    pub link_type: String,
+    /// Source business node UUID.
+    pub src_node_id: Uuid,
+    /// Destination business node UUID.
+    pub dst_node_id: Uuid,
+    /// Source node longitude.
+    pub src_lng: f64,
+    /// Source node latitude.
+    pub src_lat: f64,
+    /// Destination node longitude.
+    pub dst_lng: f64,
+    /// Destination node latitude.
+    pub dst_lat: f64,
+    /// Relationship weight.
+    pub weight: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{InvokeWidgetActionRequest, WidgetDataSource};
+    use uuid::Uuid;
+
+    #[test]
+    fn scene3d_data_source_serializes_as_scene_3d_and_accepts_legacy_alias()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let asset_id = Uuid::nil();
+        let ds = WidgetDataSource::Scene3d {
+            asset_id,
+            color_metric: Some("inventory".to_owned()),
+        };
+        let encoded = serde_json::to_value(&ds)?;
+        assert_eq!(
+            encoded.get("kind").and_then(serde_json::Value::as_str),
+            Some("SCENE_3D")
+        );
+
+        let from_canonical: WidgetDataSource = serde_json::from_value(serde_json::json!({
+            "kind": "SCENE_3D",
+            "asset_id": asset_id,
+            "color_metric": "inventory"
+        }))?;
+        assert!(matches!(from_canonical, WidgetDataSource::Scene3d { .. }));
+
+        let from_legacy: WidgetDataSource = serde_json::from_value(serde_json::json!({
+            "kind": "SCENE3D",
+            "asset_id": asset_id
+        }))?;
+        assert!(matches!(from_legacy, WidgetDataSource::Scene3d { .. }));
+        Ok(())
+    }
+
+    #[test]
+    fn action_optional_uuids_treat_empty_strings_as_none() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let ds: WidgetDataSource = serde_json::from_value(serde_json::json!({
+            "kind": "ACTION",
+            "action_type": "WRITE_NODE",
+            "flow_id": "",
+            "node_id": "   "
+        }))?;
+        assert!(matches!(
+            ds,
+            WidgetDataSource::Action {
+                flow_id: None,
+                node_id: None,
+                ..
+            }
+        ));
+
+        let invoke_req: InvokeWidgetActionRequest = serde_json::from_value(serde_json::json!({
+            "inputs": {"value": 42},
+            "target_node_id": ""
+        }))?;
+        assert_eq!(invoke_req.target_node_id, None);
+        Ok(())
+    }
 }

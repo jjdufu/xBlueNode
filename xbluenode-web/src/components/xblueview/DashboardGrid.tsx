@@ -30,11 +30,17 @@ export interface DashboardGridProps {
   readOnly?: boolean;
   fixedWidth?: number;
   selectedNodeId?: string | null;
+  filterValues?: Record<string, unknown>;
   onLayoutChange?: (items: LayoutUpdateItem[]) => void;
   onRefreshWidget: (widgetId: string) => void;
   onEditWidget?: (widget: WidgetRecord) => void;
   onDeleteWidget?: (widgetId: string) => void;
-  onDrill?: (widgetId: string, field: string, value: unknown) => void;
+  onDrill?: (
+    widgetId: string,
+    field: string,
+    value: unknown,
+    rowObj?: Record<string, unknown>
+  ) => void;
   onPopDrill?: (widgetId: string, level: number) => void;
   onCrossFilter?: (filterKey: string, value: unknown) => void;
   onSelectNode?: (node: SelectedNodeContext) => void;
@@ -54,6 +60,7 @@ export function DashboardGrid({
   readOnly = false,
   fixedWidth,
   selectedNodeId,
+  filterValues,
   onLayoutChange,
   onRefreshWidget,
   onEditWidget,
@@ -148,6 +155,7 @@ export function DashboardGrid({
               readOnly={readOnly}
               drillPath={drillMap[w.id] ?? []}
               selectedNodeId={selectedNodeId}
+              filterValues={filterValues}
               onRefresh={onRefreshWidget}
               onEdit={onEditWidget}
               onDelete={onDeleteWidget}

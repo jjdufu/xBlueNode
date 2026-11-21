@@ -10,9 +10,15 @@ import {
 } from "react-router";
 import { getAccessToken, setUnauthorizedHandler } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { MODULE_REGISTRY } from "@/modules/registry";
+import { MODULE_REGISTRY, type ModuleRouteSpec } from "@/modules/registry";
 import { LoginPage } from "@/pages/LoginPage";
-import { XBlueViewPage } from "@/pages/XBlueViewPage";
+
+function matchesModulePath(spec: ModuleRouteSpec, pathname: string): boolean {
+  if (spec.path === "/") {
+    return pathname === "/";
+  }
+  return pathname === spec.path || pathname.startsWith(`${spec.path}/`);
+}
 
 function ShellLayout() {
   const location = useLocation();
@@ -27,11 +33,16 @@ function ShellLayout() {
     return <Navigate to="/login" replace />;
   }
 
-  const isScreenMode =
-    location.pathname.startsWith("/view/") &&
-    new URLSearchParams(location.search).get("screen") === "1";
+  const navItems = MODULE_REGISTRY.filter((m) => !m.public);
+  const activeModule = navItems.find((m) => matchesModulePath(m, location.pathname));
+  const searchParams = new URLSearchParams(location.search);
+  const isImmersive = Boolean(
+    activeModule?.immersiveQueryParam &&
+      location.pathname !== activeModule.path &&
+      searchParams.get(activeModule.immersiveQueryParam) === "1"
+  );
 
-  if (isScreenMode) {
+  if (isImmersive) {
     return <Outlet />;
   }
 
@@ -40,9 +51,6 @@ function ShellLayout() {
     setDark(next);
     document.documentElement.classList.toggle("dark", next);
   };
-
-  const navItems = MODULE_REGISTRY.filter((m) => !m.public);
-  const isViewRoute = location.pathname.startsWith("/view");
 
   return (
     <div className="min-h-screen flex bg-background text-foreground">
@@ -63,11 +71,7 @@ function ShellLayout() {
           <nav className="space-y-1">
             {navItems.map((item) => {
               const Icon = item.icon;
-              const active =
-                item.path === "/"
-                  ? location.pathname === "/"
-                  : location.pathname === item.path ||
-                    location.pathname.startsWith(`${item.path}/`);
+              const active = matchesModulePath(item, location.pathname);
               return (
                 <NavLink
                   key={item.key}
@@ -101,7 +105,7 @@ function ShellLayout() {
       <main
         className={cn(
           "flex-1 min-w-0 w-full mx-auto",
-          isViewRoute ? "p-4 md:p-6 max-w-[1600px]" : "p-6 md:p-8 max-w-6xl"
+          activeModule?.wideLayout ? "p-4 md:p-6 max-w-[1600px]" : "p-6 md:p-8 max-w-6xl"
         )}
       >
         <Outlet />
@@ -115,27 +119,25 @@ const router = createBrowserRouter([
     path: "/login",
     element: <LoginPage />,
   },
-  ...MODULE_REGISTRY.filter((m) => m.public).map((m) => {
+  ...MODULE_REGISTRY.filter((m) => m.public).flatMap((m) => {
     const PublicPageComponent = m.component;
-    return {
-      path: m.path,
+    const allPaths = [m.path, ...(m.subPaths ?? [])];
+    return allPaths.map((p) => ({
+      path: p,
       element: <PublicPageComponent />,
-    };
+    }));
   }),
   {
     element: <ShellLayout />,
     children: [
-      ...MODULE_REGISTRY.filter((m) => !m.public).map((m) => {
+      ...MODULE_REGISTRY.filter((m) => !m.public).flatMap((m) => {
         const PageComponent = m.component;
-        return {
-          path: m.path,
+        const allPaths = [m.path, ...(m.subPaths ?? [])];
+        return allPaths.map((p) => ({
+          path: p,
           element: <PageComponent />,
-        };
+        }));
       }),
-      {
-        path: "/view/:slug",
-        element: <XBlueViewPage />,
-      },
       {
         path: "*",
         element: <Navigate to="/" replace />,

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Play, Send } from "lucide-react";
 import {
   xblueviewApi,
@@ -7,13 +7,21 @@ import {
   type WidgetRecord,
 } from "@/lib/api/xblueview";
 import { Badge, Button, Input } from "@/components/ui/primitives";
-import { isRecord, readBoolean, readString } from "./utils";
+import { resolveActionTargetNodeId } from "./logic";
+import {
+  buildColumnIndexMap,
+  getCell,
+  isRecord,
+  readBoolean,
+  readString,
+} from "./utils";
 
 export interface ActionWidgetProps {
   widget: WidgetRecord;
   data: WidgetDataResponse | null;
   readOnly?: boolean;
   selectedNodeId?: string | null;
+  filterValues?: Record<string, unknown>;
   onActionSuccess?: () => void;
 }
 
@@ -63,11 +71,26 @@ function parseInputSchemaFields(
   return fields;
 }
 
+function coercePrefillValue(
+  raw: unknown,
+  fieldType: SchemaPropertyField["type"]
+): unknown {
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  if (Array.isArray(raw)) {
+    return raw.length > 0 ? coercePrefillValue(raw[0], fieldType) : undefined;
+  }
+  if (fieldType === "boolean") {
+    return Boolean(raw);
+  }
+  return String(raw);
+}
+
 export function ActionWidget({
   widget,
   data,
   readOnly = false,
   selectedNodeId,
+  filterValues,
   onActionSuccess,
 }: ActionWidgetProps) {
   const ds = widget.data_source.kind === "ACTION" ? widget.data_source : null;
@@ -76,11 +99,15 @@ export function ActionWidget({
     [ds?.input_schema]
   );
 
+  const [touchedKeys, setTouchedKeys] = useState<Set<string>>(() => new Set());
   const [formValues, setFormValues] = useState<Record<string, unknown>>(() => {
     const initial: Record<string, unknown> = {};
     for (const f of fields) {
+      const fromFilter = coercePrefillValue(filterValues?.[f.key], f.type);
       if (f.defaultValue !== undefined) {
         initial[f.key] = f.defaultValue;
+      } else if (fromFilter !== undefined) {
+        initial[f.key] = fromFilter;
       } else if (f.type === "boolean") {
         initial[f.key] = false;
       } else {
@@ -89,6 +116,23 @@ export function ActionWidget({
     }
     return initial;
   });
+
+  useEffect(() => {
+    if (!filterValues) return;
+    setFormValues((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const f of fields) {
+        if (touchedKeys.has(f.key) || f.defaultValue !== undefined) continue;
+        const fromFilter = coercePrefillValue(filterValues[f.key], f.type);
+        if (fromFilter !== undefined && next[f.key] !== fromFilter) {
+          next[f.key] = fromFilter;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [fields, filterValues, touchedKeys]);
 
   const [confirming, setConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -108,6 +152,16 @@ export function ActionWidget({
   const buttonLabel =
     readString(widget.options, "button_label") ??
     (ds.action_type === "RUN_FLOW" ? "触发业务流程" : "执行节点回写");
+
+  const updateFieldValue = (key: string, value: unknown) => {
+    setTouchedKeys((prev) => {
+      if (prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.add(key);
+      return next;
+    });
+    setFormValues((prev) => ({ ...prev, [key]: value }));
+  };
 
   const executeInvoke = async () => {
     if (readOnly) return;
@@ -144,9 +198,13 @@ export function ActionWidget({
       }
 
       const idempotencyKey = `xv-${widget.id}-${Date.now()}`;
+      const targetNodeId = resolveActionTargetNodeId(
+        ds.node_id,
+        selectedNodeId
+      );
       const res = await xblueviewApi.invokeWidgetAction(widget.id, {
         inputs,
-        target_node_id: ds.node_id ?? selectedNodeId ?? undefined,
+        target_node_id: targetNodeId,
         idempotency_key: idempotencyKey,
       });
       setLastResult(res);
@@ -160,6 +218,7 @@ export function ActionWidget({
   };
 
   const recentLogs = data?.rows ?? [];
+  const logColMap = buildColumnIndexMap(data);
   const skipConfirm = readBoolean(widget.options, "skip_confirm") === true;
 
   return (
@@ -197,12 +256,7 @@ export function ActionWidget({
                       type="checkbox"
                       disabled={readOnly}
                       checked={Boolean(formValues[f.key])}
-                      onChange={(e) =>
-                        setFormValues((prev) => ({
-                          ...prev,
-                          [f.key]: e.target.checked,
-                        }))
-                      }
+                      onChange={(e) => updateFieldValue(f.key, e.target.checked)}
                     />
                     <span>是 / 启用</span>
                   </label>
@@ -210,12 +264,7 @@ export function ActionWidget({
                   <select
                     disabled={readOnly}
                     value={String(formValues[f.key] ?? "")}
-                    onChange={(e) =>
-                      setFormValues((prev) => ({
-                        ...prev,
-                        [f.key]: e.target.value,
-                      }))
-                    }
+                    onChange={(e) => updateFieldValue(f.key, e.target.value)}
                     className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
                   >
                     <option value="">请选择</option>
@@ -231,12 +280,7 @@ export function ActionWidget({
                     step={f.type === "number" ? "any" : undefined}
                     disabled={readOnly}
                     value={String(formValues[f.key] ?? "")}
-                    onChange={(e) =>
-                      setFormValues((prev) => ({
-                        ...prev,
-                        [f.key]: e.target.value,
-                      }))
-                    }
+                    onChange={(e) => updateFieldValue(f.key, e.target.value)}
                     placeholder={`输入 ${f.title}`}
                     className="h-8 text-xs font-mono-tech"
                     data-testid={`action-input-${f.key}`}
@@ -332,16 +376,45 @@ export function ActionWidget({
           <div className="text-[10px] text-muted-foreground font-mono-tech">
             最近执行记录 ({recentLogs.length})
           </div>
-          <div className="space-y-1 max-h-20 overflow-y-auto">
-            {recentLogs.slice(0, 5).map((r, idx) => (
-              <div
-                key={idx}
-                className="flex items-center justify-between text-[10px] font-mono-tech bg-muted/40 rounded px-1.5 py-0.5"
-              >
-                <span className="truncate">{String(r[1] ?? r[0] ?? "ACTION")}</span>
-                <Badge variant="outline">{String(r[2] ?? "DONE")}</Badge>
-              </div>
-            ))}
+          <div className="space-y-1 max-h-24 overflow-y-auto">
+            {recentLogs.slice(0, 5).map((r, idx) => {
+              const kindStr = String(
+                getCell(r, logColMap, "action_kind", 1) ?? r[0] ?? "ACTION"
+              );
+              const statusStr = String(
+                getCell(r, logColMap, "status", 3) ?? "DONE"
+              );
+              const createdAtRaw = getCell(r, logColMap, "created_at", -1);
+              const errRaw = getCell(r, logColMap, "error_message", -1);
+              const createdStr =
+                typeof createdAtRaw === "string" && createdAtRaw.trim()
+                  ? createdAtRaw.slice(0, 19).replace("T", " ")
+                  : "";
+              const errStr =
+                typeof errRaw === "string" && errRaw.trim() ? errRaw.trim() : "";
+
+              return (
+                <div
+                  key={idx}
+                  className="text-[10px] font-mono-tech bg-muted/40 rounded px-1.5 py-0.5 space-y-0.5"
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="truncate">{kindStr}</span>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {createdStr && (
+                        <span className="text-muted-foreground">{createdStr}</span>
+                      )}
+                      <Badge variant="outline">{statusStr}</Badge>
+                    </div>
+                  </div>
+                  {errStr && (
+                    <div className="text-muted-foreground truncate" title={errStr}>
+                      {errStr}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

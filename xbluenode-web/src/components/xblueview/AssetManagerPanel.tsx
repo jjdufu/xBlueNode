@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
-import { Box, Layers, Plus, Save, Trash2, Upload } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import * as THREE from "three";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { Box, Crosshair, Layers, Plus, Save, Trash2, Upload } from "lucide-react";
 import type { AssetKind } from "@/lib/api/enums";
 import { xblueApi, type BlueNode } from "@/lib/api/xblue";
 import {
@@ -16,6 +19,29 @@ const ASSET_KINDS: readonly AssetKind[] = [
   "GEOJSON",
   "ICON",
 ];
+
+function hasWebGl(): boolean {
+  if (typeof document === "undefined") return false;
+  try {
+    const c = document.createElement("canvas");
+    return Boolean(c.getContext("webgl2") || c.getContext("webgl"));
+  } catch {
+    return false;
+  }
+}
+
+function disposeThreeTree(root: THREE.Object3D): void {
+  root.traverse((obj) => {
+    if (obj instanceof THREE.Mesh) {
+      obj.geometry.dispose();
+      if (Array.isArray(obj.material)) {
+        for (const m of obj.material) m.dispose();
+      } else if (obj.material) {
+        obj.material.dispose();
+      }
+    }
+  });
+}
 
 export function AssetManagerPanel() {
   const [assets, setAssets] = useState<AssetRecord[]>([]);
@@ -35,13 +61,30 @@ export function AssetManagerPanel() {
   >([]);
   const [floorImgUrl, setFloorImgUrl] = useState<string | null>(null);
   const [activeNodeId, setActiveNodeId] = useState<string>("");
+  const floorCanvasRef = useRef<HTMLDivElement | null>(null);
+  const [draggingPlacementNodeId, setDraggingPlacementNodeId] = useState<
+    string | null
+  >(null);
+  const didDragPlacementRef = useRef(false);
 
-  // 3D bindings editor
+  // 3D bindings editor + GLTFLoader mesh extraction + Raycaster preview
   const [bindings3d, setBindings3d] = useState<
     Omit<Scene3dBindingRecord, "asset_id">[]
   >([]);
+  const [activeBindingIdx, setActiveBindingIdx] = useState<number>(0);
+  const [meshNames, setMeshNames] = useState<string[]>([]);
+  const [preview3dWebgl, setPreview3dWebgl] = useState<boolean>(() =>
+    hasWebGl()
+  );
+  const preview3dContainerRef = useRef<HTMLDivElement | null>(null);
+  const activeBindingIdxRef = useRef<number>(0);
+
   const [savingBindings, setSavingBindings] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    activeBindingIdxRef.current = activeBindingIdx;
+  }, [activeBindingIdx]);
 
   const loadAssetsAndNodes = useCallback(async () => {
     setLoading(true);
@@ -76,6 +119,7 @@ export function AssetManagerPanel() {
     if (!selectedAsset) {
       setPlacements([]);
       setBindings3d([]);
+      setMeshNames([]);
       setFloorImgUrl(null);
       return;
     }
@@ -84,6 +128,7 @@ export function AssetManagerPanel() {
     let revokedUrl: string | null = null;
 
     if (selectedAsset.asset_kind === "FLOOR_PLAN_IMAGE") {
+      setMeshNames([]);
       xblueviewApi
         .getFloorPlacements(selectedAsset.id)
         .then((rows) => {
@@ -115,6 +160,8 @@ export function AssetManagerPanel() {
           if (!cancelled) setFloorImgUrl(null);
         });
     } else if (selectedAsset.asset_kind === "MODEL_3D") {
+      setFloorImgUrl(null);
+      setActiveBindingIdx(0);
       xblueviewApi
         .getScene3dBindings(selectedAsset.id)
         .then((rows) => {
@@ -139,6 +186,213 @@ export function AssetManagerPanel() {
     return () => {
       cancelled = true;
       if (revokedUrl) URL.revokeObjectURL(revokedUrl);
+    };
+  }, [selectedAsset]);
+
+  // Load glTF asset with GLTFLoader to extract named Mesh / Object3D names and mount Raycaster preview
+  useEffect(() => {
+    if (!selectedAsset || selectedAsset.asset_kind !== "MODEL_3D") {
+      setMeshNames([]);
+      return;
+    }
+
+    let disposed = false;
+    let activeBlobUrl: string | null = null;
+    let gltfRoot: THREE.Object3D | null = null;
+    let renderer: THREE.WebGLRenderer | null = null;
+    let controls: OrbitControls | null = null;
+    let rafId = 0;
+    let ro: ResizeObserver | null = null;
+
+    const container = preview3dContainerRef.current;
+    const canWebgl = Boolean(container && hasWebGl());
+    setPreview3dWebgl(canWebgl);
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x18181b);
+    const camera = new THREE.PerspectiveCamera(45, 16 / 9, 0.1, 500);
+    camera.position.set(5, 4, 6);
+
+    const ambient = new THREE.AmbientLight(0xffffff, 0.9);
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.1);
+    dirLight.position.set(8, 12, 8);
+    const grid = new THREE.GridHelper(14, 14, 0x3f3f46, 0x27272a);
+    scene.add(ambient, dirLight, grid);
+
+    const pickMarker = new THREE.Mesh(
+      new THREE.SphereGeometry(0.16, 16, 16),
+      new THREE.MeshStandardMaterial({
+        color: 0x2563eb,
+        emissive: new THREE.Color(0x2563eb),
+        emissiveIntensity: 0.7,
+      })
+    );
+    pickMarker.visible = false;
+    scene.add(pickMarker);
+
+    const raycaster = new THREE.Raycaster();
+    const pointer = new THREE.Vector2();
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const hitVec = new THREE.Vector3();
+
+    const onCanvasClick = (ev: MouseEvent) => {
+      if (!renderer) return;
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
+      pointer.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointer, camera);
+
+      let pickedPoint: THREE.Vector3 | null = null;
+      let hitMeshName = "";
+
+      if (gltfRoot) {
+        const hits = raycaster.intersectObject(gltfRoot, true);
+        const firstHit = hits[0];
+        if (firstHit) {
+          pickedPoint = firstHit.point.clone();
+          let curr: THREE.Object3D | null = firstHit.object;
+          while (curr && curr !== gltfRoot) {
+            if (curr.name && curr.name.trim().length > 0) {
+              hitMeshName = curr.name.trim();
+              break;
+            }
+            curr = curr.parent;
+          }
+        }
+      }
+
+      if (!pickedPoint && raycaster.ray.intersectPlane(groundPlane, hitVec)) {
+        pickedPoint = hitVec.clone();
+      }
+
+      if (!pickedPoint) return;
+
+      const px = Number(pickedPoint.x.toFixed(2));
+      const py = Number(pickedPoint.y.toFixed(2));
+      const pz = Number(pickedPoint.z.toFixed(2));
+      pickMarker.position.set(px, py, pz);
+      pickMarker.visible = true;
+
+      setBindings3d((prev) => {
+        if (prev.length === 0) return prev;
+        const targetIdx = Math.max(
+          0,
+          Math.min(prev.length - 1, activeBindingIdxRef.current)
+        );
+        return prev.map((item, i) =>
+          i === targetIdx
+            ? {
+                ...item,
+                pos_x: px,
+                pos_y: py,
+                pos_z: pz,
+                mesh_name: item.mesh_name || hitMeshName,
+              }
+            : item
+        );
+      });
+      setStatusMsg(
+        `已拾取三维坐标 (${px}, ${py}, ${pz})${
+          hitMeshName ? ` · 命中对象 ${hitMeshName}` : ""
+        }`
+      );
+    };
+
+    if (canWebgl && container) {
+      try {
+        renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+        const w = Math.max(container.clientWidth, 280);
+        const h = Math.max(container.clientHeight, 180);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        renderer.setSize(w, h);
+        renderer.domElement.style.width = "100%";
+        renderer.domElement.style.height = "100%";
+        renderer.domElement.style.display = "block";
+        container.innerHTML = "";
+        container.appendChild(renderer.domElement);
+
+        controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
+        renderer.domElement.addEventListener("click", onCanvasClick);
+
+        ro = new ResizeObserver(() => {
+          if (!renderer || !container) return;
+          const nw = Math.max(container.clientWidth, 120);
+          const nh = Math.max(container.clientHeight, 120);
+          camera.aspect = nw / nh;
+          camera.updateProjectionMatrix();
+          renderer.setSize(nw, nh);
+        });
+        ro.observe(container);
+
+        const animate = () => {
+          if (disposed || !renderer) return;
+          rafId = requestAnimationFrame(animate);
+          controls?.update();
+          renderer.render(scene, camera);
+        };
+        rafId = requestAnimationFrame(animate);
+      } catch {
+        setPreview3dWebgl(false);
+      }
+    }
+
+    xblueviewApi
+      .fetchAssetBlobUrl(selectedAsset.id)
+      .then(async (blobUrl) => {
+        if (disposed) {
+          URL.revokeObjectURL(blobUrl);
+          return;
+        }
+        activeBlobUrl = blobUrl;
+        const loader = new GLTFLoader();
+        const gltf = await loader.loadAsync(blobUrl);
+        if (disposed) {
+          disposeThreeTree(gltf.scene);
+          return;
+        }
+        const extracted = new Set<string>();
+        gltf.scene.traverse((obj) => {
+          if (obj.name && obj.name.trim().length > 0) {
+            extracted.add(obj.name.trim());
+          }
+        });
+        setMeshNames(Array.from(extracted).sort());
+        gltfRoot = gltf.scene;
+        scene.add(gltfRoot);
+      })
+      .catch(() => {
+        if (!disposed) setMeshNames([]);
+      });
+
+    return () => {
+      disposed = true;
+      cancelAnimationFrame(rafId);
+      ro?.disconnect();
+      if (renderer) {
+        renderer.domElement.removeEventListener("click", onCanvasClick);
+      }
+      controls?.dispose();
+      if (gltfRoot) {
+        disposeThreeTree(gltfRoot);
+      }
+      disposeThreeTree(pickMarker);
+      grid.geometry.dispose();
+      if (Array.isArray(grid.material)) {
+        for (const m of grid.material) m.dispose();
+      } else {
+        grid.material.dispose();
+      }
+      renderer?.dispose();
+      if (activeBlobUrl) {
+        URL.revokeObjectURL(activeBlobUrl);
+      }
+      if (renderer && container && container.contains(renderer.domElement)) {
+        container.removeChild(renderer.domElement);
+      }
     };
   }, [selectedAsset]);
 
@@ -179,20 +433,56 @@ export function AssetManagerPanel() {
     }
   };
 
-  const handleFloorCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!activeNodeId) return;
-    const rect = e.currentTarget.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return;
+  const computeFloorRatio = (
+    clientX: number,
+    clientY: number
+  ): { xRatio: number; yRatio: number } | null => {
+    const el = floorCanvasRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return null;
     const xRatio = Number(
-      Math.max(0.02, Math.min(0.98, (e.clientX - rect.left) / rect.width)).toFixed(4)
+      Math.max(0.02, Math.min(0.98, (clientX - rect.left) / rect.width)).toFixed(
+        4
+      )
     );
     const yRatio = Number(
-      Math.max(0.02, Math.min(0.98, (e.clientY - rect.top) / rect.height)).toFixed(4)
+      Math.max(0.02, Math.min(0.98, (clientY - rect.top) / rect.height)).toFixed(
+        4
+      )
     );
+    return { xRatio, yRatio };
+  };
+
+  const handleFloorCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (didDragPlacementRef.current) {
+      didDragPlacementRef.current = false;
+      return;
+    }
+    if (!activeNodeId) return;
+    const pos = computeFloorRatio(e.clientX, e.clientY);
+    if (!pos) return;
     setPlacements((prev) => {
       const filtered = prev.filter((p) => p.node_id !== activeNodeId);
-      return [...filtered, { node_id: activeNodeId, x_ratio: xRatio, y_ratio: yRatio }];
+      return [
+        ...filtered,
+        { node_id: activeNodeId, x_ratio: pos.xRatio, y_ratio: pos.yRatio },
+      ];
     });
+  };
+
+  const handleFloorPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingPlacementNodeId) return;
+    const pos = computeFloorRatio(e.clientX, e.clientY);
+    if (!pos) return;
+    didDragPlacementRef.current = true;
+    setPlacements((prev) =>
+      prev.map((item) =>
+        item.node_id === draggingPlacementNodeId
+          ? { ...item, x_ratio: pos.xRatio, y_ratio: pos.yRatio }
+          : item
+      )
+    );
   };
 
   const handleSavePlacements = async () => {
@@ -226,23 +516,35 @@ export function AssetManagerPanel() {
   const addBinding3dRow = () => {
     if (!activeNodeId) return;
     if (bindings3d.some((b) => b.node_id === activeNodeId)) return;
-    setBindings3d((prev) => [
-      ...prev,
-      {
-        node_id: activeNodeId,
-        mesh_name: "",
-        pos_x: prev.length * 2,
-        pos_y: 0.5,
-        pos_z: 0,
-        scale: 1,
-      },
-    ]);
+    setBindings3d((prev) => {
+      const next = [
+        ...prev,
+        {
+          node_id: activeNodeId,
+          mesh_name: meshNames[0] ?? "",
+          pos_x: prev.length * 2,
+          pos_y: 0.5,
+          pos_z: 0,
+          scale: 1,
+        },
+      ];
+      setActiveBindingIdx(next.length - 1);
+      return next;
+    });
   };
 
-  const nodeTitleMap = new Map(nodes.map((n) => [n.id, `${n.title} (${n.node_key})`]));
+  const nodeTitleMap = new Map(
+    nodes.map((n) => [n.id, `${n.title} (${n.node_key})`])
+  );
+  const datalistId = selectedAsset
+    ? `gltf-meshes-${selectedAsset.id}`
+    : "gltf-meshes";
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4" data-testid="asset-manager-panel">
+    <div
+      className="grid grid-cols-1 lg:grid-cols-12 gap-4"
+      data-testid="asset-manager-panel"
+    >
       {/* Left: Upload + Asset List */}
       <div className="lg:col-span-5 space-y-4">
         <Card className="p-4 space-y-3">
@@ -377,7 +679,7 @@ export function AssetManagerPanel() {
                   2D 平面图摆放编辑器 · {selectedAsset.name}
                 </h3>
                 <p className="text-[11px] text-muted-foreground">
-                  选择业务节点后点击平面图画布放置坐标点，坐标以比例存储
+                  点击画布放置新节点，或按住拖拽已有节点桩点调整比例坐标
                 </p>
               </div>
               <Button
@@ -406,8 +708,13 @@ export function AssetManagerPanel() {
             </div>
 
             <div
+              ref={floorCanvasRef}
               onClick={handleFloorCanvasClick}
-              className="relative h-72 w-full rounded border border-border bg-muted/30 overflow-hidden cursor-crosshair"
+              onPointerMove={handleFloorPointerMove}
+              onPointerUp={() => setDraggingPlacementNodeId(null)}
+              onPointerLeave={() => setDraggingPlacementNodeId(null)}
+              className="relative h-72 w-full rounded border border-border bg-muted/30 overflow-hidden cursor-crosshair select-none"
+              data-testid="floor-placement-canvas"
             >
               {floorImgUrl && (
                 <img
@@ -419,11 +726,17 @@ export function AssetManagerPanel() {
               {placements.map((p) => (
                 <div
                   key={p.node_id}
+                  onPointerDown={(e) => {
+                    e.stopPropagation();
+                    didDragPlacementRef.current = false;
+                    setDraggingPlacementNodeId(p.node_id);
+                  }}
+                  onClick={(e) => e.stopPropagation()}
                   style={{
                     left: `${p.x_ratio * 100}%`,
                     top: `${p.y_ratio * 100}%`,
                   }}
-                  className="absolute -translate-x-1/2 -translate-y-1/2 rounded border border-xblue bg-background/95 px-1.5 py-0.5 text-[10px] font-mono-tech shadow-xs"
+                  className="absolute -translate-x-1/2 -translate-y-1/2 rounded border border-xblue bg-background/95 px-1.5 py-0.5 text-[10px] font-mono-tech shadow-xs cursor-grab active:cursor-grabbing"
                 >
                   {nodeTitleMap.get(p.node_id) ?? p.node_id.slice(0, 8)}
                 </div>
@@ -438,7 +751,7 @@ export function AssetManagerPanel() {
                   3D 孪生场景绑定编辑器 · {selectedAsset.name}
                 </h3>
                 <p className="text-[11px] text-muted-foreground">
-                  填写 glTF 命名网格（mesh_name，如 Rack_A）或三维桩点坐标 (pos_x, pos_y, pos_z, scale)
+                  自动解析 glTF 命名网格下拉选择，支持点击三维预览画布通过 Raycaster 拾取坐标填入选中行
                 </p>
               </div>
               <Button
@@ -450,6 +763,37 @@ export function AssetManagerPanel() {
                 保存 3D 绑定
               </Button>
             </div>
+
+            {/* 3D Raycaster Surface Picker Preview */}
+            <div className="rounded border border-border overflow-hidden bg-zinc-950 relative">
+              {preview3dWebgl ? (
+                <div
+                  ref={preview3dContainerRef}
+                  className="h-44 w-full cursor-crosshair"
+                  data-testid="asset-3d-raycast-canvas"
+                />
+              ) : (
+                <div
+                  className="h-24 w-full flex items-center justify-center text-[11px] text-zinc-400 px-3 text-center"
+                  data-testid="asset-3d-raycast-fallback"
+                >
+                  当前环境不支持 WebGL 三维拾取预览，已从 .glb 提取 {meshNames.length} 个命名对象供下拉绑定
+                </div>
+              )}
+              <div className="px-2.5 py-1 bg-zinc-900/90 border-t border-zinc-800 flex items-center justify-between text-[10px] font-mono-tech text-zinc-300">
+                <span className="inline-flex items-center gap-1">
+                  <Crosshair className="h-3 w-3 text-xblue" />
+                  点击模型表面拾取 (pos_x, pos_y, pos_z) → 第 {activeBindingIdx + 1} 行
+                </span>
+                <span>命名网格: {meshNames.length} 个</span>
+              </div>
+            </div>
+
+            <datalist id={datalistId}>
+              {meshNames.map((mName) => (
+                <option key={mName} value={mName} />
+              ))}
+            </datalist>
 
             <div className="flex items-center gap-2">
               <select
@@ -469,118 +813,158 @@ export function AssetManagerPanel() {
               </Button>
             </div>
 
-            <div className="space-y-2 max-h-80 overflow-y-auto">
-              {bindings3d.map((b, idx) => (
-                <div
-                  key={b.node_id}
-                  className="rounded border border-border p-2.5 grid grid-cols-12 gap-2 items-center"
-                >
-                  <div className="col-span-4 font-medium truncate">
-                    {nodeTitleMap.get(b.node_id) ?? b.node_id}
-                  </div>
-                  <div className="col-span-3">
-                    <Input
-                      value={b.mesh_name}
-                      onChange={(e) =>
-                        setBindings3d((prev) =>
-                          prev.map((item, i) =>
-                            i === idx ? { ...item, mesh_name: e.target.value } : item
+            <div className="space-y-2 max-h-72 overflow-y-auto">
+              {bindings3d.map((b, idx) => {
+                const isSelectedRow = idx === activeBindingIdx;
+                return (
+                  <div
+                    key={b.node_id}
+                    onClick={() => setActiveBindingIdx(idx)}
+                    className={`rounded border p-2.5 grid grid-cols-12 gap-2 items-center cursor-pointer ${
+                      isSelectedRow
+                        ? "border-xblue bg-xblue-soft/30"
+                        : "border-border"
+                    }`}
+                  >
+                    <div className="col-span-3 font-medium truncate">
+                      {nodeTitleMap.get(b.node_id) ?? b.node_id}
+                    </div>
+                    <div className="col-span-4 flex items-center gap-1">
+                      {meshNames.length > 0 && (
+                        <select
+                          value={meshNames.includes(b.mesh_name) ? b.mesh_name : ""}
+                          onChange={(e) => {
+                            const picked = e.target.value;
+                            setBindings3d((prev) =>
+                              prev.map((item, i) =>
+                                i === idx ? { ...item, mesh_name: picked } : item
+                              )
+                            );
+                          }}
+                          className="h-7 w-24 shrink-0 rounded border border-input bg-background px-1 text-[11px] font-mono-tech"
+                          title="从 glTF 命名对象中选择"
+                          data-testid={`binding-mesh-select-${idx}`}
+                        >
+                          <option value="">选择网格</option>
+                          {meshNames.map((mName) => (
+                            <option key={mName} value={mName}>
+                              {mName}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                      <Input
+                        list={datalistId}
+                        value={b.mesh_name}
+                        onChange={(e) =>
+                          setBindings3d((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, mesh_name: e.target.value }
+                                : item
+                            )
                           )
-                        )
-                      }
-                      placeholder="mesh_name (如 Rack_A)"
-                      className="h-7 text-[11px] font-mono-tech"
-                    />
-                  </div>
-                  <div className="col-span-1">
-                    <Input
-                      type="number"
-                      step="0.5"
-                      value={b.pos_x}
-                      onChange={(e) =>
-                        setBindings3d((prev) =>
-                          prev.map((item, i) =>
-                            i === idx
-                              ? { ...item, pos_x: Number(e.target.value) || 0 }
-                              : item
+                        }
+                        placeholder="mesh_name (如 Rack_A)"
+                        className="h-7 text-[11px] font-mono-tech flex-1"
+                      />
+                    </div>
+                    <div className="col-span-1">
+                      <Input
+                        type="number"
+                        step="0.5"
+                        value={b.pos_x}
+                        onChange={(e) =>
+                          setBindings3d((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, pos_x: Number(e.target.value) || 0 }
+                                : item
+                            )
                           )
-                        )
-                      }
-                      title="pos_x"
-                      className="h-7 text-[11px] font-mono-tech px-1.5"
-                    />
-                  </div>
-                  <div className="col-span-1">
-                    <Input
-                      type="number"
-                      step="0.5"
-                      value={b.pos_y}
-                      onChange={(e) =>
-                        setBindings3d((prev) =>
-                          prev.map((item, i) =>
-                            i === idx
-                              ? { ...item, pos_y: Number(e.target.value) || 0 }
-                              : item
+                        }
+                        title="pos_x"
+                        className="h-7 text-[11px] font-mono-tech px-1.5"
+                      />
+                    </div>
+                    <div className="col-span-1">
+                      <Input
+                        type="number"
+                        step="0.5"
+                        value={b.pos_y}
+                        onChange={(e) =>
+                          setBindings3d((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, pos_y: Number(e.target.value) || 0 }
+                                : item
+                            )
                           )
-                        )
-                      }
-                      title="pos_y"
-                      className="h-7 text-[11px] font-mono-tech px-1.5"
-                    />
-                  </div>
-                  <div className="col-span-1">
-                    <Input
-                      type="number"
-                      step="0.5"
-                      value={b.pos_z}
-                      onChange={(e) =>
-                        setBindings3d((prev) =>
-                          prev.map((item, i) =>
-                            i === idx
-                              ? { ...item, pos_z: Number(e.target.value) || 0 }
-                              : item
+                        }
+                        title="pos_y"
+                        className="h-7 text-[11px] font-mono-tech px-1.5"
+                      />
+                    </div>
+                    <div className="col-span-1">
+                      <Input
+                        type="number"
+                        step="0.5"
+                        value={b.pos_z}
+                        onChange={(e) =>
+                          setBindings3d((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? { ...item, pos_z: Number(e.target.value) || 0 }
+                                : item
+                            )
                           )
-                        )
-                      }
-                      title="pos_z"
-                      className="h-7 text-[11px] font-mono-tech px-1.5"
-                    />
-                  </div>
-                  <div className="col-span-1">
-                    <Input
-                      type="number"
-                      step="0.1"
-                      min="0.1"
-                      value={b.scale}
-                      onChange={(e) =>
-                        setBindings3d((prev) =>
-                          prev.map((item, i) =>
-                            i === idx
-                              ? {
-                                  ...item,
-                                  scale: Math.max(0.1, Number(e.target.value) || 1),
-                                }
-                              : item
+                        }
+                        title="pos_z"
+                        className="h-7 text-[11px] font-mono-tech px-1.5"
+                      />
+                    </div>
+                    <div className="col-span-1">
+                      <Input
+                        type="number"
+                        step="0.1"
+                        min="0.1"
+                        value={b.scale}
+                        onChange={(e) =>
+                          setBindings3d((prev) =>
+                            prev.map((item, i) =>
+                              i === idx
+                                ? {
+                                    ...item,
+                                    scale: Math.max(
+                                      0.1,
+                                      Number(e.target.value) || 1
+                                    ),
+                                  }
+                                : item
+                            )
                           )
-                        )
-                      }
-                      title="scale"
-                      className="h-7 text-[11px] font-mono-tech px-1.5"
-                    />
+                        }
+                        title="scale"
+                        className="h-7 text-[11px] font-mono-tech px-1.5"
+                      />
+                    </div>
+                    <div className="col-span-1 text-right">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setBindings3d((prev) =>
+                            prev.filter((_, i) => i !== idx)
+                          );
+                        }}
+                        className="rounded p-1 text-muted-foreground hover:text-foreground cursor-pointer"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
-                  <div className="col-span-1 text-right">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setBindings3d((prev) => prev.filter((_, i) => i !== idx))
-                      }
-                      className="rounded p-1 text-muted-foreground hover:text-foreground cursor-pointer"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ) : (

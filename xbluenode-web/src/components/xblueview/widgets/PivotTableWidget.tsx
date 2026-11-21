@@ -1,10 +1,15 @@
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
+import { classifyPivotRow } from "../logic";
 import { formatDisplayValue, toNumericValue } from "../utils";
 
 export interface PivotTableWidgetProps {
   widget: WidgetRecord;
   data: WidgetDataResponse | null;
-  onCellClick?: (field: string, value: unknown) => void;
+  onCellClick?: (
+    field: string,
+    value: unknown,
+    rowObj?: Record<string, unknown>
+  ) => void;
 }
 
 export function PivotTableWidget({
@@ -20,13 +25,9 @@ export function PivotTableWidget({
     );
   }
 
-  const rowKindIdx = data.columns.findIndex(
-    (c) => c.name.toLowerCase() === "_row_kind" || c.name.toLowerCase() === "row_kind"
-  );
-
   const visibleCols = data.columns
     .map((col, idx) => ({ col, idx }))
-    .filter((entry) => entry.idx !== rowKindIdx);
+    .filter((entry) => entry.col.name.toLowerCase() !== "_row_kind");
 
   return (
     <div
@@ -50,7 +51,7 @@ export function PivotTableWidget({
           {data.rows.length === 0 ? (
             <tr>
               <td
-                colSpan={visibleCols.length}
+                colSpan={Math.max(1, visibleCols.length)}
                 className="px-3 py-6 text-center text-muted-foreground"
               >
                 透视结果为空
@@ -58,29 +59,33 @@ export function PivotTableWidget({
             </tr>
           ) : (
             data.rows.map((row, rIdx) => {
-              const rowKindRaw =
-                rowKindIdx >= 0 ? String(row[rowKindIdx] ?? "") : "";
-              const firstCell = String(row[0] ?? "");
-              const isGrandTotal =
-                rowKindRaw === "GRAND_TOTAL" ||
-                firstCell.includes("合计") ||
-                firstCell === "TOTAL";
-              const isSubtotal =
-                rowKindRaw === "SUBTOTAL" || firstCell.includes("小计");
+              const rowClass = classifyPivotRow(data.columns, row);
+              const isGrandTotal = rowClass === "TOTAL";
+              const isSubtotal = rowClass === "SUBTOTAL";
+              const isSummary = isGrandTotal || isSubtotal;
 
               return (
                 <tr
                   key={rIdx}
+                  data-row-kind={rowClass}
                   onClick={() => {
-                    if (onCellClick && !isGrandTotal && !isSubtotal && visibleCols[0]) {
-                      onCellClick(visibleCols[0].col.name, row[visibleCols[0].idx]);
+                    if (onCellClick && !isSummary && visibleCols[0]) {
+                      const rowObj: Record<string, unknown> = {};
+                      data.columns.forEach((c, cIdx) => {
+                        rowObj[c.name] = row[cIdx];
+                      });
+                      onCellClick(
+                        visibleCols[0].col.name,
+                        row[visibleCols[0].idx],
+                        rowObj
+                      );
                     }
                   }}
                   className={
                     isGrandTotal
-                      ? "bg-xblue-soft/60 font-semibold text-foreground"
+                      ? "bg-xblue-soft/60 font-bold text-foreground"
                       : isSubtotal
-                        ? "bg-muted/70 font-medium"
+                        ? "bg-muted/70 font-semibold text-foreground"
                         : onCellClick
                           ? "hover:bg-muted/40 cursor-pointer"
                           : "hover:bg-muted/30"

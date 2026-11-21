@@ -273,7 +273,7 @@ export function defaultDataSourceForKind(kind: WidgetKind): WidgetDataSource {
     case "HEATMAP":
     case "RADAR":
     case "TABLE":
-      return { kind: "SQL", sql: "SELECT status, sum(amount) AS amt FROM lake.demo_orders GROUP BY 1" };
+      return { kind: "SQL", sql: "SELECT status, sum(amount) AS amt FROM demo_orders GROUP BY 1" };
     case "PIVOT_TABLE":
       return {
         kind: "PIVOT",
@@ -306,7 +306,7 @@ export function defaultDataSourceForKind(kind: WidgetKind): WidgetDataSource {
       return {
         kind: "ACTION",
         action_type: "RUN_FLOW",
-        flow_id: "",
+        flow_id: undefined,
         input_schema: { type: "object", properties: {} },
         confirm_text: "确认执行该业务动作？",
       };
@@ -314,7 +314,7 @@ export function defaultDataSourceForKind(kind: WidgetKind): WidgetDataSource {
       return {
         kind: "ACTION",
         action_type: "WRITE_NODE",
-        node_id: "",
+        node_id: undefined,
         target_kind: "METRIC",
         key: "inventory",
         input_schema: {

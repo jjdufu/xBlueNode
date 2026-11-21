@@ -1,14 +1,18 @@
 //! Interactive `xBlueView` widget action invocation (`RUN_FLOW` and `WRITE_NODE`) (`10-STEP11-12` §11.6.2).
 
 use axpoint_domain::AppError;
-use axpoint_domain::enums::{Environment, Permission, TokenKind, TriggerType};
-use axpoint_domain::flow::StartRunParams;
-use axpoint_domain::ports::{FlowRepository, ViewRepository};
+use axpoint_domain::enums::{AuditAction, Environment, Permission, TokenKind, TriggerType};
+use axpoint_domain::flow::{
+    ActionKind, ActionLogStatus, ActionSourceKind, NewActionLogInput, StartRunParams,
+};
+use axpoint_domain::platform::AuditRecord;
+use axpoint_domain::ports::{AuditSink, FlowRepository, ViewRepository};
 use axpoint_domain::view::{
     InvokeWidgetActionMode, InvokeWidgetActionRequest, InvokeWidgetActionResponse,
     ViewWriteNodeParams, WidgetActionType, WidgetDataSource, WriteNodeTargetKind,
 };
 use axpoint_security::AuthPrincipal;
+use chrono::Utc;
 use uuid::Uuid;
 
 use super::cache::ViewCache;
@@ -50,10 +54,11 @@ pub fn validate_action_inputs(
 
 /// Executes an interactive `ACTION_BUTTON` or `ACTION_FORM` widget invocation (`POST /api/xblueview/widgets/{id}/invoke`).
 ///
-/// Rejects `TokenKind::Share` tokens with `403 PERMISSION_DENIED` and requires `Permission::FlowRun`.
+/// Rejects `TokenKind::Share` tokens with `403 PERMISSION_DENIED`, requires `Permission::FlowRun`,
+/// and enforces published dashboard visibility when the caller lacks `Permission::ViewEdit`.
 ///
 /// # Errors
-/// Propagates `403 PERMISSION_DENIED`, `404 WIDGET_NOT_FOUND`, `400 SCHEMA_INVALID`,
+/// Propagates `403 PERMISSION_DENIED`, `404 WIDGET_NOT_FOUND` / `404 NOT_FOUND`, `400 SCHEMA_INVALID`,
 /// `400 INVALID_ARGUMENT`, or storage/workflow execution errors.
 pub async fn invoke_widget_action<S>(
     store: &S,
@@ -63,7 +68,7 @@ pub async fn invoke_widget_action<S>(
     req: InvokeWidgetActionRequest,
 ) -> Result<InvokeWidgetActionResponse, AppError>
 where
-    S: ViewRepository + FlowRepository + ?Sized,
+    S: ViewRepository + FlowRepository + AuditSink + ?Sized,
 {
     if principal.token_kind == TokenKind::Share {
         return Err(AppError::Forbidden("PERMISSION_DENIED"));
@@ -74,6 +79,13 @@ where
         .get_widget(&principal.tenant_id, widget_id)
         .await?
         .ok_or(AppError::NotFound("WIDGET_NOT_FOUND"))?;
+
+    if !principal.has(Permission::ViewEdit) {
+        let _published = store
+            .get_dashboard(&principal.tenant_id, widget.dashboard_id, true)
+            .await?
+            .ok_or(AppError::NotFound("NOT_FOUND"))?;
+    }
 
     let WidgetDataSource::Action {
         action_type,
@@ -111,11 +123,13 @@ where
         }
     };
 
-    cache.invalidate_widgets(&principal.tenant_id, &[widget.id]);
+    cache
+        .invalidate_widgets(&principal.tenant_id, &[widget.id])
+        .await;
     Ok(response)
 }
 
-async fn invoke_run_flow<S: FlowRepository + ?Sized>(
+async fn invoke_run_flow<S: FlowRepository + AuditSink + ?Sized>(
     store: &S,
     principal: &AuthPrincipal,
     widget_id: Uuid,
@@ -126,6 +140,7 @@ async fn invoke_run_flow<S: FlowRepository + ?Sized>(
         AppError::bad("INVALID_ARGUMENT", "RUN_FLOW action widget missing flow_id")
     })?;
 
+    let raw_inputs = req.inputs.clone();
     let mut payload_map = match req.inputs {
         serde_json::Value::Object(map) => map,
         other => {
@@ -159,20 +174,87 @@ async fn invoke_run_flow<S: FlowRepository + ?Sized>(
                 explicit_version: None,
                 trigger_source: TriggerType::Api,
                 trigger_payload: serde_json::Value::Object(payload_map),
-                idempotency_key,
+                idempotency_key: idempotency_key.clone(),
                 started_by: (!principal.user_id.is_nil()).then_some(principal.user_id),
             },
         )
         .await?;
+
+    let log_idem_key = idempotency_key.as_deref().map_or_else(
+        || format!("view:run_flow:{widget_id}:{}", run.id),
+        |k| format!("view:run_flow:{widget_id}:{k}"),
+    );
+    let (action_log, _) = store
+        .record_action_log(
+            &principal.tenant_id,
+            NewActionLogInput {
+                run_id: Some(run.id),
+                node_id: req.target_node_id.map(|id| id.to_string()),
+                source_kind: ActionSourceKind::View,
+                action_kind: ActionKind::Http,
+                target: widget_id.to_string(),
+                payload: serde_json::json!({
+                    "flow_id": target_flow_id,
+                    "run_id": run.id,
+                    "inputs": raw_inputs,
+                }),
+                status: ActionLogStatus::Done,
+                idempotency_key: log_idem_key,
+                error_message: None,
+            },
+        )
+        .await?;
+
+    record_flow_run_audit(
+        store,
+        principal,
+        widget_id,
+        target_flow_id,
+        run.id,
+        action_log.id,
+        existing,
+    )
+    .await?;
 
     Ok(InvokeWidgetActionResponse {
         mode: InvokeWidgetActionMode::Flow,
         run_id: Some(run.id),
         status: String::from(run.status.as_str()),
         node_id: req.target_node_id,
-        action_log_id: None,
+        action_log_id: Some(action_log.id),
         idempotency_replay: existing,
     })
+}
+
+async fn record_flow_run_audit<S: AuditSink + ?Sized>(
+    store: &S,
+    principal: &AuthPrincipal,
+    widget_id: Uuid,
+    flow_id: Uuid,
+    run_id: Uuid,
+    action_log_id: i64,
+    idempotency_replay: bool,
+) -> Result<(), AppError> {
+    store
+        .write_batch(vec![AuditRecord {
+            tenant_id: principal.tenant_id.clone(),
+            user_id: (!principal.user_id.is_nil()).then_some(principal.user_id),
+            username: principal.username.clone(),
+            action: AuditAction::FlowRun,
+            resource_ref: format!("flow:{flow_id}"),
+            status_code: 200,
+            client_ip: String::new(),
+            trace_id: String::new(),
+            detail_json: serde_json::json!({
+                "widget_id": widget_id,
+                "flow_id": flow_id,
+                "run_id": run_id,
+                "action_log_id": action_log_id,
+                "idempotency_replay": idempotency_replay,
+            }),
+            created_at: Utc::now(),
+        }])
+        .await
 }
 
 async fn invoke_write_node<S: ViewRepository + ?Sized>(

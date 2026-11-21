@@ -9,9 +9,11 @@ import {
   xblueviewApi,
   type DashboardDetail,
   type DrillPathItem,
+  type FilterDef,
   type WidgetRecord,
 } from "@/lib/api/xblueview";
 import { Badge, Button, Input } from "@/components/ui/primitives";
+import { buildAskFilterSpecs } from "./logic";
 import { defaultPositionForKind } from "./utils";
 import { WidgetRenderer } from "./widgets/WidgetRenderer";
 
@@ -25,18 +27,11 @@ export interface AskSlideOverProps {
   onAddedWidget: (widget: WidgetRecord) => void;
 }
 
-function buildFilterSpecs(values: Record<string, unknown>): FilterSpec[] {
-  const specs: FilterSpec[] = [];
-  for (const [field, value] of Object.entries(values)) {
-    if (value === undefined || value === null || value === "") continue;
-    if (Array.isArray(value)) {
-      if (value.length === 0) continue;
-      specs.push({ field, op: "In", value });
-    } else {
-      specs.push({ field, op: "Eq", value });
-    }
-  }
-  return specs;
+function buildFilterSpecs(
+  filters: readonly FilterDef[],
+  values: Record<string, unknown>
+): FilterSpec[] {
+  return buildAskFilterSpecs(filters, values);
 }
 
 export function AskSlideOver({
@@ -88,7 +83,7 @@ export function AskSlideOver({
         context: {
           dashboard_id: dashboard.id,
           dataset_ids: datasetIds,
-          filters: buildFilterSpecs(filterValues),
+          filters: buildFilterSpecs(dashboard.filters, filterValues),
           drill_path: drillPathStrings,
         },
       });

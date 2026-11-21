@@ -53,8 +53,21 @@ if [[ -z "$SANDBOX_ID" ]]; then
   SANDBOX_ID=$(api POST /api/axsim/sandboxes "{\"name\":\"供应链抗压演练沙盘\",\"scope\":{\"root_node_ids\":[\"$F1_ID\"],\"depth\":4,\"direction\":\"OUT\"}}" | jq -r '.id')
 fi
 
+SCENARIOS_JSON=$(api GET "/api/axsim/sandboxes/$SANDBOX_ID/scenarios" 2>/dev/null || echo "[]")
+SIM_S1_ID=$(printf '%s' "$SCENARIOS_JSON" | jq -r 'if type == "array" then (.[] | select(.name=="产能下调15%保守方案") | .id) else empty end' | head -n 1)
+if [[ -z "$SIM_S1_ID" ]]; then
+  SIM_S1_ID=$(api POST "/api/axsim/sandboxes/$SANDBOX_ID/scenarios" "{\"name\":\"产能下调15%保守方案\",\"actions\":[{\"node_id\":\"$F1_ID\",\"metric\":\"output\",\"mode\":\"RATIO\",\"value\":-0.15}]}" | jq -r '.id')
+fi
+
+SIM_S2_ID=$(printf '%s' "$SCENARIOS_JSON" | jq -r 'if type == "array" then (.[] | select(.name=="产能扩充10%保供方案") | .id) else empty end' | head -n 1)
+if [[ -z "$SIM_S2_ID" ]]; then
+  SIM_S2_ID=$(api POST "/api/axsim/sandboxes/$SANDBOX_ID/scenarios" "{\"name\":\"产能扩充10%保供方案\",\"actions\":[{\"node_id\":\"$F1_ID\",\"metric\":\"output\",\"mode\":\"RATIO\",\"value\":0.10}]}" | jq -r '.id')
+fi
+
 echo "FACTORY1_NODE_ID=$F1_ID"
 echo "WAREHOUSE_NODE_ID=$W1_ID"
 echo "ORDER1_NODE_ID=$O1_ID"
 echo "ORDER2_NODE_ID=$O2_ID"
 echo "SANDBOX_ID=$SANDBOX_ID"
+echo "SIM_S1_ID=$SIM_S1_ID"
+echo "SIM_S2_ID=$SIM_S2_ID"

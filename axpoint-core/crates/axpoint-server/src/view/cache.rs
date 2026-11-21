@@ -17,11 +17,13 @@ pub const VIEW_CACHE_MAX_CAPACITY: u64 = 10_000;
 /// Time-to-live in seconds for cached widget responses (`10-STEP11-12` §11.2.3).
 pub const VIEW_CACHE_TTL_SECS: u64 = 600;
 
-/// Composite cache key isolating responses by tenant, widget, filters, drill stack, and security scope.
+/// Composite cache key isolating responses by tenant, dashboard, widget, filters, drill stack, and security scope.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ViewCacheKey {
     /// Owning tenant identifier.
     pub tenant_id: String,
+    /// Optional owning dashboard UUID (populated for persisted dashboard widgets).
+    pub dashboard_id: Option<Uuid>,
     /// Target widget UUID.
     pub widget_id: Uuid,
     /// Deterministic SHA-256 digest of `(filters, drill_path, principal_fingerprint)`.
@@ -74,6 +76,7 @@ impl ViewCache {
     pub fn build_key(
         &self,
         tenant_id: &str,
+        dashboard_id: Option<Uuid>,
         widget_id: Uuid,
         filters: &BTreeMap<String, serde_json::Value>,
         drill_path: &[DrillPathItem],
@@ -81,6 +84,7 @@ impl ViewCache {
     ) -> ViewCacheKey {
         ViewCacheKey {
             tenant_id: tenant_id.to_owned(),
+            dashboard_id,
             widget_id,
             scope_hash: compute_scope_hash(filters, drill_path, principal_fingerprint),
         }
@@ -96,8 +100,8 @@ impl ViewCache {
         self.inner.insert(key, value).await;
     }
 
-    /// Invalidates all cached entries belonging to `(tenant_id, widget_ids)` using `invalidate_entries_if`.
-    pub fn invalidate_widgets(&self, tenant_id: &str, widget_ids: &[Uuid]) {
+    /// Invalidates all cached entries belonging to `(tenant_id, widget_ids)` and flushes pending invalidations.
+    pub async fn invalidate_widgets(&self, tenant_id: &str, widget_ids: &[Uuid]) {
         if widget_ids.is_empty() {
             return;
         }
@@ -108,6 +112,22 @@ impl ViewCache {
         }) {
             warn!(tenant_id = %tenant_id, error = %err, "ViewCache widget invalidation failed");
         }
+        self.inner.run_pending_tasks().await;
+    }
+
+    /// Invalidates all cached entries belonging to `(tenant_id, dashboard_ids)` and flushes pending invalidations.
+    pub async fn invalidate_dashboards(&self, tenant_id: &str, dashboard_ids: &[Uuid]) {
+        if dashboard_ids.is_empty() {
+            return;
+        }
+        let tenant = tenant_id.to_owned();
+        let id_set: HashSet<Uuid> = dashboard_ids.iter().copied().collect();
+        if let Err(err) = self.inner.invalidate_entries_if(move |k, _v| {
+            k.tenant_id == tenant && k.dashboard_id.is_some_and(|did| id_set.contains(&did))
+        }) {
+            warn!(tenant_id = %tenant_id, error = %err, "ViewCache dashboard invalidation failed");
+        }
+        self.inner.run_pending_tasks().await;
     }
 
     /// Invalidates all cached entries for `tenant_id`.
@@ -289,8 +309,11 @@ mod tests {
     #[tokio::test]
     async fn cache_isolates_security_scopes_and_invalidates_target_widgets() {
         let cache = ViewCache::new();
+        let d1 = Uuid::from_u128(10);
+        let d2 = Uuid::from_u128(20);
         let w1 = Uuid::from_u128(1);
         let w2 = Uuid::from_u128(2);
+        let w3 = Uuid::from_u128(3);
         let filters = BTreeMap::from([(String::from("status"), serde_json::json!(["PAID"]))]);
         let drill = vec![DrillPathItem {
             field: String::from("status"),
@@ -310,10 +333,11 @@ mod tests {
             &BTreeSet::from([Permission::DataRead]),
         );
 
-        let k1_east = cache.build_key("t1", w1, &filters, &drill, &fp_east);
-        let k1_south = cache.build_key("t1", w1, &filters, &drill, &fp_south);
-        let k2_east = cache.build_key("t1", w2, &filters, &drill, &fp_east);
-        let k1_other_tenant = cache.build_key("t2", w1, &filters, &drill, &fp_east);
+        let k1_east = cache.build_key("t1", Some(d1), w1, &filters, &drill, &fp_east);
+        let k1_south = cache.build_key("t1", Some(d1), w1, &filters, &drill, &fp_south);
+        let k2_east = cache.build_key("t1", Some(d1), w2, &filters, &drill, &fp_east);
+        let k3_other_dash = cache.build_key("t1", Some(d2), w3, &filters, &drill, &fp_east);
+        let k1_other_tenant = cache.build_key("t2", Some(d1), w1, &filters, &drill, &fp_east);
 
         cache
             .insert(k1_east.clone(), sample_response("east-w1"))
@@ -323,6 +347,9 @@ mod tests {
             .await;
         cache
             .insert(k2_east.clone(), sample_response("east-w2"))
+            .await;
+        cache
+            .insert(k3_other_dash.clone(), sample_response("east-w3"))
             .await;
         cache
             .insert(k1_other_tenant.clone(), sample_response("t2-w1"))
@@ -337,12 +364,17 @@ mod tests {
             Some(String::from("south-w1"))
         );
 
-        cache.invalidate_widgets("t1", &[w1]);
-        cache.run_pending_tasks().await;
+        cache.invalidate_widgets("t1", &[w1]).await;
 
         assert!(cache.get(&k1_east).await.is_none());
         assert!(cache.get(&k1_south).await.is_none());
         assert!(cache.get(&k2_east).await.is_some());
+        assert!(cache.get(&k3_other_dash).await.is_some());
+        assert!(cache.get(&k1_other_tenant).await.is_some());
+
+        cache.invalidate_dashboards("t1", &[d1]).await;
+        assert!(cache.get(&k2_east).await.is_none());
+        assert!(cache.get(&k3_other_dash).await.is_some());
         assert!(cache.get(&k1_other_tenant).await.is_some());
     }
 }

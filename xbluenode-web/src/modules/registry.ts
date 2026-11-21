@@ -45,10 +45,13 @@ export type TabKey =
 export interface ModuleRouteSpec {
   key: TabKey;
   path: string;
+  subPaths?: string[];
   label: string;
   icon: typeof LayoutDashboard;
   component: ComponentType;
   public?: boolean;
+  wideLayout?: boolean;
+  immersiveQueryParam?: string;
 }
 
 export const MODULE_REGISTRY: ModuleRouteSpec[] = [
@@ -63,6 +66,15 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
   { key: "axalerts", path: "/alerts", label: "AxAlerts · 告警中心", icon: Bell, component: AxAlertsPage },
   { key: "axagent", path: "/agents", label: "AxAgent · 智能体与发布", icon: Bot, component: AxAgentPage },
   { key: "axsim", path: "/sim", label: "AxSim · 因果推演", icon: GitBranch, component: AxSimPage },
-  { key: "xblueview", path: "/view", label: "xBlueView · 孪生驾驶舱", icon: Monitor, component: XBlueViewPage },
+  {
+    key: "xblueview",
+    path: "/view",
+    subPaths: ["/view/:slug"],
+    label: "xBlueView · 孪生驾驶舱",
+    icon: Monitor,
+    component: XBlueViewPage,
+    wideLayout: true,
+    immersiveQueryParam: "screen",
+  },
   { key: "agent_embed", path: "/share/agent/:token", label: "AxAgent 嵌入对话", icon: Bot, component: AgentEmbedPage, public: true },
 ];

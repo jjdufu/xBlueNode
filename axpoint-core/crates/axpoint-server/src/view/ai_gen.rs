@@ -95,7 +95,8 @@ fn is_valid_slug(slug: &str) -> bool {
         .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
 }
 
-/// Collects `SchemaDoc`, `an_metrics`, `ds_datasets`, `PROD` flows, and `xv_assets` for `tenant_id`.
+/// Collects `SchemaDoc`, `an_metrics`, `Ready` `ds_datasets`, shared `SavedQuery` items,
+/// `PROD` flows, and `xv_assets` for `tenant_id`.
 ///
 /// # Errors
 /// Propagates storage errors from any domain repository.
@@ -111,10 +112,30 @@ where
         + ViewRepository
         + ?Sized,
 {
+    collect_dashboard_gen_context_for_user(store, tenant_id, Uuid::nil()).await
+}
+
+/// Collects grounded dashboard generation context scoped to `viewer_user_id` (`include_all = false`).
+///
+/// # Errors
+/// Propagates storage errors from any domain repository.
+pub async fn collect_dashboard_gen_context_for_user<S>(
+    store: &S,
+    tenant_id: &str,
+    viewer_user_id: Uuid,
+) -> Result<DashboardGenContext, AppError>
+where
+    S: StudioRepository
+        + AnalyticsRepository
+        + DatasetRepository
+        + FlowRepository
+        + ViewRepository
+        + ?Sized,
+{
     let published = store.get_published_schema(tenant_id, "main").await?;
     let metrics = store.list_metrics(tenant_id).await?;
     let saved_queries = store
-        .list_saved_queries(tenant_id, Uuid::nil(), true)
+        .list_saved_queries(tenant_id, viewer_user_id, false)
         .await?;
 
     let mut datasets = Vec::new();
@@ -130,7 +151,11 @@ where
                 },
             )
             .await?;
-        datasets.extend(page.items);
+        datasets.extend(
+            page.items
+                .into_iter()
+                .filter(|ds| ds.status == DatasetStatus::Ready),
+        );
         if page.next_cursor.is_none() {
             break;
         }
@@ -139,34 +164,11 @@ where
 
     let mut catalog = TenantCatalog::new(tenant_id);
     for ds in &datasets {
-        if ds.status == DatasetStatus::Disabled {
-            continue;
-        }
         let cols = store.list_columns(tenant_id, ds.id).await?;
         catalog.insert_dataset(CatalogDatasetEntry::from_dataset(ds, &cols));
     }
 
-    let flows_page = store
-        .list_flows(
-            tenant_id,
-            FlowListQuery {
-                q: None,
-                limit: Some(200),
-                cursor: None,
-            },
-        )
-        .await?;
-    let mut prod_flows = Vec::new();
-    for flow in flows_page.items {
-        if store
-            .get_flow_deployment(tenant_id, flow.id, Environment::Prod)
-            .await?
-            .is_some()
-        {
-            prod_flows.push(flow);
-        }
-    }
-
+    let prod_flows = load_prod_flows(store, tenant_id).await?;
     let assets_page = store
         .list_assets(
             tenant_id,
@@ -187,6 +189,33 @@ where
         prod_flows,
         assets: assets_page.items,
     })
+}
+
+async fn load_prod_flows<S: FlowRepository + ?Sized>(
+    store: &S,
+    tenant_id: &str,
+) -> Result<Vec<AxFlowDef>, AppError> {
+    let flows_page = store
+        .list_flows(
+            tenant_id,
+            FlowListQuery {
+                q: None,
+                limit: Some(200),
+                cursor: None,
+            },
+        )
+        .await?;
+    let mut prod_flows = Vec::new();
+    for flow in flows_page.items {
+        if store
+            .get_flow_deployment(tenant_id, flow.id, Environment::Prod)
+            .await?
+            .is_some()
+        {
+            prod_flows.push(flow);
+        }
+    }
+    Ok(prod_flows)
 }
 
 /// Builds `(system_prompt, user_prompt)` for `Purpose::Extract` dashboard generation.
@@ -265,10 +294,10 @@ fn append_context_summary(out: &mut String, ctx: &DashboardGenContext) {
 
     let _w = writeln!(out, "\ndatasets:");
     for ds in &ctx.datasets {
-        if ds.status == DatasetStatus::Disabled {
+        if ds.status != DatasetStatus::Ready {
             continue;
         }
-        let cols: Vec<&str> = ds.schema_json.iter().map(|c| c.name.as_str()).collect();
+        let cols = resolve_dataset_column_names(ds, &ctx.catalog);
         let _w = writeln!(out, "- {} cols=[{}]", ds.name, cols.join(","));
     }
 
@@ -285,6 +314,21 @@ fn append_context_summary(out: &mut String, ctx: &DashboardGenContext) {
             let _w = writeln!(out, "- {} ({:?}, {})", a.id, a.asset_kind, a.name);
         }
     }
+}
+
+fn resolve_dataset_column_names(ds: &Dataset, catalog: &TenantCatalog) -> Vec<String> {
+    if let Some(entry) = catalog.datasets.get(&ds.name.to_ascii_lowercase())
+        && !entry.columns.is_empty()
+    {
+        let mut ordered: Vec<(i32, String)> = entry
+            .columns
+            .values()
+            .map(|c| (c.ordinal, c.column_name.clone()))
+            .collect();
+        ordered.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+        return ordered.into_iter().map(|(_, name)| name).collect();
+    }
+    ds.schema_json.iter().map(|c| c.name.clone()).collect()
 }
 
 fn collect_node_metric_names(nt: &NodeTypeSpec) -> BTreeSet<String> {
@@ -333,9 +377,9 @@ fn decode_normalized_draft(raw: &str) -> Result<AiDashboardDraft, serde_json::Er
     {
         for w in widgets {
             if let Some(kind_val) = w.get_mut("data_source").and_then(|ds| ds.get_mut("kind"))
-                && kind_val.as_str() == Some("SCENE_3D")
+                && kind_val.as_str() == Some("SCENE3D")
             {
-                *kind_val = serde_json::Value::String(String::from("SCENE3D"));
+                *kind_val = serde_json::Value::String(String::from("SCENE_3D"));
             }
         }
     }
@@ -627,7 +671,12 @@ where
         validate_dashboard_slug(explicit_slug.trim())?;
     }
 
-    let ctx = collect_dashboard_gen_context(store, tenant_id).await?;
+    let ctx = collect_dashboard_gen_context_for_user(
+        store,
+        tenant_id,
+        created_by.unwrap_or_else(Uuid::nil),
+    )
+    .await?;
     let (sys, usr) = build_dashboard_gen_prompts(&ctx, &req);
 
     let raw = llm_router
@@ -915,6 +964,110 @@ mod tests {
             draft.widgets.first().map(|w| w.widget_kind),
             Some(WidgetKind::LineChart)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn parse_draft_normalizes_scene3d_and_prompts_use_ready_catalog_columns() -> Result<(), AppError>
+    {
+        let raw_legacy = serde_json::json!({
+            "name": "3D 看板",
+            "slug": "twin-3d",
+            "widgets": [{
+                "widget_kind": "SCENE_3D",
+                "title": "主仓孪生",
+                "position": {"x": 0, "y": 0, "w": 24, "h": 10},
+                "data_source": {"kind": "SCENE3D", "asset_id": Uuid::from_u128(0x301)}
+            }]
+        })
+        .to_string();
+        let parsed = parse_ai_dashboard_draft(&raw_legacy)?;
+        let serialized = serde_json::to_string(&parsed.widgets)
+            .map_err(|err| AppError::Database(err.to_string()))?;
+        assert!(serialized.contains("\"kind\":\"SCENE_3D\""));
+
+        let now = chrono::Utc::now();
+        let ready_id = Uuid::from_u128(0x101);
+        let syncing_id = Uuid::from_u128(0x102);
+        let make_ds = |id: Uuid, name: &str, status: DatasetStatus| Dataset {
+            id,
+            connection_id: None,
+            name: String::from(name),
+            display_name: String::from(name),
+            description: String::new(),
+            tags: Vec::new(),
+            source_kind: axpoint_domain::enums::SourceKind::SqlTable,
+            source_ref: serde_json::json!({}),
+            sync_mode: axpoint_domain::enums::SyncMode::Snapshot,
+            cursor_column: None,
+            cursor_value: None,
+            primary_key: Vec::new(),
+            delete_column: None,
+            schema_policy: axpoint_domain::axhub::SchemaPolicy::Evolve,
+            lake_schema: String::from("tenant_default"),
+            schedule_cron: None,
+            lake_table: String::from(name),
+            schema_version: 1,
+            schema_json: Vec::new(),
+            row_count: 10,
+            last_snapshot_id: None,
+            last_synced_at: Some(now),
+            status,
+            owner_user_id: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let mut ctx = DashboardGenContext {
+            datasets: vec![
+                make_ds(ready_id, "demo_orders", DatasetStatus::Ready),
+                make_ds(syncing_id, "staging_raw", DatasetStatus::Syncing),
+            ],
+            catalog: TenantCatalog::new("default"),
+            ..DashboardGenContext::default()
+        };
+        let mut entry = CatalogDatasetEntry::simple(ready_id, "demo_orders", "demo_orders");
+        entry.columns.insert(
+            String::from("amount"),
+            axpoint_domain::axhub::ColumnMeta {
+                dataset_id: ready_id,
+                column_name: String::from("amount"),
+                data_type: DataType::Float64,
+                pii_category: PiiCategory::None,
+                pii_confirmed: false,
+                description: String::new(),
+                business_term: String::new(),
+                unit: String::new(),
+                ordinal: 1,
+            },
+        );
+        entry.columns.insert(
+            String::from("order_id"),
+            axpoint_domain::axhub::ColumnMeta {
+                dataset_id: ready_id,
+                column_name: String::from("order_id"),
+                data_type: DataType::String,
+                pii_category: PiiCategory::None,
+                pii_confirmed: false,
+                description: String::new(),
+                business_term: String::new(),
+                unit: String::new(),
+                ordinal: 0,
+            },
+        );
+        ctx.catalog.insert_dataset(entry);
+
+        let (_sys, usr) = build_dashboard_gen_prompts(
+            &ctx,
+            &AiGenerateDashboardRequest {
+                prompt: String::from("订单概览"),
+                title: None,
+                slug: None,
+                theme: None,
+            },
+        );
+        assert!(usr.contains("- demo_orders cols=[order_id,amount]"));
+        assert!(!usr.contains("staging_raw"));
         Ok(())
     }
 }

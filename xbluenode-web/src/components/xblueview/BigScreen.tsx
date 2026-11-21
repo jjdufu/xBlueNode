@@ -15,9 +15,16 @@ export interface BigScreenProps {
   errorMap: Record<string, string | null>;
   drillMap: Record<string, DrillPathItem[]>;
   sseConnected: boolean;
+  selectedNodeId?: string | null;
+  filterValues?: Record<string, unknown>;
   onExitScreen: () => void;
   onRefreshWidget: (widgetId: string) => void;
-  onDrill: (widgetId: string, field: string, value: unknown) => void;
+  onDrill: (
+    widgetId: string,
+    field: string,
+    value: unknown,
+    rowObj?: Record<string, unknown>
+  ) => void;
   onPopDrill: (widgetId: string, level: number) => void;
   onCrossFilter: (filterKey: string, value: unknown) => void;
   onSelectNode: (node: SelectedNodeContext) => void;
@@ -31,6 +38,8 @@ export function BigScreen({
   errorMap,
   drillMap,
   sseConnected,
+  selectedNodeId,
+  filterValues,
   onExitScreen,
   onRefreshWidget,
   onDrill,
@@ -87,7 +96,7 @@ export function BigScreen({
   return (
     <div
       ref={rootRef}
-      className="fixed inset-0 z-40 bg-zinc-950 text-zinc-100 overflow-hidden flex items-center justify-center"
+      className="dark fixed inset-0 z-40 bg-zinc-950 text-zinc-100 overflow-hidden flex items-center justify-center"
       data-testid="big-screen-container"
     >
       <div
@@ -162,6 +171,8 @@ export function BigScreen({
             isDark={true}
             isScreen={true}
             fixedWidth={designW - 40}
+            selectedNodeId={selectedNodeId}
+            filterValues={filterValues}
             onRefreshWidget={onRefreshWidget}
             onDrill={onDrill}
             onPopDrill={onPopDrill}

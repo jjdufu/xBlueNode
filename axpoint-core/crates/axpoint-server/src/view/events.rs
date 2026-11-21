@@ -140,7 +140,9 @@ where
             return Ok(());
         }
 
-        self.cache.invalidate_widgets(&event.tenant_id, &widget_ids);
+        self.cache
+            .invalidate_widgets(&event.tenant_id, &widget_ids)
+            .await;
 
         let view_event = ViewEvent {
             tenant_id: event.tenant_id.clone(),
@@ -238,7 +240,7 @@ pub async fn run_view_event_listener_with_cache(
             recv_res = pg_listener.recv() => {
                 match recv_res {
                     Ok(notif) => {
-                        dispatch_pg_notification(notif.payload(), &bus, cache.as_ref());
+                        dispatch_pg_notification(notif.payload(), &bus, cache.as_ref()).await;
                     }
                     Err(err) => {
                         warn!(error = %err, "PgListener ax_view_events interrupted; reconnecting");
@@ -266,13 +268,23 @@ async fn connect_view_listener(pool: &PgPool) -> Option<PgListener> {
     }
 }
 
-fn dispatch_pg_notification(raw_payload: &str, bus: &ViewEventBus, cache: Option<&Arc<ViewCache>>) {
+async fn dispatch_pg_notification(
+    raw_payload: &str,
+    bus: &ViewEventBus,
+    cache: Option<&Arc<ViewCache>>,
+) {
     match serde_json::from_str::<ViewEvent>(raw_payload) {
         Ok(event) => {
-            if let Some(view_cache) = cache
-                && !event.widget_ids.is_empty()
-            {
-                view_cache.invalidate_widgets(&event.tenant_id, &event.widget_ids);
+            if let Some(view_cache) = cache {
+                if !event.widget_ids.is_empty() {
+                    view_cache
+                        .invalidate_widgets(&event.tenant_id, &event.widget_ids)
+                        .await;
+                } else if !event.dashboard_ids.is_empty() {
+                    view_cache
+                        .invalidate_dashboards(&event.tenant_id, &event.dashboard_ids)
+                        .await;
+                }
             }
             let _receivers = bus.publish(event);
         }
@@ -473,6 +485,54 @@ mod tests {
             .map_err(|err| AppError::Database(err.to_string()))?;
         assert_eq!(decoded.widget_ids, Vec::<Uuid>::new());
         assert_eq!(decoded.dashboard_ids, vec![dash_id]);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn compacted_pg_notification_invalidates_dashboard_cache_entries() -> Result<(), AppError>
+    {
+        let cache = Arc::new(ViewCache::new());
+        let bus = ViewEventBus::new();
+        let dash_hit = Uuid::from_u128(999);
+        let dash_keep = Uuid::from_u128(1_000);
+        let w_hit = Uuid::from_u128(1);
+        let w_keep = Uuid::from_u128(2);
+        let empty_filters = std::collections::BTreeMap::new();
+        let sample = axpoint_domain::view::WidgetDataResponse {
+            columns: Vec::new(),
+            rows: Vec::new(),
+            row_count: 0,
+            truncated: false,
+            generated_at: chrono::Utc::now(),
+            data_version: String::from("v1"),
+            drill_level: 0,
+        };
+
+        let key_hit = cache.build_key("default", Some(dash_hit), w_hit, &empty_filters, &[], "fp");
+        let key_keep = cache.build_key(
+            "default",
+            Some(dash_keep),
+            w_keep,
+            &empty_filters,
+            &[],
+            "fp",
+        );
+        cache.insert(key_hit.clone(), sample.clone()).await;
+        cache.insert(key_keep.clone(), sample).await;
+
+        let many_widgets: Vec<Uuid> = (1..=300_u128).map(Uuid::from_u128).collect();
+        let ev = ViewEvent {
+            tenant_id: String::from("default"),
+            topic: String::from("dataset.synced"),
+            widget_ids: many_widgets,
+            dashboard_ids: vec![dash_hit],
+            alert: None,
+        };
+        let compact_str = serialize_compact_view_event(&ev)?;
+        dispatch_pg_notification(&compact_str, &bus, Some(&cache)).await;
+
+        assert!(cache.get(&key_hit).await.is_none());
+        assert!(cache.get(&key_keep).await.is_some());
         Ok(())
     }
 }

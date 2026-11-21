@@ -163,7 +163,7 @@ export function FilterBar({
         }
 
         if (f.kind === "DATE_RANGE") {
-          const range = Array.isArray(currentVal) ? currentVal : ["", ""];
+          const range = Array.isArray(currentVal) ? currentVal : [null, null];
           const fromVal = typeof range[0] === "string" ? range[0] : "";
           const toVal = typeof range[1] === "string" ? range[1] : "";
           return (
@@ -176,11 +176,12 @@ export function FilterBar({
                   type="date"
                   value={fromVal}
                   onChange={(e) => {
-                    const nextFrom = e.target.value;
-                    if (!nextFrom && !toVal) {
+                    const nextFrom = e.target.value || null;
+                    const currTo = toVal || null;
+                    if (nextFrom === null && currTo === null) {
                       onChange(f.key, undefined);
                     } else {
-                      onChange(f.key, [nextFrom, toVal]);
+                      onChange(f.key, [nextFrom, currTo]);
                     }
                   }}
                   className="h-8 text-xs font-mono-tech w-32"
@@ -190,11 +191,12 @@ export function FilterBar({
                   type="date"
                   value={toVal}
                   onChange={(e) => {
-                    const nextTo = e.target.value;
-                    if (!fromVal && !nextTo) {
+                    const currFrom = fromVal || null;
+                    const nextTo = e.target.value || null;
+                    if (currFrom === null && nextTo === null) {
                       onChange(f.key, undefined);
                     } else {
-                      onChange(f.key, [fromVal, nextTo]);
+                      onChange(f.key, [currFrom, nextTo]);
                     }
                   }}
                   className="h-8 text-xs font-mono-tech w-32"

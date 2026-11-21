@@ -2,11 +2,28 @@
 set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
-(cd axpoint-core && cargo test -p axpoint-db view_repo && cargo test -p axpoint-server view && cargo test -p axpoint-server --test dashboard_gen_eval)
-(cd xbluenode-web && npm run build)
+(
+  cd axpoint-core
+  CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}" \
+  CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}" \
+  CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}" \
+  cargo test -p axpoint-db view_repo && \
+  CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}" \
+  CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}" \
+  CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}" \
+  cargo test -p axpoint-server view && \
+  CARGO_PROFILE_DEV_DEBUG="${CARGO_PROFILE_DEV_DEBUG:-0}" \
+  CARGO_PROFILE_TEST_DEBUG="${CARGO_PROFILE_TEST_DEBUG:-0}" \
+  CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}" \
+  cargo test -p axpoint-server --test dashboard_gen_eval
+)
+(cd xbluenode-web && npm run test -- xblueview && npm run build)
 
-if [[ -z "${DASHBOARD_ID:-}" || -z "${KPI_WIDGET_ID:-}" || -z "${BAR_WIDGET_ID:-}" || -z "${SCENE3D_WIDGET_ID:-}" || -z "${ACTION_WIDGET_ID:-}" ]]; then
-  eval "$(bash "$(dirname "$0")/../seed/11-xblueview.sh")"
+if [[ -z "${MODEL3D_ASSET_ID:-}" || -z "${DASHBOARD_ID:-}" || -z "${KPI_WIDGET_ID:-}" || -z "${BAR_WIDGET_ID:-}" || -z "${SCENE3D_WIDGET_ID:-}" || -z "${ACTION_WIDGET_ID:-}" ]]; then
+  rm -f "$ROOT/.gate/seeded/11-xblueview.sh"
+  bash "$ROOT/scripts/seed-demo.sh" 11
+  # shellcheck disable=SC1091
+  source "$ROOT/.gate/ids.env"
 fi
 
 # 数据正确：已支付金额 = 独立 SQL 计算
@@ -35,11 +52,16 @@ wait_until "sse-invalidate" 30 "grep -q '^event: invalidate' '$SSE_LOG'"
 kill "$SSE_PID" || true
 rm -f "$SSE_LOG"
 
-# 页面级动作组件回写 → 审计落库 + 缓存失效自动反馈到 3D 场景组件
-api POST "/api/xblueview/widgets/$ACTION_WIDGET_ID/invoke" '{"inputs":{"value":620},"idempotency_key":"gate-view-act-1"}' >/dev/null
+# 页面级动作组件回写 → 审计落库 + 幂等重放 + 缓存失效自动反馈到 3D 场景组件（运行期唯一幂等键保证 all.sh 可重复回归）
+RUN_TAG="$(date +%s)-$$"
+ACT_KEY_1="gate-view-act-1-${RUN_TAG}"
+ACT_KEY_2="gate-view-act-2-${RUN_TAG}"
+api POST "/api/xblueview/widgets/$ACTION_WIDGET_ID/invoke" "{\"inputs\":{\"value\":620},\"idempotency_key\":\"$ACT_KEY_1\"}" >/dev/null
+api POST "/api/xblueview/widgets/$ACTION_WIDGET_ID/invoke" "{\"inputs\":{\"value\":620},\"idempotency_key\":\"$ACT_KEY_1\"}" >/dev/null
 wait_until "widget-action-loop" 30 "api POST '/api/xblueview/widgets/$SCENE3D_WIDGET_ID/data' '{}' | jq -e '(.rows[0][9] | tonumber) == 620'"
-expect_eq "widget-action-log" "$(sql_app default "SELECT count(*) FROM ax_action_log WHERE source_kind='VIEW' AND idempotency_key='gate-view-act-1'")" "1"
-api POST "/api/xblueview/widgets/$ACTION_WIDGET_ID/invoke" '{"inputs":{"value":500},"idempotency_key":"gate-view-act-2"}' >/dev/null
+expect_eq "widget-action-log" "$(sql_app default "SELECT count(*) FROM ax_action_log WHERE source_kind='VIEW' AND idempotency_key='$ACT_KEY_1'")" "1"
+api POST "/api/xblueview/widgets/$ACTION_WIDGET_ID/invoke" "{\"inputs\":{\"value\":500},\"idempotency_key\":\"$ACT_KEY_2\"}" >/dev/null
+wait_until "widget-action-restore" 30 "api POST '/api/xblueview/widgets/$SCENE3D_WIDGET_ID/data' '{}' | jq -e '(.rows[0][9] | tonumber) == 500'"
 
 # 缓存失效后数据反映新值，并在恢复源表后同步回一致性基线
 sql_owner "UPDATE demo_src.orders SET status='PAID', updated_at=now() WHERE id=2" >/dev/null
@@ -54,5 +76,5 @@ wait_aggregate_idle
 # 跨租户隔离
 expect_eq "rls-xv" "$(sql_app other "SELECT count(*) FROM xv_dashboards")" "0"
 
-(cd xbluenode-web && npx playwright test e2e/xblueview.spec.ts)
+(cd xbluenode-web && AXPOINT_E2E_LIVE=1 CORE_BASE_URL="$CORE_BASE_URL" VITE_DEV_TOKEN="$AXPOINT_DEV_TOKEN" npx playwright test e2e/xblueview.spec.ts)
 gate_pass step11

@@ -16,9 +16,16 @@ export interface WidgetRendererProps {
   widget: WidgetRecord;
   data: WidgetDataResponse | null;
   isDark?: boolean;
+  isEditing?: boolean;
   readOnly?: boolean;
   selectedNodeId?: string | null;
-  onDrill?: (widgetId: string, field: string, value: unknown) => void;
+  filterValues?: Record<string, unknown>;
+  onDrill?: (
+    widgetId: string,
+    field: string,
+    value: unknown,
+    rowObj?: Record<string, unknown>
+  ) => void;
   onCrossFilter?: (filterKey: string, value: unknown) => void;
   onSelectNode?: (node: SelectedNodeContext) => void;
   onActionSuccess?: () => void;
@@ -28,8 +35,10 @@ export function WidgetRenderer({
   widget,
   data,
   isDark = false,
+  isEditing = false,
   readOnly = false,
   selectedNodeId,
+  filterValues,
   onDrill,
   onCrossFilter,
   onSelectNode,
@@ -37,7 +46,11 @@ export function WidgetRenderer({
 }: WidgetRendererProps) {
   const crossFilter = parseCrossFilter(widget.options);
 
-  const handleItemClick = (field: string, value: unknown) => {
+  const handleItemClick = (
+    field: string,
+    value: unknown,
+    rowObj?: Record<string, unknown>
+  ) => {
     if (crossFilter && onCrossFilter) {
       if (crossFilter.field === field || !crossFilter.field) {
         onCrossFilter(crossFilter.target_filter_key, value);
@@ -46,7 +59,7 @@ export function WidgetRenderer({
       }
     }
     if (widget.drill.length > 0 && onDrill) {
-      onDrill(widget.id, field, value);
+      onDrill(widget.id, field, value, rowObj);
     }
   };
 
@@ -85,7 +98,7 @@ export function WidgetRenderer({
             }
             const firstCol = data?.columns[0]?.name;
             if (firstCol && rowObj[firstCol] !== undefined) {
-              handleItemClick(firstCol, rowObj[firstCol]);
+              handleItemClick(firstCol, rowObj[firstCol], rowObj);
             }
           }}
         />
@@ -146,6 +159,7 @@ export function WidgetRenderer({
         <FloorPlanWidget
           widget={widget}
           data={data}
+          editable={isEditing && !readOnly}
           onSelectNode={onSelectNode}
           onCrossFilter={(_field, val) => {
             if (crossFilter && onCrossFilter) {
@@ -190,6 +204,7 @@ export function WidgetRenderer({
           data={data}
           readOnly={readOnly}
           selectedNodeId={selectedNodeId}
+          filterValues={filterValues}
           onActionSuccess={onActionSuccess}
         />
       );
