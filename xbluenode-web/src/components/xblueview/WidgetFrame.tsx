@@ -1,4 +1,4 @@
-import { GripVertical, Pencil, RefreshCw, Trash2 } from "lucide-react";
+import { Download, GripVertical, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import type {
   DrillPathItem,
   WidgetDataResponse,
@@ -24,6 +24,7 @@ export interface WidgetFrameProps {
   onRefresh: (widgetId: string) => void;
   onEdit?: (widget: WidgetRecord) => void;
   onDelete?: (widgetId: string) => void;
+  onExportWidget?: (widget: WidgetRecord) => void;
   onDrill?: (
     widgetId: string,
     field: string,
@@ -51,12 +52,17 @@ export function WidgetFrame({
   onRefresh,
   onEdit,
   onDelete,
+  onExportWidget,
   onDrill,
   onPopDrill,
   onCrossFilter,
   onSelectNode,
   onActionSuccess,
 }: WidgetFrameProps) {
+  const isActionWidget =
+    widget.widget_kind === "ACTION_BUTTON" ||
+    widget.widget_kind === "ACTION_FORM";
+
   return (
     <div
       className={`h-full w-full flex flex-col rounded-md border overflow-hidden ${
@@ -98,6 +104,21 @@ export function WidgetFrame({
               {widget.refresh_mode}
             </span>
           )}
+          {!isEditing &&
+            !readOnly &&
+            !isScreen &&
+            !isActionWidget &&
+            onExportWidget && (
+              <button
+                type="button"
+                onClick={() => onExportWidget(widget)}
+                className="rounded p-1 text-muted-foreground hover:text-xblue hover:bg-muted cursor-pointer"
+                title="导出组件"
+                data-testid={`export-widget-${widget.id}`}
+              >
+                <Download className="h-3 w-3" />
+              </button>
+            )}
           {!readOnly && (
             <button
               type="button"

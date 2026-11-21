@@ -467,9 +467,18 @@ export const xblueviewApi = {
   },
 
   getAssetContentUrl: (assetId: string) =>
-    `/api/xblueview/assets/${assetId}/content`,
+    activeShareAssetScope
+      ? `/api/xblueview/share/${encodeURIComponent(activeShareAssetScope.token)}/assets/${encodeURIComponent(assetId)}/content`
+      : `/api/xblueview/assets/${assetId}/content`,
 
   fetchAssetBlobUrl: async (assetId: string): Promise<string> => {
+    if (activeShareAssetScope) {
+      return xblueviewShareApi.fetchSharedAssetBlobUrl(
+        activeShareAssetScope.token,
+        assetId,
+        activeShareAssetScope.shareSession
+      );
+    }
     const token = getAccessToken();
     const headers = new Headers();
     if (token) {
@@ -581,6 +590,18 @@ export const xblueviewApi = {
     const filename = parseContentDispositionFilename(cd) ?? `export-${exportId}`;
     const blob = await resp.blob();
     return { blob, filename };
+  },
+
+  downloadExport: async (
+    exportId: string,
+    fallbackFileName?: string
+  ): Promise<void> => {
+    const { blob, filename } = await xblueviewApi.downloadExportBlob(exportId);
+    const resolvedName =
+      filename === `export-${exportId}` && fallbackFileName
+        ? fallbackFileName
+        : filename;
+    triggerBlobDownload(blob, resolvedName);
   },
 
   listExportTemplates: (params?: { limit?: number; cursor?: string }) =>
@@ -826,6 +847,33 @@ async function requestSharePublic<T>(
   return (await resp.json()) as T;
 }
 
+interface ShareAssetScope {
+  token: string;
+  shareSession?: string | null;
+}
+
+let activeShareAssetScope: ShareAssetScope | null = null;
+
+/** Scopes raw spatial asset fetches (`FLOOR_PLAN` / `SCENE_3D`) to `/api/xblueview/share/:token/assets/:id/content` while `SharePage` is mounted. */
+export function setShareAssetScope(scope: ShareAssetScope | null): void {
+  activeShareAssetScope = scope;
+}
+
+function triggerBlobDownload(blob: Blob, filename: string): void {
+  if (typeof document === "undefined") return;
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  anchor.rel = "noopener";
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  setTimeout(() => {
+    URL.revokeObjectURL(objectUrl);
+  }, 1000);
+}
+
 /** Public no-Bearer API client for `/share/:token` (`SharePage`) that never redirects to `/login`. */
 export const xblueviewShareApi = {
   getShare: (token: string, shareSession?: string | null) =>
@@ -861,6 +909,42 @@ export const xblueviewShareApi = {
       }
     ),
 
+  querySharedWidgetData: (
+    token: string,
+    widgetId: string,
+    body: WidgetDataRequest,
+    shareSession?: string | null
+  ) =>
+    xblueviewShareApi.fetchSharedWidgetData(
+      token,
+      widgetId,
+      body,
+      shareSession
+    ),
+
+  getSharedAssetRawUrl: (token: string, assetId: string) =>
+    `/api/xblueview/share/${encodeURIComponent(token)}/assets/${encodeURIComponent(assetId)}/content`,
+
+  fetchSharedAssetBlobUrl: async (
+    token: string,
+    assetId: string,
+    shareSession?: string | null
+  ): Promise<string> => {
+    const headers = new Headers();
+    if (shareSession) {
+      headers.set("X-Share-Session", shareSession);
+    }
+    const resp = await fetch(
+      xblueviewShareApi.getSharedAssetRawUrl(token, assetId),
+      { headers }
+    );
+    if (!resp.ok) {
+      throw await parsePublicFetchError(resp);
+    }
+    const blob = await resp.blob();
+    return URL.createObjectURL(blob);
+  },
+
   downloadSharedArtifact: async (
     token: string,
     shareSession?: string | null,
@@ -882,5 +966,25 @@ export const xblueviewShareApi = {
     const filename = parseContentDispositionFilename(cd) ?? `shared-export`;
     const blob = await resp.blob();
     return { blob, filename };
+  },
+
+  downloadShare: async (
+    token: string,
+    format?: ExportFormat,
+    shareSession?: string | null,
+    fallbackFileName?: string
+  ): Promise<void> => {
+    const { blob, filename } = await xblueviewShareApi.downloadSharedArtifact(
+      token,
+      shareSession,
+      format
+    );
+    const resolvedName =
+      filename === "shared-export" && fallbackFileName
+        ? fallbackFileName
+        : filename === "shared-export" && format
+          ? `shared-report.${format.toLowerCase()}`
+          : filename;
+    triggerBlobDownload(blob, resolvedName);
   },
 };

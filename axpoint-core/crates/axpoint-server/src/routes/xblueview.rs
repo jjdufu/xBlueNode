@@ -1,5 +1,5 @@
 //! `xBlueView` digital-twin dashboard, widget execution, `SSE` stream, spatial binding,
-//! and visual asset routes (`/api/xblueview/*`) (`10-STEP11-12` §11.7).
+//! visual asset, full-format export, and `axs_` external share routes (`/api/xblueview/*`) (`10-STEP11-12` §11.7 & §12.6).
 
 use std::collections::{HashSet, VecDeque};
 use std::convert::Infallible;
@@ -8,7 +8,14 @@ use std::time::Duration;
 
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::PaginatedList;
-use axpoint_domain::enums::{AssetKind, AuditAction, Permission, TokenKind};
+use axpoint_domain::enums::{
+    AssetKind, AuditAction, ExportFormat, JobStatus, Permission, TokenKind,
+};
+use axpoint_domain::export::{
+    CreateExportJobParams, CreateExportRequest, CreateExportTemplateParams, CreateShareRequest,
+    CreateShareResponse, ExportJobRecord, ExportListQuery, ExportTemplateRecord, ShareLinkRecord,
+    ShareListQuery, SharePublicResponse, ShareUnlockRequest, ShareUnlockResponse,
+};
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::ViewRepository as _;
 use axpoint_domain::rules::SimplePageQuery;
@@ -27,20 +34,29 @@ use axpoint_server::view::ai_gen::{
 };
 use axpoint_server::view::data::{WidgetExecEnv, execute_widget_data, execute_widget_preview};
 use axpoint_server::view::deps::compute_widget_deps;
+use axpoint_server::view::export::{
+    build_content_disposition, cleanup_file_quietly, content_type_for_export,
+    extract_ooxml_placeholders, resolve_data_root_path, validate_create_export_request,
+};
+use axpoint_server::view::share::{
+    PublicShareEnv, ShareRequestMeta, create_share, execute_shared_widget_data, get_public_share,
+    prepare_shared_download, resolve_shared_dashboard_asset, unlock_public_share,
+};
 use axum::body::{Body, Bytes};
 use axum::extract::{Multipart, State};
-use axum::http::StatusCode;
 use axum::http::header::{
-    CONTENT_SECURITY_POLICY, CONTENT_TYPE, HeaderValue, X_CONTENT_TYPE_OPTIONS,
+    CONTENT_DISPOSITION, CONTENT_SECURITY_POLICY, CONTENT_TYPE, HeaderValue, X_CONTENT_TYPE_OPTIONS,
 };
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tokio::sync::broadcast;
+use tokio_util::io::ReaderStream;
 use uuid::Uuid;
 
 use crate::state::{ApiJson, ApiPath, ApiQuery, AppState, HttpError};
@@ -58,7 +74,7 @@ struct DuplicateDashboardRequest {
     slug: Option<String>,
 }
 
-/// Builds the `/xblueview/*` sub-router mounted under `/api` (`10-STEP11-12` §11.7).
+/// Builds the `/xblueview/*` sub-router mounted under `/api` (`10-STEP11-12` §11.7 & §12.6).
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route(
@@ -100,6 +116,7 @@ pub(crate) fn router() -> Router<AppState> {
             get(stream_dashboard_handler),
         )
         .merge(widget_and_asset_router())
+        .merge(export_and_share_router())
 }
 
 fn widget_and_asset_router() -> Router<AppState> {
@@ -118,10 +135,7 @@ fn widget_and_asset_router() -> Router<AppState> {
             "/xblueview/assets",
             get(list_assets_handler).post(upload_asset_handler),
         )
-        .route(
-            "/xblueview/assets/{id}",
-            axum::routing::delete(delete_asset_handler),
-        )
+        .route("/xblueview/assets/{id}", delete(delete_asset_handler))
         .route(
             "/xblueview/assets/{id}/content",
             get(get_asset_content_handler),
@@ -2143,6 +2157,609 @@ async fn replace_scene3d_bindings_handler(
         .await?;
     refresh_asset_bound_widgets(&state, &principal.tenant_id, asset_id).await?;
     Ok(Json(items))
+}
+
+// ============================================================================
+// Step 12: Export Jobs, OOXML Templates, and External `axs_` Share Links
+// ============================================================================
+
+fn export_and_share_router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/xblueview/exports",
+            get(list_exports_handler).post(create_export_handler),
+        )
+        .route(
+            "/xblueview/exports/{id}",
+            get(get_export_handler).delete(delete_export_handler),
+        )
+        .route(
+            "/xblueview/exports/{id}/download",
+            get(download_export_handler),
+        )
+        .route(
+            "/xblueview/export-templates",
+            get(list_export_templates_handler).post(upload_export_template_handler),
+        )
+        .route(
+            "/xblueview/export-templates/{id}",
+            delete(delete_export_template_handler),
+        )
+        .route(
+            "/xblueview/shares",
+            get(list_shares_handler).post(create_share_handler),
+        )
+        .route("/xblueview/shares/{id}", delete(revoke_share_handler))
+        .merge(public_share_router())
+}
+
+fn public_share_router() -> Router<AppState> {
+    Router::new()
+        .route("/xblueview/share/{token}", get(get_public_share_handler))
+        .route(
+            "/xblueview/share/{token}/unlock",
+            post(unlock_public_share_handler),
+        )
+        .route(
+            "/xblueview/share/{token}/widgets/{widget_id}/data",
+            post(shared_widget_data_handler),
+        )
+        .route(
+            "/xblueview/share/{token}/assets/{asset_id}/raw",
+            get(shared_asset_raw_handler),
+        )
+        .route(
+            "/xblueview/share/{token}/assets/{asset_id}/content",
+            get(shared_asset_raw_handler),
+        )
+        .route(
+            "/xblueview/share/{token}/download",
+            get(shared_download_handler),
+        )
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListTemplatesQuery {
+    limit: Option<u32>,
+    cursor: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SharedDownloadQuery {
+    #[serde(default)]
+    format: Option<ExportFormat>,
+}
+
+async fn create_export_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<CreateExportRequest>,
+) -> Result<(StatusCode, Json<ExportJobRecord>), HttpError> {
+    validate_create_export_request(&state.store, &principal, &req).await?;
+    let created = state
+        .store
+        .create_export_job(
+            &principal.tenant_id,
+            CreateExportJobParams {
+                export_format: req.export_format,
+                source: req.source,
+                options: req.options,
+                template_id: req.template_id,
+                created_by: principal.user_id,
+            },
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+async fn list_exports_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiQuery(query): ApiQuery<ExportListQuery>,
+) -> Result<Json<PaginatedList<ExportJobRecord>>, HttpError> {
+    principal.require(Permission::ExportData)?;
+    let show_all = query.mine == Some(false) && principal.has(Permission::DataAdmin);
+    let created_by_filter = (!show_all).then_some(principal.user_id);
+    let page = state
+        .store
+        .list_export_jobs(&principal.tenant_id, created_by_filter, query)
+        .await?;
+    Ok(Json(page))
+}
+
+async fn get_export_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(export_id): ApiPath<Uuid>,
+) -> Result<Json<ExportJobRecord>, HttpError> {
+    principal.require(Permission::ExportData)?;
+    let job = state
+        .store
+        .get_export_job(&principal.tenant_id, export_id)
+        .await?
+        .ok_or(AppError::NotFound("EXPORT_NOT_FOUND"))?;
+    if job.created_by != principal.user_id && !principal.has(Permission::DataAdmin) {
+        return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+    }
+    Ok(Json(job))
+}
+
+async fn delete_export_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(export_id): ApiPath<Uuid>,
+) -> Result<Json<DeleteStatus>, HttpError> {
+    principal.require(Permission::ExportData)?;
+    let job = state
+        .store
+        .get_export_job(&principal.tenant_id, export_id)
+        .await?
+        .ok_or(AppError::NotFound("EXPORT_NOT_FOUND"))?;
+    if job.created_by != principal.user_id && !principal.has(Permission::DataAdmin) {
+        return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+    }
+    let removed = state
+        .store
+        .delete_export_job(&principal.tenant_id, export_id)
+        .await?
+        .ok_or(AppError::NotFound("EXPORT_NOT_FOUND"))?;
+    if let Some(ref rel_path) = removed.file_path
+        && let Ok(full_path) = resolve_data_root_path(&state.data_root, rel_path)
+    {
+        cleanup_file_quietly(&full_path).await;
+    }
+    Ok(Json(DeleteStatus { deleted: true }))
+}
+
+async fn download_export_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(export_id): ApiPath<Uuid>,
+) -> Result<Response, HttpError> {
+    principal.require(Permission::ExportData)?;
+    let job = state
+        .store
+        .get_export_job(&principal.tenant_id, export_id)
+        .await?
+        .ok_or(AppError::NotFound("EXPORT_NOT_FOUND"))?;
+    if job.created_by != principal.user_id && !principal.has(Permission::DataAdmin) {
+        return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+    }
+    if job.status != JobStatus::Succeeded {
+        return Err(HttpError(AppError::NotFound("EXPORT_NOT_FOUND")));
+    }
+    let rel_path = job
+        .file_path
+        .as_deref()
+        .ok_or(AppError::NotFound("EXPORT_NOT_FOUND"))?;
+    let disk_path = resolve_data_root_path(&state.data_root, rel_path)?;
+    let file_name = job
+        .file_name
+        .unwrap_or_else(|| format!("export-{export_id}"));
+    stream_file_attachment(
+        &disk_path,
+        &file_name,
+        job.export_format,
+        "EXPORT_NOT_FOUND",
+    )
+    .await
+}
+
+async fn stream_file_attachment(
+    disk_path: &std::path::Path,
+    file_name: &str,
+    fallback_format: ExportFormat,
+    not_found_code: &'static str,
+) -> Result<Response, HttpError> {
+    let file = tokio::fs::File::open(disk_path)
+        .await
+        .map_err(|_| HttpError(AppError::NotFound(not_found_code)))?;
+    let stream = ReaderStream::new(file);
+    let body = Body::from_stream(stream);
+    build_attachment_response(body, file_name, fallback_format)
+}
+
+fn build_attachment_response(
+    body: Body,
+    file_name: &str,
+    fallback_format: ExportFormat,
+) -> Result<Response, HttpError> {
+    let mime_type = content_type_for_export(file_name, fallback_format);
+    let disposition_raw = build_content_disposition(file_name);
+    let disposition_val = HeaderValue::from_str(&disposition_raw).map_err(|err| {
+        HttpError(AppError::Config(format!(
+            "invalid Content-Disposition: {err}"
+        )))
+    })?;
+
+    let mut resp = Response::new(body);
+    let headers = resp.headers_mut();
+    headers.insert(CONTENT_TYPE, HeaderValue::from_static(mime_type));
+    headers.insert(CONTENT_DISPOSITION, disposition_val);
+    headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    Ok(resp)
+}
+
+struct ParsedTemplateUpload {
+    export_format: ExportFormat,
+    name: String,
+    raw_bytes: Vec<u8>,
+}
+
+async fn read_template_multipart(
+    mut multipart: Multipart,
+) -> Result<ParsedTemplateUpload, AppError> {
+    let mut format_raw: Option<String> = None;
+    let mut name: Option<String> = None;
+    let mut file_name: Option<String> = None;
+    let mut file_bytes: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| map_multipart_error(&e))?
+    {
+        let field_name = field.name().unwrap_or_default().to_owned();
+        if field_name == "tenant_id" {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                "tenant_id parameter is forbidden",
+            ));
+        }
+        if field_name == "file" {
+            if let Some(orig) = field.file_name() {
+                let clean = orig.rsplit(['/', '\\']).next().unwrap_or(orig).trim();
+                if !clean.is_empty() {
+                    file_name = Some(clean.to_owned());
+                }
+            }
+            let bytes = field.bytes().await.map_err(|e| map_multipart_error(&e))?;
+            file_bytes = Some(bytes.to_vec());
+            continue;
+        }
+        let text = field.text().await.map_err(|e| map_multipart_error(&e))?;
+        match field_name.as_str() {
+            "export_format" | "format" => format_raw = Some(text.trim().to_owned()),
+            "name" => name = Some(text.trim().to_owned()),
+            _ => {}
+        }
+    }
+
+    let fmt_str = format_raw
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| AppError::bad("INVALID_ARGUMENT", "missing 'export_format' field"))?;
+    let export_format: ExportFormat = fmt_str.parse()?;
+    if !matches!(export_format, ExportFormat::Docx | ExportFormat::Pptx) {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            "export_format for template must be DOCX or PPTX",
+        ));
+    }
+    let raw_bytes =
+        file_bytes.ok_or_else(|| AppError::bad("INVALID_ARGUMENT", "missing 'file' field"))?;
+    let resolved_name = name
+        .filter(|s| !s.is_empty())
+        .or(file_name)
+        .ok_or_else(|| AppError::bad("INVALID_ARGUMENT", "missing template 'name'"))?;
+
+    Ok(ParsedTemplateUpload {
+        export_format,
+        name: resolved_name,
+        raw_bytes,
+    })
+}
+
+fn require_template_write_perm(principal: &AuthPrincipal) -> Result<(), AppError> {
+    if principal.has(Permission::ExportData) || principal.has(Permission::ViewEdit) {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden("PERMISSION_DENIED"))
+    }
+}
+
+async fn list_export_templates_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiQuery(query): ApiQuery<ListTemplatesQuery>,
+) -> Result<Json<PaginatedList<ExportTemplateRecord>>, HttpError> {
+    if !principal.has(Permission::ExportData)
+        && !principal.has(Permission::ViewEdit)
+        && !principal.has(Permission::DataRead)
+    {
+        return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+    }
+    validate_page_limit(query.limit)?;
+    let page = state
+        .store
+        .list_export_templates(
+            &principal.tenant_id,
+            SimplePageQuery {
+                limit: query.limit,
+                cursor: query.cursor,
+            },
+        )
+        .await?;
+    Ok(Json(page))
+}
+
+async fn upload_export_template_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    multipart: Multipart,
+) -> Result<(StatusCode, Json<ExportTemplateRecord>), HttpError> {
+    require_template_write_perm(&principal)?;
+    let parsed = read_template_multipart(multipart).await?;
+    let placeholders = extract_ooxml_placeholders(parsed.export_format, &parsed.raw_bytes)?;
+    let sha256 = hex::encode(Sha256::digest(&parsed.raw_bytes));
+
+    let tpl_id = Uuid::new_v4();
+    let ext = match parsed.export_format {
+        ExportFormat::Pptx => "pptx",
+        _ => "docx",
+    };
+    let dir = state
+        .data_root
+        .join("export_templates")
+        .join(&principal.tenant_id);
+    tokio::fs::create_dir_all(&dir).await.map_err(|err| {
+        HttpError(AppError::Config(format!(
+            "failed to create export_templates directory: {err}"
+        )))
+    })?;
+    let file_name = format!("{tpl_id}.{ext}");
+    let final_path = dir.join(&file_name);
+    let part_path = dir.join(format!("{tpl_id}.{ext}.part"));
+
+    tokio::fs::write(&part_path, &parsed.raw_bytes)
+        .await
+        .map_err(|err| HttpError(AppError::Config(format!("failed to write template: {err}"))))?;
+    if let Err(err) = tokio::fs::rename(&part_path, &final_path).await {
+        cleanup_orphan_file(&part_path).await;
+        return Err(HttpError(AppError::Config(format!(
+            "failed to rename template: {err}"
+        ))));
+    }
+
+    let rel_path = PathBuf::from("export_templates")
+        .join(&principal.tenant_id)
+        .join(&file_name)
+        .to_string_lossy()
+        .into_owned();
+
+    let created = match state
+        .store
+        .create_export_template(
+            &principal.tenant_id,
+            CreateExportTemplateParams {
+                id: tpl_id,
+                name: parsed.name,
+                export_format: parsed.export_format,
+                file_path: rel_path,
+                sha256,
+                placeholders,
+                created_by: actor_uuid(&principal),
+            },
+        )
+        .await
+    {
+        Ok(rec) => rec,
+        Err(db_err) => {
+            cleanup_orphan_file(&final_path).await;
+            return Err(HttpError(db_err));
+        }
+    };
+
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+async fn delete_export_template_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(template_id): ApiPath<Uuid>,
+) -> Result<Json<DeleteStatus>, HttpError> {
+    require_template_write_perm(&principal)?;
+    let removed = state
+        .store
+        .delete_export_template(&principal.tenant_id, template_id)
+        .await?
+        .ok_or(AppError::NotFound("TEMPLATE_NOT_FOUND"))?;
+    if let Ok(full_path) = resolve_data_root_path(&state.data_root, &removed.file_path) {
+        cleanup_file_quietly(&full_path).await;
+    }
+    Ok(Json(DeleteStatus { deleted: true }))
+}
+
+async fn create_share_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<CreateShareRequest>,
+) -> Result<(StatusCode, Json<CreateShareResponse>), HttpError> {
+    let client_ip = extract_share_client_ip(&headers);
+    let trace_id = current_trace_id();
+    let created = create_share(
+        &state.store,
+        &state.audit,
+        &principal,
+        req,
+        &client_ip,
+        &trace_id,
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+async fn list_shares_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiQuery(query): ApiQuery<ShareListQuery>,
+) -> Result<Json<PaginatedList<ShareLinkRecord>>, HttpError> {
+    if !principal.has(Permission::ViewShare) && !principal.has(Permission::DataRead) {
+        return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+    }
+    let page = state
+        .store
+        .list_share_links(&principal.tenant_id, query)
+        .await?;
+    Ok(Json(page))
+}
+
+async fn revoke_share_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(share_id): ApiPath<Uuid>,
+) -> Result<Json<DeleteStatus>, HttpError> {
+    principal.require(Permission::ViewShare)?;
+    let revoked = state
+        .store
+        .revoke_share_link(&principal.tenant_id, share_id)
+        .await?;
+    if !revoked {
+        return Err(HttpError(AppError::NotFound("SHARE_NOT_FOUND")));
+    }
+    Ok(Json(DeleteStatus { deleted: true }))
+}
+
+fn extract_share_client_ip(headers: &HeaderMap) -> String {
+    headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| String::from("127.0.0.1"), String::from)
+}
+
+fn extract_share_meta(headers: &HeaderMap) -> ShareRequestMeta {
+    let share_session = headers
+        .get("x-share-session")
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    ShareRequestMeta {
+        share_session,
+        client_ip: extract_share_client_ip(headers),
+        trace_id: current_trace_id(),
+    }
+}
+
+fn build_public_share_env(state: &AppState) -> PublicShareEnv<'_, axpoint_db::PgStore> {
+    PublicShareEnv {
+        store: &state.store,
+        analytics_pool: &state.analytics_pool,
+        cache: &state.view.cache,
+        keyring: &state.keyring,
+        audit: &state.audit,
+        limiters: &state.view.share_limiters,
+        data_root: &state.data_root,
+    }
+}
+
+async fn get_public_share_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiPath(token): ApiPath<String>,
+) -> Result<Json<SharePublicResponse>, HttpError> {
+    let meta = extract_share_meta(&headers);
+    let env = build_public_share_env(&state);
+    let resp = get_public_share(&env, &token, &meta).await?;
+    Ok(Json(resp))
+}
+
+async fn unlock_public_share_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiPath(token): ApiPath<String>,
+    ApiJson(req): ApiJson<ShareUnlockRequest>,
+) -> Result<Json<ShareUnlockResponse>, HttpError> {
+    let client_ip = extract_share_client_ip(&headers);
+    let resp = unlock_public_share(
+        &state.store,
+        &state.keyring,
+        &state.view.share_limiters,
+        &token,
+        &req.password,
+        &client_ip,
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+async fn shared_widget_data_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiPath((token, widget_id)): ApiPath<(String, Uuid)>,
+    body: Bytes,
+) -> Result<Json<WidgetDataResponse>, HttpError> {
+    let req: WidgetDataRequest = parse_optional_json(&body)?;
+    let meta = extract_share_meta(&headers);
+    let env = build_public_share_env(&state);
+    let resp = execute_shared_widget_data(&env, &token, widget_id, req, &meta).await?;
+    Ok(Json(resp))
+}
+
+async fn shared_asset_raw_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiPath((token, asset_id)): ApiPath<(String, Uuid)>,
+) -> Result<Response, HttpError> {
+    let meta = extract_share_meta(&headers);
+    let env = build_public_share_env(&state);
+    let (asset, disk_path) = resolve_shared_dashboard_asset(&env, &token, asset_id, &meta).await?;
+    let bytes = tokio::fs::read(&disk_path)
+        .await
+        .map_err(|_| HttpError(AppError::NotFound("ASSET_NOT_FOUND")))?;
+
+    let content_type = HeaderValue::from_str(&asset.mime_type)
+        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
+    let mut resp = Response::new(Body::from(bytes));
+    let resp_headers = resp.headers_mut();
+    resp_headers.insert(CONTENT_TYPE, content_type);
+    resp_headers.insert(X_CONTENT_TYPE_OPTIONS, HeaderValue::from_static("nosniff"));
+    if asset.mime_type.eq_ignore_ascii_case("image/svg+xml") {
+        resp_headers.insert(
+            CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'none'; img-src data:; style-src 'unsafe-inline'; sandbox",
+            ),
+        );
+    }
+    Ok(resp)
+}
+
+async fn shared_download_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    ApiPath(token): ApiPath<String>,
+    ApiQuery(query): ApiQuery<SharedDownloadQuery>,
+) -> Result<Response, HttpError> {
+    let meta = extract_share_meta(&headers);
+    let env = build_public_share_env(&state);
+    let artifact =
+        prepare_shared_download(&env, state.sidecar.as_ref(), &token, query.format, &meta).await?;
+
+    if artifact.ephemeral {
+        let read_res = tokio::fs::read(&artifact.disk_path).await;
+        cleanup_file_quietly(&artifact.disk_path).await;
+        let bytes = read_res.map_err(|_| HttpError(AppError::NotFound("SHARE_NOT_FOUND")))?;
+        return build_attachment_response(
+            Body::from(bytes),
+            &artifact.file_name,
+            artifact.export_format,
+        );
+    }
+
+    stream_file_attachment(
+        &artifact.disk_path,
+        &artifact.file_name,
+        artifact.export_format,
+        "SHARE_NOT_FOUND",
+    )
+    .await
 }
 
 #[cfg(test)]

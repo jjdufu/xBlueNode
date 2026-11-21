@@ -410,10 +410,26 @@ pub fn guard(
     catalog: &TenantCatalog,
     opts: &GuardOptions,
 ) -> Result<GuardedSql, AppError> {
+    guard_with_ceiling(sql, catalog, opts, HARD_MAX_ROWS)
+}
+
+/// Validates and rewrites `sql` with an explicit upper `max_rows` ceiling (up to
+/// `EXPORT_SAVED_QUERY_MAX_ROWS = 1_000_000` for internal `CSV`/`XLSX` export jobs, `10-STEP11-12` §12.2).
+///
+/// # Errors
+/// Returns `PAYLOAD_TOO_LARGE`, `PERMISSION_DENIED`, or `SQL_REJECTED` on any guard violation.
+pub fn guard_with_ceiling(
+    sql: &str,
+    catalog: &TenantCatalog,
+    opts: &GuardOptions,
+    max_rows_ceiling: u32,
+) -> Result<GuardedSql, AppError> {
+    let bounded_ceiling =
+        max_rows_ceiling.clamp(1, axpoint_domain::export::EXPORT_SAVED_QUERY_MAX_ROWS);
     let effective_max_rows = if opts.max_rows == 0 {
-        DEFAULT_MAX_ROWS
+        DEFAULT_MAX_ROWS.min(bounded_ceiling)
     } else {
-        opts.max_rows.min(HARD_MAX_ROWS)
+        opts.max_rows.min(bounded_ceiling)
     };
     let mut query = parse_single_select_query(sql, &catalog.tenant_id)?;
     let output_lineage = analyze_outer_lineage(&query, catalog);

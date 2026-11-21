@@ -28,6 +28,7 @@ export interface DashboardGridProps {
   isDark?: boolean;
   isScreen?: boolean;
   readOnly?: boolean;
+  hideActionWidgets?: boolean;
   fixedWidth?: number;
   selectedNodeId?: string | null;
   filterValues?: Record<string, unknown>;
@@ -35,6 +36,7 @@ export interface DashboardGridProps {
   onRefreshWidget: (widgetId: string) => void;
   onEditWidget?: (widget: WidgetRecord) => void;
   onDeleteWidget?: (widgetId: string) => void;
+  onExportWidget?: (widget: WidgetRecord) => void;
   onDrill?: (
     widgetId: string,
     field: string,
@@ -58,6 +60,7 @@ export function DashboardGrid({
   isDark = false,
   isScreen = false,
   readOnly = false,
+  hideActionWidgets = false,
   fixedWidth,
   selectedNodeId,
   filterValues,
@@ -65,6 +68,7 @@ export function DashboardGrid({
   onRefreshWidget,
   onEditWidget,
   onDeleteWidget,
+  onExportWidget,
   onDrill,
   onPopDrill,
   onCrossFilter,
@@ -75,13 +79,25 @@ export function DashboardGrid({
     initialWidth: fixedWidth ?? 1200,
   });
 
+  const visibleWidgets = useMemo(
+    () =>
+      hideActionWidgets
+        ? widgets.filter(
+            (w) =>
+              w.widget_kind !== "ACTION_BUTTON" &&
+              w.widget_kind !== "ACTION_FORM"
+          )
+        : widgets,
+    [hideActionWidgets, widgets]
+  );
+
   const activeWidth = fixedWidth ?? measuredWidth;
   const cols = canvas.cols > 0 ? canvas.cols : 24;
   const rowHeight = canvas.row_height > 0 ? canvas.row_height : 30;
 
   const layout = useMemo<Layout>(
     () =>
-      widgets.map((w): LayoutItem => ({
+      visibleWidgets.map((w): LayoutItem => ({
         i: w.id,
         x: Math.max(0, Math.min(cols - 1, w.position?.x ?? 0)),
         y: Math.max(0, w.position?.y ?? 0),
@@ -91,7 +107,7 @@ export function DashboardGrid({
         minH: 2,
         static: !isEditing,
       })),
-    [cols, isEditing, widgets]
+    [cols, isEditing, visibleWidgets]
   );
 
   const handleRglLayoutChange = (nextLayout: Layout) => {
@@ -108,14 +124,16 @@ export function DashboardGrid({
     onLayoutChange(updates);
   };
 
-  if (widgets.length === 0) {
+  if (visibleWidgets.length === 0) {
     return (
       <div
         ref={containerRef}
         className="rounded-md border border-dashed border-border py-16 text-center text-xs text-muted-foreground"
         data-testid="dashboard-grid-empty"
       >
-        当前驾驶舱暂无组件，请切换到「编辑布局」添加组件。
+        {readOnly
+          ? "当前分享看板暂无可展示组件。"
+          : "当前驾驶舱暂无组件，请切换到「编辑布局」添加组件。"}
       </div>
     );
   }
@@ -142,7 +160,7 @@ export function DashboardGrid({
         compactor={verticalCompactor}
         onLayoutChange={handleRglLayoutChange}
       >
-        {widgets.map((w) => (
+        {visibleWidgets.map((w) => (
           <div key={w.id} className="h-full w-full">
             <WidgetFrame
               widget={w}
@@ -159,6 +177,7 @@ export function DashboardGrid({
               onRefresh={onRefreshWidget}
               onEdit={onEditWidget}
               onDelete={onDeleteWidget}
+              onExportWidget={onExportWidget}
               onDrill={onDrill}
               onPopDrill={onPopDrill}
               onCrossFilter={onCrossFilter}

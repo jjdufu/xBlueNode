@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>{{ title }}</title>
+  <style>
+{{ base_css | safe }}
+
+@page {
+  size: {{ page_size }} {{ orientation }};
+  margin: 18mm 14mm 20mm 14mm;
+  @top-left {
+    content: "{{ page_header_css }}";
+    font-family: "Noto Sans CJK SC", "Noto Sans CJK", sans-serif;
+    font-size: 8pt;
+    color: #64748b;
+  }
+  @bottom-left {
+    content: "{{ watermark_css }}";
+    font-family: "Noto Sans CJK SC", "Noto Sans CJK", sans-serif;
+    font-size: 8pt;
+    color: #64748b;
+  }
+  @bottom-right {
+    content: counter(page) " / " counter(pages);
+    font-family: "Noto Sans CJK SC", "Noto Sans CJK", sans-serif;
+    font-size: 8pt;
+    color: #64748b;
+  }
+}
+  </style>
+</head>
+<body>
+  {% if watermark %}
+  <div class="watermark-banner">{{ watermark }}</div>
+  {% endif %}
+
+  <header class="report-header">
+    <h1 class="report-title">{{ title }}</h1>
+    {% if subtitle %}
+    <p class="report-subtitle">{{ subtitle }}</p>
+    {% endif %}
+    <div class="report-meta">
+      <span>生成人：{{ generated_by }}</span>
+      <span>生成时间：{{ generated_at }} ({{ timezone }})</span>
+      {% if watermark %}
+      <span>水印：{{ watermark }}</span>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if kpis %}
+  <section class="kpi-grid">
+    {% for kpi in kpis %}
+    <div class="kpi-card">
+      <div class="kpi-label">{{ kpi.label }}</div>
+      <div class="kpi-value">{{ kpi.value }}</div>
+      {% if kpi.compare %}
+      <div class="kpi-compare">{{ kpi.compare }}</div>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {% for block in blocks %}
+    {% if block.kind == "HEADING" %}
+    <div class="section-heading-{{ block.heading_class_level }}">{{ block.text }}</div>
+    {% elif block.kind in ["PARAGRAPH", "MARKDOWN"] %}
+    <div class="section-paragraph">{{ block.text }}</div>
+    {% elif block.kind == "CHART" %}
+    <section class="chart-block">
+      {% if block.title %}
+      <h2 class="chart-title">{{ block.title }}</h2>
+      {% endif %}
+      <div class="chart-svg">{{ block.svg_markup }}</div>
+    </section>
+    {% elif block.kind == "TABLE" %}
+    <section class="table-block">
+      {% if block.title %}
+      <h2 class="table-title">{{ block.title }}</h2>
+      {% endif %}
+      <table class="data-table">
+        <thead>
+          <tr>
+            {% for col_name in block.headers %}
+            <th>{{ col_name }}</th>
+            {% endfor %}
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in block.rows %}
+          <tr class="{{ row.css_class }}">
+            {% for cell in row.cells %}
+            <td>{{ cell }}</td>
+            {% endfor %}
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% if block.truncated %}
+      <div class="truncation-note">
+        （共 {{ "{:,}".format(block.total_rows) }} 行，PDF 仅展示前 {{ "{:,}".format(block.max_rows) }} 行，完整数据请导出 XLSX 或 CSV）
+      </div>
+      {% endif %}
+    </section>
+    {% endif %}
+  {% endfor %}
+
+  <footer class="report-footer">
+    <span>报表：{{ title }}</span>
+    {% if watermark %}
+    <span> | 水印：{{ watermark }}</span>
+    {% endif %}
+  </footer>
+</body>
+</html>

@@ -2,6 +2,9 @@
  * Pure data-contract and transformation logic for xBlueView widgets and dashboard state.
  * Kept free of JSX and bundler path aliases so Node 24 `node:test` can execute it natively.
  */
+import chartSpec from "../../lib/chartSpec.json" with { type: "json" };
+
+export { chartSpec };
 
 export type LogicFilterKind =
   | "SELECT"
@@ -591,5 +594,846 @@ export function detectImplicitNodeMetricGrouping(
     xField: timeCol,
     seriesField: data.columns[gkIdx]?.name ?? "group_key",
     yField: data.columns[valIdx]?.name ?? "value",
+  };
+}
+
+export interface BuildEChartsOptionParams {
+  kind: string;
+  title?: string;
+  encoding?: Record<string, unknown>;
+  options?: Record<string, unknown>;
+  data: LogicTabularData;
+  isDark?: boolean;
+}
+
+export interface BuiltEChartsOptionResult {
+  option: Record<string, unknown>;
+  clickField: string;
+}
+
+interface LogicThresholdRule {
+  value: number;
+  color: string;
+}
+
+function readLogicStr(
+  obj: Record<string, unknown> | undefined,
+  key: string
+): string | undefined {
+  if (!obj) return undefined;
+  const val = obj[key];
+  return typeof val === "string" && val.trim().length > 0 ? val.trim() : undefined;
+}
+
+function readLogicNum(
+  obj: Record<string, unknown> | undefined,
+  key: string
+): number | undefined {
+  if (!obj) return undefined;
+  return toFiniteNumber(obj[key]) ?? undefined;
+}
+
+function readLogicStrArray(
+  obj: Record<string, unknown> | undefined,
+  key: string
+): string[] {
+  if (!obj) return [];
+  const val = obj[key];
+  if (Array.isArray(val)) {
+    return val
+      .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      .map((item) => item.trim());
+  }
+  if (typeof val === "string" && val.trim().length > 0) {
+    return [val.trim()];
+  }
+  return [];
+}
+
+function parseLogicThresholds(
+  options: Record<string, unknown> | undefined
+): LogicThresholdRule[] {
+  if (!options || !Array.isArray(options.thresholds)) return [];
+  const out: LogicThresholdRule[] = [];
+  for (const item of options.thresholds) {
+    if (typeof item !== "object" && item !== null) continue;
+    if (item === null || Array.isArray(item)) continue;
+    const rec = item as Record<string, unknown>;
+    const v = toFiniteNumber(rec.value);
+    const c = readLogicStr(rec, "color");
+    if (v !== null && c) {
+      out.push({ value: v, color: c });
+    }
+  }
+  return out.sort((a, b) => a.value - b.value);
+}
+
+function resolveLogicThresholdColor(
+  value: number,
+  thresholds: readonly LogicThresholdRule[],
+  fallbackColor: string
+): string {
+  let matched = fallbackColor;
+  for (const rule of thresholds) {
+    if (value >= rule.value) {
+      matched = rule.color;
+    }
+  }
+  return matched;
+}
+
+function findFirstNumericColIdx(
+  data: LogicTabularData,
+  excludeIndices: ReadonlySet<number>
+): number {
+  for (let i = 0; i < data.columns.length; i += 1) {
+    if (excludeIndices.has(i)) continue;
+    const dt = (data.columns[i]?.data_type ?? "").toUpperCase();
+    if (
+      dt === "INT64" ||
+      dt === "FLOAT64" ||
+      dt === "DECIMAL" ||
+      dt === "NUMBER"
+    ) {
+      return i;
+    }
+  }
+  for (let i = 0; i < data.columns.length; i += 1) {
+    if (excludeIndices.has(i)) continue;
+    const firstRow = data.rows[0];
+    if (firstRow && toFiniteNumber(firstRow[i]) !== null) {
+      return i;
+    }
+  }
+  return data.columns.length > 1 ? 1 : 0;
+}
+
+function matchCandidateColumn(
+  data: LogicTabularData,
+  colMap: Map<string, number>,
+  candidates: readonly string[],
+  excludeIndices?: ReadonlySet<number>,
+  requireNonEmptyRowValue = false
+): string | undefined {
+  for (const candidate of candidates) {
+    const idx = colMap.get(candidate) ?? colMap.get(candidate.toLowerCase());
+    if (idx === undefined) continue;
+    if (excludeIndices?.has(idx)) continue;
+    if (requireNonEmptyRowValue) {
+      const hasVal = data.rows.some((r) => {
+        const cell = r[idx];
+        return cell !== null && cell !== undefined && String(cell).trim().length > 0;
+      });
+      if (!hasVal) continue;
+    }
+    return data.columns[idx]?.name ?? candidate;
+  }
+  return undefined;
+}
+
+/**
+ * Generates an ECharts option strictly driven by `chartSpec.json` with ZERO JS functions,
+ * ensuring 100% isomorphism between browser rendering and server-side ECharts SSR (`render.mjs`).
+ */
+export function buildEChartsOption(
+  params: BuildEChartsOptionParams
+): BuiltEChartsOptionResult {
+  const { kind, title = "", encoding, options, data, isDark = false } = params;
+  const palette = [...(isDark ? chartSpec.palette.dark : chartSpec.palette.light)];
+  const tokens = isDark ? chartSpec.tokens.dark : chartSpec.tokens.light;
+  const fontFamily = chartSpec.fontFamily;
+  const baseGrid = {
+    top: chartSpec.grid.top,
+    right: chartSpec.grid.right,
+    bottom: chartSpec.grid.bottom,
+    left: chartSpec.grid.left,
+    containLabel: chartSpec.grid.containLabel,
+  };
+
+  const colMap = buildColMap(data);
+  const rows = data.rows;
+  const rootTextStyle = {
+    fontFamily,
+    color: tokens.text,
+  };
+  const baseTooltip: Record<string, unknown> = {
+    trigger: kind === "LINE_CHART" || kind === "BAR_CHART" ? "axis" : "item",
+    backgroundColor: tokens.tooltipBg,
+    borderColor: tokens.tooltipBorder,
+    textStyle: {
+      color: tokens.text,
+      fontFamily,
+      fontSize: 12,
+    },
+  };
+
+  if (kind === "LINE_CHART" || kind === "BAR_CHART") {
+    const explicitSeries = readLogicStr(encoding, "series");
+    const implicitGroup = detectImplicitNodeMetricGrouping(data, explicitSeries);
+    const xCandidates =
+      kind === "LINE_CHART"
+        ? [
+            ...chartSpec.encodingFallbacks.timeCandidates,
+            ...chartSpec.encodingFallbacks.categoryCandidates,
+          ]
+        : [
+            ...chartSpec.encodingFallbacks.categoryCandidates,
+            ...chartSpec.encodingFallbacks.timeCandidates,
+          ];
+    const xField =
+      readLogicStr(encoding, "x") ??
+      implicitGroup?.xField ??
+      matchCandidateColumn(data, colMap, xCandidates) ??
+      data.columns[0]?.name ??
+      "x";
+    const xIdx = colMap.get(xField) ?? colMap.get(xField.toLowerCase()) ?? 0;
+
+    const yFieldsEnc = readLogicStrArray(encoding, "y");
+    const fallbackSeriesCandidates = chartSpec.encodingFallbacks.seriesCandidates.filter(
+      (c) => c !== "group_key"
+    );
+    const seriesField =
+      explicitSeries ??
+      implicitGroup?.seriesField ??
+      (yFieldsEnc.length === 0
+        ? matchCandidateColumn(
+            data,
+            colMap,
+            fallbackSeriesCandidates,
+            new Set([xIdx]),
+            true
+          )
+        : undefined);
+
+    const sIdxResolved =
+      seriesField !== undefined
+        ? colMap.get(seriesField) ?? colMap.get(seriesField.toLowerCase())
+        : undefined;
+
+    const excludeForValue = new Set<number>([xIdx]);
+    if (sIdxResolved !== undefined) {
+      excludeForValue.add(sIdxResolved);
+    }
+    const fallbackValCol =
+      matchCandidateColumn(
+        data,
+        colMap,
+        chartSpec.encodingFallbacks.valueCandidates,
+        excludeForValue
+      ) ??
+      data.columns[findFirstNumericColIdx(data, excludeForValue)]?.name ??
+      data.columns[1]?.name ??
+      "y";
+
+    const yFields =
+      yFieldsEnc.length > 0
+        ? yFieldsEnc
+        : implicitGroup
+          ? [implicitGroup.yField]
+          : [fallbackValCol];
+
+    if (seriesField && sIdxResolved !== undefined) {
+      const yName = yFields[0] ?? "value";
+      const yIdx =
+        colMap.get(yName) ??
+        colMap.get(yName.toLowerCase()) ??
+        findFirstNumericColIdx(data, excludeForValue);
+
+      const categories: string[] = [];
+      const catSet = new Set<string>();
+      const seriesNames: string[] = [];
+      const serSet = new Set<string>();
+      const matrix = new Map<string, number>();
+
+      for (const r of rows) {
+        const xv = String(r[xIdx] ?? "");
+        const sv = String(r[sIdxResolved] ?? "");
+        const yv = toFiniteNumber(r[yIdx]) ?? 0;
+        if (!catSet.has(xv)) {
+          catSet.add(xv);
+          categories.push(xv);
+        }
+        if (!serSet.has(sv)) {
+          serSet.add(sv);
+          seriesNames.push(sv);
+        }
+        matrix.set(`${sv}::${xv}`, (matrix.get(`${sv}::${xv}`) ?? 0) + yv);
+      }
+
+      return {
+        clickField: xField,
+        option: {
+          animation: false,
+          color: palette,
+          textStyle: rootTextStyle,
+          tooltip: baseTooltip,
+          legend: {
+            top: 0,
+            textStyle: { color: tokens.subtext, fontFamily, fontSize: 11 },
+          },
+          grid: baseGrid,
+          xAxis: {
+            type: "category",
+            data: categories,
+            axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+            axisLine: { lineStyle: { color: tokens.axisLine } },
+          },
+          yAxis: {
+            type: "value",
+            axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+            splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
+          },
+          series: seriesNames.map((sn) => ({
+            name: sn,
+            type: kind === "LINE_CHART" ? "line" : "bar",
+            smooth: kind === "LINE_CHART",
+            barMaxWidth: 36,
+            data: categories.map((c) => matrix.get(`${sn}::${c}`) ?? 0),
+          })),
+        },
+      };
+    }
+
+    const categories = rows.map((r) =>
+      String(readCellByName(r, colMap, xField, 0) ?? "")
+    );
+    const defaultNumericIdx = findFirstNumericColIdx(data, new Set([xIdx]));
+    const baseOption: Record<string, unknown> = {
+      animation: false,
+      color: palette,
+      textStyle: rootTextStyle,
+      tooltip: baseTooltip,
+      grid: baseGrid,
+      xAxis: {
+        type: "category",
+        data: categories,
+        axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+        axisLine: { lineStyle: { color: tokens.axisLine } },
+      },
+      yAxis: {
+        type: "value",
+        axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+        splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
+      },
+      series: yFields.map((yf) => ({
+        name: yf,
+        type: kind === "LINE_CHART" ? "line" : "bar",
+        smooth: kind === "LINE_CHART",
+        barMaxWidth: 40,
+        data: rows.map(
+          (r) =>
+            toFiniteNumber(readCellByName(r, colMap, yf, defaultNumericIdx)) ?? 0
+        ),
+      })),
+    };
+    if (yFields.length > 1) {
+      baseOption.legend = {
+        top: 0,
+        textStyle: { color: tokens.subtext, fontFamily, fontSize: 11 },
+      };
+    }
+    return {
+      clickField: xField,
+      option: baseOption,
+    };
+  }
+
+  if (kind === "PIE_CHART") {
+    const catField =
+      readLogicStr(encoding, "category") ??
+      readLogicStr(encoding, "x") ??
+      matchCandidateColumn(data, colMap, chartSpec.encodingFallbacks.categoryCandidates) ??
+      data.columns[0]?.name ??
+      "category";
+    const catIdx = colMap.get(catField) ?? colMap.get(catField.toLowerCase()) ?? 0;
+    const valField =
+      readLogicStr(encoding, "value") ??
+      readLogicStr(encoding, "y") ??
+      matchCandidateColumn(
+        data,
+        colMap,
+        chartSpec.encodingFallbacks.valueCandidates,
+        new Set([catIdx])
+      ) ??
+      data.columns[1]?.name ??
+      "value";
+
+    const pieData = rows.map((r) => ({
+      name: String(readCellByName(r, colMap, catField, 0) ?? ""),
+      value: toFiniteNumber(readCellByName(r, colMap, valField, 1)) ?? 0,
+    }));
+
+    return {
+      clickField: catField,
+      option: {
+        animation: false,
+        color: palette,
+        textStyle: rootTextStyle,
+        tooltip: baseTooltip,
+        legend: {
+          bottom: 0,
+          textStyle: { color: tokens.subtext, fontFamily, fontSize: 11 },
+        },
+        series: [
+          {
+            type: "pie",
+            radius: [chartSpec.pie.innerRadius, chartSpec.pie.outerRadius],
+            center: ["50%", "45%"],
+            label: { color: tokens.text, fontFamily, fontSize: 11 },
+            data: pieData,
+          },
+        ],
+      },
+    };
+  }
+
+  if (kind === "SCATTER") {
+    const xField =
+      readLogicStr(encoding, "x") ?? data.columns[0]?.name ?? "x";
+    const yField =
+      readLogicStr(encoding, "y") ?? data.columns[1]?.name ?? "y";
+    const sizeField = readLogicStr(encoding, "size");
+    const defaultSize = chartSpec.scatter.defaultSymbolSize;
+    const minSize = chartSpec.scatter.minSymbolSize;
+    const maxSize = chartSpec.scatter.maxSymbolSize;
+
+    const scatterItems = rows.map((r) => {
+      const xv = toFiniteNumber(readCellByName(r, colMap, xField, 0)) ?? 0;
+      const yv = toFiniteNumber(readCellByName(r, colMap, yField, 1)) ?? 0;
+      const rawSize = sizeField
+        ? toFiniteNumber(readCellByName(r, colMap, sizeField, 2))
+        : null;
+      const clampedSize =
+        rawSize !== null
+          ? Math.max(minSize, Math.min(maxSize, rawSize))
+          : defaultSize;
+      return {
+        value: rawSize !== null ? [xv, yv, rawSize] : [xv, yv],
+        symbolSize: clampedSize,
+      };
+    });
+
+    return {
+      clickField: xField,
+      option: {
+        animation: false,
+        color: palette,
+        textStyle: rootTextStyle,
+        tooltip: baseTooltip,
+        grid: baseGrid,
+        xAxis: {
+          type: "value",
+          name: xField,
+          axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+          axisLine: { lineStyle: { color: tokens.axisLine } },
+          splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
+        },
+        yAxis: {
+          type: "value",
+          name: yField,
+          axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+          axisLine: { lineStyle: { color: tokens.axisLine } },
+          splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
+        },
+        series: [
+          {
+            type: "scatter",
+            symbolSize: defaultSize,
+            data: scatterItems,
+          },
+        ],
+      },
+    };
+  }
+
+  if (kind === "SANKEY") {
+    const srcField =
+      readLogicStr(encoding, "source") ??
+      chartSpec.encodingFallbacks.sankey.source;
+    const dstField =
+      readLogicStr(encoding, "target") ??
+      chartSpec.encodingFallbacks.sankey.target;
+    const valField =
+      readLogicStr(encoding, "value") ??
+      chartSpec.encodingFallbacks.sankey.value;
+    const nodeNames = new Set<string>();
+    const links: { source: string; target: string; value: number }[] = [];
+
+    for (const r of rows) {
+      const s = String(readCellByName(r, colMap, srcField, 0) ?? "");
+      const t = String(readCellByName(r, colMap, dstField, 1) ?? "");
+      const v = toFiniteNumber(readCellByName(r, colMap, valField, 2)) ?? 1;
+      if (s && t && s !== t) {
+        nodeNames.add(s);
+        nodeNames.add(t);
+        links.push({ source: s, target: t, value: Math.max(0.01, v) });
+      }
+    }
+
+    return {
+      clickField: srcField,
+      option: {
+        animation: false,
+        color: palette,
+        textStyle: rootTextStyle,
+        tooltip: baseTooltip,
+        series: [
+          {
+            type: "sankey",
+            emphasis: { focus: "adjacency" },
+            label: { color: tokens.text, fontFamily, fontSize: 11 },
+            data: Array.from(nodeNames).map((name) => ({ name })),
+            links,
+          },
+        ],
+      },
+    };
+  }
+
+  if (kind === "HEATMAP") {
+    const xField =
+      readLogicStr(encoding, "x") ??
+      matchCandidateColumn(data, colMap, chartSpec.encodingFallbacks.categoryCandidates) ??
+      data.columns[0]?.name ??
+      "x";
+    const xIdx = colMap.get(xField) ?? colMap.get(xField.toLowerCase()) ?? 0;
+    const yField =
+      readLogicStr(encoding, "y") ?? data.columns[1]?.name ?? "y";
+    const yIdx = colMap.get(yField) ?? colMap.get(yField.toLowerCase()) ?? 1;
+    const valField =
+      readLogicStr(encoding, "value") ??
+      matchCandidateColumn(
+        data,
+        colMap,
+        chartSpec.encodingFallbacks.valueCandidates,
+        new Set([xIdx, yIdx])
+      ) ??
+      data.columns[2]?.name ??
+      "value";
+
+    const xCats: string[] = [];
+    const yCats: string[] = [];
+    const xSet = new Set<string>();
+    const ySet = new Set<string>();
+    let minV = Infinity;
+    let maxV = -Infinity;
+
+    for (const r of rows) {
+      const xv = String(readCellByName(r, colMap, xField, 0) ?? "");
+      const yv = String(readCellByName(r, colMap, yField, 1) ?? "");
+      if (!xSet.has(xv)) {
+        xSet.add(xv);
+        xCats.push(xv);
+      }
+      if (!ySet.has(yv)) {
+        ySet.add(yv);
+        yCats.push(yv);
+      }
+    }
+
+    const heatData: [number, number, number][] = [];
+    for (const r of rows) {
+      const xv = String(readCellByName(r, colMap, xField, 0) ?? "");
+      const yv = String(readCellByName(r, colMap, yField, 1) ?? "");
+      const val = toFiniteNumber(readCellByName(r, colMap, valField, 2)) ?? 0;
+      minV = Math.min(minV, val);
+      maxV = Math.max(maxV, val);
+      heatData.push([xCats.indexOf(xv), yCats.indexOf(yv), val]);
+    }
+
+    const primaryColor = palette[0] ?? "#2563eb";
+    return {
+      clickField: xField,
+      option: {
+        animation: false,
+        textStyle: rootTextStyle,
+        tooltip: { position: "top", ...baseTooltip },
+        grid: baseGrid,
+        xAxis: {
+          type: "category",
+          data: xCats,
+          axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+          axisLine: { lineStyle: { color: tokens.axisLine } },
+        },
+        yAxis: {
+          type: "category",
+          data: yCats,
+          axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+          axisLine: { lineStyle: { color: tokens.axisLine } },
+        },
+        visualMap: {
+          min: Number.isFinite(minV) ? minV : 0,
+          max: Number.isFinite(maxV) && maxV > minV ? maxV : 100,
+          orient: "horizontal",
+          left: "center",
+          bottom: 0,
+          inRange: {
+            color: isDark
+              ? [tokens.tooltipBg, primaryColor]
+              : [tokens.splitLine, primaryColor],
+          },
+          textStyle: { color: tokens.subtext, fontFamily, fontSize: 10 },
+        },
+        series: [
+          {
+            type: "heatmap",
+            data: heatData,
+            label: {
+              show: heatData.length <= 48,
+              color: tokens.text,
+              fontFamily,
+              fontSize: 10,
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  if (kind === "GAUGE") {
+    const valField =
+      readLogicStr(encoding, "value") ??
+      matchCandidateColumn(data, colMap, chartSpec.encodingFallbacks.valueCandidates) ??
+      "value";
+    const val =
+      toFiniteNumber(rows[0] ? readCellByName(rows[0], colMap, valField, 0) : 0) ??
+      0;
+    const min = readLogicNum(options, "min") ?? chartSpec.gauge.defaultMin;
+    const max = readLogicNum(options, "max") ?? chartSpec.gauge.defaultMax;
+    const unit = readLogicStr(options, "unit") ?? "";
+    const thresholds = parseLogicThresholds(options);
+    const gaugeColor = resolveLogicThresholdColor(
+      val,
+      thresholds,
+      palette[0] ?? "#2563eb"
+    );
+
+    return {
+      clickField: valField,
+      option: {
+        animation: false,
+        textStyle: rootTextStyle,
+        series: [
+          {
+            type: "gauge",
+            min,
+            max,
+            progress: { show: true, width: 10, itemStyle: { color: gaugeColor } },
+            axisLine: { lineStyle: { width: 10, color: [[1, tokens.axisLine]] } },
+            axisTick: { show: false },
+            splitLine: {
+              length: 8,
+              lineStyle: { width: 1.5, color: tokens.subtext },
+            },
+            axisLabel: {
+              distance: 14,
+              color: tokens.subtext,
+              fontFamily,
+              fontSize: 10,
+            },
+            pointer: { itemStyle: { color: gaugeColor } },
+            detail: {
+              valueAnimation: false,
+              formatter: `{value}${unit ? ` ${unit}` : ""}`,
+              color: tokens.text,
+              fontFamily,
+              fontSize: 16,
+              offsetCenter: [0, "65%"],
+            },
+            data: [{ value: val, name: title }],
+            title: {
+              color: tokens.subtext,
+              fontFamily,
+              fontSize: 11,
+              offsetCenter: [0, "88%"],
+            },
+          },
+        ],
+      },
+    };
+  }
+
+  if (kind === "RADAR") {
+    const indField =
+      readLogicStr(encoding, "indicator") ??
+      chartSpec.encodingFallbacks.radar.indicator;
+    const valField =
+      readLogicStr(encoding, "value") ??
+      chartSpec.encodingFallbacks.radar.value;
+    const explicitSer = readLogicStr(encoding, "series");
+    const defaultSerCandidate = chartSpec.encodingFallbacks.radar.series;
+    const serField =
+      explicitSer ??
+      (colMap.has(defaultSerCandidate) ? defaultSerCandidate : undefined);
+
+    const indicators: string[] = [];
+    const indSet = new Set<string>();
+    const seriesMap = new Map<string, Map<string, number>>();
+
+    let maxVal = 10;
+    for (const r of rows) {
+      const ind = String(readCellByName(r, colMap, indField, 0) ?? "");
+      const val = toFiniteNumber(readCellByName(r, colMap, valField, 1)) ?? 0;
+      const ser = serField
+        ? String(readCellByName(r, colMap, serField, 2) ?? (title || "当前"))
+        : title || "当前";
+      maxVal = Math.max(maxVal, val * 1.15);
+      if (ind && !indSet.has(ind)) {
+        indSet.add(ind);
+        indicators.push(ind);
+      }
+      if (!seriesMap.has(ser)) {
+        seriesMap.set(ser, new Map());
+      }
+      seriesMap.get(ser)?.set(ind, val);
+    }
+
+    const radarOption: Record<string, unknown> = {
+      animation: false,
+      color: palette,
+      textStyle: rootTextStyle,
+      tooltip: baseTooltip,
+      radar: {
+        indicator:
+          indicators.length > 0
+            ? indicators.map((name) => ({ name, max: Math.ceil(maxVal) }))
+            : [{ name: "默认", max: chartSpec.gauge.defaultMax }],
+        axisName: { color: tokens.subtext, fontFamily, fontSize: 11 },
+        splitLine: { lineStyle: { color: tokens.splitLine } },
+        axisLine: { lineStyle: { color: tokens.axisLine } },
+      },
+      series: [
+        {
+          type: "radar",
+          data: Array.from(seriesMap.entries()).map(([name, valMap]) => ({
+            name,
+            value: indicators.map((ind) => valMap.get(ind) ?? 0),
+          })),
+        },
+      ],
+    };
+    if (seriesMap.size > 1) {
+      radarOption.legend = {
+        bottom: 0,
+        textStyle: { color: tokens.subtext, fontFamily, fontSize: 11 },
+      };
+    }
+
+    return {
+      clickField: indField,
+      option: radarOption,
+    };
+  }
+
+  // GRAPH_TOPOLOGY ECharts graph renderer (10-column record_kind NODE/LINK + 3-column preview)
+  const parsedGraph = parseGraphTopologyData(data);
+  const catList = parsedGraph.categories;
+  const graphOption: Record<string, unknown> = {
+    animation: false,
+    color: palette,
+    textStyle: rootTextStyle,
+    tooltip: baseTooltip,
+    series: [
+      {
+        type: "graph",
+        layout: "force",
+        roam: true,
+        edgeSymbol: ["none", "arrow"],
+        edgeSymbolSize: [4, 8],
+        force: { repulsion: 160, edgeLength: 70 },
+        categories: catList.map((name) => ({ name })),
+        label: {
+          show: parsedGraph.nodes.length <= 60,
+          position: "bottom",
+          color: tokens.text,
+          fontFamily,
+          fontSize: 10,
+        },
+        data: parsedGraph.nodes.map((n) => ({
+          id: n.id,
+          nodeId: n.id,
+          name: n.name,
+          value: n.value,
+          category: catList.indexOf(n.category),
+          symbolSize: 20,
+        })),
+        links: parsedGraph.links.map((lk) => {
+          const linkEntry: Record<string, unknown> = {
+            source: lk.source,
+            target: lk.target,
+          };
+          if (lk.value !== undefined) {
+            linkEntry.value = lk.value;
+          }
+          if (lk.label) {
+            linkEntry.label = {
+              show: parsedGraph.links.length <= 40,
+              formatter: lk.label,
+              fontSize: 9,
+              fontFamily,
+              color: tokens.subtext,
+            };
+          }
+          return linkEntry;
+        }),
+      },
+    ],
+  };
+  if (catList.length > 1) {
+    graphOption.legend = {
+      top: 0,
+      textStyle: { color: tokens.subtext, fontFamily, fontSize: 10 },
+    };
+  }
+
+  return {
+    clickField: "node_id",
+    option: graphOption,
+  };
+}
+
+/**
+ * Recursively checks whether a value tree contains any JS `function` reference.
+ * Server-side ECharts SSR (`render.mjs`) requires 100% pure JSON option objects.
+ */
+export function containsFunctionValue(value: unknown): boolean {
+  if (typeof value === "function") return true;
+  if (Array.isArray(value)) {
+    return value.some((item) => containsFunctionValue(item));
+  }
+  if (typeof value === "object" && value !== null) {
+    return Object.values(value).some((v) => containsFunctionValue(v));
+  }
+  return false;
+}
+
+/**
+ * Strips empty / null / undefined filter values before submitting `DASHBOARD` exports or share `locked_filters`.
+ */
+export function sanitizeExportFilters(
+  values: Record<string, unknown>
+): Record<string, unknown> {
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(values)) {
+    if (isNonEmptyFilterValue(val)) {
+      cleaned[key] = val;
+    }
+  }
+  return cleaned;
+}
+
+/**
+ * Merges visitor filter values with share-link `locked_filters`, ensuring locked keys can never be overridden.
+ */
+export function mergeLockedShareFilters(
+  baseValues: Record<string, unknown>,
+  lockedFilters: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  if (!lockedFilters) {
+    return { ...baseValues };
+  }
+  return {
+    ...baseValues,
+    ...lockedFilters,
   };
 }

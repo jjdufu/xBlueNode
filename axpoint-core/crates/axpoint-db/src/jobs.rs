@@ -66,22 +66,46 @@ impl PgStore {
         Ok(rows.into_iter().map(|r| r.get("tenant_id")).collect())
     }
 
-    /// Executes Step 00 `RETENTION` cleanup for a tenant, deleting expired terminal `ax_jobs`
-    /// and processed `ax_outbox` rows according to `ax_retention_policies` (`sec_audit_logs` is
-    /// append-only for `axpoint_app` and cleaned by owner cron in Step 14).
+    /// Executes Step 00 & Step 12 `RETENTION` cleanup for a tenant, deleting expired terminal
+    /// `ax_jobs`, processed `ax_outbox`, and expired `EXPORT_FILE` artifacts according to
+    /// `ax_retention_policies` (`sec_audit_logs` is append-only for `axpoint_app` and cleaned by
+    /// owner cron in Step 14).
     ///
     /// # Errors
-    /// Returns [`AppError::Database`] if reading policies or deleting expired rows fails.
+    /// Returns [`AppError::Database`] if reading policies or updating/deleting expired rows fails.
     pub async fn run_retention_cleanup(
         &self,
         tenant_id: &str,
+    ) -> Result<serde_json::Value, AppError> {
+        let env_root = std::env::var("AXPOINT_DATA_ROOT")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .map_or_else(
+                || std::path::PathBuf::from("/var/lib/axpoint"),
+                std::path::PathBuf::from,
+            );
+        self.run_retention_cleanup_with_data_root(tenant_id, &env_root)
+            .await
+    }
+
+    /// Executes `RETENTION` cleanup using an explicit `data_root` directory for safe `EXPORT_FILE`
+    /// artifact removal (`10-STEP11-12` §12.5.1).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if reading policies or updating/deleting expired rows fails.
+    pub async fn run_retention_cleanup_with_data_root(
+        &self,
+        tenant_id: &str,
+        data_root: &std::path::Path,
     ) -> Result<serde_json::Value, AppError> {
         let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
         let policy_rows = sqlx::query(
             "SELECT target, keep_days
                FROM ax_retention_policies
               WHERE tenant_id = $1
-                AND target IN ('JOB', 'OUTBOX', 'MESSAGE', 'METRIC_ROLLUP_MINUTE', 'METRIC_SERIES')",
+                AND target IN (
+                    'JOB', 'OUTBOX', 'MESSAGE', 'METRIC_ROLLUP_MINUTE', 'METRIC_SERIES', 'EXPORT_FILE'
+                )",
         )
         .bind(tenant_id)
         .fetch_all(&mut *tx)
@@ -93,10 +117,15 @@ impl PgStore {
         let mut webhook_buffer_deleted: u64 = 0;
         let mut minute_rollups_deleted: u64 = 0;
         let mut metric_series_deleted: u64 = 0;
+        let mut export_keep_days: i32 = 30;
 
         for row in policy_rows {
             let target: String = row.get("target");
             let keep_days: i32 = row.get("keep_days");
+            if target == "EXPORT_FILE" {
+                export_keep_days = keep_days.max(1);
+                continue;
+            }
             let affected =
                 delete_expired_target_tx(&mut tx, tenant_id, target.as_str(), keep_days).await?;
             match target.as_str() {
@@ -109,9 +138,15 @@ impl PgStore {
             }
         }
 
+        let expired_exports =
+            fetch_expired_exports_tx(&mut tx, tenant_id, export_keep_days).await?;
         tx.commit().await.map_err(|err| {
             AppError::Database(format!("commit run_retention_cleanup tx failed: {err}"))
         })?;
+
+        let export_files_expired = self
+            .expire_export_files_after_commit(tenant_id, data_root, &expired_exports)
+            .await?;
 
         Ok(serde_json::json!({
             "jobs_deleted": jobs_deleted,
@@ -119,7 +154,108 @@ impl PgStore {
             "webhook_buffer_deleted": webhook_buffer_deleted,
             "minute_rollups_deleted": minute_rollups_deleted,
             "metric_series_deleted": metric_series_deleted,
+            "export_files_expired": export_files_expired,
         }))
+    }
+
+    async fn expire_export_files_after_commit(
+        &self,
+        tenant_id: &str,
+        data_root: &std::path::Path,
+        expired_exports: &[(Uuid, Option<String>)],
+    ) -> Result<u64, AppError> {
+        if expired_exports.is_empty() {
+            return Ok(0);
+        }
+
+        for (_, maybe_path) in expired_exports {
+            if let Some(raw_path) = maybe_path.as_deref().filter(|s| !s.trim().is_empty()) {
+                remove_export_file_safely(data_root, raw_path);
+            }
+        }
+
+        let ids: Vec<Uuid> = expired_exports.iter().map(|(id, _)| *id).collect();
+        let mut tx = crate::tenant::begin_tenant_tx(self.pool(), tenant_id).await?;
+        let res = sqlx::query(
+            "UPDATE xv_export_jobs
+                SET status = 'EXPIRED',
+                    file_path = NULL
+              WHERE tenant_id = $1
+                AND id = ANY($2)
+                AND status = 'SUCCEEDED'",
+        )
+        .bind(tenant_id)
+        .bind(&ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("mark xv_export_jobs EXPIRED failed: {err}")))?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit expire xv_export_jobs tx failed: {err}"))
+        })?;
+        Ok(res.rows_affected())
+    }
+}
+
+async fn fetch_expired_exports_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    keep_days: i32,
+) -> Result<Vec<(Uuid, Option<String>)>, AppError> {
+    let rows = sqlx::query(
+        "SELECT id, file_path
+           FROM xv_export_jobs
+          WHERE tenant_id = $1
+            AND status = 'SUCCEEDED'
+            AND (expires_at <= NOW() OR created_at < NOW() - make_interval(days => $2::int))",
+    )
+    .bind(tenant_id)
+    .bind(keep_days.max(1))
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("query expired xv_export_jobs failed: {err}")))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.get("id"), r.get("file_path")))
+        .collect())
+}
+
+fn remove_export_file_safely(data_root: &std::path::Path, raw_path: &str) {
+    let candidate = std::path::Path::new(raw_path);
+    if candidate
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        tracing::warn!(path = %raw_path, "refusing retention delete with parent-dir traversal");
+        return;
+    }
+
+    let resolved = if candidate.is_absolute() {
+        let canon_root =
+            std::fs::canonicalize(data_root).unwrap_or_else(|_| data_root.to_path_buf());
+        let canon_cand =
+            std::fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf());
+        if !canon_cand.starts_with(&canon_root) && !candidate.starts_with(data_root) {
+            tracing::warn!(
+                path = %raw_path,
+                data_root = %data_root.display(),
+                "refusing retention delete outside AXPOINT_DATA_ROOT"
+            );
+            return;
+        }
+        candidate.to_path_buf()
+    } else {
+        data_root.join(candidate)
+    };
+
+    if let Err(err) = std::fs::remove_file(&resolved)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            path = %resolved.display(),
+            error = %err,
+            "failed to delete expired export file during retention"
+        );
     }
 }
 

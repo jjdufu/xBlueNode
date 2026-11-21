@@ -1,14 +1,21 @@
 //! `PostgreSQL` persistence for `xBlueView` dashboards, widgets, visual assets,
 //! 2D/3D spatial twin bindings, GIN dependency queries, and atomic node writebacks (`10-STEP11-12` §11.1–§11.6).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::str::FromStr;
 
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::PaginatedList;
-use axpoint_domain::enums::{AssetKind, DataType, MetricSourceTag, OutboxTopic, WidgetKind};
+use axpoint_domain::enums::{
+    AssetKind, DataType, ExportFormat, JobKind, JobStatus, MetricSourceTag, OutboxTopic, WidgetKind,
+};
+use axpoint_domain::export::{
+    CompleteExportJobParams, CreateExportJobParams, CreateExportTemplateParams,
+    CreateShareLinkParams, ExportJobRecord, ExportListQuery, ExportOptions, ExportSource,
+    ExportTemplateRecord, ResolvedShare, ShareLinkRecord, ShareListQuery, ShareTargetKind,
+};
 use axpoint_domain::flow::{ActionKind, ActionLogRecord, ActionLogStatus, ActionSourceKind};
-use axpoint_domain::platform::NewOutboxEvent;
+use axpoint_domain::platform::{NewJob, NewOutboxEvent};
 use axpoint_domain::ports::ViewRepository;
 use axpoint_domain::rules::SimplePageQuery;
 use axpoint_domain::studio::{PropertyKind, PropertySpec, SchemaDoc};
@@ -907,7 +914,7 @@ fn remap_filters_for_duplicate(
         id_remap.insert(w.id.to_string(), Uuid::new_v4());
     }
     for filter in filters {
-        let mut remapped = std::collections::BTreeMap::new();
+        let mut remapped = BTreeMap::new();
         for (k, v) in &filter.field_map {
             let new_key = id_remap.get(k).map_or_else(|| k.clone(), Uuid::to_string);
             remapped.insert(new_key, v.clone());
@@ -2525,6 +2532,772 @@ impl ViewRepository for PgStore {
             idempotency_replay: false,
         })
     }
+
+    async fn list_export_templates(
+        &self,
+        tenant_id: &str,
+        query: SimplePageQuery,
+    ) -> Result<PaginatedList<ExportTemplateRecord>, AppError> {
+        let (limit_usize, fetch_limit) = validate_page_limit(query.limit, 50)?;
+        let (cursor_ts, cursor_id) = parse_optional_cursor(query.cursor.as_deref())?;
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, name, export_format, file_path, sha256,
+                    placeholders, created_by, created_at
+               FROM xv_export_templates
+              WHERE tenant_id = $1
+                AND ($2::timestamptz IS NULL OR (created_at, id) < ($2, $3::uuid))
+              ORDER BY created_at DESC, id DESC
+              LIMIT $4",
+        )
+        .bind(tenant_id)
+        .bind(cursor_ts)
+        .bind(cursor_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("list xv_export_templates failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit list_export_templates tx failed: {err}"))
+        })?;
+
+        let mut items = Vec::with_capacity(rows.len());
+        for row in &rows {
+            items.push(decode_export_template_row(row)?);
+        }
+        let next_cursor = paginate_ts_uuid_items(&mut items, limit_usize, |r| (r.created_at, r.id));
+        Ok(PaginatedList { items, next_cursor })
+    }
+
+    async fn create_export_template(
+        &self,
+        tenant_id: &str,
+        params: CreateExportTemplateParams,
+    ) -> Result<ExportTemplateRecord, AppError> {
+        let trimmed_name = params.name.trim();
+        if trimmed_name.is_empty() {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                "template name must not be empty",
+            ));
+        }
+        if !matches!(
+            params.export_format,
+            ExportFormat::Docx | ExportFormat::Pptx
+        ) {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                "export template format must be DOCX or PPTX",
+            ));
+        }
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let row = sqlx::query(
+            "INSERT INTO xv_export_templates (
+                 id, tenant_id, name, export_format, file_path, sha256, placeholders, created_by
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             RETURNING id, tenant_id, name, export_format, file_path, sha256,
+                       placeholders, created_by, created_at",
+        )
+        .bind(params.id)
+        .bind(tenant_id)
+        .bind(trimmed_name)
+        .bind(params.export_format.as_str())
+        .bind(&params.file_path)
+        .bind(&params.sha256)
+        .bind(&params.placeholders)
+        .bind(params.created_by)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| {
+            if is_unique_violation(&err) {
+                AppError::Conflict("CONFLICT")
+            } else {
+                AppError::Database(format!("insert xv_export_templates failed: {err}"))
+            }
+        })?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit create_export_template tx failed: {err}"))
+        })?;
+        decode_export_template_row(&row)
+    }
+
+    async fn get_export_template(
+        &self,
+        tenant_id: &str,
+        template_id: Uuid,
+    ) -> Result<Option<ExportTemplateRecord>, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_row = sqlx::query(
+            "SELECT id, tenant_id, name, export_format, file_path, sha256,
+                    placeholders, created_by, created_at
+               FROM xv_export_templates
+              WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(template_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("get xv_export_templates failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit get_export_template tx failed: {err}"))
+        })?;
+        maybe_row
+            .as_ref()
+            .map(decode_export_template_row)
+            .transpose()
+    }
+
+    async fn delete_export_template(
+        &self,
+        tenant_id: &str,
+        template_id: Uuid,
+    ) -> Result<Option<ExportTemplateRecord>, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_row = sqlx::query(
+            "DELETE FROM xv_export_templates
+              WHERE tenant_id = $1 AND id = $2
+              RETURNING id, tenant_id, name, export_format, file_path, sha256,
+                        placeholders, created_by, created_at",
+        )
+        .bind(tenant_id)
+        .bind(template_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("delete xv_export_templates failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit delete_export_template tx failed: {err}"))
+        })?;
+        maybe_row
+            .as_ref()
+            .map(decode_export_template_row)
+            .transpose()
+    }
+
+    async fn create_export_job(
+        &self,
+        tenant_id: &str,
+        params: CreateExportJobParams,
+    ) -> Result<ExportJobRecord, AppError> {
+        let source_json = serde_json::to_value(&params.source)
+            .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("serialize source: {err}")))?;
+        let options_json = serde_json::to_value(&params.options).map_err(|err| {
+            AppError::bad("INVALID_ARGUMENT", format!("serialize options: {err}"))
+        })?;
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let export_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO xv_export_jobs (
+                 tenant_id, export_format, source, options, template_id, status, created_by
+             )
+             VALUES ($1, $2, $3, $4, $5, 'PENDING', $6)
+             RETURNING id",
+        )
+        .bind(tenant_id)
+        .bind(params.export_format.as_str())
+        .bind(source_json)
+        .bind(options_json)
+        .bind(params.template_id)
+        .bind(params.created_by)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("insert xv_export_jobs failed: {err}")))?;
+
+        let mut job_spec = NewJob::new(
+            JobKind::Export,
+            serde_json::json!({ "export_id": export_id }),
+        )
+        .with_idempotency_key(export_id.to_string());
+        job_spec.priority = 50;
+        job_spec.max_attempts = 3;
+        let job_id = crate::jobs::enqueue_job_tx(&mut tx, tenant_id, &job_spec).await?;
+
+        let row = sqlx::query(
+            "UPDATE xv_export_jobs
+                SET job_id = $3
+              WHERE tenant_id = $1 AND id = $2
+              RETURNING id, tenant_id, export_format, source, options, template_id, job_id,
+                        status, file_name, file_path, file_size, sha256, error_message,
+                        created_by, created_at, finished_at, expires_at",
+        )
+        .bind(tenant_id)
+        .bind(export_id)
+        .bind(job_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("link xv_export_jobs.job_id failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit create_export_job tx failed: {err}"))
+        })?;
+        decode_export_job_row(&row)
+    }
+
+    async fn get_export_job(
+        &self,
+        tenant_id: &str,
+        export_id: Uuid,
+    ) -> Result<Option<ExportJobRecord>, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_row = sqlx::query(
+            "SELECT id, tenant_id, export_format, source, options, template_id, job_id,
+                    status, file_name, file_path, file_size, sha256, error_message,
+                    created_by, created_at, finished_at, expires_at
+               FROM xv_export_jobs
+              WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(export_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("get xv_export_jobs failed: {err}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit get_export_job tx failed: {err}")))?;
+        maybe_row.as_ref().map(decode_export_job_row).transpose()
+    }
+
+    async fn list_export_jobs(
+        &self,
+        tenant_id: &str,
+        created_by_filter: Option<Uuid>,
+        query: ExportListQuery,
+    ) -> Result<PaginatedList<ExportJobRecord>, AppError> {
+        let (limit_usize, fetch_limit) = validate_i64_page_limit(query.limit, 50, 200)?;
+        let (cursor_ts, cursor_id) = parse_optional_cursor(query.cursor.as_deref())?;
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, export_format, source, options, template_id, job_id,
+                    status, file_name, file_path, file_size, sha256, error_message,
+                    created_by, created_at, finished_at, expires_at
+               FROM xv_export_jobs
+              WHERE tenant_id = $1
+                AND ($2::uuid IS NULL OR created_by = $2)
+                AND ($3::timestamptz IS NULL OR (created_at, id) < ($3, $4::uuid))
+              ORDER BY created_at DESC, id DESC
+              LIMIT $5",
+        )
+        .bind(tenant_id)
+        .bind(created_by_filter)
+        .bind(cursor_ts)
+        .bind(cursor_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("list xv_export_jobs failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit list_export_jobs tx failed: {err}"))
+        })?;
+
+        let mut items = Vec::with_capacity(rows.len());
+        for row in &rows {
+            items.push(decode_export_job_row(row)?);
+        }
+        let next_cursor = paginate_ts_uuid_items(&mut items, limit_usize, |r| (r.created_at, r.id));
+        Ok(PaginatedList { items, next_cursor })
+    }
+
+    async fn mark_export_job_running(
+        &self,
+        tenant_id: &str,
+        export_id: Uuid,
+    ) -> Result<Option<ExportJobRecord>, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_row = sqlx::query(
+            "UPDATE xv_export_jobs
+                SET status = 'RUNNING',
+                    error_message = NULL
+              WHERE tenant_id = $1
+                AND id = $2
+                AND status IN ('PENDING', 'RUNNING')
+              RETURNING id, tenant_id, export_format, source, options, template_id, job_id,
+                        status, file_name, file_path, file_size, sha256, error_message,
+                        created_by, created_at, finished_at, expires_at",
+        )
+        .bind(tenant_id)
+        .bind(export_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("mark xv_export_jobs RUNNING failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit mark_export_job_running tx failed: {err}"))
+        })?;
+        maybe_row.as_ref().map(decode_export_job_row).transpose()
+    }
+
+    async fn complete_export_job(
+        &self,
+        tenant_id: &str,
+        export_id: Uuid,
+        params: CompleteExportJobParams,
+    ) -> Result<ExportJobRecord, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_row = sqlx::query(
+            "UPDATE xv_export_jobs
+                SET status = 'SUCCEEDED',
+                    file_name = $3,
+                    file_path = $4,
+                    file_size = $5,
+                    sha256 = $6,
+                    error_message = NULL,
+                    finished_at = NOW(),
+                    expires_at = $7
+              WHERE tenant_id = $1 AND id = $2
+              RETURNING id, tenant_id, export_format, source, options, template_id, job_id,
+                        status, file_name, file_path, file_size, sha256, error_message,
+                        created_by, created_at, finished_at, expires_at",
+        )
+        .bind(tenant_id)
+        .bind(export_id)
+        .bind(&params.file_name)
+        .bind(&params.file_path)
+        .bind(params.file_size)
+        .bind(&params.sha256)
+        .bind(params.expires_at)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| {
+            AppError::Database(format!("complete xv_export_jobs SUCCEEDED failed: {err}"))
+        })?;
+
+        let row = maybe_row.ok_or(AppError::NotFound("EXPORT_NOT_FOUND"))?;
+        let record = decode_export_job_row(&row)?;
+
+        let outbox_event = NewOutboxEvent {
+            topic: OutboxTopic::ExportFinished,
+            payload: serde_json::json!({
+                "export_id": export_id,
+                "aggregate_id": export_id.to_string(),
+                "export_format": record.export_format.as_str(),
+                "file_name": record.file_name,
+                "file_size": record.file_size,
+                "sha256": record.sha256,
+            }),
+        };
+        let _ = insert_outbox_tx(&mut tx, tenant_id, &outbox_event).await?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit complete_export_job tx failed: {err}"))
+        })?;
+        Ok(record)
+    }
+
+    async fn fail_export_job(
+        &self,
+        tenant_id: &str,
+        export_id: Uuid,
+        error_message: &str,
+    ) -> Result<(), AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        sqlx::query(
+            "UPDATE xv_export_jobs
+                SET status = 'FAILED',
+                    error_message = $3,
+                    finished_at = NOW()
+              WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(export_id)
+        .bind(error_message)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("mark xv_export_jobs FAILED failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit fail_export_job tx failed: {err}"))
+        })?;
+        Ok(())
+    }
+
+    async fn delete_export_job(
+        &self,
+        tenant_id: &str,
+        export_id: Uuid,
+    ) -> Result<Option<ExportJobRecord>, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_row = sqlx::query(
+            "DELETE FROM xv_export_jobs
+              WHERE tenant_id = $1 AND id = $2
+              RETURNING id, tenant_id, export_format, source, options, template_id, job_id,
+                        status, file_name, file_path, file_size, sha256, error_message,
+                        created_by, created_at, finished_at, expires_at",
+        )
+        .bind(tenant_id)
+        .bind(export_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("delete xv_export_jobs failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit delete_export_job tx failed: {err}"))
+        })?;
+        maybe_row.as_ref().map(decode_export_job_row).transpose()
+    }
+
+    async fn get_export_keep_days(&self, tenant_id: &str) -> Result<i32, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_days: Option<i32> = sqlx::query_scalar(
+            "SELECT keep_days
+               FROM ax_retention_policies
+              WHERE tenant_id = $1 AND target = 'EXPORT_FILE'",
+        )
+        .bind(tenant_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("query EXPORT_FILE keep_days failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit get_export_keep_days tx failed: {err}"))
+        })?;
+        Ok(maybe_days.unwrap_or(30).max(1))
+    }
+
+    async fn create_share_link(
+        &self,
+        tenant_id: &str,
+        params: CreateShareLinkParams,
+    ) -> Result<ShareLinkRecord, AppError> {
+        let locked_json = serde_json::to_value(&params.locked_filters).map_err(|err| {
+            AppError::bad(
+                "INVALID_ARGUMENT",
+                format!("serialize locked_filters: {err}"),
+            )
+        })?;
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let row = sqlx::query(
+            "INSERT INTO xv_share_links (
+                 tenant_id, token_prefix, token_hash, target_kind, target_id,
+                 locked_filters, allow_filters, allow_export, password_hash,
+                 expires_at, max_views, created_by
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+             RETURNING id, tenant_id, token_prefix, target_kind, target_id,
+                       locked_filters, allow_filters, allow_export,
+                       (password_hash IS NOT NULL) AS has_password,
+                       expires_at, max_views, view_count, created_by, created_at, revoked_at",
+        )
+        .bind(tenant_id)
+        .bind(&params.token_prefix)
+        .bind(&params.token_hash)
+        .bind(params.target_kind.as_str())
+        .bind(params.target_id)
+        .bind(locked_json)
+        .bind(params.allow_filters)
+        .bind(params.allow_export)
+        .bind(&params.password_hash)
+        .bind(params.expires_at)
+        .bind(params.max_views)
+        .bind(params.created_by)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| {
+            if is_unique_violation(&err) {
+                AppError::Conflict("CONFLICT")
+            } else {
+                AppError::Database(format!("insert xv_share_links failed: {err}"))
+            }
+        })?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit create_share_link tx failed: {err}"))
+        })?;
+        decode_share_link_row(&row)
+    }
+
+    async fn list_share_links(
+        &self,
+        tenant_id: &str,
+        query: ShareListQuery,
+    ) -> Result<PaginatedList<ShareLinkRecord>, AppError> {
+        let (limit_usize, fetch_limit) = validate_i64_page_limit(query.limit, 50, 200)?;
+        let (cursor_ts, cursor_id) = parse_optional_cursor(query.cursor.as_deref())?;
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, token_prefix, target_kind, target_id,
+                    locked_filters, allow_filters, allow_export,
+                    (password_hash IS NOT NULL) AS has_password,
+                    expires_at, max_views, view_count, created_by, created_at, revoked_at
+               FROM xv_share_links
+              WHERE tenant_id = $1
+                AND ($2::uuid IS NULL OR target_id = $2)
+                AND ($3::timestamptz IS NULL OR (created_at, id) < ($3, $4::uuid))
+              ORDER BY created_at DESC, id DESC
+              LIMIT $5",
+        )
+        .bind(tenant_id)
+        .bind(query.target_id)
+        .bind(cursor_ts)
+        .bind(cursor_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("list xv_share_links failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit list_share_links tx failed: {err}"))
+        })?;
+
+        let mut items = Vec::with_capacity(rows.len());
+        for row in &rows {
+            items.push(decode_share_link_row(row)?);
+        }
+        let next_cursor = paginate_ts_uuid_items(&mut items, limit_usize, |r| (r.created_at, r.id));
+        Ok(PaginatedList { items, next_cursor })
+    }
+
+    async fn revoke_share_link(&self, tenant_id: &str, share_id: Uuid) -> Result<bool, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let res = sqlx::query(
+            "UPDATE xv_share_links
+                SET revoked_at = NOW()
+              WHERE tenant_id = $1
+                AND id = $2
+                AND revoked_at IS NULL",
+        )
+        .bind(tenant_id)
+        .bind(share_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("revoke xv_share_links failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit revoke_share_link tx failed: {err}"))
+        })?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    async fn resolve_share_by_hash(
+        &self,
+        token_hash: &str,
+    ) -> Result<Option<ResolvedShare>, AppError> {
+        let maybe_fn_row = sqlx::query(
+            "SELECT share_id, tenant_id, target_kind, target_id, created_by,
+                    locked_filters, allow_filters, allow_export, password_hash,
+                    max_views, view_count
+               FROM ax_resolve_share($1)",
+        )
+        .bind(token_hash)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(|err| AppError::Database(format!("ax_resolve_share failed: {err}")))?;
+
+        let Some(fn_row) = maybe_fn_row else {
+            return Ok(None);
+        };
+
+        let share_id: Uuid = fn_row.get("share_id");
+        let tenant_id: String = fn_row.get("tenant_id");
+        let target_kind_raw: String = fn_row.get("target_kind");
+        let target_kind = ShareTargetKind::from_str(&target_kind_raw)?;
+        let locked_filters: BTreeMap<String, serde_json::Value> =
+            serde_json::from_value(fn_row.get("locked_filters")).map_err(|err| {
+                AppError::Database(format!("decode ax_resolve_share.locked_filters: {err}"))
+            })?;
+
+        let mut tx = begin_tenant_tx(self.pool(), &tenant_id).await?;
+        let maybe_extra = sqlx::query(
+            "SELECT token_prefix, expires_at
+               FROM xv_share_links
+              WHERE tenant_id = $1
+                AND id = $2
+                AND revoked_at IS NULL
+                AND expires_at > NOW()",
+        )
+        .bind(&tenant_id)
+        .bind(share_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("load xv_share_links metadata failed: {err}")))?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit resolve_share_by_hash tx failed: {err}"))
+        })?;
+
+        let Some(extra) = maybe_extra else {
+            return Ok(None);
+        };
+
+        Ok(Some(ResolvedShare {
+            share_id,
+            tenant_id,
+            target_kind,
+            target_id: fn_row.get("target_id"),
+            created_by: fn_row.get("created_by"),
+            locked_filters,
+            allow_filters: fn_row.get("allow_filters"),
+            allow_export: fn_row.get("allow_export"),
+            password_hash: fn_row.get("password_hash"),
+            max_views: fn_row.get("max_views"),
+            view_count: fn_row.get("view_count"),
+            token_prefix: extra.get("token_prefix"),
+            expires_at: extra.get("expires_at"),
+        }))
+    }
+
+    async fn increment_share_view_count(
+        &self,
+        tenant_id: &str,
+        share_id: Uuid,
+    ) -> Result<bool, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_id: Option<Uuid> = sqlx::query_scalar(
+            "UPDATE xv_share_links
+                SET view_count = view_count + 1
+              WHERE tenant_id = $1
+                AND id = $2
+                AND revoked_at IS NULL
+                AND expires_at > NOW()
+                AND (max_views IS NULL OR view_count < max_views)
+              RETURNING id",
+        )
+        .bind(tenant_id)
+        .bind(share_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| {
+            AppError::Database(format!("increment xv_share_links.view_count failed: {err}"))
+        })?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!(
+                "commit increment_share_view_count tx failed: {err}"
+            ))
+        })?;
+        Ok(maybe_id.is_some())
+    }
+}
+
+fn validate_i64_page_limit(
+    raw_limit: Option<i64>,
+    default_limit: i64,
+    max_limit: i64,
+) -> Result<(usize, i64), AppError> {
+    let limit = raw_limit.unwrap_or(default_limit);
+    if !(1..=max_limit).contains(&limit) {
+        return Err(AppError::bad(
+            "LIMIT_OUT_OF_RANGE",
+            format!("limit must be in 1..={max_limit}, got {limit}"),
+        ));
+    }
+    let limit_usize = usize::try_from(limit).unwrap_or(50);
+    let fetch_limit = limit.saturating_add(1);
+    Ok((limit_usize, fetch_limit))
+}
+
+fn parse_optional_cursor(
+    raw_cursor: Option<&str>,
+) -> Result<(Option<DateTime<Utc>>, Option<Uuid>), AppError> {
+    match raw_cursor.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(raw) => {
+            let (ts, cid) = parse_ts_uuid_cursor(raw)?;
+            Ok((Some(ts), Some(cid)))
+        }
+        None => Ok((None, None)),
+    }
+}
+
+fn paginate_ts_uuid_items<T>(
+    items: &mut Vec<T>,
+    limit_usize: usize,
+    key_fn: impl Fn(&T) -> (DateTime<Utc>, Uuid),
+) -> Option<String> {
+    if items.len() > limit_usize {
+        items.truncate(limit_usize);
+        items.last().map(|last| {
+            let (ts, id) = key_fn(last);
+            encode_ts_uuid_cursor(ts, id)
+        })
+    } else {
+        None
+    }
+}
+
+fn decode_export_template_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<ExportTemplateRecord, AppError> {
+    let fmt_raw: String = row.get("export_format");
+    let export_format = ExportFormat::from_str(&fmt_raw)?;
+    Ok(ExportTemplateRecord {
+        id: row.get("id"),
+        tenant_id: row.get("tenant_id"),
+        name: row.get("name"),
+        export_format,
+        file_path: row.get("file_path"),
+        sha256: row.get("sha256"),
+        placeholders: row.get("placeholders"),
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+    })
+}
+
+fn decode_export_job_row(row: &sqlx::postgres::PgRow) -> Result<ExportJobRecord, AppError> {
+    let fmt_raw: String = row.get("export_format");
+    let export_format = ExportFormat::from_str(&fmt_raw)?;
+    let status_raw: String = row.get("status");
+    let status = JobStatus::from_str(&status_raw)?;
+    let source: ExportSource = serde_json::from_value(row.get("source"))
+        .map_err(|err| AppError::Database(format!("decode xv_export_jobs.source failed: {err}")))?;
+    let options: ExportOptions = serde_json::from_value(row.get("options")).map_err(|err| {
+        AppError::Database(format!("decode xv_export_jobs.options failed: {err}"))
+    })?;
+
+    Ok(ExportJobRecord {
+        id: row.get("id"),
+        tenant_id: row.get("tenant_id"),
+        export_format,
+        source,
+        options,
+        template_id: row.get("template_id"),
+        job_id: row.get("job_id"),
+        status,
+        file_name: row.get("file_name"),
+        file_path: row.get("file_path"),
+        file_size: row.get("file_size"),
+        sha256: row.get("sha256"),
+        error_message: row.get("error_message"),
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+        finished_at: row.get("finished_at"),
+        expires_at: row.get("expires_at"),
+    })
+}
+
+fn decode_share_link_row(row: &sqlx::postgres::PgRow) -> Result<ShareLinkRecord, AppError> {
+    let kind_raw: String = row.get("target_kind");
+    let target_kind = ShareTargetKind::from_str(&kind_raw)?;
+    let locked_filters: BTreeMap<String, serde_json::Value> =
+        serde_json::from_value(row.get("locked_filters")).map_err(|err| {
+            AppError::Database(format!("decode xv_share_links.locked_filters: {err}"))
+        })?;
+
+    Ok(ShareLinkRecord {
+        id: row.get("id"),
+        tenant_id: row.get("tenant_id"),
+        token_prefix: row.get("token_prefix"),
+        target_kind,
+        target_id: row.get("target_id"),
+        locked_filters,
+        allow_filters: row.get("allow_filters"),
+        allow_export: row.get("allow_export"),
+        has_password: row.get("has_password"),
+        expires_at: row.get("expires_at"),
+        max_views: row.get("max_views"),
+        view_count: row.get("view_count"),
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+        revoked_at: row.get("revoked_at"),
+    })
 }
 
 async fn resolve_conflicted_write_replay(

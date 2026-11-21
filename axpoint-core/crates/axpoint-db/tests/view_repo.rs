@@ -82,6 +82,9 @@ async fn setup_tenant(owner_pool: &PgPool, tenant_id: &str) -> TestResult {
 
 async fn cleanup_tenant(owner_pool: &PgPool, tenant_id: &str) -> TestResult {
     for stmt in [
+        "DELETE FROM xv_share_links WHERE tenant_id = $1",
+        "DELETE FROM xv_export_jobs WHERE tenant_id = $1",
+        "DELETE FROM xv_export_templates WHERE tenant_id = $1",
         "DELETE FROM xv_scene3d_bindings WHERE tenant_id = $1",
         "DELETE FROM xv_floor_placements WHERE tenant_id = $1",
         "DELETE FROM xv_widgets WHERE tenant_id = $1",
@@ -92,6 +95,7 @@ async fn cleanup_tenant(owner_pool: &PgPool, tenant_id: &str) -> TestResult {
         "DELETE FROM ax_action_log WHERE tenant_id = $1",
         "DELETE FROM ax_outbox WHERE tenant_id = $1",
         "DELETE FROM ax_jobs WHERE tenant_id = $1",
+        "DELETE FROM ax_retention_policies WHERE tenant_id = $1",
         "DELETE FROM xb_metric_series WHERE tenant_id = $1",
         "DELETE FROM xb_links WHERE tenant_id = $1",
         "DELETE FROM xb_nodes WHERE tenant_id = $1",
@@ -1471,6 +1475,242 @@ async fn view_repo_geo_links_and_concurrent_write_idempotency() -> TestResult {
     assert!(filtered_out.is_empty());
 
     assert_concurrent_and_cross_widget_idempotency(&store, &tenant_a, w1_id).await?;
+    cleanup_tenant(&owner_pool, &tenant_a).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn view_repo_export_jobs_templates_and_retention() -> TestResult {
+    let Some((app_pool, owner_pool)) = test_pools().await? else {
+        return Ok(());
+    };
+    let tenant_a = unique_tenant("t_view_exp_a");
+    let tenant_b = unique_tenant("t_view_exp_b");
+    setup_tenant(&owner_pool, &tenant_a).await?;
+    setup_tenant(&owner_pool, &tenant_b).await?;
+    let store = PgStore::new(app_pool);
+
+    assert_export_template_crud(&store, &tenant_a, &tenant_b).await?;
+    assert_export_job_lifecycle_and_retention(&store, &tenant_a, &tenant_b).await?;
+
+    cleanup_tenant(&owner_pool, &tenant_a).await?;
+    cleanup_tenant(&owner_pool, &tenant_b).await?;
+    Ok(())
+}
+
+async fn assert_export_template_crud(
+    store: &PgStore,
+    tenant_a: &str,
+    tenant_b: &str,
+) -> TestResult {
+    use axpoint_domain::enums::ExportFormat;
+    use axpoint_domain::export::CreateExportTemplateParams;
+
+    let tpl_id = Uuid::new_v4();
+    let created = store
+        .create_export_template(
+            tenant_a,
+            CreateExportTemplateParams {
+                id: tpl_id,
+                name: String::from("周报模板"),
+                export_format: ExportFormat::Docx,
+                file_path: format!("export_templates/{tenant_a}/{tpl_id}.docx"),
+                sha256: "a".repeat(64),
+                placeholders: vec![String::from("title"), String::from("sections")],
+                created_by: Some(Uuid::nil()),
+            },
+        )
+        .await?;
+    assert_eq!(created.id, tpl_id);
+    assert_eq!(created.placeholders.len(), 2);
+
+    let dup = store
+        .create_export_template(
+            tenant_a,
+            CreateExportTemplateParams {
+                id: Uuid::new_v4(),
+                name: String::from("周报模板"),
+                export_format: ExportFormat::Docx,
+                file_path: String::from("other.docx"),
+                sha256: "b".repeat(64),
+                placeholders: Vec::new(),
+                created_by: None,
+            },
+        )
+        .await;
+    assert!(matches!(dup, Err(AppError::Conflict("CONFLICT"))));
+
+    assert!(store.get_export_template(tenant_b, tpl_id).await?.is_none());
+    let listed = store
+        .list_export_templates(tenant_a, SimplePageQuery::default())
+        .await?;
+    assert_eq!(listed.items.len(), 1);
+    assert!(
+        store
+            .delete_export_template(tenant_a, tpl_id)
+            .await?
+            .is_some()
+    );
+    Ok(())
+}
+
+async fn assert_export_job_lifecycle_and_retention(
+    store: &PgStore,
+    tenant_a: &str,
+    tenant_b: &str,
+) -> TestResult {
+    use axpoint_domain::enums::{ExportFormat, JobKind, JobStatus};
+    use axpoint_domain::export::{
+        CompleteExportJobParams, CreateExportJobParams, ExportListQuery, ExportOptions,
+        ExportSource,
+    };
+    use axpoint_domain::ports::JobQueuePort as _;
+
+    assert_eq!(store.get_export_keep_days(tenant_a).await?, 30);
+
+    let job = store
+        .create_export_job(
+            tenant_a,
+            CreateExportJobParams {
+                export_format: ExportFormat::Pdf,
+                source: ExportSource::Dashboard {
+                    dashboard_id: Uuid::new_v4(),
+                    filters: BTreeMap::new(),
+                },
+                options: ExportOptions::default(),
+                template_id: None,
+                created_by: Uuid::nil(),
+            },
+        )
+        .await?;
+    assert_eq!(job.status, JobStatus::Pending);
+    assert_eq!(job.created_by, Uuid::nil());
+    let qjob_id = job.job_id.ok_or("missing backing ax_jobs.id")?;
+    let qjob = store
+        .get_job(tenant_a, qjob_id)
+        .await?
+        .ok_or("backing ax_job not found")?;
+    assert_eq!(qjob.kind, JobKind::Export);
+
+    let running = store
+        .mark_export_job_running(tenant_a, job.id)
+        .await?
+        .ok_or("mark_export_job_running returned None")?;
+    assert_eq!(running.status, JobStatus::Running);
+
+    let expired_ts = chrono::Utc::now() - chrono::Duration::minutes(5);
+    let completed = store
+        .complete_export_job(
+            tenant_a,
+            job.id,
+            CompleteExportJobParams {
+                file_name: String::from("report.pdf"),
+                file_path: format!("exports/{tenant_a}/{}.pdf", job.id),
+                file_size: 2048,
+                sha256: "c".repeat(64),
+                expires_at: expired_ts,
+            },
+        )
+        .await?;
+    assert_eq!(completed.status, JobStatus::Succeeded);
+    assert!(store.get_export_job(tenant_b, job.id).await?.is_none());
+
+    let listed = store
+        .list_export_jobs(tenant_a, Some(Uuid::nil()), ExportListQuery::default())
+        .await?;
+    assert_eq!(listed.items.len(), 1);
+
+    let _stats = store.run_retention_cleanup(tenant_a).await?;
+    let after_ret = store
+        .get_export_job(tenant_a, job.id)
+        .await?
+        .ok_or("job missing after retention")?;
+    assert_eq!(after_ret.status, JobStatus::Expired);
+    assert!(after_ret.file_path.is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn view_repo_share_links_resolve_max_views_and_revocation() -> TestResult {
+    use axpoint_domain::export::{CreateShareLinkParams, ShareListQuery, ShareTargetKind};
+
+    let Some((app_pool, owner_pool)) = test_pools().await? else {
+        return Ok(());
+    };
+    let tenant_a = unique_tenant("t_view_sh_a");
+    setup_tenant(&owner_pool, &tenant_a).await?;
+    let store = PgStore::new(app_pool);
+
+    let target_id = Uuid::new_v4();
+    let token_hash = format!("hash_{}", Uuid::new_v4().simple());
+    let link = store
+        .create_share_link(
+            &tenant_a,
+            CreateShareLinkParams {
+                token_prefix: String::from("abcd1234"),
+                token_hash: token_hash.clone(),
+                target_kind: ShareTargetKind::Dashboard,
+                target_id,
+                locked_filters: BTreeMap::from([(String::from("status"), json!("PAID"))]),
+                allow_filters: false,
+                allow_export: true,
+                password_hash: None,
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(2),
+                max_views: Some(2),
+                created_by: Uuid::nil(),
+            },
+        )
+        .await?;
+    assert_eq!(link.max_views, Some(2));
+    assert_eq!(link.view_count, 0);
+
+    let resolved = store
+        .resolve_share_by_hash(&token_hash)
+        .await?
+        .ok_or("expected active share to resolve")?;
+    assert_eq!(resolved.share_id, link.id);
+    assert_eq!(resolved.token_prefix, "abcd1234");
+
+    assert!(store.increment_share_view_count(&tenant_a, link.id).await?);
+    assert!(store.increment_share_view_count(&tenant_a, link.id).await?);
+    assert!(!store.increment_share_view_count(&tenant_a, link.id).await?);
+    assert!(store.resolve_share_by_hash(&token_hash).await?.is_none());
+
+    let token_hash_2 = format!("hash_{}", Uuid::new_v4().simple());
+    let link2 = store
+        .create_share_link(
+            &tenant_a,
+            CreateShareLinkParams {
+                token_prefix: String::from("efgh5678"),
+                token_hash: token_hash_2.clone(),
+                target_kind: ShareTargetKind::Dashboard,
+                target_id,
+                locked_filters: BTreeMap::new(),
+                allow_filters: true,
+                allow_export: false,
+                password_hash: Some(String::from("$argon2id$v=19$test")),
+                expires_at: chrono::Utc::now() + chrono::Duration::hours(1),
+                max_views: None,
+                created_by: Uuid::nil(),
+            },
+        )
+        .await?;
+    assert!(link2.has_password);
+    let listed = store
+        .list_share_links(
+            &tenant_a,
+            ShareListQuery {
+                target_id: Some(target_id),
+                ..ShareListQuery::default()
+            },
+        )
+        .await?;
+    assert_eq!(listed.items.len(), 2);
+
+    assert!(store.revoke_share_link(&tenant_a, link2.id).await?);
+    assert!(!store.revoke_share_link(&tenant_a, link2.id).await?);
+    assert!(store.resolve_share_by_hash(&token_hash_2).await?.is_none());
+
     cleanup_tenant(&owner_pool, &tenant_a).await?;
     Ok(())
 }
