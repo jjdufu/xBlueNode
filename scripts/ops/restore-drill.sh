@@ -30,10 +30,15 @@ trap cleanup EXIT
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   USE_DOCKER=1
   docker rm -f axp-drill-pg >/dev/null 2>&1 || true
+  DOCKER_VOL_ARGS=()
+  if [[ -d "$SRC/db" ]]; then
+    DOCKER_VOL_ARGS=(-v "$SRC/db:/dump_db:ro")
+  fi
   docker run -d --rm --name axp-drill-pg \
     -e POSTGRES_USER=axpoint \
     -e POSTGRES_PASSWORD=drill \
     -e POSTGRES_DB=xbluenode \
+    "${DOCKER_VOL_ARGS[@]}" \
     -p "127.0.0.1:${DRILL_PORT}:5432" \
     pgvector/pgvector:pg16 >/dev/null
   until docker exec axp-drill-pg pg_isready -U axpoint -d xbluenode >/dev/null 2>&1; do
@@ -72,7 +77,13 @@ END \$\$;
 " >/dev/null
 
 if [[ -d "$SRC/db" ]]; then
-  pg_restore --dbname="$DRILL_URL" --jobs=4 --no-owner --role=axpoint "$SRC/db"
+  if [[ "$USE_DOCKER" == "1" ]]; then
+    docker exec axp-drill-pg pg_restore \
+      --dbname="postgres://axpoint:drill@127.0.0.1:5432/xbluenode" \
+      --jobs=4 --no-owner --role=axpoint /dump_db
+  else
+    pg_restore --dbname="$DRILL_URL" --jobs=4 --no-owner --role=axpoint "$SRC/db"
+  fi
 fi
 if [[ -d "$SRC/files" ]]; then
   cp -a "$SRC/files/." "$DRILL_ROOT/"
@@ -81,6 +92,8 @@ fi
 PY_BIN="python3"
 if [[ -x "$ROOT/axpoint-parser/.venv/bin/python" ]]; then
   PY_BIN="$ROOT/axpoint-parser/.venv/bin/python"
+elif command -v python >/dev/null 2>&1 && python -c "import psycopg, duckdb" >/dev/null 2>&1; then
+  PY_BIN="python"
 fi
 
 "$PY_BIN" "$ROOT/scripts/ops/drill_reconcile.py" \

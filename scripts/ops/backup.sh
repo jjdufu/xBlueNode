@@ -29,7 +29,18 @@ fi
 trap 'psql "$MIGRATION_DATABASE_URL" -c "UPDATE ax_backups SET status='"'"'FAILED'"'"', finished_at=now(), error_message='"'"'see logs'"'"' WHERE id='"'"'$ID'"'"'" >/dev/null 2>&1 || true' ERR
 
 if [[ "$KIND" != "LAKE" ]]; then
-  pg_dump "$MIGRATION_DATABASE_URL" --format=directory --jobs=4 --file="$DEST/db"
+  PG_SERVER_MAJOR=$(psql "$MIGRATION_DATABASE_URL" -v ON_ERROR_STOP=1 -Atqc "SELECT current_setting('server_version_num')::int / 10000")
+  PG_DUMP_MAJOR=0
+  if command -v pg_dump >/dev/null 2>&1; then
+    PG_DUMP_MAJOR=$(pg_dump --version | sed -E 's/^[^0-9]*([0-9]+).*/\1/')
+  fi
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1 && { [[ "$PG_DUMP_MAJOR" -gt "$PG_SERVER_MAJOR" || "$PG_DUMP_MAJOR" -eq 0 ]] || docker ps --format '{{.Names}}' | grep -qx 'xbluenode-postgres-1'; }; then
+    docker run --rm --network host -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$DEST:/backup" \
+      pgvector/pgvector:pg16 \
+      pg_dump "$MIGRATION_DATABASE_URL" --format=directory --jobs=4 --file=/backup/db
+  else
+    pg_dump "$MIGRATION_DATABASE_URL" --format=directory --jobs=4 --file="$DEST/db"
+  fi
 fi
 
 if [[ "$KIND" != "DATABASE" ]]; then

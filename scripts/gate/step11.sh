@@ -17,7 +17,7 @@ source "$(dirname "$0")/lib.sh"
   CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}" \
   cargo test -p axpoint-server --test dashboard_gen_eval
 )
-(cd xbluenode-web && npm run test -- xblueview && npm run build)
+(cd xbluenode-web && npm run test -- xblueview && VITE_DEV_TOKEN="$AXPOINT_DEV_TOKEN" npm run build)
 
 if [[ -z "${MODEL3D_ASSET_ID:-}" || -z "${DASHBOARD_ID:-}" || -z "${KPI_WIDGET_ID:-}" || -z "${BAR_WIDGET_ID:-}" || -z "${SCENE3D_WIDGET_ID:-}" || -z "${ACTION_WIDGET_ID:-}" ]]; then
   rm -f "$ROOT/.gate/seeded/11-xblueview.sh"
@@ -64,11 +64,12 @@ api POST "/api/xblueview/widgets/$ACTION_WIDGET_ID/invoke" "{\"inputs\":{\"value
 wait_until "widget-action-restore" 30 "api POST '/api/xblueview/widgets/$SCENE3D_WIDGET_ID/data' '{}' | jq -e '(.rows[0][9] | tonumber) == 500'"
 
 # 缓存失效后数据反映新值，并在恢复源表后同步回一致性基线
-sql_owner "UPDATE demo_src.orders SET status='PAID', updated_at=now() WHERE id=2" >/dev/null
+ORIG_STATUS=$(sql_owner "SELECT status FROM demo_src.orders WHERE order_id=2")
+sql_owner "UPDATE demo_src.orders SET status='PAID', updated_at=now() WHERE order_id=2" >/dev/null
 wait_job "$(api POST "/api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/sync" '{}' | jq -r .job_id)"
 EXPECTED2=$(sql_owner "SELECT sum(amount) FROM demo_src.orders WHERE status='PAID'" | awk '{printf "%.2f", $1}')
 wait_until "kpi-refreshed" 30 "[[ \"\$(api POST '/api/xblueview/widgets/$KPI_WIDGET_ID/data' '{}' | jq -r '.rows[0][0]' | awk '{printf \"%.2f\", \$1}')\" == \"$EXPECTED2\" ]]"
-sql_owner "UPDATE demo_src.orders SET status='CANCELED', updated_at=now() WHERE id=2" >/dev/null
+sql_owner "UPDATE demo_src.orders SET status='${ORIG_STATUS//\'/\'\'}', updated_at=now() WHERE order_id=2" >/dev/null
 wait_job "$(api POST "/api/axhub/datasets/$DEMO_ORDERS_DATASET_ID/sync" '{}' | jq -r .job_id)"
 wait_mapping_idle "$ORDER_MAPPING_ID"
 wait_aggregate_idle
