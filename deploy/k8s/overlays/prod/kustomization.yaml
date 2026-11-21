@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: xbluenode
+resources:
+  - ../../base
+images:
+  - name: dex2all/axpoint-core
+    newTag: v1.0.0
+  - name: dex2all/axpoint-parser
+    newTag: v1.0.0-full
+replicas:
+  - name: axpoint-core
+    count: 2
+  - name: axpoint-parser
+    count: 2

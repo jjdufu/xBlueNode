@@ -11,6 +11,7 @@ pub mod expr;
 pub mod flow;
 pub mod graph;
 pub mod guard;
+pub mod ops;
 pub mod platform;
 pub mod ports;
 pub mod rollup;
