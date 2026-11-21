@@ -19,7 +19,7 @@ use axpoint_server::ops::templates::TemplateAuditContext;
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -207,8 +207,8 @@ async fn outbox_stats_handler(
     principal: AuthPrincipal,
 ) -> Result<Json<OutboxStats>, HttpError> {
     principal.require(Permission::OpsAdmin)?;
-    let stats = state.store.query_outbox_stats(&principal.tenant_id).await?;
-    Ok(Json(stats))
+    let outbox = state.store.query_outbox_stats(&principal.tenant_id).await?;
+    Ok(Json(outbox))
 }
 
 async fn system_info_handler(

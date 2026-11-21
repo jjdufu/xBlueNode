@@ -733,8 +733,8 @@ fn build_outbox_subscribers(
     state: &crate::state::AppState,
     store: &PgStore,
     store_arc: &Arc<PgStore>,
-    flow_engine: Arc<axpoint_flow::FlowEngine>,
-    notify_dispatcher: &Arc<axpoint_flow::NotificationDispatcher<PgStore, crate::state::AppState>>,
+    flow_engine: Arc<axpoint_flow::FlowEngine<PgStore>>,
+    notify_dispatcher: &Arc<ServerNotifyDispatcher>,
 ) -> Arc<[Arc<dyn OutboxSubscriber>]> {
     let ds_subscriber: Arc<dyn OutboxSubscriber> = Arc::new(DatasetSyncedSubscriber {
         store: store.clone(),

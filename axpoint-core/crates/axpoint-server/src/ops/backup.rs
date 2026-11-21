@@ -199,7 +199,7 @@ mod tests {
             _kinds: &[JobKind],
             _limit: u32,
             _lease_secs: u32,
-        ) -> impl std::future::Future<Output = Result<Vec<LeasedJob>, AppError>> + Send {
+        ) -> impl Future<Output = Result<Vec<LeasedJob>, AppError>> + Send {
             std::future::ready(Ok(Vec::new()))
         }
 
@@ -207,7 +207,7 @@ mod tests {
             &self,
             _job: &LeasedJob,
             _lease_secs: u32,
-        ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
+        ) -> impl Future<Output = Result<(), AppError>> + Send {
             std::future::ready(Ok(()))
         }
 
@@ -215,7 +215,7 @@ mod tests {
             &self,
             _job: &LeasedJob,
             _result: serde_json::Value,
-        ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
+        ) -> impl Future<Output = Result<(), AppError>> + Send {
             std::future::ready(Ok(()))
         }
 
@@ -223,7 +223,7 @@ mod tests {
             &self,
             _job: &LeasedJob,
             _error: &str,
-        ) -> impl std::future::Future<Output = Result<(), AppError>> + Send {
+        ) -> impl Future<Output = Result<(), AppError>> + Send {
             std::future::ready(Ok(()))
         }
 
@@ -231,7 +231,7 @@ mod tests {
             &self,
             _tenant_id: &str,
             _query: JobListQuery,
-        ) -> impl std::future::Future<Output = Result<JobListResponse, AppError>> + Send {
+        ) -> impl Future<Output = Result<JobListResponse, AppError>> + Send {
             std::future::ready(Ok(JobListResponse {
                 items: Vec::new(),
                 next_cursor: None,
@@ -242,7 +242,7 @@ mod tests {
             &self,
             _tenant_id: &str,
             _job_id: Uuid,
-        ) -> impl std::future::Future<Output = Result<Option<JobRecord>, AppError>> + Send {
+        ) -> impl Future<Output = Result<Option<JobRecord>, AppError>> + Send {
             std::future::ready(Ok(None))
         }
     }
@@ -250,28 +250,28 @@ mod tests {
     impl OpsRepository for MockBackupStore {
         fn probe_database_health(
             &self,
-        ) -> impl std::future::Future<Output = Result<DatabaseHealth, AppError>> + Send {
+        ) -> impl Future<Output = Result<DatabaseHealth, AppError>> + Send {
             std::future::ready(Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK")))
         }
 
         fn query_jobs_health_stats(
             &self,
             _tenant_id: &str,
-        ) -> impl std::future::Future<Output = Result<JobsHealthStats, AppError>> + Send {
+        ) -> impl Future<Output = Result<JobsHealthStats, AppError>> + Send {
             std::future::ready(Ok(JobsHealthStats::default()))
         }
 
         fn query_outbox_stats(
             &self,
             _tenant_id: &str,
-        ) -> impl std::future::Future<Output = Result<OutboxStats, AppError>> + Send {
+        ) -> impl Future<Output = Result<OutboxStats, AppError>> + Send {
             std::future::ready(Ok(OutboxStats::default()))
         }
 
         fn query_migrations_health(
             &self,
             _expected_total: usize,
-        ) -> impl std::future::Future<Output = Result<MigrationsHealth, AppError>> + Send {
+        ) -> impl Future<Output = Result<MigrationsHealth, AppError>> + Send {
             std::future::ready(Ok(MigrationsHealth {
                 ok: true,
                 current: 14,
@@ -282,8 +282,7 @@ mod tests {
         fn list_retention_policies(
             &self,
             _tenant_id: &str,
-        ) -> impl std::future::Future<Output = Result<Vec<RetentionPolicyRecord>, AppError>> + Send
-        {
+        ) -> impl Future<Output = Result<Vec<RetentionPolicyRecord>, AppError>> + Send {
             std::future::ready(Ok(Vec::new()))
         }
 
@@ -292,14 +291,13 @@ mod tests {
             _tenant_id: &str,
             target: RetentionTarget,
             keep_days: i32,
-        ) -> impl std::future::Future<Output = Result<RetentionPolicyRecord, AppError>> + Send
-        {
+        ) -> impl Future<Output = Result<RetentionPolicyRecord, AppError>> + Send {
             std::future::ready(Ok(RetentionPolicyRecord { target, keep_days }))
         }
 
         fn drop_expired_metric_partitions(
             &self,
-        ) -> impl std::future::Future<Output = Result<i64, AppError>> + Send {
+        ) -> impl Future<Output = Result<i64, AppError>> + Send {
             std::future::ready(Ok(0))
         }
 
@@ -342,16 +340,14 @@ mod tests {
             &self,
             _tenant_id: &str,
             _input: NewTemplateInstallInput,
-        ) -> impl std::future::Future<Output = Result<TemplateInstallRecord, AppError>> + Send
-        {
+        ) -> impl Future<Output = Result<TemplateInstallRecord, AppError>> + Send {
             std::future::ready(Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK")))
         }
 
         fn list_template_installs(
             &self,
             _tenant_id: &str,
-        ) -> impl std::future::Future<Output = Result<Vec<TemplateInstallRecord>, AppError>> + Send
-        {
+        ) -> impl Future<Output = Result<Vec<TemplateInstallRecord>, AppError>> + Send {
             std::future::ready(Ok(Vec::new()))
         }
 
@@ -359,8 +355,7 @@ mod tests {
             &self,
             _tenant_id: &str,
             _install_id: Uuid,
-        ) -> impl std::future::Future<Output = Result<Option<TemplateInstallRecord>, AppError>> + Send
-        {
+        ) -> impl Future<Output = Result<Option<TemplateInstallRecord>, AppError>> + Send {
             std::future::ready(Ok(None))
         }
 
@@ -371,8 +366,7 @@ mod tests {
             _status: TemplateInstallStatus,
             _object_map: &BTreeMap<String, TemplateCreatedObject>,
             _error_message: Option<&str>,
-        ) -> impl std::future::Future<Output = Result<TemplateInstallRecord, AppError>> + Send
-        {
+        ) -> impl Future<Output = Result<TemplateInstallRecord, AppError>> + Send {
             std::future::ready(Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK")))
         }
 
@@ -381,7 +375,7 @@ mod tests {
             _tenant_id: &str,
             _created_by: Option<Uuid>,
             _req: CreateWorkItemRequest,
-        ) -> impl std::future::Future<Output = Result<WorkItem, AppError>> + Send {
+        ) -> impl Future<Output = Result<WorkItem, AppError>> + Send {
             std::future::ready(Err(AppError::Unsupported("UNIMPLEMENTED_IN_MOCK")))
         }
 
@@ -389,8 +383,7 @@ mod tests {
             &self,
             _tenant_id: &str,
             _query: WorkItemListQuery,
-        ) -> impl std::future::Future<Output = Result<PaginatedList<WorkItem>, AppError>> + Send
-        {
+        ) -> impl Future<Output = Result<PaginatedList<WorkItem>, AppError>> + Send {
             std::future::ready(Ok(PaginatedList {
                 items: Vec::new(),
                 next_cursor: None,
@@ -401,8 +394,7 @@ mod tests {
             &self,
             _tenant_id: &str,
             _item_id: Uuid,
-        ) -> impl std::future::Future<Output = Result<Option<WorkItemDetail>, AppError>> + Send
-        {
+        ) -> impl Future<Output = Result<Option<WorkItemDetail>, AppError>> + Send {
             std::future::ready(Ok(None))
         }
 
@@ -412,7 +404,7 @@ mod tests {
             _item_id: Uuid,
             _actor: Option<Uuid>,
             _req: PatchWorkItemRequest,
-        ) -> impl std::future::Future<Output = Result<Option<WorkItem>, AppError>> + Send {
+        ) -> impl Future<Output = Result<Option<WorkItem>, AppError>> + Send {
             std::future::ready(Ok(None))
         }
 
@@ -423,8 +415,7 @@ mod tests {
             _event_kind: WorkItemEventKind,
             _actor: Option<Uuid>,
             _detail: serde_json::Value,
-        ) -> impl std::future::Future<Output = Result<Option<WorkItemEvent>, AppError>> + Send
-        {
+        ) -> impl Future<Output = Result<Option<WorkItemEvent>, AppError>> + Send {
             std::future::ready(Ok(None))
         }
 
@@ -432,7 +423,7 @@ mod tests {
             &self,
             _tenant_id: &str,
             _alert_id: Uuid,
-        ) -> impl std::future::Future<Output = Result<u64, AppError>> + Send {
+        ) -> impl Future<Output = Result<u64, AppError>> + Send {
             std::future::ready(Ok(0))
         }
     }
