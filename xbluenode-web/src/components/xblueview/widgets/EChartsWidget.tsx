@@ -65,7 +65,10 @@ export function EChartsWidget({
     const el = containerRef.current;
     if (!el) return;
 
-    const chart = echarts.init(el);
+    const chart = echarts.init(el, undefined, {
+      width: el.clientWidth > 0 ? el.clientWidth : 320,
+      height: el.clientHeight > 0 ? el.clientHeight : 180,
+    });
     chartRef.current = chart;
 
     chart.on("click", (params) => {
@@ -76,20 +79,28 @@ export function EChartsWidget({
     });
 
     const ro = new ResizeObserver(() => {
-      chart.resize();
+      if (!chart.isDisposed() && el.clientWidth > 0 && el.clientHeight > 0) {
+        chart.resize({ width: el.clientWidth, height: el.clientHeight });
+      }
     });
     ro.observe(el);
 
     return () => {
       ro.disconnect();
-      chart.dispose();
       chartRef.current = null;
+      try {
+        if (!chart.isDisposed()) {
+          chart.dispose();
+        }
+      } catch {
+        // Ignore ZRender 0x0 canvas dispose error during unmount
+      }
     };
   }, []);
 
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chart || !computed) return;
+    if (!chart || chart.isDisposed() || !computed) return;
     chart.setOption(computed.option as echarts.EChartsOption, true);
   }, [computed]);
 
