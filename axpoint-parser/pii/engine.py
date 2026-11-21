@@ -274,7 +274,7 @@ class OfflineSpacyNlpEngine(SpacyNlpEngine):
         try:
             zh_nlp = spacy.load("zh_core_web_sm")
             self.using_fallback_blank = False
-        except OSError:
+        except (OSError, ImportError):
             logger.info("zh_core_web_sm wheel not present; using spacy.blank('zh') fallback")
             zh_nlp = spacy.blank("zh")
             self.using_fallback_blank = True
