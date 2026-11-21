@@ -1,0 +1,21 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: axpoint-core-pdb
+  namespace: xbluenode
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: axpoint-core
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: axpoint-parser-pdb
+  namespace: xbluenode
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: axpoint-parser

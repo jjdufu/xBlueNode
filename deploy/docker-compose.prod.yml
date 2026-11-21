@@ -1,0 +1,184 @@
+name: xbluenode-prod
+
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      AXPOINT_PUBLIC_HOST: ${AXPOINT_PUBLIC_HOST:?AXPOINT_PUBLIC_HOST is required}
+      AXPOINT_MAP_TILE_ORIGIN: ${AXPOINT_MAP_TILE_ORIGIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      axpoint-core:
+        condition: service_healthy
+    networks:
+      - internal
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: axpoint
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: xbluenode
+      AXPOINT_APP_DB_PASSWORD: ${AXPOINT_APP_DB_PASSWORD:?AXPOINT_APP_DB_PASSWORD is required}
+      AXPOINT_LAKE_DB_PASSWORD: ${AXPOINT_LAKE_DB_PASSWORD:?AXPOINT_LAKE_DB_PASSWORD is required}
+    command:
+      - postgres
+      - -c
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-1GB}
+      - -c
+      - wal_level=replica
+      - -c
+      - archive_mode=on
+      - -c
+      - archive_timeout=60s
+      - -c
+      - archive_command=mkdir -p /backups/wal && test ! -f /backups/wal/%f && cp %p /backups/wal/%f
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - axpoint_backups:/backups
+      - ./docker/postgres-init.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U axpoint -d xbluenode"]
+      interval: 5s
+      retries: 20
+    networks:
+      - internal
+
+  migrate:
+    image: ${AXPOINT_REGISTRY:-dex2all}/axpoint-core:${AXPOINT_VERSION:-v1.0.0}
+    restart: "no"
+    entrypoint: ["/app/axpoint-server", "migrate"]
+    environment:
+      MIGRATION_DATABASE_URL: postgres://axpoint:${POSTGRES_PASSWORD}@postgres:5432/xbluenode
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+
+  axpoint-parser:
+    image: ${AXPOINT_REGISTRY:-dex2all}/axpoint-parser:${AXPOINT_PARSER_VERSION:-v1.0.0}-${AXPOINT_PARSER_VARIANT:-full}
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+    env_file: .env.prod
+    environment:
+      AXPOINT_ENV: production
+      AXPOINT_INTERNAL_TOKEN: ${AXPOINT_INTERNAL_TOKEN:?AXPOINT_INTERNAL_TOKEN is required}
+      AXPOINT_LAKE_CATALOG_DSN: postgres://axpoint_lake:${AXPOINT_LAKE_DB_PASSWORD}@postgres:5432/xbluenode
+      AXPOINT_DATA_ROOT: /var/lib/axpoint
+    volumes:
+      - axpoint_data:/var/lib/axpoint
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - internal
+
+  axpoint-core:
+    image: ${AXPOINT_REGISTRY:-dex2all}/axpoint-core:${AXPOINT_VERSION:-v1.0.0}
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+    env_file: .env.prod
+    environment:
+      AXPOINT_ENV: production
+      AXPOINT_MIGRATE_ON_START: "false"
+      AXPOINT_PUBLIC_HOST: ${AXPOINT_PUBLIC_HOST}
+      DATABASE_URL: postgres://axpoint_app:${AXPOINT_APP_DB_PASSWORD}@postgres:5432/xbluenode
+      AXPOINT_LAKE_CATALOG_DSN: postgres://axpoint_lake:${AXPOINT_LAKE_DB_PASSWORD}@postgres:5432/xbluenode
+      PARSER_BASE_URL: http://axpoint-parser:8001
+      AXPOINT_DATA_ROOT: /var/lib/axpoint
+    volumes:
+      - axpoint_data:/var/lib/axpoint
+      - axpoint_jwt:/etc/axpoint/jwt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      axpoint-parser:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - internal
+
+  axpoint-ops:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      MIGRATION_DATABASE_URL: postgres://axpoint:${POSTGRES_PASSWORD}@postgres:5432/xbluenode
+      AXPOINT_DATA_ROOT: /var/lib/axpoint
+      AXPOINT_BACKUP_DIR: /backups
+      AXPOINT_BACKUP_KEEP_DAYS: ${AXPOINT_BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - axpoint_data:/var/lib/axpoint:ro
+      - axpoint_backups:/backups
+      - ../scripts/ops:/opt/axpoint/ops:ro
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        set -euo pipefail
+        if ! command -v rsync >/dev/null 2>&1; then
+          apt-get update -qq && apt-get install -y -qq --no-install-recommends rsync ca-certificates && rm -rf /var/lib/apt/lists/*
+        fi
+        LAST_BACKUP_DAY=""
+        LAST_AUDIT_DAY=""
+        while true; do
+          PENDING_ROW=$$(psql "$$MIGRATION_DATABASE_URL" -Atqc "
+            WITH claimed AS (
+              SELECT id, backup_kind FROM ax_backups
+               WHERE status = 'PENDING'
+               ORDER BY started_at ASC
+               FOR UPDATE SKIP LOCKED
+               LIMIT 1
+            )
+            UPDATE ax_backups b SET status = 'RUNNING', started_at = NOW()
+              FROM claimed WHERE b.id = claimed.id
+            RETURNING b.id || '|' || b.backup_kind;
+          " || true)
+          if [[ -n "$$PENDING_ROW" ]]; then
+            BID="$${PENDING_ROW%%|*}"
+            BKIND="$${PENDING_ROW##*|}"
+            bash /opt/axpoint/ops/backup.sh "$$BKIND" "$$BID" || true
+          fi
+          CUR_DAY=$$(date -u +%Y-%m-%d)
+          CUR_HOUR=$$(date -u +%H)
+          if [[ "$$CUR_HOUR" == "18" && "$$LAST_BACKUP_DAY" != "$$CUR_DAY" ]]; then
+            bash /opt/axpoint/ops/backup.sh FULL || true
+            LAST_BACKUP_DAY="$$CUR_DAY"
+          fi
+          if [[ "$$CUR_HOUR" == "19" && "$$LAST_AUDIT_DAY" != "$$CUR_DAY" ]]; then
+            bash /opt/axpoint/ops/retention-audit.sh || true
+            LAST_AUDIT_DAY="$$CUR_DAY"
+          fi
+          sleep 5
+        done
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - internal
+
+volumes:
+  pgdata:
+  axpoint_data:
+  axpoint_backups:
+  axpoint_jwt:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:

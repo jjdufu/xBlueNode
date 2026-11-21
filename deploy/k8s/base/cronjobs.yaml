@@ -1,0 +1,143 @@
+# 每日 02:00 Asia/Shanghai（18:00 UTC）全量备份，03:00 Asia/Shanghai（19:00 UTC）审计保留清理，
+# 以及常驻单副本 axpoint-ops 消费手动触发的 ax_backups(status='PENDING')。
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: axpoint-backup
+  namespace: xbluenode
+spec:
+  schedule: "0 18 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: pgvector/pgvector:pg16
+              command: ["/bin/bash", "/opt/axpoint/ops/backup.sh", "FULL"]
+              envFrom:
+                - configMapRef:
+                    name: axpoint-config
+                - secretRef:
+                    name: axpoint-secrets
+              volumeMounts:
+                - name: data
+                  mountPath: /var/lib/axpoint
+                  readOnly: true
+                - name: backups
+                  mountPath: /backups
+                - name: ops-scripts
+                  mountPath: /opt/axpoint/ops
+                  readOnly: true
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: axpoint-data
+            - name: backups
+              persistentVolumeClaim:
+                claimName: axpoint-backups
+            - name: ops-scripts
+              configMap:
+                name: axpoint-ops-scripts
+                defaultMode: 0755
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: axpoint-retention-audit
+  namespace: xbluenode
+spec:
+  schedule: "0 19 * * *"
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: retention-audit
+              image: pgvector/pgvector:pg16
+              command: ["/bin/bash", "/opt/axpoint/ops/retention-audit.sh"]
+              envFrom:
+                - configMapRef:
+                    name: axpoint-config
+                - secretRef:
+                    name: axpoint-secrets
+              volumeMounts:
+                - name: ops-scripts
+                  mountPath: /opt/axpoint/ops
+                  readOnly: true
+          volumes:
+            - name: ops-scripts
+              configMap:
+                name: axpoint-ops-scripts
+                defaultMode: 0755
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: axpoint-ops
+  namespace: xbluenode
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: axpoint-ops
+  template:
+    metadata:
+      labels:
+        app: axpoint-ops
+    spec:
+      containers:
+        - name: ops-worker
+          image: pgvector/pgvector:pg16
+          command:
+            - /bin/bash
+            - -c
+            - |
+              set -euo pipefail
+              while true; do
+                ROW=$(psql "$MIGRATION_DATABASE_URL" -Atqc "
+                  WITH claimed AS (
+                    SELECT id, backup_kind FROM ax_backups
+                     WHERE status = 'PENDING'
+                     ORDER BY started_at ASC
+                     FOR UPDATE SKIP LOCKED
+                     LIMIT 1
+                  )
+                  UPDATE ax_backups b SET status = 'RUNNING', started_at = NOW()
+                    FROM claimed WHERE b.id = claimed.id
+                  RETURNING b.id || '|' || b.backup_kind;
+                " || true)
+                if [[ -n "$ROW" ]]; then
+                  bash /opt/axpoint/ops/backup.sh "${ROW##*|}" "${ROW%%|*}" || true
+                fi
+                sleep 5
+              done
+          envFrom:
+            - configMapRef:
+                name: axpoint-config
+            - secretRef:
+                name: axpoint-secrets
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/axpoint
+              readOnly: true
+            - name: backups
+              mountPath: /backups
+            - name: ops-scripts
+              mountPath: /opt/axpoint/ops
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: axpoint-data
+        - name: backups
+          persistentVolumeClaim:
+            claimName: axpoint-backups
+        - name: ops-scripts
+          configMap:
+            name: axpoint-ops-scripts
+            defaultMode: 0755

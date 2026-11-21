@@ -1,0 +1,25 @@
+{$AXPOINT_PUBLIC_HOST} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob: {$AXPOINT_MAP_TILE_ORIGIN}; style-src 'self' 'unsafe-inline'; connect-src 'self' {$AXPOINT_MAP_TILE_ORIGIN}"
+		-Server
+	}
+
+	@sse {
+		path /api/xblueview/dashboards/*/stream /api/axagent/agents/*/chat /api/axagent/embed/*/chat
+	}
+
+	handle @sse {
+		reverse_proxy axpoint-core:9995 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy axpoint-core:9995
+	}
+}

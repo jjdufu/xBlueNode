@@ -98,7 +98,7 @@
 | `POST /hooks/{tenant_id}/{slug}` | 钩子秘密 | 同上 |
 | `GET /approvals`、`POST /approvals/{id}/decide` | `DATA_READ` / `APPROVAL_DECIDE` | 同上 |
 | `GET /actions` | `DATA_READ` | 同上 |
-| `GET /rules`、`POST /rules`、`GET /rules/{id}`、`PUT /rules/{id}`、`DELETE /rules/{id}`、`POST /rules/{id}/dry-run` | `DATA_READ` / `RULE_EDIT` | §08.6 |
+| `GET /rules`、`POST /rules`、`POST /rules/dry-run`、`GET /rules/{id}`、`PUT /rules/{id}`、`DELETE /rules/{id}`、`POST /rules/{id}/dry-run` | `DATA_READ` / `RULE_EDIT` | §08.6 |
 | `GET /alerts`、`GET /alerts/{id}`、`GET /alerts/{id}/events` | `DATA_READ` | 同上 |
 | `POST /alerts/{id}/ack`、`POST /alerts/{id}/resolve`、`POST /alerts/ack-batch` | `ALERT_ACK` | 同上 |
 | `GET /channels`、`POST /channels`、`PUT /channels/{id}`、`DELETE /channels/{id}`、`POST /channels/{id}/test` | `DATA_READ` / `RULE_EDIT` | 同上 |
@@ -150,7 +150,7 @@
 | `POST /exports`、`GET /exports`、`GET /exports/{id}`、`GET /exports/{id}/download`、`DELETE /exports/{id}` | `EXPORT_DATA` | §12.5.1 |
 | `GET /export-templates`、`POST /export-templates`、`DELETE /export-templates/{id}` | `EXPORT_DATA` / `VIEW_EDIT` | §12.4 |
 | `POST /shares`、`GET /shares`、`DELETE /shares/{id}` | `VIEW_SHARE` | §12.5.2 |
-| `GET /share/{token}`、`POST /share/{token}/unlock`、`POST /share/{token}/widgets/{widget_id}/data`、`GET /share/{token}/download` | `axs_` 分享令牌 | 同上 |
+| `GET /share/{token}`、`POST /share/{token}/unlock`、`POST /share/{token}/widgets/{widget_id}/data`、`GET /share/{token}/assets/{asset_id}/content`、`GET /share/{token}/download` | `axs_` 分享令牌 | 同上 |
 
 ## 10. AxGuard（`/api/axguard`）
 
@@ -160,7 +160,7 @@
 | `GET /roles`、`POST /roles`、`PATCH /roles/{id}`、`DELETE /roles/{id}` | `GUARD_ADMIN` | 同上 |
 | `GET /departments`、`PUT /departments/{dept_id}`、`DELETE /departments/{dept_id}` | `GUARD_ADMIN` | 同上 |
 | `GET /policies`、`PUT /policies/{name}`、`DELETE /policies/{name}`、`POST /policies/validate`、`POST /policies/simulate` | `GUARD_ADMIN` | §13.6.1 |
-| `GET /row-policies`、`POST /row-policies`、`PUT /row-policies/{id}`、`DELETE /row-policies/{id}`、`PUT /row-policy-defaults`、`POST /row-policies/preview` | `GUARD_ADMIN` | §13.6.2 |
+| `GET /row-policies`、`POST /row-policies`、`PUT /row-policies/{id}`、`DELETE /row-policies/{id}`、`GET /row-policy-defaults`、`PUT /row-policy-defaults`、`POST /row-policies/preview` | `GUARD_ADMIN` | §13.6.2 |
 | `GET /column-policies`、`PUT /column-policies`、`DELETE /column-policies/{id}` | `GUARD_ADMIN` | §13.7 |
 | `GET /grants`、`POST /grants`、`DELETE /grants/{id}` | `DATA_READ` / `GUARD_ADMIN` | §13.9.1 |
 | `GET /audit`、`GET /audit/export.csv`、`GET /audit/verify`、`GET /audit/stats` | `GUARD_ADMIN` | §13.9.2 |

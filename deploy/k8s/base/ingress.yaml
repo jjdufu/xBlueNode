@@ -1,0 +1,52 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: xbluenode-ingress
+  namespace: xbluenode
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "512m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - xbluenode.example.com
+      secretName: xbluenode-tls
+  rules:
+    - host: xbluenode.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: axpoint-core
+                port:
+                  number: 9995
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: xbluenode-sse-ingress
+  namespace: xbluenode
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - xbluenode.example.com
+      secretName: xbluenode-tls
+  rules:
+    - host: xbluenode.example.com
+      http:
+        paths:
+          - path: /api/(xblueview/dashboards/.*/stream|axagent/agents/.*/chat|axagent/embed/.*/chat)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: axpoint-core
+                port:
+                  number: 9995

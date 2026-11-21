@@ -33,7 +33,9 @@ use crate::axhub::{
     SidecarSyncResult, SyncDatasetResponse, SyncJob, UnifiedParseResponse, UpdateColumnMetaRequest,
     UpdateConnectionInput, UpdateDatasetRequest, UploadRecord, WebhookBufferItem, WebhookConfig,
 };
-use crate::enums::{ConversationStatus, Environment, ExportFormat, GraphAlgo, JobKind};
+use crate::enums::{
+    ConversationStatus, Environment, ExportFormat, GraphAlgo, JobKind, RetentionTarget,
+};
 use crate::export::{
     CompleteExportJobParams, CreateExportJobParams, CreateExportTemplateParams,
     CreateShareLinkParams, ExportJobRecord, ExportListQuery, ExportTemplateRecord,
@@ -66,6 +68,12 @@ use crate::guard::{
     PutRowPolicyDefaultRequest, ResolvedSessionRow, ResourceRef, RowPolicyDefaultRecord,
     RowPolicyRecord, SaveRowPolicyRequest, SessionSummaryRecord, UpsertDepartmentRequest,
     UpsertOidcUserParams,
+};
+use crate::ops::{
+    BackupKind, BackupRecord, CreateWorkItemRequest, DatabaseHealth, FlowWorkItemInput,
+    JobsHealthStats, MigrationsHealth, NewTemplateInstallInput, OutboxStats, PatchWorkItemRequest,
+    RetentionPolicyRecord, TemplateCreatedObject, TemplateInstallRecord, TemplateInstallStatus,
+    WorkItem, WorkItemDetail, WorkItemEvent, WorkItemEventKind, WorkItemListQuery,
 };
 use crate::platform::{
     ApiTokenRecord, AuditRecord, BoxFuture, JobListQuery, JobListResponse, JobRecord, LeasedJob,
@@ -300,6 +308,26 @@ pub trait JobQueuePort: Send + Sync {
         tenant_id: &str,
         job_id: Uuid,
     ) -> impl Future<Output = Result<Option<JobRecord>, AppError>> + Send;
+
+    /// Resets a terminal `FAILED` or `CANCELED` job back to `PENDING` (`attempt = 0`, `next_run_at = NOW()`).
+    fn retry_job(
+        &self,
+        tenant_id: &str,
+        job_id: Uuid,
+    ) -> impl Future<Output = Result<Option<JobRecord>, AppError>> + Send {
+        let _ = (tenant_id, job_id);
+        async { Err(AppError::Unsupported("JOB_RETRY_UNSUPPORTED")) }
+    }
+
+    /// Cancels a `PENDING` or `RUNNING` job (`status = 'CANCELED'`, clears lease).
+    fn cancel_job(
+        &self,
+        tenant_id: &str,
+        job_id: Uuid,
+    ) -> impl Future<Output = Result<Option<JobRecord>, AppError>> + Send {
+        let _ = (tenant_id, job_id);
+        async { Err(AppError::Unsupported("JOB_CANCEL_UNSUPPORTED")) }
+    }
 }
 
 /// Transactional event outbox port backed by `ax_outbox`.
@@ -1795,6 +1823,16 @@ pub trait FlowRepository: Send + Sync {
 
     /// Lists active tenant IDs from `sec_tenants` for periodic approval-expiration scanning.
     fn list_active_tenants(&self) -> impl Future<Output = Result<Vec<String>, AppError>> + Send;
+
+    /// Creates a `FLOW_ACTION` work item inside `ax_work_items` when `ACTION_EMIT` executes a `WORK_ITEM` action in `PROD` (`12-STEP14` §14.7).
+    fn create_work_item_from_flow(
+        &self,
+        tenant_id: &str,
+        input: FlowWorkItemInput,
+    ) -> impl Future<Output = Result<WorkItem, AppError>> + Send {
+        let _ = (tenant_id, input);
+        async { Err(AppError::Unsupported("WORK_ITEM_UNSUPPORTED")) }
+    }
 }
 
 /// Object-safe SSRF outbound URL guard port (`07-STEP07-08` §07.0 & Step 01 §01.1).
@@ -3460,4 +3498,145 @@ pub trait GuardRepository: Send + Sync {
         from: Option<chrono::DateTime<chrono::Utc>>,
         to: Option<chrono::DateTime<chrono::Utc>>,
     ) -> impl Future<Output = Result<AuditStatsResponse, AppError>> + Send;
+}
+
+/// Persistence port for `AxOps` deep health, retention policies, platform backups,
+/// industry template installations, and delivery work items (`12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md`).
+pub trait OpsRepository: Send + Sync {
+    /// Measures PostgreSQL round-trip query latency and optional streaming replication lag (`§14.4.3`).
+    fn probe_database_health(
+        &self,
+    ) -> impl Future<Output = Result<DatabaseHealth, AppError>> + Send;
+
+    /// Queries tenant-scoped `ax_jobs` queue depth and 24-hour failure counts (`§14.4.3`).
+    fn query_jobs_health_stats(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<JobsHealthStats, AppError>> + Send;
+
+    /// Queries tenant-scoped `ax_outbox` pending count and lag in seconds (`§14.4.3`).
+    fn query_outbox_stats(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<OutboxStats, AppError>> + Send;
+
+    /// Queries `_sqlx_migrations` current applied version and computes pending count against `expected_total` (`§14.4.3`).
+    fn query_migrations_health(
+        &self,
+        expected_total: usize,
+    ) -> impl Future<Output = Result<MigrationsHealth, AppError>> + Send;
+
+    /// Lists all `ax_retention_policies` rows for `tenant_id` (`GET /api/axops/retention`).
+    fn list_retention_policies(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<RetentionPolicyRecord>, AppError>> + Send;
+
+    /// Upserts `keep_days` for `(tenant_id, target)` in `ax_retention_policies` (`PUT /api/axops/retention/{target}`).
+    fn upsert_retention_policy(
+        &self,
+        tenant_id: &str,
+        target: RetentionTarget,
+        keep_days: i32,
+    ) -> impl Future<Output = Result<RetentionPolicyRecord, AppError>> + Send;
+
+    /// Invokes `SECURITY DEFINER` function `ax_drop_expired_metric_partitions()` (`§14.4.1`).
+    fn drop_expired_metric_partitions(&self) -> impl Future<Output = Result<i64, AppError>> + Send;
+
+    /// Inserts a platform-level `ax_backups(status = 'PENDING')` row (`POST /api/axops/backups`).
+    fn create_backup(
+        &self,
+        backup_kind: BackupKind,
+    ) -> impl Future<Output = Result<BackupRecord, AppError>> + Send;
+
+    /// Lists platform-level `ax_backups` ordered by `started_at DESC`.
+    fn list_backups(
+        &self,
+        limit: u32,
+        cursor: Option<&str>,
+    ) -> impl Future<Output = Result<PaginatedList<BackupRecord>, AppError>> + Send;
+
+    /// Fetches a single platform-level `ax_backups` row by UUID.
+    fn get_backup(
+        &self,
+        backup_id: Uuid,
+    ) -> impl Future<Output = Result<Option<BackupRecord>, AppError>> + Send;
+
+    /// Inserts a `PLANNED` row into `ax_template_installs` (`POST /api/axops/templates/{pack_id}/plan`).
+    fn create_template_install(
+        &self,
+        tenant_id: &str,
+        input: NewTemplateInstallInput,
+    ) -> impl Future<Output = Result<TemplateInstallRecord, AppError>> + Send;
+
+    /// Lists `ax_template_installs` in `tenant_id` ordered by `created_at DESC`.
+    fn list_template_installs(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<TemplateInstallRecord>, AppError>> + Send;
+
+    /// Fetches a single `ax_template_installs` row in `tenant_id`.
+    fn get_template_install(
+        &self,
+        tenant_id: &str,
+        install_id: Uuid,
+    ) -> impl Future<Output = Result<Option<TemplateInstallRecord>, AppError>> + Send;
+
+    /// Updates `status`, `object_map`, `error_message`, and `finished_at` on `ax_template_installs` (`§14.5.3`).
+    fn update_template_install_progress(
+        &self,
+        tenant_id: &str,
+        install_id: Uuid,
+        status: TemplateInstallStatus,
+        object_map: &BTreeMap<String, TemplateCreatedObject>,
+        error_message: Option<&str>,
+    ) -> impl Future<Output = Result<TemplateInstallRecord, AppError>> + Send;
+
+    /// Allocates monotonic `item_no` under `pg_advisory_xact_lock`, inserts `ax_work_items`, and appends `CREATED` event (`§14.1`, `§14.7`).
+    fn create_work_item(
+        &self,
+        tenant_id: &str,
+        created_by: Option<Uuid>,
+        req: CreateWorkItemRequest,
+    ) -> impl Future<Output = Result<WorkItem, AppError>> + Send;
+
+    /// Lists paginated `ax_work_items` in `tenant_id` with optional status/priority/assignee/source filters.
+    fn list_work_items(
+        &self,
+        tenant_id: &str,
+        query: WorkItemListQuery,
+    ) -> impl Future<Output = Result<PaginatedList<WorkItem>, AppError>> + Send;
+
+    /// Loads a [`WorkItemDetail`] (item plus chronological `events`) by UUID.
+    fn get_work_item_detail(
+        &self,
+        tenant_id: &str,
+        item_id: Uuid,
+    ) -> impl Future<Output = Result<Option<WorkItemDetail>, AppError>> + Send;
+
+    /// Applies partial updates to `ax_work_items` and appends `STATUS` / `ASSIGN` events inside one transaction (`§14.7`).
+    fn patch_work_item(
+        &self,
+        tenant_id: &str,
+        item_id: Uuid,
+        actor: Option<Uuid>,
+        req: PatchWorkItemRequest,
+    ) -> impl Future<Output = Result<Option<WorkItem>, AppError>> + Send;
+
+    /// Appends a `COMMENT` or `LINK` event to `ax_work_item_events` and touches `updated_at`.
+    fn add_work_item_event(
+        &self,
+        tenant_id: &str,
+        item_id: Uuid,
+        event_kind: WorkItemEventKind,
+        actor: Option<Uuid>,
+        detail: serde_json::Value,
+    ) -> impl Future<Output = Result<Option<WorkItemEvent>, AppError>> + Send;
+
+    /// Appends a `LINK` event (`ALERT_RESOLVED`) to all `ALERT`-sourced work items referencing `alert_id` (`§14.7`).
+    fn link_resolved_alert_work_items(
+        &self,
+        tenant_id: &str,
+        alert_id: Uuid,
+    ) -> impl Future<Output = Result<u64, AppError>> + Send;
 }

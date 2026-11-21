@@ -8,4 +8,5 @@ export * from "./api/axflow";
 export * from "./api/axagent";
 export * from "./api/axsim";
 export * from "./api/xblueview";
+export * from "./api/axops";
 

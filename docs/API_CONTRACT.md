@@ -227,6 +227,19 @@
   - Cedar ABAC 与行列级策略（`GUARD_ADMIN`）：`GET /api/axguard/policies`、`PUT|DELETE /api/axguard/policies/{name}`、`POST /api/axguard/policies/validate`、`POST /api/axguard/policies/simulate`；`GET|POST /api/axguard/row-policies`、`PUT|DELETE /api/axguard/row-policies/{id}`、`GET|PUT /api/axguard/row-policy-defaults`、`POST /api/axguard/row-policies/preview`；`GET|PUT /api/axguard/column-policies`、`DELETE /api/axguard/column-policies/{id}`。
   - 跨部门授权与防篡改审计链：`GET|POST /api/axguard/grants`、`DELETE /api/axguard/grants/{id}`（`DATA_READ` / `GUARD_ADMIN`，关联 `ax_approvals(source_kind='GRANT')`）；`GET /api/axguard/audit`、`GET /api/axguard/audit/export.csv`、`GET /api/axguard/audit/verify`、`GET /api/axguard/audit/stats`（`GUARD_ADMIN`）。
 
+### `AxOps` 运维监控、备份恢复、行业模板包与工作项（`/api/axops/*`，Step 14）
+
+- 任务队列、深度健康与保留策略：
+  - `GET /api/axops/jobs`、`GET /api/axops/jobs/{id}`（`DATA_READ`）；`POST /api/axops/jobs/{id}/retry`、`POST /api/axops/jobs/{id}/cancel`、`POST /api/axops/jobs/rollup-now`（`OPS_ADMIN`）。
+  - `GET /api/axops/health/deep`、`GET /api/axops/outbox/stats`、`GET /api/axops/system/info`（`OPS_ADMIN`）：每项探针独立 `3s` 超时，返回 `DeepHealthReport {database, parser, lake, llm, embed, disk, jobs, outbox, migrations, version}`。
+  - `GET /api/axops/retention`、`PUT /api/axops/retention/{target} {keep_days}`、`POST /api/axops/retention/run-now`（`OPS_ADMIN`）：覆盖全部 11 类保留目标并立即入队 `RETENTION` 任务。
+- 平台级备份与行业模板包：
+  - `GET|POST /api/axops/backups`、`GET /api/axops/backups/{id}`（仅 `default` 租户 `OPS_ADMIN`）：创建 `PENDING` 备份并写 `BACKUP_RUN` 审计，由 `axpoint-ops`（或本地 `AXPOINT_BACKUP_CMD`）执行 `backup.sh` 并支持 `restore-drill.sh` 演练核验为 `VERIFIED`。
+  - `GET /api/axops/templates`、`GET /api/axops/templates/{pack_id}`（`DATA_READ`）；`POST /api/axops/templates/{pack_id}/plan {on_conflict?}`、`GET /api/axops/templates/installs`、`POST /api/axops/templates/installs/{id}/apply`、`POST /api/axops/templates/installs/{id}/uninstall`（`DATA_READ` / `OPS_ADMIN`）：校验 `sha256`、支持冲突 `SKIP`/`RENAME`、断点续装与内容哈希一致时的安全卸载。
+  - `POST /api/axops/demo/{scenario}/load`（`OPS_ADMIN`，`supply_chain | manufacturing_equipment | retail_store`）：一键安装模板包、运行刷新流程、回放 30 日时序并创建预置推演沙盘与场景。
+- 交付追踪工作项：
+  - `GET /api/axops/work-items`、`GET /api/axops/work-items/{id}`（`DATA_READ`）；`POST /api/axops/work-items`、`PATCH /api/axops/work-items/{id}`、`POST /api/axops/work-items/{id}/comments`（`FLOW_RUN`）：租户内 `WI-<n>` 自增编号，支持手动、`AxFlow` `ACTION_EMIT(WORK_ITEM)`、告警转工作项（告警解决自动追加 `LINK` 事件）、推演决策与模板待办五类来源。
+
 ---
 
 ## 2. AxParser Sidecar（`axpoint-parser`，端口 `8001`，仅内部网络）
@@ -234,7 +247,7 @@
 除 `GET /health` 外，所有请求携带 `X-AxPoint-Internal-Token: $AXPOINT_INTERNAL_TOKEN` 与 `X-AxPoint-Tenant`（可选 `X-AxPoint-Timezone`、`traceparent`），否则返回 `401`。
 
 ### `GET /health`
-返回解析引擎与模型目录（`${AXPOINT_MODEL_PATH:-/var/lib/axpoint/models}`）就绪状态。
+返回解析引擎版本（`version`）与模型目录（`${AXPOINT_MODEL_PATH:-/var/lib/axpoint/models}`）就绪状态。
 
 ### `POST /parse`
 `multipart/form-data`（字段 `file`），仅返回文本轨轻量结果 `ParseResponse {title, markdown, engine}`（不写 Parquet 暂存文件）。
