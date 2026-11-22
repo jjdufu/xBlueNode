@@ -1752,7 +1752,19 @@ async fn run_grounding_eval_handler(
     if !principal.has(Permission::GuardAdmin) && !principal.has(Permission::OpsAdmin) {
         return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
     }
-    let [cloud_inp, local_inp] = run_grounding_eval_suite().await?;
+    let [cloud_inp, local_inp] = tokio::task::spawn_blocking(|| {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| AppError::Config(format!("build eval runtime failed: {e}")))?;
+        rt.block_on(run_grounding_eval_suite())
+    })
+    .await
+    .map_err(|e| {
+        HttpError(AppError::Config(format!(
+            "grounding eval task join failed: {e}"
+        )))
+    })??;
     let cloud_rec = state
         .store
         .insert_grounding_eval_run(&principal.tenant_id, cloud_inp)
