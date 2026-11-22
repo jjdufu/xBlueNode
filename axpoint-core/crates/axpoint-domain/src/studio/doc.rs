@@ -653,7 +653,7 @@ impl SchemaDiff {
     }
 }
 
-/// Subgraph metadata record returned by `/api/xblue/subgraphs` (`06-STEP05-06` §05.1 & §05.4.5).
+/// Subgraph metadata record returned by `/api/xblue/subgraphs` (`06-STEP05-06` §05.1 & `03-STEP17` §17.4).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubgraphInfo {
     /// Subgraph UUID.
@@ -668,6 +668,15 @@ pub struct SubgraphInfo {
     pub owner_dept: String,
     /// Whether this is the authoritative enterprise `main` graph.
     pub is_main: bool,
+    /// Whether this subgraph is an isolated dev sandbox (`03-STEP17`).
+    #[serde(default)]
+    pub is_dev_sandbox: bool,
+    /// Optional source template pack identifier when cloned from a template (`03-STEP17`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_template_id: Option<String>,
+    /// Timestamp of the most recent runtime node reset (`03-STEP17`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reset_at: Option<DateTime<Utc>>,
     /// Current published head version (`0` before first publish).
     pub current_version: i32,
     /// Creator user UUID.
@@ -683,7 +692,7 @@ fn default_owner_dept() -> String {
     String::from("default")
 }
 
-/// Request body for `POST /api/xblue/subgraphs` (`06-STEP05-06` §05.4.5).
+/// Request body for `POST /api/xblue/subgraphs` (`06-STEP05-06` §05.4.5 & `03-STEP17` §17.4).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateSubgraphRequest {
@@ -703,6 +712,12 @@ pub struct CreateSubgraphRequest {
     /// Optional subset of `main` node type names to copy when `seed_from_main = true`.
     #[serde(default)]
     pub seed_node_types: Option<Vec<String>>,
+    /// Whether to initialize this subgraph as an isolated dev sandbox (`03-STEP17`).
+    #[serde(default)]
+    pub is_dev_sandbox: bool,
+    /// Optional source template identifier recorded on dev sandboxes.
+    #[serde(default)]
+    pub source_template_id: Option<String>,
 }
 
 /// Request body for `PATCH /api/xblue/subgraphs/{slug}` (`A4` §4).

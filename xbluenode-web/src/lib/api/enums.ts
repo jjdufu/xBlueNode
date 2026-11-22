@@ -329,7 +329,9 @@ export type AuditAction =
   | "SHARE_ACCESS"
   | "POLICY_CHANGE"
   | "BACKUP_RUN"
-  | "TEMPLATE_INSTALL";
+  | "TEMPLATE_INSTALL"
+  | "BUILDER_MCP_MUTATE"
+  | "TRIAL_TEMPLATE_CLONE";
 
 export type TokenKind =
   | "ACCESS"
@@ -339,3 +341,5 @@ export type TokenKind =
   | "SHARE";
 
 export type StructuredOutputMode = "NONE" | "JSON_OBJECT" | "JSON_SCHEMA";
+
+export type TokenProfile = "GENERAL" | "BUILDER";

@@ -598,7 +598,7 @@ async fn upsert_mapped_nodes_tx(
            FROM UNNEST(
                $4::text[], $5::text[], $6::jsonb[], $7::jsonb[], $8::float8[], $9::float8[]
            ) AS u(node_key, title, properties, metrics, geo_lng, geo_lat)
-         ON CONFLICT (tenant_id, type_name, node_key) DO UPDATE SET
+         ON CONFLICT (tenant_id, subgraph_slug, type_name, node_key) DO UPDATE SET
              title = EXCLUDED.title,
              properties = EXCLUDED.properties,
              metrics = EXCLUDED.metrics,
@@ -850,7 +850,7 @@ async fn upsert_mapped_links_tx(
          SELECT $1, u.link_type, u.src_id, u.dst_id, u.weight, $2
            FROM UNNEST($3::text[], $4::uuid[], $5::uuid[], $6::float8[])
                 AS u(link_type, src_id, dst_id, weight)
-         ON CONFLICT (tenant_id, link_type, src_node_id, dst_node_id) DO UPDATE SET
+         ON CONFLICT (tenant_id, subgraph_slug, link_type, src_node_id, dst_node_id) DO UPDATE SET
              weight = EXCLUDED.weight,
              source_dataset_id = EXCLUDED.source_dataset_id,
              updated_at = NOW()",
@@ -917,7 +917,7 @@ async fn resolve_or_create_targets_tx(
             "INSERT INTO xb_nodes (tenant_id, type_name, node_key, title, source_dataset_id, source_row_key)
              SELECT $1, u.type_name, u.node_key, u.node_key, $2, u.node_key
                FROM UNNEST($3::text[], $4::text[]) AS u(type_name, node_key)
-             ON CONFLICT (tenant_id, type_name, node_key) DO UPDATE SET
+             ON CONFLICT (tenant_id, subgraph_slug, type_name, node_key) DO UPDATE SET
                  updated_at = NOW()
              RETURNING id, type_name, node_key",
         )

@@ -33,6 +33,11 @@ use crate::axhub::{
     SidecarSyncResult, SyncDatasetResponse, SyncJob, UnifiedParseResponse, UpdateColumnMetaRequest,
     UpdateConnectionInput, UpdateDatasetRequest, UploadRecord, WebhookBufferItem, WebhookConfig,
 };
+use crate::builder::{
+    BuilderDashboardBrief, CloneTemplateSandboxResponse, DevSubgraphResetResponse,
+    DevSubgraphRunRequest, DevSubgraphRunResponse, TemplateResourcePayload,
+    UpsertDashboardDraftInput, UpsertDashboardDraftResponse,
+};
 use crate::enums::{
     ConversationStatus, Environment, ExportFormat, GraphAlgo, JobKind, RetentionTarget,
 };
@@ -44,10 +49,10 @@ use crate::export::{
 };
 use crate::flow::{
     ActionListQuery, ActionLogRecord, ApprovalListQuery, ApprovalRecord, DecideApprovalParams,
-    DeployFlowRequest, EventFlowItem, FlowDeploymentRecord, FlowListQuery, FlowVersionRecord,
-    FlowVersionsListResponse, NewActionLogInput, NewApprovalInput, ProgressionPlannerFn,
-    PublishFlowVersionRequest, ResolvedFlowHook, RunListQuery, RunRecord, ScheduledFlowItem,
-    StartRunParams, StepMutation, StepRecord, UpdateAxFlowRequest,
+    DeployFlowRequest, EventFlowItem, FlowDeploymentRecord, FlowGraph, FlowIssue, FlowListQuery,
+    FlowVersionRecord, FlowVersionsListResponse, NewActionLogInput, NewApprovalInput,
+    ProgressionPlannerFn, PublishFlowVersionRequest, ResolvedFlowHook, RunListQuery, RunRecord,
+    ScheduledFlowItem, StartRunParams, StepMutation, StepRecord, TriggerCfg, UpdateAxFlowRequest,
 };
 use crate::graph::{
     AlgoResultsQuery, AlgoResultsResponse, AlgoRunRequest, AlgoRunResponse, BulkNodesRequest,
@@ -1342,6 +1347,16 @@ pub trait StudioRepository: Send + Sync {
         tenant_id: &str,
         slug: &str,
     ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Deletes all runtime `xb_nodes`, `xb_links`, and `xb_metric_series` inside a dev sandbox subgraph (`03-STEP17` §17.4).
+    fn reset_dev_subgraph_nodes(
+        &self,
+        _tenant_id: &str,
+        _slug: &str,
+        _web_base_url: Option<&str>,
+    ) -> impl Future<Output = Result<DevSubgraphResetResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::NotFound("SUBGRAPH_NOT_FOUND")))
+    }
 
     /// Reads the currently published `SchemaDoc` and head `version` for `subgraph_slug` (ensuring `main` exists).
     fn get_published_schema(
@@ -3699,4 +3714,65 @@ pub trait OpsRepository: Send + Sync {
         tenant_id: &str,
         alert_id: Uuid,
     ) -> impl Future<Output = Result<u64, AppError>> + Send;
+}
+
+/// Object-safe build-plane port allowing `axpoint-agent` (`AxBuilder` MCP) to list/upsert `DRAFT`
+/// dashboards and run static `AxFlow` DAG validation without cross-crate coupling (`03-STEP17` §17.0).
+pub trait BuilderDashboardPort: Send + Sync {
+    /// Lists lightweight dashboard summaries in `tenant_id` for `axbuilder_pull_workspace`.
+    fn list_dashboard_briefs<'a>(
+        &'a self,
+        tenant_id: &'a str,
+    ) -> BoxFuture<'a, Vec<BuilderDashboardBrief>>;
+
+    /// Validates widget coordinates/bindings and upserts a `DRAFT` dashboard + widgets (`axbuilder_upsert_dashboard_draft`).
+    fn upsert_dashboard_draft<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        actor_user_id: Option<Uuid>,
+        actor_dept: &'a str,
+        input: UpsertDashboardDraftInput,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, UpsertDashboardDraftResponse>;
+
+    /// Executes static `AxFlow` DAG validation rules (`cycle`, operator schemas, `when` AST) on a proposed flow draft.
+    fn validate_flow_draft<'a>(
+        &'a self,
+        graph: &'a FlowGraph,
+        trigger_cfg: &'a TriggerCfg,
+        slug: Option<&'a str>,
+    ) -> BoxFuture<'a, Vec<FlowIssue>>;
+}
+
+/// Object-safe build-plane port allowing `axpoint-agent` (`AxBuilder` MCP) to inspect built-in
+/// template packs, clone templates into isolated dev sandboxes, and execute sandbox dry-run materializations (`03-STEP17` §17.0).
+pub trait TemplateSandboxPort: Send + Sync {
+    /// Lists all built-in template packs under `templates/packs/*`.
+    fn list_template_packs(&self) -> BoxFuture<'_, Vec<crate::ops::TemplateManifest>>;
+
+    /// Reads the full resource bundle (`manifest`, `README.md`, `SchemaDoc`, `metrics`, `mappings`) for `axpoint://templates/{id}`.
+    fn read_template_resource<'a>(
+        &'a self,
+        pack_id: &'a str,
+    ) -> BoxFuture<'a, TemplateResourcePayload>;
+
+    /// Clones `pack_id` into an isolated `is_dev_sandbox = true` subgraph and creates a `DRAFT` `SchemaDoc` (`axbuilder_clone_template`).
+    fn clone_template_sandbox<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        actor_user_id: Option<Uuid>,
+        pack_id: &'a str,
+        target_slug: Option<&'a str>,
+        display_name: Option<&'a str>,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, CloneTemplateSandboxResponse>;
+
+    /// Materializes up to `req.limit_rows` dataset rows and computes derived/aggregated metrics inside a dev sandbox subgraph (`axbuilder_run_dev_subgraph`).
+    fn dry_run_dev_subgraph<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        subgraph_slug: &'a str,
+        req: DevSubgraphRunRequest,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, DevSubgraphRunResponse>;
 }

@@ -200,6 +200,12 @@ pub struct ApiTokenRecord {
     pub user_id: Uuid,
     /// Optional permission scope restriction (empty inherits user permissions).
     pub scopes: BTreeSet<Permission>,
+    /// Token capability profile (`GENERAL` or `BUILDER`).
+    #[serde(default)]
+    pub token_profile: crate::enums::TokenProfile,
+    /// Optional frontend base URL bound to the token for deep-link generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_base_url: Option<String>,
 }
 
 /// User identity and role union loaded from `sec_users` + `sec_roles`.
@@ -248,6 +254,9 @@ pub struct MeResponse {
     pub permissions: BTreeSet<Permission>,
     /// Credential type used on this request.
     pub token_kind: TokenKind,
+    /// Personal access token profile (`GENERAL` or `BUILDER`).
+    #[serde(default)]
+    pub token_profile: crate::enums::TokenProfile,
 }
 
 /// Object-safe handler registered in `JobHandlerRegistry` for a specific [`JobKind`].

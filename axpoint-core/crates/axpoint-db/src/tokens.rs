@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{NewApiTokenInput, PersonalAccessTokenSummary};
-use axpoint_domain::enums::{Permission, Sensitivity};
+use axpoint_domain::enums::{Permission, Sensitivity, TokenProfile};
 use axpoint_domain::platform::{ApiTokenRecord, PrincipalRecord};
 use axpoint_domain::ports::{ApiTokenRepository, CredentialStore};
 use chrono::{DateTime, Utc};
@@ -48,6 +48,13 @@ fn decode_pat_summary_row(
         .try_get("scopes")
         .map_err(|err| AppError::Database(format!("decode sec_api_tokens.scopes failed: {err}")))?;
     let scopes = parse_permission_list(raw_scopes)?;
+    let raw_profile: String = row.try_get("token_profile").map_err(|err| {
+        AppError::Database(format!("decode sec_api_tokens.token_profile failed: {err}"))
+    })?;
+    let token_profile: TokenProfile = raw_profile.parse()?;
+    let web_base_url: Option<String> = row.try_get("web_base_url").map_err(|err| {
+        AppError::Database(format!("decode sec_api_tokens.web_base_url failed: {err}"))
+    })?;
     let expires_at: Option<DateTime<Utc>> = row.try_get("expires_at").map_err(|err| {
         AppError::Database(format!("decode sec_api_tokens.expires_at failed: {err}"))
     })?;
@@ -66,6 +73,8 @@ fn decode_pat_summary_row(
         name,
         token_prefix,
         scopes,
+        token_profile,
+        web_base_url,
         expires_at,
         last_used_at,
         revoked_at,
@@ -81,7 +90,8 @@ impl ApiTokenRepository for PgStore {
     ) -> Result<Vec<PersonalAccessTokenSummary>, AppError> {
         let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         let rows = sqlx::query(
-            "SELECT id, name, token_prefix, scopes, expires_at, last_used_at, revoked_at, created_at
+            "SELECT id, name, token_prefix, scopes, token_profile, web_base_url,
+                    expires_at, last_used_at, revoked_at, created_at
                FROM sec_api_tokens
               WHERE user_id = $1
               ORDER BY created_at DESC, id DESC",
@@ -116,9 +126,10 @@ impl ApiTokenRepository for PgStore {
 
         let row = sqlx::query(
             "INSERT INTO sec_api_tokens
-                (tenant_id, user_id, name, token_prefix, token_hash, scopes, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)
-             RETURNING id, name, token_prefix, scopes, expires_at, last_used_at, revoked_at, created_at",
+                (tenant_id, user_id, name, token_prefix, token_hash, scopes, token_profile, web_base_url, expires_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             RETURNING id, name, token_prefix, scopes, token_profile, web_base_url,
+                       expires_at, last_used_at, revoked_at, created_at",
         )
         .bind(tenant_id)
         .bind(input.user_id)
@@ -126,6 +137,8 @@ impl ApiTokenRepository for PgStore {
         .bind(&input.token_prefix)
         .bind(&input.token_hash)
         .bind(&scope_strings)
+        .bind(input.token_profile.as_str())
+        .bind(&input.web_base_url)
         .bind(input.expires_at)
         .fetch_one(&mut *tx)
         .await
@@ -169,7 +182,8 @@ impl CredentialStore for PgStore {
         token_hash: &str,
     ) -> Result<Option<ApiTokenRecord>, AppError> {
         let row_opt = sqlx::query(
-            "SELECT token_id, tenant_id, user_id, scopes FROM ax_resolve_api_token($1)",
+            "SELECT token_id, tenant_id, user_id, scopes, token_profile, web_base_url
+               FROM ax_resolve_api_token($1)",
         )
         .bind(token_hash)
         .fetch_optional(&self.pool)
@@ -192,6 +206,13 @@ impl CredentialStore for PgStore {
         let raw_scopes: Vec<String> = row
             .try_get("scopes")
             .map_err(|err| AppError::Database(format!("decode scopes failed: {err}")))?;
+        let raw_profile: String = row
+            .try_get("token_profile")
+            .map_err(|err| AppError::Database(format!("decode token_profile failed: {err}")))?;
+        let token_profile: TokenProfile = raw_profile.parse()?;
+        let web_base_url: Option<String> = row
+            .try_get("web_base_url")
+            .map_err(|err| AppError::Database(format!("decode web_base_url failed: {err}")))?;
 
         let scopes = parse_permission_set(raw_scopes)?;
         Ok(Some(ApiTokenRecord {
@@ -199,6 +220,8 @@ impl CredentialStore for PgStore {
             tenant_id,
             user_id,
             scopes,
+            token_profile,
+            web_base_url,
         }))
     }
 

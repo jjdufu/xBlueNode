@@ -33,8 +33,8 @@ pub use axpoint_domain::agent::{
 };
 pub use axpoint_domain::enums::EndpointKind;
 pub use axpoint_domain::ports::{
-    AgentCapabilityPort, AgentRepository, AgentTaskPort, ApiTokenRepository, LlmProviderStore,
-    SimExecutionPort,
+    AgentCapabilityPort, AgentRepository, AgentTaskPort, ApiTokenRepository, BuilderDashboardPort,
+    LlmProviderStore, SimExecutionPort, TemplateSandboxPort,
 };
 
 pub use embed::{EmbedRequestMeta, EmbedService, generate_embed_token};

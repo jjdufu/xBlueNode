@@ -72,6 +72,7 @@ impl AuthPrincipal {
             roles: self.roles.clone(),
             permissions: self.permissions.clone(),
             token_kind: self.token_kind,
+            token_profile: axpoint_domain::enums::TokenProfile::General,
         }
     }
 }

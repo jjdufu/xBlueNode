@@ -450,6 +450,9 @@ export interface SubgraphInfo {
   description: string;
   owner_dept: string;
   is_main: boolean;
+  is_dev_sandbox?: boolean;
+  source_template_id?: string | null;
+  last_reset_at?: string | null;
   current_version: number;
   created_by?: string | null;
   created_at: string;
@@ -463,6 +466,37 @@ export interface CreateSubgraphRequest {
   owner_dept?: string;
   seed_from_main?: boolean;
   seed_node_types?: string[];
+  is_dev_sandbox?: boolean;
+}
+
+export interface DeepLinks {
+  studio_url: string;
+  flow_url: string;
+  view_url: string;
+}
+
+export interface DevSubgraphRunRequest {
+  draft_id?: string | null;
+  limit_rows?: number;
+}
+
+export interface DevSubgraphRunResponse {
+  subgraph_slug: string;
+  nodes_upserted: number;
+  links_upserted: number;
+  points_computed: number;
+  sample_nodes: BlueNode[];
+  reject_samples: MappingRejectSample[];
+  deep_links: DeepLinks;
+}
+
+export interface DevSubgraphResetResponse {
+  subgraph_slug: string;
+  nodes_deleted: number;
+  links_deleted: number;
+  series_points_deleted: number;
+  last_reset_at: string;
+  deep_links: DeepLinks;
 }
 
 export interface UpdateSubgraphRequest {
@@ -1105,6 +1139,9 @@ export const SubgraphInfoSchema: z.ZodType<SubgraphInfo> = z.object({
   description: z.string().default(""),
   owner_dept: z.string().default("default"),
   is_main: z.boolean().default(false),
+  is_dev_sandbox: z.boolean().optional(),
+  source_template_id: z.string().nullable().optional(),
+  last_reset_at: z.string().nullable().optional(),
   current_version: z.number().default(1),
   created_by: z.string().nullable().optional(),
   created_at: z.string().default(""),
@@ -1850,6 +1887,7 @@ export const xblueApi = {
     }),
   getNodes: () => requestJson<NodeListResponse>("/api/xblue/nodes"),
   listNodes: (params?: {
+    subgraph?: string;
     type_name?: string;
     q?: string;
     bbox?: string;
@@ -2102,6 +2140,9 @@ export const xblueApi = {
     if (payload.seed_node_types && payload.seed_node_types.length > 0) {
       body.seed_node_types = payload.seed_node_types;
     }
+    if (payload.is_dev_sandbox !== undefined) {
+      body.is_dev_sandbox = payload.is_dev_sandbox;
+    }
     const raw = await requestJson<unknown>("/api/xblue/subgraphs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2153,6 +2194,29 @@ export const xblueApi = {
       .safeParse(raw ?? {});
     return parsed.success ? parsed.data : { deleted: true };
   },
+  dryRunSubgraph: async (
+    slug: string,
+    payload?: DevSubgraphRunRequest
+  ): Promise<DevSubgraphRunResponse> =>
+    requestJson<DevSubgraphRunResponse>(
+      `/api/xblue/subgraphs/${encodeURIComponent(slug)}/dry-run-materialize`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload ?? {}),
+      }
+    ),
+  resetSubgraphNodes: async (
+    slug: string
+  ): Promise<DevSubgraphResetResponse> =>
+    requestJson<DevSubgraphResetResponse>(
+      `/api/xblue/subgraphs/${encodeURIComponent(slug)}/reset-nodes`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }
+    ),
   previewSubgraphMerge: async (
     slug: string,
     payload?: MergePreviewRequest

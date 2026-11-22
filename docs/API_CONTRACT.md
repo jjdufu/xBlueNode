@@ -121,7 +121,8 @@
 
 ### `xBlueStudio` 多子图本体建模、草案发布、表达式与动态聚合（`/api/xblue/*`，Step 05 & Step 06）
 
-- `GET /api/xblue/subgraphs` / `POST /api/xblue/subgraphs` / `PATCH /api/xblue/subgraphs/{slug}` / `DELETE /api/xblue/subgraphs/{slug}`（`DATA_READ` / `STUDIO_EDIT` / `STUDIO_PUBLISH`）：企业主图（`main`）与部门独立子图工作空间管理。
+- `GET /api/xblue/subgraphs` / `POST /api/xblue/subgraphs` / `PATCH /api/xblue/subgraphs/{slug}` / `DELETE /api/xblue/subgraphs/{slug}`（`DATA_READ` / `STUDIO_EDIT` / `STUDIO_PUBLISH`）：企业主图（`main`）、部门独立子图与隔离开发沙盒子图（`is_dev_sandbox`、`source_template_id`、`last_reset_at`）管理（Step 05 / Step 17）。
+- `POST /api/xblue/subgraphs/{slug}/dry-run-materialize`（`STUDIO_EDIT` + `DATA_SYNC`）与 `POST /api/xblue/subgraphs/{slug}/reset-nodes`（`STUDIO_EDIT`）：在 `is_dev_sandbox = true` 的开发沙盒子图命名空间内试灌映射数据、计算派生与聚合指标，或一键清空沙盒运行态节点/关系/时序点且保持企业主图 `main` 零影响（Step 17）。
 - `POST /api/xblue/subgraphs/{slug}/merge-preview` / `POST /api/xblue/subgraphs/{slug}/merge`（`STUDIO_EDIT` / `STUDIO_PUBLISH`）：部门子图与主图跨图实体对齐及合并冲突消解（`EXTEND_PROPS` / `KEEP_MAIN` / `OVERWRITE_MAIN`）。
 - `GET /api/xblue/schema` / `POST /api/xblue/schema` / `POST /api/xblue/schema/validate`（`DATA_READ` / `STUDIO_PUBLISH` / `STUDIO_EDIT`）：按 `?subgraph=` 查询、直接保存或静态校验模型文档（`SchemaDoc`）。
 - `GET /api/xblue/schema/versions` / `GET /api/xblue/schema/versions/{v}` / `GET /api/xblue/schema/versions/{v}/diff/{other}` / `POST /api/xblue/schema/versions/{v}/restore`（`DATA_READ` / `STUDIO_EDIT`）：模型版本历史、结构差异对比与回滚草案生成。
@@ -164,7 +165,7 @@
 
 ### `AxAgent` 个人访问令牌、多模型路由、能力发布、MCP 与多轮智能体（`/api/auth/tokens*`、`/api/axagent/*`、`/api/published/*`、`/api/mcp`，Step 09）
 
-- `GET /api/auth/tokens` / `POST /api/auth/tokens` / `DELETE /api/auth/tokens/{id}`（已认证用户）：列出当前用户个人访问令牌（不含明文）、签发 `axp_<prefix8>_<secret32>`（`scopes` 须为当前用户权限子集，一次性返回明文并审计 `TOKEN_ISSUE`）或吊销令牌（审计 `TOKEN_REVOKE`）。
+- `GET /api/auth/tokens` / `POST /api/auth/tokens` / `DELETE /api/auth/tokens/{id}`（已认证用户）：列出当前用户个人访问令牌（不含明文）、签发 `axp_<prefix8>_<secret32>`（支持 `token_profile: "GENERAL"|"BUILDER"` 与可选 `web_base_url`；`BUILDER` 令牌禁止授予生产发布与原值读取权限并在生产变更路由拦截为 `403 BUILDER_TOKEN_PROD_FORBIDDEN`，一次性返回明文并审计 `TOKEN_ISSUE`）或吊销令牌（审计 `TOKEN_REVOKE`，Step 09 / Step 17）。
 - `GET /api/axagent/providers` / `POST /api/axagent/providers` / `PUT /api/axagent/providers/{id}` / `DELETE /api/axagent/providers/{id}` / `POST /api/axagent/providers/{id}/test`（`DATA_READ | AGENT_RUN | AGENT_EDIT` 可见系统与本人个人提供方；`SYSTEM` 提供方仅 `GUARD_ADMIN | OPS_ADMIN` 可写，非管理员读取返回 `is_readonly=true`；`allow_private_network=true` 或 `allow_pii=true` 需 `GUARD_ADMIN`）：多模型提供方注册、密钥环加密存储、`structured_mode`（`NONE | JSON_OBJECT | JSON_SCHEMA`）受限解码分级、`deterministic_seed`、`is_local_model`、`max_context_tokens` 配置与受限解码零温连通性核验（Step 09 / Step 15）。
 - `GET /api/axagent/llm-preferences` / `PUT /api/axagent/llm-preferences`（已认证用户）：读取或按用途（`CHAT | EMBED | NL2SQL | EXTRACT | AGENT | SUMMARIZE`）保存当前用户个人默认模型提供方绑定，优先于系统级优先级选路并在失败时自动回落，写 `POLICY_CHANGE` 审计（Step 15）。
 - `GET /api/axagent/usage?from=&to=`（`AGENT_EDIT`）：按提供方、日期与用途查询请求量、错误数与 Token 用量统计（`ax_llm_usage`）。
@@ -172,7 +173,7 @@
 - `GET /api/axagent/endpoints/openapi.json?environment=PROD` / `GET /api/axagent/endpoints/{id}/skill.json`（`DATA_READ`）：导出 OpenAPI 3.1 规范文档与外部智能体 Skill 清单。
 - `POST /api/axagent/apps/{endpoint_id}/run`（端点 `required_scope`）：查询即应用内部执行入口，以当前登录主体直接调用目标能力。
 - `POST /api/published/{env}/{tenant_id}/{slug}` / `GET /api/published/{env}/{tenant_id}/{slug}/runs/{run_id}`（`Authorization: Bearer axp_...` 个人访问令牌）：校验租户与 `required_scope`、`(endpoint_id, token_id)` 速率限制、JSON Schema 入参、`moka` TTL 缓存后执行能力并写审计日志。
-- `POST /api/mcp` / `GET /api/mcp` / `DELETE /api/mcp`（`Authorization: Bearer axp_...` 个人访问令牌）：Streamable HTTP MCP Server（`Mcp-Session-Id` 会话管理），动态暴露 `PROD` 且 `expose_mcp=true` 的发布端点与内置只读工具（`search_knowledge`、`ask_data`、`list_datasets`、`describe_dataset`、`query_objects`、`graph_neighbors`、`get_node`）及 `axpoint://datasets/*`、`axpoint://objects/*` 资源，每次 `tools/call` 写 `MCP_CALL` 审计。
+- `POST /api/mcp` / `GET /api/mcp` / `DELETE /api/mcp`（`Authorization: Bearer axp_...` 个人访问令牌）：Streamable HTTP MCP Server（`Mcp-Session-Id` 会话管理），同时提供运行态消费平面（`PROD` 且 `expose_mcp=true` 的发布端点、7 个内置只读工具与 `axpoint://datasets/*`、`axpoint://objects/*` 资源）与 `AxBuilder` 构建态平面（按细粒度权限动态暴露 `axbuilder_preflight`、`axbuilder_pull_workspace`、`axbuilder_validate_schema`、`axbuilder_push_schema_draft`、`axbuilder_clone_template`、`axbuilder_upsert_flow_draft`、`axbuilder_run_dev_subgraph`、`axbuilder_reset_dev_subgraph`、`axbuilder_upsert_dashboard_draft` 共 9 个构建工具及 `axpoint://templates/{id}`、`axpoint://subgraphs/{slug}` 资源，统一回传 `deep_links` 并对草稿/沙盒写操作记录 `BUILDER_MCP_MUTATE` 审计，Step 09 / Step 17）。
 - `GET /api/axagent/mcp-clients` / `POST /api/axagent/mcp-clients` / `DELETE /api/axagent/mcp-clients/{id}` / `POST /api/axagent/mcp-clients/{id}/sync`（`AGENT_EDIT`）：外部 Streamable HTTP MCP 服务登记（经 `NetGuard` 校验）与 `tools/list` 同步缓存。
 - `GET /api/axagent/agents` / `POST /api/axagent/agents` / `GET /api/axagent/agents/{id}` / `PUT /api/axagent/agents/{id}` / `DELETE /api/axagent/agents/{id}` / `POST /api/axagent/agents/{id}/publish`（`DATA_READ` / `AGENT_EDIT`）：智能体草稿编辑、多智能体嵌套深度校验（`<= 2`）与不可变版本发布（`ax_agent_versions`）。
 - `POST /api/axagent/agents/{id}/chat`（`AGENT_RUN`；`draft=true` 需 `AGENT_EDIT`）：智能体多轮工具循环对话（支持 `Accept: text/event-stream` 流式 `token|tool_call|tool_result|approval_required|final|error` 事件与 `Accept: application/json` 同步返回，写 `ax_messages` 与 `AGENT_CHAT` 审计）。

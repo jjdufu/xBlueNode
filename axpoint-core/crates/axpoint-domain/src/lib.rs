@@ -5,6 +5,7 @@ pub mod agent;
 pub mod algo;
 pub mod analytics;
 pub mod axhub;
+pub mod builder;
 pub mod enums;
 pub mod export;
 pub mod expr;

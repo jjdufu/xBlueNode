@@ -190,4 +190,8 @@ export const ENUM_LABELS: Readonly<Record<string, BilingualLabel>> = {
   SCHEMA_PUBLISH: { zh: "模型版本发布", en: "Schema Publish" },
   EXPORT_FILE: { zh: "文件导出", en: "File Export" },
   MCP_CALL: { zh: "MCP 工具调用", en: "MCP Call" },
+  BUILDER_MCP_MUTATE: { zh: "构建态草稿变更", en: "Builder Mutation" },
+  TRIAL_TEMPLATE_CLONE: { zh: "模板沙盒克隆", en: "Sandbox Clone" },
+  GENERAL: { zh: "通用令牌", en: "General" },
+  BUILDER: { zh: "构建令牌", en: "Builder" },
 };

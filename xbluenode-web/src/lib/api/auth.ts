@@ -1,4 +1,4 @@
-import type { Permission, TokenKind } from "./enums.ts";
+import type { Permission, TokenKind, TokenProfile } from "./enums.ts";
 import { ApiError, buildApiError, requestJson } from "./client.ts";
 
 /** Authenticated principal returned by `GET /api/auth/me`. */
@@ -10,6 +10,7 @@ export interface MeResponse {
   roles: string[];
   permissions: Permission[];
   token_kind: TokenKind;
+  token_profile?: TokenProfile;
 }
 
 /** Public auth configuration returned by `GET /api/auth/config` (`11-STEP13` §13.10). */
