@@ -1,5 +1,5 @@
 import type { ColumnMeta, Dataset, PaginatedList } from "./axhub";
-import { requestJson } from "./client";
+import { requestJson } from "./client.ts";
 import type {
   AggFn,
   ConnectorType,
@@ -313,6 +313,39 @@ export interface AskRequest {
   question: string;
   session_id?: string;
   context?: AskContext;
+  scope?: ChatQueryScope | null;
+}
+
+export function applyScopeToAskContext(
+  context?: AskContext,
+  scope?: ChatQueryScope | null
+): AskContext | undefined {
+  if (!scope) {
+    return context;
+  }
+  const merged: AskContext = { ...(context ?? {}) };
+  if (Array.isArray(scope.dataset_ids) && scope.dataset_ids.length > 0) {
+    merged.dataset_ids = scope.dataset_ids;
+  }
+  if (Array.isArray(scope.doc_ids) && scope.doc_ids.length > 0) {
+    merged.doc_ids = scope.doc_ids;
+  }
+  if (
+    typeof scope.doc_title_prefix === "string" &&
+    scope.doc_title_prefix.trim().length > 0
+  ) {
+    merged.doc_title_prefix = scope.doc_title_prefix.trim();
+  }
+  if (
+    typeof scope.subgraph_slug === "string" &&
+    scope.subgraph_slug.trim().length > 0
+  ) {
+    merged.subgraph_slug = scope.subgraph_slug.trim();
+  }
+  if (Array.isArray(scope.endpoint_slugs) && scope.endpoint_slugs.length > 0) {
+    merged.endpoint_slugs = scope.endpoint_slugs;
+  }
+  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 export interface ChartSuggestion {
@@ -519,8 +552,22 @@ export const analyticsApi = {
       { params }
     ),
 
-  askData: (payload: AskRequest) =>
-    jsonPost<AskResponse>("/api/analytics/ask", payload),
+  ask: (payload: AskRequest) => {
+    const { scope, context, ...rest } = payload;
+    const nextContext = applyScopeToAskContext(context, scope);
+    return jsonPost<AskResponse>("/api/analytics/ask", {
+      ...rest,
+      ...(nextContext ? { context: nextContext } : {}),
+    });
+  },
+  askData: (payload: AskRequest) => {
+    const { scope, context, ...rest } = payload;
+    const nextContext = applyScopeToAskContext(context, scope);
+    return jsonPost<AskResponse>("/api/analytics/ask", {
+      ...rest,
+      ...(nextContext ? { context: nextContext } : {}),
+    });
+  },
   submitAskFeedback: (turnId: string, payload: AskFeedbackRequest) =>
     jsonPost<AskTurnRecord>(
       `/api/analytics/ask/${encodeURIComponent(turnId)}/feedback`,

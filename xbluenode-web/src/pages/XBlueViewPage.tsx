@@ -18,13 +18,16 @@ import {
   Search,
   Settings2,
   Share2,
+  ShieldCheck,
   Sparkles,
   Trash2,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import {
   xblueviewApi,
+  type CockpitZoneLayout,
   type DashboardDetail,
+  type DashboardPreflightReport,
   type DashboardRecord,
   type DashboardTheme,
   type DrillPathItem,
@@ -66,6 +69,7 @@ import {
   sanitizeExportFilters,
 } from "@/components/xblueview/logic";
 import { NodeDrawer } from "@/components/xblueview/NodeDrawer";
+import { PublishPreflightModal } from "@/components/xblueview/PublishPreflightModal";
 import {
   ShareDialog,
   type ShareDialogTarget,
@@ -107,6 +111,8 @@ export function XBlueViewPage() {
   const [newSlug, setNewSlug] = useState("");
   const [newDesc, setNewDesc] = useState("");
   const [newTheme, setNewTheme] = useState<DashboardTheme>("light");
+  const [newZoneLayout, setNewZoneLayout] =
+    useState<CockpitZoneLayout>("FREE_GRID");
   const [creating, setCreating] = useState(false);
   const [aiWizardOpen, setAiWizardOpen] = useState(false);
   const [pendingDeleteDashboard, setPendingDeleteDashboard] =
@@ -211,12 +217,14 @@ export function XBlueViewPage() {
         slug: trimmedSlug,
         description: newDesc.trim(),
         theme: newTheme,
-        canvas: DEFAULT_CANVAS,
+        zone_layout: newZoneLayout,
+        ...(newZoneLayout === "FREE_GRID" ? { canvas: DEFAULT_CANVAS } : {}),
       });
       setCreateOpen(false);
       setNewName("");
       setNewSlug("");
       setNewDesc("");
+      setNewZoneLayout("FREE_GRID");
       void navigate(`/view/${created.slug}`);
     } catch (err) {
       setGalleryError(err instanceof Error ? err.message : String(err));
@@ -298,6 +306,14 @@ export function XBlueViewPage() {
   const [shareTarget, setShareTarget] = useState<ShareDialogTarget | null>(
     null
   );
+  const [preflightOpen, setPreflightOpen] = useState(false);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightError, setPreflightError] = useState<string | null>(null);
+  const [preflightReport, setPreflightReport] =
+    useState<DashboardPreflightReport | null>(null);
+  const [preflightIntent, setPreflightIntent] = useState<
+    "CHECK" | "PUBLISH" | "SHARE"
+  >("CHECK");
 
   const lastFetchAtRef = useRef<Record<string, number>>({});
   const throttleTimersRef = useRef<
@@ -648,26 +664,89 @@ export function XBlueViewPage() {
     }
   };
 
-  const handlePublish = async () => {
-    if (!dashboard || !canEdit) return;
+  const openPreflightModal = async (intent: "CHECK" | "PUBLISH" | "SHARE") => {
+    if (!dashboard) return;
+    setPreflightIntent(intent);
+    setPreflightOpen(true);
+    setPreflightLoading(true);
+    setPreflightError(null);
+    setPreflightReport(null);
+    try {
+      const rep = await xblueviewApi.preflightDashboard(dashboard.id);
+      setPreflightReport(rep);
+    } catch (err) {
+      setPreflightError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPreflightLoading(false);
+    }
+  };
+
+  const handleConfirmPublishFromPreflight = async () => {
+    if (!dashboard || !preflightReport || preflightReport.blocking_count > 0) {
+      return;
+    }
     setPublishing(true);
+    setPreflightError(null);
     setDetailError(null);
     try {
-      const published = await xblueviewApi.publishDashboard(dashboard.id);
-      setDashboard((prev) =>
-        prev
-          ? {
-              ...prev,
-              status: published.status,
-              version: published.version,
-            }
-          : prev
-      );
+      let nextStatus = dashboard.status;
+      if (canEdit && (preflightIntent !== "SHARE" || dashboard.status !== "PUBLISHED")) {
+        const published = await xblueviewApi.publishDashboard(dashboard.id);
+        nextStatus = published.status;
+        setDashboard((prev) =>
+          prev
+            ? {
+                ...prev,
+                status: published.status,
+                version: published.version,
+              }
+            : prev
+        );
+      }
+      setPreflightOpen(false);
+      if (preflightIntent === "SHARE" && canShare) {
+        setShareTarget({
+          targetKind: "DASHBOARD",
+          targetId: dashboard.id,
+          targetName: dashboard.name,
+          dashboardStatus: nextStatus,
+          dashboardFilters: dashboard.filters,
+          activeFilterValues: filterValues,
+        });
+      }
     } catch (err) {
-      setDetailError(err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      setPreflightError(msg);
+      setDetailError(msg);
     } finally {
       setPublishing(false);
     }
+  };
+
+  const handleLocateWidgetFromPreflight = (widgetId: string) => {
+    setPreflightOpen(false);
+    if (!dashboard) return;
+    if (canEdit) {
+      setIsEditing(true);
+    }
+    const targetWidget =
+      dashboard.widgets.find((w) => w.id === widgetId) ?? null;
+    if (typeof document !== "undefined") {
+      requestAnimationFrame(() => {
+        const el = document.querySelector(
+          `[data-testid="widget-frame-${widgetId}"]`
+        );
+        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
+    if (targetWidget && canEdit) {
+      setEditingWidget(targetWidget);
+      setEditorOpen(true);
+    }
+  };
+
+  const handlePublish = async () => {
+    await openPreflightModal("PUBLISH");
   };
 
   const confirmDeleteWidget = async () => {
@@ -771,7 +850,7 @@ export function XBlueViewPage() {
                   onSubmit={(e) => void handleCreateDashboard(e)}
                   className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end text-xs"
                 >
-                  <div className="md:col-span-3 space-y-1">
+                  <div className="md:col-span-2 space-y-1">
                     <label className="text-muted-foreground block">
                       {tx("驾驶舱名称", "Name")}
                     </label>
@@ -782,7 +861,7 @@ export function XBlueViewPage() {
                       className="h-8 text-xs"
                     />
                   </div>
-                  <div className="md:col-span-3 space-y-1">
+                  <div className="md:col-span-2 space-y-1">
                     <label className="text-muted-foreground block">Slug</label>
                     <Input
                       value={newSlug}
@@ -791,7 +870,7 @@ export function XBlueViewPage() {
                       className="h-8 text-xs font-mono-tech"
                     />
                   </div>
-                  <div className="md:col-span-3 space-y-1">
+                  <div className="md:col-span-2 space-y-1">
                     <label className="text-muted-foreground block">
                       {tx("描述", "Description")}
                     </label>
@@ -803,6 +882,28 @@ export function XBlueViewPage() {
                         "East China supply monitoring"
                       )}
                       className="h-8 text-xs"
+                    />
+                  </div>
+                  <div className="md:col-span-3 space-y-1">
+                    <label className="text-muted-foreground block">
+                      {tx("布局模式", "Layout")}
+                    </label>
+                    <SegmentedControl<CockpitZoneLayout>
+                      value={newZoneLayout}
+                      onChange={setNewZoneLayout}
+                      className="w-full"
+                      items={[
+                        {
+                          key: "FREE_GRID",
+                          label: tx("自由画布", "Free Grid"),
+                          testId: "zone-layout-free-grid-btn",
+                        },
+                        {
+                          key: "STANDARD_FIVE_ZONE",
+                          label: tx("五区驾驶舱", "Five-Zone"),
+                          testId: "zone-layout-five-zone-btn",
+                        },
+                      ]}
                     />
                   </div>
                   <div className="md:col-span-1 space-y-1">
@@ -1130,20 +1231,22 @@ export function XBlueViewPage() {
                     </Button>
                   </>
                 )}
+                {(canEdit || canShare) && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void openPreflightModal("CHECK")}
+                    data-testid="view-preflight-btn"
+                  >
+                    <ShieldCheck className="h-3.5 w-3.5 text-xblue" />
+                    {tx("自检", "Preflight")}
+                  </Button>
+                )}
                 {canShare && (
                   <Button
                     type="button"
                     variant="outline"
-                    onClick={() =>
-                      setShareTarget({
-                        targetKind: "DASHBOARD",
-                        targetId: dashboard.id,
-                        targetName: dashboard.name,
-                        dashboardStatus: dashboard.status,
-                        dashboardFilters: dashboard.filters,
-                        activeFilterValues: filterValues,
-                      })
-                    }
+                    onClick={() => void openPreflightModal("SHARE")}
                     data-testid="open-share-dialog-btn"
                   >
                     <Share2 className="h-3.5 w-3.5 text-xblue" />
@@ -1204,6 +1307,15 @@ export function XBlueViewPage() {
                   {savingLayout
                     ? tx("保存中…", "Saving…")
                     : tx("保存布局", "Save Layout")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void openPreflightModal("CHECK")}
+                  data-testid="view-preflight-btn"
+                >
+                  <ShieldCheck className="h-3.5 w-3.5 text-xblue" />
+                  {tx("自检", "Preflight")}
                 </Button>
                 <Button
                   type="button"
@@ -1453,7 +1565,22 @@ export function XBlueViewPage() {
                 : shareTarget
             }
             onClose={() => setShareTarget(null)}
-            onPublishDashboard={handlePublish}
+            onPublishDashboard={() => {
+              setShareTarget(null);
+              return openPreflightModal("SHARE");
+            }}
+          />
+
+          <PublishPreflightModal
+            open={preflightOpen}
+            dashboardName={dashboard.name}
+            loading={preflightLoading}
+            confirming={publishing}
+            error={preflightError}
+            report={preflightReport}
+            onClose={() => setPreflightOpen(false)}
+            onLocateWidget={handleLocateWidgetFromPreflight}
+            onConfirmPublish={() => void handleConfirmPublishFromPreflight()}
           />
         </>
       ) : null}

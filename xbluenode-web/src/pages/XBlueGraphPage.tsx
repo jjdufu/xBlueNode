@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
+  ChevronDown,
+  ChevronUp,
   Cpu,
   FileText,
   Info,
   RefreshCw,
   Route,
   Share2,
+  Table2,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/lib/theme";
@@ -27,6 +30,7 @@ import {
   Button,
   Card,
   EmptyState,
+  IconButton,
   PageHeader,
   SegmentedControl,
 } from "@/components/ui/primitives";
@@ -44,10 +48,20 @@ import {
   AlgoPanel,
   type AlgoVisualMode,
 } from "@/components/xbluegraph/AlgoPanel";
+import {
+  GraphPatternBar,
+  type GraphPatternFilterValues,
+} from "@/components/xbluegraph/GraphPatternBar";
+import {
+  aggregateNodesByType,
+  computeNodeDegrees,
+  selectTopMetricColumns,
+} from "@/components/xbluegraph/logic";
 import { MetricChart } from "@/components/xbluegraph/MetricChart";
 import { MetricExplainChain } from "@/components/xbluegraph/MetricExplainChain";
 import { NeighborExpand } from "@/components/xbluegraph/NeighborExpand";
 import { NodeInspector } from "@/components/xbluegraph/NodeInspector";
+import { cn } from "@/lib/utils";
 
 type SideTab = "inspector" | "neighbors" | "path" | "algo";
 type GraphLayer = "business" | "hypergraph";
@@ -135,6 +149,8 @@ export function XBlueGraphPage() {
   const [loading, setLoading] = useState(false);
   const [expanding, setExpanding] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [activeSubgraph, setActiveSubgraph] = useState("main");
+  const [summaryOpen, setSummaryOpen] = useState(false);
 
   const loadInitialGraph = useCallback(async () => {
     setLoading(true);
@@ -322,6 +338,59 @@ export function XBlueGraphPage() {
     () => nodes.find((n) => n.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId]
   );
+
+  const summaryTypeFacets = useMemo(
+    () => aggregateNodesByType(visibleNodes),
+    [visibleNodes]
+  );
+
+  const nodeDegrees = useMemo(
+    () => computeNodeDegrees(visibleNodes, visibleEdges),
+    [visibleEdges, visibleNodes]
+  );
+
+  const summaryMetricCols = useMemo(
+    () => selectTopMetricColumns(visibleNodes, 3),
+    [visibleNodes]
+  );
+
+  const handleApplyPattern = useCallback(
+    async (pat: GraphPatternFilterValues) => {
+      setLoading(true);
+      setErrorMsg(null);
+      setTypeFilter("");
+      try {
+        const sub = await xblueApi.querySubgraph({
+          subgraph: pat.subgraph || undefined,
+          src_type: pat.srcType || undefined,
+          edge_type: pat.edgeType || undefined,
+          dst_type: pat.dstType || undefined,
+          limit: 500,
+        });
+        const matchedNodes = Array.isArray(sub?.nodes) ? sub.nodes : [];
+        const matchedLinks = Array.isArray(sub?.links) ? sub.links : [];
+        setNodes(matchedNodes);
+        setEdges(mergeEdgesDeduplicated([], matchedLinks));
+        setHighlightedPathIds([]);
+        setSelectedNodeId((prev) =>
+          prev && matchedNodes.some((n) => n.id === prev)
+            ? prev
+            : (matchedNodes[0]?.id ?? null)
+        );
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+      } finally {
+        setLoading(false);
+      }
+    },
+    []
+  );
+
+  const handleResetPattern = useCallback(() => {
+    setTypeFilter("");
+    setHighlightedPathIds([]);
+    void loadInitialGraph();
+  }, [loadInitialGraph]);
 
   // Convert hypergraph TopologyGraph into interactive SigmaCanvas nodes & edges (no synthetic ENTITY-xx suffix!)
   const hyperCanvasNodes: BlueNode[] = useMemo(() => {
@@ -578,6 +647,16 @@ export function XBlueGraphPage() {
           {/* Main 100vh Split: Left Canvas (+ Wide Bottom Telemetry Panel on Metric Click) & Right Compact Inspector */}
           <div className="grid flex-1 min-h-0 grid-cols-1 lg:grid-cols-12 gap-3 overflow-hidden">
             <div className="lg:col-span-8 flex flex-col min-h-0 gap-2.5 overflow-hidden">
+              <GraphPatternBar
+                subgraph={activeSubgraph}
+                onSubgraphChange={setActiveSubgraph}
+                fallbackNodeTypes={distinctTypes}
+                fallbackEdgeTypes={knownLinkTypes}
+                loading={loading}
+                onApplyPattern={(pat) => void handleApplyPattern(pat)}
+                onResetPattern={handleResetPattern}
+              />
+
               <Card className="flex-1 min-h-0 p-0 overflow-hidden relative flex flex-col">
                 <SigmaCanvas
                   nodes={visibleNodes}
@@ -611,6 +690,171 @@ export function XBlueGraphPage() {
                   algoEntries={algoEntries}
                   isDark={isDark}
                 />
+              </Card>
+
+              {/* Collapsible Bottom Summary Drawer */}
+              <Card
+                className="shrink-0 overflow-hidden"
+                data-testid="graph-summary-drawer"
+              >
+                <div
+                  className="flex items-center justify-between gap-2 px-3 py-1.5 bg-muted/20 text-xs cursor-pointer select-none"
+                  onClick={() => setSummaryOpen((v) => !v)}
+                >
+                  <div className="flex items-center gap-2">
+                    <Table2 className="h-3.5 w-3.5 text-xblue" />
+                    <span className="font-semibold">
+                      {tx("汇总表", "Summary")}
+                    </span>
+                    <Badge variant="outline" data-testid="graph-summary-badge">
+                      {tx(
+                        `节点 ${visibleNodes.length} · 关系 ${visibleEdges.length}`,
+                        `Nodes ${visibleNodes.length} · Edges ${visibleEdges.length}`
+                      )}
+                    </Badge>
+                  </div>
+                  <IconButton
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSummaryOpen((v) => !v);
+                    }}
+                    aria-label={tx("汇总表", "Summary")}
+                    data-testid="graph-summary-toggle-btn"
+                  >
+                    {summaryOpen ? (
+                      <ChevronDown className="h-3.5 w-3.5" />
+                    ) : (
+                      <ChevronUp className="h-3.5 w-3.5" />
+                    )}
+                  </IconButton>
+                </div>
+
+                {summaryOpen && (
+                  <div className="border-t border-border p-2.5 grid grid-cols-1 lg:grid-cols-12 gap-3 max-h-56 overflow-hidden text-xs">
+                    {/* Left: Per-type count & top metric mean pills */}
+                    <div className="lg:col-span-4 overflow-y-auto space-y-1.5 pr-1">
+                      {summaryTypeFacets.length === 0 ? (
+                        <div className="py-4 text-center text-muted-foreground">
+                          {tx("暂无节点", "No nodes")}
+                        </div>
+                      ) : (
+                        summaryTypeFacets.map((facet) => {
+                          const active = typeFilter === facet.typeName;
+                          return (
+                            <button
+                              key={facet.typeName}
+                              type="button"
+                              onClick={() =>
+                                setTypeFilter((prev) =>
+                                  prev === facet.typeName ? "" : facet.typeName
+                                )
+                              }
+                              data-testid={`summary-type-pill-${facet.typeName}`}
+                              className={cn(
+                                "w-full flex items-center justify-between gap-2 rounded border px-2.5 py-1.5 text-left transition-colors cursor-pointer",
+                                active
+                                  ? "border-xblue bg-xblue-soft text-xblue font-medium"
+                                  : "border-border bg-background hover:bg-muted/50"
+                              )}
+                            >
+                              <span className="inline-flex items-center gap-1.5 truncate">
+                                <span className="font-medium truncate">
+                                  {translateNodeTypeLabel(facet.typeName, isZh)}
+                                </span>
+                                <Badge variant="neutral">{facet.count}</Badge>
+                              </span>
+                              {facet.topMetric &&
+                                facet.topMetricMean !== null && (
+                                  <span className="font-mono-tech text-[11px] text-muted-foreground shrink-0 tabular-nums">
+                                    {facet.topMetric}={fmtNum(facet.topMetricMean, 1)}
+                                  </span>
+                                )}
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+
+                    {/* Right: Node detail table */}
+                    <div className="lg:col-span-8 overflow-auto rounded border border-border">
+                      <table
+                        className="w-full border-collapse text-xs"
+                        data-testid="graph-summary-table"
+                      >
+                        <thead className="sticky top-0 bg-muted border-b border-border text-[11px] text-muted-foreground">
+                          <tr>
+                            <th className="px-2.5 py-1.5 text-left font-medium">
+                              {tx("标识", "Key")}
+                            </th>
+                            <th className="px-2.5 py-1.5 text-left font-medium">
+                              {tx("名称", "Name")}
+                            </th>
+                            <th className="px-2.5 py-1.5 text-left font-medium">
+                              {tx("类型", "Type")}
+                            </th>
+                            <th className="px-2.5 py-1.5 text-right font-medium">
+                              {tx("度数", "Degree")}
+                            </th>
+                            {summaryMetricCols.map((mKey) => (
+                              <th
+                                key={mKey}
+                                className="px-2.5 py-1.5 text-right font-mono-tech font-medium"
+                              >
+                                {mKey}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-border/70">
+                          {visibleNodes.slice(0, 300).map((n) => {
+                            const rowActive = n.id === selectedNodeId;
+                            const deg = nodeDegrees.get(n.id) ?? 0;
+                            return (
+                              <tr
+                                key={n.id}
+                                onClick={() => handleSelectNode(n.id)}
+                                data-testid={`summary-node-row-${n.node_key || n.id}`}
+                                className={cn(
+                                  "cursor-pointer transition-colors",
+                                  rowActive
+                                    ? "bg-xblue-soft/60 text-xblue font-medium"
+                                    : "hover:bg-muted/40"
+                                )}
+                              >
+                                <td className="px-2.5 py-1.5 font-mono-tech whitespace-nowrap">
+                                  {n.node_key || n.id.slice(0, 8)}
+                                </td>
+                                <td className="px-2.5 py-1.5 truncate max-w-44">
+                                  {n.title}
+                                </td>
+                                <td className="px-2.5 py-1.5 whitespace-nowrap">
+                                  {translateNodeTypeLabel(n.type_name, isZh)}
+                                </td>
+                                <td className="px-2.5 py-1.5 text-right font-mono-tech tabular-nums">
+                                  {deg}
+                                </td>
+                                {summaryMetricCols.map((mKey) => {
+                                  const mv = n.metrics?.[mKey];
+                                  return (
+                                    <td
+                                      key={`${n.id}-${mKey}`}
+                                      className="px-2.5 py-1.5 text-right font-mono-tech tabular-nums whitespace-nowrap"
+                                    >
+                                      {typeof mv === "number"
+                                        ? fmtNum(mv, 2)
+                                        : "-"}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
               </Card>
 
               {/* Wide Docked Bottom Metric Telemetry & Explain DAG Panel (Replaces narrow sidebar cramming) */}

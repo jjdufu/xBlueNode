@@ -17,6 +17,8 @@ import {
   type GraphDirection,
   type RefreshBaseResponse,
   type SandboxScope,
+  type ScopePreflightReport,
+  type ScopeReadinessGrade,
 } from "@/lib/api/axsim";
 import {
   xblueApi,
@@ -79,6 +81,9 @@ export function SandboxWizard({
   const [searchingSeeds, setSearchingSeeds] = useState(false);
 
   const [estimatedNodes, setEstimatedNodes] = useState<number | null>(null);
+  const [preflight, setPreflight] = useState<ScopePreflightReport | null>(null);
+  const [preflightLoading, setPreflightLoading] = useState(false);
+  const [preflightNonce, setPreflightNonce] = useState(0);
   const [creating, setCreating] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
   const [confirmResetOpen, setConfirmResetOpen] = useState(false);
@@ -214,6 +219,105 @@ export function SandboxWizard({
     };
   }, [open, selectedLinkTypes, selectedTypes]);
 
+  const seedIdsKey = useMemo(
+    () => selectedSeeds.map((s) => s.id).join(","),
+    [selectedSeeds]
+  );
+
+  useEffect(() => {
+    if (!open || !canSimRun) {
+      setPreflight(null);
+      setPreflightLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setPreflightLoading(true);
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const parsedDepth = Number.parseInt(maxDepth, 10);
+          const parsedMaxNodes = Number.parseInt(maxNodes, 10);
+          const rootIds = seedIdsKey
+            ? seedIdsKey.split(",").filter(Boolean)
+            : [];
+          const candidateScope: SandboxScope = {
+            root_node_ids: rootIds,
+            depth: Number.isFinite(parsedDepth)
+              ? Math.min(6, Math.max(1, parsedDepth))
+              : 3,
+            direction,
+            type_names: selectedTypes,
+            link_types: selectedLinkTypes,
+            max_nodes: Number.isFinite(parsedMaxNodes)
+              ? Math.max(1, parsedMaxNodes)
+              : 50000,
+          };
+          const report = await axsimApi
+            .preflightSandbox({
+              subgraph_slug: selectedSubgraph || "main",
+              scope: candidateScope,
+            })
+            .catch(() => null);
+          if (!cancelled) {
+            setPreflight(report);
+            if (report) {
+              setEstimatedNodes(report.estimated_nodes);
+            }
+          }
+        } finally {
+          if (!cancelled) {
+            setPreflightLoading(false);
+          }
+        }
+      })();
+    }, 350);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [
+    canSimRun,
+    direction,
+    maxDepth,
+    maxNodes,
+    open,
+    preflightNonce,
+    seedIdsKey,
+    selectedLinkTypes,
+    selectedSubgraph,
+    selectedTypes,
+  ]);
+
+  const handleFillMissingTypes = () => {
+    if (!preflight || preflight.missing_upstream_types.length === 0) return;
+    const missing = preflight.missing_upstream_types;
+    setSelectedTypes((prev) => Array.from(new Set([...prev, ...missing])));
+    setSelectedLinkTypes([]);
+    setPreflightNonce((n) => n + 1);
+  };
+
+  const renderPreflightGradeBadge = (grade: ScopeReadinessGrade) => {
+    if (grade === "READY") {
+      return (
+        <Badge variant="success" data-testid="sim-preflight-grade-badge">
+          {tx("就绪", "READY")}
+        </Badge>
+      );
+    }
+    if (grade === "DEGRADED") {
+      return (
+        <Badge variant="warning" data-testid="sim-preflight-grade-badge">
+          {tx("有损", "DEGRADED")}
+        </Badge>
+      );
+    }
+    return (
+      <Badge variant="danger" data-testid="sim-preflight-grade-badge">
+        {tx("阻断", "BLOCKED")}
+      </Badge>
+    );
+  };
+
   const searchSeedNodes = async () => {
     setSearchingSeeds(true);
     try {
@@ -313,7 +417,7 @@ export function SandboxWizard({
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!canSimRun) return;
+    if (!canSimRun || preflight?.readiness_grade === "BLOCKED") return;
     const trimmedName = name.trim();
     if (!trimmedName) {
       setErrorMsg(tx("请填写沙盘名称", "Sandbox name is required"));
@@ -816,6 +920,110 @@ export function SandboxWizard({
               )}
             </div>
 
+            {(preflight !== null || preflightLoading) && (
+              <div
+                data-testid="sim-preflight-card"
+                className="rounded-md border border-border bg-muted/25 p-3 space-y-2.5 text-xs"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 font-medium text-foreground">
+                    <span>{tx("范围预检", "Scope Preflight")}</span>
+                    {preflightLoading && (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-xblue" />
+                    )}
+                    {preflight && (
+                      <span className="font-mono-tech text-[11px] text-muted-foreground tabular-nums">
+                        {tx(
+                          `关系 ${fmtNum(preflight.estimated_links, 0)}`,
+                          `Links ${fmtNum(preflight.estimated_links, 0)}`
+                        )}
+                      </span>
+                    )}
+                  </div>
+                  {preflight &&
+                    renderPreflightGradeBadge(preflight.readiness_grade)}
+                </div>
+
+                {preflight && (
+                  <>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <div className="rounded border border-border/70 bg-background px-2.5 py-1.5">
+                        <div className="text-[11px] text-muted-foreground">
+                          {tx("预计节点", "Est. Nodes")}
+                        </div>
+                        <div className="font-mono-tech text-sm font-semibold tabular-nums">
+                          {fmtNum(preflight.estimated_nodes, 0)}
+                        </div>
+                      </div>
+                      <div className="rounded border border-border/70 bg-background px-2.5 py-1.5">
+                        <div className="text-[11px] text-muted-foreground">
+                          {tx("因果覆盖率", "Causal Coverage")}
+                        </div>
+                        <div className="font-mono-tech text-sm font-semibold tabular-nums">
+                          {fmtNum(
+                            preflight.causal_edge_coverage_ratio * 100,
+                            1
+                          )}
+                          %
+                        </div>
+                      </div>
+                      <div className="rounded border border-border/70 bg-background px-2.5 py-1.5">
+                        <div className="text-[11px] text-muted-foreground">
+                          {tx("聚合闭合度", "Agg Closure")}
+                        </div>
+                        <div className="font-mono-tech text-sm font-semibold tabular-nums">
+                          {fmtNum(preflight.agg_rule_closure_ratio * 100, 1)}%
+                        </div>
+                      </div>
+                      <div className="rounded border border-border/70 bg-background px-2.5 py-1.5">
+                        <div className="text-[11px] text-muted-foreground">
+                          {tx("孤立占比", "Isolated Ratio")}
+                        </div>
+                        <div className="font-mono-tech text-sm font-semibold tabular-nums">
+                          {fmtNum(preflight.isolated_node_ratio * 100, 1)}%
+                        </div>
+                      </div>
+                    </div>
+
+                    {preflight.reason_codes.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {preflight.reason_codes.map((code) => (
+                          <Badge key={code} variant="outline">
+                            {code}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+
+                    {preflight.missing_upstream_types.length > 0 && (
+                      <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-amber-500/35 bg-amber-500/10 px-2.5 py-2">
+                        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                          <span className="text-[11px] text-amber-800 dark:text-amber-300 font-medium">
+                            {tx("缺失类型", "Missing Types")}
+                          </span>
+                          {preflight.missing_upstream_types.map((mt) => (
+                            <Badge key={mt} variant="warning">
+                              {mt}
+                            </Badge>
+                          ))}
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={handleFillMissingTypes}
+                          data-testid="sim-preflight-fill-types-btn"
+                        >
+                          <Plus className="h-3 w-3 text-xblue" />
+                          {tx("补齐类型", "Fill Types")}
+                        </Button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
               <div className="text-[11px] font-mono-tech text-muted-foreground">
                 {tx("范围：", "Scope: ")}
@@ -827,7 +1035,11 @@ export function SandboxWizard({
                 </Button>
                 <Button
                   type="submit"
-                  disabled={creating || !name.trim()}
+                  disabled={
+                    creating ||
+                    !name.trim() ||
+                    preflight?.readiness_grade === "BLOCKED"
+                  }
                   data-testid="wizard-create-submit"
                 >
                   <DatabaseBackup className="h-3.5 w-3.5" />
