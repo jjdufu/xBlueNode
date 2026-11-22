@@ -133,7 +133,7 @@
 
 | 方法与路径 | 鉴权 | 定义 |
 | :--- | :--- | :--- |
-| `GET /sandboxes`、`POST /sandboxes`、`GET /sandboxes/{id}`、`DELETE /sandboxes/{id}`、`GET /sandboxes/{id}/graph` | `DATA_READ` / `SIM_RUN` | [09](../../plans/completed/v1-foundation-step00-14/09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) §10.2、§10.9 |
+| `GET /sandboxes`、`POST /sandboxes`、`POST /sandboxes/preflight`、`GET /sandboxes/{id}`、`DELETE /sandboxes/{id}`、`GET /sandboxes/{id}/graph` | `DATA_READ` / `SIM_RUN` | [09](../../plans/completed/v1-foundation-step00-14/09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) §10.2、§10.9；[06-STEP20](../../plans/v2-ux-and-grounded-ai/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.1.2 |
 | `PATCH /sandboxes/{id}/nodes/{node_id}`、`POST /sandboxes/{id}/nodes`、`DELETE /sandboxes/{id}/nodes/{node_id}` | `SIM_RUN` | §10.2.3 |
 | `POST /sandboxes/{id}/links`、`PATCH /sandboxes/{id}/links/{link_id}`、`DELETE /sandboxes/{id}/links/{link_id}` | `SIM_RUN` | 同上 |
 | `POST /sandboxes/{id}/reset`、`POST /sandboxes/{id}/refresh-base` | `SIM_RUN` | 同上 |
@@ -149,7 +149,7 @@
 | :--- | :--- | :--- |
 | `GET /dashboards`、`POST /dashboards`、`GET /dashboards/{id}`、`PUT /dashboards/{id}`、`DELETE /dashboards/{id}`、`GET /dashboards/by-slug/{slug}` | `DATA_READ` / `VIEW_EDIT` | [10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.7 |
 | `POST /dashboards/ai-generate`、`POST /dashboards/ai-draft` | `VIEW_EDIT` | §11.6、[05-STEP19](../../plans/v2-ux-and-grounded-ai/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.3.2 |
-| `POST /dashboards/{id}/publish`、`POST /dashboards/{id}/duplicate`、`PUT /dashboards/{id}/layout` | `VIEW_EDIT` | §11.7 |
+| `POST /dashboards/{id}/publish`、`POST /dashboards/{id}/duplicate`、`PUT /dashboards/{id}/layout`、`POST /dashboards/{id}/apply-zone-preset`、`POST /dashboards/{id}/preflight` | `VIEW_EDIT` / `VIEW_SHARE` | §11.7、[06-STEP20](../../plans/v2-ux-and-grounded-ai/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.3 |
 | `POST /dashboards/{id}/widgets`、`PUT /widgets/{id}`、`DELETE /widgets/{id}` | `VIEW_EDIT` | 同上 |
 | `POST /widgets/{id}/data`、`POST /widgets/preview` | `DATA_READ` | §11.2 |
 | `POST /widgets/{id}/invoke` | `FLOW_RUN` | §11.6 |
