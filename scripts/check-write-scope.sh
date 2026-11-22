@@ -43,11 +43,11 @@ is_allowed_for_role() {
       ;;
     squad-domain-agent)
       [[ "$file" =~ ^axpoint-core/crates/(axpoint-llm|axpoint-flow|axpoint-agent)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(agent|flow|graph|ops|rules|topology|view)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(agent|flow|graph|im|ops|rules|topology|view)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(expr|rollup|sim|studio)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(studio_repo|flow_repo|agent_repo|sim_repo|view_repo|ops_repo|tokens|nodes|topology|mapping_exec|aggregate_exec|entity_link|knowledge_sync)\.rs$ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(agent_repo|ops_repo)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(studio_repo|agent_repo|sim_repo|view_repo|step06_exec)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(studio_repo|flow_repo|agent_repo|im_repo|sim_repo|view_repo|ops_repo|tokens|nodes|topology|mapping_exec|aggregate_exec|entity_link|knowledge_sync)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(agent_repo|im_repo|ops_repo)/ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(studio_repo|agent_repo|im_repo|sim_repo|view_repo|step06_exec)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/(xblue|xblue_graphql|axflow|axagent|published|mcp|axsim|xblueview|axops)\.rs$ ]] && return 0
       [[ "$file" =~ ^templates/packs/ ]] && return 0
       [[ "$file" =~ ^scripts/ops/ ]] && return 0
@@ -64,6 +64,7 @@ is_allowed_for_role() {
     squad-qa)
       [[ "$file" =~ ^xbluenode-web/e2e/ ]] && return 0
       [[ "$file" =~ ^scripts/gate/step[0-9]+\.sh$ ]] && return 0
+      [[ "$file" =~ ^scripts/gate/tools/ ]] && return 0
       [[ "$file" =~ ^scripts/(seed|bench|demo)/ ]] && return 0
       [[ "$file" =~ ^tests/ ]] && return 0
       return 1

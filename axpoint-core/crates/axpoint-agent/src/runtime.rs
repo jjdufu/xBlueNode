@@ -1644,6 +1644,8 @@ where
                     user_id: owner_uid,
                     channel: call.channel,
                     embed_id: call.embed_id,
+                    im_connector_id: None,
+                    external_chat_id: None,
                     title,
                 },
             )
@@ -1955,6 +1957,8 @@ where
                     user_id: non_nil_uid(input.user_id),
                     channel: ConversationChannel::Flow,
                     embed_id: None,
+                    im_connector_id: None,
+                    external_chat_id: None,
                     title: String::from(idem_title),
                 },
             )

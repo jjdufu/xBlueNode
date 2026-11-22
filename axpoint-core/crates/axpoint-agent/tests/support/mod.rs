@@ -1083,6 +1083,8 @@ impl AgentRepository for MockStep09Store {
             user_id: input.user_id,
             channel: input.channel,
             embed_id: input.embed_id,
+            im_connector_id: input.im_connector_id,
+            external_chat_id: input.external_chat_id,
             title: input.title,
             status: ConversationStatus::Active,
             created_at: now,

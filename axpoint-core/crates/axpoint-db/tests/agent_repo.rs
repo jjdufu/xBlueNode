@@ -532,6 +532,8 @@ fn new_conv_input(
         user_id: Some(user_id),
         channel,
         embed_id: None,
+        im_connector_id: None,
+        external_chat_id: None,
         title: title.into(),
     }
 }

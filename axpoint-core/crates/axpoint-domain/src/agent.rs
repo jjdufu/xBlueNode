@@ -937,10 +937,16 @@ pub struct ConversationRecord {
     pub agent_version: i32,
     /// Initiating user UUID.
     pub user_id: Option<Uuid>,
-    /// Entry channel (`WORKBENCH`, `EMBED`, `API`, `FLOW`, `MCP`).
+    /// Entry channel (`WORKBENCH`, `EMBED`, `API`, `FLOW`, `MCP`, `IM`).
     pub channel: ConversationChannel,
     /// Associated `ax_agent_embeds.id` when `channel == EMBED`.
     pub embed_id: Option<Uuid>,
+    /// Associated `ax_im_connectors.id` when `channel == IM` (`07-STEP21` §21.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub im_connector_id: Option<Uuid>,
+    /// External IM thread/chat identifier when `channel == IM` (`07-STEP21` §21.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_chat_id: Option<String>,
     /// Conversation title (derived from first user message or flow idempotency key).
     pub title: String,
     /// Current status (`ACTIVE`, `WAITING_APPROVAL`, `CLOSED`).
@@ -960,10 +966,14 @@ pub struct NewConversationInput {
     pub agent_version: i32,
     /// Optional initiating user UUID (`None` for anonymous embed/system turns).
     pub user_id: Option<Uuid>,
-    /// Entry channel (`WORKBENCH`, `EMBED`, `API`, `FLOW`, `MCP`).
+    /// Entry channel (`WORKBENCH`, `EMBED`, `API`, `FLOW`, `MCP`, `IM`).
     pub channel: ConversationChannel,
     /// Associated `ax_agent_embeds.id` when `channel == EMBED`.
     pub embed_id: Option<Uuid>,
+    /// Associated `ax_im_connectors.id` when `channel == IM` (`07-STEP21` §21.1).
+    pub im_connector_id: Option<Uuid>,
+    /// External IM thread/chat identifier when `channel == IM` (`07-STEP21` §21.1).
+    pub external_chat_id: Option<String>,
     /// Conversation title (derived from first user message or flow idempotency key).
     pub title: String,
 }

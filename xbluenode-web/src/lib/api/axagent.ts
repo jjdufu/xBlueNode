@@ -4,12 +4,21 @@ import { getAccessToken } from "./auth";
 import type {
   EndpointKind,
   Environment,
+  ImConnectorStatus,
+  ImIdentityPolicy,
+  ImPlatform,
   Permission,
   StructuredOutputMode,
   TokenProfile,
 } from "./enums";
 
-export type { StructuredOutputMode, TokenProfile };
+export type {
+  ImConnectorStatus,
+  ImIdentityPolicy,
+  ImPlatform,
+  StructuredOutputMode,
+  TokenProfile,
+};
 
 export type ProviderScope = "SYSTEM" | "PERSONAL";
 
@@ -28,7 +37,8 @@ export type ConversationChannel =
   | "EMBED"
   | "API"
   | "FLOW"
-  | "MCP";
+  | "MCP"
+  | "IM";
 
 export type ConversationStatus = "ACTIVE" | "WAITING_APPROVAL" | "CLOSED";
 
@@ -308,6 +318,8 @@ export interface ConversationRecord {
   user_id: string | null;
   channel: ConversationChannel;
   embed_id: string | null;
+  im_connector_id?: string | null;
+  external_chat_id?: string | null;
   title: string;
   status: ConversationStatus;
   created_at: string;
@@ -1223,4 +1235,178 @@ export async function streamEmbedChat(
     }
   );
   await consumeAgentStreamResponse(resp, onEvent);
+}
+
+export interface ImConnectorConfig {
+  endpoint_override?: string | null;
+  allow_private_network?: boolean;
+  bot_code?: string | null;
+  web_base_url?: string | null;
+}
+
+export interface ImConnectorSecretInput {
+  app_id?: string;
+  app_secret?: string;
+  client_id?: string;
+  client_secret?: string;
+  bot_id?: string;
+  secret?: string;
+}
+
+export interface ImConnectorRecord {
+  id: string;
+  tenant_id: string;
+  name: string;
+  platform: ImPlatform;
+  agent_id: string;
+  has_secret: boolean;
+  config: ImConnectorConfig;
+  identity_policy: ImIdentityPolicy;
+  delegated_user_id?: string | null;
+  enabled: boolean;
+  leader_holder: string | null;
+  lease_until: string | null;
+  status: ImConnectorStatus;
+  last_error: string;
+  last_heartbeat_at: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateImConnectorRequest {
+  name: string;
+  platform: ImPlatform;
+  agent_id: string;
+  identity_policy?: ImIdentityPolicy;
+  delegated_user_id?: string | null;
+  secret: ImConnectorSecretInput;
+  config?: ImConnectorConfig;
+  enabled?: boolean;
+}
+
+export interface PatchImConnectorRequest {
+  name?: string;
+  agent_id?: string;
+  identity_policy?: ImIdentityPolicy;
+  delegated_user_id?: string | null;
+  secret?: ImConnectorSecretInput;
+  config?: ImConnectorConfig;
+  enabled?: boolean;
+}
+
+export interface ImConnectorTestResponse {
+  ok: boolean;
+  platform: ImPlatform;
+  latency_ms: number;
+  endpoint_preview: string;
+  message: string;
+}
+
+export interface ImUserBindingRecord {
+  id: string;
+  tenant_id: string;
+  platform: ImPlatform;
+  external_user_id: string;
+  external_display_name: string;
+  user_id: string;
+  username?: string | null;
+  bound_at: string;
+}
+
+export interface ImBindChallengePreview {
+  connector_id: string;
+  connector_name: string;
+  platform: ImPlatform;
+  external_user_id: string;
+  external_display_name: string;
+  expires_at: string;
+}
+
+export interface ConfirmImBindResponse {
+  connector_id: string;
+  platform: ImPlatform;
+  external_user_id: string;
+  external_display_name: string;
+  user_id: string;
+  bound_at: string;
+}
+
+export async function listImConnectors(): Promise<ImConnectorRecord[]> {
+  const res = await requestJson<
+    ImConnectorRecord[] | PaginatedItems<ImConnectorRecord>
+  >("/api/axagent/im-connectors");
+  return unwrapItems(res);
+}
+
+export async function createImConnector(
+  req: CreateImConnectorRequest
+): Promise<ImConnectorRecord> {
+  return requestJson<ImConnectorRecord>("/api/axagent/im-connectors", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+}
+
+export async function patchImConnector(
+  id: string,
+  req: PatchImConnectorRequest
+): Promise<ImConnectorRecord> {
+  return requestJson<ImConnectorRecord>(
+    `/api/axagent/im-connectors/${encodeURIComponent(id)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    }
+  );
+}
+
+export async function deleteImConnector(id: string): Promise<void> {
+  await requestJson<unknown>(
+    `/api/axagent/im-connectors/${encodeURIComponent(id)}`,
+    { method: "DELETE" }
+  );
+}
+
+export async function testImConnector(
+  id: string
+): Promise<ImConnectorTestResponse> {
+  return requestJson<ImConnectorTestResponse>(
+    `/api/axagent/im-connectors/${encodeURIComponent(id)}/test`,
+    { method: "POST" }
+  );
+}
+
+export async function listImBindings(): Promise<ImUserBindingRecord[]> {
+  const res = await requestJson<
+    ImUserBindingRecord[] | PaginatedItems<ImUserBindingRecord>
+  >("/api/axagent/im-bindings");
+  return unwrapItems(res);
+}
+
+export async function deleteImBinding(id: string): Promise<void> {
+  await requestJson<unknown>(
+    `/api/axagent/im-bindings/${encodeURIComponent(id)}`,
+    { method: "DELETE" }
+  );
+}
+
+export async function previewImBindToken(
+  token: string
+): Promise<ImBindChallengePreview> {
+  return requestJson<ImBindChallengePreview>(
+    `/api/axagent/im-bind/preview?token=${encodeURIComponent(token)}`
+  );
+}
+
+export async function confirmImBindToken(
+  token: string
+): Promise<ConfirmImBindResponse> {
+  return requestJson<ConfirmImBindResponse>("/api/axagent/im-bind/confirm", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
 }

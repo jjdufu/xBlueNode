@@ -75,6 +75,7 @@
 | C63 | 多表问数本体外键路径守卫（拦截无映射依据的自由 `JOIN`） | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.3 | step16 “ungrounded-join-rejected”、“mapped-join-ok” |
 | C64 | 知识问答段落引用角标核验与零召回确定性拒答 | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.4 | step16 “phantom-citation-stripped”、“empty-recall-abstain” |
 | C65 | 云/端双轨 50 例反幻觉对抗基准 100% 拦截 | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.5 | step16 “hallucination-eval-100” |
+| C75 | 企业 IM（飞书 / 钉钉 / 企业微信）零入站端口出站长连接双向智能体网关与提问人行级权限继承 | 21 | [07-STEP21](../../plans/v2-ux-and-grounded-ai/builder-and-ux/07-STEP21-IM-BIDIRECTIONAL-AGENT-CONNECTORS.md) §21.1～§21.4 | step21 “im-bind-token”、“im-rls-inherited”、“im-leader-failover” |
 
 ### E 推演
 

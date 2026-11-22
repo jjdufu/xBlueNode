@@ -476,8 +476,39 @@ async fn apply_domain_retention_target_tx(
             )
             .await?;
         }
+        "IM_EVENT_DEDUP" => {
+            purge_im_dedup_and_challenges_tx(tx, tenant_id, keep_days).await?;
+        }
         _ => {}
     }
+    Ok(())
+}
+
+async fn purge_im_dedup_and_challenges_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    keep_days: i32,
+) -> Result<(), AppError> {
+    let _dedup = exec_retention_sql_tx(
+        tx,
+        "IM_EVENT_DEDUP",
+        "DELETE FROM ax_im_event_dedup
+          WHERE tenant_id = $1
+            AND received_at < NOW() - make_interval(days => $2::int)",
+        tenant_id,
+        keep_days,
+    )
+    .await?;
+    let _challenges = exec_retention_sql_tx(
+        tx,
+        "IM_BIND_CHALLENGES",
+        "DELETE FROM ax_im_bind_challenges
+          WHERE tenant_id = $1
+            AND expires_at < NOW() - make_interval(days => $2::int)",
+        tenant_id,
+        keep_days,
+    )
+    .await?;
     Ok(())
 }
 

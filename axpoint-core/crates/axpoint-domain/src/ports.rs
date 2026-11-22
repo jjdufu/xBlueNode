@@ -39,7 +39,8 @@ use crate::builder::{
     UpsertDashboardDraftInput, UpsertDashboardDraftResponse,
 };
 use crate::enums::{
-    ConversationStatus, Environment, ExportFormat, GraphAlgo, JobKind, RetentionTarget,
+    ConversationStatus, Environment, ExportFormat, GraphAlgo, ImConnectorStatus, ImIdentityPolicy,
+    ImPlatform, JobKind, RetentionTarget,
 };
 use crate::export::{
     CompleteExportJobParams, CreateExportJobParams, CreateExportTemplateParams,
@@ -73,6 +74,10 @@ use crate::guard::{
     PutRowPolicyDefaultRequest, ResolvedSessionRow, ResourceRef, RowPolicyDefaultRecord,
     RowPolicyRecord, SaveRowPolicyRequest, SessionSummaryRecord, UpsertDepartmentRequest,
     UpsertOidcUserParams,
+};
+use crate::im::{
+    ConsumedImBindChallenge, HydratedImPrincipal, ImBindChallengePreview, ImConnectorRecord,
+    ImUserBindingRecord, NewImBindChallengeInput, NewImConnectorInput, UpdateImConnectorInput,
 };
 use crate::ops::{
     BackupKind, BackupRecord, CreateWorkItemRequest, DatabaseHealth, FlowWorkItemInput,
@@ -3847,4 +3852,141 @@ pub trait TemplateSandboxPort: Send + Sync {
         req: DevSubgraphRunRequest,
         web_base_url: Option<&'a str>,
     ) -> BoxFuture<'a, DevSubgraphRunResponse>;
+}
+
+/// Persistence, distributed single-leader lease, event deduplication, and challenge-bind port
+/// for `AxAgent` outbound enterprise IM connectors (`07-STEP21` §21.0–§21.4).
+pub trait ImGatewayRepository: Send + Sync {
+    /// Lists all `ax_im_connectors` rows in `tenant_id` ordered by `created_at DESC, name ASC`.
+    fn list_im_connectors(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<Vec<ImConnectorRecord>, AppError>> + Send;
+
+    /// Fetches a single `ax_im_connectors` row in `tenant_id`.
+    fn get_im_connector(
+        &self,
+        tenant_id: &str,
+        connector_id: Uuid,
+    ) -> impl Future<Output = Result<Option<ImConnectorRecord>, AppError>> + Send;
+
+    /// Inserts a sealed `ds_credentials` row and a new `ax_im_connectors` row in one tenant transaction.
+    fn create_im_connector(
+        &self,
+        tenant_id: &str,
+        input: NewImConnectorInput,
+    ) -> impl Future<Output = Result<ImConnectorRecord, AppError>> + Send;
+
+    /// Updates an existing `ax_im_connectors` row (optionally rotating its `ds_credentials` secret).
+    fn update_im_connector(
+        &self,
+        tenant_id: &str,
+        connector_id: Uuid,
+        input: UpdateImConnectorInput,
+    ) -> impl Future<Output = Result<Option<ImConnectorRecord>, AppError>> + Send;
+
+    /// Deletes an `ax_im_connectors` row and its attached `ds_credentials` entry.
+    fn delete_im_connector(
+        &self,
+        tenant_id: &str,
+        connector_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Claims or renews up to `limit` enabled connectors across tenants via `SECURITY DEFINER` `ax_claim_im_connectors`.
+    fn claim_im_connectors(
+        &self,
+        holder_id: &str,
+        limit: i32,
+        lease_seconds: i32,
+    ) -> impl Future<Output = Result<Vec<ImConnectorRecord>, AppError>> + Send;
+
+    /// Releases all connector leases held by `holder_id` during graceful shutdown via `ax_release_im_connectors`.
+    fn release_im_connectors(
+        &self,
+        holder_id: &str,
+    ) -> impl Future<Output = Result<i32, AppError>> + Send;
+
+    /// Updates `status` and `last_error` fenced by `leader_holder = holder_id`; returns `false` if lease was lost.
+    fn update_im_connector_runtime_state(
+        &self,
+        tenant_id: &str,
+        connector_id: Uuid,
+        holder_id: &str,
+        status: ImConnectorStatus,
+        last_error: &str,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Inserts `(tenant_id, connector_id, event_id)` into `ax_im_event_dedup`; returns `true` when newly recorded.
+    fn record_im_event_dedup(
+        &self,
+        tenant_id: &str,
+        connector_id: Uuid,
+        event_id: &str,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Resolves a bound `sec_users.id` for `(tenant_id, platform, external_user_id)`.
+    fn get_im_user_binding(
+        &self,
+        tenant_id: &str,
+        platform: ImPlatform,
+        external_user_id: &str,
+    ) -> impl Future<Output = Result<Option<ImUserBindingRecord>, AppError>> + Send;
+
+    /// Lists `ax_im_user_bindings` in `tenant_id` (`only_user_id = Some(uid)` scopes to caller's own bindings).
+    fn list_im_user_bindings(
+        &self,
+        tenant_id: &str,
+        only_user_id: Option<Uuid>,
+    ) -> impl Future<Output = Result<Vec<ImUserBindingRecord>, AppError>> + Send;
+
+    /// Deletes a binding by UUID (`only_user_id = Some(uid)` enforces self-ownership) and returns the removed row.
+    fn delete_im_user_binding(
+        &self,
+        tenant_id: &str,
+        binding_id: Uuid,
+        only_user_id: Option<Uuid>,
+    ) -> impl Future<Output = Result<Option<ImUserBindingRecord>, AppError>> + Send;
+
+    /// Inserts a 10-minute one-time challenge digest into `ax_im_bind_challenges`.
+    fn create_im_bind_challenge(
+        &self,
+        tenant_id: &str,
+        input: NewImBindChallengeInput,
+    ) -> impl Future<Output = Result<(), AppError>> + Send;
+
+    /// Previews an unconsumed, non-expired challenge in `tenant_id` (`GET /api/axagent/im-bind/preview`).
+    fn preview_im_bind_challenge(
+        &self,
+        tenant_id: &str,
+        token_hash: &str,
+    ) -> impl Future<Output = Result<Option<ImBindChallengePreview>, AppError>> + Send;
+
+    /// Atomically consumes a challenge and upserts `ax_im_user_bindings` via `ax_consume_im_bind_challenge`.
+    fn consume_im_bind_challenge(
+        &self,
+        tenant_id: &str,
+        token_hash: &str,
+        user_id: Uuid,
+    ) -> impl Future<Output = Result<Option<ConsumedImBindChallenge>, AppError>> + Send;
+
+    /// Finds the most recent `ACTIVE` `channel = 'IM'` conversation for `(connector_id, external_chat_id, user_id)`.
+    fn find_active_im_conversation(
+        &self,
+        tenant_id: &str,
+        connector_id: Uuid,
+        external_chat_id: &str,
+        user_id: Option<Uuid>,
+    ) -> impl Future<Output = Result<Option<ConversationRecord>, AppError>> + Send;
+}
+
+/// Real-time principal hydration port for outbound IM turns (`07-STEP21` §21.0 & §21.3).
+pub trait PrincipalHydrationPort: Send + Sync {
+    /// Loads a currently `ACTIVE`, unlocked `sec_users` principal in `tenant_id` together with
+    /// role permissions and `sec_user_attributes`, enforcing [`ImIdentityPolicy`] guardrails.
+    fn hydrate_im_principal(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+        policy: ImIdentityPolicy,
+    ) -> impl Future<Output = Result<Option<HydratedImPrincipal>, AppError>> + Send;
 }
