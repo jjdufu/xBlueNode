@@ -18,8 +18,8 @@ use axpoint_domain::grounding::ABSTAIN_NO_DOC_EVIDENCE_ZH;
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::AnalyticsRepository as _;
 use axpoint_domain::{
-    AppError, ChatQueryRequest, ChatQueryResponse, DocumentListResponse, FusedHit, IngestResponse,
-    IngestTextRequest, rrf_fuse, split_paragraphs,
+    AppError, ChatQueryRequest, ChatQueryResponse, ChatQueryScope, DocumentListResponse, FusedHit,
+    IngestResponse, IngestTextRequest, rrf_fuse, split_paragraphs,
 };
 use axpoint_security::AuthPrincipal;
 use axum::extract::{Multipart, Path, Query, State};
@@ -670,6 +670,7 @@ async fn handle_doc_chat_query(
         verified_citations: doc.verified_citations,
         abstained: doc.abstained,
         slot_payload: None,
+        applied_scope: req.scope.as_ref().and_then(ChatQueryScope::normalized),
     })
 }
 
@@ -750,6 +751,7 @@ async fn handle_hybrid_chat_query(
         verified_citations: hybrid.verified_citations,
         abstained: hybrid.abstained,
         slot_payload: data.slot_payload,
+        applied_scope: req.scope.as_ref().and_then(ChatQueryScope::normalized),
     })
 }
 
@@ -781,6 +783,7 @@ async fn chat_query_handler(
             Box::pin(handle_doc_chat_query(&state, &principal, &req, started)).await?,
         )),
         AskIntent::Data | AskIntent::Chitchat => {
+            let applied_scope = req.scope.as_ref().and_then(ChatQueryScope::normalized);
             let ask_resp = Box::pin(execute_ask_for_principal(
                 &state,
                 &principal,
@@ -816,6 +819,7 @@ async fn chat_query_handler(
                 verified_citations: ask_resp.verified_citations,
                 abstained: ask_resp.abstained,
                 slot_payload: ask_resp.slot_payload,
+                applied_scope,
             }))
         }
         AskIntent::Hybrid => Ok(Json(

@@ -304,6 +304,7 @@ async fn verify_dashboard_slug_and_draft_creation(
                     filters: Vec::new(),
                     theme: DashboardTheme::Light,
                     canvas: CanvasConfig::default(),
+                    zone_layout: None,
                 },
             )
             .await,
@@ -324,6 +325,7 @@ async fn verify_dashboard_slug_and_draft_creation(
                 filters: Vec::new(),
                 theme: DashboardTheme::Dark,
                 canvas: CanvasConfig::default(),
+                zone_layout: None,
             },
         )
         .await?;
@@ -342,6 +344,7 @@ async fn verify_dashboard_slug_and_draft_creation(
                     filters: Vec::new(),
                     theme: DashboardTheme::Light,
                     canvas: CanvasConfig::default(),
+                    zone_layout: None,
                 },
             )
             .await,
@@ -471,6 +474,7 @@ async fn verify_duplicate_ai_and_pagination(
                 filters: Vec::new(),
                 theme: DashboardTheme::Screen,
                 canvas: CanvasConfig::default(),
+                zone_layout: None,
             },
             vec![static_widget_params(
                 Uuid::nil(),
@@ -568,6 +572,7 @@ async fn view_repo_widgets_layout_and_gin_deps_lookup() -> TestResult {
                 filters: Vec::new(),
                 theme: DashboardTheme::Light,
                 canvas: CanvasConfig::default(),
+                zone_layout: None,
             },
         )
         .await?;
@@ -1189,6 +1194,7 @@ async fn assert_bounds_and_canvas_rejected(
                         cols: 0,
                         ..CanvasConfig::default()
                     },
+                    zone_layout: None,
                 },
             )
             .await,
@@ -1337,6 +1343,7 @@ async fn view_repo_bounds_canvas_asset_kind_and_widgets_by_asset() -> TestResult
                 filters: Vec::new(),
                 theme: DashboardTheme::Light,
                 canvas: CanvasConfig::default(),
+                zone_layout: None,
             },
         )
         .await?;

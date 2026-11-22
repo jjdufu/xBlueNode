@@ -6,11 +6,12 @@ import {
   refreshAccessToken,
 } from "./auth.ts";
 
-/** Standard three-field error response body from AxPoint Core & Sidecar (`A1` §5). */
+/** Standard error response body from AxPoint Core & Sidecar (`A1` §5, with optional `details` on HTTP 422). */
 export const ApiErrorBodySchema = z.object({
   error_code: z.string(),
   message: z.string(),
   trace_id: z.string(),
+  details: z.unknown().optional(),
 });
 
 /** Structured HTTP error thrown by all API client helpers. */
@@ -19,12 +20,14 @@ export class ApiError extends Error {
   readonly errorCode: string;
   override readonly message: string;
   readonly traceId: string;
+  readonly details?: unknown;
 
   constructor(params: {
     status: number;
     errorCode: string;
     message: string;
     traceId: string;
+    details?: unknown;
   }) {
     super(params.message);
     this.name = "ApiError";
@@ -32,6 +35,9 @@ export class ApiError extends Error {
     this.errorCode = params.errorCode;
     this.message = params.message;
     this.traceId = params.traceId;
+    if (params.details !== undefined) {
+      this.details = params.details;
+    }
     Object.setPrototypeOf(this, ApiError.prototype);
   }
 }
@@ -117,6 +123,7 @@ export async function buildApiError(resp: Response): Promise<ApiError> {
           errorCode: validated.data.error_code,
           message: validated.data.message,
           traceId: validated.data.trace_id,
+          details: validated.data.details,
         });
       }
     } catch {

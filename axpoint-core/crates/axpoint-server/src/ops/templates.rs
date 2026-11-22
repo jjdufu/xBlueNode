@@ -1802,6 +1802,7 @@ where
                     filters: def.filters,
                     theme: def.theme,
                     canvas: def.canvas,
+                    zone_layout: None,
                 },
             )
             .await?;

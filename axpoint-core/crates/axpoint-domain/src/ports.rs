@@ -107,7 +107,7 @@ use crate::sim::{
     Checkpoint, CreateDecisionRequest, CreateOverlayLinkRequest, CreateOverlayNodeRequest,
     CreateScenarioRequest, DecisionRecord, ImpactListQuery, ImpactRow, PatchOverlayLinkRequest,
     PatchOverlayNodeRequest, RefreshBaseResponse, SandboxGraphLink, SandboxGraphNode,
-    SandboxGraphResponse, ScenarioRecord, SimGraph, SimResult,
+    SandboxGraphResponse, SandboxScope, ScenarioRecord, ScopePreflightSlice, SimGraph, SimResult,
 };
 use crate::studio::{
     CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus, MappingRecord,
@@ -4006,4 +4006,15 @@ pub trait OnboardingAndPackagingPort: Send + Sync {
         tenant_id: &str,
         subgraph_slug: &str,
     ) -> impl Future<Output = Result<SubgraphConsumptionResponse, AppError>> + Send;
+}
+
+/// Read-only persistence port sampling candidate `SandboxScope` topology and metric keys before cloning (`06-STEP20` §20.1.2).
+pub trait SimPreflightPort: Send + Sync {
+    /// Samples node counts, isolated nodes, induced edges, boundary-truncated edges, observed runtime metric keys, and `SchemaDoc` for `scope` without mutating `ax_sim_base_*`.
+    fn preview_scope_slice(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        scope: &SandboxScope,
+    ) -> impl Future<Output = Result<ScopePreflightSlice, AppError>> + Send;
 }

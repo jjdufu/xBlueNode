@@ -694,3 +694,12 @@ async fn retention_cleanup_purges_expired_jobs_and_outbox() -> TestResult {
 
     Ok(())
 }
+
+#[test]
+fn escape_like_prefix_escapes_wildcards_and_ignores_blank() {
+    assert_eq!(crate::escape_like_prefix("   "), None);
+    assert_eq!(
+        crate::escape_like_prefix(" SOP_2026%v1\\a "),
+        Some(String::from("SOP\\_2026\\%v1\\\\a%"))
+    );
+}

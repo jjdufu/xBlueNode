@@ -80,7 +80,9 @@ impl IntoResponse for HttpError {
             AppError::Conflict(_) => StatusCode::CONFLICT,
             AppError::PayloadTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             AppError::Unsupported(_) => StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            AppError::Unprocessable { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            AppError::Unprocessable { .. } | AppError::UnprocessableDetails { .. } => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             AppError::RateLimited => StatusCode::TOO_MANY_REQUESTS,
             AppError::Config(raw) | AppError::Database(raw) => {
                 tracing::error!(error = %raw, "internal server error");
@@ -93,11 +95,14 @@ impl IntoResponse for HttpError {
             AppError::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
         };
         let trace_id = current_trace_id();
-        let body = serde_json::json!({
+        let mut body = serde_json::json!({
             "error_code": self.0.error_code(),
             "message": self.0.client_message(),
             "trace_id": trace_id,
         });
+        if let (Some(obj), Some(details)) = (body.as_object_mut(), self.0.details()) {
+            obj.insert(String::from("details"), details.clone());
+        }
         (status, Json(body)).into_response()
     }
 }

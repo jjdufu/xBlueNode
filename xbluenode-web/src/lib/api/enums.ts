@@ -374,3 +374,12 @@ export type ImConnectorStatus =
   | "CONNECTED"
   | "DEGRADED"
   | "ERROR";
+
+export type CockpitZoneLayout = "FREE_GRID" | "STANDARD_FIVE_ZONE";
+
+export type SemanticZoneKind =
+  | "CONTROL"
+  | "KPI"
+  | "SCENE"
+  | "INSIGHT"
+  | "DECISION";

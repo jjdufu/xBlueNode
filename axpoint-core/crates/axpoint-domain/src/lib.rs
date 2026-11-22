@@ -24,6 +24,9 @@ pub mod sim;
 pub mod studio;
 pub mod topology;
 pub mod view;
+pub mod view_zones;
+
+pub use analytics::ChatQueryScope;
 
 use std::collections::HashMap;
 
@@ -79,6 +82,17 @@ pub enum AppError {
         message: String,
     },
 
+    /// Semantically unprocessable payload with structured machine-readable diagnostics (`HTTP 422`, `06-STEP20` §20.3.2).
+    #[error("{code}: {message}")]
+    UnprocessableDetails {
+        /// Stable machine-readable error code, e.g., `VIEW_PREFLIGHT_BLOCKED`.
+        code: &'static str,
+        /// Human-readable diagnostic message.
+        message: String,
+        /// Boxed structured diagnostic payload returned under `"details"`.
+        details: Box<serde_json::Value>,
+    },
+
     /// Rate limit exceeded (`HTTP 429`).
     #[error("rate limited")]
     RateLimited,
@@ -127,12 +141,36 @@ impl AppError {
         }
     }
 
+    /// Constructs [`AppError::UnprocessableDetails`] with structured diagnostic details (`HTTP 422`).
+    #[must_use]
+    pub fn unprocessable_details(
+        code: &'static str,
+        message: impl Into<String>,
+        details: serde_json::Value,
+    ) -> Self {
+        Self::UnprocessableDetails {
+            code,
+            message: message.into(),
+            details: Box::new(details),
+        }
+    }
+
+    /// Returns optional structured diagnostic details when attached (e.g., [`AppError::UnprocessableDetails`]).
+    #[must_use]
+    pub fn details(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::UnprocessableDetails { details, .. } => Some(details.as_ref()),
+            _ => None,
+        }
+    }
+
     /// Returns the canonical `error_code` string per `A1` §5.
     #[must_use]
     pub const fn error_code(&self) -> &'static str {
         match self {
             Self::BadRequest { code, .. }
             | Self::Unprocessable { code, .. }
+            | Self::UnprocessableDetails { code, .. }
             | Self::Unauthorized(code)
             | Self::Forbidden(code)
             | Self::NotFound(code)
@@ -153,9 +191,9 @@ impl AppError {
     pub fn client_message(&self) -> String {
         match self {
             Self::Config(_) | Self::Database(_) => String::from("internal error"),
-            Self::BadRequest { message, .. } | Self::Unprocessable { message, .. } => {
-                message.clone()
-            }
+            Self::BadRequest { message, .. }
+            | Self::Unprocessable { message, .. }
+            | Self::UnprocessableDetails { message, .. } => message.clone(),
             other => other.to_string(),
         }
     }
@@ -312,6 +350,9 @@ pub struct ChatQueryRequest {
     /// Explicit intent routing mode (`AUTO` | `DOC` | `DATA`, default `AUTO`).
     #[serde(default)]
     pub mode: analytics::ChatQueryMode,
+    /// Optional explicit session retrieval and analytical scope (`06-STEP20` §20.2.1).
+    #[serde(default)]
+    pub scope: Option<ChatQueryScope>,
 }
 
 /// Chat / RAG / Hybrid query response with five-way provenance and structured NL2SQL results (`05-STEP04` §04.8).
@@ -366,6 +407,9 @@ pub struct ChatQueryResponse {
     /// Structured ontology/metric slot payload when compiled via Stage 0 (`02-STEP16` §16.2.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot_payload: Option<serde_json::Value>,
+    /// Normalized scope applied during execution, if any (`06-STEP20` §20.2.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub applied_scope: Option<ChatQueryScope>,
 }
 
 /// System-wide hypergraph statistics for the `xBlueNode` dashboard.

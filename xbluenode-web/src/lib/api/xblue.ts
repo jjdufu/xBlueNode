@@ -259,6 +259,16 @@ export interface ResolveEntitiesResponse {
 
 export type TraversalDirection = "OUT" | "IN" | "BOTH";
 
+export interface SubgraphQueryParams {
+  type_names?: string;
+  link_types?: string;
+  subgraph?: string;
+  src_type?: string;
+  edge_type?: string;
+  dst_type?: string;
+  limit?: number;
+}
+
 export interface SubgraphResponse {
   nodes: BlueNode[];
   links: LinkRecord[];
@@ -2430,13 +2440,9 @@ export const xblueApi = {
     weighted?: boolean;
   }) =>
     requestJson<PathResponse>(`/api/xblue/graph/path${buildQuery(params)}`),
-  querySubgraph: (params?: {
-    type_names?: string;
-    link_types?: string;
-    limit?: number;
-  }) =>
+  querySubgraph: (params?: SubgraphQueryParams) =>
     requestJson<SubgraphResponse>(
-      `/api/xblue/graph/subgraph${buildQuery(params ?? {})}`
+      `/api/xblue/graph/subgraph${buildQuery({ ...(params ?? {}) })}`
     ),
   runAlgorithm: (
     algo: GraphAlgo,

@@ -133,6 +133,8 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `ImPlatform` | `FEISHU` `DINGTALK` `WECOM` | `ax_im_connectors.platform`、`ax_im_user_bindings.platform`（Step 21） |
 | `ImIdentityPolicy` | `REQUIRE_USER_BIND` `CREATOR_DELEGATED` | `ax_im_connectors.identity_policy`（Step 21） |
 | `ImConnectorStatus` | `DISCONNECTED` `CONNECTING` `CONNECTED` `DEGRADED` `ERROR` | `ax_im_connectors.status`（Step 21） |
+| `CockpitZoneLayout` | `FREE_GRID` `STANDARD_FIVE_ZONE` | `xv_dashboards.canvas.zone_layout`（Step 20） |
+| `SemanticZoneKind` | `CONTROL` `KPI` `SCENE` `INSIGHT` `DECISION` | `xv_widgets.options.semantic_zone`（Step 20） |
 
 ---
 
@@ -155,7 +157,7 @@ Rust 侧 `axpoint-domain::AppError` 枚举与 HTTP 状态码映射：
 | `Conflict(code)` | 409 | `NAME_TAKEN` `VERSION_CONFLICT` `SCHEMA_BREAKING_CHANGE` `IDEMPOTENCY_REPLAY` |
 | `PayloadTooLarge(code)` | 413 | `UPLOAD_TOO_LARGE` `ARCHIVE_BOMB` |
 | `Unsupported(code)` | 415 | `UNSUPPORTED_FORMAT` `UNSUPPORTED_EARLY_OFFICE_FORMAT` |
-| `Unprocessable(code, msg)` | 422 | `PARSE_FAILED` `XML_UNSAFE` `PII_POLICY_VIOLATION` `STRUCTURED_OUTPUT_INVALID` |
+| `Unprocessable(code, msg)` / `UnprocessableDetails(code, msg, details)` | 422 | `PARSE_FAILED` `XML_UNSAFE` `PII_POLICY_VIOLATION` `STRUCTURED_OUTPUT_INVALID` `VIEW_PREFLIGHT_BLOCKED`（携带结构化 `details`） |
 | `RateLimited` | 429 | `RATE_LIMITED` |
 | `Config(msg)` / `Database(msg)` | 500 | `INTERNAL` |
 | `Llm(msg)` / `Parser(msg)` / `Upstream(msg)` | 502 | `UPSTREAM_LLM` `UPSTREAM_PARSER` `UPSTREAM_CONNECTOR` |
