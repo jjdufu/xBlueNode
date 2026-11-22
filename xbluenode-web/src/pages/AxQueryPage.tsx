@@ -16,6 +16,7 @@ import {
   Wrench,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import {
   analyticsApi,
   api,
@@ -292,7 +293,7 @@ export function AxQueryPage() {
   return (
     <div className="space-y-5" data-testid="axquery-page">
       <PageHeader
-        title={tx("AxQuery · 五路融合问答", "AxQuery · Hybrid Ask & Recall")}
+        title={tx(MODULE_META.axquery.label, MODULE_META.axquery.enLabel)}
         badges={
           sessionId ? (
             <Badge

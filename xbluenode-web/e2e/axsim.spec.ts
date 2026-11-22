@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from "@playwright/test";
+import { chooseSelectOption } from "./helpers";
 
 const SANDBOX_INITIAL_ID = "00000000-0000-0000-0000-000000000801";
 const SANDBOX_CREATED_ID = "00000000-0000-0000-0000-000000000802";
@@ -998,7 +999,7 @@ test("AxSim Step 10 end-to-end workbench: sandbox, intervention, overlay, steppe
   // 1) Open /sim and create a new sandbox via SandboxWizard
   await page.goto("/sim");
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxSim · 因果推演沙盘" })
+    page.getByRole("heading", { level: 1, name: "AxSim · 因果推演" })
   ).toBeVisible();
 
   await page.getByTestId("open-sandbox-wizard-btn").click();
@@ -1011,9 +1012,9 @@ test("AxSim Step 10 end-to-end workbench: sandbox, intervention, overlay, steppe
   );
 
   // 2) Add intervention (F-1 / output -30% RATIO) with uncertainty and run scenario
-  await page.getByTestId("action-node-select-0").selectOption(NODE_F1_ID);
+  await chooseSelectOption(page, "action-node-select-0", NODE_F1_ID);
   await page.getByTestId("action-metric-input-0").fill("output");
-  await page.getByTestId("action-mode-select-0").selectOption("RATIO");
+  await chooseSelectOption(page, "action-mode-select-0", "RATIO");
   await page.getByTestId("action-value-input-0").fill("-0.3");
   await page.getByTestId("sim-uncertainty-toggle").check();
   await page.getByTestId("scenario-name-input").fill("cut_30_scenario");
@@ -1079,7 +1080,7 @@ test("AxSim Step 10 end-to-end workbench: sandbox, intervention, overlay, steppe
 
   // 7) Propose decision & test conflict/rebase flow
   await page.getByTestId("axsim-tab-decisions").click();
-  await page.getByTestId("decision-flow-select").selectOption(FLOW_ID);
+  await chooseSelectOption(page, "decision-flow-select", FLOW_ID);
   await page.getByTestId("create-decision-btn").click();
 
   await expect(page.getByTestId("decision-status-badge")).toContainText("PENDING_APPROVAL");

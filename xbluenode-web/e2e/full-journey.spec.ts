@@ -1215,7 +1215,7 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   // -------------------------------------------------------------------------
   await page.getByRole("link", { name: "AxHub · 数据接入与目录" }).click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxHub · 数据接入与资产目录" })
+    page.getByRole("heading", { level: 1, name: "AxHub · 数据接入与目录" })
   ).toBeVisible();
 
   await page.getByTestId("axhub-nav-uploads").click();
@@ -1239,7 +1239,7 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   await expect(
     page.getByRole("heading", {
       level: 1,
-      name: "xBlueStudio · 节点与关系建模",
+      name: "xBlueStudio · 节点建模",
     })
   ).toBeVisible();
   await expect(page.getByTestId("xbluestudio-canvas")).toBeVisible();
@@ -1285,7 +1285,7 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   // -------------------------------------------------------------------------
   await page.getByRole("link", { name: "xBlueGraph · 图浏览" }).click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "xBlueGraph · 拓扑浏览器" })
+    page.getByRole("heading", { level: 1, name: "xBlueGraph · 图浏览" })
   ).toBeVisible();
   await expect(
     page.getByTestId("xbluegraph-canvas").locator("canvas").first()
@@ -1306,7 +1306,7 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   await expect(
     page.getByRole("heading", {
       level: 1,
-      name: "AxAnalytics · OLAP 与智能问数",
+      name: "AxAnalytics · 分析与问数",
     })
   ).toBeVisible();
 
@@ -1323,7 +1323,7 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   // -------------------------------------------------------------------------
   await page.getByRole("link", { name: "AxSim · 因果推演" }).click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxSim · 因果推演沙盘" })
+    page.getByRole("heading", { level: 1, name: "AxSim · 因果推演" })
   ).toBeVisible();
 
   const sandboxSelect = page.getByTestId("sandbox-selector");
@@ -1388,7 +1388,7 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   // -------------------------------------------------------------------------
   await page.getByRole("link", { name: "AxOps · 运维与交付" }).click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxOps · 运维与交付中心" })
+    page.getByRole("heading", { level: 1, name: "AxOps · 运维与交付" })
   ).toBeVisible();
   await expect(page.getByTestId("axops-health-panel")).toBeVisible({
     timeout: 15_000,
@@ -1402,6 +1402,7 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   // -------------------------------------------------------------------------
   // 9. Logout, then navigate to /view and assert URL redirects to /login
   // -------------------------------------------------------------------------
+  await page.getByTestId("shell-user-menu-btn").click();
   await page.getByTestId("shell-logout-btn").click();
   await expect(page).toHaveURL(/\/login$/, { timeout: 15_000 });
 

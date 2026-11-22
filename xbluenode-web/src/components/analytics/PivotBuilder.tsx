@@ -811,7 +811,7 @@ export function PivotBuilder({
                 className="inline-flex items-center gap-1.5 rounded border border-xblue/35 bg-xblue-soft/50 px-2 py-1 text-xs"
                 data-testid={`pivot-val-chip-${v.field}`}
               >
-                <select
+                <Select
                   value={v.agg}
                   onChange={(e) => {
                     const nextAgg = e.target.value as AggFn;
@@ -827,7 +827,7 @@ export function PivotBuilder({
                       )
                     );
                   }}
-                  className="rounded border border-border bg-background px-1 py-0.5 font-mono-tech text-[11px] text-xblue"
+                  className="h-6 px-1.5 py-0 font-mono-tech text-[11px] text-xblue"
                   data-testid={`pivot-val-agg-${v.field}-${idx}`}
                 >
                   {AGG_OPTIONS.map((agg) => (
@@ -835,7 +835,7 @@ export function PivotBuilder({
                       {agg}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <span className="font-mono-tech font-medium text-foreground">
                   ({v.field})
                 </span>
@@ -890,7 +890,7 @@ export function PivotBuilder({
                 className="flex flex-wrap items-center gap-1.5 text-xs"
               >
                 <Badge variant="neutral">{flt.field}</Badge>
-                <select
+                <Select
                   value={flt.op}
                   onChange={(e) => {
                     const nextOp = e.target.value as FilterOp;
@@ -900,14 +900,14 @@ export function PivotBuilder({
                       )
                     );
                   }}
-                  className="h-7 rounded border border-input bg-background px-1.5 font-mono-tech text-[11px]"
+                  className="h-7 px-2 font-mono-tech text-[11px]"
                 >
                   {FILTER_OPS.map((o) => (
                     <option key={o.op} value={o.op}>
                       {o.label}
                     </option>
                   ))}
-                </select>
+                </Select>
                 {flt.op !== "IsNull" && flt.op !== "IsNotNull" && (
                   <Input
                     value={flt.rawValue}

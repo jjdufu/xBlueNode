@@ -12,7 +12,7 @@ import { useI18n } from "@/i18n";
 import type { ChartSuggestion, QueryColumn } from "@/lib/api/analytics";
 import type { DataType } from "@/lib/api/enums";
 import { useTheme } from "@/lib/theme";
-import { Badge } from "@/components/ui/primitives";
+import { Badge, Select } from "@/components/ui/primitives";
 
 export type SupportedChartKind =
   | "BAR_CHART"
@@ -445,10 +445,10 @@ export function ChartPanel({
               activeKind === "PIE_CHART") && (
               <div className="flex items-center gap-1 text-[11px] shrink-0">
                 <span className="text-muted-foreground">X:</span>
-                <select
+                <Select
                   value={xField}
                   onChange={(e) => setManualXField(e.target.value)}
-                  className="h-6 max-w-[110px] rounded border border-input bg-background px-1.5 font-mono-tech text-[11px]"
+                  className="h-7 max-w-[128px] px-2 font-mono-tech text-[11px]"
                   data-testid="chart-x-select"
                 >
                   {columns.map((c) => (
@@ -456,12 +456,12 @@ export function ChartPanel({
                       {c.name}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <span className="text-muted-foreground ml-1">Y:</span>
-                <select
+                <Select
                   value={yField}
                   onChange={(e) => setManualYField(e.target.value)}
-                  className="h-6 max-w-[110px] rounded border border-input bg-background px-1.5 font-mono-tech text-[11px]"
+                  className="h-7 max-w-[128px] px-2 font-mono-tech text-[11px]"
                   data-testid="chart-y-select"
                 >
                   {columns.map((c) => (
@@ -469,7 +469,7 @@ export function ChartPanel({
                       {c.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
             )}
 

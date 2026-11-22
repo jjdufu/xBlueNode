@@ -17,6 +17,7 @@ import {
   UploadCloud,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import { usePrincipal } from "@/lib/permissions";
 import { ApiError } from "@/lib/api/client";
 import { axhubApi, type Dataset } from "@/lib/api/axhub";
@@ -778,11 +779,8 @@ export function XBlueStudioPage() {
       {/* Page Header — h1 preserves smoke.spec.ts zh-CN assertion */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-lg font-semibold tracking-tight">
-            {tx(
-              "xBlueStudio · 节点与关系建模",
-              "xBlueStudio · Ontology Studio"
-            )}
+          <h1 className="text-base font-semibold tracking-tight">
+            {tx(MODULE_META.xbluestudio.label, MODULE_META.xbluestudio.enLabel)}
           </h1>
           <Badge variant="outline">
             {workingDoc.node_types.length} {tx("类型", "Types")} ·{" "}

@@ -462,7 +462,7 @@ test("AxHub /hub renders demo_pg & demo_orders, tests connectivity, previews tab
   await page.goto("/hub");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxHub · 数据接入与资产目录" })
+    page.getByRole("heading", { level: 1, name: "AxHub · 数据接入与目录" })
   ).toBeVisible();
 
   // 1. Verify seed connection demo_pg with status OK & non-echoing secret on edit

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Award, Code2, TableProperties, Wand2 } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import {
   analyticsApi,
   type AnalyticsCatalogResponse,
@@ -270,8 +271,8 @@ export function AnalyticsStudioPage() {
     <div className="space-y-4" data-testid="analytics-studio-page">
       <PageHeader
         title={tx(
-          "AxAnalytics · OLAP 与智能问数",
-          "AxAnalytics · OLAP & Smart Ask"
+          MODULE_META.axanalytics.label,
+          MODULE_META.axanalytics.enLabel
         )}
         badges={
           <>

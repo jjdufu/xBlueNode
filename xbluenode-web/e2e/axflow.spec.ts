@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from "@playwright/test";
+import { chooseSelectOption } from "./helpers";
 
 const FLOW_DAILY_ID = "00000000-0000-0000-0000-000000000701";
 const FLOW_CYCLIC_ID = "00000000-0000-0000-0000-000000000702";
@@ -811,7 +812,7 @@ test("daily_supply_refresh DAG loads on canvas, pauses at HUMAN_APPROVAL, and co
   // 1) Navigate to /flow and verify heading, deployment badges, and 6 DAG nodes + conditional edge
   await page.goto("/flow");
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxFlow · 智能编排流水线" })
+    page.getByRole("heading", { level: 1, name: "AxFlow · 编排" })
   ).toBeVisible();
 
   await expect(page.getByTestId("axflow-badge-test")).toHaveText("TEST v1");
@@ -934,7 +935,7 @@ test("supports operator palette authoring, webhook secret rotation, version depl
 
   // Switch to Trigger tab, select WEBHOOK, and rotate one-time secret
   await page.getByTestId("inspector-tab-trigger").click();
-  await page.getByTestId("trigger-type-select").selectOption("WEBHOOK");
+  await chooseSelectOption(page, "trigger-type-select", "WEBHOOK");
   await expect(page.getByTestId("trigger-webhook-url")).toContainText(
     "/api/axflow/hooks/default/daily-supply-refresh"
   );
@@ -952,7 +953,7 @@ test("supports operator palette authoring, webhook secret rotation, version depl
   await expect(page.getByTestId("axflow-badge-prod")).toHaveText("PROD v2");
 
   // Switch to cyclic_demo flow and verify static validation reports CYCLE_DETECTED
-  await page.getByTestId("axflow-flow-select").selectOption(FLOW_CYCLIC_ID);
+  await chooseSelectOption(page, "axflow-flow-select", FLOW_CYCLIC_ID);
   await page.getByTestId("validate-flow-btn").click();
   await expect(page.getByTestId("flow-validation-issues")).toContainText(
     "CYCLE_DETECTED"

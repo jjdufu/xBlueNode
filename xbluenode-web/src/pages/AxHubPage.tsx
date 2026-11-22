@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Cable, FileUp, Search } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import {
   axhubApi,
   type Connection,
@@ -106,10 +107,7 @@ export function AxHubPage() {
   return (
     <div className="space-y-5" data-testid="axhub-page">
       <PageHeader
-        title={tx(
-          "AxHub · 数据接入与资产目录",
-          "AxHub · Connectors & Catalog"
-        )}
+        title={tx(MODULE_META.axhub.label, MODULE_META.axhub.enLabel)}
         badges={
           <>
             <Badge variant="neutral">

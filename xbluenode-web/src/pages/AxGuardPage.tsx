@@ -39,6 +39,7 @@ import { RowPolicyEditor } from "@/components/axguard/RowPolicyEditor";
 import { UsersPanel } from "@/components/axguard/UsersPanel";
 import { Badge, Card, PageHeader, Tabs } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 
 interface AxGuardTabSpec {
   readonly key: AxGuardTabKey;
@@ -284,7 +285,7 @@ export function AxGuardPage() {
           title={
             <span className="inline-flex items-center gap-2">
               <ShieldCheck className="h-4 w-4 text-xblue shrink-0" />
-              {tx("AxGuard · 安全治理中心", "AxGuard · Security Governance")}
+              {tx(MODULE_META.axguard.label, MODULE_META.axguard.enLabel)}
             </span>
           }
         />
@@ -310,7 +311,7 @@ export function AxGuardPage() {
         title={
           <span className="inline-flex items-center gap-2">
             <ShieldCheck className="h-4 w-4 text-xblue shrink-0" />
-            {tx("AxGuard · 安全治理中心", "AxGuard · Security Governance")}
+            {tx(MODULE_META.axguard.label, MODULE_META.axguard.enLabel)}
           </span>
         }
         badges={

@@ -9,6 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import {
   api,
   type DocumentSummary,
@@ -182,7 +183,7 @@ export function AxIngestPage() {
   return (
     <div className="space-y-5" data-testid="axingest-page">
       <PageHeader
-        title={tx("AxIngest · 知识解析入库", "AxIngest · Knowledge Ingestion")}
+        title={tx(MODULE_META.axingest.label, MODULE_META.axingest.enLabel)}
         badges={
           <>
             <Badge variant="neutral">

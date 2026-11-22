@@ -32,32 +32,32 @@ const SHELL_SMOKE_ROUTES: readonly SmokeRouteAssertion[] = [
   {
     path: "/ingest",
     sidebarLabel: "AxIngest · 知识入库",
-    heading: "AxIngest · 知识解析入库",
+    heading: "AxIngest · 知识入库",
   },
   {
     path: "/query",
     sidebarLabel: "AxQuery · 智能问答",
-    heading: "AxQuery · 五路融合问答",
+    heading: "AxQuery · 智能问答",
   },
   {
     path: "/graph",
     sidebarLabel: "xBlueGraph · 图浏览",
-    heading: "xBlueGraph · 拓扑浏览器",
+    heading: "xBlueGraph · 图浏览",
   },
   {
     path: "/studio",
     sidebarLabel: "xBlueStudio · 节点建模",
-    heading: "xBlueStudio · 节点与关系建模",
+    heading: "xBlueStudio · 节点建模",
   },
   {
     path: "/flow",
     sidebarLabel: "AxFlow · 编排",
-    heading: "AxFlow · 智能编排流水线",
+    heading: "AxFlow · 编排",
   },
   {
     path: "/sim",
     sidebarLabel: "AxSim · 因果推演",
-    heading: "AxSim · 因果推演沙盘",
+    heading: "AxSim · 因果推演",
   },
   {
     path: "/view",
@@ -67,12 +67,12 @@ const SHELL_SMOKE_ROUTES: readonly SmokeRouteAssertion[] = [
   {
     path: "/guard",
     sidebarLabel: "AxGuard · 安全治理",
-    heading: "AxGuard · 安全治理中心",
+    heading: "AxGuard · 安全治理",
   },
   {
     path: "/ops",
     sidebarLabel: "AxOps · 运维与交付",
-    heading: "AxOps · 运维与交付中心",
+    heading: "AxOps · 运维与交付",
   },
 ];
 

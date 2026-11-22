@@ -5,6 +5,7 @@ import {
   type Route,
   test,
 } from "@playwright/test";
+import { chooseSelectOption } from "./helpers";
 
 declare const process: {
   readonly env: Record<string, string | undefined>;
@@ -955,13 +956,11 @@ test("AxAgent 6-tab workbench, SSE tool-calling stream, Query-as-App, Endpoint p
 
     await page.goto("/agents");
     await expect(
-      page.getByRole("heading", { level: 1, name: "AxAgent 智能体与能力发布" })
+      page.getByRole("heading", { level: 1, name: "AxAgent · 智能体与发布" })
     ).toBeVisible();
 
     if (targetAgentId) {
-      await page
-        .getByTestId("workbench-agent-select")
-        .selectOption(targetAgentId);
+      await chooseSelectOption(page, "workbench-agent-select", targetAgentId);
     }
 
     await page
@@ -1017,7 +1016,7 @@ test("AxAgent 6-tab workbench, SSE tool-calling stream, Query-as-App, Endpoint p
 
   await page.goto("/agents");
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxAgent 智能体与能力发布" })
+    page.getByRole("heading", { level: 1, name: "AxAgent · 智能体与发布" })
   ).toBeVisible();
 
   // Verify all 6 tabs render cleanly

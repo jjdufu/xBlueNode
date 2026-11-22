@@ -40,12 +40,14 @@ import {
   Card,
   EmptyState,
   PageHeader,
+  Select,
   StatusBadge,
   Tabs,
   type TabOption,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
+import { MODULE_META } from "@/modules/meta";
 
 type WorkbenchTab = "topology" | "simulate" | "compare" | "decisions";
 
@@ -468,7 +470,7 @@ export function AxSimPage() {
   return (
     <div className="space-y-4" data-testid="axsim-workbench">
       <PageHeader
-        title={tx("AxSim · 因果推演沙盘", "AxSim · Causal Sandbox")}
+        title={tx(MODULE_META.axsim.label, MODULE_META.axsim.enLabel)}
         badges={
           <Badge variant="xblue">{tx("隔离沙盘", "Isolated Sandbox")}</Badge>
         }
@@ -506,10 +508,10 @@ export function AxSimPage() {
             <GitBranch className="h-4 w-4 text-xblue" />
             <span>{tx("当前沙盘:", "Sandbox:")}</span>
           </div>
-          <select
+          <Select
             value={selectedSandboxId}
             onChange={(e) => setSelectedSandboxId(e.target.value)}
-            className="h-8 min-w-[220px] rounded-md border border-input bg-background px-2.5 text-xs font-medium"
+            className="min-w-[220px] font-medium"
             data-testid="sandbox-selector"
           >
             {sandboxes.length === 0 && (
@@ -525,7 +527,7 @@ export function AxSimPage() {
                 )
               </option>
             ))}
-          </select>
+          </Select>
 
           {activeSandbox && (
             <div className="flex flex-wrap items-center gap-1.5">

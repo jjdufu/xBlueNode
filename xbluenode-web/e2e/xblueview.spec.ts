@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from "@playwright/test";
+import { chooseSelectOption } from "./helpers";
 
 declare const process: {
   readonly env: Record<string, string | undefined>;
@@ -910,7 +911,7 @@ test("xBlueView /view/supply-overview renders 8 isomorphic widgets incl. 3D scen
   await page.getByTestId("toggle-edit-mode-btn").click();
   await expect(page.getByTestId("open-dashboard-settings-btn")).toBeVisible();
   await page.getByTestId("add-widget-btn").click();
-  await page.getByTestId("widget-editor-kind").selectOption("GRAPH_TOPOLOGY");
+  await chooseSelectOption(page, "widget-editor-kind", "GRAPH_TOPOLOGY");
   await page.getByTestId("widget-editor-preview-btn").click();
   await expect(page.getByTestId("widget-chart-preview-widget")).toBeVisible();
   await page.getByRole("button", { name: "取消" }).click();
@@ -1092,12 +1093,12 @@ test("xBlueView ExportDialog configures PDF & DOCX template placeholders, polls 
   // Open ExportDialog from toolbar, inspect PDF options, then switch to DOCX template + placeholders
   await page.getByTestId("open-export-dialog-btn").click();
   await expect(page.getByTestId("export-dialog")).toBeVisible();
-  await page.getByTestId("export-pdf-page-size").selectOption("A3");
-  await page.getByTestId("export-pdf-orientation").selectOption("landscape");
+  await chooseSelectOption(page, "export-pdf-page-size", "A3");
+  await chooseSelectOption(page, "export-pdf-orientation", "landscape");
 
   await page.getByTestId("export-format-DOCX").click();
   await page.getByTestId("export-title-input").fill("供应链全景周报");
-  await page.getByTestId("export-template-select").selectOption(TEMPLATE_ID);
+  await chooseSelectOption(page, "export-template-select", TEMPLATE_ID);
   await page.getByTestId("export-placeholder-department").fill("华东供应链中心");
   await page.getByTestId("export-placeholder-author").fill("张工");
   await page.getByTestId("submit-export-btn").click();

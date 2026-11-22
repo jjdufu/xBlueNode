@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/lib/theme";
+import { MODULE_META } from "@/modules/meta";
 import { api, type TopologyGraph } from "@/lib/api/rag";
 import {
   xblueApi,
@@ -451,8 +452,8 @@ export function XBlueGraphPage() {
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3.5">
         <div className="flex flex-wrap items-center gap-2.5">
-          <h1 className="text-lg font-semibold tracking-tight">
-            {tx("xBlueGraph · 拓扑浏览器", "xBlueGraph · Topology Explorer")}
+          <h1 className="text-base font-semibold tracking-tight">
+            {tx(MODULE_META.xbluegraph.label, MODULE_META.xbluegraph.enLabel)}
           </h1>
           <Badge variant="outline">
             {graphLayer === "business"

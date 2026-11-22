@@ -10,6 +10,7 @@ import {
   Webhook,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import { usePrincipal } from "@/lib/permissions";
 import {
   DEFAULT_RETRY_POLICY,
@@ -824,11 +825,8 @@ export function AxFlowPage() {
       {/* Page Header & Global Flow Bar — h1 preserves smoke.spec.ts & axflow.spec.ts zh-CN assertion */}
       <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 border-b border-border pb-3.5">
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-lg font-semibold tracking-tight">
-            {tx(
-              "AxFlow · 智能编排流水线",
-              "AxFlow · Pipeline Orchestrator"
-            )}
+          <h1 className="text-base font-semibold tracking-tight">
+            {tx(MODULE_META.axflow.label, MODULE_META.axflow.enLabel)}
           </h1>
           <Badge variant="outline">
             {flows.length} {tx("流水线", "Flows")}
