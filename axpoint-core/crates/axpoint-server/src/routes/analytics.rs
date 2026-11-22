@@ -1,6 +1,6 @@
 //! `AxAnalytics` OLAP SQL, pivot, semantic layer, saved queries, NL2SQL, and AI transform routes (`05-STEP04`).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -9,32 +9,37 @@ use axpoint_analytics::{
     AskPipelineInput, CatalogDatasetEntry, LiveConnectionSpec, MetricExecuteOptions,
     PivotExecuteOptions, TenantCatalog, TenantDb, compile_ontology_join_edges,
     ensure_no_dependency_cycle, execute_metric_query, execute_multi_metric_query, execute_pivot,
-    generate_transform_sql, preview_transform_sql, run_grounding_eval_suite,
+    generate_transform_sql, guard_and_rewrite, preview_transform_sql, run_grounding_eval_suite,
     validate_corrected_sql, validate_create_metric_request, validate_metric_def,
     validate_target_dataset_name,
 };
-use axpoint_domain::AppError;
+use axpoint_domain::agent::{EndpointListQuery, EndpointSpec};
 use axpoint_domain::analytics::{
-    AnalyticsCatalogResponse, AnalyticsPrincipal, ApplyTransformResponse, AskFeedbackRequest,
-    AskIntent, AskRequest, AskResponse, AskTurnRecord, CatalogDatasetNode, CreateMetricRequest,
-    CreateSavedQueryRequest, CreateTransformDraftRequest, ExplainResult, GroundingEvalRunRecord,
-    GroundingEvalRunResponse, LiveConnectionNode, MetricDef, MetricQuery, MetricQueryResult,
-    MultiMetricQuery, NewAskTurnInput, NewQueryHistoryEntry, NewTransformDraftInput, PivotResult,
-    PivotSpec, PlatformViewNode, QueryColumn, QueryHistoryEntry, QueryHistoryKind,
-    QueryHistoryListQuery, QueryHistoryStatus, QueryRequest, QueryResult, RunSavedQueryRequest,
-    SavedQuery, SavedQueryKind, TransformDraft, TransformDraftStatus, UpdateMetricRequest,
-    UpdateSavedQueryRequest, UpdateTransformDraftRequest,
+    AnalyticsCatalogResponse, AnalyticsPrincipal, ApplyTransformResponse, AskContext,
+    AskFeedbackRequest, AskIntent, AskRequest, AskResponse, AskTurnRecord, CatalogDatasetNode,
+    CreateMetricRequest, CreateSavedQueryRequest, CreateTransformDraftRequest, ExplainResult,
+    FewShotTurn, GroundingEvalRunRecord, GroundingEvalRunResponse, LiveConnectionNode, MetricDef,
+    MetricQuery, MetricQueryResult, MultiMetricQuery, NewAskTurnInput, NewQueryHistoryEntry,
+    NewTransformDraftInput, PivotResult, PivotSpec, PlatformViewNode, QueryColumn,
+    QueryHistoryEntry, QueryHistoryKind, QueryHistoryListQuery, QueryHistoryStatus, QueryRequest,
+    QueryResult, RunSavedQueryRequest, SavedQuery, SavedQueryKind, TransformDraft,
+    TransformDraftStatus, UpdateMetricRequest, UpdateSavedQueryRequest,
+    UpdateTransformDraftRequest,
 };
 use axpoint_domain::axhub::{
     CreateDatasetRequest, Dataset, DatasetListQuery, DatasetStatus, PaginatedList, SchemaPolicy,
 };
-use axpoint_domain::enums::{AuditAction, DataType, Permission, PiiCategory, SourceKind, SyncMode};
+use axpoint_domain::enums::{
+    AuditAction, DataType, EndpointKind, Environment, Permission, PiiCategory, SourceKind, SyncMode,
+};
+use axpoint_domain::guard::GrantResourceKind;
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::{
-    AnalyticsQueryPort, AnalyticsRepository as _, ConnectionRepository as _,
-    DatasetRepository as _, StudioRepository as _,
+    AgentRepository as _, AnalyticsQueryPort, AnalyticsRepository as _, ConnectionRepository as _,
+    DatasetRepository as _, FlowRepository as _, GuardRepository as _, StudioRepository as _,
 };
 use axpoint_domain::studio::SchemaDoc;
+use axpoint_domain::{AppError, ChatQueryScope};
 use axpoint_security::AuthPrincipal;
 use axum::extract::State;
 use axum::routing::{get, patch, post};
@@ -211,22 +216,33 @@ async fn load_published_tenant_schemas(
     }
     let mut out = Vec::new();
     for slug in &slugs {
-        let Ok(resp) = state.store.get_published_schema(tenant_id, slug).await else {
-            continue;
-        };
-        let mut doc = resp.doc;
-        for m in &mut doc.mappings {
-            if let Ok(ds_uuid) = Uuid::parse_str(m.dataset.trim())
-                && let Some(entry) = catalog.dataset_by_id(ds_uuid)
-            {
-                m.dataset.clone_from(&entry.name);
-            }
-        }
-        if !doc.node_types.is_empty() || !doc.mappings.is_empty() {
+        if let Some(doc) = load_single_published_schema(state, tenant_id, slug, catalog).await {
             out.push(doc);
         }
     }
     out
+}
+
+pub(crate) async fn load_single_published_schema(
+    state: &AppState,
+    tenant_id: &str,
+    slug: &str,
+    catalog: &TenantCatalog,
+) -> Option<SchemaDoc> {
+    let resp = state
+        .store
+        .get_published_schema(tenant_id, slug)
+        .await
+        .ok()?;
+    let mut doc = resp.doc;
+    for m in &mut doc.mappings {
+        if let Ok(ds_uuid) = Uuid::parse_str(m.dataset.trim())
+            && let Some(entry) = catalog.dataset_by_id(ds_uuid)
+        {
+            m.dataset.clone_from(&entry.name);
+        }
+    }
+    (!doc.node_types.is_empty() || !doc.mappings.is_empty()).then_some(doc)
 }
 
 /// Acquires or initializes the hardened `TenantDb` session for `tenant_id` with a fresh catalog.
@@ -235,7 +251,17 @@ pub(crate) async fn acquire_tenant_session(
     tenant_id: &str,
     has_live_permission: bool,
 ) -> Result<(Arc<TenantDb>, TenantCatalog), AppError> {
-    let (catalog, _, _, live_specs) =
+    let (session, snap, _) =
+        acquire_tenant_session_with_datasets(state, tenant_id, has_live_permission).await?;
+    Ok((session, snap))
+}
+
+pub(crate) async fn acquire_tenant_session_with_datasets(
+    state: &AppState,
+    tenant_id: &str,
+    has_live_permission: bool,
+) -> Result<(Arc<TenantDb>, TenantCatalog, Vec<Dataset>), AppError> {
+    let (catalog, all_datasets, _, live_specs) =
         load_tenant_catalog_and_live(state, tenant_id, has_live_permission).await?;
     let session = state
         .analytics_pool
@@ -243,7 +269,7 @@ pub(crate) async fn acquire_tenant_session(
         .await?;
     let mut snap = session.catalog();
     snap.has_live_permission = has_live_permission;
-    Ok((session, snap))
+    Ok((session, snap, all_datasets))
 }
 
 /// Refreshes the cached `TenantCatalog` inside `SessionPool` if `tenant_id` has an active session.
@@ -1188,11 +1214,499 @@ async fn run_saved_query_handler(
     Ok(Json(val))
 }
 
+/// Extracts and normalizes [`ChatQueryScope`] fields from an [`AskContext`] (`06-STEP20` §20.2.1).
+pub(crate) fn scope_from_ask_context(ctx: Option<&AskContext>) -> Option<ChatQueryScope> {
+    let c = ctx?;
+    ChatQueryScope {
+        dataset_ids: c.dataset_ids.clone(),
+        doc_ids: c.doc_ids.clone(),
+        doc_title_prefix: c.doc_title_prefix.clone(),
+        subgraph_slug: c.subgraph_slug.clone(),
+        endpoint_slugs: c.endpoint_slugs.clone(),
+    }
+    .normalized()
+}
+
+/// Converts a normalized [`ChatQueryScope`] into an [`AskContext`] (`06-STEP20` §20.2.1).
+pub(crate) fn ask_context_from_scope(scope: Option<&ChatQueryScope>) -> Option<AskContext> {
+    let s = scope?;
+    Some(AskContext {
+        dataset_ids: s.dataset_ids.clone(),
+        doc_ids: s.doc_ids.clone(),
+        doc_title_prefix: s.doc_title_prefix.clone(),
+        subgraph_slug: s.subgraph_slug.clone(),
+        endpoint_slugs: s.endpoint_slugs.clone(),
+        ..AskContext::default()
+    })
+}
+
+/// Borrowed governance and catalog snapshot used when validating [`ChatQueryScope`] (`06-STEP20` §20.2.2).
+pub(crate) struct ScopeAuthContext<'a> {
+    pub(crate) client_ip: &'a str,
+    pub(crate) catalog: &'a TenantCatalog,
+    pub(crate) all_datasets: &'a [Dataset],
+    pub(crate) policy: &'a axpoint_domain::guard::PolicyContext,
+}
+
+fn map_forbidden_to_policy_denied<T>(res: Result<T, AppError>) -> Result<T, AppError> {
+    res.map_err(|err| match err {
+        AppError::Forbidden(_) => AppError::Forbidden("POLICY_DENIED"),
+        other => other,
+    })
+}
+
+async fn authorize_dataset_id_for_scope(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    ds_id: Uuid,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    let Some(ds) = ctx
+        .all_datasets
+        .iter()
+        .find(|d| d.id == ds_id && d.status != DatasetStatus::Disabled)
+    else {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    };
+    let ds_id_str = ds_id.to_string();
+    if ctx.policy.denied_datasets.contains(&ds_id_str)
+        || ctx
+            .policy
+            .denied_datasets
+            .contains(&ds.name.to_ascii_lowercase())
+    {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    let _res = map_forbidden_to_policy_denied(
+        axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            principal,
+            Permission::DataRead,
+            GrantResourceKind::Dataset,
+            &ds_id_str,
+            ctx.client_ip,
+        )
+        .await,
+    )?;
+    Ok(())
+}
+
+/// Enforces `AxGuard` `ABAC` intersection on `scope` (`403 POLICY_DENIED` on missing/denied datasets,
+/// subgraphs, or endpoints) and returns pruned `PROD` [`EndpointSpec`]s (`06-STEP20` §20.2.2).
+pub(crate) async fn authorize_and_resolve_query_scope(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    scope: Option<&ChatQueryScope>,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<Vec<EndpointSpec>, AppError> {
+    let Some(s) = scope else {
+        return Ok(Vec::new());
+    };
+
+    for ds_id in &s.dataset_ids {
+        authorize_dataset_id_for_scope(state, principal, *ds_id, ctx).await?;
+    }
+
+    if let Some(ref sg) = s.subgraph_slug {
+        let clean_sg = sg.trim();
+        if !clean_sg.is_empty() && clean_sg != "main" {
+            let exists = state
+                .store
+                .resolve_resource_ref(&principal.tenant_id, GrantResourceKind::Subgraph, clean_sg)
+                .await?
+                .is_some();
+            if !exists {
+                return Err(AppError::Forbidden("POLICY_DENIED"));
+            }
+            let _res = map_forbidden_to_policy_denied(
+                axpoint_server::policy::authorize_resource_for_store(
+                    &state.store,
+                    &state.cedar,
+                    principal,
+                    Permission::DataRead,
+                    GrantResourceKind::Subgraph,
+                    clean_sg,
+                    ctx.client_ip,
+                )
+                .await,
+            )?;
+        }
+    }
+
+    resolve_scoped_prod_endpoints(state, principal, &s.endpoint_slugs, ctx).await
+}
+
+/// Resolves, enforces live `AxGuard` `ABAC` on backing targets, and prunes `PROD` [`EndpointSpec`]s (`06-STEP20` §20.2.2).
+pub(crate) async fn resolve_scoped_prod_endpoints(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    endpoint_slugs: &[String],
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<Vec<EndpointSpec>, AppError> {
+    if endpoint_slugs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let profile =
+        axpoint_server::policy::load_effective_guard_profile(&state.store, principal).await?;
+    let prod_eps = state
+        .store
+        .list_endpoints(
+            &principal.tenant_id,
+            EndpointListQuery {
+                environment: Some(Environment::Prod),
+                ..EndpointListQuery::default()
+            },
+        )
+        .await?;
+
+    let mut matched = Vec::with_capacity(endpoint_slugs.len());
+    for raw_slug in endpoint_slugs {
+        let clean_slug = raw_slug.trim();
+        if clean_slug.is_empty() {
+            return Err(AppError::Forbidden("POLICY_DENIED"));
+        }
+        let Some(ep) = prod_eps
+            .iter()
+            .find(|candidate| candidate.enabled && candidate.slug.eq_ignore_ascii_case(clean_slug))
+        else {
+            return Err(AppError::Forbidden("POLICY_DENIED"));
+        };
+        if !profile.permissions.contains(&ep.required_scope) {
+            return Err(AppError::Forbidden("POLICY_DENIED"));
+        }
+        authorize_endpoint_backing_target(state, principal, &profile, ep, ctx).await?;
+        matched.push(ep.clone());
+    }
+    Ok(matched)
+}
+
+async fn authorize_endpoint_backing_target(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    profile: &axpoint_domain::guard::GuardPrincipalProfile,
+    ep: &EndpointSpec,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    let target_id = ep.target_id.trim();
+    if target_id.is_empty() {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    match ep.kind {
+        EndpointKind::Agent => {
+            let agent_id =
+                Uuid::parse_str(target_id).map_err(|_| AppError::Forbidden("POLICY_DENIED"))?;
+            if state
+                .store
+                .get_agent(&principal.tenant_id, agent_id)
+                .await?
+                .is_none()
+            {
+                return Err(AppError::Forbidden("POLICY_DENIED"));
+            }
+            let _res = map_forbidden_to_policy_denied(
+                axpoint_server::policy::authorize_resource_for_store(
+                    &state.store,
+                    &state.cedar,
+                    principal,
+                    ep.required_scope,
+                    GrantResourceKind::Agent,
+                    &agent_id.to_string(),
+                    ctx.client_ip,
+                )
+                .await,
+            )?;
+            Ok(())
+        }
+        EndpointKind::ObjectType => {
+            authorize_object_type_endpoint(state, principal, profile, ep, target_id, ctx).await
+        }
+        EndpointKind::Metric => {
+            authorize_metric_endpoint(state, principal, profile, ep, target_id, ctx).await
+        }
+        EndpointKind::SavedQuery => {
+            authorize_saved_query_endpoint(state, principal, profile, ep, target_id, ctx).await
+        }
+        EndpointKind::Flow => authorize_flow_endpoint(state, principal, target_id, ctx).await,
+    }
+}
+
+async fn authorize_object_type_endpoint(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    profile: &axpoint_domain::guard::GuardPrincipalProfile,
+    ep: &EndpointSpec,
+    target_type: &str,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    if !profile.permissions.contains(&Permission::DataRead) {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    let has_snap = ep
+        .target_snapshot
+        .as_ref()
+        .and_then(|v| {
+            serde_json::from_value::<axpoint_domain::studio::NodeTypeSpec>(v.clone()).ok()
+        })
+        .is_some();
+    let in_schema = ctx
+        .catalog
+        .published_schemas
+        .iter()
+        .any(|s| s.node_types.iter().any(|n| n.name == target_type));
+    let in_guard = state
+        .store
+        .resolve_resource_ref(
+            &principal.tenant_id,
+            GrantResourceKind::NodeType,
+            target_type,
+        )
+        .await?
+        .is_some();
+    if !has_snap && !in_schema && !in_guard {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    let _res = map_forbidden_to_policy_denied(
+        axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            principal,
+            ep.required_scope,
+            GrantResourceKind::NodeType,
+            target_type,
+            ctx.client_ip,
+        )
+        .await,
+    )?;
+    Ok(())
+}
+
+async fn authorize_metric_endpoint(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    profile: &axpoint_domain::guard::GuardPrincipalProfile,
+    ep: &EndpointSpec,
+    metric_name: &str,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    if !profile.permissions.contains(&Permission::DataRead) {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    let Some(metric) = state
+        .store
+        .get_metric_by_name(&principal.tenant_id, metric_name)
+        .await?
+    else {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    };
+    authorize_dataset_id_for_scope(state, principal, metric.dataset_id, ctx).await?;
+    if let Some(snap_metric) = ep
+        .target_snapshot
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<MetricDef>(v.clone()).ok())
+        && snap_metric.dataset_id != metric.dataset_id
+    {
+        authorize_dataset_id_for_scope(state, principal, snap_metric.dataset_id, ctx).await?;
+    }
+    Ok(())
+}
+
+async fn authorize_saved_query_endpoint(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    profile: &axpoint_domain::guard::GuardPrincipalProfile,
+    ep: &EndpointSpec,
+    target_id: &str,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    if !profile.permissions.contains(&Permission::DataRead) {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    let sq_id = Uuid::parse_str(target_id).map_err(|_| AppError::Forbidden("POLICY_DENIED"))?;
+    let Some(sq) = state
+        .store
+        .get_saved_query(&principal.tenant_id, sq_id)
+        .await?
+    else {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    };
+    authorize_saved_query_datasets(state, principal, &sq, ctx).await?;
+    if let Some(snap_sq) = ep
+        .target_snapshot
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<SavedQuery>(v.clone()).ok())
+    {
+        authorize_saved_query_datasets(state, principal, &snap_sq, ctx).await?;
+    }
+    Ok(())
+}
+
+async fn authorize_saved_query_datasets(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    sq: &SavedQuery,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    match sq.kind {
+        SavedQueryKind::Sql | SavedQueryKind::Ask => {
+            let sql_text = sq
+                .spec
+                .get("sql")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(AppError::Forbidden("POLICY_DENIED"))?;
+            let guarded = guard_and_rewrite(sql_text, ctx.catalog, 1)
+                .map_err(|_| AppError::Forbidden("POLICY_DENIED"))?;
+            for ds_id in guarded.referenced_datasets {
+                authorize_dataset_id_for_scope(state, principal, ds_id, ctx).await?;
+            }
+            Ok(())
+        }
+        SavedQueryKind::Pivot => {
+            let spec: PivotSpec = serde_json::from_value(sq.spec.clone())
+                .map_err(|_| AppError::Forbidden("POLICY_DENIED"))?;
+            let rel = spec.dataset.trim();
+            if !rel.to_ascii_lowercase().starts_with("ax.") {
+                let entry = ctx
+                    .catalog
+                    .dataset(rel)
+                    .ok_or(AppError::Forbidden("POLICY_DENIED"))?;
+                authorize_dataset_id_for_scope(state, principal, entry.id, ctx).await?;
+            }
+            Ok(())
+        }
+        SavedQueryKind::Metric => {
+            let metric_name = sq
+                .spec
+                .get("metric_name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(AppError::Forbidden("POLICY_DENIED"))?;
+            let Some(metric) = state
+                .store
+                .get_metric_by_name(&principal.tenant_id, metric_name.trim())
+                .await?
+            else {
+                return Err(AppError::Forbidden("POLICY_DENIED"));
+            };
+            authorize_dataset_id_for_scope(state, principal, metric.dataset_id, ctx).await
+        }
+    }
+}
+
+async fn authorize_flow_endpoint(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    target_id: &str,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    let flow_id = Uuid::parse_str(target_id).map_err(|_| AppError::Forbidden("POLICY_DENIED"))?;
+    let Some(flow) = state.store.get_flow(&principal.tenant_id, flow_id).await? else {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    };
+    if state
+        .store
+        .get_flow_deployment(&principal.tenant_id, flow_id, Environment::Prod)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    for node in &flow.nodes {
+        if let Some(ds_str) = node
+            .config
+            .get("dataset_id")
+            .and_then(serde_json::Value::as_str)
+            && let Ok(ds_id) = Uuid::parse_str(ds_str.trim())
+        {
+            authorize_dataset_id_for_scope(state, principal, ds_id, ctx).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Prunes `catalog` datasets/schemas and `all_metrics` to `scope`, returning excluded dataset names (`06-STEP20` §20.2.2).
+pub(crate) async fn prune_catalog_and_metrics_for_scope(
+    state: &AppState,
+    tenant_id: &str,
+    catalog: &mut TenantCatalog,
+    all_datasets: &[Dataset],
+    all_metrics: &mut Vec<MetricDef>,
+    scope: Option<&ChatQueryScope>,
+) -> Vec<String> {
+    let Some(s) = scope else {
+        return Vec::new();
+    };
+
+    let restrict_set: BTreeSet<Uuid> = s.dataset_ids.iter().copied().collect();
+    let mut excluded_names = Vec::new();
+    if !restrict_set.is_empty() {
+        let mut seen_lower = BTreeSet::new();
+        for ds in all_datasets {
+            if ds.status == DatasetStatus::Disabled || restrict_set.contains(&ds.id) {
+                continue;
+            }
+            if seen_lower.insert(ds.name.trim().to_lowercase()) {
+                excluded_names.push(ds.name.clone());
+            }
+            let disp = ds.display_name.trim();
+            if !disp.is_empty() && seen_lower.insert(disp.to_lowercase()) {
+                excluded_names.push(String::from(disp));
+            }
+        }
+        catalog.datasets.retain(|_, d| restrict_set.contains(&d.id));
+        all_metrics.retain(|m| restrict_set.contains(&m.dataset_id));
+    }
+
+    if let Some(ref sg) = s.subgraph_slug {
+        let clean_sg = sg.trim();
+        if !clean_sg.is_empty() {
+            let scoped_schemas = load_single_published_schema(state, tenant_id, clean_sg, catalog)
+                .await
+                .into_iter()
+                .collect::<Vec<_>>();
+            catalog.published_schemas = scoped_schemas;
+        }
+    }
+
+    if !restrict_set.is_empty() || s.subgraph_slug.is_some() {
+        catalog.allowed_joins = compile_ontology_join_edges(&catalog.published_schemas)
+            .into_iter()
+            .filter(|e| {
+                catalog.dataset(&e.left_dataset).is_some()
+                    && catalog.dataset(&e.right_dataset).is_some()
+            })
+            .collect();
+    }
+
+    excluded_names
+}
+
+fn filter_few_shots_for_excluded_datasets(
+    few_shots: Vec<FewShotTurn>,
+    excluded_dataset_names: &[String],
+) -> Vec<FewShotTurn> {
+    if excluded_dataset_names.is_empty() {
+        return few_shots;
+    }
+    let lowered: Vec<String> = excluded_dataset_names
+        .iter()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| s.len() >= 3)
+        .collect();
+    few_shots
+        .into_iter()
+        .filter(|fs| {
+            let sql_low = fs.sql_text.to_lowercase();
+            !lowered.iter().any(|ex| sql_low.contains(ex))
+        })
+        .collect()
+}
+
 async fn build_ask_link_extras(
     session: &TenantDb,
     catalog: &TenantCatalog,
     all_metrics: Vec<MetricDef>,
     restrict_ids: Vec<Uuid>,
+    excluded_dataset_names: Vec<String>,
     policy: &axpoint_domain::guard::PolicyContext,
 ) -> SchemaLinkExtras {
     let sample_rows_by_dataset =
@@ -1205,6 +1719,7 @@ async fn build_ask_link_extras(
         all_metrics,
         sample_rows_by_dataset,
         restrict_dataset_ids: restrict_ids,
+        excluded_dataset_names,
         prior_session_sqls: Vec::new(),
         published_schemas: catalog.published_schemas.clone(),
         enforce_ontology_joins,
@@ -1359,27 +1874,67 @@ pub(crate) async fn execute_ask_for_principal(
     force_intent: Option<AskIntent>,
     persist_turn: bool,
 ) -> Result<AskResponse, AppError> {
-    if req.question.trim().is_empty() {
-        return Err(AppError::bad(
-            "INVALID_ARGUMENT",
-            "question cannot be empty",
-        ));
-    }
+    execute_ask_for_principal_with_ip(
+        state,
+        principal,
+        "127.0.0.1",
+        req,
+        force_intent,
+        persist_turn,
+    )
+    .await
+}
 
-    let policy = axpoint_server::policy::build_policy_context_for_store(
+struct PreparedScopedAskContext {
+    session: Arc<TenantDb>,
+    catalog: TenantCatalog,
+    policy: axpoint_domain::guard::PolicyContext,
+    db_recall: axpoint_domain::analytics::SchemaRecallBundle,
+    link_extras: SchemaLinkExtras,
+    few_shots: Vec<FewShotTurn>,
+    session_turns: Vec<AskTurnRecord>,
+    timezone: String,
+}
+
+async fn prepare_scoped_ask_context(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    client_ip: &str,
+    req: &AskRequest,
+) -> Result<PreparedScopedAskContext, AppError> {
+    let scope = scope_from_ask_context(req.context.as_ref());
+    let subgraph_slug = scope
+        .as_ref()
+        .and_then(|s| s.subgraph_slug.as_deref())
+        .unwrap_or("main");
+    let policy = axpoint_server::policy::build_policy_context_for_subgraph(
         &state.store,
         &state.cedar,
         principal,
+        subgraph_slug,
         false,
-        "127.0.0.1",
+        client_ip,
     )
     .await?;
-    let (session, catalog) = acquire_tenant_session(state, &principal.tenant_id, false).await?;
-    let restrict_ids: Vec<Uuid> = req
-        .context
-        .as_ref()
-        .map_or_else(Vec::new, |c| c.dataset_ids.clone());
+    let (session, mut catalog, all_datasets) =
+        acquire_tenant_session_with_datasets(state, &principal.tenant_id, false).await?;
+    let _pinned_endpoints = authorize_and_resolve_query_scope(
+        state,
+        principal,
+        scope.as_ref(),
+        &ScopeAuthContext {
+            client_ip,
+            catalog: &catalog,
+            all_datasets: &all_datasets,
+            policy: &policy,
+        },
+    )
+    .await?;
 
+    let restrict_ids: Vec<Uuid> = scope
+        .as_ref()
+        .map_or_else(Vec::new, |s| s.dataset_ids.clone());
+    let recall_subgraph = scope.as_ref().and_then(|s| s.subgraph_slug.as_deref());
     let q_embed = state
         .ai
         .embed_one(req.question.trim())
@@ -1387,12 +1942,13 @@ pub(crate) async fn execute_ask_for_principal(
         .ok()
         .map(|(v, _)| v);
 
-    let (db_recall, all_metrics, few_shots, timezone) = tokio::try_join!(
-        state.store.recall_schema_candidates(
+    let (db_recall, mut all_metrics, raw_few_shots, timezone) = tokio::try_join!(
+        state.store.recall_schema_candidates_scoped(
             &principal.tenant_id,
             req.question.trim(),
             q_embed.as_deref(),
             &restrict_ids,
+            recall_subgraph,
         ),
         state.store.list_metrics(&principal.tenant_id),
         state
@@ -1401,6 +1957,16 @@ pub(crate) async fn execute_ask_for_principal(
         state.store.get_tenant_timezone(&principal.tenant_id),
     )?;
 
+    let excluded_names = prune_catalog_and_metrics_for_scope(
+        state,
+        &principal.tenant_id,
+        &mut catalog,
+        &all_datasets,
+        &mut all_metrics,
+        scope.as_ref(),
+    )
+    .await;
+    let few_shots = filter_few_shots_for_excluded_datasets(raw_few_shots, &excluded_names);
     let session_turns = match req.session_id {
         Some(sid) => {
             state
@@ -1410,10 +1976,44 @@ pub(crate) async fn execute_ask_for_principal(
         }
         None => Vec::new(),
     };
+    let link_extras = build_ask_link_extras(
+        &session,
+        &catalog,
+        all_metrics,
+        restrict_ids,
+        excluded_names,
+        &policy,
+    )
+    .await;
 
-    let link_extras =
-        build_ask_link_extras(&session, &catalog, all_metrics, restrict_ids, &policy).await;
+    Ok(PreparedScopedAskContext {
+        session,
+        catalog,
+        policy,
+        db_recall,
+        link_extras,
+        few_shots,
+        session_turns,
+        timezone,
+    })
+}
 
+pub(crate) async fn execute_ask_for_principal_with_ip(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    client_ip: &str,
+    req: AskRequest,
+    force_intent: Option<AskIntent>,
+    persist_turn: bool,
+) -> Result<AskResponse, AppError> {
+    if req.question.trim().is_empty() {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            "question cannot be empty",
+        ));
+    }
+
+    let ctx = prepare_scoped_ask_context(state, principal, client_ip, &req).await?;
     let nl2sql_ai = state
         .ai
         .for_tenant(&principal.tenant_id)
@@ -1421,20 +2021,20 @@ pub(crate) async fn execute_ask_for_principal(
         .with_purpose_override(axpoint_domain::enums::Purpose::Nl2Sql);
     let out = axpoint_analytics::nl2sql::run_ask_pipeline_with_policy(
         &nl2sql_ai,
-        &session,
+        &ctx.session,
         &AskPipelineInput {
             request: &req,
-            catalog: &catalog,
-            db_recall: &db_recall,
-            link_extras: &link_extras,
-            few_shots: &few_shots,
-            session_turns: &session_turns,
-            timezone: &timezone,
+            catalog: &ctx.catalog,
+            db_recall: &ctx.db_recall,
+            link_extras: &ctx.link_extras,
+            few_shots: &ctx.few_shots,
+            session_turns: &ctx.session_turns,
+            timezone: &ctx.timezone,
             now_rfc3339_override: None,
             timeout_ms: None,
             force_intent,
         },
-        Some(&policy),
+        Some(&ctx.policy),
     )
     .await?;
 
@@ -1455,11 +2055,14 @@ pub(crate) async fn execute_ask_for_principal(
 
 async fn ask_data_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<AskRequest>,
 ) -> Result<Json<AskResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let resp = execute_ask_for_principal(&state, &principal, req, None, true).await?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let resp =
+        execute_ask_for_principal_with_ip(&state, &principal, &client_ip, req, None, true).await?;
     Ok(Json(resp))
 }
 

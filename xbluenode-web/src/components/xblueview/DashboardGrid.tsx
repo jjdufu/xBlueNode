@@ -12,9 +12,11 @@ import type {
   CanvasConfig,
   DrillPathItem,
   LayoutUpdateItem,
+  SemanticZoneKind,
   WidgetDataResponse,
   WidgetRecord,
 } from "@/lib/api/xblueview";
+import { formatSemanticZoneLabel } from "./PublishPreflightModal";
 import {
   extractKnownNodesFromWidgetDataMap,
   type SelectedNodeContext,
@@ -79,6 +81,7 @@ export function DashboardGrid({
   onSelectNode,
   onActionSuccess,
 }: DashboardGridProps) {
+  const { isZh } = useI18n();
   const { tx } = useI18n();
   const { width: measuredWidth, containerRef } = useContainerWidth({
     initialWidth: fixedWidth ?? 1200,
@@ -102,8 +105,52 @@ export function DashboardGrid({
   );
 
   const activeWidth = fixedWidth ?? measuredWidth;
-  const cols = canvas.cols > 0 ? canvas.cols : 24;
+  const isFiveZone = canvas.zone_layout === "STANDARD_FIVE_ZONE";
+  const cols = isFiveZone
+    ? canvas.cols > 0 && canvas.cols <= 12
+      ? canvas.cols
+      : 12
+    : canvas.cols > 0
+      ? canvas.cols
+      : 24;
   const rowHeight = canvas.row_height > 0 ? canvas.row_height : 30;
+
+  const fiveZoneRegions: ReadonlyArray<{
+    zone: SemanticZoneKind;
+    colSpanClass: string;
+    coords: string;
+  }> = [
+    { zone: "CONTROL", colSpanClass: "col-span-12", coords: "12×2" },
+    { zone: "KPI", colSpanClass: "col-span-12", coords: "12×3" },
+    { zone: "SCENE", colSpanClass: "col-span-7", coords: "7×9" },
+    { zone: "INSIGHT", colSpanClass: "col-span-5", coords: "5×9" },
+    { zone: "DECISION", colSpanClass: "col-span-12", coords: "12×5" },
+  ];
+
+  const renderFiveZoneHeaderStrip = () => {
+    if (!isEditing || !isFiveZone) return null;
+    return (
+      <div
+        className="grid grid-cols-12 gap-1.5 mb-2.5"
+        data-testid="five-zone-blueprint-strip"
+      >
+        {fiveZoneRegions.map(({ zone, colSpanClass, coords }) => (
+          <div
+            key={zone}
+            data-testid={`semantic-zone-header-${zone}`}
+            className={`${colSpanClass} flex items-center justify-between rounded border border-dashed border-xblue/35 bg-xblue-soft/30 px-2.5 py-1 text-[11px]`}
+          >
+            <span className="font-medium text-xblue">
+              {formatSemanticZoneLabel(zone, isZh)}
+            </span>
+            <span className="font-mono-tech text-[10px] text-muted-foreground">
+              {zone} · {coords}
+            </span>
+          </div>
+        ))}
+      </div>
+    );
+  };
 
   const layout = useMemo<Layout>(
     () =>
@@ -138,20 +185,23 @@ export function DashboardGrid({
 
   if (visibleWidgets.length === 0) {
     return (
-      <div
-        ref={containerRef}
-        className="rounded-md border border-dashed border-border py-16 text-center text-xs text-muted-foreground"
-        data-testid="dashboard-grid-empty"
-      >
-        {readOnly
-          ? tx("当前看板暂无可展示组件", "No widgets available")
-          : tx("当前驾驶舱暂无组件", "No widgets configured")}
+      <div ref={containerRef} className="w-full space-y-2">
+        {renderFiveZoneHeaderStrip()}
+        <div
+          className="rounded-md border border-dashed border-border py-16 text-center text-xs text-muted-foreground"
+          data-testid="dashboard-grid-empty"
+        >
+          {readOnly
+            ? tx("当前看板暂无可展示组件", "No widgets available")
+            : tx("当前驾驶舱暂无组件", "No widgets configured")}
+        </div>
       </div>
     );
   }
 
   return (
     <div ref={containerRef} className="w-full" data-testid="dashboard-grid">
+      {renderFiveZoneHeaderStrip()}
       <GridLayout
         width={activeWidth}
         layout={layout}

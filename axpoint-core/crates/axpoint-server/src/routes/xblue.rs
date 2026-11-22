@@ -2797,10 +2797,29 @@ async fn query_subgraph_handler(
 ) -> Result<Json<SubgraphResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
     let client_ip = crate::routes::auth::extract_client_ip(&headers);
-    let policy = axpoint_server::policy::build_policy_context_for_store(
+    let target_slug = query
+        .subgraph
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("main");
+    if target_slug != "main" {
+        let _ = axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            &principal,
+            Permission::DataRead,
+            axpoint_domain::guard::GrantResourceKind::Subgraph,
+            target_slug,
+            &client_ip,
+        )
+        .await?;
+    }
+    let policy = axpoint_server::policy::build_policy_context_for_subgraph(
         &state.store,
         &state.cedar,
         &principal,
+        target_slug,
         false,
         &client_ip,
     )

@@ -2,7 +2,7 @@
 //! graph algorithms (`PageRank`, `Degree`, `LabelPropagation`, `ConnectedComponents`) for Step 03 (`AxGraph`).
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BinaryHeap, HashMap};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
 use std::time::Instant;
 
 use axpoint_domain::AppError;
@@ -254,6 +254,49 @@ impl GraphQueryPort for PgStore {
         tenant_id: &str,
         query: SubgraphQuery,
     ) -> Result<SubgraphResponse, AppError> {
+        let subgraph_slug = query
+            .subgraph
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("main");
+        let src_type = query
+            .src_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let edge_type = query
+            .edge_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let dst_type = query
+            .dst_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let type_names = parse_csv_list(query.type_names.as_deref());
+        let link_types = parse_csv_list(query.link_types.as_deref());
+
+        if src_type.is_some() || edge_type.is_some() || dst_type.is_some() {
+            let clamped = query.limit.clamp(1, 2_000);
+            let limit_usize = usize::try_from(clamped).unwrap_or(2_000);
+            return self
+                .query_pattern_subgraph(
+                    tenant_id,
+                    PatternSubgraphFilter {
+                        subgraph_slug,
+                        src_type,
+                        edge_type,
+                        dst_type,
+                        type_names: type_names.as_deref(),
+                        link_types: link_types.as_deref(),
+                        limit_usize,
+                    },
+                )
+                .await;
+        }
+
         if !(1..=2_000).contains(&query.limit) {
             return Err(AppError::bad(
                 "LIMIT_OUT_OF_RANGE",
@@ -261,8 +304,6 @@ impl GraphQueryPort for PgStore {
             ));
         }
 
-        let type_names = parse_csv_list(query.type_names.as_deref());
-        let link_types = parse_csv_list(query.link_types.as_deref());
         let limit_usize = usize::try_from(query.limit).unwrap_or(2_000);
         let fetch_limit = i64::from(query.limit).saturating_add(1);
 
@@ -272,11 +313,12 @@ impl GraphQueryPort for PgStore {
                     geo_lng, geo_lat, source_dataset_id, source_row_key,
                     row_version, created_at, updated_at
                FROM xb_nodes
-              WHERE subgraph_slug = 'main'
-                AND ($1::text[] IS NULL OR type_name = ANY($1))
+              WHERE subgraph_slug = $1
+                AND ($2::text[] IS NULL OR type_name = ANY($2))
               ORDER BY updated_at DESC, id ASC
-              LIMIT $2",
+              LIMIT $3",
         )
+        .bind(subgraph_slug)
         .bind(&type_names)
         .bind(fetch_limit)
         .fetch_all(&mut *tx)
@@ -290,7 +332,13 @@ impl GraphQueryPort for PgStore {
         }
 
         let node_ids: Vec<Uuid> = nodes.iter().map(|n| n.id).collect();
-        let links = load_induced_links_tx(&mut tx, &node_ids, link_types.as_deref()).await?;
+        let links = load_induced_links_for_subgraph_tx(
+            &mut tx,
+            subgraph_slug,
+            &node_ids,
+            link_types.as_deref(),
+        )
+        .await?;
 
         tx.commit()
             .await
@@ -517,8 +565,133 @@ impl GraphQueryPort for PgStore {
     }
 }
 
+struct PatternSubgraphFilter<'a> {
+    subgraph_slug: &'a str,
+    src_type: Option<&'a str>,
+    edge_type: Option<&'a str>,
+    dst_type: Option<&'a str>,
+    type_names: Option<&'a [String]>,
+    link_types: Option<&'a [String]>,
+    limit_usize: usize,
+}
+
+impl PgStore {
+    async fn query_pattern_subgraph(
+        &self,
+        tenant_id: &str,
+        filter: PatternSubgraphFilter<'_>,
+    ) -> Result<SubgraphResponse, AppError> {
+        const PATTERN_EDGE_SAFETY_CAP: usize = 200_000;
+        let fetch_cap = i64::try_from(PATTERN_EDGE_SAFETY_CAP.saturating_add(1)).unwrap_or(200_001);
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let link_rows = sqlx::query(
+            "SELECT l.id, l.link_type, l.src_node_id, l.dst_node_id, l.weight,
+                    l.properties, l.source_dataset_id, l.valid_from, l.valid_to,
+                    l.created_at, l.updated_at
+               FROM xb_links l
+               JOIN xb_nodes s
+                 ON s.tenant_id = l.tenant_id
+                AND s.subgraph_slug = l.subgraph_slug
+                AND s.id = l.src_node_id
+               JOIN xb_nodes d
+                 ON d.tenant_id = l.tenant_id
+                AND d.subgraph_slug = l.subgraph_slug
+                AND d.id = l.dst_node_id
+              WHERE l.subgraph_slug = $1
+                AND ($2::text IS NULL OR s.type_name = $2)
+                AND ($3::text IS NULL OR l.link_type = $3)
+                AND ($4::text IS NULL OR d.type_name = $4)
+                AND ($5::text[] IS NULL OR (s.type_name = ANY($5) AND d.type_name = ANY($5)))
+                AND ($6::text[] IS NULL OR l.link_type = ANY($6))
+              ORDER BY l.created_at ASC, l.id ASC
+              LIMIT $7",
+        )
+        .bind(filter.subgraph_slug)
+        .bind(filter.src_type)
+        .bind(filter.edge_type)
+        .bind(filter.dst_type)
+        .bind(filter.type_names)
+        .bind(filter.link_types)
+        .bind(fetch_cap)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("query_pattern_subgraph links failed: {err}")))?;
+
+        let hit_edge_cap = link_rows.len() > PATTERN_EDGE_SAFETY_CAP;
+        let decoded_links: Vec<LinkRecord> = link_rows
+            .iter()
+            .take(PATTERN_EDGE_SAFETY_CAP)
+            .map(decode_link_record)
+            .collect();
+        let (ordered_ids, links, truncated) =
+            select_pattern_links_within_node_limit(decoded_links, filter.limit_usize, hit_edge_cap);
+
+        let nodes = load_nodes_preserving_order_for_subgraph_tx(
+            &mut tx,
+            filter.subgraph_slug,
+            &ordered_ids,
+        )
+        .await?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit query_pattern_subgraph tx failed: {err}"))
+        })?;
+
+        Ok(SubgraphResponse {
+            nodes,
+            links,
+            truncated,
+        })
+    }
+}
+
+fn select_pattern_links_within_node_limit(
+    all_links: Vec<LinkRecord>,
+    limit_usize: usize,
+    hit_edge_cap: bool,
+) -> (Vec<Uuid>, Vec<LinkRecord>, bool) {
+    let mut ordered_node_ids = Vec::new();
+    let mut node_set = HashSet::new();
+    let mut kept_links = Vec::new();
+    let mut truncated = hit_edge_cap;
+
+    for link in all_links {
+        let need_src = usize::from(!node_set.contains(&link.src_node_id));
+        let need_dst = usize::from(
+            link.dst_node_id != link.src_node_id && !node_set.contains(&link.dst_node_id),
+        );
+        let needed = need_src.saturating_add(need_dst);
+        if node_set.len().saturating_add(needed) <= limit_usize {
+            if node_set.insert(link.src_node_id) {
+                ordered_node_ids.push(link.src_node_id);
+            }
+            if node_set.insert(link.dst_node_id) {
+                ordered_node_ids.push(link.dst_node_id);
+            }
+            kept_links.push(link);
+        } else {
+            truncated = true;
+            if limit_usize == 1 && node_set.is_empty() {
+                node_set.insert(link.src_node_id);
+                ordered_node_ids.push(link.src_node_id);
+            }
+        }
+    }
+
+    (ordered_node_ids, kept_links, truncated)
+}
+
 async fn load_nodes_preserving_order_tx(
     tx: &mut Transaction<'_, Postgres>,
+    ordered_ids: &[Uuid],
+) -> Result<Vec<BlueNode>, AppError> {
+    load_nodes_preserving_order_for_subgraph_tx(tx, "main", ordered_ids).await
+}
+
+async fn load_nodes_preserving_order_for_subgraph_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    subgraph_slug: &str,
     ordered_ids: &[Uuid],
 ) -> Result<Vec<BlueNode>, AppError> {
     if ordered_ids.is_empty() {
@@ -529,8 +702,10 @@ async fn load_nodes_preserving_order_tx(
                 geo_lng, geo_lat, source_dataset_id, source_row_key,
                 row_version, created_at, updated_at
            FROM xb_nodes
-          WHERE id = ANY($1)",
+          WHERE subgraph_slug = $1
+            AND id = ANY($2)",
     )
+    .bind(subgraph_slug)
     .bind(ordered_ids)
     .fetch_all(&mut **tx)
     .await
@@ -555,6 +730,15 @@ async fn load_induced_links_tx(
     node_ids: &[Uuid],
     link_types: Option<&[String]>,
 ) -> Result<Vec<LinkRecord>, AppError> {
+    load_induced_links_for_subgraph_tx(tx, "main", node_ids, link_types).await
+}
+
+async fn load_induced_links_for_subgraph_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    subgraph_slug: &str,
+    node_ids: &[Uuid],
+    link_types: Option<&[String]>,
+) -> Result<Vec<LinkRecord>, AppError> {
     if node_ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -562,12 +746,13 @@ async fn load_induced_links_tx(
         "SELECT id, link_type, src_node_id, dst_node_id, weight,
                 properties, source_dataset_id, valid_from, valid_to, created_at, updated_at
            FROM xb_links
-          WHERE subgraph_slug = 'main'
-            AND src_node_id = ANY($1)
-            AND dst_node_id = ANY($1)
-            AND ($2::text[] IS NULL OR link_type = ANY($2))
+          WHERE subgraph_slug = $1
+            AND src_node_id = ANY($2)
+            AND dst_node_id = ANY($2)
+            AND ($3::text[] IS NULL OR link_type = ANY($3))
           ORDER BY created_at ASC, id ASC",
     )
+    .bind(subgraph_slug)
     .bind(node_ids)
     .bind(link_types)
     .fetch_all(&mut **tx)
@@ -1555,5 +1740,46 @@ mod tests {
         let comm_b: Vec<Option<i64>> = lpa_b.iter().map(|o| o.community).collect();
         assert_eq!(comm_a, comm_b);
         Ok(())
+    }
+
+    #[test]
+    fn select_pattern_links_deduplicates_endpoints_and_marks_truncated() {
+        let now = Utc::now();
+        let mk_link = |lid: u128, u: u128, v: u128| LinkRecord {
+            id: Uuid::from_u128(lid),
+            link_type: String::from("SUPPLIES"),
+            src_node_id: Uuid::from_u128(u),
+            dst_node_id: Uuid::from_u128(v),
+            weight: 1.0,
+            properties: serde_json::Map::new(),
+            source_dataset_id: None,
+            valid_from: None,
+            valid_to: None,
+            created_at: now,
+            updated_at: now,
+        };
+
+        let links = vec![
+            mk_link(1, 10, 20),
+            mk_link(2, 20, 30),
+            mk_link(3, 40, 50),
+            mk_link(4, 10, 30),
+        ];
+
+        let (node_ids, kept, truncated) = select_pattern_links_within_node_limit(links, 3, false);
+        assert!(truncated);
+        assert_eq!(
+            node_ids,
+            vec![
+                Uuid::from_u128(10),
+                Uuid::from_u128(20),
+                Uuid::from_u128(30)
+            ]
+        );
+        // Link 4 (10 -> 30) connects already-selected endpoints so it is retained, while Link 3 (40 -> 50) is dropped.
+        assert_eq!(
+            kept.iter().map(|l| l.id).collect::<Vec<_>>(),
+            vec![Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(4)]
+        );
     }
 }

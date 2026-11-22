@@ -9,7 +9,8 @@ use axpoint_analytics::{
     GroundedHybridSynthesis, HybridGroundingInput, filter_noise_recall_candidates,
     sanitize_and_ground_doc_answer, sanitize_and_ground_hybrid_answer,
 };
-use axpoint_db::{DocumentIngestPayload, ParaIngestInput};
+use axpoint_db::{DocRecallScope, DocumentIngestPayload, ParaIngestInput};
+use axpoint_domain::agent::EndpointSpec;
 use axpoint_domain::analytics::{
     AskCitation, AskIntent, AskRequest, ChatQueryMode, LinkedObjects, NewAskTurnInput,
 };
@@ -19,7 +20,7 @@ use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::AnalyticsRepository as _;
 use axpoint_domain::{
     AppError, ChatQueryRequest, ChatQueryResponse, ChatQueryScope, DocumentListResponse, FusedHit,
-    IngestResponse, IngestTextRequest, rrf_fuse, split_paragraphs,
+    IngestResponse, IngestTextRequest, RecallChannel, rrf_fuse, split_paragraphs,
 };
 use axpoint_security::AuthPrincipal;
 use axum::extract::{Multipart, Path, Query, State};
@@ -31,7 +32,11 @@ use serde::Deserialize;
 use tracing::warn;
 use uuid::Uuid;
 
-use crate::routes::analytics::{execute_ask_for_principal, load_tenant_catalog_and_live};
+use crate::routes::analytics::{
+    ScopeAuthContext, ask_context_from_scope, authorize_and_resolve_query_scope,
+    execute_ask_for_principal_with_ip, load_tenant_catalog_and_live,
+    prune_catalog_and_metrics_for_scope,
+};
 use crate::state::{ApiJson, AppState, HttpError, ParserSidecarResponse};
 use crate::telemetry::{current_trace_id, outbound_traceparent};
 
@@ -351,8 +356,31 @@ pub(crate) async fn mask_recalled_hits(
     Ok(())
 }
 
+fn build_doc_recall_scope(
+    doc_ids: &[Uuid],
+    doc_title_prefix: Option<&str>,
+) -> Option<DocRecallScope> {
+    let clean_prefix = doc_title_prefix
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned);
+    if doc_ids.is_empty() && clean_prefix.is_none() {
+        None
+    } else {
+        Some(DocRecallScope {
+            doc_ids: doc_ids.to_vec(),
+            doc_title_prefix: clean_prefix,
+        })
+    }
+}
+
+fn build_doc_scope_from_chat_scope(scope: Option<&ChatQueryScope>) -> Option<DocRecallScope> {
+    let s = scope?;
+    build_doc_recall_scope(&s.doc_ids, s.doc_title_prefix.as_deref())
+}
+
 /// Executes 5-channel hypergraph document recall (`vector + bm25 + entity_link + multi_hop + context`)
-/// fused via RRF, optionally filtered by `doc_title_prefix` (`08-STEP09` §09.5.1).
+/// fused via RRF, optionally filtered by `doc_title_prefix` (`08-STEP09` §09.5.1, `06-STEP20` §20.2.2).
 pub(crate) async fn recall_knowledge_hits(
     state: &AppState,
     tenant_id: &str,
@@ -360,7 +388,8 @@ pub(crate) async fn recall_knowledge_hits(
     top_k: usize,
     doc_title_prefix: Option<&str>,
 ) -> Result<(Vec<FusedHit>, Vec<String>), AppError> {
-    recall_knowledge_hits_for_user(state, tenant_id, None, query, top_k, doc_title_prefix).await
+    let doc_scope = build_doc_recall_scope(&[], doc_title_prefix);
+    recall_knowledge_hits_for_user(state, tenant_id, None, query, top_k, doc_scope.as_ref()).await
 }
 
 async fn recall_knowledge_hits_for_user(
@@ -369,7 +398,7 @@ async fn recall_knowledge_hits_for_user(
     caller_user_id: Option<Uuid>,
     query: &str,
     top_k: usize,
-    doc_title_prefix: Option<&str>,
+    doc_scope: Option<&DocRecallScope>,
 ) -> Result<(Vec<FusedHit>, Vec<String>), AppError> {
     let trimmed = query.trim();
     if trimmed.is_empty() || top_k == 0 {
@@ -384,44 +413,42 @@ async fn recall_knowledge_hits_for_user(
         tenant_ai.extract_query_entities(trimmed)
     );
 
-    let (q_vec, q_dim) = embed_res?;
+    let (q_vec, _q_dim) = embed_res?;
     let seeds = seed_entities.unwrap_or_default();
 
     let recall_started = Instant::now();
-    let (vec_res, bm25_res, ent_res, hop_res) = tokio::join!(
-        state.store.recall_vector(tenant_id, q_vec, q_dim, 12),
-        state.store.recall_bm25(tenant_id, trimmed, 12),
-        state.store.recall_entity_link(tenant_id, &seeds, 10),
-        state.store.recall_multi_hop(tenant_id, &seeds, 10)
+    let (base_res, ent_res, hop_res) = tokio::join!(
+        state
+            .store
+            .recall_with_scope(tenant_id, trimmed, Some(&q_vec), 12, doc_scope),
+        state
+            .store
+            .recall_entity_link_scoped(tenant_id, &seeds, 10, doc_scope),
+        state
+            .store
+            .recall_multi_hop_scoped(tenant_id, &seeds, 10, doc_scope),
     );
     metrics::histogram!("axpoint_recall_channel_seconds", "channel" => "parallel")
         .record(recall_started.elapsed().as_secs_f64());
 
-    let mut all_candidates = Vec::new();
-    all_candidates.extend(vec_res?);
-    all_candidates.extend(bm25_res?);
-    all_candidates.extend(ent_res?);
-    all_candidates.extend(hop_res?);
-    let mut all_candidates = filter_noise_recall_candidates(trimmed, all_candidates);
+    let mut non_ctx: Vec<_> = base_res?
+        .into_iter()
+        .filter(|c| c.channel != RecallChannel::Context)
+        .collect();
+    non_ctx.extend(ent_res?);
+    non_ctx.extend(hop_res?);
 
-    let seed_para_ids: Vec<Uuid> = all_candidates.iter().take(4).map(|c| c.para_id).collect();
-    let ctx_res = state
-        .store
-        .recall_context(tenant_id, &seed_para_ids, 6)
-        .await?;
-    all_candidates.extend(ctx_res);
-
-    let clean_prefix = doc_title_prefix.map(str::trim).filter(|s| !s.is_empty());
-    let fetch_k = if clean_prefix.is_some() {
-        top_k.saturating_mul(4).max(20)
-    } else {
-        top_k
-    };
-    let mut hits = rrf_fuse(all_candidates, fetch_k);
-    if let Some(prefix) = clean_prefix {
-        hits.retain(|h| h.doc_title.starts_with(prefix));
-        hits.truncate(top_k);
+    let mut filtered = filter_noise_recall_candidates(trimmed, non_ctx);
+    if !filtered.is_empty() {
+        let seed_para_ids: Vec<Uuid> = filtered.iter().take(4).map(|c| c.para_id).collect();
+        let extra_ctx = state
+            .store
+            .recall_context_scoped(tenant_id, &seed_para_ids, 6, doc_scope)
+            .await?;
+        filtered.extend(extra_ctx);
     }
+
+    let hits = rrf_fuse(filtered, top_k);
     Ok((hits, seeds))
 }
 
@@ -430,6 +457,7 @@ async fn run_doc_rag_pipeline(
     principal: &AuthPrincipal,
     query: &str,
     top_k: usize,
+    doc_scope: Option<&DocRecallScope>,
 ) -> Result<DocRagOutcome, AppError> {
     let tenant_id = &principal.tenant_id;
     let has_pii_raw = principal.has(Permission::PiiRawRead);
@@ -439,7 +467,7 @@ async fn run_doc_rag_pipeline(
         Some(principal.user_id),
         query,
         top_k,
-        None,
+        doc_scope,
     )
     .await?;
     mask_recalled_hits(state, tenant_id, &mut hits, has_pii_raw).await?;
@@ -489,21 +517,39 @@ async fn resolve_auto_chat_intent(
     principal: &AuthPrincipal,
     question: &str,
     session_id: Option<Uuid>,
+    scope: Option<&ChatQueryScope>,
 ) -> Result<AskIntent, AppError> {
     let tenant_id = &principal.tenant_id;
     let scoped_ai = state.ai.for_tenant(tenant_id).for_user(principal.user_id);
-    let (catalog, _, _, _) = load_tenant_catalog_and_live(state, tenant_id, false).await?;
+    let (mut catalog, all_datasets, _, _) =
+        load_tenant_catalog_and_live(state, tenant_id, false).await?;
+    let restrict_ids: Vec<Uuid> = scope.map_or_else(Vec::new, |s| s.dataset_ids.clone());
+    let subgraph_slug = scope.and_then(|s| s.subgraph_slug.as_deref());
     let q_embed = scoped_ai
         .embed_one(question.trim())
         .await
         .ok()
         .map(|(v, _)| v);
-    let (db_recall, all_metrics) = tokio::try_join!(
-        state
-            .store
-            .recall_schema_candidates(tenant_id, question.trim(), q_embed.as_deref(), &[]),
+    let (db_recall, mut all_metrics) = tokio::try_join!(
+        state.store.recall_schema_candidates_scoped(
+            tenant_id,
+            question.trim(),
+            q_embed.as_deref(),
+            &restrict_ids,
+            subgraph_slug,
+        ),
         state.store.list_metrics(tenant_id),
     )?;
+    let excluded_dataset_names = prune_catalog_and_metrics_for_scope(
+        state,
+        tenant_id,
+        &mut catalog,
+        &all_datasets,
+        &mut all_metrics,
+        scope,
+    )
+    .await;
+
     let session_turns = match session_id {
         Some(sid) => state.store.list_session_turns(tenant_id, sid).await?,
         None => Vec::new(),
@@ -522,11 +568,16 @@ async fn resolve_auto_chat_intent(
         &db_recall,
         &SchemaLinkExtras {
             all_metrics,
+            restrict_dataset_ids: restrict_ids,
+            excluded_dataset_names,
             published_schemas: catalog.published_schemas.clone(),
             enforce_ontology_joins,
             ..SchemaLinkExtras::default()
         },
     );
+    if linked.targeted_excluded_dataset {
+        return Ok(AskIntent::Data);
+    }
 
     if let Some(by_rule) =
         classify_intent_by_rules(question, linked.has_positive_hit, has_prior_data_turn)
@@ -550,6 +601,7 @@ async fn synthesize_hybrid_answer(
     question: &str,
     doc: &DocRagOutcome,
     data: &axpoint_domain::analytics::AskResponse,
+    pinned_endpoints: &[EndpointSpec],
 ) -> GroundedHybridSynthesis {
     let raw_hybrid = if !data.abstained
         && !doc.abstained
@@ -572,6 +624,12 @@ async fn synthesize_hybrid_answer(
                 c.doc_title,
                 c.snippet
             );
+        }
+        if !pinned_endpoints.is_empty() {
+            prompt.push_str("\n### 已限定可用技能端点\n");
+            for ep in pinned_endpoints {
+                let _fmt_ok = writeln!(prompt, "- {} ({})", ep.slug, ep.title);
+            }
         }
         let _fmt_ok = write!(prompt, "\n### 用户问题\n{}", question.trim());
 
@@ -597,14 +655,53 @@ async fn synthesize_hybrid_answer(
     })
 }
 
+async fn precheck_chat_query_scope(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    client_ip: &str,
+    scope: Option<&ChatQueryScope>,
+) -> Result<Vec<EndpointSpec>, AppError> {
+    let Some(s) = scope else {
+        return Ok(Vec::new());
+    };
+    let subgraph_slug = s.subgraph_slug.as_deref().unwrap_or("main");
+    let policy = axpoint_server::policy::build_policy_context_for_subgraph(
+        &state.store,
+        &state.cedar,
+        principal,
+        subgraph_slug,
+        false,
+        client_ip,
+    )
+    .await?;
+    let (catalog, all_datasets, _, _) =
+        load_tenant_catalog_and_live(state, &principal.tenant_id, false).await?;
+    authorize_and_resolve_query_scope(
+        state,
+        principal,
+        Some(s),
+        &ScopeAuthContext {
+            client_ip,
+            catalog: &catalog,
+            all_datasets: &all_datasets,
+            policy: &policy,
+        },
+    )
+    .await
+}
+
 async fn handle_doc_chat_query(
     state: &AppState,
     principal: &AuthPrincipal,
+    client_ip: &str,
     req: &ChatQueryRequest,
+    applied_scope: Option<ChatQueryScope>,
     started: Instant,
 ) -> Result<ChatQueryResponse, AppError> {
     let tenant_id = &principal.tenant_id;
-    let doc = run_doc_rag_pipeline(state, principal, &req.query, req.top_k).await?;
+    let doc_scope = build_doc_scope_from_chat_scope(applied_scope.as_ref());
+    let doc =
+        run_doc_rag_pipeline(state, principal, &req.query, req.top_k, doc_scope.as_ref()).await?;
     let session_id = req.session_id.unwrap_or_else(Uuid::new_v4);
     let turn = state
         .store
@@ -630,10 +727,14 @@ async fn handle_doc_chat_query(
         )
         .await?;
 
+    let subgraph_slug = applied_scope
+        .as_ref()
+        .and_then(|s| s.subgraph_slug.as_deref())
+        .unwrap_or("main");
     let hit_para_ids: Vec<Uuid> = doc.hits.iter().map(|h| h.para_id).collect();
     let related_nodes = state
         .store
-        .list_related_nodes(tenant_id, &hit_para_ids, &[])
+        .list_related_nodes_for_subgraph(tenant_id, subgraph_slug, &hit_para_ids, &[])
         .await?;
     state.audit.record(AuditRecord {
         tenant_id: tenant_id.clone(),
@@ -642,7 +743,7 @@ async fn handle_doc_chat_query(
         action: AuditAction::RagAsk,
         resource_ref: String::from("chat:doc"),
         status_code: 200,
-        client_ip: String::from("127.0.0.1"),
+        client_ip: String::from(client_ip),
         trace_id: current_trace_id(),
         detail_json: serde_json::json!({
             "hit_count": doc.hits.len(),
@@ -670,30 +771,26 @@ async fn handle_doc_chat_query(
         verified_citations: doc.verified_citations,
         abstained: doc.abstained,
         slot_payload: None,
-        applied_scope: req.scope.as_ref().and_then(ChatQueryScope::normalized),
+        applied_scope,
     })
 }
 
-async fn handle_hybrid_chat_query(
+struct HybridChatInput<'a> {
+    client_ip: &'a str,
+    req: &'a ChatQueryRequest,
+    applied_scope: Option<ChatQueryScope>,
+    pinned_endpoints: Vec<EndpointSpec>,
+    started: Instant,
+}
+
+async fn persist_hybrid_turn(
     state: &AppState,
     principal: &AuthPrincipal,
-    req: &ChatQueryRequest,
-    started: Instant,
-) -> Result<ChatQueryResponse, AppError> {
-    let tenant_id = &principal.tenant_id;
-    let ask_req = AskRequest {
-        question: req.query.clone(),
-        session_id: req.session_id,
-        context: None,
-    };
-    let (doc_res, data_res) = tokio::join!(
-        run_doc_rag_pipeline(state, principal, &req.query, req.top_k),
-        execute_ask_for_principal(state, principal, ask_req, Some(AskIntent::Data), false)
-    );
-    let doc = doc_res?;
-    let data = data_res?;
-    let hybrid = synthesize_hybrid_answer(state, principal, &req.query, &doc, &data).await;
-
+    question: &str,
+    doc: &DocRagOutcome,
+    data: &axpoint_domain::analytics::AskResponse,
+    hybrid: &GroundedHybridSynthesis,
+) -> Result<Uuid, AppError> {
     let preview = (!data.sql.is_empty()).then(|| {
         serde_json::json!({
             "columns": data.columns,
@@ -705,11 +802,11 @@ async fn handle_hybrid_chat_query(
     let turn = state
         .store
         .insert_ask_turn(
-            tenant_id,
+            &principal.tenant_id,
             NewAskTurnInput {
                 session_id: data.session_id,
                 user_id: Some(principal.user_id),
-                question: req.query.trim().to_owned(),
+                question: question.trim().to_owned(),
                 intent: AskIntent::Hybrid,
                 linked_objects: data.linked_objects.clone(),
                 sql_text: (!data.sql.is_empty()).then(|| data.sql.clone()),
@@ -725,21 +822,75 @@ async fn handle_hybrid_chat_query(
             },
         )
         .await?;
+    Ok(turn.id)
+}
 
+async fn handle_hybrid_chat_query(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    inp: HybridChatInput<'_>,
+) -> Result<ChatQueryResponse, AppError> {
+    let doc_scope = build_doc_scope_from_chat_scope(inp.applied_scope.as_ref());
+    let ask_req = AskRequest {
+        question: inp.req.query.clone(),
+        session_id: inp.req.session_id,
+        context: ask_context_from_scope(inp.applied_scope.as_ref()),
+    };
+    let (doc_res, data_res) = tokio::join!(
+        run_doc_rag_pipeline(
+            state,
+            principal,
+            &inp.req.query,
+            inp.req.top_k,
+            doc_scope.as_ref()
+        ),
+        execute_ask_for_principal_with_ip(
+            state,
+            principal,
+            inp.client_ip,
+            ask_req,
+            Some(AskIntent::Data),
+            false,
+        )
+    );
+    let doc = doc_res?;
+    let data = data_res?;
+    let hybrid = synthesize_hybrid_answer(
+        state,
+        principal,
+        &inp.req.query,
+        &doc,
+        &data,
+        &inp.pinned_endpoints,
+    )
+    .await;
+
+    let turn_id =
+        persist_hybrid_turn(state, principal, &inp.req.query, &doc, &data, &hybrid).await?;
+    let subgraph_slug = inp
+        .applied_scope
+        .as_ref()
+        .and_then(|s| s.subgraph_slug.as_deref())
+        .unwrap_or("main");
     let hit_para_ids: Vec<Uuid> = doc.hits.iter().map(|h| h.para_id).collect();
     let related_nodes = state
         .store
-        .list_related_nodes(tenant_id, &hit_para_ids, &data.linked_objects.nodes)
+        .list_related_nodes_for_subgraph(
+            &principal.tenant_id,
+            subgraph_slug,
+            &hit_para_ids,
+            &data.linked_objects.nodes,
+        )
         .await?;
 
     Ok(ChatQueryResponse {
         answer: hybrid.answer,
         hits: doc.hits,
         seed_entities: doc.seeds,
-        elapsed_ms: started.elapsed().as_millis(),
+        elapsed_ms: inp.started.elapsed().as_millis(),
         intent: AskIntent::Hybrid,
         session_id: Some(data.session_id),
-        turn_id: Some(turn.id),
+        turn_id: Some(turn_id),
         citations: doc.citations,
         sql: (!data.sql.is_empty()).then_some(data.sql),
         columns: data.columns,
@@ -751,12 +902,72 @@ async fn handle_hybrid_chat_query(
         verified_citations: hybrid.verified_citations,
         abstained: hybrid.abstained,
         slot_payload: data.slot_payload,
-        applied_scope: req.scope.as_ref().and_then(ChatQueryScope::normalized),
+        applied_scope: inp.applied_scope,
+    })
+}
+
+async fn handle_data_or_chitchat_query(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    client_ip: &str,
+    req: ChatQueryRequest,
+    intent: AskIntent,
+    applied_scope: Option<ChatQueryScope>,
+    started: Instant,
+) -> Result<ChatQueryResponse, AppError> {
+    let subgraph_slug = applied_scope
+        .as_ref()
+        .and_then(|s| s.subgraph_slug.as_deref())
+        .unwrap_or("main")
+        .to_owned();
+    let ask_resp = Box::pin(execute_ask_for_principal_with_ip(
+        state,
+        principal,
+        client_ip,
+        AskRequest {
+            question: req.query,
+            session_id: req.session_id,
+            context: ask_context_from_scope(applied_scope.as_ref()),
+        },
+        Some(intent),
+        true,
+    ))
+    .await?;
+    let related_nodes = state
+        .store
+        .list_related_nodes_for_subgraph(
+            &principal.tenant_id,
+            &subgraph_slug,
+            &[],
+            &ask_resp.linked_objects.nodes,
+        )
+        .await?;
+    Ok(ChatQueryResponse {
+        answer: ask_resp.answer,
+        hits: Vec::new(),
+        seed_entities: Vec::new(),
+        elapsed_ms: started.elapsed().as_millis(),
+        intent: ask_resp.intent,
+        session_id: Some(ask_resp.session_id),
+        turn_id: Some(ask_resp.turn_id),
+        citations: ask_resp.citations,
+        sql: (!ask_resp.sql.is_empty()).then_some(ask_resp.sql),
+        columns: ask_resp.columns,
+        rows: ask_resp.rows,
+        chart: ask_resp.chart,
+        related_nodes,
+        grounding_mode: ask_resp.grounding_mode,
+        verified_numbers: ask_resp.verified_numbers,
+        verified_citations: ask_resp.verified_citations,
+        abstained: ask_resp.abstained,
+        slot_payload: ask_resp.slot_payload,
+        applied_scope,
     })
 }
 
 async fn chat_query_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<ChatQueryRequest>,
 ) -> Result<Json<ChatQueryResponse>, HttpError> {
@@ -768,62 +979,64 @@ async fn chat_query_handler(
         )));
     }
 
-    let tenant_id = &principal.tenant_id;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let applied_scope = req.scope.as_ref().and_then(ChatQueryScope::normalized);
+    let pinned_endpoints =
+        precheck_chat_query_scope(&state, &principal, &client_ip, applied_scope.as_ref()).await?;
+
     let started = Instant::now();
     let intent = match req.mode {
         ChatQueryMode::Doc => AskIntent::Doc,
         ChatQueryMode::Data => AskIntent::Data,
         ChatQueryMode::Auto => {
-            resolve_auto_chat_intent(&state, &principal, &req.query, req.session_id).await?
+            resolve_auto_chat_intent(
+                &state,
+                &principal,
+                &req.query,
+                req.session_id,
+                applied_scope.as_ref(),
+            )
+            .await?
         }
     };
 
     match intent {
         AskIntent::Doc => Ok(Json(
-            Box::pin(handle_doc_chat_query(&state, &principal, &req, started)).await?,
-        )),
-        AskIntent::Data | AskIntent::Chitchat => {
-            let applied_scope = req.scope.as_ref().and_then(ChatQueryScope::normalized);
-            let ask_resp = Box::pin(execute_ask_for_principal(
+            Box::pin(handle_doc_chat_query(
                 &state,
                 &principal,
-                AskRequest {
-                    question: req.query,
-                    session_id: req.session_id,
-                    context: None,
-                },
-                Some(intent),
-                true,
-            ))
-            .await?;
-            let related_nodes = state
-                .store
-                .list_related_nodes(tenant_id, &[], &ask_resp.linked_objects.nodes)
-                .await?;
-            Ok(Json(ChatQueryResponse {
-                answer: ask_resp.answer,
-                hits: Vec::new(),
-                seed_entities: Vec::new(),
-                elapsed_ms: started.elapsed().as_millis(),
-                intent: ask_resp.intent,
-                session_id: Some(ask_resp.session_id),
-                turn_id: Some(ask_resp.turn_id),
-                citations: ask_resp.citations,
-                sql: (!ask_resp.sql.is_empty()).then_some(ask_resp.sql),
-                columns: ask_resp.columns,
-                rows: ask_resp.rows,
-                chart: ask_resp.chart,
-                related_nodes,
-                grounding_mode: ask_resp.grounding_mode,
-                verified_numbers: ask_resp.verified_numbers,
-                verified_citations: ask_resp.verified_citations,
-                abstained: ask_resp.abstained,
-                slot_payload: ask_resp.slot_payload,
+                &client_ip,
+                &req,
                 applied_scope,
-            }))
-        }
+                started,
+            ))
+            .await?,
+        )),
+        AskIntent::Data | AskIntent::Chitchat => Ok(Json(
+            handle_data_or_chitchat_query(
+                &state,
+                &principal,
+                &client_ip,
+                req,
+                intent,
+                applied_scope,
+                started,
+            )
+            .await?,
+        )),
         AskIntent::Hybrid => Ok(Json(
-            Box::pin(handle_hybrid_chat_query(&state, &principal, &req, started)).await?,
+            Box::pin(handle_hybrid_chat_query(
+                &state,
+                &principal,
+                HybridChatInput {
+                    client_ip: &client_ip,
+                    req: &req,
+                    applied_scope,
+                    pinned_endpoints,
+                    started,
+                },
+            ))
+            .await?,
         )),
     }
 }

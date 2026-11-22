@@ -122,7 +122,7 @@ async fn ensure_main_subgraph_tx(
     Ok(())
 }
 
-async fn require_subgraph_exists_tx(
+pub(crate) async fn require_subgraph_exists_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
     slug: &str,
@@ -165,7 +165,7 @@ fn decode_subgraph_info(row: &sqlx::postgres::PgRow) -> SubgraphInfo {
     }
 }
 
-async fn load_schema_doc_tx(
+pub(crate) async fn load_schema_doc_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
     subgraph_slug: &str,

@@ -2272,7 +2272,8 @@ async function fetchGraphqlSdlResilient(): Promise<GraphqlSdlResponse> {
 }
 
 export const xblueApi = {
-  getSchema: () => requestJson<XBlueSchema>("/api/xblue/schema"),
+  getSchema: (subgraph?: string) =>
+    requestJson<XBlueSchema>(`/api/xblue/schema${subgraphQs(subgraph)}`),
   saveSchema: (payload: {
     node_types: Omit<BlueNodeTypeDef, "id">[];
     edge_types: Omit<BlueEdgeTypeDef, "id">[];

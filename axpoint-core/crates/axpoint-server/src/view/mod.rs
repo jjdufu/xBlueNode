@@ -8,6 +8,7 @@ pub mod data;
 pub mod deps;
 pub mod events;
 pub mod export;
+pub mod preflight;
 pub mod share;
 
 use std::path::PathBuf;

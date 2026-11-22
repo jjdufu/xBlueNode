@@ -30,8 +30,19 @@ import {
   type AskIntent,
   type ChatQueryMode,
   type ChatQueryResponse,
+  type ChatQueryScope,
   type RecallChannel,
 } from "@/lib/api";
+import {
+  QueryScopeBar,
+  type QueryScopeBarHandle,
+} from "@/components/axquery/QueryScopeBar";
+import {
+  detectAtMention,
+  formatAppliedScopeBadge,
+  normalizeChatQueryScope,
+  stripAtMention,
+} from "@/components/axquery/logic";
 import { ChartPanel } from "@/components/analytics/ChartPanel";
 import { GroundingBadge } from "@/components/analytics/GroundingBadge";
 import { ResultGrid } from "@/components/analytics/ResultGrid";
@@ -65,6 +76,7 @@ interface StoredConversationSession {
   title: string;
   updatedAt: string;
   sessionId?: string;
+  scope?: ChatQueryScope;
   turns: ConversationTurn[];
 }
 
@@ -136,7 +148,7 @@ export function AxQueryPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialQueryParam = searchParams.get("q")?.trim() ?? "";
-  const { tx, fmtNum, fmtTime } = useI18n();
+  const { isZh, tx, fmtNum, fmtTime } = useI18n();
 
   const [sessions, setSessions] = useState<StoredConversationSession[]>(() =>
     loadStoredSessions()
@@ -147,6 +159,11 @@ export function AxQueryPage() {
   const [historySidebarOpen, setHistorySidebarOpen] = useState(false);
 
   const [query, setQuery] = useState(() => initialQueryParam);
+  const [caretPos, setCaretPos] = useState<number | null>(null);
+  const [dismissedMentionAt, setDismissedMentionAt] = useState<number | null>(
+    null
+  );
+  const [scope, setScope] = useState<ChatQueryScope>({});
   const [mode, setMode] = useState<ChatQueryMode>("AUTO");
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
@@ -155,6 +172,7 @@ export function AxQueryPage() {
   const [error, setError] = useState<string | null>(null);
 
   const streamEndRef = useRef<HTMLDivElement | null>(null);
+  const scopeBarRef = useRef<QueryScopeBarHandle | null>(null);
 
   useEffect(() => {
     if (initialQueryParam) {
@@ -297,16 +315,19 @@ export function AxQueryPage() {
   const persistSessionSnapshot = (
     localId: string,
     nextSessionId: string | undefined,
-    nextTurns: ConversationTurn[]
+    nextTurns: ConversationTurn[],
+    nextScope: ChatQueryScope = scope
   ) => {
     if (nextTurns.length === 0) return;
     const titleText = nextTurns[0]?.question.slice(0, 36) ?? tx("会话", "Chat");
+    const cleanScope = normalizeChatQueryScope(nextScope);
     setSessions((prev) => {
       const entry: StoredConversationSession = {
         id: localId,
         title: titleText,
         updatedAt: new Date().toISOString(),
         sessionId: nextSessionId,
+        ...(cleanScope ? { scope: cleanScope } : {}),
         turns: nextTurns,
       };
       const filtered = prev.filter((s) => s.id !== localId);
@@ -315,6 +336,22 @@ export function AxQueryPage() {
       return updated;
     });
   };
+
+  const handleScopeChange = (nextScope: ChatQueryScope) => {
+    setScope(nextScope);
+    if (activeLocalSessionId && turns.length > 0) {
+      persistSessionSnapshot(activeLocalSessionId, sessionId, turns, nextScope);
+    }
+  };
+
+  const activeMention = useMemo(() => {
+    const m = detectAtMention(query, caretPos);
+    if (!m) return null;
+    if (dismissedMentionAt !== null && m.start === dismissedMentionAt) {
+      return null;
+    }
+    return m;
+  }, [caretPos, dismissedMentionAt, query]);
 
   const submitQuestion = async (
     rawQuestion: string,
@@ -331,11 +368,13 @@ export function AxQueryPage() {
     setPendingQuestion(trimmed);
     setError(null);
     try {
+      const activeScope = normalizeChatQueryScope(scope);
       const data = await api.chatQuery({
         query: trimmed,
         top_k: 6,
         mode: effectiveMode,
         ...(sessionId ? { session_id: sessionId } : {}),
+        ...(activeScope ? { scope: activeScope } : {}),
       });
 
       const resolvedSessionId = data.session_id ?? sessionId;
@@ -363,10 +402,17 @@ export function AxQueryPage() {
       setActiveLocalSessionId(localSessKey);
       setTurns((prev) => {
         const nextList = [...prev, nextTurn];
-        persistSessionSnapshot(localSessKey, resolvedSessionId, nextList);
+        persistSessionSnapshot(
+          localSessKey,
+          resolvedSessionId,
+          nextList,
+          scope
+        );
         return nextList;
       });
       setQuery("");
+      setCaretPos(null);
+      setDismissedMentionAt(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -382,6 +428,7 @@ export function AxQueryPage() {
   const handleResetSession = () => {
     setActiveLocalSessionId(null);
     setSessionId(undefined);
+    setScope({});
     setTurns([]);
     setError(null);
   };
@@ -389,6 +436,7 @@ export function AxQueryPage() {
   const handleSelectStoredSession = (sess: StoredConversationSession) => {
     setActiveLocalSessionId(sess.id);
     setSessionId(sess.sessionId);
+    setScope(sess.scope ?? {});
     setTurns(sess.turns);
     setError(null);
   };
@@ -482,13 +530,43 @@ export function AxQueryPage() {
 
   const renderComposerBox = (rowsCount: number) => (
     <div className="rounded-xl border border-border bg-card shadow-xs focus-within:border-xblue focus-within:ring-2 focus-within:ring-xblue/15 transition-all">
+      <QueryScopeBar
+        ref={scopeBarRef}
+        scope={scope}
+        onChange={handleScopeChange}
+        mentionKeyword={activeMention?.keyword ?? null}
+        popoverPlacement={isEmptyWelcome ? "bottom" : "top"}
+        onDismissMention={() => {
+          if (activeMention) {
+            setDismissedMentionAt(activeMention.start);
+          }
+        }}
+        onCommitMentionSelection={(nextScope) => {
+          handleScopeChange(nextScope);
+          if (activeMention) {
+            const stripped = stripAtMention(query, activeMention);
+            setQuery(stripped);
+            setCaretPos(stripped.length);
+            setDismissedMentionAt(null);
+          }
+        }}
+      />
       <Textarea
         rows={rowsCount}
         className="border-0 bg-transparent px-3.5 pt-3 pb-1.5 text-sm leading-relaxed focus:ring-0 resize-none"
         placeholder={modeMeta[mode].placeholder}
         value={query}
-        onChange={(e) => setQuery(e.target.value)}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setCaretPos(e.target.selectionStart);
+          setDismissedMentionAt(null);
+        }}
+        onClick={(e) => setCaretPos(e.currentTarget.selectionStart)}
+        onKeyUp={(e) => setCaretPos(e.currentTarget.selectionStart)}
         onKeyDown={(e) => {
+          if (scopeBarRef.current?.handleMentionKeyDown(e)) {
+            return;
+          }
           if (e.key === "Enter" && !e.shiftKey) {
             e.preventDefault();
             void handleAsk();
@@ -817,6 +895,10 @@ export function AxQueryPage() {
                   const verifiedCitations = resp.verified_citations ?? 0;
                   const hasSlotPayload = resp.slot_payload != null;
                   const isAbstained = resp.abstained === true;
+                  const appliedScopeLabel = formatAppliedScopeBadge(
+                    resp.applied_scope,
+                    isZh
+                  );
 
                   return (
                     <div
@@ -834,6 +916,14 @@ export function AxQueryPage() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2">
+                          {appliedScopeLabel && (
+                            <Badge
+                              variant="neutral"
+                              data-testid="turn-applied-scope-badge"
+                            >
+                              {appliedScopeLabel}
+                            </Badge>
+                          )}
                           <Badge
                             variant={meta.variant}
                             data-testid="axquery-intent-badge"
