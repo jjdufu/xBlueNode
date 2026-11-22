@@ -577,6 +577,9 @@ define_str_enum! {
     }
 }
 
+/// Alias for [`EndpointKind`] used by `xBlueStudio` domain packaging contracts (`05-STEP19` §19.3.1).
+pub type PublishedKind = EndpointKind;
+
 define_str_enum! {
     /// Operational rule and alert severity level.
     pub enum Severity {

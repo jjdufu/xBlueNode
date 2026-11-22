@@ -81,9 +81,10 @@ use crate::im::{
 };
 use crate::ops::{
     BackupKind, BackupRecord, CreateWorkItemRequest, DatabaseHealth, FlowWorkItemInput,
-    JobsHealthStats, MigrationsHealth, NewTemplateInstallInput, OutboxStats, PatchWorkItemRequest,
-    RetentionPolicyRecord, TemplateCreatedObject, TemplateInstallRecord, TemplateInstallStatus,
-    WorkItem, WorkItemDetail, WorkItemEvent, WorkItemEventKind, WorkItemListQuery,
+    JobsHealthStats, MigrationsHealth, NewTemplateInstallInput, OnboardingStatusResponse,
+    OutboxStats, PatchWorkItemRequest, RetentionPolicyRecord, TemplateCreatedObject,
+    TemplateInstallRecord, TemplateInstallStatus, WorkItem, WorkItemDetail, WorkItemEvent,
+    WorkItemEventKind, WorkItemListQuery,
 };
 use crate::platform::{
     ApiTokenRecord, AuditRecord, BoxFuture, JobListQuery, JobListResponse, JobRecord, LeasedJob,
@@ -112,9 +113,9 @@ use crate::studio::{
     CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus, MappingRecord,
     MappingRunRecord, MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeTypeSpec,
     PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest,
-    SchemaDiff, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary, SubgraphInfo,
-    TriggerMappingRunRequest, TriggerMappingRunResponse, UpdateDraftRequest, UpdateSubgraphRequest,
-    ValidationContext,
+    SchemaDiff, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary,
+    SubgraphConsumptionResponse, SubgraphInfo, TriggerMappingRunRequest, TriggerMappingRunResponse,
+    UpdateDraftRequest, UpdateSubgraphRequest, ValidationContext,
 };
 use crate::topology::{
     AxFlowDef, AxFlowRunResult, AxSandboxRecord, AxSimAction, AxSimResult, AxSimSnapshot, BlueNode,
@@ -3989,4 +3990,20 @@ pub trait PrincipalHydrationPort: Send + Sync {
         user_id: Uuid,
         policy: ImIdentityPolicy,
     ) -> impl Future<Output = Result<Option<HydratedImPrincipal>, AppError>> + Send;
+}
+
+/// Read-only persistence port for Step 19 5-step onboarding progress and reverse subgraph consumption counts (`05-STEP19` §19.1, §19.3.2).
+pub trait OnboardingAndPackagingPort: Send + Sync {
+    /// Computes the live 5-step onboarding status for `tenant_id` within a single read-only tenant transaction.
+    fn get_onboarding_status(
+        &self,
+        tenant_id: &str,
+    ) -> impl Future<Output = Result<OnboardingStatusResponse, AppError>> + Send;
+
+    /// Aggregates downstream published endpoints, agents, twin dashboards, and alert rules referencing node types in `subgraph_slug`.
+    fn get_subgraph_consumption(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+    ) -> impl Future<Output = Result<SubgraphConsumptionResponse, AppError>> + Send;
 }
