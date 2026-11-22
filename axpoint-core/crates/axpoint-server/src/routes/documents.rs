@@ -33,8 +33,9 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::routes::analytics::{
-    ask_context_from_scope, authorize_and_resolve_query_scope, execute_ask_for_principal_with_ip,
-    load_tenant_catalog_and_live, prune_catalog_and_metrics_for_scope,
+    ScopeAuthContext, ask_context_from_scope, authorize_and_resolve_query_scope,
+    execute_ask_for_principal_with_ip, load_tenant_catalog_and_live,
+    prune_catalog_and_metrics_for_scope,
 };
 use crate::state::{ApiJson, AppState, HttpError, ParserSidecarResponse};
 use crate::telemetry::{current_trace_id, outbound_traceparent};
@@ -430,9 +431,10 @@ async fn recall_knowledge_hits_for_user(
     metrics::histogram!("axpoint_recall_channel_seconds", "channel" => "parallel")
         .record(recall_started.elapsed().as_secs_f64());
 
-    let (mut non_ctx, base_ctx): (Vec<_>, Vec<_>) = base_res?
+    let mut non_ctx: Vec<_> = base_res?
         .into_iter()
-        .partition(|c| c.channel != RecallChannel::Context);
+        .filter(|c| c.channel != RecallChannel::Context)
+        .collect();
     non_ctx.extend(ent_res?);
     non_ctx.extend(hop_res?);
 
@@ -443,7 +445,6 @@ async fn recall_knowledge_hits_for_user(
             .store
             .recall_context_scoped(tenant_id, &seed_para_ids, 6, doc_scope)
             .await?;
-        filtered.extend(base_ctx);
         filtered.extend(extra_ctx);
     }
 
@@ -673,10 +674,20 @@ async fn precheck_chat_query_scope(
         client_ip,
     )
     .await?;
-    let (_, all_datasets, _, _) =
+    let (catalog, all_datasets, _, _) =
         load_tenant_catalog_and_live(state, &principal.tenant_id, false).await?;
-    authorize_and_resolve_query_scope(state, principal, client_ip, Some(s), &all_datasets, &policy)
-        .await
+    authorize_and_resolve_query_scope(
+        state,
+        principal,
+        Some(s),
+        &ScopeAuthContext {
+            client_ip,
+            catalog: &catalog,
+            all_datasets: &all_datasets,
+            policy: &policy,
+        },
+    )
+    .await
 }
 
 async fn handle_doc_chat_query(

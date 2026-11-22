@@ -9,7 +9,7 @@ use axpoint_analytics::{
     AskPipelineInput, CatalogDatasetEntry, LiveConnectionSpec, MetricExecuteOptions,
     PivotExecuteOptions, TenantCatalog, TenantDb, compile_ontology_join_edges,
     ensure_no_dependency_cycle, execute_metric_query, execute_multi_metric_query, execute_pivot,
-    generate_transform_sql, preview_transform_sql, run_grounding_eval_suite,
+    generate_transform_sql, guard_and_rewrite, preview_transform_sql, run_grounding_eval_suite,
     validate_corrected_sql, validate_create_metric_request, validate_metric_def,
     validate_target_dataset_name,
 };
@@ -30,13 +30,13 @@ use axpoint_domain::axhub::{
     CreateDatasetRequest, Dataset, DatasetListQuery, DatasetStatus, PaginatedList, SchemaPolicy,
 };
 use axpoint_domain::enums::{
-    AuditAction, DataType, Environment, Permission, PiiCategory, SourceKind, SyncMode,
+    AuditAction, DataType, EndpointKind, Environment, Permission, PiiCategory, SourceKind, SyncMode,
 };
 use axpoint_domain::guard::GrantResourceKind;
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::{
     AgentRepository as _, AnalyticsQueryPort, AnalyticsRepository as _, ConnectionRepository as _,
-    DatasetRepository as _, GuardRepository as _, StudioRepository as _,
+    DatasetRepository as _, FlowRepository as _, GuardRepository as _, StudioRepository as _,
 };
 use axpoint_domain::studio::SchemaDoc;
 use axpoint_domain::{AppError, ChatQueryScope};
@@ -1240,45 +1240,72 @@ pub(crate) fn ask_context_from_scope(scope: Option<&ChatQueryScope>) -> Option<A
     })
 }
 
-/// Enforces `AxGuard` `ABAC` intersection on `scope` (`403 POLICY_DENIED` on missing/denied datasets
-/// or subgraphs) and returns pruned `PROD` [`EndpointSpec`]s when `endpoint_slugs` is non-empty (`06-STEP20` §20.2.2).
-pub(crate) async fn authorize_and_resolve_query_scope(
+/// Borrowed governance and catalog snapshot used when validating [`ChatQueryScope`] (`06-STEP20` §20.2.2).
+pub(crate) struct ScopeAuthContext<'a> {
+    pub(crate) client_ip: &'a str,
+    pub(crate) catalog: &'a TenantCatalog,
+    pub(crate) all_datasets: &'a [Dataset],
+    pub(crate) policy: &'a axpoint_domain::guard::PolicyContext,
+}
+
+fn map_forbidden_to_policy_denied<T>(res: Result<T, AppError>) -> Result<T, AppError> {
+    res.map_err(|err| match err {
+        AppError::Forbidden(_) => AppError::Forbidden("POLICY_DENIED"),
+        other => other,
+    })
+}
+
+async fn authorize_dataset_id_for_scope(
     state: &AppState,
     principal: &AuthPrincipal,
-    client_ip: &str,
-    scope: Option<&ChatQueryScope>,
-    all_datasets: &[Dataset],
-    policy: &axpoint_domain::guard::PolicyContext,
-) -> Result<Vec<EndpointSpec>, AppError> {
-    let Some(s) = scope else {
-        return Ok(Vec::new());
+    ds_id: Uuid,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    let Some(ds) = ctx
+        .all_datasets
+        .iter()
+        .find(|d| d.id == ds_id && d.status != DatasetStatus::Disabled)
+    else {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
     };
-
-    for ds_id in &s.dataset_ids {
-        let Some(ds) = all_datasets
-            .iter()
-            .find(|d| d.id == *ds_id && d.status != DatasetStatus::Disabled)
-        else {
-            return Err(AppError::Forbidden("POLICY_DENIED"));
-        };
-        let ds_id_str = ds_id.to_string();
-        if policy.denied_datasets.contains(&ds_id_str)
-            || policy
-                .denied_datasets
-                .contains(&ds.name.to_ascii_lowercase())
-        {
-            return Err(AppError::Forbidden("POLICY_DENIED"));
-        }
-        let _res = axpoint_server::policy::authorize_resource_for_store(
+    let ds_id_str = ds_id.to_string();
+    if ctx.policy.denied_datasets.contains(&ds_id_str)
+        || ctx
+            .policy
+            .denied_datasets
+            .contains(&ds.name.to_ascii_lowercase())
+    {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    let _res = map_forbidden_to_policy_denied(
+        axpoint_server::policy::authorize_resource_for_store(
             &state.store,
             &state.cedar,
             principal,
             Permission::DataRead,
             GrantResourceKind::Dataset,
             &ds_id_str,
-            client_ip,
+            ctx.client_ip,
         )
-        .await?;
+        .await,
+    )?;
+    Ok(())
+}
+
+/// Enforces `AxGuard` `ABAC` intersection on `scope` (`403 POLICY_DENIED` on missing/denied datasets,
+/// subgraphs, or endpoints) and returns pruned `PROD` [`EndpointSpec`]s (`06-STEP20` §20.2.2).
+pub(crate) async fn authorize_and_resolve_query_scope(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    scope: Option<&ChatQueryScope>,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<Vec<EndpointSpec>, AppError> {
+    let Some(s) = scope else {
+        return Ok(Vec::new());
+    };
+
+    for ds_id in &s.dataset_ids {
+        authorize_dataset_id_for_scope(state, principal, *ds_id, ctx).await?;
     }
 
     if let Some(ref sg) = s.subgraph_slug {
@@ -1292,31 +1319,36 @@ pub(crate) async fn authorize_and_resolve_query_scope(
             if !exists {
                 return Err(AppError::Forbidden("POLICY_DENIED"));
             }
-            let _res = axpoint_server::policy::authorize_resource_for_store(
-                &state.store,
-                &state.cedar,
-                principal,
-                Permission::DataRead,
-                GrantResourceKind::Subgraph,
-                clean_sg,
-                client_ip,
-            )
-            .await?;
+            let _res = map_forbidden_to_policy_denied(
+                axpoint_server::policy::authorize_resource_for_store(
+                    &state.store,
+                    &state.cedar,
+                    principal,
+                    Permission::DataRead,
+                    GrantResourceKind::Subgraph,
+                    clean_sg,
+                    ctx.client_ip,
+                )
+                .await,
+            )?;
         }
     }
 
-    resolve_scoped_prod_endpoints(state, principal, &s.endpoint_slugs).await
+    resolve_scoped_prod_endpoints(state, principal, &s.endpoint_slugs, ctx).await
 }
 
-/// Resolves and prunes candidate `PROD` [`EndpointSpec`]s to `endpoint_slugs` (`06-STEP20` §20.2.2).
+/// Resolves, enforces live `AxGuard` `ABAC` on backing targets, and prunes `PROD` [`EndpointSpec`]s (`06-STEP20` §20.2.2).
 pub(crate) async fn resolve_scoped_prod_endpoints(
     state: &AppState,
     principal: &AuthPrincipal,
     endpoint_slugs: &[String],
+    ctx: &ScopeAuthContext<'_>,
 ) -> Result<Vec<EndpointSpec>, AppError> {
     if endpoint_slugs.is_empty() {
         return Ok(Vec::new());
     }
+    let profile =
+        axpoint_server::policy::load_effective_guard_profile(&state.store, principal).await?;
     let prod_eps = state
         .store
         .list_endpoints(
@@ -1327,18 +1359,268 @@ pub(crate) async fn resolve_scoped_prod_endpoints(
             },
         )
         .await?;
-    let mut matched = Vec::new();
-    for ep in prod_eps {
-        if ep.enabled
-            && endpoint_slugs
-                .iter()
-                .any(|s| s.trim().eq_ignore_ascii_case(&ep.slug))
-        {
-            principal.require(ep.required_scope)?;
-            matched.push(ep);
+
+    let mut matched = Vec::with_capacity(endpoint_slugs.len());
+    for raw_slug in endpoint_slugs {
+        let clean_slug = raw_slug.trim();
+        if clean_slug.is_empty() {
+            return Err(AppError::Forbidden("POLICY_DENIED"));
         }
+        let Some(ep) = prod_eps
+            .iter()
+            .find(|candidate| candidate.enabled && candidate.slug.eq_ignore_ascii_case(clean_slug))
+        else {
+            return Err(AppError::Forbidden("POLICY_DENIED"));
+        };
+        if !profile.permissions.contains(&ep.required_scope) {
+            return Err(AppError::Forbidden("POLICY_DENIED"));
+        }
+        authorize_endpoint_backing_target(state, principal, &profile, ep, ctx).await?;
+        matched.push(ep.clone());
     }
     Ok(matched)
+}
+
+async fn authorize_endpoint_backing_target(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    profile: &axpoint_domain::guard::GuardPrincipalProfile,
+    ep: &EndpointSpec,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    let target_id = ep.target_id.trim();
+    if target_id.is_empty() {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    match ep.kind {
+        EndpointKind::Agent => {
+            let agent_id =
+                Uuid::parse_str(target_id).map_err(|_| AppError::Forbidden("POLICY_DENIED"))?;
+            if state
+                .store
+                .get_agent(&principal.tenant_id, agent_id)
+                .await?
+                .is_none()
+            {
+                return Err(AppError::Forbidden("POLICY_DENIED"));
+            }
+            let _res = map_forbidden_to_policy_denied(
+                axpoint_server::policy::authorize_resource_for_store(
+                    &state.store,
+                    &state.cedar,
+                    principal,
+                    ep.required_scope,
+                    GrantResourceKind::Agent,
+                    &agent_id.to_string(),
+                    ctx.client_ip,
+                )
+                .await,
+            )?;
+            Ok(())
+        }
+        EndpointKind::ObjectType => {
+            authorize_object_type_endpoint(state, principal, profile, ep, target_id, ctx).await
+        }
+        EndpointKind::Metric => {
+            authorize_metric_endpoint(state, principal, profile, ep, target_id, ctx).await
+        }
+        EndpointKind::SavedQuery => {
+            authorize_saved_query_endpoint(state, principal, profile, ep, target_id, ctx).await
+        }
+        EndpointKind::Flow => authorize_flow_endpoint(state, principal, target_id, ctx).await,
+    }
+}
+
+async fn authorize_object_type_endpoint(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    profile: &axpoint_domain::guard::GuardPrincipalProfile,
+    ep: &EndpointSpec,
+    target_type: &str,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    if !profile.permissions.contains(&Permission::DataRead) {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    let has_snap = ep
+        .target_snapshot
+        .as_ref()
+        .and_then(|v| {
+            serde_json::from_value::<axpoint_domain::studio::NodeTypeSpec>(v.clone()).ok()
+        })
+        .is_some();
+    let in_schema = ctx
+        .catalog
+        .published_schemas
+        .iter()
+        .any(|s| s.node_types.iter().any(|n| n.name == target_type));
+    let in_guard = state
+        .store
+        .resolve_resource_ref(
+            &principal.tenant_id,
+            GrantResourceKind::NodeType,
+            target_type,
+        )
+        .await?
+        .is_some();
+    if !has_snap && !in_schema && !in_guard {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    let _res = map_forbidden_to_policy_denied(
+        axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            principal,
+            ep.required_scope,
+            GrantResourceKind::NodeType,
+            target_type,
+            ctx.client_ip,
+        )
+        .await,
+    )?;
+    Ok(())
+}
+
+async fn authorize_metric_endpoint(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    profile: &axpoint_domain::guard::GuardPrincipalProfile,
+    ep: &EndpointSpec,
+    metric_name: &str,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    if !profile.permissions.contains(&Permission::DataRead) {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    let Some(metric) = state
+        .store
+        .get_metric_by_name(&principal.tenant_id, metric_name)
+        .await?
+    else {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    };
+    authorize_dataset_id_for_scope(state, principal, metric.dataset_id, ctx).await?;
+    if let Some(snap_metric) = ep
+        .target_snapshot
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<MetricDef>(v.clone()).ok())
+        && snap_metric.dataset_id != metric.dataset_id
+    {
+        authorize_dataset_id_for_scope(state, principal, snap_metric.dataset_id, ctx).await?;
+    }
+    Ok(())
+}
+
+async fn authorize_saved_query_endpoint(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    profile: &axpoint_domain::guard::GuardPrincipalProfile,
+    ep: &EndpointSpec,
+    target_id: &str,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    if !profile.permissions.contains(&Permission::DataRead) {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    let sq_id = Uuid::parse_str(target_id).map_err(|_| AppError::Forbidden("POLICY_DENIED"))?;
+    let Some(sq) = state
+        .store
+        .get_saved_query(&principal.tenant_id, sq_id)
+        .await?
+    else {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    };
+    authorize_saved_query_datasets(state, principal, &sq, ctx).await?;
+    if let Some(snap_sq) = ep
+        .target_snapshot
+        .as_ref()
+        .and_then(|v| serde_json::from_value::<SavedQuery>(v.clone()).ok())
+    {
+        authorize_saved_query_datasets(state, principal, &snap_sq, ctx).await?;
+    }
+    Ok(())
+}
+
+async fn authorize_saved_query_datasets(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    sq: &SavedQuery,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    match sq.kind {
+        SavedQueryKind::Sql | SavedQueryKind::Ask => {
+            let sql_text = sq
+                .spec
+                .get("sql")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(AppError::Forbidden("POLICY_DENIED"))?;
+            let guarded = guard_and_rewrite(sql_text, ctx.catalog, 1)
+                .map_err(|_| AppError::Forbidden("POLICY_DENIED"))?;
+            for ds_id in guarded.referenced_datasets {
+                authorize_dataset_id_for_scope(state, principal, ds_id, ctx).await?;
+            }
+            Ok(())
+        }
+        SavedQueryKind::Pivot => {
+            let spec: PivotSpec = serde_json::from_value(sq.spec.clone())
+                .map_err(|_| AppError::Forbidden("POLICY_DENIED"))?;
+            let rel = spec.dataset.trim();
+            if !rel.to_ascii_lowercase().starts_with("ax.") {
+                let entry = ctx
+                    .catalog
+                    .dataset(rel)
+                    .ok_or(AppError::Forbidden("POLICY_DENIED"))?;
+                authorize_dataset_id_for_scope(state, principal, entry.id, ctx).await?;
+            }
+            Ok(())
+        }
+        SavedQueryKind::Metric => {
+            let metric_name = sq
+                .spec
+                .get("metric_name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or(AppError::Forbidden("POLICY_DENIED"))?;
+            let Some(metric) = state
+                .store
+                .get_metric_by_name(&principal.tenant_id, metric_name.trim())
+                .await?
+            else {
+                return Err(AppError::Forbidden("POLICY_DENIED"));
+            };
+            authorize_dataset_id_for_scope(state, principal, metric.dataset_id, ctx).await
+        }
+    }
+}
+
+async fn authorize_flow_endpoint(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    target_id: &str,
+    ctx: &ScopeAuthContext<'_>,
+) -> Result<(), AppError> {
+    let flow_id = Uuid::parse_str(target_id).map_err(|_| AppError::Forbidden("POLICY_DENIED"))?;
+    let Some(flow) = state.store.get_flow(&principal.tenant_id, flow_id).await? else {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    };
+    if state
+        .store
+        .get_flow_deployment(&principal.tenant_id, flow_id, Environment::Prod)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::Forbidden("POLICY_DENIED"));
+    }
+    for node in &flow.nodes {
+        if let Some(ds_str) = node
+            .config
+            .get("dataset_id")
+            .and_then(serde_json::Value::as_str)
+            && let Ok(ds_id) = Uuid::parse_str(ds_str.trim())
+        {
+            authorize_dataset_id_for_scope(state, principal, ds_id, ctx).await?;
+        }
+    }
+    Ok(())
 }
 
 /// Prunes `catalog` datasets/schemas and `all_metrics` to `scope`, returning excluded dataset names (`06-STEP20` §20.2.2).
@@ -1639,10 +1921,13 @@ async fn prepare_scoped_ask_context(
     let _pinned_endpoints = authorize_and_resolve_query_scope(
         state,
         principal,
-        client_ip,
         scope.as_ref(),
-        &all_datasets,
-        &policy,
+        &ScopeAuthContext {
+            client_ip,
+            catalog: &catalog,
+            all_datasets: &all_datasets,
+            policy: &policy,
+        },
     )
     .await?;
 
