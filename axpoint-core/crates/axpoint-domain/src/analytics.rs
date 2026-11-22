@@ -821,6 +821,101 @@ impl AskFeedbackKind {
     }
 }
 
+/// Explicit session-pinned retrieval and analytical scope (`06-STEP20` §20.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChatQueryScope {
+    /// Restrict structured SQL / metric candidates to these `ds_datasets.id` UUIDs.
+    #[serde(default)]
+    pub dataset_ids: Vec<Uuid>,
+    /// Restrict hypergraph document recall to these `hg_docs.id` UUIDs.
+    #[serde(default)]
+    pub doc_ids: Vec<Uuid>,
+    /// Optional document title prefix filter (`hg_docs.title LIKE prefix || '%'`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_title_prefix: Option<String>,
+    /// Optional business subgraph slug bounding `NodeTypeSpec`, `xb_nodes`, and ontology routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subgraph_slug: Option<String>,
+    /// Optional published capability endpoint slugs (`ax_published_endpoints.slug`) pinned for hybrid invocation.
+    #[serde(default)]
+    pub endpoint_slugs: Vec<String>,
+}
+
+impl ChatQueryScope {
+    /// Returns `true` when no scope constraint is active after trimming string fields.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        let prefix_empty = self
+            .doc_title_prefix
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty());
+        let subgraph_empty = self
+            .subgraph_slug
+            .as_deref()
+            .is_none_or(|s| s.trim().is_empty());
+        let endpoints_empty = self.endpoint_slugs.iter().all(|s| s.trim().is_empty());
+        self.dataset_ids.is_empty()
+            && self.doc_ids.is_empty()
+            && prefix_empty
+            && subgraph_empty
+            && endpoints_empty
+    }
+
+    /// Trims string fields, deduplicates UUID and slug lists while preserving order, and returns `None` if empty.
+    #[must_use]
+    pub fn normalized(&self) -> Option<Self> {
+        let mut seen_ds = BTreeSet::new();
+        let dataset_ids: Vec<Uuid> = self
+            .dataset_ids
+            .iter()
+            .copied()
+            .filter(|id| seen_ds.insert(*id))
+            .collect();
+
+        let mut seen_docs = BTreeSet::new();
+        let doc_ids: Vec<Uuid> = self
+            .doc_ids
+            .iter()
+            .copied()
+            .filter(|id| seen_docs.insert(*id))
+            .collect();
+
+        let doc_title_prefix = self
+            .doc_title_prefix
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned);
+
+        let subgraph_slug = self
+            .subgraph_slug
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(ToOwned::to_owned);
+
+        let mut seen_eps = BTreeSet::new();
+        let endpoint_slugs: Vec<String> = self
+            .endpoint_slugs
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .filter(|s| seen_eps.insert(*s))
+            .map(ToOwned::to_owned)
+            .collect();
+
+        let cleaned = Self {
+            dataset_ids,
+            doc_ids,
+            doc_title_prefix,
+            subgraph_slug,
+            endpoint_slugs,
+        };
+        (!cleaned.is_empty()).then_some(cleaned)
+    }
+}
+
 /// Optional dashboard/dataset scoping context on `POST /api/analytics/ask`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -828,6 +923,18 @@ pub struct AskContext {
     /// Restrict candidate schema linking to these dataset UUIDs.
     #[serde(default)]
     pub dataset_ids: Vec<Uuid>,
+    /// Restrict hypergraph document recall to these `hg_docs.id` UUIDs (`06-STEP20` §20.2.1).
+    #[serde(default)]
+    pub doc_ids: Vec<Uuid>,
+    /// Optional document title prefix filter (`06-STEP20` §20.2.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub doc_title_prefix: Option<String>,
+    /// Optional business subgraph slug (`06-STEP20` §20.2.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subgraph_slug: Option<String>,
+    /// Optional pinned published capability endpoint slugs (`06-STEP20` §20.2.1).
+    #[serde(default)]
+    pub endpoint_slugs: Vec<String>,
     /// Additional dashboard filter constraints injected into prompt.
     #[serde(default)]
     pub filters: Vec<FilterSpec>,
@@ -1549,5 +1656,37 @@ mod tests {
         let c = ds_column_embedding_id(ds_id, "status");
         assert_eq!(a, b);
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn chat_query_scope_normalizes_and_deduplicates() {
+        let empty = ChatQueryScope {
+            doc_title_prefix: Some(String::from("   ")),
+            subgraph_slug: Some(String::new()),
+            endpoint_slugs: vec![String::from("  ")],
+            ..ChatQueryScope::default()
+        };
+        assert!(empty.is_empty());
+        assert_eq!(empty.normalized(), None);
+
+        let ds = Uuid::new_v4();
+        let scoped = ChatQueryScope {
+            dataset_ids: vec![ds, ds],
+            doc_ids: Vec::new(),
+            doc_title_prefix: Some(String::from("  SOP-2026- ")),
+            subgraph_slug: Some(String::from(" main ")),
+            endpoint_slugs: vec![String::from("order_lookup"), String::from(" order_lookup ")],
+        };
+        let norm = scoped.normalized();
+        assert_eq!(
+            norm,
+            Some(ChatQueryScope {
+                dataset_ids: vec![ds],
+                doc_ids: Vec::new(),
+                doc_title_prefix: Some(String::from("SOP-2026-")),
+                subgraph_slug: Some(String::from("main")),
+                endpoint_slugs: vec![String::from("order_lookup")],
+            })
+        );
     }
 }

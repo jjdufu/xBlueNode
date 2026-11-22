@@ -290,8 +290,20 @@ export type AskIntent = "DOC" | "DATA" | "HYBRID" | "CHITCHAT";
 export type ChatQueryMode = "AUTO" | "DOC" | "DATA";
 export type AskFeedbackKind = "UP" | "DOWN";
 
+export interface ChatQueryScope {
+  dataset_ids?: string[];
+  doc_ids?: string[];
+  doc_title_prefix?: string | null;
+  subgraph_slug?: string | null;
+  endpoint_slugs?: string[];
+}
+
 export interface AskContext {
   dataset_ids?: string[];
+  doc_ids?: string[];
+  doc_title_prefix?: string | null;
+  subgraph_slug?: string | null;
+  endpoint_slugs?: string[];
   filters?: FilterSpec[];
   drill_path?: string[];
   dashboard_id?: string;

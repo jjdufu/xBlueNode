@@ -14,6 +14,7 @@ export type DecisionStatus =
   | "CONFLICT"
   | "FAILED";
 export type SimAskIntent = "WHAT_IF" | "QUERY_RESULT";
+export type ScopeReadinessGrade = "READY" | "DEGRADED" | "BLOCKED";
 
 export interface SandboxScope {
   root_node_ids?: string[];
@@ -22,6 +23,32 @@ export interface SandboxScope {
   type_names?: string[];
   link_types?: string[];
   max_nodes?: number;
+}
+
+export interface ScopePreflightRequest {
+  subgraph_slug?: string;
+  scope: SandboxScope;
+}
+
+export interface TruncatedEdgeDiagnostic {
+  link_type: string;
+  in_scope_count: number;
+  boundary_dropped_count: number;
+  excluded_neighbor_type: string;
+  has_causal_rule: boolean;
+  has_agg_rule: boolean;
+}
+
+export interface ScopePreflightReport {
+  readiness_grade: ScopeReadinessGrade;
+  estimated_nodes: number;
+  estimated_links: number;
+  causal_edge_coverage_ratio: number;
+  agg_rule_closure_ratio: number;
+  isolated_node_ratio: number;
+  missing_upstream_types: string[];
+  truncated_edge_types: TruncatedEdgeDiagnostic[];
+  reason_codes: string[];
 }
 
 export interface UncertaintyConfig {
@@ -399,8 +426,39 @@ export const SandboxRecordSchema = z.object({
   updated_at: z.string().optional(),
 });
 
+export const TruncatedEdgeDiagnosticSchema = z.object({
+  link_type: z.string(),
+  in_scope_count: z.number(),
+  boundary_dropped_count: z.number(),
+  excluded_neighbor_type: z.string(),
+  has_causal_rule: z.boolean(),
+  has_agg_rule: z.boolean(),
+});
+
+export const ScopePreflightReportSchema = z.object({
+  readiness_grade: z.enum(["READY", "DEGRADED", "BLOCKED"]),
+  estimated_nodes: z.number(),
+  estimated_links: z.number(),
+  causal_edge_coverage_ratio: z.number(),
+  agg_rule_closure_ratio: z.number(),
+  isolated_node_ratio: z.number(),
+  missing_upstream_types: z.array(z.string()).default([]),
+  truncated_edge_types: z.array(TruncatedEdgeDiagnosticSchema).default([]),
+  reason_codes: z.array(z.string()).default([]),
+});
+
 export const axsimApi = {
   listSandboxes: () => requestJson<AxSandboxRecord[]>("/api/axsim/sandboxes"),
+
+  preflightSandbox: async (
+    req: ScopePreflightRequest
+  ): Promise<ScopePreflightReport> => {
+    const raw = await requestJson<unknown>("/api/axsim/sandboxes/preflight", {
+      method: "POST",
+      body: JSON.stringify(req),
+    });
+    return ScopePreflightReportSchema.parse(raw);
+  },
 
   createSandbox: (req: CreateSandboxRequest) =>
     requestJson<AxSandboxRecord>("/api/axsim/sandboxes", {

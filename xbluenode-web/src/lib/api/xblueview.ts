@@ -1,7 +1,17 @@
 import { z } from "zod";
 import { getAccessToken } from "./auth";
 import { ApiError, ApiErrorBodySchema, requestJson, requestMultipart } from "./client";
-import type { AssetKind, DataType, ExportFormat, JobStatus, WidgetKind } from "./enums";
+import type {
+  AssetKind,
+  CockpitZoneLayout,
+  DataType,
+  ExportFormat,
+  JobStatus,
+  SemanticZoneKind,
+  WidgetKind,
+} from "./enums";
+
+export type { CockpitZoneLayout, SemanticZoneKind } from "./enums";
 
 export type DashboardTheme = "light" | "dark" | "screen";
 export type DashboardStatus = "DRAFT" | "PUBLISHED";
@@ -21,6 +31,7 @@ export interface CanvasConfig {
   row_height: number;
   screen_width: number;
   screen_height: number;
+  zone_layout?: CockpitZoneLayout;
 }
 
 export interface WidgetPosition {
@@ -179,6 +190,45 @@ export interface CreateDashboardRequest {
   filters?: FilterDef[];
   theme?: DashboardTheme;
   canvas?: CanvasConfig;
+  zone_layout?: CockpitZoneLayout;
+}
+
+export interface ApplyZonePresetRequest {
+  zone_layout: CockpitZoneLayout;
+}
+
+export type DashboardPreflightStatus = "PASS" | "WARN" | "BLOCKED";
+
+export type WidgetIssueCode =
+  | "MISSING_DATASET"
+  | "BROKEN_METRIC"
+  | "MISSING_SAVED_QUERY"
+  | "INVALID_SQL_AST"
+  | "MISSING_ASSET"
+  | "INSUFFICIENT_SCENARIOS"
+  | "UNCONFIGURED_ACTION"
+  | "UNAUTHORIZED_TARGET"
+  | "STATIC_PLACEHOLDER"
+  | "LAYOUT_OUT_OF_BOUNDS";
+
+export type WidgetPreflightSeverity = "BLOCKING" | "WARNING";
+
+export interface WidgetPreflightIssue {
+  widget_id: string | null;
+  widget_title: string;
+  semantic_zone: SemanticZoneKind | null;
+  severity: WidgetPreflightSeverity;
+  code: WidgetIssueCode;
+  message: string;
+}
+
+export interface DashboardPreflightReport {
+  dashboard_id: string;
+  status: DashboardPreflightStatus;
+  checked_widgets: number;
+  blocking_count: number;
+  warning_count: number;
+  issues: WidgetPreflightIssue[];
 }
 
 export interface UpdateDashboardRequest {
@@ -325,6 +375,39 @@ export const WidgetDataResponseSchema = z.object({
   drill_level: z.number(),
 });
 
+export const WidgetIssueCodeSchema = z.enum([
+  "MISSING_DATASET",
+  "BROKEN_METRIC",
+  "MISSING_SAVED_QUERY",
+  "INVALID_SQL_AST",
+  "MISSING_ASSET",
+  "INSUFFICIENT_SCENARIOS",
+  "UNCONFIGURED_ACTION",
+  "UNAUTHORIZED_TARGET",
+  "STATIC_PLACEHOLDER",
+  "LAYOUT_OUT_OF_BOUNDS",
+]);
+
+export const WidgetPreflightIssueSchema = z.object({
+  widget_id: z.string().nullable(),
+  widget_title: z.string(),
+  semantic_zone: z
+    .enum(["CONTROL", "KPI", "SCENE", "INSIGHT", "DECISION"])
+    .nullable(),
+  severity: z.enum(["BLOCKING", "WARNING"]),
+  code: WidgetIssueCodeSchema,
+  message: z.string(),
+});
+
+export const DashboardPreflightReportSchema = z.object({
+  dashboard_id: z.string(),
+  status: z.enum(["PASS", "WARN", "BLOCKED"]),
+  checked_widgets: z.number(),
+  blocking_count: z.number(),
+  warning_count: z.number(),
+  issues: z.array(WidgetPreflightIssueSchema).default([]),
+});
+
 function qs(params: Record<string, string | number | boolean | undefined>): string {
   const sp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
@@ -389,6 +472,28 @@ export const xblueviewApi = {
       headers: { "Content-Type": "application/json" },
       body: "{}",
     }),
+
+  applyZonePreset: (id: string, body: ApplyZonePresetRequest) =>
+    requestJson<DashboardDetail>(
+      `/api/xblueview/dashboards/${encodeURIComponent(id)}/apply-zone-preset`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    ),
+
+  preflightDashboard: async (id: string): Promise<DashboardPreflightReport> => {
+    const raw = await requestJson<unknown>(
+      `/api/xblueview/dashboards/${encodeURIComponent(id)}/preflight`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      }
+    );
+    return DashboardPreflightReportSchema.parse(raw);
+  },
 
   duplicateDashboard: (id: string, body?: { name?: string; slug?: string }) =>
     requestJson<DashboardDetail>(`/api/xblueview/dashboards/${id}/duplicate`, {

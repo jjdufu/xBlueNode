@@ -1068,6 +1068,34 @@ define_str_enum! {
     }
 }
 
+define_str_enum! {
+    /// Canvas layout preset mode on `xv_dashboards.canvas.zone_layout` (`06-STEP20` §20.3).
+    #[derive(Default)]
+    pub enum CockpitZoneLayout {
+        /// Unconstrained grid canvas (default 24-column or custom geometry).
+        #[default]
+        FreeGrid => "FREE_GRID",
+        /// Canonical 12-column five-zone operational twin cockpit.
+        StandardFiveZone => "STANDARD_FIVE_ZONE",
+    }
+}
+
+define_str_enum! {
+    /// Semantic cockpit region identifier (`xv_widgets.options.semantic_zone`, `06-STEP20` §20.3).
+    pub enum SemanticZoneKind {
+        /// Global time window, subgraph, and dimension filter strip.
+        Control => "CONTROL",
+        /// Primary north-star KPI summary strip.
+        Kpi => "KPI",
+        /// Spatial or topological twin scene (`GRAPH_TOPOLOGY`, `SCENE_3D`, `MAP`, `FLOOR_PLAN`).
+        Scene => "SCENE",
+        /// Multi-dimensional trend and attribution charts.
+        Insight => "INSIGHT",
+        /// Active alerts, scenario comparison, and writeback action controls.
+        Decision => "DECISION",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

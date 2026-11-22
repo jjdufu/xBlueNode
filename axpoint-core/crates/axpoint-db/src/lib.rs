@@ -93,6 +93,41 @@ pub struct DocumentIngestPayload {
     pub paras: Vec<ParaIngestInput>,
 }
 
+/// Document-level SQL pushdown filter applied across all five hypergraph recall channels (`06-STEP20` §20.2.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DocRecallScope {
+    /// Optional `hg_docs.id` whitelist; non-empty pushes `d.id = ANY(...)` before `LIMIT`.
+    pub doc_ids: Vec<Uuid>,
+    /// Optional `hg_docs.title` prefix; non-empty pushes `d.title LIKE escaped_prefix || '%' ESCAPE '\'` before `LIMIT`.
+    pub doc_title_prefix: Option<String>,
+}
+
+/// Escapes SQL `LIKE` metacharacters (`\`, `%`, `_`) in a literal title prefix and appends `%`.
+#[must_use]
+pub fn escape_like_prefix(prefix: &str) -> Option<String> {
+    let trimmed = prefix.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut escaped = String::with_capacity(trimmed.len().saturating_add(4));
+    for ch in trimmed.chars() {
+        if matches!(ch, '\\' | '%' | '_') {
+            escaped.push('\\');
+        }
+        escaped.push(ch);
+    }
+    escaped.push('%');
+    Some(escaped)
+}
+
+fn unpack_doc_scope(scope: Option<&DocRecallScope>) -> (Option<&[Uuid]>, Option<String>) {
+    let ids = scope.and_then(|s| (!s.doc_ids.is_empty()).then_some(s.doc_ids.as_slice()));
+    let prefix_like = scope
+        .and_then(|s| s.doc_title_prefix.as_deref())
+        .and_then(escape_like_prefix);
+    (ids, prefix_like)
+}
+
 /// PostgreSQL hypergraph and multi-dimension vector store.
 #[derive(Debug, Clone)]
 pub struct PgStore {
@@ -377,10 +412,27 @@ impl PgStore {
         dim: usize,
         limit: i64,
     ) -> Result<Vec<ChannelCandidate>, AppError> {
+        self.recall_vector_scoped(tenant_id, query_vec, dim, limit, None)
+            .await
+    }
+
+    /// Channel 1: Dense vector similarity recall with optional document scope pushed down before `LIMIT` (`06-STEP20` §20.2.2).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if the vector query fails.
+    pub async fn recall_vector_scoped(
+        &self,
+        tenant_id: &str,
+        query_vec: Vec<f32>,
+        dim: usize,
+        limit: i64,
+        doc_scope: Option<&DocRecallScope>,
+    ) -> Result<Vec<ChannelCandidate>, AppError> {
         let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         let dim_i32 = i32::try_from(dim).map_err(|err| {
             AppError::bad("INVALID_ARGUMENT", format!("invalid embedding dim: {err}"))
         })?;
+        let (doc_ids_opt, title_like_opt) = unpack_doc_scope(doc_scope);
 
         let rows = sqlx::query(
             "SELECT p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,
@@ -391,6 +443,8 @@ impl PgStore {
              WHERE e.tenant_id = $1
                AND e.node_type = 'PARA'
                AND e.embedding_dim = $3
+               AND ($5::uuid[] IS NULL OR d.id = ANY($5))
+               AND ($6::text IS NULL OR d.title LIKE $6 ESCAPE '\\')
              ORDER BY e.embedding <=> $2 ASC
              LIMIT $4",
         )
@@ -398,6 +452,8 @@ impl PgStore {
         .bind(Vector::from(query_vec))
         .bind(dim_i32)
         .bind(limit)
+        .bind(doc_ids_opt)
+        .bind(title_like_opt.as_deref())
         .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("vector recall failed: {err}")))?;
@@ -422,10 +478,26 @@ impl PgStore {
         query_text: &str,
         limit: i64,
     ) -> Result<Vec<ChannelCandidate>, AppError> {
+        self.recall_bm25_scoped(tenant_id, query_text, limit, None)
+            .await
+    }
+
+    /// Channel 2: Lexical BM25 / FTS recall with optional document scope pushed down before `LIMIT` (`06-STEP20` §20.2.2).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if the full-text query fails.
+    pub async fn recall_bm25_scoped(
+        &self,
+        tenant_id: &str,
+        query_text: &str,
+        limit: i64,
+        doc_scope: Option<&DocRecallScope>,
+    ) -> Result<Vec<ChannelCandidate>, AppError> {
         let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         let trimmed = query_text.trim();
         let like_pattern = format!("%{trimmed}%");
         let sub_patterns = build_lexical_subpatterns(trimmed);
+        let (doc_ids_opt, title_like_opt) = unpack_doc_scope(doc_scope);
         let rows = sqlx::query(
             "SELECT p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,
                     (
@@ -442,6 +514,8 @@ impl PgStore {
              FROM hg_paras p
              JOIN hg_docs d ON d.id = p.doc_id
              WHERE p.tenant_id = $1
+               AND ($6::uuid[] IS NULL OR d.id = ANY($6))
+               AND ($7::text IS NULL OR d.title LIKE $7 ESCAPE '\\')
                AND (
                    p.fts @@ websearch_to_tsquery('simple', $2)
                    OR d.fts @@ websearch_to_tsquery('simple', $2)
@@ -457,6 +531,8 @@ impl PgStore {
         .bind(like_pattern)
         .bind(&sub_patterns)
         .bind(limit)
+        .bind(doc_ids_opt)
+        .bind(title_like_opt.as_deref())
         .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("bm25 recall failed: {err}")))?;
@@ -481,11 +557,27 @@ impl PgStore {
         seed_entities: &[String],
         limit: i64,
     ) -> Result<Vec<ChannelCandidate>, AppError> {
+        self.recall_entity_link_scoped(tenant_id, seed_entities, limit, None)
+            .await
+    }
+
+    /// Channel 3: Cross-document entity-bridge recall with optional document scope pushed down before `LIMIT` (`06-STEP20` §20.2.2).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if the entity link query fails.
+    pub async fn recall_entity_link_scoped(
+        &self,
+        tenant_id: &str,
+        seed_entities: &[String],
+        limit: i64,
+        doc_scope: Option<&DocRecallScope>,
+    ) -> Result<Vec<ChannelCandidate>, AppError> {
         if seed_entities.is_empty() {
             return Ok(Vec::new());
         }
 
         let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        let (doc_ids_opt, title_like_opt) = unpack_doc_scope(doc_scope);
         let rows = sqlx::query(
             "SELECT DISTINCT ON (p.id) p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,
                     ent.name AS matched_entity, ent.occur_count
@@ -495,12 +587,16 @@ impl PgStore {
              JOIN hg_docs d ON d.id = p.doc_id
              WHERE ent.tenant_id = $1
                AND ent.name = ANY($2)
+               AND ($4::uuid[] IS NULL OR d.id = ANY($4))
+               AND ($5::text IS NULL OR d.title LIKE $5 ESCAPE '\\')
              ORDER BY p.id, ent.occur_count DESC
              LIMIT $3",
         )
         .bind(tenant_id)
         .bind(seed_entities)
         .bind(limit)
+        .bind(doc_ids_opt)
+        .bind(title_like_opt.as_deref())
         .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("entity_link recall failed: {err}")))?;
@@ -525,11 +621,27 @@ impl PgStore {
         seed_para_ids: &[Uuid],
         limit: i64,
     ) -> Result<Vec<ChannelCandidate>, AppError> {
+        self.recall_context_scoped(tenant_id, seed_para_ids, limit, None)
+            .await
+    }
+
+    /// Channel 4: Adjacent paragraph (`NEXT_PARA`) context expansion with optional document scope pushed down before `LIMIT` (`06-STEP20` §20.2.2).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if the context expansion query fails.
+    pub async fn recall_context_scoped(
+        &self,
+        tenant_id: &str,
+        seed_para_ids: &[Uuid],
+        limit: i64,
+        doc_scope: Option<&DocRecallScope>,
+    ) -> Result<Vec<ChannelCandidate>, AppError> {
         if seed_para_ids.is_empty() {
             return Ok(Vec::new());
         }
 
         let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        let (doc_ids_opt, title_like_opt) = unpack_doc_scope(doc_scope);
         let rows = sqlx::query(
             "SELECT DISTINCT p.id AS para_id, p.doc_id, d.title AS doc_title, p.content
              FROM hg_edges ed
@@ -539,11 +651,15 @@ impl PgStore {
                AND ed.rel_type = 'NEXT_PARA'
                AND (ed.src_id = ANY($2) OR ed.dst_id = ANY($2))
                AND NOT (p.id = ANY($2))
+               AND ($4::uuid[] IS NULL OR d.id = ANY($4))
+               AND ($5::text IS NULL OR d.title LIKE $5 ESCAPE '\\')
              LIMIT $3",
         )
         .bind(tenant_id)
         .bind(seed_para_ids)
         .bind(limit)
+        .bind(doc_ids_opt)
+        .bind(title_like_opt.as_deref())
         .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("context recall failed: {err}")))?;
@@ -567,11 +683,27 @@ impl PgStore {
         seed_entities: &[String],
         limit: i64,
     ) -> Result<Vec<ChannelCandidate>, AppError> {
+        self.recall_multi_hop_scoped(tenant_id, seed_entities, limit, None)
+            .await
+    }
+
+    /// Channel 5: Multi-hop (`RELATES`) graph path reasoning recall with optional document scope pushed down before `LIMIT` (`06-STEP20` §20.2.2).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if the multi-hop traversal query fails.
+    pub async fn recall_multi_hop_scoped(
+        &self,
+        tenant_id: &str,
+        seed_entities: &[String],
+        limit: i64,
+        doc_scope: Option<&DocRecallScope>,
+    ) -> Result<Vec<ChannelCandidate>, AppError> {
         if seed_entities.is_empty() {
             return Ok(Vec::new());
         }
 
         let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        let (doc_ids_opt, title_like_opt) = unpack_doc_scope(doc_scope);
         let rows = sqlx::query(
             "SELECT DISTINCT ON (p.id) p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,
                     e1.name AS src_name, rel.fact, e2.name AS dst_name
@@ -583,12 +715,16 @@ impl PgStore {
              JOIN hg_docs d ON d.id = p.doc_id
              WHERE e1.tenant_id = $1
                AND e1.name = ANY($2)
+               AND ($4::uuid[] IS NULL OR d.id = ANY($4))
+               AND ($5::text IS NULL OR d.title LIKE $5 ESCAPE '\\')
              ORDER BY p.id, rel.weight DESC
              LIMIT $3",
         )
         .bind(tenant_id)
         .bind(seed_entities)
         .bind(limit)
+        .bind(doc_ids_opt)
+        .bind(title_like_opt.as_deref())
         .fetch_all(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("multi_hop recall failed: {err}")))?;
@@ -603,6 +739,126 @@ impl PgStore {
             let f: String = r.try_get("fact").unwrap_or_default();
             Some(format!("{s} -> {o}: {f}"))
         }))
+    }
+
+    async fn match_query_seed_entities(
+        &self,
+        tenant_id: &str,
+        query_text: &str,
+    ) -> Result<Vec<String>, AppError> {
+        let trimmed = query_text.trim();
+        if trimmed.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        let rows: Vec<String> = sqlx::query_scalar(
+            "SELECT name
+             FROM hg_entities
+             WHERE tenant_id = $1
+               AND char_length(name) >= 2
+               AND strpos(lower($2), lower(name)) > 0
+             ORDER BY occur_count DESC, char_length(name) DESC
+             LIMIT 16",
+        )
+        .bind(tenant_id)
+        .bind(trimmed)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("match query seed entities failed: {err}")))?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit seed entities recall tx failed: {err}"))
+        })?;
+        Ok(rows)
+    }
+
+    /// Executes five-channel hypergraph recall (`Vector + Bm25 + EntityLink + Context + MultiHop`)
+    /// without document scoping (`doc_scope = None`).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if any recall channel query fails.
+    pub async fn recall(
+        &self,
+        tenant_id: &str,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        top_k_per_channel: i64,
+    ) -> Result<Vec<ChannelCandidate>, AppError> {
+        self.recall_with_scope(
+            tenant_id,
+            query_text,
+            query_embedding,
+            top_k_per_channel,
+            None,
+        )
+        .await
+    }
+
+    /// Executes five-channel hypergraph recall pushing optional [`DocRecallScope`] (`d.id = ANY(...)`
+    /// and escaped `d.title LIKE ... ESCAPE '\'`) into all five SQL channels before `LIMIT` (`06-STEP20` §20.2.2).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if any recall channel query fails.
+    pub async fn recall_with_scope(
+        &self,
+        tenant_id: &str,
+        query_text: &str,
+        query_embedding: Option<&[f32]>,
+        top_k_per_channel: i64,
+        doc_scope: Option<&DocRecallScope>,
+    ) -> Result<Vec<ChannelCandidate>, AppError> {
+        let trimmed = query_text.trim();
+        if trimmed.is_empty() || top_k_per_channel <= 0 {
+            return Ok(Vec::new());
+        }
+        let limit = top_k_per_channel.clamp(1, 200);
+        let seeds = self.match_query_seed_entities(tenant_id, trimmed).await?;
+
+        let mut candidates = Vec::new();
+        if let Some(vec_slice) = query_embedding
+            && !vec_slice.is_empty()
+        {
+            candidates.extend(
+                self.recall_vector_scoped(
+                    tenant_id,
+                    vec_slice.to_vec(),
+                    vec_slice.len(),
+                    limit,
+                    doc_scope,
+                )
+                .await?,
+            );
+        }
+
+        candidates.extend(
+            self.recall_bm25_scoped(tenant_id, trimmed, limit, doc_scope)
+                .await?,
+        );
+        candidates.extend(
+            self.recall_entity_link_scoped(tenant_id, &seeds, limit, doc_scope)
+                .await?,
+        );
+        candidates.extend(
+            self.recall_multi_hop_scoped(tenant_id, &seeds, limit, doc_scope)
+                .await?,
+        );
+
+        let mut seed_para_ids = Vec::new();
+        for cand in &candidates {
+            if !seed_para_ids.contains(&cand.para_id) {
+                seed_para_ids.push(cand.para_id);
+                if seed_para_ids.len() >= 4 {
+                    break;
+                }
+            }
+        }
+        if !seed_para_ids.is_empty() {
+            candidates.extend(
+                self.recall_context_scoped(tenant_id, &seed_para_ids, limit.min(8), doc_scope)
+                    .await?,
+            );
+        }
+
+        Ok(candidates)
     }
 
     /// Loads stored `hg_paras.pii_spans` JSONB arrays for a batch of paragraph IDs (`11-STEP13` §13.6.3, §13.8.2).

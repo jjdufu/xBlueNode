@@ -36,6 +36,7 @@ fn is_non_retryable_sync_error(err: &AppError) -> bool {
             | AppError::Conflict(_)
             | AppError::Unsupported(_)
             | AppError::Unprocessable { .. }
+            | AppError::UnprocessableDetails { .. }
     )
 }
 

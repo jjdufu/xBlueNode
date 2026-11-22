@@ -76,6 +76,7 @@
 | C63 | 多表问数本体外键路径守卫（拦截无映射依据的自由 `JOIN`） | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.3 | step16 “ungrounded-join-rejected”、“mapped-join-ok” |
 | C64 | 知识问答段落引用角标核验与零召回确定性拒答 | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.4 | step16 “phantom-citation-stripped”、“empty-recall-abstain” |
 | C65 | 云/端双轨 50 例反幻觉对抗基准 100% 拦截 | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.5 | step16 “hallucination-eval-100” |
+| C74 | 会话级显式上下文锁定问数、五区语义驾驶舱预设与发布前全组件健康自检 | 20 | [06-STEP20](../../plans/v2-ux-and-grounded-ai/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.2～§20.4 | step20 “scoped-ask-isolated”、“view-zone-preset”、“view-publish-preflight” |
 | C75 | 企业 IM（飞书 / 钉钉 / 企业微信）零入站端口出站长连接双向智能体网关与提问人行级权限继承 | 21 | [07-STEP21](../../plans/v2-ux-and-grounded-ai/builder-and-ux/07-STEP21-IM-BIDIRECTIONAL-AGENT-CONNECTORS.md) §21.1～§21.4 | step21 “im-bind-token”、“im-rls-inherited”、“im-leader-failover” |
 
 ### E 推演
@@ -88,6 +89,7 @@
 | C42 | 检查点、过程回看、推演问数 | 10 | §10.5、§10.7.3 | step10 “checkpoints”；`sim_ask_eval` |
 | C43 | AI 研判建议 | 10 | §10.7.2 | step10 “compare”（`briefing.recommended_scenario_id`） |
 | C44 | 决策落到动作（审批后执行） | 10 | §10.8 | step10 “applied”、“audit-sim-apply”、“conflict” |
+| C73 | 推演沙盘范围静态完整度预检（因果传导覆盖率、聚合闭合度与截断边诊断） | 20 | [06-STEP20](../../plans/v2-ux-and-grounded-ai/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.1 | step20 “sim-preflight-warn”、“sim-preflight-closed” |
 
 ### F 可视
 

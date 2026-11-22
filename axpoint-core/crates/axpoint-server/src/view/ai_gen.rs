@@ -826,6 +826,7 @@ where
         filters: draft.filters,
         theme: draft.theme,
         canvas: CanvasConfig::default(),
+        zone_layout: None,
     };
 
     store

@@ -49,10 +49,21 @@ import type {
   AskIntent,
   ChartSuggestion,
   ChatQueryMode,
+  ChatQueryScope,
   QueryColumn,
   RelatedNodeSummary,
 } from "./analytics";
 import type { GroundingMode } from "./enums";
+
+export type { ChatQueryScope } from "./analytics";
+
+export interface ChatQueryRequest {
+  query: string;
+  top_k?: number;
+  session_id?: string;
+  mode?: ChatQueryMode;
+  scope?: ChatQueryScope;
+}
 
 export interface ChatQueryResponse {
   answer: string;
@@ -73,6 +84,7 @@ export interface ChatQueryResponse {
   verified_citations?: number;
   abstained?: boolean;
   slot_payload?: Record<string, unknown> | null;
+  applied_scope?: ChatQueryScope | null;
 }
 
 export interface TopologyNode {
@@ -149,12 +161,7 @@ export const api = {
     }),
   uploadFile: (file: File): Promise<IngestResponse> => uploadDocument(file),
   uploadDocument: (file: File): Promise<IngestResponse> => uploadDocument(file),
-  chatQuery: (payload: {
-    query: string;
-    top_k?: number;
-    session_id?: string;
-    mode?: ChatQueryMode;
-  }) =>
+  chatQuery: (payload: ChatQueryRequest) =>
     requestJson<ChatQueryResponse>("/api/chat/query", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -3,6 +3,7 @@
 pub mod action;
 pub mod explain;
 pub mod graph;
+pub mod preflight;
 pub mod scc;
 pub mod steady;
 pub mod stepped;
@@ -26,6 +27,10 @@ pub use graph::{
     CompiledEdge, EdgeSaturation, IndexedSimGraph, IndexedSimNode, NodeIdx, PropagationClamp,
     PropagationCurve, PropagationRule, PropagationSpec, SimGraph, SimLink, SimNode, aggregate_kpis,
     apply_clamp, eval_edge_delta, merge_clamps,
+};
+pub use preflight::{
+    ScopeBoundaryEdgeGroup, ScopeInducedEdgeGroup, ScopePreflightReport, ScopePreflightRequest,
+    ScopePreflightSlice, ScopeReadinessGrade, TruncatedEdgeDiagnostic, evaluate_scope_preflight,
 };
 pub use scc::{SccGraph, is_cyclic_component, tarjan_scc_topo};
 

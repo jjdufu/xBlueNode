@@ -1014,6 +1014,7 @@ where
                 type_names: Some(type_name.to_owned()),
                 link_types: None,
                 limit: 2_000,
+                ..SubgraphQuery::default()
             },
         )
         .await
@@ -1139,6 +1140,7 @@ where
                 type_names: (!type_names.is_empty()).then(|| type_names.join(",")),
                 link_types: (!link_types.is_empty()).then(|| link_types.join(",")),
                 limit: lim,
+                ..SubgraphQuery::default()
             },
         )
         .await?;

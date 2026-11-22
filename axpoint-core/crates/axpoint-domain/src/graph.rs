@@ -950,6 +950,18 @@ pub struct SubgraphQuery {
     /// Optional comma-separated `link_types`.
     #[serde(default)]
     pub link_types: Option<String>,
+    /// Optional subgraph slug filter (defaults to `"main"`, `06-STEP20` §20.4.1).
+    #[serde(default)]
+    pub subgraph: Option<String>,
+    /// Pattern source node type (`(src:NodeType)-[r]->(dst)`, `06-STEP20` §20.4.1).
+    #[serde(default)]
+    pub src_type: Option<String>,
+    /// Pattern directed relationship type (`(src)-[r:EdgeType]->(dst)`, `06-STEP20` §20.4.1).
+    #[serde(default)]
+    pub edge_type: Option<String>,
+    /// Pattern destination node type (`(src)-[r]->(dst:NodeType)`, `06-STEP20` §20.4.1).
+    #[serde(default)]
+    pub dst_type: Option<String>,
     /// Maximum nodes (`<= 2000`, default `2000`).
     #[serde(default = "default_subgraph_limit")]
     pub limit: u32,

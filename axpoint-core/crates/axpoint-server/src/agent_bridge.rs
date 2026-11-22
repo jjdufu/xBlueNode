@@ -370,9 +370,7 @@ async fn resolve_ask_dataset_context(
     } else {
         Ok(Some(AskContext {
             dataset_ids: ids,
-            filters: Vec::new(),
-            drill_path: Vec::new(),
-            dashboard_id: None,
+            ..AskContext::default()
         }))
     }
 }
@@ -1170,6 +1168,7 @@ async fn upsert_dashboard_draft_impl(
                     filters: input.filters,
                     theme,
                     canvas: CanvasConfig::default(),
+                    zone_layout: None,
                 },
             )
             .await?;

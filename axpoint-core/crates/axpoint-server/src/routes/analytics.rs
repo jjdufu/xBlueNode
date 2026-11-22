@@ -332,7 +332,7 @@ fn error_http_status_i32(err: &AppError) -> i32 {
         AppError::Conflict(_) => 409,
         AppError::PayloadTooLarge(_) => 413,
         AppError::Unsupported(_) => 415,
-        AppError::Unprocessable { .. } => 422,
+        AppError::Unprocessable { .. } | AppError::UnprocessableDetails { .. } => 422,
         AppError::RateLimited => 429,
         AppError::Timeout(_) => 504,
         AppError::Config(_) | AppError::Database(_) => 500,

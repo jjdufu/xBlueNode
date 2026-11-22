@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::analytics::QueryColumn;
-use crate::enums::{AssetKind, DataType, WidgetKind};
+use crate::enums::{AssetKind, CockpitZoneLayout, DataType, WidgetKind};
+
+pub use crate::view_zones::*;
 
 /// Dashboard visual theme.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -159,7 +161,7 @@ pub enum InvokeWidgetActionMode {
 /// Dashboard grid canvas geometry and big-screen reference resolution.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanvasConfig {
-    /// Grid column count (fixed 24 for standard dashboards).
+    /// Grid column count (fixed 24 for standard dashboards, 12 for `STANDARD_FIVE_ZONE`).
     #[serde(default = "default_canvas_cols")]
     pub cols: i32,
     /// Grid row unit height in pixels.
@@ -171,6 +173,9 @@ pub struct CanvasConfig {
     /// Reference height in pixels for `?screen=1` scaled view.
     #[serde(default = "default_screen_height")]
     pub screen_height: i32,
+    /// Cockpit semantic zone layout preset (`06-STEP20` §20.3.1).
+    #[serde(default)]
+    pub zone_layout: CockpitZoneLayout,
 }
 
 const fn default_canvas_cols() -> i32 {
@@ -189,6 +194,20 @@ const fn default_screen_height() -> i32 {
     1080
 }
 
+impl CanvasConfig {
+    /// Canonical 12-column five-zone operational twin cockpit geometry (`06-STEP20` §20.3.1).
+    #[must_use]
+    pub const fn standard_five_zone() -> Self {
+        Self {
+            cols: 12,
+            row_height: 32,
+            screen_width: 1920,
+            screen_height: 1080,
+            zone_layout: CockpitZoneLayout::StandardFiveZone,
+        }
+    }
+}
+
 impl Default for CanvasConfig {
     fn default() -> Self {
         Self {
@@ -196,6 +215,7 @@ impl Default for CanvasConfig {
             row_height: default_row_height(),
             screen_width: default_screen_width(),
             screen_height: default_screen_height(),
+            zone_layout: CockpitZoneLayout::FreeGrid,
         }
     }
 }
@@ -427,7 +447,7 @@ pub enum WidgetDataSource {
         #[serde(default)]
         key: Option<String>,
         /// JSON Schema validating invocation `inputs`.
-        #[serde(default = "default_action_schema")]
+        #[serde(default = "default_action_schema", alias = "action_schema")]
         input_schema: serde_json::Value,
         /// Optional confirmation prompt before execution.
         #[serde(default)]
@@ -549,6 +569,9 @@ pub struct CreateDashboardRequest {
     /// Optional grid canvas geometry.
     #[serde(default)]
     pub canvas: CanvasConfig,
+    /// Optional semantic zone layout preset (`06-STEP20` §20.3.1).
+    #[serde(default)]
+    pub zone_layout: Option<CockpitZoneLayout>,
 }
 
 /// Request payload for `PUT /api/xblueview/dashboards/{id}`.
