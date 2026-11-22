@@ -1,0 +1,2 @@
+{"match_all":["PURPOSE:AGENT","TOOLS:ask_analytics,query_sql","你是企业经营数据助手，必须调用工具查询真实数据并严格按结果作答。","查询我可见的部门订单明细"],"exclude_any":["ROLE:tool"],"kind":"chat","response":"","tool_calls":[{"id":"call_im21_1","name":"query_sql","arguments":{"sql":"SELECT order_id, warehouse_code, status, amount, phone FROM demo_orders ORDER BY order_id LIMIT 5"}}]}
+{"match_all":["PURPOSE:AGENT","ROLE:tool tool_call_id=call_im21_1"],"exclude_any":["W-2"],"kind":"chat","response":"已按您的部门数据权限查询可见订单明细（华东仓 W-1）：共返回可见订单记录，联系手机号字段均已完成安全脱敏，未包含跨区域订单。"}

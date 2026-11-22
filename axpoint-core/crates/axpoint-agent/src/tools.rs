@@ -56,20 +56,23 @@ pub const ALL_BUILTIN_TOOL_NAMES: &[&str] = &[
     "run_simulation",
 ];
 
-/// Returns `true` if `name` is a recognized built-in `AxAgent` tool identifier (including `08-STEP09` §09.5.1 aliases).
+/// Returns `true` if `name` is a recognized built-in `AxAgent` tool identifier (including `08-STEP09` §09.5.1 and `07-STEP21` aliases).
 #[must_use]
 pub fn is_known_builtin_tool(name: &str) -> bool {
     ALL_BUILTIN_TOOL_NAMES.contains(&name)
-        || matches!(name, "query_objects" | "node_metric_series" | "start_flow")
+        || matches!(
+            name,
+            "ask_analytics" | "query_sql" | "query_objects" | "node_metric_series" | "start_flow"
+        )
 }
 
 /// Returns the [`Permission`] required to see and invoke a built-in tool (`08-STEP09` §09.5.1).
 #[must_use]
 pub fn required_builtin_permission(name: &str) -> Option<Permission> {
     match name {
-        "search_knowledge" | "ask_data" | "run_sql" | "query_metric" | "query_objects"
-        | "get_node" | "search_nodes" | "graph_neighbors" | "node_timeseries"
-        | "node_metric_series" | "list_alerts" => Some(Permission::DataRead),
+        "search_knowledge" | "ask_data" | "ask_analytics" | "run_sql" | "query_sql"
+        | "query_metric" | "query_objects" | "get_node" | "search_nodes" | "graph_neighbors"
+        | "node_timeseries" | "node_metric_series" | "list_alerts" => Some(Permission::DataRead),
         "ack_alert" => Some(Permission::AlertAck),
         "trigger_flow" | "start_flow" => Some(Permission::FlowRun),
         "write_node_metric" => Some(Permission::DataSync),
@@ -269,8 +272,10 @@ where
                 self.exec_search_knowledge(principal, args, knowledge_scope)
                     .await
             }
-            "ask_data" => self.exec_ask_data(principal, args, knowledge_scope).await,
-            "run_sql" => self.exec_run_sql(principal, args).await,
+            "ask_data" | "ask_analytics" => {
+                self.exec_ask_data(principal, args, knowledge_scope).await
+            }
+            "run_sql" | "query_sql" => self.exec_run_sql(principal, args).await,
             "query_metric" => self.exec_query_metric(principal, args).await,
             "query_objects" => self.exec_query_objects(principal, args).await,
             "get_node" => self.exec_get_node(principal, args).await,
@@ -821,7 +826,7 @@ fn builtin_data_tool_def(name: &str) -> Option<ModelToolDef> {
                 "additionalProperties": false
             }),
         ),
-        "ask_data" => (
+        "ask_data" | "ask_analytics" => (
             "使用自然语言对数据湖数据集发起智能问数（NL2SQL）",
             serde_json::json!({
                 "type": "object",
@@ -833,7 +838,7 @@ fn builtin_data_tool_def(name: &str) -> Option<ModelToolDef> {
                 "additionalProperties": false
             }),
         ),
-        "run_sql" => (
+        "run_sql" | "query_sql" => (
             "执行经 sql_guard 校验与脱敏的只读 DuckDB SQL（最多返回 200 行）",
             serde_json::json!({
                 "type": "object",
@@ -1038,7 +1043,34 @@ fn builtin_action_tool_def(name: &str) -> Option<ModelToolDef> {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_TOOL_OUTPUT_BYTES, TRUNCATION_HINT, truncate_tool_output};
+    use axpoint_domain::enums::Permission;
+
+    use super::{
+        MAX_TOOL_OUTPUT_BYTES, TRUNCATION_HINT, builtin_tool_def, is_known_builtin_tool,
+        required_builtin_permission, truncate_tool_output,
+    };
+
+    #[test]
+    fn step21_builtin_tool_aliases_preserve_configured_function_names() {
+        assert!(is_known_builtin_tool("ask_analytics"));
+        assert!(is_known_builtin_tool("query_sql"));
+        assert_eq!(
+            required_builtin_permission("ask_analytics"),
+            Some(Permission::DataRead)
+        );
+        assert_eq!(
+            required_builtin_permission("query_sql"),
+            Some(Permission::DataRead)
+        );
+
+        let ask_def = builtin_tool_def("ask_analytics");
+        assert_eq!(
+            ask_def.as_ref().map(|d| d.name.as_str()),
+            Some("ask_analytics")
+        );
+        let sql_def = builtin_tool_def("query_sql");
+        assert_eq!(sql_def.as_ref().map(|d| d.name.as_str()), Some("query_sql"));
+    }
 
     #[test]
     fn truncates_over_50_rows_and_over_16kb_payloads() {

@@ -170,6 +170,7 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path = public
 AS $$
+#variable_conflict use_column
 DECLARE
     v_row ax_im_bind_challenges%ROWTYPE;
 BEGIN

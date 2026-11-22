@@ -6,7 +6,7 @@ use std::sync::{Arc, OnceLock};
 
 use axpoint_agent::{
     AgentRuntime, AgentRuntimeDeps, BuiltinToolRegistry, CapabilityPublisher, EmbedService,
-    McpClientManager, McpServerHub, PublishedAgentInvoker,
+    ImGatewayDeps, ImGatewaySupervisor, McpClientManager, McpServerHub, PublishedAgentInvoker,
 };
 use axpoint_db::PgStore;
 use axpoint_db::studio_repo::NeighborBatchKey;
@@ -118,7 +118,7 @@ pub(crate) fn build_llm_router(
     )
 }
 
-/// Assembled Step 09 & Step 17 `AxAgent` services shared across HTTP routes and background workers.
+/// Assembled Step 09, Step 17 & Step 21 `AxAgent` services shared across HTTP routes and background workers.
 pub(crate) struct AxAgentServices {
     pub(crate) capability: Arc<ServerAgentCapability>,
     pub(crate) publisher: Arc<CapabilityPublisher<PgStore>>,
@@ -126,6 +126,7 @@ pub(crate) struct AxAgentServices {
     pub(crate) mcp_clients: Arc<McpClientManager<PgStore>>,
     pub(crate) runtime: Arc<AgentRuntime<PgStore>>,
     pub(crate) embed: Arc<EmbedService<PgStore>>,
+    pub(crate) im_supervisor: Arc<ImGatewaySupervisor<PgStore>>,
     pub(crate) public_host: Option<String>,
 }
 
@@ -190,10 +191,20 @@ pub(crate) fn build_axagent_services(
         .with_builder_ports(Some(dash_port), Some(sandbox_port), public_host.clone()),
     );
     let embed = Arc::new(EmbedService::new(
-        store_arc,
+        Arc::clone(&store_arc),
         Arc::clone(&runtime),
         Some(audit.clone()),
     ));
+    let im_url_guard: Arc<dyn axpoint_domain::ports::OutboundUrlGuardPort> =
+        Arc::new(NetGuard::new());
+    let im_supervisor = ImGatewaySupervisor::new(ImGatewayDeps {
+        store: store_arc,
+        runtime: Arc::clone(&runtime),
+        keyring: Arc::clone(keyring),
+        url_guard: im_url_guard,
+        holder_id: None,
+        default_web_base_url: public_host.clone(),
+    });
 
     Arc::new(AxAgentServices {
         capability,
@@ -202,6 +213,7 @@ pub(crate) fn build_axagent_services(
         mcp_clients,
         runtime,
         embed,
+        im_supervisor,
         public_host,
     })
 }

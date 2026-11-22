@@ -7,6 +7,7 @@ use hex as _;
 use sha2 as _;
 
 pub mod embed;
+pub mod im_gateway;
 pub mod mcp_builder;
 pub mod mcp_client;
 pub mod mcp_server;
@@ -39,6 +40,10 @@ pub use axpoint_domain::ports::{
 };
 
 pub use embed::{EmbedRequestMeta, EmbedService, generate_embed_token};
+pub use im_gateway::{
+    ImGatewayDeps, ImGatewaySupervisor, generate_im_bind_token, normalize_url_for_guard,
+    probe_im_connector,
+};
 pub use mcp_builder::{
     ALL_AXBUILDER_TOOL_NAMES, axbuilder_tool_schema, has_axbuilder_tool_permissions,
     is_axbuilder_mcp_tool,
@@ -62,6 +67,7 @@ pub use publish::{
 };
 pub use runtime::{
     AgentApprovalDecidedSubscriber, AgentRuntime, AgentRuntimeDeps, ChannelChatCall,
+    ImApprovalReplyPort,
 };
 pub use tools::{
     ALL_BUILTIN_TOOL_NAMES, BuiltinToolRegistry, MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_OUTPUT_ROWS,

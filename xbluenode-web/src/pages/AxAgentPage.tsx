@@ -1,5 +1,6 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams } from "react-router";
 import { z } from "zod";
 import {
   Blocks,
@@ -12,6 +13,7 @@ import {
   LayoutGrid,
   MessageSquare,
   Plug,
+  Radio,
   Trash2,
 } from "lucide-react";
 import { analyticsApi } from "@/lib/api/analytics";
@@ -35,6 +37,7 @@ import { AgentEditor } from "@/components/axagent/AgentEditor";
 import { AppCard } from "@/components/axagent/AppCard";
 import { ChatWorkbench } from "@/components/axagent/ChatWorkbench";
 import { EndpointList } from "@/components/axagent/EndpointList";
+import { ImConnectorPanel } from "@/components/axagent/ImConnectorPanel";
 import {
   BUILDER_FORBIDDEN_PROD_PERMISSIONS,
   McpBuilderConfigCard,
@@ -64,7 +67,8 @@ type AxAgentTabKey =
   | "apps"
   | "endpoints"
   | "providers"
-  | "mcp";
+  | "mcp"
+  | "im";
 
 const DEFAULT_PAT_SCOPES: readonly Permission[] = [
   "DATA_READ",
@@ -79,12 +83,37 @@ const BUILDER_FORBIDDEN_SET: ReadonlySet<Permission> = new Set(
 
 export function AxAgentPage() {
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { tx, tEnum, fmtNum } = useI18n();
   const { canAny } = usePrincipal();
   const canManagePat = canAny(["AGENT_RUN", "AGENT_EDIT", "DATA_READ"]);
 
-  const [activeTab, setActiveTab] = useState<AxAgentTabKey>("workbench");
+  const imBindParam = useMemo(() => {
+    const raw = searchParams.get("im_bind")?.trim() ?? "";
+    return raw.length > 0 ? raw : null;
+  }, [searchParams]);
+
+  const [activeTab, setActiveTab] = useState<AxAgentTabKey>(() =>
+    imBindParam ? "im" : "workbench"
+  );
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (imBindParam) {
+      setActiveTab("im");
+    }
+  }, [imBindParam]);
+
+  const handleClearBindToken = useCallback(() => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("im_bind");
+        return next;
+      },
+      { replace: true }
+    );
+  }, [setSearchParams]);
 
   // Active testing PAT stored only in memory (never written to localStorage)
   const [activePat, setActivePat] = useState<string | null>(null);
@@ -264,6 +293,8 @@ export function AxAgentPage() {
       queryClient.invalidateQueries({ queryKey: ["axagent", "llm-preferences"] }),
       queryClient.invalidateQueries({ queryKey: ["axagent", "mcp-clients"] }),
       queryClient.invalidateQueries({ queryKey: ["axagent", "usage"] }),
+      queryClient.invalidateQueries({ queryKey: ["axagent", "im-connectors"] }),
+      queryClient.invalidateQueries({ queryKey: ["axagent", "im-bindings"] }),
     ]);
   }, [queryClient]);
 
@@ -430,6 +461,12 @@ export function AxAgentPage() {
         count: mcpClients.length,
         testId: "axagent-tab-mcp",
       },
+      {
+        key: "im" as const,
+        label: tx("IM 连接", "IM"),
+        icon: <Radio className="h-3.5 w-3.5" />,
+        testId: "axagent-tab-im",
+      },
     ],
     [
       agents.length,
@@ -481,7 +518,7 @@ export function AxAgentPage() {
         }
       />
 
-      {/* 6-Tab Navigation Bar */}
+      {/* Tab Navigation Bar */}
       <Tabs items={tabItems} value={activeTab} onChange={setActiveTab} />
 
       {/* Tab Panels */}
@@ -554,7 +591,7 @@ export function AxAgentPage() {
             onRefresh={refreshAll}
           />
         </div>
-      ) : (
+      ) : activeTab === "mcp" ? (
         <div className="space-y-6">
           <McpBuilderConfigCard
             canIssueToken={canManagePat}
@@ -573,6 +610,13 @@ export function AxAgentPage() {
             onRefresh={refreshAll}
           />
         </div>
+      ) : (
+        <ImConnectorPanel
+          agents={agents}
+          currentUserId={meQuery.data?.user_id ?? null}
+          bindToken={imBindParam}
+          onClearBindToken={handleClearBindToken}
+        />
       )}
 
       {/* Personal Access Token (PAT) Management Modal */}

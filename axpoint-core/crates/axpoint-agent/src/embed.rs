@@ -327,6 +327,8 @@ where
                     request: req,
                     channel: ConversationChannel::Embed,
                     embed_id: Some(resolved.embed_id),
+                    im_connector_id: None,
+                    external_chat_id: None,
                 },
                 event_tx,
             )

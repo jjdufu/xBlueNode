@@ -4,7 +4,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use axpoint_agent::{ChannelChatCall, EmbedRequestMeta, PublishedInvokeOutcome};
+use axpoint_agent::{
+    ChannelChatCall, EmbedRequestMeta, PublishedInvokeOutcome, normalize_url_for_guard,
+    probe_im_connector,
+};
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{
     AgentChatRequest, AgentEmbedRecord, AgentEvent, AgentRecord, AgentVersionRecord,
@@ -16,15 +19,26 @@ use axpoint_domain::agent::{
     UpdateAgentRequest, UpdateEndpointRequest, UserLlmPreferenceRecord,
 };
 use axpoint_domain::axhub::{PaginatedList, SealedCredential};
-use axpoint_domain::enums::{AuditAction, ConversationChannel, Environment, Permission};
+use axpoint_domain::enums::{
+    AuditAction, ConversationChannel, Environment, ImIdentityPolicy, Permission,
+};
+use axpoint_domain::im::{
+    ConfirmImBindRequest, ConfirmImBindResponse, CreateImConnectorRequest, ImBindChallengePreview,
+    ImBindPreviewQuery, ImConnectorConfig, ImConnectorRecord, ImConnectorTestResponse,
+    ImUserBindingRecord, NewImConnectorInput, PatchImConnectorRequest, UpdateImConnectorInput,
+    hash_im_bind_token,
+};
 use axpoint_domain::platform::AuditRecord;
-use axpoint_domain::ports::{AgentRepository as _, OutboundUrlGuardPort as _};
+use axpoint_domain::ports::{
+    AgentRepository as _, ConnectionRepository as _, CredentialStore as _,
+    ImGatewayRepository as _, OutboundUrlGuardPort as _,
+};
 use axpoint_security::{AuthPrincipal, CredentialKeyring, NetGuard};
 use axum::body::Bytes;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::Deserialize;
@@ -50,6 +64,7 @@ pub(crate) fn router() -> Router<AppState> {
         .merge(providers_router())
         .merge(endpoints_and_mcp_router())
         .merge(agents_and_embeds_router())
+        .merge(im_gateway_router())
 }
 
 fn providers_router() -> Router<AppState> {
@@ -136,6 +151,29 @@ fn agents_and_embeds_router() -> Router<AppState> {
         )
         .route("/axagent/embeds/{embed_id}", delete(revoke_embed_handler))
         .route("/axagent/embed/{token}/chat", post(embed_chat_handler))
+}
+
+fn im_gateway_router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/axagent/im-connectors",
+            get(list_im_connectors_handler).post(create_im_connector_handler),
+        )
+        .route(
+            "/axagent/im-connectors/{id}",
+            patch(patch_im_connector_handler).delete(delete_im_connector_handler),
+        )
+        .route(
+            "/axagent/im-connectors/{id}/test",
+            post(test_im_connector_handler),
+        )
+        .route("/axagent/im-bindings", get(list_im_bindings_handler))
+        .route(
+            "/axagent/im-bindings/{id}",
+            delete(delete_im_binding_handler),
+        )
+        .route("/axagent/im-bind/preview", get(preview_im_bind_handler))
+        .route("/axagent/im-bind/confirm", post(confirm_im_bind_handler))
 }
 
 fn seal_provider_api_key(
@@ -1038,6 +1076,8 @@ async fn embed_chat_handler(
             request: chat_req,
             channel: ConversationChannel::Embed,
             embed_id: Some(resolved.embed_id),
+            im_connector_id: None,
+            external_chat_id: None,
         };
         if let Err(err) = runtime
             .chat_in_channel(&principal, call, Some(tx.clone()))
@@ -1088,4 +1128,414 @@ fn infer_base_url(headers: &HeaderMap) -> Option<String> {
         .filter(|s| *s == "http" || *s == "https")
         .unwrap_or("http");
     Some(format!("{proto}://{host}"))
+}
+
+fn seal_im_secret_map(
+    keyring: &CredentialKeyring,
+    tenant_id: &str,
+    cred_id: Uuid,
+    secret_map: &BTreeMap<String, String>,
+) -> Result<SealedCredential, AppError> {
+    let encoded = Zeroizing::new(
+        serde_json::to_vec(secret_map)
+            .map_err(|err| AppError::Config(format!("serialize IM connector secret: {err}")))?,
+    );
+    let aad = CredentialKeyring::aad_for_credential(tenant_id, cred_id);
+    keyring.seal_credential(cred_id, &aad, encoded.as_slice())
+}
+
+async fn validate_im_connector_fields(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    name: &str,
+    agent_id: Uuid,
+    identity_policy: ImIdentityPolicy,
+    delegated_user_id: Option<Uuid>,
+    config: &ImConnectorConfig,
+) -> Result<(String, Option<Uuid>, ImConnectorConfig), AppError> {
+    if config.allow_private_network {
+        principal.require(Permission::GuardAdmin)?;
+    }
+    let clean_name = name.trim();
+    if clean_name.is_empty() || clean_name.len() > 128 {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            "IM connector name must be 1..=128 characters",
+        ));
+    }
+
+    let resolved_delegated = match identity_policy {
+        ImIdentityPolicy::RequireUserBind => None,
+        ImIdentityPolicy::CreatorDelegated => {
+            let uid = delegated_user_id.filter(|u| !u.is_nil()).ok_or_else(|| {
+                AppError::bad(
+                    "INVALID_ARGUMENT",
+                    "CREATOR_DELEGATED policy requires delegated_user_id",
+                )
+            })?;
+            let _user = state
+                .store
+                .load_principal(&principal.tenant_id, uid)
+                .await?
+                .ok_or_else(|| {
+                    AppError::bad(
+                        "INVALID_ARGUMENT",
+                        "delegated_user_id does not exist or is inactive",
+                    )
+                })?;
+            Some(uid)
+        }
+    };
+
+    let _agent = state
+        .store
+        .get_agent(&principal.tenant_id, agent_id)
+        .await?
+        .ok_or(AppError::NotFound("AGENT_NOT_FOUND"))?;
+
+    let mut clean_cfg = config.clone();
+    clean_cfg.endpoint_override = clean_cfg
+        .endpoint_override
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    clean_cfg.bot_code = clean_cfg
+        .bot_code
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    clean_cfg.web_base_url = clean_cfg
+        .web_base_url
+        .as_deref()
+        .map(str::trim)
+        .map(|s| s.trim_end_matches('/'))
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    if let Some(ref raw_override) = clean_cfg.endpoint_override {
+        let http_equiv = normalize_url_for_guard(raw_override)?;
+        let _checked = NetGuard::new()
+            .check_outbound_url(&http_equiv, clean_cfg.allow_private_network)
+            .await?;
+    }
+
+    Ok((String::from(clean_name), resolved_delegated, clean_cfg))
+}
+
+async fn list_im_connectors_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+) -> Result<Json<PaginatedList<ImConnectorRecord>>, HttpError> {
+    if !principal.has(Permission::DataRead) && !principal.has(Permission::AgentEdit) {
+        return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+    }
+    let items = state.store.list_im_connectors(&principal.tenant_id).await?;
+    Ok(Json(PaginatedList {
+        items,
+        next_cursor: None,
+    }))
+}
+
+async fn create_im_connector_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<CreateImConnectorRequest>,
+) -> Result<(StatusCode, Json<ImConnectorRecord>), HttpError> {
+    principal.enforce_no_prod_mutation()?;
+    principal.require(Permission::AgentEdit)?;
+
+    let (name, delegated_user_id, config) = validate_im_connector_fields(
+        &state,
+        &principal,
+        &req.name,
+        req.agent_id,
+        req.identity_policy,
+        req.delegated_user_id,
+        &req.config,
+    )
+    .await?;
+
+    let secret_map = req.secret.normalize_for_platform(req.platform)?;
+    let credential_id = Uuid::new_v4();
+    let credential = seal_im_secret_map(
+        &state.keyring,
+        &principal.tenant_id,
+        credential_id,
+        &secret_map,
+    )?;
+    let created_by = (!principal.user_id.is_nil()).then_some(principal.user_id);
+
+    let created = state
+        .store
+        .create_im_connector(
+            &principal.tenant_id,
+            NewImConnectorInput {
+                name,
+                platform: req.platform,
+                agent_id: req.agent_id,
+                credential_id,
+                credential,
+                config,
+                identity_policy: req.identity_policy,
+                delegated_user_id,
+                enabled: req.enabled,
+                created_by,
+            },
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+async fn patch_im_connector_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(id): ApiPath<Uuid>,
+    ApiJson(req): ApiJson<PatchImConnectorRequest>,
+) -> Result<Json<ImConnectorRecord>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
+    principal.require(Permission::AgentEdit)?;
+
+    let existing = state
+        .store
+        .get_im_connector(&principal.tenant_id, id)
+        .await?
+        .ok_or(AppError::NotFound("NOT_FOUND"))?;
+
+    let next_name = req.name.as_deref().unwrap_or(&existing.name);
+    let next_agent_id = req.agent_id.unwrap_or(existing.agent_id);
+    let next_policy = req.identity_policy.unwrap_or(existing.identity_policy);
+    let next_delegated = req.delegated_user_id.or(existing.delegated_user_id);
+    let next_cfg = req.config.unwrap_or_else(|| existing.config.clone());
+    let next_enabled = req.enabled.unwrap_or(existing.enabled);
+
+    let (name, delegated_user_id, config) = validate_im_connector_fields(
+        &state,
+        &principal,
+        next_name,
+        next_agent_id,
+        next_policy,
+        next_delegated,
+        &next_cfg,
+    )
+    .await?;
+
+    let rotated_credential = match req.secret {
+        Some(ref sec_in) if !sec_in.is_empty() => {
+            let secret_map = sec_in.normalize_for_platform(existing.platform)?;
+            let new_cred_id = Uuid::new_v4();
+            let sealed = seal_im_secret_map(
+                &state.keyring,
+                &principal.tenant_id,
+                new_cred_id,
+                &secret_map,
+            )?;
+            Some((new_cred_id, sealed))
+        }
+        _ => None,
+    };
+
+    let updated = state
+        .store
+        .update_im_connector(
+            &principal.tenant_id,
+            id,
+            UpdateImConnectorInput {
+                name,
+                agent_id: next_agent_id,
+                rotated_credential,
+                config,
+                identity_policy: next_policy,
+                delegated_user_id,
+                enabled: next_enabled,
+            },
+        )
+        .await?
+        .ok_or(AppError::NotFound("NOT_FOUND"))?;
+    Ok(Json(updated))
+}
+
+async fn delete_im_connector_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
+    principal.require(Permission::AgentEdit)?;
+
+    let deleted = state
+        .store
+        .delete_im_connector(&principal.tenant_id, id)
+        .await?;
+    if !deleted {
+        return Err(HttpError(AppError::NotFound("NOT_FOUND")));
+    }
+    Ok(Json(serde_json::json!({ "deleted": true })))
+}
+
+async fn test_im_connector_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<Json<ImConnectorTestResponse>, HttpError> {
+    principal.require(Permission::AgentEdit)?;
+    let connector = state
+        .store
+        .get_im_connector(&principal.tenant_id, id)
+        .await?
+        .ok_or(AppError::NotFound("NOT_FOUND"))?;
+    if connector.config.allow_private_network {
+        principal.require(Permission::GuardAdmin)?;
+    }
+
+    let sealed = state
+        .store
+        .get_credential(&principal.tenant_id, connector.credential_id)
+        .await?
+        .ok_or(AppError::NotFound("CREDENTIAL_NOT_FOUND"))?;
+    let secrets =
+        crate::routes::open_secret_map(&state.keyring, &principal.tenant_id, Some(&sealed))?;
+    let resp = probe_im_connector(&connector, &secrets, &NetGuard::new()).await?;
+    Ok(Json(resp))
+}
+
+async fn list_im_bindings_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+) -> Result<Json<PaginatedList<ImUserBindingRecord>>, HttpError> {
+    let only_user_id = if principal.has(Permission::AgentEdit) {
+        None
+    } else {
+        principal.require(Permission::DataRead)?;
+        Some(principal.user_id)
+    };
+    let items = state
+        .store
+        .list_im_user_bindings(&principal.tenant_id, only_user_id)
+        .await?;
+    Ok(Json(PaginatedList {
+        items,
+        next_cursor: None,
+    }))
+}
+
+async fn delete_im_binding_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    let only_user_id = if principal.has(Permission::AgentEdit) {
+        None
+    } else if !principal.user_id.is_nil() {
+        Some(principal.user_id)
+    } else {
+        return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+    };
+
+    let removed = state
+        .store
+        .delete_im_user_binding(&principal.tenant_id, id, only_user_id)
+        .await?
+        .ok_or(AppError::NotFound("NOT_FOUND"))?;
+
+    state.audit.record(AuditRecord {
+        tenant_id: principal.tenant_id.clone(),
+        user_id: (!principal.user_id.is_nil()).then_some(principal.user_id),
+        username: principal.username.clone(),
+        action: AuditAction::ImAccountBind,
+        resource_ref: format!("im_binding:{id}"),
+        status_code: 200,
+        client_ip: extract_client_ip(&headers),
+        trace_id: current_trace_id(),
+        detail_json: serde_json::json!({
+            "op": "unbind",
+            "platform": removed.platform,
+            "external_user_id": removed.external_user_id,
+            "bound_user_id": removed.user_id,
+        }),
+        created_at: Utc::now(),
+    });
+    if let Err(err) = state.audit.flush().await {
+        tracing::warn!(error = %err, "delete_im_binding audit flush failed");
+    }
+
+    Ok(Json(serde_json::json!({ "deleted": true })))
+}
+
+async fn preview_im_bind_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiQuery(query): ApiQuery<ImBindPreviewQuery>,
+) -> Result<Json<ImBindChallengePreview>, HttpError> {
+    let token_hash = hash_im_bind_token(&query.token)?;
+    let preview = state
+        .store
+        .preview_im_bind_challenge(&principal.tenant_id, &token_hash)
+        .await?
+        .ok_or_else(|| {
+            AppError::bad(
+                "INVALID_ARGUMENT",
+                "IM bind token is expired or already consumed",
+            )
+        })?;
+    Ok(Json(preview))
+}
+
+async fn confirm_im_bind_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<ConfirmImBindRequest>,
+) -> Result<Json<ConfirmImBindResponse>, HttpError> {
+    if principal.user_id.is_nil() {
+        return Err(HttpError(AppError::bad(
+            "INVALID_ARGUMENT",
+            "authenticated user account is required to confirm IM binding",
+        )));
+    }
+    let token_hash = hash_im_bind_token(&req.token)?;
+    let consumed = state
+        .store
+        .consume_im_bind_challenge(&principal.tenant_id, &token_hash, principal.user_id)
+        .await?
+        .ok_or_else(|| {
+            AppError::bad(
+                "INVALID_ARGUMENT",
+                "IM bind token is expired or already consumed",
+            )
+        })?;
+    let bound_at = Utc::now();
+
+    state.audit.record(AuditRecord {
+        tenant_id: principal.tenant_id.clone(),
+        user_id: Some(principal.user_id),
+        username: principal.username.clone(),
+        action: AuditAction::ImAccountBind,
+        resource_ref: format!("im_connector:{}", consumed.connector_id),
+        status_code: 200,
+        client_ip: extract_client_ip(&headers),
+        trace_id: current_trace_id(),
+        detail_json: serde_json::json!({
+            "connector_id": consumed.connector_id,
+            "platform": consumed.platform,
+            "external_user_id": consumed.external_user_id,
+            "external_display_name": consumed.external_display_name,
+            "user_id": principal.user_id,
+        }),
+        created_at: bound_at,
+    });
+    if let Err(err) = state.audit.flush().await {
+        tracing::warn!(error = %err, "confirm_im_bind audit flush failed");
+    }
+
+    Ok(Json(ConfirmImBindResponse {
+        connector_id: consumed.connector_id,
+        platform: consumed.platform,
+        external_user_id: consumed.external_user_id,
+        external_display_name: consumed.external_display_name,
+        user_id: principal.user_id,
+        bound_at,
+    }))
 }
