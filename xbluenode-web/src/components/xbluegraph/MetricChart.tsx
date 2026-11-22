@@ -199,10 +199,10 @@ export function MetricChart({ nodeId, nodeTitle, metric }: MetricChartProps) {
 
   return (
     <div
-      className="rounded-md border border-border p-3 space-y-2.5 bg-muted/20"
+      className="flex h-full flex-col space-y-2"
       data-testid="metric-chart-panel"
     >
-      <div className="flex flex-wrap items-center justify-between gap-1.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-1.5 text-xs font-semibold min-w-0">
           <Activity className="h-3.5 w-3.5 text-xblue shrink-0" />
           <span className="truncate">{nodeTitle}</span>
@@ -212,71 +212,71 @@ export function MetricChart({ nodeId, nodeTitle, metric }: MetricChartProps) {
           </span>
         </div>
 
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          className="h-6 px-2"
-          onClick={() => void loadMetrics()}
-          disabled={loading}
-          title={tx("刷新趋势", "Refresh Trend")}
-        >
-          <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
-        </Button>
-      </div>
+        {/* Single-Row Controls: Range, Grain, Agg, Window + Refresh */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Select
+            value={rangePreset}
+            onChange={(e) => setRangePreset(e.target.value as TimeRangePreset)}
+            className="h-7 px-2 font-mono-tech text-[11px]"
+            data-testid="metric-range-select"
+          >
+            <option value="6h">{tx("近 6 小时", "Last 6h")}</option>
+            <option value="24h">{tx("近 24 小时", "Last 24h")}</option>
+            <option value="7d">{tx("近 7 天", "Last 7d")}</option>
+            <option value="30d">{tx("近 30 天", "Last 30d")}</option>
+            <option value="90d">{tx("近 90 天", "Last 90d")}</option>
+          </Select>
 
-      {/* Controls: Range, Grain, Agg, Window */}
-      <div className="grid grid-cols-2 gap-1.5">
-        <Select
-          value={rangePreset}
-          onChange={(e) => setRangePreset(e.target.value as TimeRangePreset)}
-          className="h-7 px-2 font-mono-tech text-[11px]"
-          data-testid="metric-range-select"
-        >
-          <option value="6h">{tx("近 6 小时", "Last 6h")}</option>
-          <option value="24h">{tx("近 24 小时", "Last 24h")}</option>
-          <option value="7d">{tx("近 7 天", "Last 7d")}</option>
-          <option value="30d">{tx("近 30 天", "Last 30d")}</option>
-          <option value="90d">{tx("近 90 天", "Last 90d")}</option>
-        </Select>
+          <Select
+            value={grain}
+            onChange={(e) => setGrain(e.target.value as GrainOption)}
+            disabled={queryMode !== "SERIES"}
+            className="h-7 px-2 font-mono-tech text-[11px]"
+            data-testid="metric-grain-select"
+          >
+            <option value="AUTO">{tx("粒度: 自动", "Grain: Auto")}</option>
+            <option value="RAW">{tx("粒度: 原始", "Grain: Raw")}</option>
+            <option value="MINUTE">{tx("粒度: 分钟", "Grain: Minute")}</option>
+            <option value="HOUR">{tx("粒度: 小时", "Grain: Hour")}</option>
+            <option value="DAY">{tx("粒度: 天", "Grain: Day")}</option>
+          </Select>
 
-        <Select
-          value={grain}
-          onChange={(e) => setGrain(e.target.value as GrainOption)}
-          disabled={queryMode !== "SERIES"}
-          className="h-7 px-2 font-mono-tech text-[11px]"
-          data-testid="metric-grain-select"
-        >
-          <option value="AUTO">{tx("粒度: 自动", "Grain: Auto")}</option>
-          <option value="RAW">{tx("粒度: 原始", "Grain: Raw")}</option>
-          <option value="MINUTE">{tx("粒度: 分钟", "Grain: Minute")}</option>
-          <option value="HOUR">{tx("粒度: 小时", "Grain: Hour")}</option>
-          <option value="DAY">{tx("粒度: 天", "Grain: Day")}</option>
-        </Select>
+          <Select
+            value={agg}
+            onChange={(e) => setAgg(e.target.value as AggFn)}
+            className="h-7 px-2 font-mono-tech text-[11px]"
+            data-testid="metric-agg-select"
+          >
+            {AGG_OPTIONS.map((fn) => (
+              <option key={fn} value={fn}>
+                {tx("聚合", "Agg")}: {fn}
+              </option>
+            ))}
+          </Select>
 
-        <Select
-          value={agg}
-          onChange={(e) => setAgg(e.target.value as AggFn)}
-          className="h-7 px-2 font-mono-tech text-[11px]"
-          data-testid="metric-agg-select"
-        >
-          {AGG_OPTIONS.map((fn) => (
-            <option key={fn} value={fn}>
-              {tx("聚合", "Agg")}: {fn}
-            </option>
-          ))}
-        </Select>
+          <Select
+            value={queryMode}
+            onChange={(e) => setQueryMode(e.target.value as QueryMode)}
+            className="h-7 px-2 font-mono-tech text-[11px]"
+            data-testid="metric-window-select"
+          >
+            <option value="SERIES">{tx("时序序列", "Series")}</option>
+            <option value="TUMBLING">{tx("滚动窗口", "Tumbling")}</option>
+            <option value="SLIDING">{tx("滑动窗口", "Sliding")}</option>
+          </Select>
 
-        <Select
-          value={queryMode}
-          onChange={(e) => setQueryMode(e.target.value as QueryMode)}
-          className="h-7 px-2 font-mono-tech text-[11px]"
-          data-testid="metric-window-select"
-        >
-          <option value="SERIES">{tx("时序序列", "Series")}</option>
-          <option value="TUMBLING">{tx("滚动窗口", "Tumbling")}</option>
-          <option value="SLIDING">{tx("滑动窗口", "Sliding")}</option>
-        </Select>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2"
+            onClick={() => void loadMetrics()}
+            disabled={loading}
+            title={tx("刷新趋势", "Refresh Trend")}
+          >
+            <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
+          </Button>
+        </div>
       </div>
 
       {errorMsg && (
@@ -287,7 +287,7 @@ export function MetricChart({ nodeId, nodeTitle, metric }: MetricChartProps) {
 
       <div
         ref={containerRef}
-        className="h-48 min-h-[192px] w-full shrink-0 rounded border border-border bg-background"
+        className="flex-1 min-h-[168px] w-full rounded border border-border/70 bg-background"
         data-testid="metric-line-chart"
       />
     </div>

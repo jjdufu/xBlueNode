@@ -6,6 +6,7 @@ import {
   DARK_TYPE_PALETTE,
   LIGHT_TYPE_PALETTE,
   resolveNodeTypeColor,
+  translateNodeTypeLabel,
   type GraphColorMode,
 } from "./SigmaCanvas";
 
@@ -26,7 +27,7 @@ export function AlgoLegend({
   algoEntries,
   isDark: isDarkProp,
 }: AlgoLegendProps) {
-  const { tx } = useI18n();
+  const { isZh, tx } = useI18n();
   const { isDark: themeDark } = useTheme();
   const isDark = isDarkProp ?? themeDark;
   const palette = isDark ? DARK_TYPE_PALETTE : LIGHT_TYPE_PALETTE;
@@ -34,7 +35,7 @@ export function AlgoLegend({
   if (colorMode === "METRIC") {
     return (
       <div
-        className="flex flex-wrap items-center gap-3 px-3 py-1.5 border-t border-border text-[11px] text-muted-foreground"
+        className="flex shrink-0 flex-wrap items-center gap-3 px-3 py-1.5 border-t border-border bg-card/80 text-[11px] text-muted-foreground"
         data-testid="algo-legend"
       >
         <span className="font-medium text-foreground">
@@ -70,11 +71,11 @@ export function AlgoLegend({
 
     return (
       <div
-        className="flex flex-wrap items-center gap-3 px-3 py-1.5 border-t border-border text-[11px] text-muted-foreground"
+        className="flex shrink-0 flex-wrap items-center gap-3 px-3 py-1.5 border-t border-border bg-card/80 text-[11px] text-muted-foreground"
         data-testid="algo-legend"
       >
         <span className="font-medium text-foreground">
-          {tx("算法映射", "Algorithm Mapping")} ({algoMode}):
+          {tx("算法映射", "Algorithm Mapping")}:
         </span>
         {communities.length > 0 ? (
           communities.map((c) => (
@@ -88,7 +89,7 @@ export function AlgoLegend({
                   backgroundColor: palette[Math.abs(c) % palette.length],
                 }}
               />
-              C-{c}
+              {tx(`社团 ${c}`, `C-${c}`)}
             </span>
           ))
         ) : (
@@ -105,11 +106,11 @@ export function AlgoLegend({
 
   return (
     <div
-      className="flex flex-wrap items-center gap-3 px-3 py-1.5 border-t border-border text-[11px] text-muted-foreground"
+      className="flex shrink-0 flex-wrap items-center gap-3 px-3 py-1.5 border-t border-border bg-card/80 text-[11px] text-muted-foreground"
       data-testid="algo-legend"
     >
       <span className="font-medium text-foreground">
-        {tx("节点类型", "Node Types")}:
+        {tx("图例", "Legend")}:
       </span>
       {distinctTypes.length === 0 ? (
         <span>{tx("暂无类型", "No types")}</span>
@@ -117,15 +118,15 @@ export function AlgoLegend({
         distinctTypes.map((t, idx) => (
           <span
             key={t}
-            className="inline-flex items-center gap-1 font-mono-tech"
+            className="inline-flex items-center gap-1.5 text-foreground/90"
           >
             <span
-              className="h-2.5 w-2.5 rounded-full"
+              className="h-2.5 w-2.5 rounded-full shrink-0"
               style={{
                 backgroundColor: resolveNodeTypeColor(t, idx, isDark),
               }}
             />
-            {t}
+            <span>{translateNodeTypeLabel(t, isZh)}</span>
           </span>
         ))
       )}

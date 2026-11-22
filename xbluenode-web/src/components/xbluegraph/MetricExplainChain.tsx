@@ -4,6 +4,7 @@ import {
   ChevronDown,
   ChevronRight,
   GitBranch,
+  X,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import {
@@ -367,11 +368,13 @@ function ExplainChainLevel({
 export interface MetricExplainChainProps {
   nodeId: string;
   metric: string;
+  onClose?: () => void;
 }
 
 export function MetricExplainChain({
   nodeId,
   metric,
+  onClose,
 }: MetricExplainChainProps) {
   const { tx } = useI18n();
   const emptySet = useMemo(() => new Set<string>(), []);
@@ -386,9 +389,22 @@ export function MetricExplainChain({
           <GitBranch className="h-3.5 w-3.5 text-xblue" />
           {tx("指标计算溯源链", "Metric Lineage")} ({metric})
         </span>
-        <span className="font-mono-tech text-[10px] text-muted-foreground">
-          Explain DAG
-        </span>
+        <div className="flex items-center gap-1.5">
+          <span className="font-mono-tech text-[10px] text-muted-foreground">
+            Explain DAG
+          </span>
+          {onClose && (
+            <button
+              type="button"
+              onClick={onClose}
+              title={tx("收起指标面板", "Close metric panel")}
+              aria-label={tx("收起指标面板", "Close metric panel")}
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
       </div>
 
       <ExplainChainLevel

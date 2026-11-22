@@ -4,8 +4,6 @@ import {
   Cpu,
   FileText,
   Info,
-  Pause,
-  Play,
   RefreshCw,
   Route,
   Share2,
@@ -29,13 +27,16 @@ import {
   Button,
   Card,
   EmptyState,
-  Select,
+  PageHeader,
+  SegmentedControl,
 } from "@/components/ui/primitives";
 import { AlgoLegend } from "@/components/graph/AlgoLegend";
 import { GraphToolbar } from "@/components/graph/GraphToolbar";
 import { PathPanel } from "@/components/graph/PathPanel";
 import {
   SigmaCanvas,
+  translateEdgeTypeLabel,
+  translateNodeTypeLabel,
   type CanvasEdge,
   type GraphColorMode,
 } from "@/components/graph/SigmaCanvas";
@@ -43,6 +44,8 @@ import {
   AlgoPanel,
   type AlgoVisualMode,
 } from "@/components/xbluegraph/AlgoPanel";
+import { MetricChart } from "@/components/xbluegraph/MetricChart";
+import { MetricExplainChain } from "@/components/xbluegraph/MetricExplainChain";
 import { NeighborExpand } from "@/components/xbluegraph/NeighborExpand";
 import { NodeInspector } from "@/components/xbluegraph/NodeInspector";
 
@@ -92,7 +95,7 @@ function mergeEdgesDeduplicated(
 }
 
 export function XBlueGraphPage() {
-  const { tx, tEnum, fmtNum } = useI18n();
+  const { isZh, tx, fmtNum } = useI18n();
   const { isDark } = useTheme();
   const [searchParams] = useSearchParams();
   const initialNodeIdParam = searchParams.get("node_id");
@@ -101,6 +104,7 @@ export function XBlueGraphPage() {
   const [hypergraph, setHypergraph] = useState<TopologyGraph | null>(null);
   const [hyperSelectedId, setHyperSelectedId] = useState<string | null>(null);
   const [hyperTypeFilter, setHyperTypeFilter] = useState<string>("");
+  const [hyperSearchQuery, setHyperSearchQuery] = useState<string>("");
   const [hyperFa2Running, setHyperFa2Running] = useState<boolean>(false);
 
   const [nodes, setNodes] = useState<BlueNode[]>([]);
@@ -108,6 +112,7 @@ export function XBlueGraphPage() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(
     initialNodeIdParam
   );
+  const [activeMetric, setActiveMetric] = useState<string | null>(null);
   const [sideTab, setSideTab] = useState<SideTab>("inspector");
   const [typeFilter, setTypeFilter] = useState<string>("");
 
@@ -233,6 +238,7 @@ export function XBlueGraphPage() {
 
   const handleSelectNode = useCallback((nodeId: string) => {
     setSelectedNodeId(nodeId);
+    setActiveMetric(null);
     setSideTab("inspector");
   }, []);
 
@@ -317,20 +323,25 @@ export function XBlueGraphPage() {
     [nodes, selectedNodeId]
   );
 
-  // Convert hypergraph TopologyGraph into interactive SigmaCanvas nodes & edges
+  // Convert hypergraph TopologyGraph into interactive SigmaCanvas nodes & edges (no synthetic ENTITY-xx suffix!)
   const hyperCanvasNodes: BlueNode[] = useMemo(() => {
     const list = hypergraph?.nodes ?? [];
+    const q = hyperSearchQuery.trim().toLowerCase();
     return list
-      .filter((hn) => !hyperTypeFilter || hn.node_type === hyperTypeFilter)
-      .map((hn, idx) => ({
+      .filter((hn) => {
+        if (hyperTypeFilter && hn.node_type !== hyperTypeFilter) return false;
+        if (q && !hn.label.toLowerCase().includes(q)) return false;
+        return true;
+      })
+      .map((hn) => ({
         id: hn.id,
         type_name: hn.node_type || "ENTITY",
-        node_key: `${hn.node_type || "H"}-${idx + 1}`,
+        node_key: "",
         title: hn.label,
-        properties: { node_type: hn.node_type },
+        properties: {},
         metrics: { weight: hn.weight },
       }));
-  }, [hypergraph?.nodes, hyperTypeFilter]);
+  }, [hypergraph?.nodes, hyperTypeFilter, hyperSearchQuery]);
 
   const hyperCanvasNodeIds = useMemo(
     () => new Set(hyperCanvasNodes.map((n) => n.id)),
@@ -448,70 +459,83 @@ export function XBlueGraphPage() {
   };
 
   return (
-    <div className="space-y-4" data-testid="xbluegraph-page">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3.5">
-        <div className="flex flex-wrap items-center gap-2.5">
-          <h1 className="text-base font-semibold tracking-tight">
-            {tx(MODULE_META.xbluegraph.label, MODULE_META.xbluegraph.enLabel)}
-          </h1>
-          <Badge variant="outline">
-            {graphLayer === "business"
-              ? `${fmtNum(visibleNodes.length, 0)} ${tx("节点", "Nodes")}`
-              : `${fmtNum(hyperCanvasNodes.length, 0)} ${tx("实体", "Entities")}`}
-          </Badge>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center rounded-md border border-border bg-muted/40 p-0.5 text-xs">
-            <button
-              type="button"
-              onClick={() => setGraphLayer("business")}
-              className={`rounded px-2.5 py-1 font-medium cursor-pointer ${
-                graphLayer === "business"
-                  ? "bg-background text-foreground border border-border"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {tx("业务对象图谱", "Business Graph")}
-            </button>
-            <button
-              type="button"
-              onClick={() => setGraphLayer("hypergraph")}
-              className={`rounded px-2.5 py-1 font-medium cursor-pointer ${
-                graphLayer === "hypergraph"
-                  ? "bg-background text-foreground border border-border"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {tx("知识超图网络", "Knowledge Hypergraph")}
-            </button>
+    <div
+      className="flex flex-1 min-h-0 flex-col gap-2.5 overflow-hidden"
+      data-testid="xbluegraph-page"
+    >
+      {/* Unified Header */}
+      <PageHeader
+        className="shrink-0 pb-2.5"
+        title={tx(MODULE_META.xbluegraph.label, MODULE_META.xbluegraph.enLabel)}
+        badges={
+          <div className="flex items-center gap-3 pl-1 text-xs text-muted-foreground">
+            <span className="inline-flex items-baseline gap-1">
+              <span>{tx("节点", "Nodes")}</span>
+              <strong
+                className="font-mono-tech font-semibold text-foreground tabular-nums"
+                data-testid="canvas-node-count"
+              >
+                {graphLayer === "business"
+                  ? visibleNodes.length
+                  : hyperCanvasNodes.length}
+              </strong>
+            </span>
+            <span className="text-border">·</span>
+            <span className="inline-flex items-baseline gap-1">
+              <span>{tx("关系", "Edges")}</span>
+              <strong
+                className="font-mono-tech font-semibold text-foreground tabular-nums"
+                data-testid="canvas-edge-count"
+              >
+                {graphLayer === "business"
+                  ? visibleEdges.length
+                  : hyperCanvasEdges.length}
+              </strong>
+            </span>
           </div>
-
-          <Button
-            variant="outline"
-            onClick={() =>
-              void (graphLayer === "business"
-                ? loadInitialGraph()
-                : loadHypergraph())
-            }
-            disabled={loading}
-            data-testid="refresh-graph-btn"
-          >
-            <RefreshCw
-              className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
+        }
+        actions={
+          <>
+            <SegmentedControl<GraphLayer>
+              value={graphLayer}
+              onChange={setGraphLayer}
+              items={[
+                {
+                  key: "business",
+                  label: tx("业务对象图谱", "Business Graph"),
+                },
+                {
+                  key: "hypergraph",
+                  label: tx("知识超图网络", "Knowledge Hypergraph"),
+                },
+              ]}
             />
-            {tx("刷新拓扑", "Refresh")}
-          </Button>
-        </div>
-      </div>
+
+            <Button
+              variant="outline"
+              onClick={() =>
+                void (graphLayer === "business"
+                  ? loadInitialGraph()
+                  : loadHypergraph())
+              }
+              disabled={loading}
+              data-testid="refresh-graph-btn"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
+              />
+              {tx("刷新", "Refresh")}
+            </Button>
+          </>
+        }
+      />
 
       {errorMsg && (
         <div
-          className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs flex items-center justify-between"
+          className="shrink-0 rounded border border-red-500/30 bg-red-500/5 px-3 py-1.5 text-xs flex items-center justify-between"
           data-testid="graph-error-banner"
         >
-          <span>{errorMsg}</span>
+          <span className="text-red-600 dark:text-red-400">{errorMsg}</span>
           <button
             type="button"
             className="text-muted-foreground hover:text-foreground cursor-pointer"
@@ -551,179 +575,186 @@ export function XBlueGraphPage() {
             onExpandNode={(id) => void handleExpandOneHop(id)}
           />
 
-          {/* Main Sigma Canvas + Right Tool Inspector */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-            <Card className="lg:col-span-8 p-0 overflow-hidden relative flex flex-col">
-              <SigmaCanvas
-                nodes={visibleNodes}
-                edges={visibleEdges}
-                selectedNodeId={selectedNodeId}
-                highlightedPathIds={highlightedPathIds}
-                colorMode={colorMode}
-                colorMetricKey={colorMetricKey}
-                algoMode={algoMode}
-                algoEntries={algoEntries}
-                fa2Running={fa2Running}
-                isDark={isDark}
-                onSelectNode={handleSelectNode}
-                onExpandNode={(id) => void handleExpandOneHop(id)}
-                onSetPathEndpoint={(role, nodeId) => {
-                  if (role === "from") setPresetPathFrom(nodeId);
-                  else setPresetPathTo(nodeId);
-                  setSideTab("path");
-                }}
-              />
-              {visibleNodes.length === 0 && !loading && (
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs text-muted-foreground">
-                  {tx("暂无业务节点", "No business nodes")}
-                </div>
-              )}
-              <AlgoLegend
-                colorMode={colorMode}
-                colorMetricKey={colorMetricKey}
-                distinctTypes={distinctTypes}
-                algoMode={algoMode}
-                algoEntries={algoEntries}
-                isDark={isDark}
-              />
-            </Card>
-
-            <Card className="lg:col-span-4 p-3 space-y-3 max-h-[620px] overflow-y-auto">
-              {/* Side Drawer Tool Tabs */}
-              <div className="grid grid-cols-4 gap-1 rounded-md border border-border bg-muted/40 p-0.5">
-                {(
-                  [
-                    {
-                      key: "inspector",
-                      label: tx("详情", "Details"),
-                      icon: Info,
-                    },
-                    {
-                      key: "neighbors",
-                      label: tx("扩展", "Expand"),
-                      icon: Share2,
-                    },
-                    { key: "path", label: tx("路径", "Path"), icon: Route },
-                    {
-                      key: "algo",
-                      label: tx("算法", "Algorithms"),
-                      icon: Cpu,
-                    },
-                  ] as const
-                ).map((item) => {
-                  const Icon = item.icon;
-                  const isActive = sideTab === item.key;
-                  return (
-                    <button
-                      key={item.key}
-                      type="button"
-                      onClick={() => setSideTab(item.key)}
-                      data-testid={`side-tab-${item.key}`}
-                      className={`inline-flex items-center justify-center gap-1 rounded py-1.5 text-xs font-medium transition-colors cursor-pointer ${
-                        isActive
-                          ? "bg-background text-foreground border border-border"
-                          : "text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <Icon
-                        className={`h-3 w-3 ${isActive ? "text-xblue" : ""}`}
-                      />
-                      {item.label}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {sideTab === "inspector" && (
-                <NodeInspector
-                  node={selectedNode}
-                  onExpandOneHop={handleExpandOneHop}
-                />
-              )}
-
-              {sideTab === "neighbors" && (
-                <NeighborExpand
-                  nodes={nodes}
+          {/* Main 100vh Split: Left Canvas (+ Wide Bottom Telemetry Panel on Metric Click) & Right Compact Inspector */}
+          <div className="grid flex-1 min-h-0 grid-cols-1 lg:grid-cols-12 gap-3 overflow-hidden">
+            <div className="lg:col-span-8 flex flex-col min-h-0 gap-2.5 overflow-hidden">
+              <Card className="flex-1 min-h-0 p-0 overflow-hidden relative flex flex-col">
+                <SigmaCanvas
+                  nodes={visibleNodes}
+                  edges={visibleEdges}
                   selectedNodeId={selectedNodeId}
-                  knownLinkTypes={knownLinkTypes}
-                  onMergeSubgraph={mergeSubgraphIntoCanvas}
-                />
-              )}
-
-              {sideTab === "path" && (
-                <PathPanel
-                  nodes={nodes}
-                  presetFromId={presetPathFrom}
-                  presetToId={presetPathTo}
-                  onPathFound={handlePathFound}
-                  onClearHighlight={() => setHighlightedPathIds([])}
-                />
-              )}
-
-              {sideTab === "algo" && (
-                <AlgoPanel
-                  onApplyVisualMapping={(mode, entries) => {
-                    setAlgoMode(mode);
-                    setAlgoEntries(entries);
-                    if (mode !== "NONE") setColorMode("ALGO");
+                  highlightedPathIds={highlightedPathIds}
+                  colorMode={colorMode}
+                  colorMetricKey={colorMetricKey}
+                  algoMode={algoMode}
+                  algoEntries={algoEntries}
+                  fa2Running={fa2Running}
+                  isDark={isDark}
+                  onSelectNode={handleSelectNode}
+                  onExpandNode={(id) => void handleExpandOneHop(id)}
+                  onSetPathEndpoint={(role, nodeId) => {
+                    if (role === "from") setPresetPathFrom(nodeId);
+                    else setPresetPathTo(nodeId);
+                    setSideTab("path");
                   }}
-                  onSelectNodeId={(id) => handleSelectNode(id)}
                 />
+                {visibleNodes.length === 0 && !loading && (
+                  <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs text-muted-foreground">
+                    {tx("暂无业务节点", "No business nodes")}
+                  </div>
+                )}
+                <AlgoLegend
+                  colorMode={colorMode}
+                  colorMetricKey={colorMetricKey}
+                  distinctTypes={distinctTypes}
+                  algoMode={algoMode}
+                  algoEntries={algoEntries}
+                  isDark={isDark}
+                />
+              </Card>
+
+              {/* Wide Docked Bottom Metric Telemetry & Explain DAG Panel (Replaces narrow sidebar cramming) */}
+              {selectedNode && activeMetric && (
+                <Card className="shrink-0 h-68 p-3 flex flex-col gap-2 overflow-hidden">
+                  <div className="grid flex-1 min-h-0 grid-cols-1 xl:grid-cols-12 gap-3 overflow-hidden">
+                    <div className="xl:col-span-7 min-w-0 flex flex-col min-h-0">
+                      <MetricChart
+                        nodeId={selectedNode.id}
+                        nodeTitle={selectedNode.title}
+                        metric={activeMetric}
+                      />
+                    </div>
+                    <div className="xl:col-span-5 min-w-0 flex flex-col min-h-0 overflow-y-auto">
+                      <MetricExplainChain
+                        nodeId={selectedNode.id}
+                        metric={activeMetric}
+                        onClose={() => setActiveMetric(null)}
+                      />
+                    </div>
+                  </div>
+                </Card>
               )}
+            </div>
+
+            <Card className="lg:col-span-4 h-full min-h-0 p-3 flex flex-col gap-3 overflow-hidden">
+              <SegmentedControl<SideTab>
+                className="w-full grid grid-cols-4 shrink-0"
+                value={sideTab}
+                onChange={setSideTab}
+                items={[
+                  {
+                    key: "inspector",
+                    label: tx("详情", "Details"),
+                    icon: <Info className="h-3 w-3" />,
+                    testId: "side-tab-inspector",
+                  },
+                  {
+                    key: "neighbors",
+                    label: tx("扩展", "Expand"),
+                    icon: <Share2 className="h-3 w-3" />,
+                    testId: "side-tab-neighbors",
+                  },
+                  {
+                    key: "path",
+                    label: tx("路径", "Path"),
+                    icon: <Route className="h-3 w-3" />,
+                    testId: "side-tab-path",
+                  },
+                  {
+                    key: "algo",
+                    label: tx("算法", "Algo"),
+                    icon: <Cpu className="h-3 w-3" />,
+                    testId: "side-tab-algo",
+                  },
+                ]}
+              />
+
+              <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
+                {sideTab === "inspector" && (
+                  <NodeInspector
+                    node={selectedNode}
+                    selectedMetric={activeMetric}
+                    onSelectMetric={(m) =>
+                      setActiveMetric((prev) => (prev === m ? null : m))
+                    }
+                    onExpandOneHop={handleExpandOneHop}
+                  />
+                )}
+
+                {sideTab === "neighbors" && (
+                  <NeighborExpand
+                    nodes={nodes}
+                    selectedNodeId={selectedNodeId}
+                    knownLinkTypes={knownLinkTypes}
+                    onMergeSubgraph={mergeSubgraphIntoCanvas}
+                  />
+                )}
+
+                {sideTab === "path" && (
+                  <PathPanel
+                    nodes={nodes}
+                    presetFromId={presetPathFrom}
+                    presetToId={presetPathTo}
+                    onPathFound={handlePathFound}
+                    onClearHighlight={() => setHighlightedPathIds([])}
+                  />
+                )}
+
+                {sideTab === "algo" && (
+                  <AlgoPanel
+                    onApplyVisualMapping={(mode, entries) => {
+                      setAlgoMode(mode);
+                      setAlgoEntries(entries);
+                      if (mode !== "NONE") setColorMode("ALGO");
+                    }}
+                    onSelectNodeId={(id) => handleSelectNode(id)}
+                  />
+                )}
+              </div>
             </Card>
           </div>
         </>
       ) : (
-        /* Interactive Knowledge Hypergraph View */
-        <div className="space-y-3" data-testid="hypergraph-layer-panel">
-          <Card className="p-3 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-semibold">
-                {tx("知识超图网络", "Knowledge Hypergraph")}
-              </span>
-              <Badge variant="xblue">
-                {fmtNum(hyperCanvasNodes.length, 0)} {tx("节点", "Nodes")}
-              </Badge>
-              <Badge variant="neutral">
-                {fmtNum(hyperCanvasEdges.length, 0)} {tx("关系", "Edges")}
-              </Badge>
-            </div>
+        /* Unified Interactive Knowledge Hypergraph View */
+        <div
+          className="flex flex-1 min-h-0 flex-col gap-2.5 overflow-hidden"
+          data-testid="hypergraph-layer-panel"
+        >
+          <GraphToolbar
+            searchQuery={hyperSearchQuery}
+            onSearchQueryChange={setHyperSearchQuery}
+            onSearchSubmit={(e) => {
+              e.preventDefault();
+              if (hyperCanvasNodes[0]) {
+                setHyperSelectedId(hyperCanvasNodes[0].id);
+              }
+            }}
+            searching={false}
+            searchOpen={false}
+            onCloseSearch={() => {}}
+            searchHits={[]}
+            onPickSearchHit={() => {}}
+            typeFilter={hyperTypeFilter}
+            onTypeFilterChange={setHyperTypeFilter}
+            distinctTypes={hyperDistinctTypes}
+            colorMode="TYPE"
+            onColorModeChange={() => {}}
+            colorMetricKey="weight"
+            onColorMetricKeyChange={() => {}}
+            availableMetrics={[]}
+            fa2Running={hyperFa2Running}
+            onToggleFa2={() => setHyperFa2Running((v) => !v)}
+            visibleNodes={hyperCanvasNodes}
+            visibleEdgeCount={hyperCanvasEdges.length}
+            selectedNodeId={hyperSelectedId}
+            expanding={false}
+            onSelectNode={(id) => setHyperSelectedId(id)}
+            onExpandNode={() => {}}
+            hideColorModeControls
+          />
 
-            <div className="flex flex-wrap items-center gap-2">
-              <Select
-                value={hyperTypeFilter}
-                onChange={(e) => setHyperTypeFilter(e.target.value)}
-                className="h-8 font-mono-tech"
-              >
-                <option value="">{tx("全部超图类型", "All Types")}</option>
-                {hyperDistinctTypes.map((ht) => (
-                  <option key={ht} value={ht}>
-                    {ht} ({tEnum(ht)})
-                  </option>
-                ))}
-              </Select>
-
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 px-2.5"
-                onClick={() => setHyperFa2Running((v) => !v)}
-              >
-                {hyperFa2Running ? (
-                  <Pause className="h-3.5 w-3.5 text-xblue" />
-                ) : (
-                  <Play className="h-3.5 w-3.5" />
-                )}
-                {hyperFa2Running
-                  ? tx("暂停布局", "Pause Layout")
-                  : tx("力导布局", "Force Layout")}
-              </Button>
-            </div>
-          </Card>
-
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
-            <Card className="lg:col-span-8 p-0 overflow-hidden relative flex flex-col">
+          <div className="grid flex-1 min-h-0 grid-cols-1 lg:grid-cols-12 gap-3 overflow-hidden">
+            <Card className="lg:col-span-8 flex-1 min-h-0 p-0 overflow-hidden relative flex flex-col">
               <SigmaCanvas
                 nodes={hyperCanvasNodes}
                 edges={hyperCanvasEdges}
@@ -740,7 +771,7 @@ export function XBlueGraphPage() {
               />
               {hyperCanvasNodes.length === 0 && !loading && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs text-muted-foreground">
-                  {tx("暂无超图节点", "No hypergraph nodes")}
+                  {tx("暂无匹配超图节点", "No matching hypergraph nodes")}
                 </div>
               )}
               <AlgoLegend
@@ -753,15 +784,15 @@ export function XBlueGraphPage() {
               />
             </Card>
 
-            <Card className="lg:col-span-4 p-3.5 space-y-3 max-h-[620px] overflow-y-auto text-xs">
-              <div className="flex items-center justify-between border-b border-border pb-2">
+            <Card className="lg:col-span-4 h-full min-h-0 p-3.5 flex flex-col gap-3 overflow-y-auto text-xs">
+              <div className="flex items-center justify-between border-b border-border pb-2 shrink-0">
                 <span className="font-semibold flex items-center gap-1.5">
                   <FileText className="h-3.5 w-3.5 text-xblue" />
                   {tx("超图节点详情", "Hypergraph Node")}
                 </span>
                 {selectedHyperNode && (
                   <Badge variant="xblue">
-                    {tEnum(selectedHyperNode.node_type)}
+                    {translateNodeTypeLabel(selectedHyperNode.node_type, isZh)}
                   </Badge>
                 )}
               </div>
@@ -772,53 +803,54 @@ export function XBlueGraphPage() {
                 />
               ) : (
                 <div className="space-y-3">
-                  <div className="rounded border border-border bg-muted/20 p-2.5 space-y-1">
-                    <div className="text-sm font-semibold">
+                  <div className="rounded-md bg-muted/35 p-2.5 space-y-1">
+                    <div className="text-sm font-semibold leading-snug">
                       {selectedHyperNode.label}
                     </div>
-                    <div className="flex items-center gap-2 font-mono-tech text-[11px] text-muted-foreground">
-                      <span>{selectedHyperNode.node_type}</span>
-                      <span>·</span>
-                      <span>
-                        {tx("权重", "Weight")} ={" "}
+                    <div className="text-[11px] text-muted-foreground">
+                      {tx("连接度权重", "Connectivity weight")}:{" "}
+                      <span className="font-mono-tech tabular-nums text-foreground font-medium">
                         {fmtNum(selectedHyperNode.weight, 2)}
                       </span>
                     </div>
                   </div>
 
                   <div className="space-y-1.5">
-                    <div className="font-semibold text-muted-foreground">
+                    <div className="text-[11px] font-semibold text-muted-foreground">
                       {tx("关联超边与事实", "Connected Hyperedges")} (
                       {selectedHyperEdges.length})
                     </div>
                     {selectedHyperEdges.length === 0 ? (
-                      <div className="text-muted-foreground">
-                        {tx("暂无关联超边", "No connected edges")}
+                      <div className="rounded-md bg-muted/25 py-6 text-center text-muted-foreground">
+                        {tx("当前节点暂无直接关联超边", "No connected hyperedges")}
                       </div>
                     ) : (
                       <div className="space-y-1.5">
-                        {selectedHyperEdges.slice(0, 20).map((he, idx) => {
+                        {selectedHyperEdges.slice(0, 30).map((he, idx) => {
                           const peerId =
                             he.source === selectedHyperNode.id
                               ? he.target
                               : he.source;
                           const peerLabel =
-                            hyperNodeLabelById.get(peerId) ?? peerId.slice(0, 8);
+                            hyperNodeLabelById.get(peerId) ??
+                            peerId.slice(0, 8);
                           return (
                             <button
                               key={`${he.id}-${idx}`}
                               type="button"
                               onClick={() => setHyperSelectedId(peerId)}
-                              className="w-full text-left rounded border border-border bg-background p-2 space-y-1 hover:border-xblue transition-colors cursor-pointer"
+                              className="w-full text-left rounded-md border border-border/80 bg-background p-2.5 space-y-1 hover:border-xblue hover:bg-xblue-soft/20 transition-colors cursor-pointer"
                             >
                               <div className="flex items-center justify-between gap-2">
                                 <span className="font-medium truncate">
                                   {peerLabel}
                                 </span>
-                                <Badge variant="outline">{he.rel_type}</Badge>
+                                <Badge variant="outline">
+                                  {translateEdgeTypeLabel(he.rel_type, isZh)}
+                                </Badge>
                               </div>
                               {he.fact && (
-                                <div className="text-[11px] text-muted-foreground line-clamp-2">
+                                <div className="text-[11px] text-muted-foreground leading-relaxed line-clamp-3">
                                   {he.fact}
                                 </div>
                               )}
@@ -827,34 +859,6 @@ export function XBlueGraphPage() {
                         })}
                       </div>
                     )}
-                  </div>
-                </div>
-              )}
-
-              {(hypergraph?.nodes.length ?? 0) > 0 && (
-                <div className="space-y-1.5 border-t border-border pt-3">
-                  <div className="font-semibold text-muted-foreground">
-                    {tx("节点索引", "Node Index")} (
-                    {hypergraph?.nodes.length ?? 0})
-                  </div>
-                  <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
-                    {(hypergraph?.nodes ?? []).slice(0, 40).map((hn) => {
-                      const active = hn.id === hyperSelectedId;
-                      return (
-                        <button
-                          key={hn.id}
-                          type="button"
-                          onClick={() => setHyperSelectedId(hn.id)}
-                          className={`rounded border px-2 py-0.5 text-[11px] transition-colors cursor-pointer ${
-                            active
-                              ? "border-xblue bg-xblue-soft text-xblue font-medium"
-                              : "border-border bg-background hover:bg-muted"
-                          }`}
-                        >
-                          {hn.label}
-                        </button>
-                      );
-                    })}
                   </div>
                 </div>
               )}
