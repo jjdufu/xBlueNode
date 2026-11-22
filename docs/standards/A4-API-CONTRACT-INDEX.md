@@ -64,6 +64,7 @@
 | `GET /subgraphs`、`POST /subgraphs`、`PATCH /subgraphs/{slug}`、`DELETE /subgraphs/{slug}` | `DATA_READ` / `STUDIO_EDIT` | [06](../../plans/completed/v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §05.7 |
 | `POST /subgraphs/{slug}/merge-preview`、`POST /subgraphs/{slug}/merge`、`POST /subgraphs/{slug}/dry-run-materialize`、`POST /subgraphs/{slug}/reset-nodes` | `STUDIO_EDIT` / `STUDIO_PUBLISH` / `DATA_SYNC` | §05.7、[03](../../plans/v2-ux-and-grounded-ai/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.4 |
 | `GET /subgraphs/{slug}/lineage/{node_type}`、`GET /subgraphs/{slug}/spec-doc` | `DATA_READ` | [04-STEP18](../../plans/v2-ux-and-grounded-ai/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.4、§18.5 |
+| `POST /subgraphs/from-template`、`POST /subgraphs/{slug}/package-agent`、`GET /subgraphs/{slug}/consumption` | `STUDIO_EDIT` / `AGENT_EDIT` / `DATA_READ` | [05-STEP19](../../plans/v2-ux-and-grounded-ai/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.2、§19.3 |
 | `GET /schema`、`POST /schema`、`PUT /schema`、`POST /schema/validate` | `DATA_READ` / `STUDIO_PUBLISH` / `STUDIO_EDIT` | §05.7 |
 | `GET /schema/versions`、`GET /schema/versions/{v}`、`GET /schema/versions/{a}/diff/{b}`、`POST /schema/versions/{v}/restore` | `DATA_READ` / `STUDIO_PUBLISH` | 同上 |
 | `GET /drafts`、`POST /drafts`、`GET /drafts/{id}`、`PUT /drafts/{id}`、`POST /drafts/{id}/discard`、`POST /drafts/ai`、`POST /drafts/{id}/publish` | `STUDIO_EDIT` / `STUDIO_PUBLISH` | 同上 |
@@ -147,7 +148,7 @@
 | 方法与路径 | 鉴权 | 定义 |
 | :--- | :--- | :--- |
 | `GET /dashboards`、`POST /dashboards`、`GET /dashboards/{id}`、`PUT /dashboards/{id}`、`DELETE /dashboards/{id}`、`GET /dashboards/by-slug/{slug}` | `DATA_READ` / `VIEW_EDIT` | [10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.7 |
-| `POST /dashboards/ai-generate` | `VIEW_EDIT` | §11.6 |
+| `POST /dashboards/ai-generate`、`POST /dashboards/ai-draft` | `VIEW_EDIT` | §11.6、[05-STEP19](../../plans/v2-ux-and-grounded-ai/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.3.2 |
 | `POST /dashboards/{id}/publish`、`POST /dashboards/{id}/duplicate`、`PUT /dashboards/{id}/layout` | `VIEW_EDIT` | §11.7 |
 | `POST /dashboards/{id}/widgets`、`PUT /widgets/{id}`、`DELETE /widgets/{id}` | `VIEW_EDIT` | 同上 |
 | `POST /widgets/{id}/data`、`POST /widgets/preview` | `DATA_READ` | §11.2 |
@@ -184,7 +185,8 @@
 | `GET /health/deep`、`GET /outbox/stats`、`GET /system/info` | `OPS_ADMIN` | 14 | §14.4.3 |
 | `GET /retention`、`PUT /retention/{target}`、`POST /retention/run-now` | `OPS_ADMIN` | 14 | §14.4.1 |
 | `GET /backups`、`POST /backups`、`GET /backups/{id}` | `OPS_ADMIN`（`default` 租户） | 14 | §14.3 |
-| `GET /templates`、`GET /templates/{pack_id}`、`POST /templates/{pack_id}/plan`、`GET /templates/installs`、`POST /templates/installs/{id}/apply`、`POST /templates/installs/{id}/uninstall` | `DATA_READ` / `OPS_ADMIN` | 14 | §14.5 |
+| `GET /onboarding-status` | `DATA_READ` | 19 | [05-STEP19](../../plans/v2-ux-and-grounded-ai/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.1.1 |
+| `GET /templates`、`GET /templates/{pack_id}`、`GET /templates/{pack_id}/preview`、`POST /templates/{pack_id}/plan`、`POST /templates/{pack_id}/install`、`GET /templates/installs`、`POST /templates/installs/{id}/apply`、`POST /templates/installs/{id}/uninstall` | `DATA_READ` / `OPS_ADMIN` | 14 / 19 | §14.5、[05-STEP19](../../plans/v2-ux-and-grounded-ai/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.2 |
 | `POST /demo/{scenario}/load` | `OPS_ADMIN` | 14 | §14.6 |
 | `GET /work-items`、`POST /work-items`、`GET /work-items/{id}`、`PATCH /work-items/{id}`、`POST /work-items/{id}/comments` | `DATA_READ` / `FLOW_RUN` | 14 | §14.7 |
 

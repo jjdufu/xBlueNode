@@ -284,7 +284,6 @@ async fn ai_draft_dashboard_handler(
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<AiDraftDashboardRequest>,
 ) -> Result<(StatusCode, Json<DashboardDetail>), HttpError> {
-    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::ViewEdit)?;
     let detail = generate_studio_ai_dashboard_draft(
         &state.store,
