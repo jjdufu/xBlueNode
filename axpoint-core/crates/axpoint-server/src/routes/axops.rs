@@ -6,13 +6,16 @@ use axpoint_domain::axhub::PaginatedList;
 use axpoint_domain::enums::{JobKind, Permission, RetentionTarget};
 use axpoint_domain::ops::{
     BackupRecord, CreateBackupRequest, CreateWorkItemCommentRequest, CreateWorkItemRequest,
-    DeepHealthReport, DemoLoadResponse, DemoScenario, OutboxStats, PatchWorkItemRequest,
-    PutRetentionPolicyRequest, RetentionPolicyRecord, SystemInfoResponse, TemplateInstallRecord,
-    TemplateManifest, TemplatePackDetail, TemplatePlanRequest, TemplateUninstallResponse, WorkItem,
-    WorkItemDetail, WorkItemEvent, WorkItemListQuery,
+    DeepHealthReport, DemoLoadResponse, DemoScenario, InstallTemplateRequest,
+    OnboardingStatusResponse, OutboxStats, PatchWorkItemRequest, PutRetentionPolicyRequest,
+    RetentionPolicyRecord, SystemInfoResponse, TemplateInstallRecord, TemplateManifest,
+    TemplatePackDetail, TemplatePlanRequest, TemplatePreviewResponse, TemplateUninstallResponse,
+    WorkItem, WorkItemDetail, WorkItemEvent, WorkItemListQuery,
 };
 use axpoint_domain::platform::{JobListQuery, JobListResponse, JobRecord, NewJob};
-use axpoint_domain::ports::{JobQueuePort as _, OpsRepository as _};
+use axpoint_domain::ports::{
+    JobQueuePort as _, OnboardingAndPackagingPort as _, OpsRepository as _,
+};
 use axpoint_security::AuthPrincipal;
 use axpoint_server::ops::backup::BackupAuditContext;
 use axpoint_server::ops::templates::TemplateAuditContext;
@@ -47,6 +50,7 @@ pub(crate) fn router() -> Router<AppState> {
 
 fn jobs_and_health_router() -> Router<AppState> {
     Router::new()
+        .route("/axops/onboarding-status", get(onboarding_status_handler))
         .route("/axops/jobs", get(list_jobs_handler))
         .route("/axops/jobs/rollup-now", post(rollup_now_handler))
         .route("/axops/jobs/{id}", get(get_job_handler))
@@ -78,8 +82,16 @@ fn templates_and_demo_router() -> Router<AppState> {
         )
         .route("/axops/templates/{pack_id}", get(get_template_handler))
         .route(
+            "/axops/templates/{pack_id}/preview",
+            get(preview_template_handler),
+        )
+        .route(
             "/axops/templates/{pack_id}/plan",
             post(plan_template_handler),
+        )
+        .route(
+            "/axops/templates/{pack_id}/install",
+            post(install_template_handler),
         )
         .route(
             "/axops/templates/installs/{id}/apply",
@@ -336,6 +348,65 @@ async fn get_template_handler(
     Ok(Json(state.ops.get_template(&pack_id)?))
 }
 
+async fn onboarding_status_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+) -> Result<Json<OnboardingStatusResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let status = state
+        .store
+        .get_onboarding_status(&principal.tenant_id)
+        .await?;
+    Ok(Json(status))
+}
+
+async fn preview_template_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(pack_id): ApiPath<String>,
+) -> Result<Json<TemplatePreviewResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    Ok(Json(state.ops.preview_template(&pack_id)?))
+}
+
+async fn install_template_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath(pack_id): ApiPath<String>,
+    body: Bytes,
+) -> Result<Json<TemplateInstallRecord>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
+    principal.require(Permission::OpsAdmin)?;
+    let req: InstallTemplateRequest = parse_optional_json(&body)?;
+    let planned = state
+        .ops
+        .plan_template_install(
+            &principal.tenant_id,
+            actor_opt(&principal),
+            &pack_id,
+            Some(req.on_conflict),
+        )
+        .await?;
+    if req.dry_run {
+        return Ok(Json(planned));
+    }
+    let client_ip = extract_client_ip(&headers);
+    let trace_id = current_trace_id();
+    let installed = state
+        .ops
+        .apply_template_install(
+            &principal,
+            TemplateAuditContext {
+                client_ip: &client_ip,
+                trace_id: &trace_id,
+            },
+            planned.id,
+        )
+        .await?;
+    Ok(Json(installed))
+}
+
 async fn list_template_installs_handler(
     State(state): State<AppState>,
     principal: AuthPrincipal,
@@ -493,4 +564,12 @@ async fn add_work_item_comment_handler(
         .add_work_item_comment(&principal.tenant_id, id, actor_opt(&principal), req)
         .await?;
     Ok((StatusCode::CREATED, Json(ev)))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn axops_templates_router_builds_without_param_conflict() {
+        let _router = super::router();
+    }
 }

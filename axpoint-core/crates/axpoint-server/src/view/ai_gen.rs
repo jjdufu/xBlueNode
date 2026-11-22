@@ -7,19 +7,19 @@ use axpoint_analytics::{CatalogDatasetEntry, GuardOptions, TenantCatalog, compil
 use axpoint_domain::AppError;
 use axpoint_domain::analytics::{MetricDef, PivotSpec, SavedQuery};
 use axpoint_domain::axhub::{Dataset, DatasetListQuery, DatasetStatus};
-use axpoint_domain::enums::{AssetKind, Environment, Purpose};
+use axpoint_domain::enums::{AssetKind, Environment, Purpose, WidgetKind};
 use axpoint_domain::flow::FlowListQuery;
 use axpoint_domain::ports::{
     AiPort, AnalyticsRepository, DatasetRepository, FlowRepository, StudioRepository,
     ViewRepository,
 };
 use axpoint_domain::rules::SimplePageQuery;
-use axpoint_domain::studio::{NodeTypeSpec, PropertyKind, SchemaDoc};
+use axpoint_domain::studio::{DraftStatus, NodeTypeSpec, PropertyKind, SchemaDoc};
 use axpoint_domain::topology::AxFlowDef;
 use axpoint_domain::view::{
-    AiDashboardDraft, AiGenerateDashboardRequest, AssetRecord, CanvasConfig,
-    CreateDashboardRequest, CreateWidgetRecordParams, DashboardDetail, RefreshMode,
-    WidgetActionType, WidgetDataSource, WidgetPosition,
+    AiDashboardDraft, AiDraftDashboardRequest, AiGenerateDashboardRequest, AiWidgetDraft,
+    AssetRecord, CanvasConfig, CreateDashboardRequest, CreateWidgetRecordParams, DashboardDetail,
+    DashboardStatus, RefreshMode, WidgetActionType, WidgetDataSource, WidgetPosition,
 };
 use axpoint_llm::LlmRouter;
 use uuid::Uuid;
@@ -834,6 +834,529 @@ where
         .await
 }
 
+/// Generates (or deterministically synthesizes on offline cassette miss) a Studio-contextual `DRAFT`
+/// twin dashboard seeded with `subgraph_slug` and `seed_node_types` (`POST /api/xblueview/dashboards/ai-draft`, `05-STEP19` §19.3).
+///
+/// # Errors
+/// Returns [`AppError::BadRequest`] on empty `name`/`prompt` or invalid `slug`,
+/// [`AppError::Conflict`] if an explicit `slug` collides with an already `PUBLISHED` dashboard,
+/// or storage errors from underlying repositories.
+pub async fn generate_studio_ai_dashboard_draft<S>(
+    store: &S,
+    llm_router: &LlmRouter,
+    tenant_id: &str,
+    caller_user_id: Option<Uuid>,
+    created_by: Option<Uuid>,
+    req: AiDraftDashboardRequest,
+) -> Result<DashboardDetail, AppError>
+where
+    S: StudioRepository
+        + AnalyticsRepository
+        + DatasetRepository
+        + FlowRepository
+        + ViewRepository
+        + ?Sized,
+{
+    let trimmed_name = req.name.trim();
+    if trimmed_name.is_empty() {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            "dashboard name cannot be empty",
+        ));
+    }
+    if req.prompt.trim().is_empty() {
+        return Err(AppError::bad("INVALID_ARGUMENT", "prompt cannot be empty"));
+    }
+    if let Some(ref explicit_slug) = req.slug {
+        validate_dashboard_slug(explicit_slug.trim())?;
+    }
+
+    let viewer_uid = caller_user_id.or(created_by).unwrap_or_else(Uuid::nil);
+    let (ctx, seeded_types) =
+        collect_studio_dashboard_context(store, tenant_id, viewer_uid, &req).await?;
+
+    let mut draft = match try_llm_studio_draft(
+        llm_router,
+        tenant_id,
+        caller_user_id,
+        &ctx,
+        &req,
+        &seeded_types,
+    )
+    .await
+    {
+        Some(llm_draft) => llm_draft,
+        None => synthesize_studio_dashboard_draft(&ctx, &req, &seeded_types),
+    };
+    draft.name = String::from(trimmed_name);
+    if let Some(theme_override) = req.theme {
+        draft.theme = theme_override;
+    }
+
+    let final_slug =
+        prepare_idempotent_draft_slug(store, tenant_id, req.slug.as_deref(), &draft.slug).await?;
+    persist_draft_dashboard_records(store, tenant_id, created_by, final_slug, draft).await
+}
+
+async fn collect_studio_dashboard_context<S>(
+    store: &S,
+    tenant_id: &str,
+    viewer_uid: Uuid,
+    req: &AiDraftDashboardRequest,
+) -> Result<(DashboardGenContext, Vec<String>), AppError>
+where
+    S: StudioRepository
+        + AnalyticsRepository
+        + DatasetRepository
+        + FlowRepository
+        + ViewRepository
+        + ?Sized,
+{
+    let mut ctx = collect_dashboard_gen_context_for_user(store, tenant_id, viewer_uid).await?;
+    let subgraph_slug = req
+        .subgraph_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("main");
+
+    let mut sub_doc = store
+        .get_published_schema(tenant_id, subgraph_slug)
+        .await?
+        .doc;
+    if sub_doc.node_types.is_empty() {
+        let drafts = store
+            .list_drafts(tenant_id, subgraph_slug, Some(DraftStatus::Draft))
+            .await?;
+        if let Some(latest) = drafts.into_iter().next() {
+            sub_doc = latest.schema_doc;
+        }
+    }
+    ctx.schema = sub_doc;
+
+    let mut seeded = Vec::new();
+    let mut seen = BTreeSet::new();
+    for raw in &req.seed_node_types {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty()
+            && ctx.schema.node_types.iter().any(|nt| nt.name == trimmed)
+            && seen.insert(String::from(trimmed))
+        {
+            seeded.push(String::from(trimmed));
+        }
+    }
+    if seeded.is_empty() {
+        seeded = ctx
+            .schema
+            .node_types
+            .iter()
+            .map(|nt| nt.name.clone())
+            .collect();
+    } else {
+        ctx.schema
+            .node_types
+            .sort_by_key(|nt| usize::from(!seen.contains(&nt.name)));
+    }
+
+    Ok((ctx, seeded))
+}
+
+async fn try_llm_studio_draft(
+    llm_router: &LlmRouter,
+    tenant_id: &str,
+    caller_user_id: Option<Uuid>,
+    ctx: &DashboardGenContext,
+    req: &AiDraftDashboardRequest,
+    seeded_types: &[String],
+) -> Option<AiDashboardDraft> {
+    let gen_req = AiGenerateDashboardRequest {
+        prompt: req.prompt.clone(),
+        title: Some(req.name.clone()),
+        slug: req.slug.clone(),
+        theme: req.theme,
+    };
+    let (sys, mut usr) = build_dashboard_gen_prompts(ctx, &gen_req);
+    if !seeded_types.is_empty() {
+        let _w = writeln!(usr, "seed_node_types: {}", seeded_types.join(","));
+    }
+
+    let raw = llm_router
+        .complete_chat_for_user(tenant_id, caller_user_id, Purpose::Extract, &sys, &usr)
+        .await
+        .ok()?;
+    let candidate = match parse_and_validate(&raw, ctx) {
+        Ok(d) => d,
+        Err((repair_usr, _)) => {
+            let repaired = llm_router
+                .complete_chat_for_user(
+                    tenant_id,
+                    caller_user_id,
+                    Purpose::Extract,
+                    &sys,
+                    &repair_usr,
+                )
+                .await
+                .ok()?;
+            parse_and_validate(&repaired, ctx).ok()?
+        }
+    };
+
+    if candidate.widgets.is_empty() {
+        return None;
+    }
+    if !req.seed_node_types.is_empty() && !draft_covers_seeded_types(&candidate, seeded_types) {
+        return None;
+    }
+    Some(candidate)
+}
+
+fn draft_covers_seeded_types(draft: &AiDashboardDraft, seeded_types: &[String]) -> bool {
+    let mut covered = BTreeSet::new();
+    for w in &draft.widgets {
+        match &w.data_source {
+            WidgetDataSource::NodeMetric { type_name, .. } => {
+                covered.insert(type_name.as_str());
+            }
+            WidgetDataSource::Graph { type_names, .. }
+            | WidgetDataSource::NodesGeo { type_names, .. } => {
+                for tn in type_names {
+                    covered.insert(tn.as_str());
+                }
+            }
+            _ => {}
+        }
+    }
+    seeded_types.iter().all(|s| covered.contains(s.as_str()))
+}
+
+/// Deterministically synthesizes a grounded 4-widget `xBlueView` twin dashboard draft from
+/// `ctx` and `seeded_types` when `LlmRouter` is offline or omits seeded entities (`05-STEP19` §19.3).
+#[must_use]
+pub fn synthesize_studio_dashboard_draft(
+    ctx: &DashboardGenContext,
+    req: &AiDraftDashboardRequest,
+    seeded_types: &[String],
+) -> AiDashboardDraft {
+    let primary_nt = seeded_types
+        .first()
+        .and_then(|name| ctx.schema.node_types.iter().find(|nt| nt.name == *name))
+        .or_else(|| ctx.schema.node_types.first());
+    let primary_metrics: Vec<String> =
+        primary_nt.map_or_default(|nt| collect_node_metric_names(nt).into_iter().collect());
+
+    let kpi_widget = build_fallback_kpi_widget(ctx, primary_nt, primary_metrics.first());
+    let bar_widget = build_fallback_bar_widget(
+        ctx,
+        primary_nt,
+        primary_metrics.get(1).or_else(|| primary_metrics.first()),
+    );
+    let graph_widget = build_fallback_graph_widget(
+        req.name.trim(),
+        ctx,
+        seeded_types,
+        primary_metrics.first().map(String::as_str),
+    );
+    let alert_widget = AiWidgetDraft {
+        widget_kind: WidgetKind::AlertList,
+        title: String::from("实时监控与风险告警"),
+        position: WidgetPosition {
+            x: 14,
+            y: 6,
+            w: 10,
+            h: 10,
+        },
+        data_source: WidgetDataSource::Alerts {
+            status: vec![String::from("OPEN"), String::from("ACK")],
+            severity: vec![String::from("WARN"), String::from("CRITICAL")],
+            limit: Some(20),
+        },
+        encoding: serde_json::json!({}),
+        options: serde_json::json!({}),
+        drill: Vec::new(),
+    };
+
+    let fallback_slug = req
+        .slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map_or_else(|| derive_fallback_cockpit_slug(seeded_types), String::from);
+
+    AiDashboardDraft {
+        name: req.name.trim().to_owned(),
+        slug: fallback_slug,
+        theme: req.theme.unwrap_or_default(),
+        description: req.prompt.trim().to_owned(),
+        filters: Vec::new(),
+        widgets: vec![kpi_widget, bar_widget, graph_widget, alert_widget],
+    }
+}
+
+fn build_fallback_kpi_widget(
+    ctx: &DashboardGenContext,
+    primary_nt: Option<&NodeTypeSpec>,
+    metric_opt: Option<&String>,
+) -> AiWidgetDraft {
+    let pos = WidgetPosition {
+        x: 0,
+        y: 0,
+        w: 8,
+        h: 6,
+    };
+    if let (Some(nt), Some(m1)) = (primary_nt, metric_opt) {
+        let label = if nt.display_name.trim().is_empty() {
+            nt.name.as_str()
+        } else {
+            nt.display_name.trim()
+        };
+        return AiWidgetDraft {
+            widget_kind: WidgetKind::KpiCard,
+            title: format!("{label} · {m1}"),
+            position: pos,
+            data_source: WidgetDataSource::NodeMetric {
+                type_name: nt.name.clone(),
+                metric: m1.clone(),
+                agg: Some(String::from("AVG")),
+                grain: Some(String::from("DAY")),
+                time_range: Some(String::from("LAST_30_DAYS")),
+                group_by: None,
+            },
+            encoding: serde_json::json!({}),
+            options: serde_json::json!({}),
+            drill: Vec::new(),
+        };
+    }
+    if let Some(sm) = ctx.metrics.first() {
+        let title = if sm.display_name.trim().is_empty() {
+            sm.name.clone()
+        } else {
+            sm.display_name.clone()
+        };
+        return AiWidgetDraft {
+            widget_kind: WidgetKind::KpiCard,
+            title,
+            position: pos,
+            data_source: WidgetDataSource::Metric {
+                metric: sm.name.clone(),
+                dimensions: Vec::new(),
+                time_grain: None,
+                time_range: Some(String::from("LAST_30_DAYS")),
+            },
+            encoding: serde_json::json!({}),
+            options: serde_json::json!({}),
+            drill: Vec::new(),
+        };
+    }
+    AiWidgetDraft {
+        widget_kind: WidgetKind::KpiCard,
+        title: String::from("待处理告警概览"),
+        position: pos,
+        data_source: WidgetDataSource::Alerts {
+            status: vec![String::from("OPEN")],
+            severity: Vec::new(),
+            limit: Some(10),
+        },
+        encoding: serde_json::json!({}),
+        options: serde_json::json!({}),
+        drill: Vec::new(),
+    }
+}
+
+fn build_fallback_bar_widget(
+    ctx: &DashboardGenContext,
+    primary_nt: Option<&NodeTypeSpec>,
+    metric_opt: Option<&String>,
+) -> AiWidgetDraft {
+    let pos = WidgetPosition {
+        x: 8,
+        y: 0,
+        w: 16,
+        h: 6,
+    };
+    if let (Some(nt), Some(m2)) = (primary_nt, metric_opt) {
+        let label = if nt.display_name.trim().is_empty() {
+            nt.name.as_str()
+        } else {
+            nt.display_name.trim()
+        };
+        return AiWidgetDraft {
+            widget_kind: WidgetKind::BarChart,
+            title: format!("{label} · {m2}分布"),
+            position: pos,
+            data_source: WidgetDataSource::NodeMetric {
+                type_name: nt.name.clone(),
+                metric: m2.clone(),
+                agg: Some(String::from("LAST")),
+                grain: Some(String::from("DAY")),
+                time_range: Some(String::from("LAST_30_DAYS")),
+                group_by: Some(String::from("node")),
+            },
+            encoding: serde_json::json!({ "x": "node_title", "y": "value" }),
+            options: serde_json::json!({}),
+            drill: Vec::new(),
+        };
+    }
+    if let Some(sm) = ctx.metrics.first() {
+        let dims = sm
+            .dimensions
+            .first()
+            .map_or_default(|d| vec![d.name.clone()]);
+        return AiWidgetDraft {
+            widget_kind: WidgetKind::BarChart,
+            title: format!("{}趋势对比", sm.name),
+            position: pos,
+            data_source: WidgetDataSource::Metric {
+                metric: sm.name.clone(),
+                dimensions: dims,
+                time_grain: Some(String::from("DAY")),
+                time_range: Some(String::from("LAST_30_DAYS")),
+            },
+            encoding: serde_json::json!({}),
+            options: serde_json::json!({}),
+            drill: Vec::new(),
+        };
+    }
+    AiWidgetDraft {
+        widget_kind: WidgetKind::BarChart,
+        title: String::from("风险态势分布"),
+        position: pos,
+        data_source: WidgetDataSource::Alerts {
+            status: vec![String::from("OPEN"), String::from("ACK")],
+            severity: Vec::new(),
+            limit: Some(20),
+        },
+        encoding: serde_json::json!({}),
+        options: serde_json::json!({}),
+        drill: Vec::new(),
+    }
+}
+
+fn build_fallback_graph_widget(
+    dash_name: &str,
+    ctx: &DashboardGenContext,
+    seeded_types: &[String],
+    color_metric: Option<&str>,
+) -> AiWidgetDraft {
+    let type_set: BTreeSet<&str> = seeded_types.iter().map(String::as_str).collect();
+    let link_types: Vec<String> = ctx
+        .schema
+        .edge_types
+        .iter()
+        .filter(|et| {
+            type_set.contains(et.src_type_name.as_str())
+                && type_set.contains(et.dst_type_name.as_str())
+        })
+        .map(|et| et.name.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    AiWidgetDraft {
+        widget_kind: WidgetKind::GraphTopology,
+        title: format!("{dash_name} 业务拓扑"),
+        position: WidgetPosition {
+            x: 0,
+            y: 6,
+            w: 14,
+            h: 10,
+        },
+        data_source: WidgetDataSource::Graph {
+            type_names: seeded_types.to_vec(),
+            link_types,
+            color_metric: color_metric.map(String::from),
+            limit: Some(200),
+        },
+        encoding: serde_json::json!({}),
+        options: serde_json::json!({}),
+        drill: Vec::new(),
+    }
+}
+
+fn derive_fallback_cockpit_slug(seeded_types: &[String]) -> String {
+    if let Some(first) = seeded_types.first() {
+        let mut slug = String::new();
+        for ch in first.chars() {
+            if ch.is_ascii_alphanumeric() {
+                if ch.is_ascii_uppercase() && !slug.is_empty() && !slug.ends_with('-') {
+                    slug.push('-');
+                }
+                slug.push(ch.to_ascii_lowercase());
+            }
+        }
+        let clean = slug.trim_matches('-');
+        if !clean.is_empty() {
+            let candidate = format!("{clean}-cockpit");
+            if is_valid_slug(&candidate) {
+                return candidate;
+            }
+        }
+    }
+    String::from("studio-twin-cockpit")
+}
+
+async fn prepare_idempotent_draft_slug<S: ViewRepository + ?Sized>(
+    store: &S,
+    tenant_id: &str,
+    explicit_slug: Option<&str>,
+    draft_slug: &str,
+) -> Result<String, AppError> {
+    if let Some(s) = explicit_slug.map(str::trim).filter(|s| !s.is_empty()) {
+        validate_dashboard_slug(s)?;
+        if let Some(existing) = store.get_dashboard_by_slug(tenant_id, s, false).await? {
+            if existing.dashboard.status != DashboardStatus::Draft {
+                return Err(AppError::Conflict("SLUG_TAKEN"));
+            }
+            let _deleted = store
+                .delete_dashboard(tenant_id, existing.dashboard.id)
+                .await?;
+        }
+        return Ok(String::from(s));
+    }
+    resolve_final_slug(store, tenant_id, None, draft_slug).await
+}
+
+async fn persist_draft_dashboard_records<S>(
+    store: &S,
+    tenant_id: &str,
+    created_by: Option<Uuid>,
+    final_slug: String,
+    draft: AiDashboardDraft,
+) -> Result<DashboardDetail, AppError>
+where
+    S: StudioRepository + AnalyticsRepository + DatasetRepository + ViewRepository + ?Sized,
+{
+    let mut widget_params = Vec::with_capacity(draft.widgets.len());
+    for w in draft.widgets {
+        let deps = compute_widget_deps(store, tenant_id, &w.data_source).await?;
+        widget_params.push(CreateWidgetRecordParams {
+            dashboard_id: Uuid::nil(),
+            widget_kind: w.widget_kind,
+            title: w.title,
+            position: w.position,
+            data_source: w.data_source,
+            encoding: w.encoding,
+            options: w.options,
+            drill: w.drill,
+            refresh_mode: RefreshMode::Live,
+            refresh_seconds: 60,
+            deps,
+        });
+    }
+
+    let create_req = CreateDashboardRequest {
+        name: draft.name,
+        slug: final_slug,
+        description: draft.description,
+        filters: draft.filters,
+        theme: draft.theme,
+        canvas: CanvasConfig::default(),
+    };
+
+    store
+        .create_ai_dashboard(tenant_id, created_by, create_req, widget_params)
+        .await
+}
+
 fn parse_and_validate(
     raw: &str,
     ctx: &DashboardGenContext,
@@ -1217,5 +1740,40 @@ mod tests {
         assert!(err_msg.contains("failed to decode AiDashboardDraft JSON:"));
         assert!(err_msg.contains("NOT_A_REAL_KIND"));
         Ok(())
+    }
+
+    #[test]
+    fn synthesize_studio_dashboard_draft_builds_valid_grounded_widgets() {
+        let mut ctx = DashboardGenContext::default();
+        ctx.schema.node_types.push(NodeTypeSpec {
+            name: String::from("Warehouse"),
+            display_name: String::from("仓库"),
+            properties: vec![PropertySpec {
+                name: String::from("inventory_qty"),
+                display_name: String::from("可用库存量"),
+                data_type: DataType::Float64,
+                kind: PropertyKind::Metric,
+                ..PropertySpec::default()
+            }],
+            ..NodeTypeSpec::default()
+        });
+
+        let req = AiDraftDashboardRequest {
+            name: String::from("门禁仓库履约孪生看板"),
+            slug: Some(String::from("gate-step19-warehouse-cockpit")),
+            prompt: String::from("围绕 Warehouse 在库量与履约告警生成监控驾驶舱"),
+            subgraph_slug: Some(String::from("main")),
+            seed_node_types: vec![String::from("Warehouse")],
+            theme: None,
+        };
+        let seeded = vec![String::from("Warehouse")];
+        let draft = synthesize_studio_dashboard_draft(&ctx, &req, &seeded);
+        assert_eq!(draft.widgets.len(), 4);
+        assert!(draft_covers_seeded_types(&draft, &seeded));
+        let issues = validate_ai_dashboard_draft(&draft, &ctx);
+        assert!(
+            issues.is_empty(),
+            "unexpected validation issues: {issues:?}"
+        );
     }
 }

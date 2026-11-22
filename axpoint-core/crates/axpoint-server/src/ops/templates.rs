@@ -18,8 +18,8 @@ use axpoint_domain::ops::{
     CreateWorkItemRequest, NewTemplateInstallInput, PatchWorkItemRequest, TemplateConflictStrategy,
     TemplateCreatedObject, TemplateDatasetEntry, TemplateInstallPlan, TemplateInstallRecord,
     TemplateInstallStatus, TemplateManifest, TemplatePackDetail, TemplatePlannedObject,
-    TemplateUninstallResponse, WorkItem, WorkItemKind, WorkItemPriority, WorkItemSourceKind,
-    WorkItemStatus,
+    TemplatePreviewResponse, TemplateUninstallResponse, WorkItem, WorkItemKind, WorkItemPriority,
+    WorkItemSourceKind, WorkItemStatus,
 };
 use axpoint_domain::platform::{AuditRecord, BoxFuture};
 use axpoint_domain::ports::{
@@ -60,21 +60,21 @@ pub struct TemplateAuditContext<'a> {
 }
 
 #[derive(Debug, Deserialize)]
-struct PackDashboardDef {
+pub(super) struct PackDashboardDef {
     #[serde(default)]
-    key: Option<String>,
-    name: String,
-    slug: String,
+    pub(super) key: Option<String>,
+    pub(super) name: String,
+    pub(super) slug: String,
     #[serde(default)]
-    description: String,
+    pub(super) description: String,
     #[serde(default)]
-    filters: Vec<FilterDef>,
+    pub(super) filters: Vec<FilterDef>,
     #[serde(default)]
-    theme: DashboardTheme,
+    pub(super) theme: DashboardTheme,
     #[serde(default)]
-    canvas: CanvasConfig,
+    pub(super) canvas: CanvasConfig,
     #[serde(default)]
-    widgets: Vec<CreateWidgetRequest>,
+    pub(super) widgets: Vec<CreateWidgetRequest>,
 }
 
 struct PlanCollector<'a> {
@@ -647,6 +647,16 @@ impl<S, P> OpsServices<S, P> {
     pub fn get_template(&self, pack_id: &str) -> Result<TemplatePackDetail, AppError> {
         let dir = resolve_templates_dir().ok_or(AppError::NotFound("TEMPLATE_NOT_FOUND"))?;
         get_template_detail_in_dir(&dir, pack_id)
+    }
+
+    /// Returns a read-only [`TemplatePreviewResponse`] (`GET /api/axops/templates/{pack_id}/preview`, `05-STEP19` §19.2.2).
+    ///
+    /// # Errors
+    /// Returns [`AppError::NotFound`] (`TEMPLATE_NOT_FOUND`) when `pack_id` is absent, or
+    /// [`AppError::Unprocessable`] on `CHECKSUM_MISMATCH` / invalid pack JSON.
+    pub fn preview_template(&self, pack_id: &str) -> Result<TemplatePreviewResponse, AppError> {
+        let dir = resolve_templates_dir().ok_or(AppError::NotFound("TEMPLATE_NOT_FOUND"))?;
+        super::trial::preview_template_in_dir(&dir, pack_id)
     }
 }
 
@@ -2500,7 +2510,7 @@ fn normalize_metric_dataset_field(val: &mut serde_json::Value) {
     }
 }
 
-fn normalize_agent_spec_envelope(val: &mut serde_json::Value) {
+pub(super) fn normalize_agent_spec_envelope(val: &mut serde_json::Value) {
     let serde_json::Value::Object(map) = val else {
         return;
     };
@@ -2547,7 +2557,7 @@ fn json_required_str<'a>(
         })
 }
 
-fn json_opt_str(val: &serde_json::Value, field: &str) -> Option<String> {
+pub(super) fn json_opt_str(val: &serde_json::Value, field: &str) -> Option<String> {
     val.get(field)
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
@@ -2698,7 +2708,7 @@ pub fn canonical_work_item_hash(wi: &WorkItem) -> String {
     }))
 }
 
-fn resolve_pack_dir(catalog_dir: &Path, pack_id: &str) -> Result<PathBuf, AppError> {
+pub(super) fn resolve_pack_dir(catalog_dir: &Path, pack_id: &str) -> Result<PathBuf, AppError> {
     let trimmed = pack_id.trim();
     if trimmed.is_empty()
         || trimmed.len() > 64
@@ -2715,7 +2725,7 @@ fn resolve_pack_dir(catalog_dir: &Path, pack_id: &str) -> Result<PathBuf, AppErr
     Ok(dir)
 }
 
-fn safe_pack_file(pack_dir: &Path, rel_path: &str) -> Result<PathBuf, AppError> {
+pub(super) fn safe_pack_file(pack_dir: &Path, rel_path: &str) -> Result<PathBuf, AppError> {
     let rel = Path::new(rel_path.trim());
     if rel.as_os_str().is_empty()
         || rel.is_absolute()
@@ -2734,7 +2744,7 @@ fn safe_pack_file(pack_dir: &Path, rel_path: &str) -> Result<PathBuf, AppError> 
     Ok(pack_dir.join(rel))
 }
 
-fn read_manifest(pack_dir: &Path) -> Result<TemplateManifest, AppError> {
+pub(super) fn read_manifest(pack_dir: &Path) -> Result<TemplateManifest, AppError> {
     let raw = std::fs::read_to_string(pack_dir.join("manifest.json"))
         .map_err(|err| AppError::Config(format!("read manifest.json failed: {err}")))?;
     serde_json::from_str::<TemplateManifest>(&raw).map_err(|err| {
@@ -2742,7 +2752,10 @@ fn read_manifest(pack_dir: &Path) -> Result<TemplateManifest, AppError> {
     })
 }
 
-fn read_pack_json(pack_dir: &Path, rel_path: &str) -> Result<serde_json::Value, AppError> {
+pub(super) fn read_pack_json(
+    pack_dir: &Path,
+    rel_path: &str,
+) -> Result<serde_json::Value, AppError> {
     let full = safe_pack_file(pack_dir, rel_path)?;
     let raw = std::fs::read_to_string(&full).map_err(|err| {
         AppError::unprocessable("PARSE_FAILED", format!("read '{rel_path}' failed: {err}"))
@@ -2774,7 +2787,7 @@ fn to_pascal_case(raw: &str) -> String {
     }
 }
 
-fn truncate_chars(s: &str, max_chars: usize) -> String {
+pub(super) fn truncate_chars(s: &str, max_chars: usize) -> String {
     s.chars().take(max_chars).collect()
 }
 
@@ -2785,7 +2798,7 @@ fn file_stem_key(rel_path: &str) -> String {
         .map_or_else(|| String::from("item"), String::from)
 }
 
-fn extract_json_array(
+pub(super) fn extract_json_array(
     val: serde_json::Value,
     wrapper_key: &str,
 ) -> Result<Vec<serde_json::Value>, AppError> {
@@ -2881,7 +2894,7 @@ pub fn read_template_pack_csv_rows(
     Some(parse_simple_csv_rows(&content, limit))
 }
 
-fn parse_simple_csv_rows(
+pub(super) fn parse_simple_csv_rows(
     content: &str,
     limit: usize,
 ) -> Vec<serde_json::Map<String, serde_json::Value>> {
@@ -2918,7 +2931,7 @@ fn parse_simple_csv_rows(
     rows
 }
 
-fn default_pack_dataset_ref_map(
+pub(super) fn default_pack_dataset_ref_map(
     manifest: &TemplateManifest,
 ) -> BTreeMap<String, TemplateCreatedObject> {
     let mut map = BTreeMap::new();
@@ -2942,7 +2955,7 @@ fn default_pack_dataset_ref_map(
     map
 }
 
-fn parse_resolved_pack_mappings(
+pub(super) fn parse_resolved_pack_mappings(
     raw: serde_json::Value,
     ref_map: &BTreeMap<String, TemplateCreatedObject>,
 ) -> Result<Vec<MappingSpec>, AppError> {
@@ -3388,5 +3401,73 @@ mod tests {
 
         detail.dashboard.name = String::from("用户自定义驾驶舱标题");
         assert_ne!(canonical_dashboard_hash(&detail), initial_hash);
+    }
+
+    #[test]
+    fn preview_template_and_trial_materializer_verify_supply_chain_pack() -> Result<(), AppError> {
+        let Some(catalog_root) = resolve_templates_dir() else {
+            return Ok(());
+        };
+        let preview = crate::ops::trial::preview_template_in_dir(&catalog_root, "supply_chain")?;
+        assert_eq!(preview.manifest.id, "supply_chain");
+        assert_ne!(preview.readme_markdown.trim(), "");
+        assert!(preview.topology_summary.node_types.len() >= 4);
+        assert!(preview.topology_summary.edge_types.len() >= 3);
+        assert!(preview.topology_summary.derived_rule_count >= 1);
+        assert!(preview.sample_metrics.len() >= 2);
+        assert_eq!(preview.dashboard_previews.len(), 1);
+        assert_eq!(preview.agents.len(), 1);
+        assert_eq!(preview.sample_rows.len(), 4);
+        for ds_preview in &preview.sample_rows {
+            assert!(ds_preview.headers.len() >= 4);
+            assert!(ds_preview.rows.len() <= 5);
+            assert!(ds_preview.total_rows >= ds_preview.rows.len());
+        }
+
+        let sc_dir = resolve_pack_dir(&catalog_root, "supply_chain")?;
+        let manifest = read_manifest(&sc_dir)?;
+        let mut schema_doc: SchemaDoc =
+            serde_json::from_value(read_pack_json(&sc_dir, &manifest.contents.schema)?)
+                .map_err(|err| AppError::Config(err.to_string()))?;
+        if let Some(wh) = schema_doc
+            .node_types
+            .iter_mut()
+            .find(|n| n.name == "Warehouse")
+        {
+            wh.agg_rules.push(axpoint_domain::studio::AggRuleSpec {
+                target_metric: String::from("total_order_amt"),
+                op: axpoint_domain::enums::AggFn::Sum,
+                via_link_type: String::from("FULFILLS"),
+                direction: axpoint_domain::studio::LinkDirection::Out,
+                source_type_name: String::from("Order"),
+                source_metric: String::from("order_amount"),
+                filter: None,
+                weight_by_link: false,
+                maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            });
+        }
+
+        let ref_map = default_pack_dataset_ref_map(&manifest);
+        let raw_mappings = read_pack_json(&sc_dir, "mappings.json")?;
+        let mappings = parse_resolved_pack_mappings(raw_mappings, &ref_map)?;
+        let graph = crate::ops::trial::materialize_pack_trial_graph(
+            &sc_dir,
+            &manifest,
+            &schema_doc,
+            &mappings,
+        )?;
+        assert_eq!(graph.nodes.len(), 34);
+        assert_eq!(graph.links.len(), 26);
+
+        let wh01 = graph
+            .nodes
+            .iter()
+            .find(|n| n.type_name == "Warehouse" && n.node_key == "WH-01")
+            .ok_or_else(|| AppError::Config(String::from("missing WH-01")))?;
+        let fill_rate = wh01.metrics.get("fill_rate").copied().unwrap_or(0.0);
+        assert!((fill_rate - (150.0 / 480.0)).abs() < 1e-6);
+        let agg_amt = wh01.metrics.get("total_order_amt").copied().unwrap_or(0.0);
+        assert!((agg_amt - (128_500.0 + 96_400.0 + 109_200.0)).abs() < 1e-3);
+        Ok(())
     }
 }

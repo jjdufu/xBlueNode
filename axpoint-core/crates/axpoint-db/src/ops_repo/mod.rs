@@ -3,6 +3,7 @@
 
 mod backups_templates;
 mod health_retention;
+mod onboarding;
 mod work_items;
 
 #[cfg(test)]
@@ -15,11 +16,13 @@ use axpoint_domain::axhub::PaginatedList;
 use axpoint_domain::enums::RetentionTarget;
 use axpoint_domain::ops::{
     BackupKind, BackupRecord, CreateWorkItemRequest, DatabaseHealth, JobsHealthStats,
-    MigrationsHealth, NewTemplateInstallInput, OutboxStats, PatchWorkItemRequest,
-    RetentionPolicyRecord, TemplateCreatedObject, TemplateInstallRecord, TemplateInstallStatus,
-    WorkItem, WorkItemDetail, WorkItemEvent, WorkItemEventKind, WorkItemListQuery,
+    MigrationsHealth, NewTemplateInstallInput, OnboardingStatusResponse, OutboxStats,
+    PatchWorkItemRequest, RetentionPolicyRecord, TemplateCreatedObject, TemplateInstallRecord,
+    TemplateInstallStatus, WorkItem, WorkItemDetail, WorkItemEvent, WorkItemEventKind,
+    WorkItemListQuery,
 };
-use axpoint_domain::ports::OpsRepository;
+use axpoint_domain::ports::{OnboardingAndPackagingPort, OpsRepository};
+use axpoint_domain::studio::SubgraphConsumptionResponse;
 use uuid::Uuid;
 
 use crate::PgStore;
@@ -195,5 +198,22 @@ impl OpsRepository for PgStore {
         alert_id: Uuid,
     ) -> Result<u64, AppError> {
         work_items::link_resolved_alert_work_items_impl(self, tenant_id, alert_id).await
+    }
+}
+
+impl OnboardingAndPackagingPort for PgStore {
+    async fn get_onboarding_status(
+        &self,
+        tenant_id: &str,
+    ) -> Result<OnboardingStatusResponse, AppError> {
+        onboarding::get_onboarding_status_impl(self, tenant_id).await
+    }
+
+    async fn get_subgraph_consumption(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+    ) -> Result<SubgraphConsumptionResponse, AppError> {
+        onboarding::get_subgraph_consumption_impl(self, tenant_id, subgraph_slug).await
     }
 }
