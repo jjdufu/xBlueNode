@@ -500,14 +500,28 @@ pub fn build_impacts_duckdb(
 }
 
 fn col_meta(name: &str, data_type: DataType, ordinal: i32) -> ColumnMeta {
+    let (business_term, description) = match name {
+        "node_id" => ("节点标识", "受影响图节点主键标识"),
+        "type_name" => ("节点类型", "受影响图节点实体类型名称"),
+        "title" => ("节点名称", "受影响业务节点标题"),
+        "metric" => ("受影响指标", "节点仿真指标键名"),
+        "before_val" => ("仿真前基线", "推演干预前的指标基线值"),
+        "after_val" => ("仿真后数值", "仿真推演后的指标结果值"),
+        "delta" => ("受影响变化幅度", "仿真前后绝对增减变化量"),
+        "delta_ratio" => ("相对降幅涨跌比例", "仿真前后相对变化幅度比率"),
+        "hop_distance" => ("传导距离跳数", "因果传导路径距离跳数"),
+        "p10" => ("P10下界", "不确定性区间P10分位数"),
+        "p90" => ("P90上界", "不确定性区间P90分位数"),
+        _ => ("", ""),
+    };
     ColumnMeta {
         dataset_id: Uuid::nil(),
         column_name: String::from(name),
         data_type,
         pii_category: PiiCategory::None,
         pii_confirmed: false,
-        description: String::new(),
-        business_term: String::new(),
+        description: String::from(description),
+        business_term: String::from(business_term),
         unit: String::new(),
         ordinal,
     }
