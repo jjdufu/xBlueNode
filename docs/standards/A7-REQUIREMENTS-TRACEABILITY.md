@@ -68,6 +68,10 @@
 | C37 | 多智能体协作 | 09 | §09.5 | step09 “multi-agent” |
 | C38 | 知识库批量上传解析 | 01 / 02 | §01.2～§01.11、§02.6 | step02 “upload-commit”；step01 全部断言 |
 | C60 | 云端与本地小模型 `json_schema` 受限解码及确定性零温采样 | 15 | [01-STEP15](../../plans/v2-ux-and-grounded-ai/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.2～§15.3 | step15 “schema-guided-ok”、“temp-zero-enforced” |
+| C62 | 本体与认证指标优先问数路由（零裸 SQL 确定性语义编译） | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.2 | step16 “ontology-metric-route”、“slot-compile-exact” |
+| C63 | 多表问数本体外键路径守卫（拦截无映射依据的自由 `JOIN`） | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.3 | step16 “ungrounded-join-rejected”、“mapped-join-ok” |
+| C64 | 知识问答段落引用角标核验与零召回确定性拒答 | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.4 | step16 “phantom-citation-stripped”、“empty-recall-abstain” |
+| C65 | 云/端双轨 50 例反幻觉对抗基准 100% 拦截 | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.5 | step16 “hallucination-eval-100” |
 
 ### E 推演
 

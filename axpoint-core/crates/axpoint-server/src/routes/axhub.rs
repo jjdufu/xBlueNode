@@ -932,11 +932,8 @@ async fn preview_dataset_handler(
             .execute_sql_with_policy(
                 &axpoint_domain::analytics::QueryRequest {
                     sql: format!("SELECT * FROM \"{}\"", ds.name.replace('"', "\"\"")),
-                    params: BTreeMap::new(),
                     max_rows: Some(limit),
-                    timeout_ms: None,
-                    allow_live: false,
-                    reveal_pii: false,
+                    ..axpoint_domain::analytics::QueryRequest::default()
                 },
                 false,
                 principal.has(Permission::PiiRawRead),

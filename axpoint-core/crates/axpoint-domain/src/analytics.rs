@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 use crate::axhub::{ColumnMeta, Dataset};
 use crate::enums::{
-    AggFn, ConnectorType, DataType, Permission, PiiCategory, RollupGrain, WidgetKind,
+    AggFn, ConnectorType, DataType, GroundingMode, Permission, PiiCategory, RollupGrain, WidgetKind,
 };
 
 /// Principal context passed into [`crate::ports::AnalyticsQueryPort`] methods.
@@ -87,7 +87,7 @@ pub struct AnalyticsCatalogResponse {
 }
 
 /// Request body for `POST /api/analytics/sql/run` and `POST /api/analytics/sql/explain`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueryRequest {
     /// User or compiled `DuckDB` SQL query.
@@ -107,6 +107,9 @@ pub struct QueryRequest {
     /// Whether unmasked PII values are requested (requires `PII_RAW_READ`).
     #[serde(default)]
     pub reveal_pii: bool,
+    /// When `true`, multi-dataset `SELECT` queries must join exclusively along published ontology edges (`02-STEP16` §16.3.3).
+    #[serde(default)]
+    pub strict_ontology_join: bool,
 }
 
 /// Column descriptor in an `AxAnalytics` result set.
@@ -940,6 +943,21 @@ pub struct AskResponse {
     pub linked_objects: LinkedObjects,
     /// Document citations (when `DOC` or `HYBRID`).
     pub citations: Vec<AskCitation>,
+    /// Execution and verification path taken (`02-STEP16` §16.2.1).
+    #[serde(default)]
+    pub grounding_mode: GroundingMode,
+    /// Count of verified in-table numeric values in `answer` (`02-STEP16` §16.2.1).
+    #[serde(default)]
+    pub verified_numbers: u32,
+    /// Count of verified in-bounds `[文N]` citations in `answer` (`02-STEP16` §16.2.1).
+    #[serde(default)]
+    pub verified_citations: u32,
+    /// `true` when zero actionable evidence was recalled and free-form synthesis was skipped (`02-STEP16` §16.2.1).
+    #[serde(default)]
+    pub abstained: bool,
+    /// Structured slot payload compiled via Stage 0 ontology routing (`02-STEP16` §16.2.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_payload: Option<serde_json::Value>,
 }
 
 /// Persisted conversation turn returned by `GET /api/analytics/ask/sessions/{session_id}`.
@@ -973,6 +991,21 @@ pub struct AskTurnRecord {
     pub model_name: String,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
+    /// Execution and verification path taken (`02-STEP16` §16.1).
+    #[serde(default)]
+    pub grounding_mode: GroundingMode,
+    /// Count of verified in-table numeric values in `answer`.
+    #[serde(default)]
+    pub verified_numbers: u32,
+    /// Count of verified in-bounds `[文N]` citations in `answer`.
+    #[serde(default)]
+    pub verified_citations: u32,
+    /// Whether the turn deterministically abstained due to zero recalled evidence.
+    #[serde(default)]
+    pub abstained: bool,
+    /// Structured slot payload compiled via Stage 0 ontology routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_payload: Option<serde_json::Value>,
 }
 
 /// Input payload to persist a new row in `an_ask_turns`.
@@ -998,6 +1031,277 @@ pub struct NewAskTurnInput {
     pub citations: Vec<AskCitation>,
     /// Model identifier.
     pub model_name: String,
+    /// Execution and verification path taken (`02-STEP16` §16.1).
+    #[serde(default)]
+    pub grounding_mode: GroundingMode,
+    /// Count of verified in-table numeric values in `answer`.
+    #[serde(default)]
+    pub verified_numbers: u32,
+    /// Count of verified in-bounds `[文N]` citations in `answer`.
+    #[serde(default)]
+    pub verified_citations: u32,
+    /// Whether the turn deterministically abstained due to zero recalled evidence.
+    #[serde(default)]
+    pub abstained: bool,
+    /// Structured slot payload compiled via Stage 0 ontology routing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_payload: Option<serde_json::Value>,
+}
+
+/// Declared legal join edge between two physical datasets derived from published `xBlueStudio` mappings (`02-STEP16` §16.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct AllowedDatasetJoinEdge {
+    /// Left dataset SQL identifier (lowercased).
+    pub left_dataset: String,
+    /// Left dataset column identifier (lowercased).
+    pub left_column: String,
+    /// Right dataset SQL identifier (lowercased).
+    pub right_dataset: String,
+    /// Right dataset column identifier (lowercased).
+    pub right_column: String,
+    /// Originating ontology `EdgeTypeSpec.name` or `"SAME_ENTITY:<NodeType>"`.
+    pub relationship_label: String,
+}
+
+impl AllowedDatasetJoinEdge {
+    /// Returns `true` if `(ds_a, col_a)` and `(ds_b, col_b)` match this edge in either direction (case-insensitive).
+    #[must_use]
+    pub fn matches_undirected(&self, ds_a: &str, col_a: &str, ds_b: &str, col_b: &str) -> bool {
+        let forward = self.left_dataset.eq_ignore_ascii_case(ds_a)
+            && self.left_column.eq_ignore_ascii_case(col_a)
+            && self.right_dataset.eq_ignore_ascii_case(ds_b)
+            && self.right_column.eq_ignore_ascii_case(col_b);
+        let reverse = self.left_dataset.eq_ignore_ascii_case(ds_b)
+            && self.left_column.eq_ignore_ascii_case(col_b)
+            && self.right_dataset.eq_ignore_ascii_case(ds_a)
+            && self.right_column.eq_ignore_ascii_case(col_a);
+        forward || reverse
+    }
+}
+
+/// Structured filter item emitted by full `JsonSchemaSpec::ontology_slot_extraction` (`02-STEP16` §16.2.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OntologySlotFilter {
+    /// Column or property identifier.
+    pub field: String,
+    /// Comparison operator (`EQ`, `NE`, `GT`, `GTE`, `LT`, `LTE`, `IN`, `NOT_IN`, `LIKE`, `IS_NULL`, `IS_NOT_NULL`).
+    pub op: String,
+    /// Scalar or comma-separated literal text.
+    pub value_text: String,
+}
+
+/// Stage 0 structured slot draft decoded from either full cloud JSON Schema or compact local-7B JSON Schema (`02-STEP16` §16.2.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OntologySlotDraft {
+    /// Selected route (`SINGLE_METRIC` | `MULTI_METRIC` | `DOMAIN_OBJECT` | `CLARIFY` | `FALLBACK_SQL`).
+    pub route: String,
+    /// Matched `MetricDef.name` identifiers.
+    #[serde(default)]
+    pub metric_names: Vec<String>,
+    /// Matched `NodeTypeSpec.name` (normalized from `null` or `""` to `None`).
+    #[serde(default)]
+    pub target_node_type: Option<String>,
+    /// Requested group-by dimension names.
+    #[serde(default)]
+    pub dimensions: Vec<String>,
+    /// Structured filter items (from full schema).
+    #[serde(default)]
+    pub filters: Vec<OntologySlotFilter>,
+    /// Compact filter expressions (from local-7B schema, e.g. `"region = '华东'"`).
+    #[serde(default)]
+    pub filter_exprs: Vec<String>,
+    /// Inclusive lower ISO-8601 timestamp bound, if any.
+    #[serde(default)]
+    pub time_from: Option<String>,
+    /// Exclusive upper ISO-8601 timestamp bound, if any.
+    #[serde(default)]
+    pub time_to: Option<String>,
+    /// Optional time rollup grain (`MINUTE` | `HOUR` | `DAY` | `MONTH`).
+    #[serde(default)]
+    pub grain: Option<RollupGrain>,
+    /// Optional period comparison (`PREVIOUS_PERIOD` | `SAME_PERIOD_LAST_YEAR`).
+    #[serde(default)]
+    pub compare: Option<MetricCompareMode>,
+    /// Incident `EdgeTypeSpec.name` links requested for `DOMAIN_OBJECT` queries.
+    #[serde(default)]
+    pub include_links: Vec<String>,
+    /// Clarification prompt when `route == "CLARIFY"`.
+    #[serde(default)]
+    pub clarification: String,
+}
+
+impl OntologySlotDraft {
+    /// Normalizes a `serde_json::Value` conforming to either full or local-7B compact `axpoint_ontology_slots` into [`Self`].
+    ///
+    /// # Errors
+    /// Returns [`crate::AppError::BadRequest`] if required fields have incompatible types or invalid enum values.
+    pub fn from_structured_value(val: &serde_json::Value) -> Result<Self, crate::AppError> {
+        let obj = val.as_object().ok_or_else(|| {
+            crate::AppError::bad(
+                "INVALID_ARGUMENT",
+                "ontology slot payload must be a JSON object",
+            )
+        })?;
+        let route = obj
+            .get("route")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("FALLBACK_SQL")
+            .trim()
+            .to_owned();
+        let metric_names = parse_str_array(obj.get("metric_names"));
+        let target_node_type = parse_non_empty_opt_str(obj.get("target_node_type"));
+        let dimensions = parse_str_array(obj.get("dimensions"));
+        let filters = obj
+            .get("filters")
+            .cloned()
+            .map(serde_json::from_value::<Vec<OntologySlotFilter>>)
+            .transpose()
+            .map_err(|e| {
+                crate::AppError::bad("INVALID_ARGUMENT", format!("invalid slot filters: {e}"))
+            })?
+            .unwrap_or_default();
+        let filter_exprs = parse_str_array(obj.get("filter_exprs"));
+        let time_from = parse_non_empty_opt_str(obj.get("time_from"));
+        let time_to = parse_non_empty_opt_str(obj.get("time_to"));
+        let grain = match parse_non_empty_opt_str(obj.get("grain")) {
+            Some(g) => Some(g.parse::<RollupGrain>().map_err(|_| {
+                crate::AppError::bad("INVALID_ARGUMENT", format!("invalid slot grain '{g}'"))
+            })?),
+            None => None,
+        };
+        let compare = match parse_non_empty_opt_str(obj.get("compare")) {
+            Some(c) => Some(
+                serde_json::from_value::<MetricCompareMode>(serde_json::Value::String(c)).map_err(
+                    |e| {
+                        crate::AppError::bad(
+                            "INVALID_ARGUMENT",
+                            format!("invalid slot compare: {e}"),
+                        )
+                    },
+                )?,
+            ),
+            None => None,
+        };
+        let include_links = parse_str_array(obj.get("include_links"));
+        let clarification = obj
+            .get("clarification")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned();
+
+        Ok(Self {
+            route,
+            metric_names,
+            target_node_type,
+            dimensions,
+            filters,
+            filter_exprs,
+            time_from,
+            time_to,
+            grain,
+            compare,
+            include_links,
+            clarification,
+        })
+    }
+}
+
+fn parse_non_empty_opt_str(val: Option<&serde_json::Value>) -> Option<String> {
+    val.and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn parse_str_array(val: Option<&serde_json::Value>) -> Vec<String> {
+    val.and_then(serde_json::Value::as_array)
+        .map_or_else(Vec::new, |arr| {
+            arr.iter()
+                .filter_map(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+}
+
+/// Evaluation track in `an_grounding_eval_runs` (`0016_grounded_ask_eval.sql`, `02-STEP16` §16.5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum GroundingEvalTrack {
+    /// Cloud frontier/standard model replay track (`hallucination_cloud_50.jsonl`).
+    Cloud,
+    /// Local 7B compact & noisy model replay track (`hallucination_local7b_50.jsonl`).
+    Local7b,
+}
+
+impl GroundingEvalTrack {
+    /// Canonical database wire string (`CLOUD` | `LOCAL_7B`).
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Cloud => "CLOUD",
+            Self::Local7b => "LOCAL_7B",
+        }
+    }
+}
+
+/// Persisted benchmark run record in `an_grounding_eval_runs` (`02-STEP16` §16.1, §16.5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroundingEvalRunRecord {
+    /// Evaluation run UUID.
+    pub id: Uuid,
+    /// Suite identifier (e.g. `"hallucination_50"`).
+    pub suite_name: String,
+    /// Replay track (`CLOUD` | `LOCAL_7B`).
+    pub track: GroundingEvalTrack,
+    /// Model profile identifier.
+    pub model_name: String,
+    /// Total benchmark cases evaluated.
+    pub total_cases: u32,
+    /// Cases whose hallucination vector was deterministically intercepted.
+    pub intercepted_cases: u32,
+    /// Pass rate in `[0.0, 1.0]`.
+    pub pass_rate: f64,
+    /// Per-category pass breakdown JSON (`CAT1_METRIC_SLOT`..`CAT5_ZERO_EVIDENCE`).
+    pub category_breakdown: serde_json::Value,
+    /// Failure details array (empty when `pass_rate == 1.0`).
+    pub failures: serde_json::Value,
+    /// Suite execution duration in milliseconds.
+    pub duration_ms: u64,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Input payload to persist a new row in `an_grounding_eval_runs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NewGroundingEvalRunInput {
+    /// Suite identifier.
+    pub suite_name: String,
+    /// Replay track (`CLOUD` | `LOCAL_7B`).
+    pub track: GroundingEvalTrack,
+    /// Model profile identifier.
+    pub model_name: String,
+    /// Total benchmark cases evaluated.
+    pub total_cases: u32,
+    /// Intercepted benchmark cases.
+    pub intercepted_cases: u32,
+    /// Pass rate in `[0.0, 1.0]`.
+    pub pass_rate: f64,
+    /// Per-category pass breakdown JSON.
+    pub category_breakdown: serde_json::Value,
+    /// Failure details array.
+    pub failures: serde_json::Value,
+    /// Execution duration in milliseconds.
+    pub duration_ms: u64,
+}
+
+/// Response payload for `POST /api/analytics/grounding-eval/run` (`02-STEP16` §16.5).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroundingEvalRunResponse {
+    /// Persisted `CLOUD` and `LOCAL_7B` evaluation run records.
+    pub runs: Vec<GroundingEvalRunRecord>,
 }
 
 /// Request body for `POST /api/analytics/ask/{turn_id}/feedback`.

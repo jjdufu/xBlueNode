@@ -633,6 +633,11 @@ async fn seed_ask_turns_for_session(
                 answer: String::from("已支付订单总金额为 65,175.00 元。"),
                 citations: Vec::new(),
                 model_name: String::from("qwen-plus"),
+                grounding_mode: axpoint_domain::enums::GroundingMode::GuardedSql,
+                verified_numbers: 1,
+                verified_citations: 0,
+                abstained: false,
+                slot_payload: None,
             },
         )
         .await?;
@@ -654,6 +659,11 @@ async fn seed_ask_turns_for_session(
                 answer: String::from("错误回答"),
                 citations: Vec::new(),
                 model_name: String::from("qwen-plus"),
+                grounding_mode: axpoint_domain::enums::GroundingMode::GuardedSql,
+                verified_numbers: 0,
+                verified_citations: 0,
+                abstained: false,
+                slot_payload: None,
             },
         )
         .await?;
@@ -680,6 +690,11 @@ async fn seed_ask_turns_for_session(
                     snippet: String::from("华东履约正常"),
                 }],
                 model_name: String::from("qwen-plus"),
+                grounding_mode: axpoint_domain::enums::GroundingMode::GuardedSql,
+                verified_numbers: 0,
+                verified_citations: 1,
+                abstained: false,
+                slot_payload: None,
             },
         )
         .await?;

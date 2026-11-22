@@ -129,6 +129,7 @@ where
                     timeout_ms,
                     allow_live,
                     reveal_pii: false,
+                    strict_ontology_join: false,
                 },
             )
             .await?;

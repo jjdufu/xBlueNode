@@ -412,6 +412,11 @@ async fn finish_non_sql_intent<A: AiPort>(
             explanation: String::new(),
             linked_objects: linked.linked_objects,
             citations: Vec::new(),
+            grounding_mode: axpoint_domain::enums::GroundingMode::Clarification,
+            verified_numbers: 0,
+            verified_citations: 0,
+            abstained: false,
+            slot_payload: None,
         },
         rewritten_sql: String::new(),
         repair_rounds: 0,
@@ -448,6 +453,11 @@ fn build_clarification_output(
             explanation: msg,
             linked_objects: linked.linked_objects,
             citations: Vec::new(),
+            grounding_mode: axpoint_domain::enums::GroundingMode::Clarification,
+            verified_numbers: 0,
+            verified_citations: 0,
+            abstained: false,
+            slot_payload: None,
         },
         rewritten_sql: String::new(),
         repair_rounds: 0,
@@ -605,6 +615,11 @@ fn finalize_non_ready_outcome(
                 explanation: last_error,
                 linked_objects: linked.linked_objects,
                 citations: Vec::new(),
+                grounding_mode: axpoint_domain::enums::GroundingMode::GuardedSql,
+                verified_numbers: 0,
+                verified_citations: 0,
+                abstained: false,
+                slot_payload: None,
             },
             rewritten_sql: String::new(),
             repair_rounds,
@@ -626,6 +641,11 @@ fn finalize_non_ready_outcome(
                 explanation: String::new(),
                 linked_objects: linked.linked_objects,
                 citations: Vec::new(),
+                grounding_mode: axpoint_domain::enums::GroundingMode::GuardedSql,
+                verified_numbers: 0,
+                verified_citations: 0,
+                abstained: false,
+                slot_payload: None,
             },
             rewritten_sql: String::new(),
             repair_rounds: 0,
@@ -662,6 +682,7 @@ async fn finalize_succeeded_output<A: AiPort>(
         }
     };
 
+    let verified_numbers = axpoint_domain::grounding::count_grounded_numbers(&answer);
     let duration_ms = u64::try_from(args.started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let response = AskResponse {
         turn_id: Uuid::new_v4(),
@@ -678,6 +699,11 @@ async fn finalize_succeeded_output<A: AiPort>(
         explanation: args.explanation,
         linked_objects: args.linked.linked_objects,
         citations: Vec::new(),
+        grounding_mode: axpoint_domain::enums::GroundingMode::GuardedSql,
+        verified_numbers,
+        verified_citations: 0,
+        abstained: false,
+        slot_payload: None,
     };
     Ok(AskPipelineOutput {
         response,

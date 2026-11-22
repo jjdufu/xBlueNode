@@ -820,11 +820,8 @@ fn guard_nested_subqueries_union_and_cte_propagate_pii_lineage() -> Result<(), A
 fn simple_sql_req(sql: &str) -> axpoint_analytics::QueryRequest {
     axpoint_analytics::QueryRequest {
         sql: String::from(sql),
-        params: BTreeMap::new(),
         max_rows: Some(10),
-        timeout_ms: None,
-        allow_live: false,
-        reveal_pii: false,
+        ..axpoint_analytics::QueryRequest::default()
     }
 }
 

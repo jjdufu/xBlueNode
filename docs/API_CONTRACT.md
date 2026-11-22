@@ -109,15 +109,16 @@
 ### `AxAnalytics` OLAP、透视制表、指标语义层与智能问数（`/api/analytics/*` 与 `/api/chat/query` 扩展，Step 04）
 
 - `GET /api/analytics/catalog`（`DATA_READ`）：返回当前租户在湖中的数据集与列目录（含 PII 与业务术语）、`ax.*` 平台联邦视图及 `live_*` 直连对象树。
-- `POST /api/analytics/sql/run` / `POST /api/analytics/sql/explain`（`DATA_READ`）：经 `sql_guard` AST 白名单与租户表改写后执行或解释只读 `DuckDB` SQL；默认对所有主体动态脱敏 PII 列（除非 `reveal_pii=true` 且具备 `PII_RAW_READ`），并记录 `an_query_history` 与 `QUERY_SQL` 审计。
+- `POST /api/analytics/sql/run` / `POST /api/analytics/sql/explain`（`DATA_READ`）：经 `sql_guard` AST 白名单与租户表改写后执行或解释只读 `DuckDB` SQL；支持 `strict_ontology_join: true` 按已发布 `MappingLinkSpec` 校验跨表 `JOIN`（未命中法定边返回 `400 JOIN_PATH_UNGROUNDED`）；默认对所有主体动态脱敏 PII 列（除非 `reveal_pii=true` 且具备 `PII_RAW_READ`），并记录 `an_query_history` 与 `QUERY_SQL` 审计（Step 04 / Step 16）。
 - `POST /api/analytics/pivot`（`DATA_READ`）：拖拽式透视制表编译与交叉矩阵化（支持 `GROUPING SETS` 小计/总计、列组合频次上限与非可加聚合截断提示）。
 - `GET /api/analytics/metrics` / `POST /api/analytics/metrics` / `GET /api/analytics/metrics/{name}` / `PATCH /api/analytics/metrics/{name}` / `DELETE /api/analytics/metrics/{name}`（`DATA_READ` / `STUDIO_EDIT`，`certified=true` 需 `STUDIO_PUBLISH`）：指标语义层管理、聚合表达式校验、破坏性 Schema 检测（`broken=true`）与血缘记录。
 - `POST /api/analytics/metrics/{name}/query` / `POST /api/analytics/metrics/query-multi`（`DATA_READ`）：单指标或多指标按维度、时间粒度与同比/环比（`PREVIOUS_PERIOD` / `SAME_PERIOD_LAST_YEAR`）编译查询。
 - `GET /api/analytics/saved-queries` / `POST /api/analytics/saved-queries` / `GET /api/analytics/saved-queries/{id}` / `PATCH /api/analytics/saved-queries/{id}` / `DELETE /api/analytics/saved-queries/{id}` / `POST /api/analytics/saved-queries/{id}/run`（`DATA_READ` / `VIEW_EDIT`）：参数化保存查询管理与运行。
-- `POST /api/analytics/ask` / `POST /api/analytics/ask/{turn_id}/feedback` / `GET /api/analytics/ask/sessions/{session_id}`（`DATA_READ`）：智能问数管线（意图路由、FTS+向量模式链接、`sql_guard` + `EXPLAIN` 自修复、数值逐字核验摘要、图表建议、多轮会话与点赞/修正少样本反馈）。
+- `POST /api/analytics/ask` / `POST /api/analytics/ask/{turn_id}/feedback` / `GET /api/analytics/ask/sessions/{session_id}`（`DATA_READ`）：智能问数管线（第 0 阶段认证指标与领域对象槽位确定性编译、FTS+向量模式链接、`sql_guard` + 法定 `JOIN` 守卫 + `EXPLAIN` 自修复、数值逐字核验摘要、零依据确定性拒答、图表建议、多轮会话与少样本反馈），返回接地元数据 `{grounding_mode, verified_numbers, verified_citations, abstained, slot_payload?}`（Step 04 / Step 16）。
+- `POST /api/analytics/grounding-eval/run`（`GUARD_ADMIN` 或 `OPS_ADMIN`）/ `GET /api/analytics/grounding-eval/runs?limit=20`（`DATA_READ`）：执行内置 50 例云/端双轨（`CLOUD` + `LOCAL_7B`）反幻觉对抗基准并持久化或查询历史评测记录 `an_grounding_eval_runs`（Step 16）。
 - `POST /api/analytics/transform/draft` / `PATCH /api/analytics/transform/{id}` / `POST /api/analytics/transform/{id}/apply` / `POST /api/analytics/transform/{id}/discard`（`DATA_SYNC`）：自然语言 → `SELECT` 变换草案 → 100 行脱敏预览 → 确认物化为 `DERIVED_VIEW` 派生数据集并级联同步。
 - `GET /api/analytics/history`（`DATA_READ` 看本人，`DATA_ADMIN` 看全租户）：SQL/透视/指标/问数/变换执行历史分页查询。
-- `POST /api/chat/query`（`DATA_READ`，扩展）：新增 `session_id?` 与 `mode?: "AUTO"|"DOC"|"DATA"`，支持 `DOC`、`DATA`、`HYBRID`（`[文n]` + `[表]` 混合合成）与 `related_nodes` 业务节点关联返回。
+- `POST /api/chat/query`（`DATA_READ`）：支持 `session_id?` 与 `mode?: "AUTO"|"DOC"|"DATA"`，覆盖 `DOC`（`[文N]` 段落引用越界剥离与零召回 `ABSTAINED` 拒答）、`DATA`、`HYBRID`（`[文N]` + `[表]` 双重核验合成）与 `related_nodes` 业务节点关联返回，附带 `{grounding_mode, verified_numbers, verified_citations, abstained, slot_payload?}`（Step 04 / Step 16）。
 
 ### `xBlueStudio` 多子图本体建模、草案发布、表达式与动态聚合（`/api/xblue/*`，Step 05 & Step 06）
 

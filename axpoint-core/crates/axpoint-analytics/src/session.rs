@@ -1792,11 +1792,9 @@ mod tests {
 
         let req = QueryRequest {
             sql: String::from("SELECT * FROM range(20)"),
-            params: BTreeMap::new(),
             max_rows: Some(10),
             timeout_ms: Some(5_000),
-            allow_live: false,
-            reveal_pii: false,
+            ..QueryRequest::default()
         };
         let out = pool
             .query("default", catalog.clone(), &[], &req, false, false)
@@ -1883,11 +1881,9 @@ mod tests {
         let pool = SessionPool::new(cfg);
         let req = QueryRequest {
             sql: String::from("SELECT id, phone, amount FROM demo_orders ORDER BY id"),
-            params: BTreeMap::new(),
             max_rows: Some(100),
             timeout_ms: Some(5_000),
-            allow_live: false,
-            reveal_pii: false,
+            ..QueryRequest::default()
         };
         let out = pool
             .query("default", catalog.clone(), &[], &req, false, true)
@@ -1918,11 +1914,9 @@ mod tests {
 
         let warmup = QueryRequest {
             sql: String::from("SELECT 1 AS ok"),
-            params: BTreeMap::new(),
             max_rows: Some(10),
             timeout_ms: Some(5_000),
-            allow_live: false,
-            reveal_pii: false,
+            ..QueryRequest::default()
         };
         let _warmup_out = pool
             .query("default", catalog.clone(), &[], &warmup, false, false)
@@ -1932,11 +1926,9 @@ mod tests {
             sql: String::from(
                 "SELECT count(*) AS n FROM range(10000000) a CROSS JOIN range(10000000) b",
             ),
-            params: BTreeMap::new(),
             max_rows: Some(10),
             timeout_ms: Some(60),
-            allow_live: false,
-            reveal_pii: false,
+            ..QueryRequest::default()
         };
         let res = pool
             .query("default", catalog.clone(), &[], &runaway, false, false)

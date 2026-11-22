@@ -32,7 +32,7 @@ is_allowed_for_role() {
       ;;
     squad-analytics-guard)
       [[ "$file" =~ ^axpoint-core/crates/(axpoint-analytics|axpoint-security)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(analytics|guard)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(analytics|guard|grounding)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/algo/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(hub_repo|axhub_repo|graph_repo|graph_query|analytics_repo|rules_repo|guard_repo)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(rules_repo|guard_repo)/ ]] && return 0

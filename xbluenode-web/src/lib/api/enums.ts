@@ -342,4 +342,12 @@ export type TokenKind =
 
 export type StructuredOutputMode = "NONE" | "JSON_OBJECT" | "JSON_SCHEMA";
 
+export type GroundingMode =
+  | "SEMANTIC_METRIC"
+  | "DOMAIN_OBJECT"
+  | "GUARDED_SQL"
+  | "GROUNDED_DOC"
+  | "ABSTAINED"
+  | "CLARIFICATION";
+
 export type TokenProfile = "GENERAL" | "BUILDER";

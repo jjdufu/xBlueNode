@@ -125,6 +125,7 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `BuiltinRole` | `ADMIN`（全部权限）`ANALYST` `OPERATOR` `VIEWER` | `sec_roles.name` |
 | `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` `BUILDER_MCP_MUTATE` `TRIAL_TEMPLATE_CLONE` | `sec_audit_logs.action` |
 | `StructuredOutputMode` | `NONE` `JSON_OBJECT` `JSON_SCHEMA` | `ax_llm_providers.structured_mode`（Step 15） |
+| `GroundingMode` | `SEMANTIC_METRIC` `DOMAIN_OBJECT` `GUARDED_SQL` `GROUNDED_DOC` `ABSTAINED` `CLARIFICATION` | `an_ask_turns.grounding_mode`（Step 16） |
 | `TokenProfile` | `GENERAL` `BUILDER` | `sec_api_tokens.token_profile`（Step 17） |
 
 ---
@@ -141,7 +142,7 @@ Rust 侧 `axpoint-domain::AppError` 枚举与 HTTP 状态码映射：
 
 | `AppError` 变体 | HTTP | 典型 `error_code` |
 | :--- | :--- | :--- |
-| `BadRequest(code, msg)` | 400 | `INVALID_ARGUMENT` `SQL_REJECTED` `CYCLE_DETECTED` `DIV_BY_ZERO` `LIMIT_OUT_OF_RANGE` `SCHEMA_INVALID` `SIM_DIVERGENT` `BUILDER_SCOPE_FORBIDDEN` `DEV_SANDBOX_REQUIRED` |
+| `BadRequest(code, msg)` | 400 | `INVALID_ARGUMENT` `SQL_REJECTED` `JOIN_PATH_UNGROUNDED` `CYCLE_DETECTED` `DIV_BY_ZERO` `LIMIT_OUT_OF_RANGE` `SCHEMA_INVALID` `SIM_DIVERGENT` `BUILDER_SCOPE_FORBIDDEN` `DEV_SANDBOX_REQUIRED` |
 | `Unauthorized(code)` | 401 | `TOKEN_MISSING` `TOKEN_INVALID` `TOKEN_EXPIRED` `SIGNATURE_INVALID` |
 | `Forbidden(code)` | 403 | `PERMISSION_DENIED` `POLICY_DENIED` `BUILDER_TOKEN_PROD_FORBIDDEN` |
 | `NotFound(code)` | 404 | `ROUTE_NOT_FOUND` `DATASET_NOT_FOUND` `NODE_NOT_FOUND` `FLOW_NOT_FOUND` `JOB_NOT_FOUND` `SHARE_NOT_FOUND`（跨租户访问一律返回 404） |

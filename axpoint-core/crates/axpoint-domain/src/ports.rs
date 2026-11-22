@@ -16,11 +16,11 @@ use crate::agent::{
 };
 use crate::analytics::{
     AnalyticsPrincipal, AskFeedbackKind, AskTurnRecord, CreateMetricRequest,
-    CreateSavedQueryRequest, FewShotTurn, MaterializeRequest, MetricDef, MetricQuery,
-    MetricQueryResult, NewAskTurnInput, NewQueryHistoryEntry, NewTransformDraftInput, PivotResult,
-    PivotSpec, QueryHistoryEntry, QueryHistoryListQuery, QueryRequest, QueryResult, SavedQuery,
-    SchemaRecallBundle, TransformDraft, TransformPreview, UpdateMetricRequest,
-    UpdateSavedQueryRequest,
+    CreateSavedQueryRequest, FewShotTurn, GroundingEvalRunRecord, MaterializeRequest, MetricDef,
+    MetricQuery, MetricQueryResult, NewAskTurnInput, NewGroundingEvalRunInput,
+    NewQueryHistoryEntry, NewTransformDraftInput, PivotResult, PivotSpec, QueryHistoryEntry,
+    QueryHistoryListQuery, QueryRequest, QueryResult, SavedQuery, SchemaRecallBundle,
+    TransformDraft, TransformPreview, UpdateMetricRequest, UpdateSavedQueryRequest,
 };
 use crate::axhub::{
     CatalogSearchHit, ColumnMeta, CommitStagingRequest, Connection, ConnectionStatus,
@@ -1281,6 +1281,24 @@ pub trait AnalyticsRepository: Send + Sync {
         tenant_id: &str,
         upstream_dataset_id: Uuid,
     ) -> impl Future<Output = Result<Vec<Dataset>, AppError>> + Send;
+
+    /// Persists a benchmark run row in `an_grounding_eval_runs` (`02-STEP16` §16.5).
+    fn insert_grounding_eval_run(
+        &self,
+        _tenant_id: &str,
+        _input: NewGroundingEvalRunInput,
+    ) -> impl Future<Output = Result<GroundingEvalRunRecord, AppError>> + Send {
+        std::future::ready(Err(AppError::NotFound("GROUNDING_EVAL_NOT_IMPLEMENTED")))
+    }
+
+    /// Lists recent benchmark run rows in `an_grounding_eval_runs` ordered by `created_at DESC` (`02-STEP16` §16.5).
+    fn list_grounding_eval_runs(
+        &self,
+        _tenant_id: &str,
+        _limit: u32,
+    ) -> impl Future<Output = Result<Vec<GroundingEvalRunRecord>, AppError>> + Send {
+        std::future::ready(Ok(Vec::new()))
+    }
 }
 
 /// Domain query execution port exposed by `AxAnalytics` to `AxFlow` (Step 07), `AxAgent` (Step 09), and `xBlueView` (Step 11) (`05-STEP04` §04.9).
