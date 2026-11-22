@@ -1066,6 +1066,7 @@ impl StudioRepository for MockStep09Store {
                 .unwrap_or(axpoint_domain::studio::DraftSource::Manual),
             ai_context: req.ai_context.unwrap_or_else(|| serde_json::json!({})),
             issues: Vec::new(),
+            pass_count: 1,
             created_by: actor_user_id,
             created_at: now,
             updated_at: now,

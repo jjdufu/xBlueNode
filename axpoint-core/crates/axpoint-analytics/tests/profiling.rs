@@ -68,6 +68,7 @@ fn make_prop(
         pii_category: PiiCategory::None,
         allowed_values,
         description: String::new(),
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
     }
 }
 
@@ -368,6 +369,9 @@ fn build_sales_order_mapping_fixture() -> (NodeTypeSpec, MappingSpec) {
         sync_to_knowledge: true,
         pos_x: 0.0,
         pos_y: 0.0,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     };
 
     let mut attributes = BTreeMap::new();
@@ -558,6 +562,9 @@ async fn session_pool_ducklake_profile_and_preview_end_to_end() -> Result<(), Ap
         sync_to_knowledge: true,
         pos_x: 0.0,
         pos_y: 0.0,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     };
     let mut attrs = BTreeMap::new();
     attrs.insert(String::from("status"), String::from("status"));

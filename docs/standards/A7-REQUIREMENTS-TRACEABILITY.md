@@ -37,6 +37,9 @@
 | C20 | AI 从需求描述与数据生成模型草稿 | 05 | §05.5 | step05 “ai-draft”；`schema_draft_eval.rs` |
 | C21 | 模型版本与变更影响分析 | 05 | §05.4 | step05 “diff”、“breaking” |
 | C56 | 多子图部门独立建模与跨部门本体对齐融合 | 05 | §05.1、§05.4.3 | step05 “subgraph-publish”、“subgraph-isolated”、“subgraph-preview”、“subgraph-merge”、“subgraph-merged-main” |
+| C68 | `xBlueStudio` 焦点感知常驻 AI 助手与草案快照一键回退 | 18 | [04-STEP18](../../plans/v2-ux-and-grounded-ai/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.3 | step18 “copilot-readonly-diag”、“copilot-mutate-rollback” |
+| C69 | 模型要素 `PROPOSED / CONFIRMED` 成熟度状态流与完备度通过项计数 | 18 | [04-STEP18](../../plans/v2-ux-and-grounded-ai/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.2 | step18 “proposal-confirm-flow”、“pass-count-metrics” |
+| C70 | 单节点左→右全链路数据血缘管道图与自动生成模型全景规格书 | 18 | [04-STEP18](../../plans/v2-ux-and-grounded-ai/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.4 | step18 “node-lineage-graph”、“subgraph-spec-doc” |
 
 ### C 构建
 

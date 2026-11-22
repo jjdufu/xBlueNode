@@ -1533,6 +1533,60 @@ pub trait StudioRepository: Send + Sync {
         tenant_id: &str,
         doc_ids: &[Uuid],
     ) -> impl Future<Output = Result<Vec<DocEntityGroup>, AppError>> + Send;
+
+    /// Lists incremental snapshots recorded for `draft_id` (`04-STEP18` §18.3.1).
+    fn list_draft_snapshots(
+        &self,
+        _tenant_id: &str,
+        _draft_id: Uuid,
+        _limit: u32,
+    ) -> impl Future<Output = Result<Vec<crate::studio::DraftSnapshotSummary>, AppError>> + Send
+    {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    /// Atomically records a pre-mutation snapshot (`reason = COPILOT_PATCH`), applies `patched_doc`, and recomputes `issues` + `pass_count` (`04-STEP18` §18.3.2).
+    fn apply_copilot_patch_with_snapshot(
+        &self,
+        _tenant_id: &str,
+        _draft_id: Uuid,
+        _actor_user_id: Option<Uuid>,
+        _patched_doc: crate::studio::SchemaDoc,
+    ) -> impl Future<Output = Result<(crate::studio::DraftSnapshotSummary, SchemaDraft), AppError>> + Send
+    {
+        std::future::ready(Err(AppError::NotFound("STUDIO_SNAPSHOT_NOT_IMPLEMENTED")))
+    }
+
+    /// Restores `draft_id` from `snapshot_id` and recomputes `issues` + `pass_count` (`04-STEP18` §18.3.1).
+    fn restore_draft_snapshot(
+        &self,
+        _tenant_id: &str,
+        _draft_id: Uuid,
+        _snapshot_id: Uuid,
+    ) -> impl Future<Output = Result<SchemaDraft, AppError>> + Send {
+        std::future::ready(Err(AppError::NotFound("STUDIO_SNAPSHOT_NOT_FOUND")))
+    }
+
+    /// Records a `BATCH_CONFIRM` snapshot and transitions matching `PROPOSED` elements on `draft_id` to `CONFIRMED` (`04-STEP18` §18.3.1).
+    fn confirm_draft_proposals(
+        &self,
+        _tenant_id: &str,
+        _draft_id: Uuid,
+        _actor_user_id: Option<Uuid>,
+        _req: crate::studio::ConfirmProposalsRequest,
+    ) -> impl Future<Output = Result<SchemaDraft, AppError>> + Send {
+        std::future::ready(Err(AppError::NotFound("DRAFT_NOT_FOUND")))
+    }
+
+    /// Queries downstream alert rules, published endpoints, and dashboards consuming `node_type` (`04-STEP18` §18.4.1).
+    fn list_node_downstream_consumers(
+        &self,
+        _tenant_id: &str,
+        _node_type: &str,
+    ) -> impl Future<Output = Result<Vec<crate::studio::DownstreamConsumerBinding>, AppError>> + Send
+    {
+        std::future::ready(Ok(Vec::new()))
+    }
 }
 
 /// Internal trusted query port for reading `DuckLake` tables and change feeds inside background workers (`06-STEP05-06` §06.2.1).

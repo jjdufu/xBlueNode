@@ -809,6 +809,7 @@ mod tests {
             required: false,
             allowed_values: None,
             pii_category,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }
     }
 
@@ -831,6 +832,9 @@ mod tests {
             sync_to_knowledge: false,
             pos_x: 0.0,
             pos_y: 0.0,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            semantic_layer_tier: None,
+            domain_group: None,
         };
         let mut main_order = draft_order.clone();
         main_order.properties = vec![

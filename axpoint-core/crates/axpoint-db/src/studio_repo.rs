@@ -7,7 +7,7 @@ use std::str::FromStr;
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::ColumnProfile;
 use axpoint_domain::builder::{DevSubgraphResetResponse, resolve_deep_links};
-use axpoint_domain::enums::{Cardinality, DataType, JobKind};
+use axpoint_domain::enums::{Cardinality, DataType, DesignMaturity, JobKind, SemanticLayerTier};
 use axpoint_domain::graph::GeoPoint;
 use axpoint_domain::platform::NewJob;
 use axpoint_domain::ports::StudioRepository;
@@ -20,7 +20,7 @@ use axpoint_domain::studio::{
     SaveSchemaDirectRequest, SchemaDiff, SchemaDoc, SchemaDraft, SchemaVersionDetail,
     SchemaVersionSummary, SubgraphInfo, TriggerMappingRunRequest, TriggerMappingRunResponse,
     UpdateDraftRequest, UpdateSubgraphRequest, ValidationContext, ValidationIssue, apply_merge,
-    diff_schema, preview_merge, validate,
+    diff_schema, preview_merge, validate, validate_with_metrics,
 };
 use axpoint_domain::topology::BlueNode;
 use chrono::{DateTime, Utc};
@@ -170,7 +170,8 @@ async fn load_schema_doc_tx(
 ) -> Result<SchemaDoc, AppError> {
     let node_rows = sqlx::query(
         "SELECT id, name, display_name, description, icon, color, title_template,
-                properties, agg_rules, derived_rules, sync_to_knowledge, pos_x, pos_y
+                properties, agg_rules, derived_rules, sync_to_knowledge, pos_x, pos_y,
+                semantic_layer_tier, domain_group
            FROM xb_node_types
           WHERE tenant_id = $1 AND subgraph_slug = $2
           ORDER BY created_at ASC, name ASC",
@@ -189,6 +190,10 @@ async fn load_schema_doc_tx(
             serde_json::from_value(r.get("agg_rules")).unwrap_or_default();
         let derived_rules: Vec<DerivedRuleSpec> =
             serde_json::from_value(r.get("derived_rules")).unwrap_or_default();
+        let raw_tier: Option<String> = r.get("semantic_layer_tier");
+        let semantic_layer_tier = raw_tier
+            .as_deref()
+            .and_then(|s| SemanticLayerTier::from_str(s).ok());
         node_types.push(NodeTypeSpec {
             id: Some(r.get("id")),
             name: r.get("name"),
@@ -203,6 +208,9 @@ async fn load_schema_doc_tx(
             sync_to_knowledge: r.get("sync_to_knowledge"),
             pos_x: r.get("pos_x"),
             pos_y: r.get("pos_y"),
+            maturity: DesignMaturity::Confirmed,
+            semantic_layer_tier,
+            domain_group: r.get("domain_group"),
         });
     }
 
@@ -235,6 +243,7 @@ async fn load_schema_doc_tx(
             description: r.get("description"),
             properties,
             propagation: r.get("propagation"),
+            maturity: DesignMaturity::Confirmed,
         });
     }
 
@@ -441,6 +450,7 @@ fn decode_draft_row(row: &sqlx::postgres::PgRow) -> Result<SchemaDraft, AppError
         .map_err(|err| AppError::Database(format!("decode draft schema_doc failed: {err}")))?;
     let issues: Vec<ValidationIssue> =
         serde_json::from_value(row.get("issues")).unwrap_or_default();
+    let pass_count = u32::try_from(row.get::<i32, _>("pass_count").max(0)).unwrap_or(0);
 
     Ok(SchemaDraft {
         id: row.get("id"),
@@ -451,6 +461,7 @@ fn decode_draft_row(row: &sqlx::postgres::PgRow) -> Result<SchemaDraft, AppError
         schema_doc,
         ai_context: row.get("ai_context"),
         issues,
+        pass_count,
         status,
         created_by: row.get("created_by"),
         created_at: row.get("created_at"),
@@ -519,7 +530,8 @@ async fn insert_draft_tx(
     }
     let head_ver = require_subgraph_exists_tx(tx, tenant_id, subgraph_slug).await?;
     let ctx = load_validation_context_tx(tx, tenant_id, subgraph_slug).await?;
-    let issues = validate(&req.schema_doc, &ctx);
+    let val_summary = validate_with_metrics(&req.schema_doc, &ctx);
+    let pass_count_i32 = i32::try_from(val_summary.pass_count).unwrap_or(i32::MAX);
 
     let base_version = req.base_version.unwrap_or(head_ver);
     let source = req.source.unwrap_or(DraftSource::Manual);
@@ -528,15 +540,15 @@ async fn insert_draft_tx(
         .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
     let doc_json = serde_json::to_value(&req.schema_doc)
         .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid schema_doc: {err}")))?;
-    let issues_json = serde_json::to_value(&issues)
+    let issues_json = serde_json::to_value(&val_summary.issues)
         .map_err(|err| AppError::Database(format!("serialize issues failed: {err}")))?;
 
     let row = sqlx::query(
         "INSERT INTO xb_schema_drafts (
              tenant_id, subgraph_slug, title, source, base_version,
-             schema_doc, ai_context, issues, status, created_by
+             schema_doc, ai_context, issues, pass_count, status, created_by
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'DRAFT', $9)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'DRAFT', $10)
          RETURNING *",
     )
     .bind(tenant_id)
@@ -547,6 +559,7 @@ async fn insert_draft_tx(
     .bind(doc_json)
     .bind(ai_context)
     .bind(issues_json)
+    .bind(pass_count_i32)
     .bind(actor_user_id)
     .fetch_one(&mut **tx)
     .await
@@ -704,9 +717,10 @@ async fn apply_node_and_edge_tables_tx(
         let row = sqlx::query(
             "INSERT INTO xb_node_types (
                  tenant_id, subgraph_slug, name, display_name, description, icon, color,
-                 title_template, properties, agg_rules, derived_rules, sync_to_knowledge, pos_x, pos_y
+                 title_template, properties, agg_rules, derived_rules, sync_to_knowledge, pos_x, pos_y,
+                 semantic_layer_tier, domain_group
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
              ON CONFLICT (tenant_id, subgraph_slug, name) DO UPDATE SET
                  display_name = EXCLUDED.display_name,
                  description = EXCLUDED.description,
@@ -719,6 +733,8 @@ async fn apply_node_and_edge_tables_tx(
                  sync_to_knowledge = EXCLUDED.sync_to_knowledge,
                  pos_x = EXCLUDED.pos_x,
                  pos_y = EXCLUDED.pos_y,
+                 semantic_layer_tier = EXCLUDED.semantic_layer_tier,
+                 domain_group = EXCLUDED.domain_group,
                  updated_at = NOW()
              RETURNING id",
         )
@@ -736,6 +752,8 @@ async fn apply_node_and_edge_tables_tx(
         .bind(nt.sync_to_knowledge)
         .bind(nt.pos_x)
         .bind(nt.pos_y)
+        .bind(nt.semantic_layer_tier.map(SemanticLayerTier::as_str))
+        .bind(&nt.domain_group)
         .fetch_one(&mut **tx)
         .await
         .map_err(|err| AppError::Database(format!("upsert xb_node_types failed: {err}")))?;
@@ -1789,6 +1807,7 @@ impl StudioRepository for PgStore {
                 schema_doc: req.doc,
                 source: Some(DraftSource::Manual),
                 ai_context: None,
+                subgraph_slug: None,
             },
         )
         .await?;
@@ -1957,6 +1976,7 @@ impl StudioRepository for PgStore {
                 schema_doc: target_doc,
                 source: Some(DraftSource::Restore),
                 ai_context: None,
+                subgraph_slug: None,
             },
         )
         .await?;
@@ -2066,11 +2086,12 @@ impl StudioRepository for PgStore {
         }
 
         let ctx = load_validation_context_tx(&mut tx, tenant_id, &existing.subgraph_slug).await?;
-        let issues = validate(&req.schema_doc, &ctx);
+        let val_summary = validate_with_metrics(&req.schema_doc, &ctx);
+        let pass_count_i32 = i32::try_from(val_summary.pass_count).unwrap_or(i32::MAX);
         let doc_json = serde_json::to_value(&req.schema_doc).map_err(|err| {
             AppError::bad("INVALID_ARGUMENT", format!("invalid schema_doc: {err}"))
         })?;
-        let issues_json = serde_json::to_value(&issues)
+        let issues_json = serde_json::to_value(&val_summary.issues)
             .map_err(|err| AppError::Database(format!("serialize draft issues: {err}")))?;
 
         let updated_row = sqlx::query(
@@ -2078,6 +2099,7 @@ impl StudioRepository for PgStore {
                 SET title = COALESCE($3, title),
                     schema_doc = $4,
                     issues = $5,
+                    pass_count = $6,
                     updated_at = NOW()
               WHERE tenant_id = $1 AND id = $2
              RETURNING *",
@@ -2087,6 +2109,7 @@ impl StudioRepository for PgStore {
         .bind(req.title.as_deref().map(str::trim))
         .bind(doc_json)
         .bind(issues_json)
+        .bind(pass_count_i32)
         .fetch_one(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("update xb_schema_drafts failed: {err}")))?;
@@ -2234,6 +2257,7 @@ impl StudioRepository for PgStore {
                     "source_version": sub_version,
                     "default_strategy": req.default_strategy,
                 })),
+                subgraph_slug: None,
             },
         )
         .await?;
@@ -2577,6 +2601,7 @@ async fn seed_subgraph_from_main_tx(
             },
             source: Some(DraftSource::Manual),
             ai_context: None,
+            subgraph_slug: None,
         },
     )
     .await?;

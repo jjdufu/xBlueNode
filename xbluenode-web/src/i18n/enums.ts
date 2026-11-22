@@ -200,4 +200,12 @@ export const ENUM_LABELS: Readonly<Record<string, BilingualLabel>> = {
   GROUNDED_DOC: { zh: "原文溯源", en: "Grounded Doc" },
   ABSTAINED: { zh: "无依据拒答", en: "Abstained" },
   CLARIFICATION: { zh: "待澄清", en: "Clarify" },
+  STUDIO_SNAPSHOT_RESTORE: { zh: "草案快照回退", en: "Snapshot Restore" },
+  PROPOSED: { zh: "待确认", en: "Proposed" },
+  CONFIRMED: { zh: "已确认", en: "Confirmed" },
+  STATIC_FACT: { zh: "主数据", en: "Master Data" },
+  EVENT_DYNAMIC: { zh: "业务事件", en: "Event" },
+  CUBE_ROLLUP: { zh: "汇总中心", en: "Rollup" },
+  DIAGNOSE_ONLY: { zh: "诊断", en: "Diagnose" },
+  PATCH_DRAFT: { zh: "改写草案", en: "Patch Draft" },
 };

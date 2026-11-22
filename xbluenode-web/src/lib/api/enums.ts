@@ -331,7 +331,8 @@ export type AuditAction =
   | "BACKUP_RUN"
   | "TEMPLATE_INSTALL"
   | "BUILDER_MCP_MUTATE"
-  | "TRIAL_TEMPLATE_CLONE";
+  | "TRIAL_TEMPLATE_CLONE"
+  | "STUDIO_SNAPSHOT_RESTORE";
 
 export type TokenKind =
   | "ACCESS"
@@ -351,3 +352,12 @@ export type GroundingMode =
   | "CLARIFICATION";
 
 export type TokenProfile = "GENERAL" | "BUILDER";
+
+export type DesignMaturity = "PROPOSED" | "CONFIRMED";
+
+export type SemanticLayerTier =
+  | "STATIC_FACT"
+  | "EVENT_DYNAMIC"
+  | "CUBE_ROLLUP";
+
+export type CopilotActionMode = "DIAGNOSE_ONLY" | "PATCH_DRAFT";

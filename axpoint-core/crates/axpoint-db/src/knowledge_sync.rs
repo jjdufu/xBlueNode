@@ -156,6 +156,9 @@ async fn resolve_sync_targets(
             sync_to_knowledge: true,
             pos_x: r.get("pos_x"),
             pos_y: r.get("pos_y"),
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            semantic_layer_tier: None,
+            domain_group: None,
         };
         sync_types.insert(nt.name.clone(), nt);
     }
@@ -966,6 +969,7 @@ mod tests {
                     required: false,
                     pii_category: PiiCategory::None,
                     allowed_values: None,
+                    maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                 },
                 PropertySpec {
                     name: String::from("api_secret"),
@@ -977,6 +981,7 @@ mod tests {
                     required: false,
                     pii_category: PiiCategory::Secret,
                     allowed_values: None,
+                    maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                 },
             ],
             agg_rules: Vec::new(),
@@ -984,6 +989,9 @@ mod tests {
             sync_to_knowledge: true,
             pos_x: 0.0,
             pos_y: 0.0,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            semantic_layer_tier: None,
+            domain_group: None,
         };
 
         let md = render_node_dossier_markdown(&node, &nt, &[], &[String::from("2026履约SOP")]);

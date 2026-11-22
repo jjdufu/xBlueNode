@@ -2367,46 +2367,43 @@ async fn authorize_export_source(
             .await?;
         }
         ExportSource::SavedQuery { saved_query_id } => {
-            let resource = explicit_export_dataset_ref(principal, saved_query_id.to_string());
-            axpoint_server::policy::authorize_explicit_resource_for_store(
-                &state.store,
-                &state.cedar,
-                principal,
-                Permission::ExportData,
-                &resource,
-                client_ip,
-            )
-            .await?;
+            authorize_explicit_export(state, principal, saved_query_id.to_string(), client_ip)
+                .await?;
         }
         ExportSource::Scenario { scenario_ids } => {
             let id_str = scenario_ids
                 .first()
                 .map_or_else(|| String::from("scenario"), ToString::to_string);
-            let resource = explicit_export_dataset_ref(principal, id_str);
-            axpoint_server::policy::authorize_explicit_resource_for_store(
-                &state.store,
-                &state.cedar,
-                principal,
-                Permission::ExportData,
-                &resource,
-                client_ip,
-            )
-            .await?;
+            authorize_explicit_export(state, principal, id_str, client_ip).await?;
         }
         ExportSource::Conversation { conversation_id } => {
-            let resource = explicit_export_dataset_ref(principal, conversation_id.to_string());
-            axpoint_server::policy::authorize_explicit_resource_for_store(
-                &state.store,
-                &state.cedar,
-                principal,
-                Permission::ExportData,
-                &resource,
-                client_ip,
-            )
-            .await?;
+            authorize_explicit_export(state, principal, conversation_id.to_string(), client_ip)
+                .await?;
+        }
+        ExportSource::Markdown { .. } => {
+            authorize_explicit_export(state, principal, String::from("spec-doc"), client_ip)
+                .await?;
         }
     }
     Ok(())
+}
+
+async fn authorize_explicit_export(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    id_str: String,
+    client_ip: &str,
+) -> Result<(), AppError> {
+    let resource = explicit_export_dataset_ref(principal, id_str);
+    axpoint_server::policy::authorize_explicit_resource_for_store(
+        &state.store,
+        &state.cedar,
+        principal,
+        Permission::ExportData,
+        &resource,
+        client_ip,
+    )
+    .await
 }
 
 async fn create_export_handler(

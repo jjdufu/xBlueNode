@@ -838,6 +838,8 @@ define_str_enum! {
         BuilderMcpMutate => "BUILDER_MCP_MUTATE",
         /// Isolated sandbox template clone (`03-STEP17` / `05-STEP19`).
         TrialTemplateClone => "TRIAL_TEMPLATE_CLONE",
+        /// `xBlueStudio` draft snapshot restored (`04-STEP18`).
+        StudioSnapshotRestore => "STUDIO_SNAPSHOT_RESTORE",
     }
 }
 
@@ -974,6 +976,44 @@ define_str_enum! {
         Abstained => "ABSTAINED",
         /// Model or slot router requested explicit user disambiguation before execution.
         Clarification => "CLARIFICATION",
+    }
+}
+
+define_str_enum! {
+    /// Design sign-off maturity state attached to `xBlueStudio` schema elements (`04-STEP18` §18.2.1).
+    #[derive(Default)]
+    pub enum DesignMaturity {
+        /// Generated or patched by AI; requires explicit human review before version publication.
+        Proposed => "PROPOSED",
+        /// Human-authored or explicitly reviewed and accepted (default for backward compatibility).
+        #[default]
+        Confirmed => "CONFIRMED",
+    }
+}
+
+define_str_enum! {
+    /// Optional semantic role tier of a `NodeTypeSpec` within an enterprise domain graph (`04-STEP18` §18.2.1).
+    #[derive(Default)]
+    pub enum SemanticLayerTier {
+        /// Master/reference entity changing slowly (e.g., `Supplier`, `Warehouse`, `Equipment`).
+        #[default]
+        StaticFact => "STATIC_FACT",
+        /// Transactional or operational event entity (e.g., `PurchaseOrder`, `WorkTicket`).
+        EventDynamic => "EVENT_DYNAMIC",
+        /// Rollup hub or management summary node aggregating multi-hop metrics (e.g., `RegionCenter`).
+        CubeRollup => "CUBE_ROLLUP",
+    }
+}
+
+define_str_enum! {
+    /// Action mode for `xBlueStudio` focus-aware AI Copilot (`04-STEP18` §18.3.1).
+    #[derive(Default)]
+    pub enum CopilotActionMode {
+        /// Read-only inspection and recommendations; zero draft mutations or snapshots.
+        #[default]
+        DiagnoseOnly => "DIAGNOSE_ONLY",
+        /// Records a pre-mutation snapshot and applies `PROPOSED` schema patches.
+        PatchDraft => "PATCH_DRAFT",
     }
 }
 

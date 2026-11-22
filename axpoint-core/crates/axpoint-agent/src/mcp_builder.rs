@@ -700,6 +700,7 @@ where
                     slug,
                     non_nil_uid(principal.user_id),
                     CreateDraftRequest {
+                        subgraph_slug: Some(String::from(slug)),
                         title: String::from(title),
                         schema_doc: doc,
                         base_version: Some(published.version),

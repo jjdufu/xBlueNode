@@ -218,6 +218,7 @@ fn mk_prop(name: &str, dt: DataType, kind: PropertyKind) -> PropertySpec {
         required: false,
         pii_category: PiiCategory::None,
         allowed_values: None,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
     }
 }
 
@@ -239,6 +240,9 @@ fn build_order_and_warehouse_types() -> Vec<NodeTypeSpec> {
         sync_to_knowledge: false,
         pos_x: 0.0,
         pos_y: 0.0,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     };
 
     let warehouse = NodeTypeSpec {
@@ -263,15 +267,20 @@ fn build_order_and_warehouse_types() -> Vec<NodeTypeSpec> {
             source_metric: String::from("demand"),
             filter: Some(String::from("prop.status != 'CANCELED'")),
             weight_by_link: false,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }],
         derived_rules: vec![DerivedRuleSpec {
             target_metric: String::from("fill_rate"),
             expression: String::from("inventory / total_demand"),
             enabled: true,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }],
         sync_to_knowledge: true,
         pos_x: 0.0,
         pos_y: 0.0,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     };
     vec![warehouse, order]
 }
@@ -289,6 +298,7 @@ fn build_supply_chain_schema() -> SchemaDoc {
             description: String::new(),
             properties: Vec::new(),
             propagation: serde_json::json!({}),
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }],
         mappings: vec![MappingSpec {
             name: String::from("orders_to_graph"),

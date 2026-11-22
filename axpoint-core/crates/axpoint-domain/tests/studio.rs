@@ -25,6 +25,7 @@ fn attr_prop(name: &str, dt: DataType) -> PropertySpec {
         required: false,
         pii_category: PiiCategory::None,
         allowed_values: None,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
     }
 }
 
@@ -39,6 +40,7 @@ fn metric_prop(name: &str, dt: DataType) -> PropertySpec {
         required: false,
         pii_category: PiiCategory::None,
         allowed_values: None,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
     }
 }
 
@@ -66,6 +68,7 @@ fn sample_supply_chain_doc() -> SchemaDoc {
             source_metric: String::from("demand"),
             filter: Some(String::from("prop.status != 'CANCELED' and demand > 0")),
             weight_by_link: false,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }],
         derived_rules: vec![DerivedRuleSpec {
             target_metric: String::from("fill_rate"),
@@ -73,10 +76,14 @@ fn sample_supply_chain_doc() -> SchemaDoc {
                 "if(total_demand > 0, safe_div(inventory, total_demand, 0), null)",
             ),
             enabled: true,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }],
         sync_to_knowledge: false,
         pos_x: 360.0,
         pos_y: 140.0,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     };
 
     let order = NodeTypeSpec {
@@ -97,6 +104,9 @@ fn sample_supply_chain_doc() -> SchemaDoc {
         sync_to_knowledge: false,
         pos_x: 640.0,
         pos_y: 140.0,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     };
 
     let fulfills = EdgeTypeSpec {
@@ -109,6 +119,7 @@ fn sample_supply_chain_doc() -> SchemaDoc {
         description: String::new(),
         properties: Vec::new(),
         propagation: serde_json::json!({}),
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
     };
 
     SchemaDoc {
@@ -151,6 +162,9 @@ fn studio_rule1_names_reserved_colors_and_templates() {
         sync_to_knowledge: false,
         pos_x: 0.0,
         pos_y: 0.0,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     };
     doc.node_types.push(dup_order);
 
@@ -176,6 +190,9 @@ fn studio_rule2_and_rule3_edge_endpoints_cross_subgraph_and_weights() {
         sync_to_knowledge: false,
         pos_x: 100.0,
         pos_y: 100.0,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     };
     let sub_doc = SchemaDoc {
         node_types: vec![shipment],
@@ -189,6 +206,7 @@ fn studio_rule2_and_rule3_edge_endpoints_cross_subgraph_and_weights() {
             description: String::new(),
             properties: Vec::new(),
             propagation: serde_json::json!({}),
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }],
         mappings: Vec::new(),
     };
@@ -234,18 +252,21 @@ fn studio_rule4_rule5_rule6_rule7_expressions_cycles_and_producers() {
             target_metric: String::from("inventory"),
             expression: String::from("fill_rate * 2"),
             enabled: true,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         });
         // Introduce duplicate producer on total_demand
         wh.derived_rules.push(DerivedRuleSpec {
             target_metric: String::from("total_demand"),
             expression: String::from("round(abs(-10.5), 1) + 2 ^ 3 ^ 2"),
             enabled: true,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         });
         // Invalid chained comparison in another rule
         wh.derived_rules.push(DerivedRuleSpec {
             target_metric: String::from("fill_rate"),
             expression: String::from("if(1 < 2 < 3, 1, 0)"),
             enabled: false,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         });
     }
 
@@ -384,6 +405,9 @@ fn studio_diff_schema_detects_added_removed_and_changed_fields() {
             sync_to_knowledge: false,
             pos_x: 120.0,
             pos_y: 120.0,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            semantic_layer_tier: None,
+            domain_group: None,
         }],
         edge_types: Vec::new(),
         mappings: Vec::new(),
@@ -421,6 +445,9 @@ fn logistics_subgraph_doc() -> SchemaDoc {
                 sync_to_knowledge: false,
                 pos_x: 200.0,
                 pos_y: 200.0,
+                maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+                semantic_layer_tier: None,
+                domain_group: None,
             },
             NodeTypeSpec {
                 id: None,
@@ -436,6 +463,9 @@ fn logistics_subgraph_doc() -> SchemaDoc {
                 sync_to_knowledge: false,
                 pos_x: 420.0,
                 pos_y: 160.0,
+                maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+                semantic_layer_tier: None,
+                domain_group: None,
             },
         ],
         edge_types: vec![EdgeTypeSpec {
@@ -448,6 +478,7 @@ fn logistics_subgraph_doc() -> SchemaDoc {
             description: String::new(),
             properties: Vec::new(),
             propagation: serde_json::json!({}),
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }],
         mappings: Vec::new(),
     }
@@ -566,6 +597,9 @@ fn studio_merge_extend_props_rejects_unresolved_type_conflict() {
             sync_to_knowledge: false,
             pos_x: 0.0,
             pos_y: 0.0,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            semantic_layer_tier: None,
+            domain_group: None,
         }],
         edge_types: Vec::new(),
         mappings: Vec::new(),

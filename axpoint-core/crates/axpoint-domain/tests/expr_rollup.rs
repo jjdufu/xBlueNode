@@ -52,6 +52,7 @@ fn mk_prop(name: &str, dt: DataType, kind: PropertyKind) -> PropertySpec {
         required: false,
         pii_category: PiiCategory::None,
         allowed_values: None,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
     }
 }
 
@@ -84,6 +85,9 @@ fn sample_node_type() -> NodeTypeSpec {
         sync_to_knowledge: false,
         pos_x: 0.0,
         pos_y: 0.0,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     }
 }
 
@@ -599,6 +603,9 @@ fn build_node_type(
         sync_to_knowledge: false,
         pos_x: 0.0,
         pos_y: 0.0,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     }
 }
 
@@ -616,11 +623,13 @@ fn three_tier_supply_chain_doc() -> SchemaDoc {
             source_metric: String::from("demand"),
             filter: None,
             weight_by_link: false,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }],
         vec![DerivedRuleSpec {
             target_metric: String::from("fill_rate"),
             expression: String::from("if(total_demand > 0, inventory / total_demand, null)"),
             enabled: true,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }],
     );
     let factory = build_node_type(
@@ -636,6 +645,7 @@ fn three_tier_supply_chain_doc() -> SchemaDoc {
                 source_metric: String::from("total_demand"),
                 filter: None,
                 weight_by_link: false,
+                maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             },
             AggRuleSpec {
                 target_metric: String::from("avg_fill_rate"),
@@ -646,6 +656,7 @@ fn three_tier_supply_chain_doc() -> SchemaDoc {
                 source_metric: String::from("fill_rate"),
                 filter: None,
                 weight_by_link: false,
+                maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             },
         ],
         Vec::new(),
@@ -664,6 +675,7 @@ fn three_tier_supply_chain_doc() -> SchemaDoc {
                 description: String::new(),
                 properties: Vec::new(),
                 propagation: serde_json::json!({}),
+                maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             },
             EdgeTypeSpec {
                 id: None,
@@ -675,6 +687,7 @@ fn three_tier_supply_chain_doc() -> SchemaDoc {
                 description: String::new(),
                 properties: Vec::new(),
                 propagation: serde_json::json!({}),
+                maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             },
         ],
         mappings: Vec::new(),

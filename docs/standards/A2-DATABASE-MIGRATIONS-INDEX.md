@@ -25,6 +25,7 @@
 | 0015 | `0015_llm_structured_grounding.sql` | Step 15 | 提供方受限解码能力分级、确定性种子、本地小模型标识、个人归属隔离与用户默认模型偏好 | [01-STEP15](../../plans/v2-ux-and-grounded-ai/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.1 |
 | 0016 | `0016_grounded_ask_eval.sql` | Step 16 | 问数轮次接地路径审计列（`grounding_mode`、`verified_numbers`、`verified_citations`、`abstained`、`slot_payload`）与双轨反幻觉评测运行表 `an_grounding_eval_runs` | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.1 |
 | 0017 | `0017_axbuilder_scopes.sql` | Step 17 | `AxBuilder` 构建令牌档位与深链基址、开发子图沙盒元数据、运行态节点 `subgraph_slug` 隔离索引与审计动作扩展 | [03-STEP17](../../plans/v2-ux-and-grounded-ai/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.1 |
+| 0018 | `0018_studio_proposal_status.sql` | Step 18 | 模型草案增量快照表 `xb_schema_draft_snapshots`、`xb_schema_drafts.pass_count`、节点类型语义分层/业务域列与 `STUDIO_SNAPSHOT_RESTORE` 审计动作 | [04-STEP18](../../plans/v2-ux-and-grounded-ai/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.1 |
 
 Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 中的时序表）。
 
@@ -38,7 +39,7 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `hg_paras` | 0001 | 0013（`pii_spans`） | 仓库已有 / 13 | 是 |
 | `hg_entities` | 0001 | 0004 | 仓库已有 / 03 | 是 |
 | `hg_edges`、`hg_embeddings` | 0001 | — | 仓库已有 | 是 |
-| `xb_node_types` | 0001 | 0006、0013 | 05 / 13 | 是 |
+| `xb_node_types` | 0001 | 0006、0013、0018（语义分层与业务域） | 05 / 13 / 18 | 是 |
 | `xb_edge_types` | 0001 | 0006 | 05 | 是 |
 | `xb_nodes` | 0001 | 0004、0006、0017（`subgraph_slug` 隔离） | 03 / 05 / 17 | 是 |
 | `xb_links` | 0001 | 0004、0006、0017（`subgraph_slug` 隔离） | 03 / 05 / 17 | 是 |
@@ -48,7 +49,7 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `sec_users` | 0002 | 0013 | 00 / 13 | 是 |
 | `sec_roles`、`sec_user_roles` | 0002 | — | 00 | 是 |
 | `sec_api_tokens` | 0002 | 0017（`token_profile`、`web_base_url`） | 00 / 09 / 17 | 是 |
-| `sec_audit_logs` | 0002 | 0013（哈希链）、0017（构建与克隆动作） | 00 / 13 / 17 | 是（应用角色无 UPDATE / DELETE） |
+| `sec_audit_logs` | 0002 | 0013（哈希链）、0017（构建与克隆动作）、0018（快照回退动作） | 00 / 13 / 17 / 18 | 是（应用角色无 UPDATE / DELETE） |
 | `ax_jobs`、`ax_outbox`、`ax_retention_policies` | 0002 | — | 00 | 是 |
 | `ds_credentials`、`ds_connections`、`ds_column_meta`、`ds_sync_jobs`、`ds_uploads`、`ds_webhooks`、`ds_webhook_buffer`、`ds_stream_offsets`、`ds_quality_rules`、`ds_glossary_terms`、`ds_lineage` | 0003 | — | 02 | 是 |
 | `ds_datasets` | 0003 | 0013（归属、密级） | 02 / 13 | 是 |
@@ -58,7 +59,9 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `an_ask_turns` | 0005 | 0016（接地路径与核验计数列） | 04 / 16 | 是 |
 | `an_grounding_eval_runs` | 0016 | — | 16 | 是 |
 | `xb_subgraphs` | 0006 | 0013（密级）、0017（开发沙盒元数据） | 05 / 13 / 17 | 是 |
-| `xb_schema_heads`、`xb_schema_versions`、`xb_schema_drafts`、`xb_mappings`、`xb_mapping_runs` | 0006 | — | 05 / 06 | 是 |
+| `xb_schema_heads`、`xb_schema_versions`、`xb_mappings`、`xb_mapping_runs` | 0006 | — | 05 / 06 | 是 |
+| `xb_schema_drafts` | 0006 | 0018（`pass_count`） | 05 / 18 | 是 |
+| `xb_schema_draft_snapshots` | 0018 | — | 18 | 是 |
 | `ax_flow_versions`、`ax_flow_deployments`、`ax_flow_runs`、`ax_flow_step_logs`、`ax_action_log`、`ax_flow_hooks` | 0007 | — | 07 | 是 |
 | `ax_approvals` | 0007 | 0013（`GRANT` 来源） | 07 / 13 | 是 |
 | `ax_notify_channels`、`ax_rules`、`ax_alerts`、`ax_alert_events`、`ax_notify_deliveries`、`ax_alert_silences` | 0008 | — | 08 | 是 |
