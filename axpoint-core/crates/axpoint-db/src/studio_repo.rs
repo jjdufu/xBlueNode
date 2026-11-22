@@ -6,6 +6,7 @@ use std::str::FromStr;
 
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::ColumnProfile;
+use axpoint_domain::builder::{DevSubgraphResetResponse, resolve_deep_links};
 use axpoint_domain::enums::{Cardinality, DataType, JobKind};
 use axpoint_domain::graph::GeoPoint;
 use axpoint_domain::platform::NewJob;
@@ -294,7 +295,10 @@ async fn load_validation_context_tx(
 
     if subgraph_slug == "main" {
         let n_rows = sqlx::query(
-            "SELECT type_name, COUNT(*) AS cnt FROM xb_nodes WHERE tenant_id = $1 GROUP BY type_name",
+            "SELECT type_name, COUNT(*) AS cnt
+               FROM xb_nodes
+              WHERE tenant_id = $1 AND subgraph_slug = 'main'
+              GROUP BY type_name",
         )
         .bind(tenant_id)
         .fetch_all(&mut **tx)
@@ -305,7 +309,10 @@ async fn load_validation_context_tx(
         }
 
         let l_rows = sqlx::query(
-            "SELECT link_type, COUNT(*) AS cnt FROM xb_links WHERE tenant_id = $1 GROUP BY link_type",
+            "SELECT link_type, COUNT(*) AS cnt
+               FROM xb_links
+              WHERE tenant_id = $1 AND subgraph_slug = 'main'
+              GROUP BY link_type",
         )
         .bind(tenant_id)
         .fetch_all(&mut **tx)
@@ -318,7 +325,7 @@ async fn load_validation_context_tx(
         let cv_rows = sqlx::query(
             "SELECT DISTINCT link_type
                FROM xb_links
-              WHERE tenant_id = $1
+              WHERE tenant_id = $1 AND subgraph_slug = 'main'
               GROUP BY link_type, dst_node_id
              HAVING COUNT(*) > 1",
         )
@@ -782,12 +789,15 @@ async fn sync_edge_types_table_tx(
             .iter()
             .map(|k| k.split(':').next().unwrap_or(k.as_str()).to_owned())
             .collect();
-        sqlx::query("DELETE FROM xb_links WHERE tenant_id = $1 AND link_type = ANY($2)")
-            .bind(tenant_id)
-            .bind(&removed_names)
-            .execute(&mut **tx)
-            .await
-            .map_err(|err| AppError::Database(format!("cascade delete xb_links failed: {err}")))?;
+        sqlx::query(
+            "DELETE FROM xb_links
+              WHERE tenant_id = $1 AND subgraph_slug = 'main' AND link_type = ANY($2)",
+        )
+        .bind(tenant_id)
+        .bind(&removed_names)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("cascade delete xb_links failed: {err}")))?;
     }
 
     for et in &mut doc.edge_types {
@@ -835,8 +845,9 @@ async fn cascade_delete_removed_runtime_nodes_tx(
     sqlx::query(
         "DELETE FROM xb_links
           WHERE tenant_id = $1
-            AND (src_node_id IN (SELECT id FROM xb_nodes WHERE tenant_id = $1 AND type_name = ANY($2))
-              OR dst_node_id IN (SELECT id FROM xb_nodes WHERE tenant_id = $1 AND type_name = ANY($2)))",
+            AND subgraph_slug = 'main'
+            AND (src_node_id IN (SELECT id FROM xb_nodes WHERE tenant_id = $1 AND subgraph_slug = 'main' AND type_name = ANY($2))
+              OR dst_node_id IN (SELECT id FROM xb_nodes WHERE tenant_id = $1 AND subgraph_slug = 'main' AND type_name = ANY($2)))",
     )
     .bind(tenant_id)
     .bind(removed_types)
@@ -847,7 +858,7 @@ async fn cascade_delete_removed_runtime_nodes_tx(
     sqlx::query(
         "DELETE FROM xb_metric_series
           WHERE tenant_id = $1
-            AND node_id IN (SELECT id FROM xb_nodes WHERE tenant_id = $1 AND type_name = ANY($2))",
+            AND node_id IN (SELECT id FROM xb_nodes WHERE tenant_id = $1 AND subgraph_slug = 'main' AND type_name = ANY($2))",
     )
     .bind(tenant_id)
     .bind(removed_types)
@@ -855,12 +866,15 @@ async fn cascade_delete_removed_runtime_nodes_tx(
     .await
     .map_err(|err| AppError::Database(format!("cascade delete node metrics failed: {err}")))?;
 
-    sqlx::query("DELETE FROM xb_nodes WHERE tenant_id = $1 AND type_name = ANY($2)")
-        .bind(tenant_id)
-        .bind(removed_types)
-        .execute(&mut **tx)
-        .await
-        .map_err(|err| AppError::Database(format!("cascade delete xb_nodes failed: {err}")))?;
+    sqlx::query(
+        "DELETE FROM xb_nodes
+          WHERE tenant_id = $1 AND subgraph_slug = 'main' AND type_name = ANY($2)",
+    )
+    .bind(tenant_id)
+    .bind(removed_types)
+    .execute(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("cascade delete xb_nodes failed: {err}")))?;
     Ok(())
 }
 
@@ -1246,6 +1260,7 @@ impl PgStore {
                     row_version, created_at, updated_at
                FROM xb_nodes
               WHERE tenant_id = $1
+                AND subgraph_slug = 'main'
                 AND type_name = $2
                 AND ($3::text IS NULL OR node_key ILIKE $3 OR title ILIKE $3)
                 AND ($4::jsonb IS NULL OR properties @> $4)
@@ -1298,7 +1313,7 @@ impl PgStore {
                     geo_lng, geo_lat, source_dataset_id, source_row_key,
                     row_version, created_at, updated_at
                FROM xb_nodes
-              WHERE tenant_id = $1 AND type_name = $2 AND node_key = $3",
+              WHERE tenant_id = $1 AND subgraph_slug = 'main' AND type_name = $2 AND node_key = $3",
         )
         .bind(tenant_id)
         .bind(type_name)
@@ -1404,6 +1419,8 @@ const fn batch_neighbor_sql(direction: LinkDirection) -> &'static str {
                      FROM xb_links l
                      JOIN xb_nodes n ON n.tenant_id = l.tenant_id AND n.id = l.dst_node_id
                     WHERE l.tenant_id = $1
+                      AND l.subgraph_slug = 'main'
+                      AND n.subgraph_slug = 'main'
                       AND l.link_type = $2
                       AND l.src_node_id = ANY($3)
                       AND n.type_name = $4
@@ -1426,6 +1443,8 @@ const fn batch_neighbor_sql(direction: LinkDirection) -> &'static str {
                      FROM xb_links l
                      JOIN xb_nodes n ON n.tenant_id = l.tenant_id AND n.id = l.src_node_id
                     WHERE l.tenant_id = $1
+                      AND l.subgraph_slug = 'main'
+                      AND n.subgraph_slug = 'main'
                       AND l.link_type = $2
                       AND l.dst_node_id = ANY($3)
                       AND n.type_name = $4
@@ -1612,6 +1631,9 @@ impl StudioRepository for PgStore {
         let _ = require_subgraph_exists_tx(&mut tx, tenant_id, slug).await?;
 
         for stmt in [
+            "DELETE FROM xb_metric_series WHERE tenant_id = $1 AND node_id IN (SELECT id FROM xb_nodes WHERE tenant_id = $1 AND subgraph_slug = $2)",
+            "DELETE FROM xb_links WHERE tenant_id = $1 AND subgraph_slug = $2",
+            "DELETE FROM xb_nodes WHERE tenant_id = $1 AND subgraph_slug = $2",
             "DELETE FROM xb_mappings WHERE tenant_id = $1 AND subgraph_slug = $2",
             "DELETE FROM xb_edge_types WHERE tenant_id = $1 AND subgraph_slug = $2",
             "DELETE FROM xb_node_types WHERE tenant_id = $1 AND subgraph_slug = $2",
@@ -1634,6 +1656,97 @@ impl StudioRepository for PgStore {
             AppError::Database(format!("commit delete_subgraph tx failed: {err}"))
         })?;
         Ok(())
+    }
+
+    async fn reset_dev_subgraph_nodes(
+        &self,
+        tenant_id: &str,
+        slug: &str,
+        web_base_url: Option<&str>,
+    ) -> Result<DevSubgraphResetResponse, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        ensure_main_subgraph_tx(&mut tx, tenant_id).await?;
+
+        let meta_row = sqlx::query(
+            "SELECT is_main, is_dev_sandbox
+               FROM xb_subgraphs
+              WHERE tenant_id = $1 AND slug = $2
+              FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(slug)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("lock xb_subgraphs for reset failed: {err}")))?
+        .ok_or(AppError::NotFound("SUBGRAPH_NOT_FOUND"))?;
+
+        let is_main: bool = meta_row.get("is_main");
+        let is_dev_sandbox: bool = meta_row.get("is_dev_sandbox");
+        if is_main || !is_dev_sandbox {
+            return Err(AppError::bad(
+                "DEV_SANDBOX_REQUIRED",
+                "target subgraph must be a non-main dev sandbox",
+            ));
+        }
+
+        let series_res = sqlx::query(
+            "DELETE FROM xb_metric_series
+              WHERE tenant_id = $1
+                AND node_id IN (SELECT id FROM xb_nodes WHERE tenant_id = $1 AND subgraph_slug = $2)",
+        )
+        .bind(tenant_id)
+        .bind(slug)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("reset sandbox xb_metric_series failed: {err}")))?;
+
+        let links_res =
+            sqlx::query("DELETE FROM xb_links WHERE tenant_id = $1 AND subgraph_slug = $2")
+                .bind(tenant_id)
+                .bind(slug)
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| {
+                    AppError::Database(format!("reset sandbox xb_links failed: {err}"))
+                })?;
+
+        let nodes_res =
+            sqlx::query("DELETE FROM xb_nodes WHERE tenant_id = $1 AND subgraph_slug = $2")
+                .bind(tenant_id)
+                .bind(slug)
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| {
+                    AppError::Database(format!("reset sandbox xb_nodes failed: {err}"))
+                })?;
+
+        let reset_row = sqlx::query(
+            "UPDATE xb_subgraphs
+                SET last_reset_at = NOW(), updated_at = NOW()
+              WHERE tenant_id = $1 AND slug = $2
+             RETURNING last_reset_at",
+        )
+        .bind(tenant_id)
+        .bind(slug)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| {
+            AppError::Database(format!("update xb_subgraphs.last_reset_at failed: {err}"))
+        })?;
+        let last_reset_at: DateTime<Utc> = reset_row.get("last_reset_at");
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit reset_dev_subgraph_nodes tx failed: {err}"))
+        })?;
+
+        Ok(DevSubgraphResetResponse {
+            subgraph_slug: String::from(slug),
+            nodes_deleted: nodes_res.rows_affected(),
+            links_deleted: links_res.rows_affected(),
+            series_points_deleted: series_res.rows_affected(),
+            last_reset_at,
+            deep_links: resolve_deep_links(web_base_url, None, slug, None, None, None),
+        })
     }
 
     async fn get_published_schema(

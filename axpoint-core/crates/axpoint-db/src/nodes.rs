@@ -292,8 +292,14 @@ impl PgStore {
             None
         };
 
+        let subgraph_slug = query
+            .subgraph
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("main");
         let node_ids: Vec<Uuid> = nodes.iter().map(|n| n.id).collect();
-        let links = load_incident_blue_links_tx(&mut tx, &node_ids).await?;
+        let links = load_incident_blue_links_tx(&mut tx, &node_ids, subgraph_slug).await?;
 
         tx.commit()
             .await
@@ -358,8 +364,15 @@ fn build_list_nodes_query(
                 geo_lng, geo_lat, source_dataset_id, source_row_key,
                 row_version, created_at, updated_at
            FROM xb_nodes
-          WHERE TRUE",
+          WHERE subgraph_slug = ",
     );
+    let subgraph_slug = query
+        .subgraph
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("main");
+    qb.push_bind(String::from(subgraph_slug));
 
     if let Some(tf) = query
         .type_name
@@ -442,7 +455,7 @@ impl GraphStorePort for PgStore {
                     geo_lng, geo_lat, source_dataset_id, source_row_key,
                     row_version, created_at, updated_at
                FROM xb_nodes
-              WHERE id = $1",
+              WHERE id = $1 AND subgraph_slug = 'main'",
         )
         .bind(node_id)
         .fetch_optional(&mut *tx)
@@ -570,7 +583,7 @@ impl GraphStorePort for PgStore {
                     geo_lng, geo_lat, source_dataset_id, source_row_key,
                     row_version, created_at, updated_at
                FROM xb_nodes
-              WHERE id = $1
+              WHERE id = $1 AND subgraph_slug = 'main'
               FOR UPDATE",
         )
         .bind(node_id)
@@ -637,7 +650,7 @@ impl GraphStorePort for PgStore {
                     geo_lat = $6,
                     row_version = row_version + 1,
                     updated_at = NOW()
-              WHERE id = $1
+              WHERE id = $1 AND subgraph_slug = 'main'
               RETURNING id, type_name, node_key, title, properties, metrics,
                         geo_lng, geo_lat, source_dataset_id, source_row_key,
                         row_version, created_at, updated_at",
@@ -666,7 +679,8 @@ impl GraphStorePort for PgStore {
         let peer_rows = sqlx::query(
             "SELECT DISTINCT CASE WHEN src_node_id = $1 THEN dst_node_id ELSE src_node_id END AS peer_id
                FROM xb_links
-              WHERE (src_node_id = $1 OR dst_node_id = $1)
+              WHERE subgraph_slug = 'main'
+                AND (src_node_id = $1 OR dst_node_id = $1)
                 AND src_node_id <> dst_node_id",
         )
         .bind(node_id)
@@ -675,11 +689,13 @@ impl GraphStorePort for PgStore {
         .map_err(|err| AppError::Database(format!("query peer links before delete_node: {err}")))?;
         let peer_ids: Vec<Uuid> = peer_rows.into_iter().map(|r| r.get("peer_id")).collect();
 
-        let deleted = sqlx::query("DELETE FROM xb_nodes WHERE id = $1 RETURNING id")
-            .bind(node_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|err| AppError::Database(format!("delete xb_nodes failed: {err}")))?;
+        let deleted = sqlx::query(
+            "DELETE FROM xb_nodes WHERE id = $1 AND subgraph_slug = 'main' RETURNING id",
+        )
+        .bind(node_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("delete xb_nodes failed: {err}")))?;
 
         if deleted.is_none() {
             return Err(AppError::NotFound("NODE_NOT_FOUND"));
@@ -815,7 +831,8 @@ impl GraphStorePort for PgStore {
             "SELECT id, link_type, src_node_id, dst_node_id, weight,
                     properties, source_dataset_id, valid_from, valid_to, created_at, updated_at
                FROM xb_links
-              WHERE ($1::uuid IS NULL OR src_node_id = $1 OR dst_node_id = $1)
+              WHERE subgraph_slug = 'main'
+                AND ($1::uuid IS NULL OR src_node_id = $1 OR dst_node_id = $1)
                 AND ($2::text IS NULL OR link_type = $2)
               ORDER BY updated_at DESC, id DESC
               LIMIT $3",
@@ -860,8 +877,8 @@ impl GraphStorePort for PgStore {
         let weight = req.weight.unwrap_or(default_w);
 
         let endpoints_exist: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1)
-                AND EXISTS(SELECT 1 FROM xb_nodes WHERE id = $2)",
+            "SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1 AND subgraph_slug = 'main')
+                AND EXISTS(SELECT 1 FROM xb_nodes WHERE id = $2 AND subgraph_slug = 'main')",
         )
         .bind(req.src_node_id)
         .bind(req.dst_node_id)
@@ -922,12 +939,13 @@ impl GraphStorePort for PgStore {
 
     async fn delete_link(&self, tenant_id: &str, link_id: Uuid) -> Result<(), AppError> {
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
-        let deleted_row =
-            sqlx::query("DELETE FROM xb_links WHERE id = $1 RETURNING src_node_id, dst_node_id")
-                .bind(link_id)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|err| AppError::Database(format!("delete xb_links failed: {err}")))?;
+        let deleted_row = sqlx::query(
+            "DELETE FROM xb_links WHERE id = $1 AND subgraph_slug = 'main' RETURNING src_node_id, dst_node_id",
+        )
+        .bind(link_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("delete xb_links failed: {err}")))?;
 
         let Some(row) = deleted_row else {
             return Err(AppError::NotFound("LINK_NOT_FOUND"));
@@ -1093,6 +1111,7 @@ async fn emit_node_side_effects_tx(
 async fn load_incident_blue_links_tx(
     tx: &mut Transaction<'_, Postgres>,
     node_ids: &[Uuid],
+    subgraph_slug: &str,
 ) -> Result<Vec<BlueLink>, AppError> {
     if node_ids.is_empty() {
         return Ok(Vec::new());
@@ -1100,9 +1119,10 @@ async fn load_incident_blue_links_tx(
     let link_rows = sqlx::query(
         "SELECT id, link_type, src_node_id, dst_node_id, weight
            FROM xb_links
-          WHERE src_node_id = ANY($1) AND dst_node_id = ANY($1)",
+          WHERE subgraph_slug = $2 AND src_node_id = ANY($1) AND dst_node_id = ANY($1)",
     )
     .bind(node_ids)
+    .bind(subgraph_slug)
     .fetch_all(&mut **tx)
     .await
     .map_err(|err| AppError::Database(format!("list incident xb_links failed: {err}")))?;
@@ -1155,12 +1175,13 @@ async fn resolve_upsert_link_tx(
         return Ok(None);
     };
     let default_w = lookup_edge_impact_weight_tx(tx, &ltype).await?;
-    let target_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1)")
-            .bind(target_id)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|err| AppError::Database(format!("verify link target: {err}")))?;
+    let target_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1 AND subgraph_slug = 'main')",
+    )
+    .bind(target_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("verify link target: {err}")))?;
     if !target_exists {
         return Err(AppError::NotFound("NODE_NOT_FOUND"));
     }
@@ -1187,7 +1208,7 @@ async fn merge_single_upsert_node_tx(
     let existing = sqlx::query(
         "SELECT id, properties, metrics, row_version
            FROM xb_nodes
-          WHERE type_name = $1 AND node_key = $2
+          WHERE subgraph_slug = 'main' AND type_name = $1 AND node_key = $2
           FOR UPDATE",
     )
     .bind(type_name)
@@ -1327,7 +1348,8 @@ async fn preload_bulk_nodes_state_tx(
         "SELECT x.type_name, x.node_key, x.metrics, x.properties
            FROM xb_nodes x
            JOIN UNNEST($1::text[], $2::text[]) AS p(type_name, node_key)
-             ON x.type_name = p.type_name AND x.node_key = p.node_key",
+             ON x.type_name = p.type_name AND x.node_key = p.node_key
+          WHERE x.subgraph_slug = 'main'",
     )
     .bind(&probe_types)
     .bind(&probe_keys)
@@ -1599,11 +1621,12 @@ async fn load_bulk_link_lookups_tx(
         BTreeSet::new()
     } else {
         let id_vec: Vec<Uuid> = needed_ids.into_iter().collect();
-        let rows = sqlx::query("SELECT id FROM xb_nodes WHERE id = ANY($1)")
-            .bind(&id_vec)
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(|err| AppError::Database(format!("resolve bulk link UUIDs: {err}")))?;
+        let rows =
+            sqlx::query("SELECT id FROM xb_nodes WHERE id = ANY($1) AND subgraph_slug = 'main'")
+                .bind(&id_vec)
+                .fetch_all(&mut **tx)
+                .await
+                .map_err(|err| AppError::Database(format!("resolve bulk link UUIDs: {err}")))?;
         rows.into_iter().map(|r| r.get("id")).collect()
     };
 
@@ -1616,7 +1639,8 @@ async fn load_bulk_link_lookups_tx(
             "SELECT x.id, x.type_name, x.node_key
                FROM xb_nodes x
                JOIN UNNEST($1::text[], $2::text[]) AS p(type_name, node_key)
-                 ON x.type_name = p.type_name AND x.node_key = p.node_key",
+                 ON x.type_name = p.type_name AND x.node_key = p.node_key
+              WHERE x.subgraph_slug = 'main'",
         )
         .bind(&kt)
         .bind(&kk)
@@ -1793,7 +1817,8 @@ async fn query_fts_nodes_tx(
                             ELSE 0.0 END)
                 ) AS lex_score
            FROM xb_nodes
-          WHERE ($3::text IS NULL OR type_name = $3)
+          WHERE subgraph_slug = 'main'
+            AND ($3::text IS NULL OR type_name = $3)
             AND (fts @@ plainto_tsquery('simple', $1) OR title ILIKE $2 OR node_key ILIKE $2)
           ORDER BY lex_score DESC, updated_at DESC
           LIMIT 50",
@@ -1824,6 +1849,7 @@ async fn query_vector_nodes_tx(
            FROM hg_embeddings e
            JOIN xb_nodes n ON n.id = e.node_id
           WHERE e.node_type = 'XB_NODE'
+            AND n.subgraph_slug = 'main'
             AND e.embedding_dim = $1
             AND ($2::text IS NULL OR n.type_name = $2)
           ORDER BY e.embedding <=> $3 ASC

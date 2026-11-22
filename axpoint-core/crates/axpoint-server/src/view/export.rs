@@ -313,6 +313,8 @@ where
         roles: rec.roles,
         permissions: masked_perms,
         token_kind: TokenKind::Access,
+        token_profile: axpoint_domain::enums::TokenProfile::General,
+        web_base_url: None,
     }))
 }
 

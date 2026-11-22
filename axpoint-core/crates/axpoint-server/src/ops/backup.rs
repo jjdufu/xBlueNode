@@ -437,6 +437,8 @@ mod tests {
             roles: vec![String::from("ADMIN")],
             permissions: perms,
             token_kind: TokenKind::Access,
+            token_profile: axpoint_domain::enums::TokenProfile::General,
+            web_base_url: None,
         }
     }
 

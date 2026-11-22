@@ -12,10 +12,12 @@ use axpoint_domain::enums::{
 use axpoint_domain::graph::{NeighborQuery, NodeListQuery, TraversalDirection};
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::{
-    AgentCapabilityPort, AgentRepository, AnalyticsRepository, DatasetRepository, FlowRepository,
-    GraphQueryPort, GraphStorePort, StudioRepository,
+    AgentCapabilityPort, AgentRepository, AnalyticsRepository, BuilderDashboardPort,
+    DatasetRepository, FlowRepository, GraphQueryPort, GraphStorePort, StudioRepository,
+    TemplateSandboxPort,
 };
 use axpoint_domain::studio::PropertyKind;
+use axpoint_security::masking::MaskKeyRing;
 use axpoint_security::{AuditWriter, AuthPrincipal};
 use chrono::Utc;
 use moka::future::Cache;
@@ -59,30 +61,50 @@ struct JsonRpcIncoming {
     params: Option<serde_json::Value>,
 }
 
-#[derive(Debug, Serialize)]
-struct McpToolDescriptor {
-    name: String,
-    description: String,
-    #[serde(rename = "inputSchema")]
-    input_schema: serde_json::Value,
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct McpCallMeta<'a> {
+    pub(crate) client_ip: &'a str,
+    pub(crate) trace_id: &'a str,
 }
 
 #[derive(Debug, Serialize)]
-struct McpResourceDescriptor {
-    uri: String,
-    name: String,
-    description: String,
+pub(crate) struct McpToolDescriptor {
+    pub(crate) name: String,
+    pub(crate) description: String,
+    #[serde(rename = "inputSchema")]
+    pub(crate) input_schema: serde_json::Value,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct McpResourceDescriptor {
+    pub(crate) uri: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
     #[serde(rename = "mimeType")]
-    mime_type: &'static str,
+    pub(crate) mime_type: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct McpResourceTemplateDescriptor {
+    #[serde(rename = "uriTemplate")]
+    pub(crate) uri_template: &'static str,
+    pub(crate) name: &'static str,
+    pub(crate) description: &'static str,
+    #[serde(rename = "mimeType")]
+    pub(crate) mime_type: &'static str,
 }
 
 /// Streamable HTTP MCP Server dynamically exposing tenant `PROD` published endpoints (`expose_mcp = true`),
-/// 7 built-in read-only platform tools, and `axpoint://` catalog resources (`08-STEP09` §09.4.1).
+/// 7 built-in read-only platform tools, 9 `AxBuilder` build-plane tools, and `axpoint://` catalog resources (`08-STEP09` & `03-STEP17`).
 pub struct McpServerHub<R> {
-    store: Arc<R>,
-    capability: Arc<dyn AgentCapabilityPort>,
-    publisher: Arc<CapabilityPublisher<R>>,
-    audit: Option<AuditWriter>,
+    pub(crate) store: Arc<R>,
+    pub(crate) capability: Arc<dyn AgentCapabilityPort>,
+    pub(crate) publisher: Arc<CapabilityPublisher<R>>,
+    pub(crate) audit: Option<AuditWriter>,
+    pub(crate) builder_dashboard: Option<Arc<dyn BuilderDashboardPort>>,
+    pub(crate) template_sandbox: Option<Arc<dyn TemplateSandboxPort>>,
+    pub(crate) public_host: Option<String>,
+    pub(crate) mask_keys: MaskKeyRing,
     sessions: Cache<String, Arc<McpSession>>,
 }
 
@@ -99,13 +121,40 @@ impl<R> McpServerHub<R> {
             .max_capacity(8_192)
             .time_to_idle(Duration::from_secs(MCP_IDLE_TTL_SECS))
             .build();
+        let mask_keys = MaskKeyRing::from_env().unwrap_or_else(|_| MaskKeyRing::dev_default());
         Self {
             store,
             capability,
             publisher,
             audit,
+            builder_dashboard: None,
+            template_sandbox: None,
+            public_host: None,
+            mask_keys,
             sessions,
         }
+    }
+
+    /// Attaches Step 17 `AxBuilder` build-plane ports (`BuilderDashboardPort`, `TemplateSandboxPort`)
+    /// and optional `AXPOINT_PUBLIC_HOST` origin for deterministic frontend `deep_links` generation.
+    #[must_use]
+    pub fn with_builder_ports(
+        mut self,
+        builder_dashboard: Option<Arc<dyn BuilderDashboardPort>>,
+        template_sandbox: Option<Arc<dyn TemplateSandboxPort>>,
+        public_host: Option<String>,
+    ) -> Self {
+        self.builder_dashboard = builder_dashboard;
+        self.template_sandbox = template_sandbox;
+        self.public_host = public_host;
+        self
+    }
+
+    /// Overrides the [`MaskKeyRing`] used for deterministic `HMAC_HASH` `PII` masking.
+    #[must_use]
+    pub fn with_mask_keys(mut self, mask_keys: MaskKeyRing) -> Self {
+        self.mask_keys = mask_keys;
+        self
     }
 }
 
@@ -176,6 +225,14 @@ where
                 principal.require(Permission::DataRead)?;
                 let resources = self.collect_resources(&principal.tenant_id).await?;
                 jsonrpc_ok(&req_id, &serde_json::json!({ "resources": resources }))
+            }
+            "resources/templates/list" => {
+                principal.require(Permission::DataRead)?;
+                let templates = crate::mcp_builder::axbuilder_resource_templates();
+                jsonrpc_ok(
+                    &req_id,
+                    &serde_json::json!({ "resourceTemplates": templates }),
+                )
             }
             "resources/read" => {
                 principal.require(Permission::DataRead)?;
@@ -249,19 +306,20 @@ where
         });
         self.sessions.insert(session_id.clone(), session).await;
 
-        let requested_proto = rpc
+        let negotiated_proto = rpc
             .params
             .as_ref()
             .and_then(|p| p.get("protocolVersion"))
             .and_then(serde_json::Value::as_str)
-            .filter(|s| !s.trim().is_empty())
+            .map(str::trim)
+            .filter(|s| matches!(*s, "2025-06-18" | "2025-03-26" | "2024-11-05"))
             .unwrap_or(DEFAULT_MCP_PROTOCOL_VERSION);
 
         let req_id = rpc.id.clone().unwrap_or(serde_json::Value::Null);
         let body = jsonrpc_ok(
             &req_id,
             &serde_json::json!({
-                "protocolVersion": requested_proto,
+                "protocolVersion": negotiated_proto,
                 "capabilities": {
                     "tools": { "listChanged": false },
                     "resources": { "subscribe": false, "listChanged": false }
@@ -308,6 +366,7 @@ where
         if principal.has(Permission::DataRead) {
             tools.extend(builtin_readonly_mcp_tools());
         }
+        tools.extend(crate::mcp_builder::visible_axbuilder_tools(principal));
 
         let endpoints = self
             .store
@@ -369,8 +428,12 @@ where
             .unwrap_or_else(|| serde_json::json!({}));
 
         let start = Instant::now();
+        let meta = McpCallMeta {
+            client_ip,
+            trace_id,
+        };
         let exec_res = self
-            .execute_mcp_tool(principal, &tool_name, arguments)
+            .execute_mcp_tool(principal, &tool_name, arguments, meta)
             .await;
         let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -436,7 +499,15 @@ where
         principal: &AuthPrincipal,
         tool_name: &str,
         arguments: serde_json::Value,
+        meta: McpCallMeta<'_>,
     ) -> Result<Option<serde_json::Value>, AppError> {
+        if crate::mcp_builder::is_axbuilder_mcp_tool(tool_name) {
+            let out = self
+                .execute_axbuilder_tool(principal, tool_name, &arguments, meta)
+                .await?;
+            return Ok(Some(out));
+        }
+
         if is_builtin_readonly_mcp_tool(tool_name) {
             principal.require(Permission::DataRead)?;
             let schema = builtin_mcp_schema(tool_name);
@@ -713,6 +784,7 @@ where
                 mime_type: "application/json",
             });
         }
+        self.append_axbuilder_resources(tenant_id, &mut out).await?;
         Ok(out)
     }
 
@@ -780,6 +852,13 @@ where
             ));
         }
 
+        if let Some(builder_res) = self
+            .try_read_axbuilder_resource(tenant_id, req_id, uri)
+            .await?
+        {
+            return Ok(builder_res);
+        }
+
         Ok(jsonrpc_err(
             req_id,
             -32602,
@@ -839,7 +918,7 @@ fn ensure_pat_principal(principal: &AuthPrincipal) -> Result<(), AppError> {
     Ok(())
 }
 
-fn jsonrpc_ok(id: &serde_json::Value, result: &serde_json::Value) -> serde_json::Value {
+pub(crate) fn jsonrpc_ok(id: &serde_json::Value, result: &serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -858,7 +937,10 @@ fn jsonrpc_err(id: &serde_json::Value, code: i32, message: impl Into<String>) ->
     })
 }
 
-fn required_str_arg<'a>(args: &'a serde_json::Value, key: &str) -> Result<&'a str, AppError> {
+pub(crate) fn required_str_arg<'a>(
+    args: &'a serde_json::Value,
+    key: &str,
+) -> Result<&'a str, AppError> {
     args.get(key)
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
@@ -878,7 +960,12 @@ fn optional_usize_arg(
         .map_or(default_val, |v| v.clamp(1, cap))
 }
 
-fn optional_u32_arg(args: &serde_json::Value, key: &str, default_val: u32, cap: u32) -> u32 {
+pub(crate) fn optional_u32_arg(
+    args: &serde_json::Value,
+    key: &str,
+    default_val: u32,
+    cap: u32,
+) -> u32 {
     args.get(key)
         .and_then(serde_json::Value::as_u64)
         .and_then(|v| u32::try_from(v).ok())

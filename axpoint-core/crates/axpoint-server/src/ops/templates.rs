@@ -2802,6 +2802,383 @@ fn extract_json_array(
     }
 }
 
+/// Reads the complete `axpoint://templates/{id}` build-plane resource bundle (`03-STEP17` §17.3.3).
+///
+/// # Errors
+/// Returns [`AppError::NotFound`] (`TEMPLATE_NOT_FOUND`) when `pack_id` does not exist, or
+/// [`AppError::Unprocessable`] if checksum verification or JSON decoding fails.
+pub fn read_template_resource_payload(
+    pack_id: &str,
+) -> Result<axpoint_domain::builder::TemplateResourcePayload, AppError> {
+    let catalog_dir = resolve_templates_dir().ok_or(AppError::NotFound("TEMPLATE_NOT_FOUND"))?;
+    let pack_dir = resolve_pack_dir(&catalog_dir, pack_id)?;
+    let manifest = read_manifest(&pack_dir)?;
+    verify_manifest_checksums(&pack_dir, &manifest)?;
+
+    let readme_path = pack_dir.join("README.md");
+    let readme_markdown = if readme_path.is_file() {
+        std::fs::read_to_string(&readme_path)
+            .map_err(|err| AppError::Config(format!("read template README.md failed: {err}")))?
+    } else {
+        String::new()
+    };
+
+    let mut schema_doc: SchemaDoc =
+        serde_json::from_value(read_pack_json(&pack_dir, &manifest.contents.schema)?).map_err(
+            |err| AppError::unprocessable("PARSE_FAILED", format!("invalid schema.json: {err}")),
+        )?;
+
+    let default_ds_map = default_pack_dataset_ref_map(&manifest);
+    let mappings = match manifest.contents.mappings.as_deref() {
+        Some(rel_path) if !rel_path.trim().is_empty() => {
+            let raw = read_pack_json(&pack_dir, rel_path)?;
+            schema_doc.mappings = parse_resolved_pack_mappings(raw.clone(), &default_ds_map)?;
+            raw
+        }
+        _ => serde_json::json!([]),
+    };
+
+    let metrics = match manifest.contents.metrics.as_deref() {
+        Some(rel_path) if !rel_path.trim().is_empty() => read_pack_json(&pack_dir, rel_path)?,
+        _ => serde_json::json!([]),
+    };
+
+    let manifest_val = serde_json::to_value(&manifest)
+        .map_err(|err| AppError::Config(format!("serialize TemplateManifest failed: {err}")))?;
+
+    Ok(axpoint_domain::builder::TemplateResourcePayload {
+        manifest: manifest_val,
+        readme_markdown,
+        schema_doc,
+        metrics,
+        mappings,
+    })
+}
+
+/// Reads up to `limit` sample CSV rows from `templates/packs/{pack_id}` matching `dataset_name`
+/// for sandbox dry-run fallback when `DuckLake` tables have not yet been committed.
+#[must_use]
+pub fn read_template_pack_csv_rows(
+    pack_id: &str,
+    dataset_name: &str,
+    limit: usize,
+) -> Option<Vec<serde_json::Map<String, serde_json::Value>>> {
+    let catalog_dir = resolve_templates_dir()?;
+    let pack_dir = resolve_pack_dir(&catalog_dir, pack_id).ok()?;
+    let manifest = read_manifest(&pack_dir).ok()?;
+    let entry = manifest.contents.datasets.iter().find(|d| {
+        d.key == dataset_name
+            || d.name
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|n| n == dataset_name)
+    })?;
+    let csv_path = safe_pack_file(&pack_dir, &entry.file).ok()?;
+    let content = std::fs::read_to_string(csv_path).ok()?;
+    Some(parse_simple_csv_rows(&content, limit))
+}
+
+fn parse_simple_csv_rows(
+    content: &str,
+    limit: usize,
+) -> Vec<serde_json::Map<String, serde_json::Value>> {
+    let mut lines = content
+        .lines()
+        .map(|l| l.trim_end_matches('\r'))
+        .filter(|l| !l.trim().is_empty());
+    let Some(header_line) = lines.next() else {
+        return Vec::new();
+    };
+    let headers: Vec<&str> = header_line.split(',').map(str::trim).collect();
+    let mut rows = Vec::new();
+    for line in lines.take(limit) {
+        let cells: Vec<&str> = line.split(',').map(str::trim).collect();
+        let mut map = serde_json::Map::with_capacity(headers.len());
+        for (idx, &col) in headers.iter().enumerate() {
+            let cell = cells.get(idx).copied().unwrap_or("");
+            let val = if cell.is_empty() {
+                serde_json::Value::Null
+            } else if let Ok(i) = cell.parse::<i64>() {
+                serde_json::Value::Number(i.into())
+            } else if let Ok(f) = cell.parse::<f64>()
+                && f.is_finite()
+                && let Some(num) = serde_json::Number::from_f64(f)
+            {
+                serde_json::Value::Number(num)
+            } else {
+                serde_json::Value::String(String::from(cell))
+            };
+            map.insert(String::from(col), val);
+        }
+        rows.push(map);
+    }
+    rows
+}
+
+fn default_pack_dataset_ref_map(
+    manifest: &TemplateManifest,
+) -> BTreeMap<String, TemplateCreatedObject> {
+    let mut map = BTreeMap::new();
+    for ds in &manifest.contents.datasets {
+        let ds_name = ds
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&ds.key);
+        map.insert(
+            format!("dataset:{}", ds.key),
+            TemplateCreatedObject {
+                id: String::from(ds_name),
+                category: String::from("dataset"),
+                target_name: String::from(ds_name),
+                content_hash: String::new(),
+            },
+        );
+    }
+    map
+}
+
+fn parse_resolved_pack_mappings(
+    raw: serde_json::Value,
+    ref_map: &BTreeMap<String, TemplateCreatedObject>,
+) -> Result<Vec<MappingSpec>, AppError> {
+    let items = extract_json_array(raw, "mappings")?;
+    let mut specs = Vec::with_capacity(items.len());
+    for mut item in items {
+        resolve_json_refs(&mut item, None, ref_map)?;
+        strip_key_field(&mut item);
+        let spec: MappingSpec = serde_json::from_value(item).map_err(|err| {
+            AppError::unprocessable("PARSE_FAILED", format!("invalid pack mapping: {err}"))
+        })?;
+        specs.push(spec);
+    }
+    Ok(specs)
+}
+
+fn build_sandbox_slug(pack_id: &str, target_slug: Option<&str>) -> String {
+    if let Some(explicit) = target_slug.map(str::trim).filter(|s| !s.is_empty()) {
+        return String::from(explicit);
+    }
+    let clean_pack: String = pack_id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let short4: String = Uuid::new_v4()
+        .simple()
+        .to_string()
+        .chars()
+        .take(4)
+        .collect();
+    truncate_chars(
+        &format!("dev_{}_{short4}", clean_pack.trim_matches('_')),
+        62,
+    )
+}
+
+impl<S, P> OpsServices<S, P>
+where
+    S: OpsRepository
+        + StudioRepository
+        + StudioExecutionPort
+        + DatasetRepository
+        + AnalyticsRepository
+        + FlowRepository
+        + RulesRepository
+        + ViewRepository
+        + AgentRepository
+        + Sync,
+    P: SidecarPort + Sync,
+{
+    /// Clones `pack_id` into an isolated `is_dev_sandbox = true` subgraph with sample datasets and
+    /// a `DraftSource::Template` `DRAFT` containing resolved `mappings` (`03-STEP17` §17.3.2).
+    ///
+    /// # Errors
+    /// Returns [`AppError`] when the template pack is missing, checksum verification fails,
+    /// dataset seeding fails, or subgraph/draft persistence fails.
+    pub fn clone_template_sandbox<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        actor: Option<Uuid>,
+        pack_id: &'a str,
+        target_slug: Option<&'a str>,
+        display_name: Option<&'a str>,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, axpoint_domain::builder::CloneTemplateSandboxResponse> {
+        Box::pin(async move {
+            let catalog_dir =
+                resolve_templates_dir().ok_or(AppError::NotFound("TEMPLATE_NOT_FOUND"))?;
+            let pack_dir = resolve_pack_dir(&catalog_dir, pack_id)?;
+            let manifest = read_manifest(&pack_dir)?;
+            verify_manifest_checksums(&pack_dir, &manifest)?;
+
+            let ds_map = self
+                .ensure_sandbox_pack_datasets(tenant_id, actor, &pack_dir, &manifest)
+                .await?;
+
+            let mut schema_doc: SchemaDoc =
+                serde_json::from_value(read_pack_json(&pack_dir, &manifest.contents.schema)?)
+                    .map_err(|err| {
+                        AppError::unprocessable(
+                            "PARSE_FAILED",
+                            format!("invalid schema.json: {err}"),
+                        )
+                    })?;
+            if let Some(ref rel_path) = manifest.contents.mappings {
+                let raw = read_pack_json(&pack_dir, rel_path)?;
+                schema_doc.mappings = parse_resolved_pack_mappings(raw, &ds_map)?;
+            }
+
+            let slug = build_sandbox_slug(&manifest.id, target_slug);
+            let disp = display_name
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map_or_else(|| format!("{} · 开发沙盒", manifest.name), String::from);
+
+            let subgraph = self
+                .store
+                .create_subgraph(
+                    tenant_id,
+                    actor,
+                    axpoint_domain::studio::CreateSubgraphRequest {
+                        slug,
+                        display_name: disp,
+                        description: manifest.description.clone(),
+                        owner_dept: String::new(),
+                        is_dev_sandbox: true,
+                        source_template_id: Some(manifest.id.clone()),
+                        seed_from_main: false,
+                        seed_node_types: None,
+                    },
+                )
+                .await?;
+
+            let node_type_count = schema_doc.node_types.len();
+            let edge_type_count = schema_doc.edge_types.len();
+            let draft = self
+                .store
+                .create_draft(
+                    tenant_id,
+                    &subgraph.slug,
+                    actor,
+                    CreateDraftRequest {
+                        title: format!("{} 模板草案", manifest.name),
+                        schema_doc,
+                        base_version: Some(0),
+                        source: Some(DraftSource::Template),
+                        ai_context: Some(serde_json::json!({
+                            "source_template_id": manifest.id,
+                        })),
+                    },
+                )
+                .await?;
+
+            let deep_links = axpoint_domain::builder::resolve_deep_links(
+                web_base_url,
+                None,
+                &subgraph.slug,
+                Some(draft.id),
+                None,
+                None,
+            );
+
+            Ok(axpoint_domain::builder::CloneTemplateSandboxResponse {
+                subgraph_slug: subgraph.slug,
+                is_dev_sandbox: true,
+                source_template_id: manifest.id,
+                node_type_count,
+                edge_type_count,
+                draft_id: draft.id,
+                deep_links,
+            })
+        })
+    }
+
+    async fn ensure_sandbox_pack_datasets(
+        &self,
+        tenant_id: &str,
+        actor: Option<Uuid>,
+        pack_dir: &Path,
+        manifest: &TemplateManifest,
+    ) -> Result<BTreeMap<String, TemplateCreatedObject>, AppError> {
+        let timezone = self.store.get_tenant_timezone(tenant_id).await?;
+        let mut ref_map = BTreeMap::new();
+        let mut any_committed = false;
+
+        let dummy_session = ApplySession {
+            tenant_id: String::from(tenant_id),
+            actor,
+            install_id: Uuid::nil(),
+            pack_dir: pack_dir.to_path_buf(),
+            manifest: manifest.clone(),
+            plan: TemplateInstallPlan {
+                pack_id: manifest.id.clone(),
+                pack_version: manifest.version.clone(),
+                on_conflict: TemplateConflictStrategy::Skip,
+                objects: Vec::new(),
+                conflicts: Vec::new(),
+            },
+            node_type_renames: BTreeMap::new(),
+            object_map: BTreeMap::new(),
+        };
+
+        for ds_entry in &manifest.contents.datasets {
+            let target_name = ds_entry
+                .name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(&ds_entry.key);
+            let existing = self
+                .store
+                .get_dataset_by_name(tenant_id, target_name)
+                .await?;
+            let ds = match existing {
+                Some(found) if found.row_count > 0 => found,
+                _ => match self
+                    .ingest_single_pack_dataset(&dummy_session, &timezone, ds_entry, target_name)
+                    .await
+                {
+                    Ok(committed) => {
+                        any_committed = true;
+                        committed
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            pack_id = %manifest.id,
+                            dataset = target_name,
+                            error = %err,
+                            "sandbox CSV sidecar ingest skipped; falling back to local CSV reader on dry-run"
+                        );
+                        self.ensure_pack_dataset_row(&dummy_session, ds_entry, target_name)
+                            .await?
+                    }
+                },
+            };
+            ref_map.insert(
+                format!("dataset:{}", ds_entry.key),
+                TemplateCreatedObject {
+                    id: ds.id.to_string(),
+                    category: String::from("dataset"),
+                    target_name: ds.name,
+                    content_hash: String::new(),
+                },
+            );
+        }
+
+        if any_committed {
+            let _evicted = self.analytics_pool.invalidate_tenant(tenant_id).await;
+        }
+        Ok(ref_map)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

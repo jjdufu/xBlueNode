@@ -573,6 +573,385 @@ async fn mcp_server_hub_tools_resources_masking_and_session_lifecycle() -> Resul
     Ok(())
 }
 
+fn decode_mcp_tool_text(rpc_body: &serde_json::Value) -> Result<serde_json::Value, AppError> {
+    let txt = rpc_body
+        .pointer("/result/content/0/text")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("{}");
+    serde_json::from_str(txt).map_err(|e| AppError::Config(format!("decode MCP tool json: {e}")))
+}
+
+fn sample_sandbox_schema_doc_json() -> serde_json::Value {
+    serde_json::json!({
+        "node_types": [{
+            "name": "SandboxHub",
+            "display_name": "沙盒枢纽",
+            "properties": [{
+                "name": "region",
+                "display_name": "区域",
+                "data_type": "STRING",
+                "kind": "ATTRIBUTE",
+                "required": true
+            }]
+        }],
+        "edge_types": [],
+        "mappings": []
+    })
+}
+
+#[tokio::test]
+async fn mcp_axbuilder_permission_filtering_and_preflight() -> Result<(), AppError> {
+    use axpoint_domain::enums::TokenProfile;
+
+    let stack = HarnessStack::build(
+        Arc::new(CassetteModelAdapter::from_entries(Vec::new())),
+        None,
+    )
+    .await?;
+
+    let mut studio_only = make_principal(
+        TokenKind::ApiToken,
+        &[Permission::DataRead, Permission::StudioEdit],
+    );
+    studio_only.token_profile = TokenProfile::Builder;
+    studio_only.web_base_url = Some(String::from("https://studio.xblue.example"));
+
+    let init = stack
+        .mcp_hub
+        .handle_post(
+            &studio_only,
+            None,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "protocolVersion": "2025-03-26" }
+            }),
+            "127.0.0.1",
+            "tr-b1",
+        )
+        .await?;
+    let sid = init
+        .session_id
+        .ok_or_else(|| AppError::Config(String::from("missing Mcp-Session-Id")))?;
+
+    let list_json = stack
+        .mcp_hub
+        .handle_post(
+            &studio_only,
+            Some(&sid),
+            serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
+            "127.0.0.1",
+            "tr-b2",
+        )
+        .await?
+        .body
+        .unwrap_or_default()
+        .to_string();
+    assert!(list_json.contains("axbuilder_preflight"));
+    assert!(list_json.contains("axbuilder_push_schema_draft"));
+    assert!(list_json.contains("axbuilder_clone_template"));
+    assert!(list_json.contains("axbuilder_reset_dev_subgraph"));
+    assert!(!list_json.contains("axbuilder_run_dev_subgraph"));
+    assert!(!list_json.contains("axbuilder_upsert_flow_draft"));
+    assert!(!list_json.contains("axbuilder_upsert_dashboard_draft"));
+
+    let preflight_rpc = stack
+        .mcp_hub
+        .handle_post(
+            &studio_only,
+            Some(&sid),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": { "name": "axbuilder_preflight", "arguments": { "subgraph_slug": "main" } }
+            }),
+            "127.0.0.1",
+            "tr-b3",
+        )
+        .await?
+        .body
+        .unwrap_or_default();
+    let preflight_val = decode_mcp_tool_text(&preflight_rpc)?;
+    assert_eq!(preflight_val.get("healthy"), Some(&serde_json::json!(true)));
+    assert_eq!(
+        preflight_val.get("token_profile"),
+        Some(&serde_json::json!("BUILDER"))
+    );
+    assert_eq!(
+        preflight_val.pointer("/deep_links/studio_url"),
+        Some(&serde_json::json!(
+            "https://studio.xblue.example/studio?subgraph=main"
+        ))
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn mcp_axbuilder_push_draft_and_audit() -> Result<(), AppError> {
+    use axpoint_domain::enums::TokenProfile;
+    use axpoint_domain::ports::StudioRepository as _;
+
+    let stack = HarnessStack::build(
+        Arc::new(CassetteModelAdapter::from_entries(Vec::new())),
+        None,
+    )
+    .await?;
+
+    let mut studio_only = make_principal(
+        TokenKind::ApiToken,
+        &[Permission::DataRead, Permission::StudioEdit],
+    );
+    studio_only.token_profile = TokenProfile::Builder;
+    studio_only.web_base_url = Some(String::from("https://studio.xblue.example"));
+
+    let sid = stack
+        .mcp_hub
+        .handle_post(
+            &studio_only,
+            None,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "protocolVersion": "2025-03-26" }
+            }),
+            "127.0.0.1",
+            "tr-b10",
+        )
+        .await?
+        .session_id
+        .ok_or_else(|| AppError::Config(String::from("missing Mcp-Session-Id")))?;
+
+    let _dev_sbx = stack
+        .store
+        .create_subgraph(
+            "default",
+            Some(studio_only.user_id),
+            axpoint_domain::studio::CreateSubgraphRequest {
+                slug: String::from("dev_sbx"),
+                display_name: String::from("测试沙盒"),
+                description: String::new(),
+                owner_dept: String::new(),
+                is_dev_sandbox: true,
+                source_template_id: None,
+                seed_from_main: false,
+                seed_node_types: None,
+            },
+        )
+        .await?;
+
+    let push_rpc = stack
+        .mcp_hub
+        .handle_post(
+            &studio_only,
+            Some(&sid),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "axbuilder_push_schema_draft",
+                    "arguments": {
+                        "subgraph_slug": "dev_sbx",
+                        "title": "AI 沙盒草案",
+                        "schema_doc": sample_sandbox_schema_doc_json()
+                    }
+                }
+            }),
+            "127.0.0.1",
+            "tr-b11",
+        )
+        .await?
+        .body
+        .unwrap_or_default();
+    let push_val = decode_mcp_tool_text(&push_rpc)?;
+    assert_eq!(push_val.get("status"), Some(&serde_json::json!("DRAFT")));
+    assert_eq!(push_val.get("error_count"), Some(&serde_json::json!(0)));
+    let draft_id = push_val
+        .get("draft_id")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let studio_url = push_val
+        .pointer("/deep_links/studio_url")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    assert!(studio_url.starts_with(&format!(
+        "https://studio.xblue.example/studio?subgraph=dev_sbx&draft={draft_id}"
+    )));
+    assert!(
+        stack
+            .audit_sink
+            .records
+            .lock()
+            .await
+            .iter()
+            .any(|r| r.action == AuditAction::BuilderMcpMutate)
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn mcp_axbuilder_resources_read_templates_and_subgraphs() -> Result<(), AppError> {
+    let stack = HarnessStack::build(
+        Arc::new(CassetteModelAdapter::from_entries(Vec::new())),
+        None,
+    )
+    .await?;
+    let pat = make_principal(TokenKind::ApiToken, &[Permission::DataRead]);
+
+    let sid = stack
+        .mcp_hub
+        .handle_post(
+            &pat,
+            None,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "protocolVersion": "2025-03-26" }
+            }),
+            "127.0.0.1",
+            "tr-r1",
+        )
+        .await?
+        .session_id
+        .ok_or_else(|| AppError::Config(String::from("missing Mcp-Session-Id")))?;
+
+    let tpl_list = stack
+        .mcp_hub
+        .handle_post(
+            &pat,
+            Some(&sid),
+            serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "resources/templates/list" }),
+            "127.0.0.1",
+            "tr-r2",
+        )
+        .await?
+        .body
+        .unwrap_or_default()
+        .to_string();
+    assert!(tpl_list.contains("axpoint://templates/{id}"));
+    assert!(tpl_list.contains("axpoint://subgraphs/{slug}"));
+
+    let tpl_read = stack
+        .mcp_hub
+        .handle_post(
+            &pat,
+            Some(&sid),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "resources/read",
+                "params": { "uri": "axpoint://templates/supply_chain" }
+            }),
+            "127.0.0.1",
+            "tr-r3",
+        )
+        .await?
+        .body
+        .unwrap_or_default()
+        .to_string();
+    assert!(tpl_read.contains("供应链协同"));
+
+    let sg_read = stack
+        .mcp_hub
+        .handle_post(
+            &pat,
+            Some(&sid),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 6,
+                "method": "resources/read",
+                "params": { "uri": "axpoint://subgraphs/main" }
+            }),
+            "127.0.0.1",
+            "tr-r4",
+        )
+        .await?
+        .body
+        .unwrap_or_default()
+        .to_string();
+    assert!(sg_read.contains("企业主图"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn mcp_axbuilder_sandbox_pii_masking_and_agent_publish_guard() -> Result<(), AppError> {
+    use axpoint_domain::enums::TokenProfile;
+
+    let stack = HarnessStack::build(
+        Arc::new(CassetteModelAdapter::from_entries(Vec::new())),
+        None,
+    )
+    .await?;
+
+    let mut builder_pat = make_principal(
+        TokenKind::ApiToken,
+        &[
+            Permission::DataRead,
+            Permission::DataSync,
+            Permission::StudioEdit,
+            Permission::AgentEdit,
+        ],
+    );
+    builder_pat.token_profile = TokenProfile::Builder;
+
+    let publish_err = stack
+        .runtime
+        .publish_agent(&builder_pat, Uuid::new_v4())
+        .await;
+    assert!(matches!(
+        publish_err,
+        Err(AppError::Forbidden("BUILDER_TOKEN_PROD_FORBIDDEN"))
+    ));
+
+    let sid = stack
+        .mcp_hub
+        .handle_post(
+            &builder_pat,
+            None,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "protocolVersion": "2025-03-26" }
+            }),
+            "127.0.0.1",
+            "tr-sbx1",
+        )
+        .await?
+        .session_id
+        .ok_or_else(|| AppError::Config(String::from("missing Mcp-Session-Id")))?;
+
+    let run_rpc = stack
+        .mcp_hub
+        .handle_post(
+            &builder_pat,
+            Some(&sid),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "axbuilder_run_dev_subgraph",
+                    "arguments": { "subgraph_slug": "dev_supply_chain", "limit_rows": 10 }
+                }
+            }),
+            "127.0.0.1",
+            "tr-sbx2",
+        )
+        .await?
+        .body
+        .unwrap_or_default();
+    let run_val = decode_mcp_tool_text(&run_rpc)?;
+    let dumped = run_val.to_string();
+    assert!(!dumped.contains("13812345678"));
+    assert!(dumped.contains("138****5678"));
+    Ok(())
+}
+
 async fn spawn_mock_remote_mcp_server() -> Result<String, AppError> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await

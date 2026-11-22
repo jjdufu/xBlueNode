@@ -1,14 +1,12 @@
 //! Federated `OIDC` login (`start` / `callback`), password change, and personal access token (`PAT`)
 //! handlers mounted under `/api/auth/*` (`11-STEP13` §13.3, §13.5, §13.10).
 
-use std::collections::BTreeSet;
-
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{
     CreateApiTokenRequest, CreateApiTokenResponse, NewApiTokenInput, PersonalAccessTokenSummary,
 };
 use axpoint_domain::axhub::PaginatedList;
-use axpoint_domain::enums::{AuditAction, Permission};
+use axpoint_domain::enums::AuditAction;
 use axpoint_domain::guard::{AuthSource, ChangePasswordRequest};
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::{ApiTokenRepository as _, GuardRepository as _};
@@ -289,20 +287,20 @@ pub(super) async fn create_token_handler(
         )));
     }
 
-    if !req
-        .scopes
+    let normalized_web_url =
+        axpoint_domain::builder::normalize_web_base_url(req.web_base_url.as_deref())?;
+    let resolved_scopes = axpoint_domain::builder::validate_and_resolve_token_scopes(
+        req.token_profile,
+        &req.scopes,
+        &principal.permissions,
+    )?;
+
+    if !resolved_scopes
         .iter()
         .all(|perm| principal.permissions.contains(perm))
     {
         return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
     }
-
-    let dedup_scopes: Vec<Permission> = req
-        .scopes
-        .into_iter()
-        .collect::<BTreeSet<Permission>>()
-        .into_iter()
-        .collect();
 
     let expires_at = match req.expires_in_days {
         Some(0) => {
@@ -333,9 +331,9 @@ pub(super) async fn create_token_handler(
                 name: trimmed_name.to_owned(),
                 token_prefix,
                 token_hash,
-                scopes: dedup_scopes,
+                scopes: resolved_scopes,
                 token_profile: req.token_profile,
-                web_base_url: req.web_base_url,
+                web_base_url: normalized_web_url,
                 expires_at,
             },
         )

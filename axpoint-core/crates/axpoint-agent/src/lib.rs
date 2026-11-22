@@ -7,6 +7,7 @@ use hex as _;
 use sha2 as _;
 
 pub mod embed;
+pub mod mcp_builder;
 pub mod mcp_client;
 pub mod mcp_server;
 pub mod model;
@@ -38,6 +39,10 @@ pub use axpoint_domain::ports::{
 };
 
 pub use embed::{EmbedRequestMeta, EmbedService, generate_embed_token};
+pub use mcp_builder::{
+    ALL_AXBUILDER_TOOL_NAMES, axbuilder_tool_schema, has_axbuilder_tool_permissions,
+    is_axbuilder_mcp_tool,
+};
 pub use mcp_client::McpClientManager;
 pub use mcp_server::{McpHttpResponse, McpServerHub};
 pub use model::{

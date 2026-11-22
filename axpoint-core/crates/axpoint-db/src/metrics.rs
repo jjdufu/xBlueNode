@@ -229,12 +229,13 @@ impl MetricStorePort for PgStore {
         }
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
-        let node_exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1)")
-                .bind(node_id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|err| AppError::Database(format!("check xb_nodes exists: {err}")))?;
+        let node_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1 AND subgraph_slug = 'main')",
+        )
+        .bind(node_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("check xb_nodes exists: {err}")))?;
         if !node_exists {
             return Err(AppError::NotFound("NODE_NOT_FOUND"));
         }
@@ -400,6 +401,7 @@ impl MetricStorePort for PgStore {
                     MAX(s.ts) AS max_ts
                FROM xb_metric_series s
                JOIN xb_nodes n ON n.id = s.node_id
+              WHERE n.subgraph_slug = 'main'
               GROUP BY n.type_name, s.metric
               ORDER BY n.type_name ASC, s.metric ASC",
         )
@@ -486,11 +488,12 @@ async fn resolve_and_dedup_points_tx(
         BTreeSet::new()
     } else {
         let vec_ids: Vec<Uuid> = explicit_ids.iter().copied().collect();
-        let rows = sqlx::query("SELECT id FROM xb_nodes WHERE id = ANY($1)")
-            .bind(&vec_ids)
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(|err| AppError::Database(format!("verify metric node_ids: {err}")))?;
+        let rows =
+            sqlx::query("SELECT id FROM xb_nodes WHERE id = ANY($1) AND subgraph_slug = 'main'")
+                .bind(&vec_ids)
+                .fetch_all(&mut **tx)
+                .await
+                .map_err(|err| AppError::Database(format!("verify metric node_ids: {err}")))?;
         rows.into_iter().map(|r| r.get("id")).collect()
     };
 
@@ -509,7 +512,8 @@ async fn resolve_and_dedup_points_tx(
             "SELECT x.id, x.type_name, x.node_key
                FROM xb_nodes x
                JOIN UNNEST($1::text[], $2::text[]) AS p(type_name, node_key)
-                 ON x.type_name = p.type_name AND x.node_key = p.node_key",
+                 ON x.type_name = p.type_name AND x.node_key = p.node_key
+              WHERE x.subgraph_slug = 'main'",
         )
         .bind(&kt)
         .bind(&kk)
@@ -561,38 +565,45 @@ async fn resolve_and_dedup_points_tx(
     Ok(dedup.into_values().collect())
 }
 
-async fn sync_latest_node_snapshots_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant_id: &str,
+fn collect_latest_points_by_node(
     points: &[ResolvedPoint],
-) -> Result<(), AppError> {
+) -> BTreeMap<Uuid, BTreeMap<String, (DateTime<Utc>, f64)>> {
     let mut latest_by_node: BTreeMap<Uuid, BTreeMap<String, (DateTime<Utc>, f64)>> =
         BTreeMap::new();
     for pt in points {
         if let Some(v) = pt.value {
             let entry = latest_by_node.entry(pt.node_id).or_default();
-            let replace = entry
+            if entry
                 .get(&pt.metric)
-                .is_none_or(|(prev_ts, _)| pt.ts >= *prev_ts);
-            if replace {
+                .is_none_or(|(prev_ts, _)| pt.ts >= *prev_ts)
+            {
                 entry.insert(pt.metric.clone(), (pt.ts, v));
             }
         }
     }
+    latest_by_node
+}
 
+async fn sync_latest_node_snapshots_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    points: &[ResolvedPoint],
+) -> Result<(), AppError> {
+    let latest_by_node = collect_latest_points_by_node(points);
     if latest_by_node.is_empty() {
         return Ok(());
     }
 
     let target_ids: Vec<Uuid> = latest_by_node.keys().copied().collect();
-    let rows =
-        sqlx::query("SELECT id, properties, metrics FROM xb_nodes WHERE id = ANY($1) FOR UPDATE")
-            .bind(&target_ids)
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(|err| {
-                AppError::Database(format!("lock xb_nodes for metric snapshot: {err}"))
-            })?;
+    let rows = sqlx::query(
+        "SELECT id, properties, metrics FROM xb_nodes WHERE id = ANY($1) AND subgraph_slug = 'main' FOR UPDATE",
+    )
+    .bind(&target_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| {
+        AppError::Database(format!("lock xb_nodes for metric snapshot: {err}"))
+    })?;
 
     let mut changed_nodes: Vec<Uuid> = Vec::new();
     for r in rows {
@@ -649,7 +660,7 @@ async fn sync_latest_node_snapshots_tx(
                 SET properties = $2,
                     metrics = $3,
                     updated_at = NOW()
-              WHERE id = $1",
+              WHERE id = $1 AND subgraph_slug = 'main'",
         )
         .bind(nid)
         .bind(serde_json::Value::Object(props_map))
@@ -881,7 +892,8 @@ async fn load_target_nodes_tx(
 ) -> Result<BTreeMap<Uuid, String>, AppError> {
     let rows = match node_ids.filter(|ids| !ids.is_empty()) {
         None => sqlx::query(
-            "SELECT id, type_name FROM xb_nodes WHERE ($1::text IS NULL OR type_name = $1)",
+            "SELECT id, type_name FROM xb_nodes
+              WHERE subgraph_slug = 'main' AND ($1::text IS NULL OR type_name = $1)",
         )
         .bind(type_name)
         .fetch_all(&mut **tx)

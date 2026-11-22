@@ -30,10 +30,13 @@ use axpoint_domain::flow::{ActionLogRecord, ApprovalRecord, FlowDeploymentRecord
 use axpoint_domain::graph::{LinkRecord, MetricSeriesPoint};
 use axpoint_domain::platform::{AuditRecord, BoxFuture, PrincipalRecord};
 use axpoint_domain::ports::{
-    AgentCapabilityPort, AgentRepository, AuditSink, OutboundUrlGuardPort, SimExecutionPort,
+    AgentCapabilityPort, AgentRepository, AuditSink, BuilderDashboardPort, OutboundUrlGuardPort,
+    SimExecutionPort, TemplateSandboxPort,
 };
 use axpoint_domain::rules::AlertRecord;
-use axpoint_domain::studio::doc::{NodeTypeSpec, PublishedSchemaResponse};
+use axpoint_domain::studio::doc::{
+    NodeTypeSpec, PublishedSchemaResponse, SchemaDraft, SubgraphInfo,
+};
 use axpoint_domain::topology::BlueNode;
 use axpoint_domain::{AppError, FusedHit, RecallChannel};
 use axpoint_security::{AuditWriter, AuthPrincipal, CredentialKeyring};
@@ -66,10 +69,13 @@ pub struct StoreInner {
     pub datasets: Vec<Dataset>,
     pub columns: HashMap<Uuid, Vec<ColumnMeta>>,
     pub schema: Option<PublishedSchemaResponse>,
+    pub subgraphs: Vec<SubgraphInfo>,
+    pub drafts: Vec<SchemaDraft>,
     pub nodes: Vec<BlueNode>,
     pub links: Vec<LinkRecord>,
     pub series: HashMap<(Uuid, String), Vec<MetricSeriesPoint>>,
     pub alerts: Vec<AlertRecord>,
+    pub flows: Vec<axpoint_domain::topology::AxFlowDef>,
     pub flow_deployments: HashMap<(Uuid, Environment), FlowDeploymentRecord>,
     pub flow_runs: Vec<RunRecord>,
     pub approvals: Vec<ApprovalRecord>,
@@ -351,6 +357,172 @@ impl AgentCapabilityPort for MockCapabilityPort {
     }
 }
 
+impl BuilderDashboardPort for MockCapabilityPort {
+    fn list_dashboard_briefs<'a>(
+        &'a self,
+        _tenant_id: &'a str,
+    ) -> BoxFuture<'a, Vec<axpoint_domain::builder::BuilderDashboardBrief>> {
+        Box::pin(async move {
+            Ok(vec![axpoint_domain::builder::BuilderDashboardBrief {
+                id: Uuid::from_u128(0x901),
+                name: String::from("供应链总览"),
+                slug: String::from("supply-overview"),
+                status: String::from("DRAFT"),
+            }])
+        })
+    }
+
+    fn upsert_dashboard_draft<'a>(
+        &'a self,
+        _tenant_id: &'a str,
+        _actor_user_id: Option<Uuid>,
+        _actor_dept: &'a str,
+        input: axpoint_domain::builder::UpsertDashboardDraftInput,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, axpoint_domain::builder::UpsertDashboardDraftResponse> {
+        Box::pin(async move {
+            let dashboard_id = input.dashboard_id.unwrap_or_else(Uuid::new_v4);
+            let deep_links = axpoint_domain::builder::resolve_deep_links(
+                web_base_url,
+                None,
+                "main",
+                None,
+                None,
+                Some(dashboard_id),
+            );
+            Ok(axpoint_domain::builder::UpsertDashboardDraftResponse {
+                dashboard_id,
+                slug: input.slug,
+                status: String::from("DRAFT"),
+                widget_count: input.widgets.len(),
+                deep_links,
+            })
+        })
+    }
+
+    fn validate_flow_draft<'a>(
+        &'a self,
+        _graph: &'a axpoint_domain::flow::FlowGraph,
+        _trigger_cfg: &'a axpoint_domain::flow::TriggerCfg,
+        _slug: Option<&'a str>,
+    ) -> BoxFuture<'a, Vec<axpoint_domain::flow::FlowIssue>> {
+        Box::pin(async move { Ok(Vec::new()) })
+    }
+}
+
+impl TemplateSandboxPort for MockCapabilityPort {
+    fn list_template_packs(&self) -> BoxFuture<'_, Vec<axpoint_domain::ops::TemplateManifest>> {
+        Box::pin(async move {
+            let manifest: axpoint_domain::ops::TemplateManifest =
+                serde_json::from_value(serde_json::json!({
+                    "id": "supply_chain",
+                    "name": "供应链协同",
+                    "version": "1.0.0",
+                    "industry": "制造 / 流通",
+                    "description": "供应商—工厂—仓库—订单四层网络",
+                    "contents": {
+                        "schema": "schema.json",
+                        "datasets": [],
+                        "flows": [],
+                        "dashboards": [],
+                        "agents": [],
+                        "export_templates": []
+                    },
+                    "sha256": {}
+                }))
+                .map_err(|e| AppError::Config(format!("mock manifest: {e}")))?;
+            Ok(vec![manifest])
+        })
+    }
+
+    fn read_template_resource<'a>(
+        &'a self,
+        pack_id: &'a str,
+    ) -> BoxFuture<'a, axpoint_domain::builder::TemplateResourcePayload> {
+        Box::pin(async move {
+            if pack_id != "supply_chain" {
+                return Err(AppError::NotFound("TEMPLATE_NOT_FOUND"));
+            }
+            Ok(axpoint_domain::builder::TemplateResourcePayload {
+                manifest: serde_json::json!({ "id": "supply_chain", "name": "供应链协同" }),
+                readme_markdown: String::from("# 供应链协同模板"),
+                schema_doc: axpoint_domain::studio::SchemaDoc::default(),
+                metrics: serde_json::json!([]),
+                mappings: serde_json::json!([]),
+            })
+        })
+    }
+
+    fn clone_template_sandbox<'a>(
+        &'a self,
+        _tenant_id: &'a str,
+        _actor_user_id: Option<Uuid>,
+        pack_id: &'a str,
+        target_slug: Option<&'a str>,
+        _display_name: Option<&'a str>,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, axpoint_domain::builder::CloneTemplateSandboxResponse> {
+        Box::pin(async move {
+            let slug = target_slug.unwrap_or("dev_supply_chain").to_owned();
+            let draft_id = Uuid::new_v4();
+            let deep_links = axpoint_domain::builder::resolve_deep_links(
+                web_base_url,
+                None,
+                &slug,
+                Some(draft_id),
+                None,
+                None,
+            );
+            Ok(axpoint_domain::builder::CloneTemplateSandboxResponse {
+                subgraph_slug: slug,
+                is_dev_sandbox: true,
+                source_template_id: String::from(pack_id),
+                node_type_count: 4,
+                edge_type_count: 3,
+                draft_id,
+                deep_links,
+            })
+        })
+    }
+
+    fn dry_run_dev_subgraph<'a>(
+        &'a self,
+        _tenant_id: &'a str,
+        subgraph_slug: &'a str,
+        req: axpoint_domain::builder::DevSubgraphRunRequest,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, axpoint_domain::builder::DevSubgraphRunResponse> {
+        Box::pin(async move {
+            if subgraph_slug == "main" {
+                return Err(AppError::bad(
+                    "DEV_SANDBOX_REQUIRED",
+                    "target subgraph must be a non-main dev sandbox",
+                ));
+            }
+            let guard = self.store.inner.lock().await;
+            let sample_nodes: Vec<BlueNode> = guard.nodes.iter().take(2).cloned().collect();
+            drop(guard);
+            let deep_links = axpoint_domain::builder::resolve_deep_links(
+                web_base_url,
+                None,
+                subgraph_slug,
+                req.draft_id,
+                None,
+                None,
+            );
+            Ok(axpoint_domain::builder::DevSubgraphRunResponse {
+                subgraph_slug: String::from(subgraph_slug),
+                nodes_upserted: u64::try_from(sample_nodes.len()).unwrap_or(0),
+                links_upserted: 1,
+                points_computed: 2,
+                sample_nodes,
+                reject_samples: Vec::new(),
+                deep_links,
+            })
+        })
+    }
+}
+
 /// Complete assembled Step 09 service stack for integration tests.
 pub struct HarnessStack {
     pub store: Arc<MockStep09Store>,
@@ -404,12 +576,21 @@ impl HarnessStack {
         let dyn_invoker: Arc<dyn PublishedAgentInvoker> = runtime.clone();
         publisher.register_agent_invoker(Arc::downgrade(&dyn_invoker));
 
-        let mcp_hub = Arc::new(McpServerHub::new(
-            store.clone(),
-            capability,
-            publisher.clone(),
-            Some(audit_writer.clone()),
-        ));
+        let dashboard_port: Arc<dyn BuilderDashboardPort> = capability.clone();
+        let sandbox_port: Arc<dyn TemplateSandboxPort> = capability.clone();
+        let mcp_hub = Arc::new(
+            McpServerHub::new(
+                store.clone(),
+                capability,
+                publisher.clone(),
+                Some(audit_writer.clone()),
+            )
+            .with_builder_ports(
+                Some(dashboard_port),
+                Some(sandbox_port),
+                Some(String::from("https://public.xblue.example")),
+            ),
+        );
         let embed = Arc::new(EmbedService::new(
             store.clone(),
             runtime.clone(),
@@ -445,6 +626,8 @@ pub fn make_principal(token_kind: TokenKind, perms: &[Permission]) -> AuthPrinci
         roles: vec![String::from("ADMIN")],
         permissions,
         token_kind,
+        token_profile: axpoint_domain::enums::TokenProfile::General,
+        web_base_url: None,
     }
 }
 

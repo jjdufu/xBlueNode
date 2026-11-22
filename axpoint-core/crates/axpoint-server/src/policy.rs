@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::{Dataset, DatasetListQuery, DatasetStatus};
-use axpoint_domain::enums::{MaskRule, Permission, Sensitivity};
+use axpoint_domain::enums::{MaskRule, Permission, PiiCategory, Sensitivity};
 use axpoint_domain::graph::NodeSearchHit;
 use axpoint_domain::guard::{
     CedarPolicyRecord, ColumnPolicyRecord, DepartmentRecord, GrantRecord, GrantResourceKind,
@@ -13,7 +13,7 @@ use axpoint_domain::guard::{
     PolicyTargetKind, ResourceRef, RowPolicyDefaultRecord, RowPolicyRecord, UserAccountStatus,
 };
 use axpoint_domain::ports::{DatasetRepository, GuardRepository, StudioRepository};
-use axpoint_domain::studio::NodeTypeSpec;
+use axpoint_domain::studio::{DraftStatus, NodeTypeSpec};
 use axpoint_domain::topology::BlueNode;
 use axpoint_security::AuthPrincipal;
 use axpoint_security::cedar_authz::{CedarAuthorizer, CedarContext, dept_lineage};
@@ -277,10 +277,47 @@ pub async fn build_policy_context_for_store<S>(
 where
     S: GuardRepository + DatasetRepository + StudioRepository + ?Sized,
 {
+    build_policy_context_for_subgraph(
+        store,
+        cedar,
+        principal,
+        "main",
+        reveal_pii_requested,
+        client_ip,
+    )
+    .await
+}
+
+/// Compiles the complete [`PolicyContext`] for `principal` scoped to `subgraph_slug`, overlaying
+/// active `DRAFT` and published subgraph node-type `PII` declarations onto `"main"` (`03-STEP17` §17.3.1).
+///
+/// # Errors
+/// - Returns `401 TOKEN_INVALID` if the principal is missing or disabled.
+/// - Returns `403 PERMISSION_DENIED` if `reveal_pii_requested` is `true` and caller lacks
+///   `Permission::PiiRawRead` and matches no `sec_column_policies.exempt` selector.
+/// - Returns `400 INVALID_PREDICATE` or [`AppError::Database`] on policy compilation or DB failure.
+pub async fn build_policy_context_for_subgraph<S>(
+    store: &S,
+    cedar: &CedarAuthorizer,
+    principal: &AuthPrincipal,
+    subgraph_slug: &str,
+    reveal_pii_requested: bool,
+    client_ip: &str,
+) -> Result<PolicyContext, AppError>
+where
+    S: GuardRepository + DatasetRepository + StudioRepository + ?Sized,
+{
     Box::pin(async move {
         let profile = load_effective_guard_profile(store, principal).await?;
-        build_policy_context_for_profile(store, cedar, &profile, reveal_pii_requested, client_ip)
-            .await
+        build_policy_context_for_profile_inner(
+            store,
+            cedar,
+            &profile,
+            subgraph_slug,
+            reveal_pii_requested,
+            client_ip,
+        )
+        .await
     })
     .await
 }
@@ -304,16 +341,78 @@ where
         store,
         cedar,
         profile,
+        "main",
         reveal_pii_requested,
         client_ip,
     ))
     .await
 }
 
+fn merge_node_type_into(merged: &mut BTreeMap<String, NodeTypeSpec>, incoming: &NodeTypeSpec) {
+    let Some(existing) = merged.get_mut(&incoming.name) else {
+        merged.insert(incoming.name.clone(), incoming.clone());
+        return;
+    };
+    for prop in &incoming.properties {
+        if let Some(ex_prop) = existing.properties.iter_mut().find(|p| p.name == prop.name) {
+            if ex_prop.pii_category == PiiCategory::None && prop.pii_category != PiiCategory::None {
+                ex_prop.pii_category = prop.pii_category;
+            }
+        } else {
+            existing.properties.push(prop.clone());
+        }
+    }
+}
+
+async fn load_effective_node_types<S>(
+    store: &S,
+    tenant_id: &str,
+    subgraph_slug: &str,
+) -> Result<Vec<NodeTypeSpec>, AppError>
+where
+    S: StudioRepository + ?Sized,
+{
+    let main_pub = store.get_published_schema(tenant_id, "main").await?;
+    let clean_slug = subgraph_slug.trim();
+    if clean_slug.is_empty() || clean_slug == "main" {
+        return Ok(main_pub.doc.node_types);
+    }
+
+    let mut merged: BTreeMap<String, NodeTypeSpec> = BTreeMap::new();
+    let active_drafts = store
+        .list_drafts(tenant_id, clean_slug, Some(DraftStatus::Draft))
+        .await
+        .unwrap_or_default();
+    for draft in &active_drafts {
+        for nt in &draft.schema_doc.node_types {
+            merge_node_type_into(&mut merged, nt);
+        }
+    }
+    if active_drafts.is_empty()
+        && let Ok(all_drafts) = store.list_drafts(tenant_id, clean_slug, None).await
+    {
+        for draft in &all_drafts {
+            for nt in &draft.schema_doc.node_types {
+                merge_node_type_into(&mut merged, nt);
+            }
+        }
+    }
+    if let Ok(sub_pub) = store.get_published_schema(tenant_id, clean_slug).await {
+        for nt in &sub_pub.doc.node_types {
+            merge_node_type_into(&mut merged, nt);
+        }
+    }
+    for nt in &main_pub.doc.node_types {
+        merge_node_type_into(&mut merged, nt);
+    }
+    Ok(merged.into_values().collect())
+}
+
 async fn build_policy_context_for_profile_inner<S>(
     store: &S,
     cedar: &CedarAuthorizer,
     profile: &GuardPrincipalProfile,
+    subgraph_slug: &str,
     reveal_pii_requested: bool,
     client_ip: &str,
 ) -> Result<PolicyContext, AppError>
@@ -323,7 +422,7 @@ where
     let tenant_id = &profile.tenant_id;
     let snap = load_governance_snapshot(store, tenant_id).await?;
     let all_datasets = load_all_active_datasets(store, tenant_id).await?;
-    let published = store.get_published_schema(tenant_id, "main").await?;
+    let effective_node_types = load_effective_node_types(store, tenant_id, subgraph_slug).await?;
     let lineage = dept_lineage(&profile.dept_id, &snap.departments);
     let ip = normalize_ip(client_ip);
     let hour = current_utc_hour();
@@ -362,7 +461,7 @@ where
     }
 
     let mut node_types_map = BTreeMap::new();
-    for nt in &published.doc.node_types {
+    for nt in &effective_node_types {
         let (spec, exempt) = compile_single_node_type_entry(
             store,
             cedar,
@@ -691,4 +790,71 @@ pub fn effective_property_masks(
         }
     }
     fallback
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axpoint_domain::enums::DataType;
+    use axpoint_domain::studio::{PropertyKind, PropertySpec};
+
+    fn make_prop(name: &str, pii_category: PiiCategory) -> PropertySpec {
+        PropertySpec {
+            name: String::from(name),
+            display_name: String::from(name),
+            description: String::new(),
+            unit: None,
+            data_type: DataType::String,
+            kind: PropertyKind::Attribute,
+            required: false,
+            allowed_values: None,
+            pii_category,
+        }
+    }
+
+    #[test]
+    fn merge_node_type_into_unions_sandbox_draft_and_main_pii_properties() {
+        let draft_order = NodeTypeSpec {
+            id: None,
+            name: String::from("Order"),
+            display_name: String::from("订单"),
+            description: String::new(),
+            icon: String::new(),
+            color: String::new(),
+            title_template: String::new(),
+            properties: vec![
+                make_prop("customer_phone", PiiCategory::Phone),
+                make_prop("contact_email", PiiCategory::None),
+            ],
+            agg_rules: Vec::new(),
+            derived_rules: Vec::new(),
+            sync_to_knowledge: false,
+            pos_x: 0.0,
+            pos_y: 0.0,
+        };
+        let mut main_order = draft_order.clone();
+        main_order.properties = vec![
+            make_prop("contact_email", PiiCategory::Email),
+            make_prop("id_card", PiiCategory::IdCard),
+        ];
+
+        let mut merged = BTreeMap::new();
+        merge_node_type_into(&mut merged, &draft_order);
+        merge_node_type_into(&mut merged, &main_order);
+
+        let effective = merged.get("Order");
+        let masks = effective_property_masks("Order", effective, None, false);
+        assert_eq!(
+            masks.get("customer_phone"),
+            Some(&MaskRule::from_pii_category(PiiCategory::Phone))
+        );
+        assert_eq!(
+            masks.get("contact_email"),
+            Some(&MaskRule::from_pii_category(PiiCategory::Email))
+        );
+        assert_eq!(
+            masks.get("id_card"),
+            Some(&MaskRule::from_pii_category(PiiCategory::IdCard))
+        );
+    }
 }

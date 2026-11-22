@@ -29,11 +29,16 @@ import {
   listMcpClients,
   revokeApiToken,
   type CreateApiTokenResponse,
+  type TokenProfile,
 } from "@/lib/api/axagent";
 import { AgentEditor } from "@/components/axagent/AgentEditor";
 import { AppCard } from "@/components/axagent/AppCard";
 import { ChatWorkbench } from "@/components/axagent/ChatWorkbench";
 import { EndpointList } from "@/components/axagent/EndpointList";
+import {
+  BUILDER_FORBIDDEN_PROD_PERMISSIONS,
+  McpBuilderConfigCard,
+} from "@/components/axagent/McpBuilderConfigCard";
 import { McpClientForm } from "@/components/axagent/McpClientForm";
 import { ProviderTable } from "@/components/axagent/ProviderTable";
 import { UserLlmPreferencesBar } from "@/components/axagent/UserLlmPreferencesBar";
@@ -44,12 +49,14 @@ import {
   Input,
   Modal,
   PageHeader,
+  Select,
   StatusBadge,
   Tabs,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { MODULE_META } from "@/modules/meta";
 import { usePrincipal } from "@/lib/permissions";
+import { cn } from "@/lib/utils";
 
 type AxAgentTabKey =
   | "workbench"
@@ -66,6 +73,10 @@ const DEFAULT_PAT_SCOPES: readonly Permission[] = [
   "SIM_RUN",
 ];
 
+const BUILDER_FORBIDDEN_SET: ReadonlySet<Permission> = new Set(
+  BUILDER_FORBIDDEN_PROD_PERMISSIONS
+);
+
 export function AxAgentPage() {
   const queryClient = useQueryClient();
   const { tx, tEnum, fmtNum } = useI18n();
@@ -80,6 +91,12 @@ export function AxAgentPage() {
   const [patModalOpen, setPatModalOpen] = useState(false);
   const [patName, setPatName] = useState("");
   const [patDays, setPatDays] = useState("30");
+  const [patProfile, setPatProfile] = useState<TokenProfile>("GENERAL");
+  const [patWebBaseUrl, setPatWebBaseUrl] = useState(() =>
+    typeof window !== "undefined"
+      ? window.location.origin
+      : "http://127.0.0.1:5173"
+  );
   const [patScopes, setPatScopes] = useState<Permission[]>([
     "DATA_READ",
     "AGENT_RUN",
@@ -250,7 +267,21 @@ export function AxAgentPage() {
     ]);
   }, [queryClient]);
 
+  const handleChangePatProfile = (next: TokenProfile) => {
+    setPatProfile(next);
+    if (next === "BUILDER") {
+      setPatScopes((prev) => {
+        const filtered = prev.filter((p) => !BUILDER_FORBIDDEN_SET.has(p));
+        if (filtered.length > 0) return filtered;
+        return userPermissions.filter((p) => !BUILDER_FORBIDDEN_SET.has(p));
+      });
+    }
+  };
+
   const togglePatScope = (perm: Permission) => {
+    if (patProfile === "BUILDER" && BUILDER_FORBIDDEN_SET.has(perm)) {
+      return;
+    }
     setPatScopes((prev) =>
       prev.includes(perm) ? prev.filter((p) => p !== perm) : [...prev, perm]
     );
@@ -259,6 +290,23 @@ export function AxAgentPage() {
   const handleIssuePat = async () => {
     if (!canManagePat) return;
     setPatError(null);
+    const effectiveScopes =
+      patProfile === "BUILDER"
+        ? patScopes.filter((p) => !BUILDER_FORBIDDEN_SET.has(p))
+        : patScopes;
+    const trimmedWebUrl = patWebBaseUrl.trim();
+    if (
+      trimmedWebUrl.length > 0 &&
+      (!(
+        trimmedWebUrl.startsWith("http://") ||
+        trimmedWebUrl.startsWith("https://")
+      ) ||
+        /\s/.test(trimmedWebUrl))
+    ) {
+      setPatError(tx("前端地址格式无效", "Invalid frontend URL"));
+      return;
+    }
+
     const patFormSchema = z.object({
       name: z
         .string()
@@ -273,7 +321,7 @@ export function AxAgentPage() {
 
     const check = patFormSchema.safeParse({
       name: patName,
-      scopes: patScopes,
+      scopes: effectiveScopes,
       expires_in_days: Number(patDays),
     });
     if (!check.success) {
@@ -288,8 +336,12 @@ export function AxAgentPage() {
     try {
       const created = await createApiToken({
         name: check.data.name,
-        scopes: patScopes,
+        scopes: effectiveScopes,
         expires_in_days: check.data.expires_in_days,
+        token_profile: patProfile,
+        ...(trimmedWebUrl.length > 0
+          ? { web_base_url: trimmedWebUrl.replace(/\/+$/, "") }
+          : {}),
       });
       setIssuedPat(created);
       setActivePat(created.token);
@@ -503,12 +555,24 @@ export function AxAgentPage() {
           />
         </div>
       ) : (
-        <McpClientForm
-          mcpClients={mcpClients}
-          endpoints={endpoints}
-          activePat={activePat}
-          onRefresh={refreshAll}
-        />
+        <div className="space-y-6">
+          <McpBuilderConfigCard
+            canIssueToken={canManagePat}
+            userPermissions={userPermissions}
+            onTokenIssued={(created) => {
+              setActivePat(created.token);
+              void queryClient.invalidateQueries({
+                queryKey: ["axagent", "pat-list"],
+              });
+            }}
+          />
+          <McpClientForm
+            mcpClients={mcpClients}
+            endpoints={endpoints}
+            activePat={activePat}
+            onRefresh={refreshAll}
+          />
+        </div>
       )}
 
       {/* Personal Access Token (PAT) Management Modal */}
@@ -537,7 +601,26 @@ export function AxAgentPage() {
             {tx("签发访问令牌", "Issue Token")}
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="sm:col-span-2 space-y-1">
+            <div className="space-y-1">
+              <label className="text-[11px] text-muted-foreground">
+                {tx("令牌档位", "Profile")}
+              </label>
+              <Select
+                data-testid="pat-profile-select"
+                aria-label={tx("令牌档位", "Profile")}
+                value={patProfile}
+                onChange={(e) =>
+                  handleChangePatProfile(
+                    e.target.value === "BUILDER" ? "BUILDER" : "GENERAL"
+                  )
+                }
+                className="w-full"
+              >
+                <option value="GENERAL">{tx("通用令牌", "General")}</option>
+                <option value="BUILDER">{tx("构建令牌", "Builder")}</option>
+              </Select>
+            </div>
+            <div className="space-y-1">
               <label className="text-[11px] text-muted-foreground">
                 {tx("令牌名称", "Token Name")}
               </label>
@@ -564,26 +647,53 @@ export function AxAgentPage() {
             </div>
           </div>
 
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground">
+              {tx("前端地址", "Frontend URL")}
+            </label>
+            <Input
+              data-testid="pat-web-url-input"
+              aria-label={tx("前端地址", "Frontend URL")}
+              value={patWebBaseUrl}
+              onChange={(e) => setPatWebBaseUrl(e.target.value)}
+              placeholder="http://127.0.0.1:5173"
+              className="h-8 text-xs font-mono-tech"
+            />
+          </div>
+
           <div className="space-y-1.5">
             <div className="text-[11px] text-muted-foreground">
               {tx("权限范围", "Permission Scopes")}
             </div>
             <div className="flex flex-wrap gap-2">
-              {userPermissions.map((perm) => (
-                <label
-                  key={perm}
-                  title={perm}
-                  className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-2 py-1 text-[11px] cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={patScopes.includes(perm)}
-                    onChange={() => togglePatScope(perm)}
-                    className="accent-xblue"
-                  />
-                  <span>{tEnum(perm)}</span>
-                </label>
-              ))}
+              {userPermissions.map((perm) => {
+                const forbiddenForBuilder =
+                  patProfile === "BUILDER" && BUILDER_FORBIDDEN_SET.has(perm);
+                return (
+                  <label
+                    key={perm}
+                    title={perm}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded border border-border bg-background px-2 py-1 text-[11px]",
+                      forbiddenForBuilder
+                        ? "opacity-45 cursor-not-allowed"
+                        : "cursor-pointer"
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      data-testid={`pat-scope-checkbox-${perm}`}
+                      disabled={forbiddenForBuilder}
+                      checked={
+                        !forbiddenForBuilder && patScopes.includes(perm)
+                      }
+                      onChange={() => togglePatScope(perm)}
+                      className="accent-xblue"
+                    />
+                    <span>{tEnum(perm)}</span>
+                  </label>
+                );
+              })}
             </div>
           </div>
 
@@ -651,6 +761,7 @@ export function AxAgentPage() {
             <div className="space-y-2">
               {(patListQuery.data ?? []).map((tok) => {
                 const revoked = Boolean(tok.revoked_at);
+                const profileCode = tok.token_profile ?? "GENERAL";
                 return (
                   <div
                     key={tok.id}
@@ -658,11 +769,19 @@ export function AxAgentPage() {
                     className="flex items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2"
                   >
                     <div className="space-y-0.5 min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-semibold">{tok.name}</span>
                         <span className="font-mono-tech text-[11px] text-muted-foreground">
                           {tok.token_prefix}…
                         </span>
+                        <Badge
+                          variant={
+                            profileCode === "BUILDER" ? "xblue" : "outline"
+                          }
+                          data-testid={`pat-profile-badge-${tok.id}`}
+                        >
+                          {tEnum(profileCode)}
+                        </Badge>
                         <StatusBadge
                           status={revoked ? "REVOKED" : "ACTIVE"}
                         />

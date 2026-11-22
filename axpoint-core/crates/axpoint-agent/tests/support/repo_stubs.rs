@@ -179,6 +179,21 @@ pub async fn populate_enterprise_seed(store: &MockStep09Store) -> Result<(), App
 
     let mut guard = store.inner.lock().await;
     guard.schema = Some(schema);
+    guard.subgraphs = vec![SubgraphInfo {
+        id: Uuid::from_u128(0x501),
+        slug: String::from("main"),
+        display_name: String::from("企业主图"),
+        description: String::from("企业全局标准模型主图"),
+        owner_dept: String::new(),
+        is_main: true,
+        is_dev_sandbox: false,
+        source_template_id: None,
+        last_reset_at: None,
+        current_version: 3,
+        created_by: None,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+    }];
     guard.nodes = nodes;
     guard.links = links;
     guard
@@ -830,20 +845,36 @@ impl AnalyticsRepository for MockStep09Store {
 }
 
 impl StudioRepository for MockStep09Store {
-    fn list_subgraphs(
-        &self,
-        _tenant_id: &str,
-    ) -> impl Future<Output = Result<Vec<SubgraphInfo>, AppError>> {
-        std::future::ready(Ok(Vec::new()))
+    async fn list_subgraphs(&self, _tenant_id: &str) -> Result<Vec<SubgraphInfo>, AppError> {
+        let guard = self.inner.lock().await;
+        Ok(guard.subgraphs.clone())
     }
 
-    fn create_subgraph(
+    async fn create_subgraph(
         &self,
         _tenant_id: &str,
-        _actor_user_id: Option<Uuid>,
-        _req: CreateSubgraphRequest,
-    ) -> impl Future<Output = Result<SubgraphInfo, AppError>> {
-        std::future::ready(Err(AppError::NotFound("NOT_FOUND")))
+        actor_user_id: Option<Uuid>,
+        req: CreateSubgraphRequest,
+    ) -> Result<SubgraphInfo, AppError> {
+        let mut guard = self.inner.lock().await;
+        let now = Utc::now();
+        let info = SubgraphInfo {
+            id: Uuid::new_v4(),
+            slug: req.slug,
+            display_name: req.display_name,
+            description: req.description,
+            owner_dept: req.owner_dept,
+            is_main: false,
+            is_dev_sandbox: req.is_dev_sandbox,
+            source_template_id: req.source_template_id,
+            last_reset_at: None,
+            current_version: 0,
+            created_by: actor_user_id,
+            created_at: now,
+            updated_at: now,
+        };
+        guard.subgraphs.push(info.clone());
+        Ok(info)
     }
 
     fn update_subgraph(
@@ -863,12 +894,60 @@ impl StudioRepository for MockStep09Store {
         std::future::ready(Ok(()))
     }
 
+    async fn reset_dev_subgraph_nodes(
+        &self,
+        _tenant_id: &str,
+        slug: &str,
+        web_base_url: Option<&str>,
+    ) -> Result<axpoint_domain::builder::DevSubgraphResetResponse, AppError> {
+        let mut guard = self.inner.lock().await;
+        let sg = guard
+            .subgraphs
+            .iter_mut()
+            .find(|s| s.slug == slug)
+            .ok_or(AppError::NotFound("SUBGRAPH_NOT_FOUND"))?;
+        if sg.is_main || !sg.is_dev_sandbox {
+            return Err(AppError::bad(
+                "DEV_SANDBOX_REQUIRED",
+                "target subgraph must be a non-main dev sandbox",
+            ));
+        }
+        let now = Utc::now();
+        sg.last_reset_at = Some(now);
+        sg.updated_at = now;
+        Ok(axpoint_domain::builder::DevSubgraphResetResponse {
+            subgraph_slug: String::from(slug),
+            nodes_deleted: 2,
+            links_deleted: 1,
+            series_points_deleted: 4,
+            last_reset_at: now,
+            deep_links: axpoint_domain::builder::resolve_deep_links(
+                web_base_url,
+                None,
+                slug,
+                None,
+                None,
+                None,
+            ),
+        })
+    }
+
     async fn get_published_schema(
         &self,
         _tenant_id: &str,
-        _subgraph_slug: &str,
+        subgraph_slug: &str,
     ) -> Result<PublishedSchemaResponse, AppError> {
         let guard = self.inner.lock().await;
+        if subgraph_slug != "main" {
+            if !guard.subgraphs.iter().any(|s| s.slug == subgraph_slug) {
+                return Err(AppError::NotFound("SUBGRAPH_NOT_FOUND"));
+            }
+            return Ok(PublishedSchemaResponse {
+                subgraph_slug: String::from(subgraph_slug),
+                version: 0,
+                doc: axpoint_domain::studio::SchemaDoc::default(),
+            });
+        }
         guard.schema.clone().ok_or(AppError::NotFound("NOT_FOUND"))
     }
 
@@ -882,12 +961,26 @@ impl StudioRepository for MockStep09Store {
         std::future::ready(Err(AppError::NotFound("NOT_FOUND")))
     }
 
-    fn load_validation_context(
+    async fn load_validation_context(
         &self,
         _tenant_id: &str,
-        _subgraph_slug: &str,
-    ) -> impl Future<Output = Result<ValidationContext, AppError>> {
-        std::future::ready(Err(AppError::NotFound("NOT_FOUND")))
+        subgraph_slug: &str,
+    ) -> Result<ValidationContext, AppError> {
+        let guard = self.inner.lock().await;
+        let current_doc = if subgraph_slug == "main" {
+            guard.schema.as_ref().map(|s| s.doc.clone())
+        } else {
+            None
+        };
+        Ok(ValidationContext {
+            subgraph_slug: String::from(subgraph_slug),
+            main_node_types: BTreeMap::new(),
+            current_doc,
+            existing_node_counts: BTreeMap::new(),
+            existing_link_counts: BTreeMap::new(),
+            datasets: BTreeMap::new(),
+            cardinality_violations: std::collections::BTreeSet::new(),
+        })
     }
 
     fn list_schema_versions(
@@ -927,40 +1020,78 @@ impl StudioRepository for MockStep09Store {
         std::future::ready(Err(AppError::NotFound("NOT_FOUND")))
     }
 
-    fn list_drafts(
+    async fn list_drafts(
         &self,
         _tenant_id: &str,
-        _subgraph_slug: &str,
-        _status: Option<DraftStatus>,
-    ) -> impl Future<Output = Result<Vec<SchemaDraft>, AppError>> {
-        std::future::ready(Ok(Vec::new()))
+        subgraph_slug: &str,
+        status: Option<DraftStatus>,
+    ) -> Result<Vec<SchemaDraft>, AppError> {
+        let guard = self.inner.lock().await;
+        Ok(guard
+            .drafts
+            .iter()
+            .filter(|d| d.subgraph_slug == subgraph_slug)
+            .filter(|d| status.is_none_or(|st| d.status == st))
+            .cloned()
+            .collect())
     }
 
-    fn get_draft(
+    async fn get_draft(
         &self,
         _tenant_id: &str,
-        _draft_id: Uuid,
-    ) -> impl Future<Output = Result<Option<SchemaDraft>, AppError>> {
-        std::future::ready(Ok(None))
+        draft_id: Uuid,
+    ) -> Result<Option<SchemaDraft>, AppError> {
+        let guard = self.inner.lock().await;
+        Ok(guard.drafts.iter().find(|d| d.id == draft_id).cloned())
     }
 
-    fn create_draft(
+    async fn create_draft(
         &self,
         _tenant_id: &str,
-        _subgraph_slug: &str,
-        _actor_user_id: Option<Uuid>,
-        _req: CreateDraftRequest,
-    ) -> impl Future<Output = Result<SchemaDraft, AppError>> {
-        std::future::ready(Err(AppError::NotFound("NOT_FOUND")))
+        subgraph_slug: &str,
+        actor_user_id: Option<Uuid>,
+        req: CreateDraftRequest,
+    ) -> Result<SchemaDraft, AppError> {
+        let mut guard = self.inner.lock().await;
+        let now = Utc::now();
+        let draft = SchemaDraft {
+            id: Uuid::new_v4(),
+            subgraph_slug: String::from(subgraph_slug),
+            base_version: req.base_version.unwrap_or(0),
+            title: req.title,
+            schema_doc: req.schema_doc,
+            status: DraftStatus::Draft,
+            source: req
+                .source
+                .unwrap_or(axpoint_domain::studio::DraftSource::Manual),
+            ai_context: req.ai_context.unwrap_or_else(|| serde_json::json!({})),
+            issues: Vec::new(),
+            created_by: actor_user_id,
+            created_at: now,
+            updated_at: now,
+        };
+        guard.drafts.push(draft.clone());
+        Ok(draft)
     }
 
-    fn update_draft(
+    async fn update_draft(
         &self,
         _tenant_id: &str,
-        _draft_id: Uuid,
-        _req: UpdateDraftRequest,
-    ) -> impl Future<Output = Result<SchemaDraft, AppError>> {
-        std::future::ready(Err(AppError::NotFound("NOT_FOUND")))
+        draft_id: Uuid,
+        req: UpdateDraftRequest,
+    ) -> Result<SchemaDraft, AppError> {
+        let mut guard = self.inner.lock().await;
+        let existing = guard
+            .drafts
+            .iter_mut()
+            .find(|d| d.id == draft_id)
+            .ok_or(AppError::NotFound("DRAFT_NOT_FOUND"))?;
+        if let Some(title) = req.title {
+            existing.title = title;
+        }
+        existing.schema_doc = req.schema_doc;
+        existing.updated_at = Utc::now();
+        Ok(existing.clone())
     }
 
     fn discard_draft(
@@ -1342,41 +1473,85 @@ impl MetricStorePort for MockStep09Store {
 }
 
 impl FlowRepository for MockStep09Store {
-    fn list_flows(
+    async fn list_flows(
         &self,
         _tenant_id: &str,
         _query: FlowListQuery,
-    ) -> impl Future<Output = Result<PaginatedList<AxFlowDef>, AppError>> {
-        std::future::ready(Ok(PaginatedList {
-            items: Vec::new(),
+    ) -> Result<PaginatedList<AxFlowDef>, AppError> {
+        let guard = self.inner.lock().await;
+        Ok(PaginatedList {
+            items: guard.flows.clone(),
             next_cursor: None,
-        }))
+        })
     }
 
-    fn get_flow(
+    async fn get_flow(
         &self,
         _tenant_id: &str,
-        _flow_id: Uuid,
-    ) -> impl Future<Output = Result<Option<AxFlowDef>, AppError>> {
-        std::future::ready(Ok(None))
+        flow_id: Uuid,
+    ) -> Result<Option<AxFlowDef>, AppError> {
+        let guard = self.inner.lock().await;
+        Ok(guard.flows.iter().find(|f| f.id == flow_id).cloned())
     }
 
-    fn create_flow(
+    async fn create_flow(
         &self,
         _tenant_id: &str,
-        _created_by: Option<Uuid>,
-        _req: CreateAxFlowRequest,
-    ) -> impl Future<Output = Result<AxFlowDef, AppError>> {
-        std::future::ready(Err(AppError::NotFound("NOT_FOUND")))
+        created_by: Option<Uuid>,
+        req: CreateAxFlowRequest,
+    ) -> Result<AxFlowDef, AppError> {
+        let mut guard = self.inner.lock().await;
+        let now = Utc::now();
+        let (nodes, edges) = req.resolve_dag();
+        let rec = AxFlowDef {
+            id: Uuid::new_v4(),
+            name: req.name,
+            description: req.description,
+            slug: req.slug,
+            nodes,
+            edges,
+            trigger_cfg: req.trigger_cfg,
+            status: String::from("DRAFT"),
+            created_by,
+            last_run_at: None,
+            created_at: now,
+            updated_at: now,
+            issues: Vec::new(),
+        };
+        guard.flows.push(rec.clone());
+        Ok(rec)
     }
 
-    fn update_flow(
+    async fn update_flow(
         &self,
         _tenant_id: &str,
-        _flow_id: Uuid,
-        _req: UpdateAxFlowRequest,
-    ) -> impl Future<Output = Result<Option<AxFlowDef>, AppError>> {
-        std::future::ready(Ok(None))
+        flow_id: Uuid,
+        req: UpdateAxFlowRequest,
+    ) -> Result<Option<AxFlowDef>, AppError> {
+        let mut guard = self.inner.lock().await;
+        let Some(existing) = guard.flows.iter_mut().find(|f| f.id == flow_id) else {
+            return Ok(None);
+        };
+        if let Some(name) = req.name {
+            existing.name = name;
+        }
+        if let Some(desc) = req.description {
+            existing.description = desc;
+        }
+        if let Some(slug) = req.slug {
+            existing.slug = (!slug.is_empty()).then_some(slug);
+        }
+        if let Some(nodes) = req.nodes {
+            existing.nodes = nodes;
+        }
+        if let Some(edges) = req.edges {
+            existing.edges = edges;
+        }
+        if let Some(tc) = req.trigger_cfg {
+            existing.trigger_cfg = tc;
+        }
+        existing.updated_at = Utc::now();
+        Ok(Some(existing.clone()))
     }
 
     fn delete_flow(
@@ -1402,7 +1577,11 @@ impl FlowRepository for MockStep09Store {
         _tenant_id: &str,
         _flow_id: Uuid,
     ) -> impl Future<Output = Result<FlowVersionsListResponse, AppError>> {
-        std::future::ready(Err(AppError::NotFound("NOT_FOUND")))
+        std::future::ready(Ok(FlowVersionsListResponse {
+            items: Vec::new(),
+            deployments: Vec::new(),
+            next_cursor: None,
+        }))
     }
 
     fn get_flow_version(

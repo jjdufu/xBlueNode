@@ -10,6 +10,9 @@ use std::str::FromStr;
 use axpoint_db::studio_repo::NeighborBatchKey;
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::{Dataset, PaginatedList};
+use axpoint_domain::builder::{
+    DevSubgraphResetResponse, DevSubgraphRunRequest, DevSubgraphRunResponse,
+};
 use axpoint_domain::enums::{AuditAction, DataType, GraphAlgo, JobKind, Permission};
 use axpoint_domain::expr::{
     EvalEnv, EvaluateExprRequest, EvaluateExprResponse, ValidateExprRequest, ValidateExprResponse,
@@ -80,8 +83,18 @@ pub(crate) fn router() -> Router<AppState> {
             post(merge_subgraph_handler),
         )
         .route(
+            "/xblue/subgraphs/{slug}/dry-run-materialize",
+            post(dry_run_dev_subgraph_handler),
+        )
+        .route(
+            "/xblue/subgraphs/{slug}/reset-nodes",
+            post(reset_dev_subgraph_nodes_handler),
+        )
+        .route(
             "/xblue/schema",
-            get(get_schema_handler).post(save_schema_handler),
+            get(get_schema_handler)
+                .post(save_schema_handler)
+                .put(save_schema_handler),
         )
         .route("/xblue/schema/validate", post(validate_schema_handler))
         .route("/xblue/schema/versions", get(list_schema_versions_handler))
@@ -328,6 +341,7 @@ async fn merge_subgraph_handler(
     ApiPath(slug): ApiPath<String>,
     ApiJson(req): ApiJson<MergeSubgraphRequest>,
 ) -> Result<Json<PublishDraftResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioPublish)?;
     let resp = state
         .store
@@ -347,6 +361,115 @@ async fn merge_subgraph_handler(
         serde_json::json!({
             "merged_from": slug.trim(),
             "draft_id": resp.draft_id,
+        }),
+    )
+    .await;
+    Ok(Json(resp))
+}
+
+async fn record_builder_sandbox_audit(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    client_ip: &str,
+    subgraph_slug: &str,
+    detail: serde_json::Value,
+) {
+    state.audit.record(AuditRecord {
+        tenant_id: principal.tenant_id.clone(),
+        user_id: actor_uuid(principal),
+        username: principal.username.clone(),
+        action: AuditAction::BuilderMcpMutate,
+        resource_ref: format!("xblue:subgraph:{subgraph_slug}"),
+        status_code: 200,
+        client_ip: String::from(client_ip),
+        trace_id: current_trace_id(),
+        detail_json: detail,
+        created_at: Utc::now(),
+    });
+    if let Err(err) = state.audit.flush().await {
+        tracing::warn!(error = %err, "xblue builder sandbox audit flush failed");
+    }
+}
+
+async fn dry_run_dev_subgraph_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath(slug): ApiPath<String>,
+    body: Bytes,
+) -> Result<Json<DevSubgraphRunResponse>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    principal.require(Permission::DataSync)?;
+    let req: DevSubgraphRunRequest = parse_optional_json(&body)?;
+    let draft_id = req.draft_id;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let clean_slug = slug.trim();
+    let web_base = principal
+        .web_base_url
+        .as_deref()
+        .or(state.axagent.public_host.as_deref());
+    let mut resp = state
+        .axagent
+        .capability
+        .execute_dev_subgraph_dry_run(&principal.tenant_id, clean_slug, req, web_base)
+        .await?;
+    state
+        .axagent
+        .capability
+        .mask_dev_sample_nodes(
+            &principal,
+            &client_ip,
+            clean_slug,
+            draft_id,
+            &mut resp.sample_nodes,
+        )
+        .await;
+    record_builder_sandbox_audit(
+        &state,
+        &principal,
+        &client_ip,
+        clean_slug,
+        serde_json::json!({
+            "endpoint": "dry-run-materialize",
+            "token_profile": principal.token_profile,
+            "draft_id": draft_id,
+            "nodes_upserted": resp.nodes_upserted,
+            "links_upserted": resp.links_upserted,
+            "points_computed": resp.points_computed,
+        }),
+    )
+    .await;
+    Ok(Json(resp))
+}
+
+async fn reset_dev_subgraph_nodes_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath(slug): ApiPath<String>,
+) -> Result<Json<DevSubgraphResetResponse>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let clean_slug = slug.trim();
+    let web_base = principal
+        .web_base_url
+        .as_deref()
+        .or(state.axagent.public_host.as_deref());
+    let resp = state
+        .store
+        .reset_dev_subgraph_nodes(&principal.tenant_id, clean_slug, web_base)
+        .await?;
+    record_builder_sandbox_audit(
+        &state,
+        &principal,
+        &client_ip,
+        clean_slug,
+        serde_json::json!({
+            "endpoint": "reset-nodes",
+            "token_profile": principal.token_profile,
+            "nodes_deleted": resp.nodes_deleted,
+            "links_deleted": resp.links_deleted,
+            "series_points_deleted": resp.series_points_deleted,
         }),
     )
     .await;
@@ -391,6 +514,7 @@ async fn save_schema_handler(
     ApiQuery(sub): ApiQuery<SubgraphQueryParam>,
     ApiJson(req): ApiJson<SaveSchemaDirectRequest>,
 ) -> Result<Json<PublishedSchemaResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     let slug = sub.slug_or_main();
     if slug == "main" {
         principal.require(Permission::StudioPublish)?;
@@ -615,6 +739,7 @@ async fn publish_draft_handler(
     ApiPath(id): ApiPath<Uuid>,
     body: Bytes,
 ) -> Result<Json<PublishDraftResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     let existing = state
         .store
         .get_draft(&principal.tenant_id, id)
@@ -857,6 +982,7 @@ async fn trigger_mapping_run_handler(
     ApiPath(id): ApiPath<Uuid>,
     body: Bytes,
 ) -> Result<Json<TriggerMappingRunResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::DataSync)?;
     let req: TriggerMappingRunRequest = parse_optional_json(&body)?;
     let resp = state
@@ -1253,6 +1379,24 @@ async fn list_nodes_handler(
 ) -> Result<Json<NodeListResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
     let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let target_slug = query
+        .subgraph
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("main");
+    if target_slug != "main" {
+        let _ = axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            &principal,
+            Permission::DataRead,
+            axpoint_domain::guard::GrantResourceKind::Subgraph,
+            target_slug,
+            &client_ip,
+        )
+        .await?;
+    }
     if let Some(tn) = query
         .type_name
         .as_deref()
@@ -1271,10 +1415,11 @@ async fn list_nodes_handler(
         .await?;
     }
 
-    let policy = axpoint_server::policy::build_policy_context_for_store(
+    let policy = axpoint_server::policy::build_policy_context_for_subgraph(
         &state.store,
         &state.cedar,
         &principal,
+        target_slug,
         query.reveal_pii,
         &client_ip,
     )
@@ -1325,6 +1470,7 @@ async fn upsert_node_handler(
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<UpsertBlueNodeRequest>,
 ) -> Result<Json<BlueNode>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioEdit)?;
     let node = state.store.upsert_node(&principal.tenant_id, req).await?;
     if let Err(err) = state
@@ -1347,6 +1493,7 @@ async fn bulk_upsert_nodes_handler(
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<BulkNodesRequest>,
 ) -> Result<Json<BulkNodesResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioEdit)?;
     let resp = state.store.bulk_upsert(&principal.tenant_id, req).await?;
     if resp.upserted_nodes > 0
@@ -1455,6 +1602,7 @@ async fn patch_node_handler(
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<PatchNodeRequest>,
 ) -> Result<Json<BlueNode>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioEdit)?;
     let node = state
         .store
@@ -1468,6 +1616,7 @@ async fn delete_node_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioEdit)?;
     state.store.delete_node(&principal.tenant_id, id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
@@ -1515,6 +1664,7 @@ async fn upsert_link_handler(
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<UpsertLinkRequest>,
 ) -> Result<Json<LinkRecord>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioEdit)?;
     let link = state.store.upsert_link(&principal.tenant_id, req).await?;
     Ok(Json(link))
@@ -1525,6 +1675,7 @@ async fn delete_link_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioEdit)?;
     state.store.delete_link(&principal.tenant_id, id).await?;
     Ok(Json(serde_json::json!({ "deleted": true })))
@@ -1535,6 +1686,7 @@ async fn write_metrics_handler(
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<WriteMetricsRequest>,
 ) -> Result<Json<WriteMetricsResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::DataSync)?;
     let resp = state.store.write_metrics(&principal.tenant_id, req).await?;
     Ok(Json(resp))
@@ -1726,6 +1878,7 @@ async fn resolve_entities_handler(
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<ResolveEntitiesRequest>,
 ) -> Result<Json<ResolveEntitiesResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioEdit)?;
     let resp = state
         .store
@@ -1751,6 +1904,7 @@ async fn confirm_entity_link_handler(
     principal: AuthPrincipal,
     ApiPath((entity_id, node_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<EntityLink>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioEdit)?;
     let link = state
         .store
@@ -1764,6 +1918,7 @@ async fn reject_entity_link_handler(
     principal: AuthPrincipal,
     ApiPath((entity_id, node_id)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<EntityLink>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioEdit)?;
     let link = state
         .store
@@ -1845,6 +2000,7 @@ async fn recompute_aggregate_handler(
     principal: AuthPrincipal,
     body: Bytes,
 ) -> Result<Json<RecomputeAggregateResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioEdit)?;
     let req: RecomputeAggregateRequest = parse_optional_json(&body)?;
     let clean_type = req
@@ -1917,6 +2073,7 @@ async fn accept_knowledge_node_candidate_handler(
     ApiPath(entity_id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<AcceptNodeCandidateRequest>,
 ) -> Result<Json<AcceptNodeCandidateResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::StudioEdit)?;
     let resp = state
         .store

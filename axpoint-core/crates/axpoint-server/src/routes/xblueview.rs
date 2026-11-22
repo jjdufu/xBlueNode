@@ -397,6 +397,7 @@ async fn publish_dashboard_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<DashboardRecord>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::ViewEdit)?;
     let published = state
         .store

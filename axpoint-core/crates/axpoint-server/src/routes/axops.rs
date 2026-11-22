@@ -354,6 +354,7 @@ async fn plan_template_handler(
     ApiPath(pack_id): ApiPath<String>,
     body: Bytes,
 ) -> Result<Json<TemplateInstallRecord>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::OpsAdmin)?;
     let req: TemplatePlanRequest = parse_optional_json(&body)?;
     let planned = state
@@ -374,6 +375,7 @@ async fn apply_template_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<TemplateInstallRecord>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::OpsAdmin)?;
     let client_ip = extract_client_ip(&headers);
     let trace_id = current_trace_id();
@@ -396,6 +398,7 @@ async fn uninstall_template_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<TemplateUninstallResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::OpsAdmin)?;
     let res = state
         .ops
@@ -410,6 +413,7 @@ async fn load_demo_handler(
     principal: AuthPrincipal,
     ApiPath(scenario): ApiPath<DemoScenario>,
 ) -> Result<Json<DemoLoadResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::OpsAdmin)?;
     let client_ip = extract_client_ip(&headers);
     let trace_id = current_trace_id();

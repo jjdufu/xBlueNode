@@ -145,16 +145,7 @@ async fn jwks_handler(State(state): State<AppState>) -> Result<Json<serde_json::
 }
 
 async fn me_handler(principal: AuthPrincipal) -> Result<Json<MeResponse>, HttpError> {
-    Ok(Json(MeResponse {
-        user_id: principal.user_id,
-        tenant_id: principal.tenant_id,
-        username: principal.username,
-        dept_id: principal.dept_id,
-        roles: principal.roles,
-        permissions: principal.permissions,
-        token_kind: principal.token_kind,
-        token_profile: axpoint_domain::enums::TokenProfile::General,
-    }))
+    Ok(Json(principal.to_me_response()))
 }
 
 async fn run_dummy_argon2(password: String) {

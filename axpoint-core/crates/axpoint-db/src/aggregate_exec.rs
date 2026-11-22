@@ -265,7 +265,9 @@ async fn initialize_dirty_seeds(
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
 
     if let Some(ft) = full_type_opt {
-        let rows = sqlx::query("SELECT id FROM xb_nodes WHERE tenant_id = $1 AND type_name = $2")
+        let rows = sqlx::query(
+            "SELECT id FROM xb_nodes WHERE tenant_id = $1 AND subgraph_slug = 'main' AND type_name = $2",
+        )
             .bind(tenant_id)
             .bind(ft)
             .fetch_all(&mut *tx)
@@ -290,7 +292,7 @@ async fn initialize_dirty_seeds(
 
     if !payload.node_ids.is_empty() {
         let rows = sqlx::query(
-            "SELECT id, type_name, metrics FROM xb_nodes WHERE tenant_id = $1 AND id = ANY($2)",
+            "SELECT id, type_name, metrics FROM xb_nodes WHERE tenant_id = $1 AND subgraph_slug = 'main' AND id = ANY($2)",
         )
         .bind(tenant_id)
         .bind(&payload.node_ids)
@@ -347,7 +349,9 @@ async fn resolve_step_targets(
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
 
     if ctx.is_full_all || ctx.full_type_opt == Some(target_v.type_name.as_str()) {
-        let rows = sqlx::query("SELECT id FROM xb_nodes WHERE tenant_id = $1 AND type_name = $2")
+        let rows = sqlx::query(
+            "SELECT id FROM xb_nodes WHERE tenant_id = $1 AND subgraph_slug = 'main' AND type_name = $2",
+        )
             .bind(tenant_id)
             .bind(&target_v.type_name)
             .fetch_all(&mut *tx)
@@ -393,6 +397,8 @@ async fn resolve_step_targets(
                            FROM xb_links l
                            JOIN xb_nodes p ON p.tenant_id = l.tenant_id AND p.id = l.src_node_id
                           WHERE l.tenant_id = $1
+                            AND l.subgraph_slug = 'main'
+                            AND p.subgraph_slug = 'main'
                             AND l.link_type = $2
                             AND l.dst_node_id = ANY($3)
                             AND p.type_name = $4"
@@ -402,6 +408,8 @@ async fn resolve_step_targets(
                            FROM xb_links l
                            JOIN xb_nodes p ON p.tenant_id = l.tenant_id AND p.id = l.dst_node_id
                           WHERE l.tenant_id = $1
+                            AND l.subgraph_slug = 'main'
+                            AND p.subgraph_slug = 'main'
                             AND l.link_type = $2
                             AND l.src_node_id = ANY($3)
                             AND p.type_name = $4"
@@ -583,9 +591,11 @@ async fn compute_aggregation_sql_tx(
                xb_links l
                JOIN xb_nodes c
                  ON c.tenant_id = l.tenant_id
+                AND c.subgraph_slug = l.subgraph_slug
                 AND c.type_name = $4
                 AND ({where_pred})
            ) ON l.tenant_id = $1
+            AND l.subgraph_slug = 'main'
             AND l.link_type = $3
             AND {join_cond}
           GROUP BY p.parent_id"
@@ -1028,7 +1038,7 @@ pub async fn explain_node_metric_impl(
                 geo_lng, geo_lat, source_dataset_id, source_row_key, row_version,
                 created_at, updated_at
            FROM xb_nodes
-          WHERE tenant_id = $1 AND id = $2",
+          WHERE tenant_id = $1 AND subgraph_slug = 'main' AND id = $2",
     )
     .bind(tenant_id)
     .bind(node_id)

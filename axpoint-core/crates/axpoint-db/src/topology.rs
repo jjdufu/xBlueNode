@@ -258,7 +258,7 @@ impl PgStore {
             "SELECT id, type_name, node_key, title, properties, metrics,
                     geo_lng, geo_lat, source_dataset_id, source_row_key,
                     row_version, created_at, updated_at
-             FROM xb_nodes WHERE tenant_id = $1 ORDER BY updated_at DESC",
+             FROM xb_nodes WHERE tenant_id = $1 AND subgraph_slug = 'main' ORDER BY updated_at DESC",
         )
         .bind(tenant_id)
         .fetch_all(&mut **tx)
@@ -301,7 +301,7 @@ impl PgStore {
 
         let link_rows = sqlx::query(
             "SELECT id, link_type, src_node_id, dst_node_id, weight
-             FROM xb_links WHERE tenant_id = $1",
+             FROM xb_links WHERE tenant_id = $1 AND subgraph_slug = 'main'",
         )
         .bind(tenant_id)
         .fetch_all(&mut **tx)

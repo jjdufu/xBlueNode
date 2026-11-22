@@ -401,6 +401,7 @@ async fn publish_flow_version_handler(
     ApiPath(id): ApiPath<Uuid>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<FlowVersionRecord>), HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::FlowPublish)?;
     let req: PublishFlowVersionRequest = parse_optional_json(&body)?;
 
@@ -438,7 +439,10 @@ async fn deploy_flow_handler(
 ) -> Result<Json<FlowDeploymentRecord>, HttpError> {
     match req.environment {
         Environment::Test => principal.require(Permission::FlowEdit)?,
-        Environment::Prod => principal.require(Permission::FlowPublish)?,
+        Environment::Prod => {
+            principal.enforce_no_prod_mutation()?;
+            principal.require(Permission::FlowPublish)?;
+        }
     }
     if req.version <= 0 {
         return Err(HttpError(AppError::bad(
@@ -507,9 +511,12 @@ async fn start_flow_run_handler(
     ApiPath(id): ApiPath<Uuid>,
     body: Bytes,
 ) -> Result<(StatusCode, Json<StartFlowRunResponse>), HttpError> {
-    principal.require(Permission::FlowRun)?;
     let req: StartFlowRunRequest = parse_optional_json(&body)?;
     let environment = req.environment.unwrap_or(Environment::Test);
+    if environment == Environment::Prod {
+        principal.enforce_no_prod_mutation()?;
+    }
+    principal.require(Permission::FlowRun)?;
     start_manual_run(&state, &principal, id, environment, req).await
 }
 
@@ -811,6 +818,7 @@ async fn decide_approval_handler(
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<DecideApprovalRequest>,
 ) -> Result<Json<ApprovalRecord>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::ApprovalDecide)?;
     let mut is_grant = false;
     if let Some(existing) = state.store.get_approval(&principal.tenant_id, id).await? {

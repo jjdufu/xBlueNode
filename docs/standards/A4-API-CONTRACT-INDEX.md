@@ -62,8 +62,8 @@
 | `POST /graph/algorithms/{algo}`、`GET /graph/algorithms/{algo}/results` | `STUDIO_EDIT` / `DATA_READ` | 同上 |
 | `POST /entities/resolve`、`GET /entities/candidates`、`POST /entities/links/{entity_id}/{node_id}/confirm`、`POST /entities/links/{entity_id}/{node_id}/reject` | `STUDIO_EDIT` | 同上 |
 | `GET /subgraphs`、`POST /subgraphs`、`PATCH /subgraphs/{slug}`、`DELETE /subgraphs/{slug}` | `DATA_READ` / `STUDIO_EDIT` | [06](../../plans/completed/v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §05.7 |
-| `POST /subgraphs/{slug}/merge-preview`、`POST /subgraphs/{slug}/merge` | `STUDIO_EDIT` / `STUDIO_PUBLISH` | 同上 |
-| `GET /schema`、`POST /schema`、`POST /schema/validate` | `DATA_READ` / `STUDIO_PUBLISH` / `STUDIO_EDIT` | 同上 |
+| `POST /subgraphs/{slug}/merge-preview`、`POST /subgraphs/{slug}/merge`、`POST /subgraphs/{slug}/dry-run-materialize`、`POST /subgraphs/{slug}/reset-nodes` | `STUDIO_EDIT` / `STUDIO_PUBLISH` / `DATA_SYNC` | §05.7、[03](../../plans/v2-ux-and-grounded-ai/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.4 |
+| `GET /schema`、`POST /schema`、`PUT /schema`、`POST /schema/validate` | `DATA_READ` / `STUDIO_PUBLISH` / `STUDIO_EDIT` | §05.7 |
 | `GET /schema/versions`、`GET /schema/versions/{v}`、`GET /schema/versions/{a}/diff/{b}`、`POST /schema/versions/{v}/restore` | `DATA_READ` / `STUDIO_PUBLISH` | 同上 |
 | `GET /drafts`、`POST /drafts`、`GET /drafts/{id}`、`PUT /drafts/{id}`、`POST /drafts/{id}/discard`、`POST /drafts/ai`、`POST /drafts/{id}/publish` | `STUDIO_EDIT` / `STUDIO_PUBLISH` | 同上 |
 | `GET /mappings`、`GET /mappings/{id}/runs`、`POST /mappings/{id}/run`、`POST /mappings/{id}/preview` | `DATA_READ` / `STUDIO_EDIT` | 同上 |

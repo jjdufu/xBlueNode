@@ -87,12 +87,13 @@ pub(crate) async fn list_node_documents_impl(
     node_id: Uuid,
 ) -> Result<NodeDocumentsResponse, AppError> {
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
-    let node_exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1)")
-            .bind(node_id)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(|err| AppError::Database(format!("check xb_nodes exists failed: {err}")))?;
+    let node_exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1 AND subgraph_slug = 'main')",
+    )
+    .bind(node_id)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(|err| AppError::Database(format!("check xb_nodes exists failed: {err}")))?;
 
     if !node_exists {
         return Err(AppError::NotFound("NODE_NOT_FOUND"));
@@ -166,12 +167,13 @@ pub(crate) async fn resolve_entity_links_impl(
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
 
     if let Some(target_nid) = req.node_id {
-        let exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1)")
-                .bind(target_nid)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|err| AppError::Database(format!("verify target node failed: {err}")))?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1 AND subgraph_slug = 'main')",
+        )
+        .bind(target_nid)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("verify target node failed: {err}")))?;
         if !exists {
             return Err(AppError::NotFound("NODE_NOT_FOUND"));
         }
@@ -365,7 +367,7 @@ pub(crate) async fn list_entity_candidates_impl(
                 el.match_method, el.confidence, el.confirmed, el.rejected, el.created_at
            FROM xb_entity_links el
            JOIN hg_entities e ON e.id = el.entity_id
-           JOIN xb_nodes n ON n.id = el.node_id
+           JOIN xb_nodes n ON n.id = el.node_id AND n.subgraph_slug = 'main'
           WHERE el.confirmed = FALSE AND el.rejected = FALSE
           ORDER BY el.confidence DESC, el.created_at DESC",
     )
@@ -416,7 +418,7 @@ pub(crate) async fn confirm_or_reject_entity_link_impl(
     } else {
         let both_exist: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM hg_entities WHERE id = $1)
-                AND EXISTS(SELECT 1 FROM xb_nodes WHERE id = $2)",
+                AND EXISTS(SELECT 1 FROM xb_nodes WHERE id = $2 AND subgraph_slug = 'main')",
         )
         .bind(entity_id)
         .bind(node_id)
@@ -497,7 +499,7 @@ async fn load_entities_tx(tx: &mut Transaction<'_, Postgres>) -> Result<Vec<Enti
 async fn load_nodes_summary_tx(
     tx: &mut Transaction<'_, Postgres>,
 ) -> Result<Vec<NodeSummaryRow>, AppError> {
-    let rows = sqlx::query("SELECT id, node_key, title FROM xb_nodes")
+    let rows = sqlx::query("SELECT id, node_key, title FROM xb_nodes WHERE subgraph_slug = 'main'")
         .fetch_all(&mut **tx)
         .await
         .map_err(|err| AppError::Database(format!("load xb_nodes summary failed: {err}")))?;
@@ -617,7 +619,7 @@ impl PgStore {
                      ON el.entity_id = ed.dst_id
                     AND el.confirmed = TRUE
                     AND el.rejected = FALSE
-                   JOIN xb_nodes n ON n.id = el.node_id
+                   JOIN xb_nodes n ON n.id = el.node_id AND n.subgraph_slug = 'main'
                   WHERE ed.src_type = 'PARA'
                     AND ed.dst_type = 'ENTITY'
                     AND ed.rel_type = 'MENTIONS'
@@ -655,7 +657,8 @@ impl PgStore {
             let rows = sqlx::query(
                 "SELECT id, type_name, title, metrics
                    FROM xb_nodes
-                  WHERE node_key = $1
+                  WHERE subgraph_slug = 'main'
+                    AND node_key = $1
                     AND ($2::text IS NULL OR type_name = $2)
                   ORDER BY title ASC",
             )

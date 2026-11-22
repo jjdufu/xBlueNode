@@ -1,5 +1,12 @@
 import { useState } from "react";
-import { FolderGit2, GitMerge, Plus, Trash2 } from "lucide-react";
+import {
+  FlaskConical,
+  FolderGit2,
+  GitMerge,
+  Plus,
+  RotateCcw,
+  Trash2,
+} from "lucide-react";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 import type {
@@ -11,6 +18,7 @@ import type {
 import {
   Badge,
   Button,
+  ConfirmDialog,
   Input,
   Modal,
   Select,
@@ -26,6 +34,7 @@ export interface StudioSubgraphBarProps {
   draftTitle: string;
   baseVersion: number;
   publishedVersion: number;
+  runtimeNodeCount?: number;
   isDirty: boolean;
   busyOp?: string | null;
   mainNodeTypes: NodeTypeSpec[];
@@ -34,6 +43,8 @@ export interface StudioSubgraphBarProps {
   onDiscardDraft?: () => void;
   onCreateSubgraph: (req: CreateSubgraphRequest) => Promise<void>;
   onDeleteSubgraph?: (slug: string) => Promise<void>;
+  onDryRunSubgraph?: () => Promise<void>;
+  onResetSubgraphNodes?: () => Promise<void>;
   onOpenMergeDialog: () => void;
 }
 
@@ -47,6 +58,7 @@ export function StudioSubgraphBar({
   draftTitle,
   baseVersion,
   publishedVersion,
+  runtimeNodeCount = 0,
   isDirty,
   busyOp = null,
   mainNodeTypes,
@@ -55,9 +67,11 @@ export function StudioSubgraphBar({
   onDiscardDraft,
   onCreateSubgraph,
   onDeleteSubgraph,
+  onDryRunSubgraph,
+  onResetSubgraphNodes,
   onOpenMergeDialog,
 }: StudioSubgraphBarProps) {
-  const { tx } = useI18n();
+  const { tx, fmtNum } = useI18n();
   const { can } = usePrincipal();
   const canEdit = can("STUDIO_EDIT");
 
@@ -66,10 +80,14 @@ export function StudioSubgraphBar({
   const [displayName, setDisplayName] = useState("");
   const [ownerDept, setOwnerDept] = useState("default");
   const [description, setDescription] = useState("");
+  const [isDevSandbox, setIsDevSandbox] = useState(false);
   const [seedFromMain, setSeedFromMain] = useState(true);
   const [selectedSeedTypes, setSelectedSeedTypes] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const normalizedList: SubgraphInfo[] =
     subgraphs.length > 0
@@ -88,6 +106,9 @@ export function StudioSubgraphBar({
           },
         ];
 
+  const activeSgInfo = normalizedList.find((sg) => sg.slug === activeSubgraph);
+  const isActiveSandbox = Boolean(activeSgInfo?.is_dev_sandbox);
+
   const effectiveDraftLabel = activeDraft
     ? `${activeDraft.title}${isDirty ? tx(" (未保存)", " (Unsaved)") : ""}`
     : isDirty
@@ -99,6 +120,7 @@ export function StudioSubgraphBar({
     setDisplayName("");
     setOwnerDept("default");
     setDescription("");
+    setIsDevSandbox(false);
     setSeedFromMain(mainNodeTypes.length > 0);
     setSelectedSeedTypes(mainNodeTypes.map((nt) => nt.name));
     setFormError(null);
@@ -145,6 +167,7 @@ export function StudioSubgraphBar({
         owner_dept: ownerDept.trim() || "default",
         seed_from_main: seedFromMain,
         seed_node_types: seedFromMain ? selectedSeedTypes : undefined,
+        is_dev_sandbox: isDevSandbox,
       });
       setCreateOpen(false);
     } catch (err) {
@@ -155,6 +178,20 @@ export function StudioSubgraphBar({
       );
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleConfirmReset = async () => {
+    if (!onResetSubgraphNodes) {
+      setResetConfirmOpen(false);
+      return;
+    }
+    setResetting(true);
+    try {
+      await onResetSubgraphNodes();
+      setResetConfirmOpen(false);
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -204,6 +241,17 @@ export function StudioSubgraphBar({
             </div>
           );
         })}
+
+        {isActiveSandbox && (
+          <>
+            <Badge variant="xblue" data-testid="studio-dev-sandbox-badge">
+              {tx("开发沙盒", "Dev Sandbox")}
+            </Badge>
+            <Badge variant="outline" data-testid="studio-sandbox-node-count-badge">
+              {tx("节点", "Nodes")} {fmtNum(runtimeNodeCount, 0)}
+            </Badge>
+          </>
+        )}
 
         <span className="text-border px-0.5">|</span>
 
@@ -264,7 +312,37 @@ export function StudioSubgraphBar({
       </div>
 
       {/* Right: Subgraph Actions */}
-      <div className="flex items-center gap-1.5 shrink-0">
+      <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+        {isActiveSandbox && canEdit && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="studio-sandbox-dry-run-btn"
+              disabled={busyOp !== null}
+              onClick={() => {
+                if (onDryRunSubgraph) void onDryRunSubgraph();
+              }}
+            >
+              <FlaskConical className="h-3.5 w-3.5 text-xblue" />
+              {busyOp === "dry-run-subgraph"
+                ? tx("试灌中…", "Running…")
+                : tx("试灌数据", "Dry Run")}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="studio-sandbox-reset-btn"
+              disabled={busyOp !== null}
+              onClick={() => setResetConfirmOpen(true)}
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              {busyOp === "reset-subgraph"
+                ? tx("清空中…", "Resetting…")
+                : tx("清空节点", "Reset Nodes")}
+            </Button>
+          </>
+        )}
         {canEdit && (
           <Button
             variant="outline"
@@ -287,6 +365,25 @@ export function StudioSubgraphBar({
           {tx("合并至主图", "Merge to Main")}
         </Button>
       </div>
+
+      {/* Confirm Reset Sandbox Runtime Nodes Dialog */}
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        onClose={() => {
+          if (!resetting) setResetConfirmOpen(false);
+        }}
+        onConfirm={() => void handleConfirmReset()}
+        title={tx("清空节点", "Reset Nodes")}
+        description={tx(
+          "将清空当前开发沙盒子图内的全部运行态节点、关系与时序点，模型草案与主图数据不受影响。",
+          "All runtime nodes, links, and time-series points in this dev sandbox subgraph will be deleted. Schema drafts and main graph data remain intact."
+        )}
+        confirmLabel={
+          resetting ? tx("清空中…", "Resetting…") : tx("清空", "Reset")
+        }
+        danger
+        loading={resetting}
+      />
 
       {/* Create Department Subgraph Modal */}
       <Modal
@@ -372,6 +469,18 @@ export function StudioSubgraphBar({
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               className="h-8 text-xs"
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/40 p-2.5">
+            <span className="font-medium">
+              {tx("开发沙盒", "Dev Sandbox")}
+            </span>
+            <Switch
+              data-testid="new-subgraph-sandbox-switch"
+              checked={isDevSandbox}
+              onCheckedChange={setIsDevSandbox}
+              aria-label={tx("开发沙盒", "Dev Sandbox")}
             />
           </div>
 
