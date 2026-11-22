@@ -113,6 +113,49 @@ export function XBlueViewPage() {
     useState<DashboardRecord | null>(null);
   const [deletingDashboard, setDeletingDashboard] = useState(false);
 
+  const wizardParam = searchParams.get("wizard")?.trim() ?? "";
+  const wizardSubgraph = useMemo(() => {
+    const raw = searchParams.get("subgraph")?.trim() ?? "";
+    return raw.length > 0 ? raw : null;
+  }, [searchParams]);
+  const wizardNodeTypesRaw = searchParams.get("node_types")?.trim() ?? "";
+  const wizardSeedNodeTypes = useMemo(
+    () =>
+      wizardNodeTypesRaw
+        ? wizardNodeTypesRaw
+            .split(",")
+            .map((s) => s.trim())
+            .filter(Boolean)
+        : [],
+    [wizardNodeTypesRaw]
+  );
+
+  useEffect(() => {
+    if (!slug && wizardParam === "ai") {
+      setGalleryTab("dashboards");
+      setAiWizardOpen(true);
+    }
+  }, [slug, wizardParam]);
+
+  const clearWizardSearchParams = useCallback(() => {
+    if (
+      searchParams.has("wizard") ||
+      searchParams.has("subgraph") ||
+      searchParams.has("node_types")
+    ) {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("wizard");
+          next.delete("subgraph");
+          next.delete("node_types");
+          return next;
+        },
+        { replace: true }
+      );
+    }
+  }, [searchParams, setSearchParams]);
+
   const loadDashboards = useCallback(async () => {
     setGalleryLoading(true);
     setGalleryError(null);
@@ -917,9 +960,15 @@ export function XBlueViewPage() {
 
         <AiDashboardWizard
           open={aiWizardOpen}
-          onClose={() => setAiWizardOpen(false)}
+          initialSubgraphSlug={wizardSubgraph}
+          initialSeedNodeTypes={wizardSeedNodeTypes}
+          onClose={() => {
+            setAiWizardOpen(false);
+            clearWizardSearchParams();
+          }}
           onGenerated={(created) => {
             setAiWizardOpen(false);
+            clearWizardSearchParams();
             void navigate(`/view/${created.slug}`);
           }}
         />

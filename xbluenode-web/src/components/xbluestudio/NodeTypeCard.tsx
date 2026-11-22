@@ -20,6 +20,7 @@ import type { SemanticLayerTier } from "@/lib/api/enums";
 import {
   computeNodeBadgeCounts,
   hasProposedElements,
+  type NodeConsumptionCounts,
   type NodeTypeSpec,
 } from "@/lib/api/xblue";
 import {
@@ -37,8 +38,10 @@ export interface StudioNodeCardData extends Record<string, unknown> {
   selected: boolean;
   issueCount: number;
   hasError: boolean;
+  consumption?: NodeConsumptionCounts | null;
   onConfirmNode?: (nodeName: string) => void;
   onDoubleClickNode?: (nodeName: string) => void;
+  onOpenAppPackaging?: (nodeName: string) => void;
 }
 
 export type StudioFlowNode = Node<StudioNodeCardData, "studioNode">;
@@ -101,12 +104,18 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
     selected,
     issueCount,
     hasError,
+    consumption,
     onConfirmNode,
     onDoubleClickNode,
+    onOpenAppPackaging,
   } = data;
   const counts = computeNodeBadgeCounts(spec);
   const isProposed = hasProposedElements(spec);
   const accentColor = spec.color || "#2563eb";
+  const totalDownstream =
+    (consumption?.endpoint_count ?? 0) +
+    (consumption?.agent_count ?? 0) +
+    (consumption?.dashboard_count ?? 0);
 
   return (
     <div
@@ -259,6 +268,26 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
             )}
           </div>
         )}
+
+        {totalDownstream > 0 && (
+          <div className="border-t border-border pt-1.5 flex items-center">
+            <button
+              type="button"
+              data-testid={`node-consumption-badge-${spec.name}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenAppPackaging?.(spec.name);
+              }}
+              onDoubleClick={(e) => e.stopPropagation()}
+              className="nodrag nopan inline-flex items-center gap-1 rounded-full bg-muted/80 hover:bg-xblue-soft hover:text-xblue px-2 py-0.5 text-[10px] font-mono-tech text-muted-foreground transition-colors cursor-pointer"
+            >
+              {tx(
+                `${consumption?.agent_count ?? 0} 智能体 · ${consumption?.dashboard_count ?? 0} 看板`,
+                `${consumption?.agent_count ?? 0} Agent · ${consumption?.dashboard_count ?? 0} View`
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       <Handle
@@ -272,19 +301,23 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
 
 export interface NodeTypeCardProps {
   nodeType: NodeTypeSpec;
+  consumption?: NodeConsumptionCounts | null;
   onChange: (updated: NodeTypeSpec) => void;
   onDelete: () => void;
   onConfirmNode?: (nodeName: string) => void;
   onOpenLineage?: (nodeName: string) => void;
+  onOpenAppPackaging?: (nodeName: string) => void;
 }
 
 /** Sidebar basic metadata inspector for a selected `NodeTypeSpec`. */
 export function NodeTypeCard({
   nodeType,
+  consumption,
   onChange,
   onDelete,
   onConfirmNode,
   onOpenLineage,
+  onOpenAppPackaging,
 }: NodeTypeCardProps) {
   const { tx, tEnum } = useI18n();
   const { can } = usePrincipal();
@@ -293,6 +326,10 @@ export function NodeTypeCard({
 
   const counts = computeNodeBadgeCounts(nodeType);
   const isProposed = hasProposedElements(nodeType);
+  const totalDownstream =
+    (consumption?.endpoint_count ?? 0) +
+    (consumption?.agent_count ?? 0) +
+    (consumption?.dashboard_count ?? 0);
 
   const attrNames = nodeType.properties
     .filter((p) => p.kind === "ATTRIBUTE" && p.name.trim().length > 0)
@@ -566,6 +603,22 @@ export function NodeTypeCard({
           aria-label={tx("同步至知识超图", "Sync to Knowledge Graph")}
         />
       </div>
+
+      {totalDownstream > 0 && (
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <button
+            type="button"
+            data-testid="inspector-node-consumption-badge"
+            onClick={() => onOpenAppPackaging?.(nodeType.name)}
+            className="inline-flex items-center gap-1 rounded-full bg-muted/80 hover:bg-xblue-soft hover:text-xblue px-2.5 py-0.5 text-[11px] font-mono-tech text-muted-foreground transition-colors cursor-pointer"
+          >
+            {tx(
+              `${consumption?.agent_count ?? 0} 智能体 · ${consumption?.dashboard_count ?? 0} 看板`,
+              `${consumption?.agent_count ?? 0} Agent · ${consumption?.dashboard_count ?? 0} View`
+            )}
+          </button>
+        </div>
+      )}
 
       {canEdit && (
         <div className="flex items-center justify-end gap-1.5 pt-2 border-t border-border">

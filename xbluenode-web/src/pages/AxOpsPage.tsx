@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
 import {
   Activity,
   Archive,
@@ -23,7 +24,7 @@ import { JobsPanel } from "@/components/axops/JobsPanel";
 import {
   canAccessAxOpsTab,
   hasOpsAdminAccess,
-  resolveDefaultAxOpsTab,
+  resolveAxOpsInitialTab,
 } from "@/components/axops/logic";
 import { RetentionPanel } from "@/components/axops/RetentionPanel";
 import { TemplateGallery } from "@/components/axops/TemplateGallery";
@@ -80,6 +81,8 @@ const AXOPS_TABS: readonly AxOpsTabSpec[] = [
 
 export function AxOpsPage() {
   const { isZh, tx } = useI18n();
+  const [searchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab");
   const [me, setMe] = useState<MeResponse | null>(() => getCachedMe());
   const [meResolved, setMeResolved] = useState<boolean>(
     () => getCachedMe() !== null
@@ -87,12 +90,17 @@ export function AxOpsPage() {
   const [activeTab, setActiveTab] = useState<AxOpsTabKey>(() => {
     const cached = getCachedMe();
     if (cached && Array.isArray(cached.permissions)) {
-      return resolveDefaultAxOpsTab(
+      return resolveAxOpsInitialTab(
+        requestedTab,
         cached.permissions as readonly string[],
         cached.roles ?? []
       );
     }
-    return "health";
+    return resolveAxOpsInitialTab(
+      requestedTab,
+      ["OPS_ADMIN", "DATA_READ", "FLOW_RUN"],
+      ["ADMIN"]
+    );
   });
 
   const [healthReport, setHealthReport] = useState<DeepHealthReport | null>(
@@ -131,6 +139,18 @@ export function AxOpsPage() {
   );
 
   useEffect(() => {
+    if (!requestedTab) return;
+    const resolved = resolveAxOpsInitialTab(
+      requestedTab,
+      effectivePerms,
+      effectiveRoles
+    );
+    if (resolved === requestedTab) {
+      setActiveTab(resolved);
+    }
+  }, [effectivePerms, effectiveRoles, requestedTab]);
+
+  useEffect(() => {
     let cancelled = false;
     void fetchMe()
       .then((profile) => {
@@ -140,8 +160,18 @@ export function AxOpsPage() {
           setActiveTab((prev) => {
             const perms = profile.permissions as readonly string[];
             const roles = profile.roles ?? [];
+            if (requestedTab) {
+              const fromQuery = resolveAxOpsInitialTab(
+                requestedTab,
+                perms,
+                roles
+              );
+              if (fromQuery === requestedTab) {
+                return fromQuery;
+              }
+            }
             if (!canAccessAxOpsTab(prev, perms, roles)) {
-              return resolveDefaultAxOpsTab(perms, roles);
+              return resolveAxOpsInitialTab(null, perms, roles);
             }
             return prev;
           });
@@ -156,7 +186,7 @@ export function AxOpsPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [requestedTab]);
 
   const loadHealthOverview = useCallback(async () => {
     if (!hasOpsAdmin) return;

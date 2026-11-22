@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router";
+import { Link, useNavigate } from "react-router";
 import ReactMarkdown from "react-markdown";
 import {
   BookOpen,
   CheckCircle2,
+  CopyPlus,
   ExternalLink,
+  Eye,
   Layers,
   Package,
   Play,
@@ -22,7 +24,9 @@ import {
   type TemplatePackDetail,
   type TemplateUninstallResponse,
 } from "@/lib/api/axops";
+import { xblueApi } from "@/lib/api/xblue";
 import { xblueviewApi } from "@/lib/api/xblueview";
+import { TemplateHubModal } from "@/components/dashboard/TemplateHubModal";
 import {
   Badge,
   Button,
@@ -45,9 +49,11 @@ export interface TemplateGalleryProps {
 }
 
 export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
+  const navigate = useNavigate();
   const { isZh, tx, fmtNum, fmtTime } = useI18n();
   const { can } = usePrincipal();
   const canWrite = canManageOps && can("OPS_ADMIN");
+  const canTrialClone = can("STUDIO_EDIT");
 
   const [templates, setTemplates] = useState<TemplateManifest[]>([]);
   const [installs, setInstalls] = useState<TemplateInstallRecord[]>([]);
@@ -72,11 +78,13 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
   const [lastUninstallSummary, setLastUninstallSummary] =
     useState<TemplateUninstallResponse | null>(null);
 
-  // README preview modal
+  // README & Topology preview modals + Trial clone state
   const [readmeDetail, setReadmeDetail] = useState<TemplatePackDetail | null>(
     null
   );
   const [readmeLoadingId, setReadmeLoadingId] = useState<string | null>(null);
+  const [previewPackId, setPreviewPackId] = useState<string | null>(null);
+  const [cloningPackId, setCloningPackId] = useState<string | null>(null);
 
   // Demo scenario loading
   const [loadingScenario, setLoadingScenario] = useState<DemoScenario | null>(
@@ -95,7 +103,11 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
     try {
       const [tplRes, instRes, dashRes] = await Promise.all([
         axopsApi.listTemplates(),
-        axopsApi.listTemplateInstalls(),
+        canWrite
+          ? axopsApi
+              .listTemplateInstalls()
+              .catch(() => ({ items: [] as TemplateInstallRecord[] }))
+          : Promise.resolve({ items: [] as TemplateInstallRecord[] }),
         xblueviewApi.listDashboards({ limit: 100 }).catch(() => ({
           items: [],
           next_cursor: null,
@@ -117,7 +129,7 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
     } finally {
       setLoading(false);
     }
-  }, [tx]);
+  }, [canWrite, tx]);
 
   useEffect(() => {
     void loadAll();
@@ -137,6 +149,27 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
       );
     } finally {
       setReadmeLoadingId(null);
+    }
+  };
+
+  const handleTrialClone = async (packId: string) => {
+    if (!canTrialClone || cloningPackId !== null) return;
+    setCloningPackId(packId);
+    setErrorMsg(null);
+    try {
+      const res = await xblueApi.cloneSubgraphFromTemplate({ pack_id: packId });
+      const targetUrl = res.draft_id
+        ? `/studio?subgraph=${encodeURIComponent(res.subgraph_slug)}&draft=${encodeURIComponent(res.draft_id)}`
+        : `/studio?subgraph=${encodeURIComponent(res.subgraph_slug)}`;
+      void navigate(targetUrl);
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("试用克隆失败", "Trial clone failed")
+      );
+    } finally {
+      setCloningPackId(null);
     }
   };
 
@@ -493,36 +526,67 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
                     </div>
                   )}
 
-                  <div className="flex items-center justify-between gap-2">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      data-testid={`open-template-readme-btn-${pack.id}`}
-                      disabled={readmeLoadingId === pack.id}
-                      onClick={() => void handleOpenReadme(pack.id)}
-                    >
-                      <BookOpen className="h-3.5 w-3.5 text-xblue" />
-                      {readmeLoadingId === pack.id
-                        ? tx("读取中…", "Loading…")
-                        : tx("说明文档", "README")}
-                    </Button>
-
-                    {canWrite && (
+                  <div className="flex flex-wrap items-center justify-between gap-1.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
                       <Button
                         type="button"
-                        variant="primary"
+                        variant="outline"
                         size="sm"
-                        data-testid={`plan-template-btn-${pack.id}`}
-                        disabled={isPlanning}
-                        onClick={() => void handlePlanInstall(pack.id)}
+                        data-testid={`preview-template-btn-${pack.id}`}
+                        onClick={() => setPreviewPackId(pack.id)}
                       >
-                        <Layers className="h-3.5 w-3.5" />
-                        {isPlanning
-                          ? tx("规划中…", "Planning…")
-                          : tx("规划安装", "Plan Install")}
+                        <Eye className="h-3.5 w-3.5 text-xblue" />
+                        {tx("预览模板", "Preview")}
                       </Button>
-                    )}
+
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        data-testid={`open-template-readme-btn-${pack.id}`}
+                        disabled={readmeLoadingId === pack.id}
+                        onClick={() => void handleOpenReadme(pack.id)}
+                      >
+                        <BookOpen className="h-3.5 w-3.5 text-xblue" />
+                        {readmeLoadingId === pack.id
+                          ? tx("读取中…", "Loading…")
+                          : tx("说明文档", "README")}
+                      </Button>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {canTrialClone && (
+                        <Button
+                          type="button"
+                          variant={canWrite ? "outline" : "primary"}
+                          size="sm"
+                          data-testid={`trial-clone-template-btn-${pack.id}`}
+                          disabled={cloningPackId !== null}
+                          onClick={() => void handleTrialClone(pack.id)}
+                        >
+                          <CopyPlus className="h-3.5 w-3.5" />
+                          {cloningPackId === pack.id
+                            ? tx("克隆中…", "Cloning…")
+                            : tx("试用克隆", "Try Clone")}
+                        </Button>
+                      )}
+
+                      {canWrite && (
+                        <Button
+                          type="button"
+                          variant="primary"
+                          size="sm"
+                          data-testid={`plan-template-btn-${pack.id}`}
+                          disabled={isPlanning}
+                          onClick={() => void handlePlanInstall(pack.id)}
+                        >
+                          <Layers className="h-3.5 w-3.5" />
+                          {isPlanning
+                            ? tx("规划中…", "Planning…")
+                            : tx("规划安装", "Plan Install")}
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </div>
               </Card>
@@ -810,6 +874,12 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
           </div>
         )}
       </Modal>
+
+      <TemplateHubModal
+        open={Boolean(previewPackId)}
+        initialPackId={previewPackId}
+        onClose={() => setPreviewPackId(null)}
+      />
     </div>
   );
 }

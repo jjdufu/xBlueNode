@@ -25,6 +25,7 @@ import { useTheme } from "@/lib/theme";
 import type { Cardinality } from "@/lib/api/enums";
 import type {
   EdgeTypeSpec,
+  NodeConsumptionCounts,
   NodeTypeSpec,
   ValidationIssue,
 } from "@/lib/api/xblue";
@@ -158,6 +159,7 @@ export interface StudioCanvasProps {
   nodeTypes: NodeTypeSpec[];
   edgeTypes: EdgeTypeSpec[];
   issues: ValidationIssue[];
+  consumptionByNodeType?: Record<string, NodeConsumptionCounts>;
   selectedNodeName: string | null;
   selectedEdgeIndex: number | null;
   onSelectNode: (name: string | null) => void;
@@ -170,12 +172,14 @@ export interface StudioCanvasProps {
   onCreateEdgeType: (edge: EdgeTypeSpec) => void;
   onConfirmNode?: (nodeName: string) => void;
   onOpenLineage?: (nodeName: string) => void;
+  onOpenAppPackaging?: (nodeName: string) => void;
 }
 
 export function StudioCanvas({
   nodeTypes,
   edgeTypes,
   issues,
+  consumptionByNodeType,
   selectedNodeName,
   selectedEdgeIndex,
   onSelectNode,
@@ -186,6 +190,7 @@ export function StudioCanvas({
   onCreateEdgeType,
   onConfirmNode,
   onOpenLineage,
+  onOpenAppPackaging,
 }: StudioCanvasProps) {
   const { tx } = useI18n();
   const { isDark } = useTheme();
@@ -260,8 +265,10 @@ export function StudioCanvas({
           selected: selectedNodeName === nt.name,
           issueCount: st.count,
           hasError: st.hasError,
+          consumption: consumptionByNodeType?.[nt.name] ?? null,
           onConfirmNode,
           onDoubleClickNode: onOpenLineage,
+          onOpenAppPackaging,
         },
       };
     });
@@ -269,8 +276,10 @@ export function StudioCanvas({
     nodeTypes,
     selectedNodeName,
     issueStatsByNode,
+    consumptionByNodeType,
     onConfirmNode,
     onOpenLineage,
+    onOpenAppPackaging,
   ]);
 
   const [liveNodes, setLiveNodes] = useState<StudioFlowNode[]>(flowNodes);

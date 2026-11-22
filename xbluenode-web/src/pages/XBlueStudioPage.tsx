@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
+  Blocks,
   BookOpen,
   BookOpenCheck,
   CheckCheck,
@@ -43,6 +44,7 @@ import {
   type SchemaDoc,
   type SchemaDraft,
   type SchemaVersionSummary,
+  type SubgraphConsumptionResponse,
   type SubgraphInfo,
   type TypeMergeResolution,
   type ValidationIssue,
@@ -76,6 +78,7 @@ import {
 } from "@/components/xbluestudio/NodeTypeCard";
 import { PropertyTable } from "@/components/xbluestudio/PropertyTable";
 import { RuleEditor } from "@/components/xbluestudio/RuleEditor";
+import { StudioAppDrawer } from "@/components/xbluestudio/StudioAppDrawer";
 import { StudioCanvas } from "@/components/xbluestudio/StudioCanvas";
 import { StudioCopilotPanel } from "@/components/xbluestudio/StudioCopilotPanel";
 import { StudioSubgraphBar } from "@/components/xbluestudio/StudioSubgraphBar";
@@ -149,6 +152,12 @@ export function XBlueStudioPage() {
   const [publishModalOpen, setPublishModalOpen] = useState<boolean>(false);
   const [versionPanelOpen, setVersionPanelOpen] = useState<boolean>(false);
   const [domainDrawerOpen, setDomainDrawerOpen] = useState<boolean>(false);
+  const [appDrawerOpen, setAppDrawerOpen] = useState<boolean>(false);
+  const [appDrawerFilterNode, setAppDrawerFilterNode] = useState<string | null>(
+    null
+  );
+  const [consumption, setConsumption] =
+    useState<SubgraphConsumptionResponse | null>(null);
   const [aiWizardOpen, setAiWizardOpen] = useState<boolean>(false);
   const [knowledgeCandidatesOpen, setKnowledgeCandidatesOpen] =
     useState<boolean>(false);
@@ -172,6 +181,7 @@ export function XBlueStudioPage() {
         mapList,
         nodeSnap,
         mainSchemaOpt,
+        consumptionRes,
       ] = await Promise.all([
         xblueApi.listSubgraphs().catch(() => [] as SubgraphInfo[]),
         xblueApi.getPublishedSchema(slug).catch(() => ({
@@ -195,12 +205,14 @@ export function XBlueStudioPage() {
         slug === "main"
           ? Promise.resolve(null)
           : xblueApi.getPublishedSchema("main").catch(() => null),
+        xblueApi.getSubgraphConsumption(slug).catch(() => null),
       ]);
 
       setSubgraphs(sgList);
       setVersions(verList);
       setPersistedMappings(mapList);
       setPublishedVersion(pubSchema.version);
+      setConsumption(consumptionRes);
 
       const resolvedNodes = Array.isArray(nodeSnap?.nodes)
         ? nodeSnap.nodes
@@ -1171,6 +1183,24 @@ export function XBlueStudioPage() {
 
   const activeSubgraphInfo = subgraphs.find((s) => s.slug === activeSubgraph);
 
+  const refreshConsumption = useCallback(async () => {
+    const latest = await xblueApi
+      .getSubgraphConsumption(activeSubgraph)
+      .catch(() => null);
+    setConsumption(latest);
+  }, [activeSubgraph]);
+
+  const consumptionByNodeType = useMemo(() => {
+    if (
+      consumption &&
+      consumption.by_node_type &&
+      typeof consumption.by_node_type === "object"
+    ) {
+      return consumption.by_node_type;
+    }
+    return {};
+  }, [consumption]);
+
   return (
     <div className="flex flex-1 min-h-0 flex-col gap-2 overflow-hidden">
       {/* Unified Header — h1 preserves smoke.spec.ts zh-CN assertion */}
@@ -1191,6 +1221,15 @@ export function XBlueStudioPage() {
               label={tx("关系", "Relations")}
               value={workingDoc.edge_types.length}
             />
+            {activeSubgraphInfo?.is_dev_sandbox &&
+              activeSubgraphInfo?.source_template_id && (
+                <Badge variant="xblue" data-testid="studio-trial-sandbox-badge">
+                  {tx(
+                    `演练沙盒 · ${activeSubgraphInfo.source_template_id}`,
+                    `Trial Sandbox · ${activeSubgraphInfo.source_template_id}`
+                  )}
+                </Badge>
+              )}
           </div>
         }
         actions={
@@ -1273,6 +1312,18 @@ export function XBlueStudioPage() {
             >
               <Code2 className="h-3.5 w-3.5 text-xblue" />
               {tx("领域接口", "Domain API")}
+            </Button>
+
+            <Button
+              variant="outline"
+              data-testid="studio-package-app-btn"
+              onClick={() => {
+                setAppDrawerFilterNode(null);
+                setAppDrawerOpen(true);
+              }}
+            >
+              <Blocks className="h-3.5 w-3.5 text-xblue" />
+              {tx("应用包装", "Package App")}
             </Button>
 
             {canEdit && (
@@ -1451,6 +1502,7 @@ export function XBlueStudioPage() {
               nodeTypes={workingDoc.node_types}
               edgeTypes={workingDoc.edge_types}
               issues={issues}
+              consumptionByNodeType={consumptionByNodeType}
               selectedNodeName={
                 inspectorTab === "edge" ? null : (selectedNode?.name ?? null)
               }
@@ -1495,6 +1547,10 @@ export function XBlueStudioPage() {
               onOpenLineage={(name) => {
                 setSelectedNodeName(name);
                 setLineageNodeName(name);
+              }}
+              onOpenAppPackaging={(name) => {
+                setAppDrawerFilterNode(name);
+                setAppDrawerOpen(true);
               }}
             />
           )}
@@ -1569,12 +1625,17 @@ export function XBlueStudioPage() {
               (selectedNode ? (
                 <NodeTypeCard
                   nodeType={selectedNode}
+                  consumption={consumptionByNodeType[selectedNode.name] ?? null}
                   onChange={handleUpdateSelectedNode}
                   onDelete={handleDeleteSelectedNode}
                   onConfirmNode={(name) => void handleConfirmNodeProposal(name)}
                   onOpenLineage={(name) => {
                     setSelectedNodeName(name);
                     setLineageNodeName(name);
+                  }}
+                  onOpenAppPackaging={(name) => {
+                    setAppDrawerFilterNode(name);
+                    setAppDrawerOpen(true);
                   }}
                 />
               ) : (
@@ -2057,6 +2118,18 @@ export function XBlueStudioPage() {
         fallbackMainDoc={mainDoc}
         mainVersion={mainVersion}
         onClose={() => setDomainDrawerOpen(false)}
+      />
+
+      <StudioAppDrawer
+        open={appDrawerOpen}
+        subgraphSlug={activeSubgraph}
+        isDevSandbox={Boolean(activeSubgraphInfo?.is_dev_sandbox)}
+        nodeTypes={workingDoc.node_types}
+        consumption={consumption}
+        filterNodeType={appDrawerFilterNode}
+        onChangeFilterNodeType={setAppDrawerFilterNode}
+        onRefreshConsumption={refreshConsumption}
+        onClose={() => setAppDrawerOpen(false)}
       />
 
       <AiDraftWizard
