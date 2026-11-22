@@ -1,5 +1,5 @@
 # Integration test auxiliary services for Step 02 connectors.
-# Reference: docs/blueprint/03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md §02.1.3
+# Reference: plans/completed/v1-foundation-step00-14/03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md §02.1.3
 name: xbluenode-test
 services:
   redpanda:

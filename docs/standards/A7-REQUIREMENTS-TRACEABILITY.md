@@ -10,20 +10,20 @@
 
 | # | 能力 | Step | 实现 | 验收 |
 | :--- | :--- | :--- | :--- | :--- |
-| C01 | 业务对象一体管理（对象、关系、属性、指标统一模型） | 03 / 05 | [04](./04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md) §03.2、[06](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §05.2 | step03 “link-unique”；step05 “publish-1” |
-| C02 | 对象上的计算规则与派生属性 | 06 | [06](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §06.1、§06.3 | step06 “derived”、“expr-chain-cmp” |
+| C01 | 业务对象一体管理（对象、关系、属性、指标统一模型） | 03 / 05 | [04](../../plans/completed/v1-foundation-step00-14/04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md) §03.2、[06](../../plans/completed/v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §05.2 | step03 “link-unique”；step05 “publish-1” |
+| C02 | 对象上的计算规则与派生属性 | 06 | [06](../../plans/completed/v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §06.1、§06.3 | step06 “derived”、“expr-chain-cmp” |
 | C03 | 写入即自动汇总（增量、并发安全） | 06 | §06.3 | step06 “agg-reconcile”、“agg-incremental” |
-| C04 | 时间窗口聚合、历史明细与当前值并存 | 03 | [04](./04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md) §03.3 | step03 “rollup-day”、“window-sliding”、“metrics-merge” |
-| C05 | 数据保留策略 | 00 / 14 | [01](./01-STEP00-FOUNDATION-AND-GUARD-SKELETON.md) §00.6.6、[12](./12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.4 | step14 “retention-jobs”、“audit-anchor” |
+| C04 | 时间窗口聚合、历史明细与当前值并存 | 03 | [04](../../plans/completed/v1-foundation-step00-14/04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md) §03.3 | step03 “rollup-day”、“window-sliding”、“metrics-merge” |
+| C05 | 数据保留策略 | 00 / 14 | [01](../../plans/completed/v1-foundation-step00-14/01-STEP00-FOUNDATION-AND-GUARD-SKELETON.md) §00.6.6、[12](../../plans/completed/v1-foundation-step00-14/12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.4 | step14 “retention-jobs”、“audit-anchor” |
 | C06 | 对象级向量相似检索 | 03 | §03.4 | step03 “node-search” |
-| C07 | 混合检索知识库（向量 + 图谱 + 全文，多路召回） | 仓库已有 / 04 | `routes/documents.rs`、[05](./05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) §04.8 | step00 冒烟；step04 “ask-data” |
+| C07 | 混合检索知识库（向量 + 图谱 + 全文，多路召回） | 仓库已有 / 04 | `routes/documents.rs`、[05](../../plans/completed/v1-foundation-step00-14/05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) §04.8 | step00 冒烟；step04 “ask-data” |
 | C08 | 关联查询与路径分析 | 03 | §03.6 | step03 “neighbors”、“path” |
 | C09 | 图算法（社区、中心性） | 03 | §03.6 | step03 “pagerank” |
-| C10 | 空间地理数据与地图态势 | 03 / 11 | §03.2（`geo_lng/geo_lat`）、[10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.4 | step03 “geo-bbox”；`e2e/xblueview.spec.ts` 地图组件渲染 |
-| C11 | 行级与子图级可见范围 | 13 | [11](./11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.6 | step13 “row-policy”、“row-policy-filter” |
+| C10 | 空间地理数据与地图态势 | 03 / 11 | §03.2（`geo_lng/geo_lat`）、[10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.4 | step03 “geo-bbox”；`e2e/xblueview.spec.ts` 地图组件渲染 |
+| C11 | 行级与子图级可见范围 | 13 | [11](../../plans/completed/v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.6 | step13 “row-policy”、“row-policy-filter” |
 | C12 | 敏感信息脱敏后协作 | 13 | §13.7、§13.8 | step13 “mask-phone”、“east-no-reveal”、“pii-egress”；step04 “pii-mask” |
 | C13 | 跨部门共享访问 | 13 | §13.9.1 | step13 “cedar-deny”、“grant-active” |
-| C14 | 第三方库全量 + 增量同步（含 Schema 演进） | 02 | [03](./03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md) §02.4、§02.9 | step02 “orders-rows”、“single-flight”；`tests/test_connectors_sql.py` |
+| C14 | 第三方库全量 + 增量同步（含 Schema 演进） | 02 | [03](../../plans/completed/v1-foundation-step00-14/03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md) §02.4、§02.9 | step02 “orders-rows”、“single-flight”；`tests/test_connectors_sql.py` |
 | C15 | 流式数据与消息队列接入 | 02 | §02.8 | `tests/test_streams.py`（去重与位点） |
 | C16 | 私有化部署、轻量起步、规模扩展 | 00 / 14 | §00.9、§14.2 | step14 “health-deep”；`all.sh` |
 | C17 | 备份恢复 | 14 | §14.3 | `restore-drill.sh` 输出 `restore-drill: OK` |
@@ -42,19 +42,19 @@
 
 | # | 能力 | Step | 实现 | 验收 |
 | :--- | :--- | :--- | :--- | :--- |
-| C22 | 多源接入（关系库、时序、数仓、文件、接口、消息） | 01 / 02 | [02](./02-STEP01-AXPARSER-FILE-PARSING.md)、[03](./03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md)、[A3](./A3-CONNECTOR-SPEC-CARDS.md) | 第 2 节逐类验收 |
+| C22 | 多源接入（关系库、时序、数仓、文件、接口、消息） | 01 / 02 | [02](../../plans/completed/v1-foundation-step00-14/02-STEP01-AXPARSER-FILE-PARSING.md)、[03](../../plans/completed/v1-foundation-step00-14/03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md)、[A3](../../plans/completed/v1-foundation-step00-14/A3-CONNECTOR-SPEC-CARDS.md) | 第 2 节逐类验收 |
 | C23 | 数据资产目录（字段注释全文检索、术语、血缘） | 02 | §02.9.5 | step02 “catalog” |
-| C24 | AI 生成数据处理逻辑并试运行 | 04 | [05](./05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) §04.7 | `tests/transform.rs`（草稿 → 预览 → 应用生成 `DERIVED_VIEW`） |
+| C24 | AI 生成数据处理逻辑并试运行 | 04 | [05](../../plans/completed/v1-foundation-step00-14/05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) §04.7 | `tests/transform.rs`（草稿 → 预览 → 应用生成 `DERIVED_VIEW`） |
 | C25 | 子图建模写入对象库（映射） | 06 | §06.2 | step06 “mapped-orders”、“mapped-links”、“incremental-mode” |
-| C26 | 可视化规则与流程编排（DAG） | 07 | [07](./07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md) §07.2～§07.4 | step07 “cycle”、“steps-all” |
+| C26 | 可视化规则与流程编排（DAG） | 07 | [07](../../plans/completed/v1-foundation-step00-14/07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md) §07.2～§07.4 | step07 “cycle”、“steps-all” |
 | C27 | 条件满足自动动作（写入即判定） | 08 | §08.2～§08.3 | step08 “alert-open”、“flow-started” |
 | C28 | 定时任务 | 02 / 07 | §02.9.6、§07.5 | `axpoint-flow/tests/triggers.rs`（Cron 下次触发时间与咨询锁单例） |
-| C29 | 测试环境与正式环境分开发布 | 07 / 09 | §07.6、[08](./08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) §09.3 | step07 “test-dry-run”；step09 “prod-pinned” |
+| C29 | 测试环境与正式环境分开发布 | 07 / 09 | §07.6、[08](../../plans/completed/v1-foundation-step00-14/08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) §09.3 | step07 “test-dry-run”；step09 “prod-pinned” |
 | C30 | 查询即应用（页面、接口、Skill、MCP 共用） | 09 | §09.3～§09.4 | step09 “pub-ok”、“openapi”、“mcp-call” |
-| C31 | 交付过程可追溯 | 14 | [12](./12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.7 | step14 “work-item” |
+| C31 | 交付过程可追溯 | 14 | [12](../../plans/completed/v1-foundation-step00-14/12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.7 | step14 “work-item” |
 | C32 | 接入主流大模型（多厂商、按任务路由、回退、计量） | 09 | §09.2 | `axpoint-llm/tests/router.rs`（回退与用量记录） |
 | C33 | 外部 MCP 与插件工具接入 | 09 | §09.4 | `axpoint-agent/tests/mcp_client.rs`（同步外部工具清单并调用） |
-| C57 | 业务对象自动生成领域 REST / 动态 GraphQL 接口与 MCP 暴露 | 05 / 09 | §05.6、[08](./08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) §09.3～§09.4 | step05 “domain-graphql”、“domain-objects”；step09 “published-object”、“mcp-tools” |
+| C57 | 业务对象自动生成领域 REST / 动态 GraphQL 接口与 MCP 暴露 | 05 / 09 | §05.6、[08](../../plans/completed/v1-foundation-step00-14/08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) §09.3～§09.4 | step05 “domain-graphql”、“domain-objects”；step09 “published-object”、“mcp-tools” |
 
 ### D 智能
 
@@ -70,7 +70,7 @@
 
 | # | 能力 | Step | 实现 | 验收 |
 | :--- | :--- | :--- | :--- | :--- |
-| C39 | 按业务范围克隆隔离沙盘（写时复制） | 10 | [09](./09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) §10.2 | step10 “prod-untouched” |
+| C39 | 按业务范围克隆隔离沙盘（写时复制） | 10 | [09](../../plans/completed/v1-foundation-step00-14/09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) §10.2 | step10 “prod-untouched” |
 | C40 | 施加行动观察层层传导 | 10 | §10.3～§10.4 | step10 “propagated”、“shorthand-equal”、“missing-metric”；`tests/sim.rs` |
 | C41 | 多方案并排对比 | 10 | §10.7.2 | step10 “compare” |
 | C42 | 检查点、过程回看、推演问数 | 10 | §10.5、§10.7.3 | step10 “checkpoints”；`sim_ask_eval` |
@@ -81,7 +81,7 @@
 
 | # | 能力 | Step | 实现 | 验收 |
 | :--- | :--- | :--- | :--- | :--- |
-| C45 | 按业务对象的孪生视图 | 11 | [10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.3（`NodeDrawer`） | `e2e/xblueview.spec.ts` |
+| C45 | 按业务对象的孪生视图 | 11 | [10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.3（`NodeDrawer`） | `e2e/xblueview.spec.ts` |
 | C46 | 拖拽驾驶舱（指标、趋势、告警、图表、场景视图） | 11 | §11.2、§11.6 | step11 “kpi”；`e2e/xblueview.spec.ts` 8 个组件渲染 |
 | C47 | 组件绑定查询，数据变化即时反映 | 11 | §11.5 | step11 “sse-invalidate”、“kpi-refreshed” |
 | C48 | 运行页问数与下钻 | 11 | §11.3、§11.6 | step11 “drill”；`e2e/xblueview.spec.ts` 面包屑 |
@@ -106,7 +106,7 @@
 
 | # | 类别 | 覆盖格式 / 产品 | Step | 实现 | 验收 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| D01 | CSV / TSV | `.csv`、`.tsv`，UTF-8 / GB18030，坏行隔离 | 01 | [02](./02-STEP01-AXPARSER-FILE-PARSING.md) §01.3 | step01 “csv-pii”、“staging-under-root”；`test_csv.py` |
+| D01 | CSV / TSV | `.csv`、`.tsv`，UTF-8 / GB18030，坏行隔离 | 01 | [02](../../plans/completed/v1-foundation-step00-14/02-STEP01-AXPARSER-FILE-PARSING.md) §01.3 | step01 “csv-pii”、“staging-under-root”；`test_csv.py` |
 | D02 | TXT | 纯文本、定宽、键值、分隔 | 01 | §01.4 | `test_text.py` |
 | D03 | Excel | `.xlsx`、`.xlsm`、`.xls`、`.xlsb`、`.ods`；多表头、合并单元格、多区块、公式 | 01 | §01.5 | step01 “xlsx-blocks”、“xlsx-types”；`test_excel.py` |
 | D04 | PPT | `.pptx`、`.ppt`；备注、表格、图表数据 | 01 | §01.6 | step01 “pptx-notes” |
@@ -115,8 +115,8 @@
 | D07 | 图片 | `.png`、`.jpg`、`.tiff`（OCR） | 01 | §01.8 | `test_pdf.py` OCR 用例（full 镜像；lite 镜像断言 415） |
 | D08 | JSON | `.json`、`.jsonl`；嵌套扁平化、子表拆分、Schema 漂移 | 01 | §01.9 | step01 “json-child” |
 | D09 | XML | 命名空间、属性、记录识别；XXE 防护 | 01 | §01.10 | step01 “xml-records”、“xxe-blocked” |
-| D10 | 日志 | nginx、log4j 多行、syslog、容器日志；持续采集（Vector / Fluent Bit） | 01 / 02 | §01.11、[03](./03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md) §02.7.4 | step01 “log-ts”；step02 “webhook-rows” |
-| D11 | 对象存储 / SFTP | `S3`、`SFTP` | 02 | §02.6.2、[A3](./A3-CONNECTOR-SPEC-CARDS.md) | §02.6.2 测试（minio 中 3 个文件合并为一个数据集，第 4 个文件 APPEND 只读入新行） |
+| D10 | 日志 | nginx、log4j 多行、syslog、容器日志；持续采集（Vector / Fluent Bit） | 01 / 02 | §01.11、[03](../../plans/completed/v1-foundation-step00-14/03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md) §02.7.4 | step01 “log-ts”；step02 “webhook-rows” |
+| D11 | 对象存储 / SFTP | `S3`、`SFTP` | 02 | §02.6.2、[A3](../../plans/completed/v1-foundation-step00-14/A3-CONNECTOR-SPEC-CARDS.md) | §02.6.2 测试（minio 中 3 个文件合并为一个数据集，第 4 个文件 APPEND 只读入新行） |
 | D12 | 通用关系库 | `POSTGRES`、`MYSQL`、`MSSQL`、`ORACLE`、`SQLITE` | 02 | §02.4 | step02 “conn-ok”、“orders-rows”；`test_connectors_sql.py` |
 | D13 | 国产数据库 | `DAMENG`、`KINGBASE`、`OPENGAUSS`、`OCEANBASE`、`TIDB` | 02 | §02.4 | `test_connectors_sql.py -m heavy`；MySQL / PG 协议级用例 |
 | D14 | 分析型库与数仓 | `CLICKHOUSE`、`DORIS`、`STARROCKS`、`HIVE` | 02 | §02.4 | `test_connectors_sql.py`（ClickHouse 常驻；其余 heavy） |
@@ -139,9 +139,9 @@
 
 ```bash
 # 每个能力项与数据源类别都在本表出现且只出现一次
-grep -cE '^\| C[0-9]{2} ' docs/blueprint/A7-REQUIREMENTS-TRACEABILITY.md   # 59
-grep -cE '^\| D[0-9]{2} ' docs/blueprint/A7-REQUIREMENTS-TRACEABILITY.md   # 26
+grep -cE '^\| C[0-9]{2} ' docs/standards/A7-REQUIREMENTS-TRACEABILITY.md   # 59
+grep -cE '^\| D[0-9]{2} ' docs/standards/A7-REQUIREMENTS-TRACEABILITY.md   # 26
 
 # 表中引用的门禁断言名都存在于对应门禁脚本（输出缺失项，期望为空）
-python3 scripts/check_traceability.py docs/blueprint/A7-REQUIREMENTS-TRACEABILITY.md scripts/gate
+python3 scripts/check_traceability.py docs/standards/A7-REQUIREMENTS-TRACEABILITY.md scripts/gate
 ```

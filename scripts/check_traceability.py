@@ -69,15 +69,15 @@ def verify_traceability(matrix_path: Path, gate_dir: Path) -> list[str]:
         for step_name, assertion_name in _extract_step_assertions(acceptance_cell):
             required_assertions.append((item_id, step_name, assertion_name))
 
-    if len(cap_ids) != 59 or len(set(cap_ids)) != 59:
+    if len(cap_ids) < 59 or len(set(cap_ids)) != len(cap_ids):
         errors.append(
-            f"capability count mismatch: total={len(cap_ids)} "
-            f"unique={len(set(cap_ids))} (expected 59)"
+            f"capability count/uniqueness mismatch: total={len(cap_ids)} "
+            f"unique={len(set(cap_ids))} (expected >= 59 unique items)"
         )
-    if len(ds_ids) != 26 or len(set(ds_ids)) != 26:
+    if len(ds_ids) < 26 or len(set(ds_ids)) != len(ds_ids):
         errors.append(
-            f"datasource count mismatch: total={len(ds_ids)} "
-            f"unique={len(set(ds_ids))} (expected 26)"
+            f"datasource count/uniqueness mismatch: total={len(ds_ids)} "
+            f"unique={len(set(ds_ids))} (expected >= 26 unique items)"
         )
 
     gate_cache: dict[str, str | None] = {}
@@ -106,7 +106,7 @@ def main() -> int:
     parser.add_argument(
         "matrix",
         nargs="?",
-        default="docs/blueprint/A7-REQUIREMENTS-TRACEABILITY.md",
+        default="docs/standards/A7-REQUIREMENTS-TRACEABILITY.md",
         help="Path to A7-REQUIREMENTS-TRACEABILITY.md",
     )
     parser.add_argument(

@@ -3,8 +3,8 @@ set -euo pipefail
 source "$(dirname "$0")/lib.sh"
 
 # 契约与需求追踪静态双向核验（A4 §13 & A7 §3）
-python3 "$ROOT/scripts/check_routes.py" --routes "$ROOT/axpoint-core/crates/axpoint-server/src/routes" --index "$ROOT/docs/blueprint/A4-API-CONTRACT-INDEX.md"
-python3 "$ROOT/scripts/check_traceability.py" "$ROOT/docs/blueprint/A7-REQUIREMENTS-TRACEABILITY.md" "$ROOT/scripts/gate"
+python3 "$ROOT/scripts/check_routes.py" --routes "$ROOT/axpoint-core/crates/axpoint-server/src/routes" --index "$ROOT/docs/standards/A4-API-CONTRACT-INDEX.md"
+python3 "$ROOT/scripts/check_traceability.py" "$ROOT/docs/standards/A7-REQUIREMENTS-TRACEABILITY.md" "$ROOT/scripts/gate"
 
 (cd "$ROOT/axpoint-core" && cargo test -p axpoint-server ops::)
 

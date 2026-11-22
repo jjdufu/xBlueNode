@@ -30,7 +30,7 @@ use uuid::Uuid;
 
 /// Unified application error type across `AxPoint` crates.
 ///
-/// Error codes follow `docs/blueprint/A1-CONVENTIONS-ENUMS-ROUTES.md` §5.
+/// Error codes follow `docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md` §5.
 #[derive(Debug, Error)]
 pub enum AppError {
     /// Client sent invalid parameters (`HTTP 400`).

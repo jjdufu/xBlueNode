@@ -34,7 +34,7 @@ Step 01 只交付 Sidecar 能力与测试；Core 侧“文件 → 数据集”�
 | 修改 | `axpoint-parser/parsers/engine.py` | 保留 `parse_bytes_to_markdown`，内部改为调用 registry 的文本轨结果 |
 | 新建 | `axpoint-parser/tests/{test_security.py, test_csv.py, test_text.py, test_excel.py, test_pptx.py, test_docx.py, test_pdf.py, test_json.py, test_xml.py, test_logs.py, test_profiler.py}` | 每个子步骤一个测试文件 |
 | 新建 | `axpoint-parser/tests/snapshots/` | 期望 `UnifiedParseResponse` 快照（syrupy） |
-| 修改 | `axpoint-parser/pyproject.toml` | 依赖见 [A6 §3](./A6-DEPENDENCY-BASELINE.md) |
+| 修改 | `axpoint-parser/pyproject.toml` | 依赖见 [A6 §3](../../../docs/standards/A6-DEPENDENCY-BASELINE.md) |
 | 新建 | `scripts/gate/step01.sh` | 门禁 |
 
 ---

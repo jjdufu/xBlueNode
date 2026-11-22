@@ -19,7 +19,7 @@
 9. **安全治理**：本地口令 + OIDC、短期令牌与个人访问令牌、Cedar ABAC + PostgreSQL 行级安全、查询 / LLM / 出品三道脱敏、跨部门授权共享、全链路审计。
 10. **轻量交付**：PostgreSQL + 单二进制 Core + Sidecar 三个必选容器；备份恢复、保留策略、行业模板包、演示数据一键装载。
 
-命名体系、路由前缀、页面键、公共枚举见 [A1](./A1-CONVENTIONS-ENUMS-ROUTES.md)。
+命名体系、路由前缀、页面键、公共枚举见 [A1](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
 
 ---
 
@@ -136,7 +136,7 @@ xBlueNode/
 │   └── src/{pages, components/<module>, lib/api, modules/registry.ts}
 └── docs/
     ├── API_CONTRACT.md              # 已实现接口契约（随每个 Step 的契约 PR 扩展）
-    ├── TEAM_MULTI_AGENT_MANUAL.md
+    ├── MULTI_AGENT_TEAM_WORKFLOW.md
     └── blueprint/                   # 本蓝图
 ```
 
@@ -159,13 +159,13 @@ xBlueNode/
 | [10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) | Step 11：孪生驾驶舱、AI 生成大屏、页面动作回写、图浏览器、实时刷新、下钻、地图 / 2D / 3D 孪生场景；Step 12：出品引擎、服务端图表、安全分享 |
 | [11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md](./11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) | Step 13：本地 + OIDC 认证、令牌有效期与轮换、Cedar ABAC、行级与列级策略、PII 识别、跨部门授权、审计 |
 | [12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md](./12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) | Step 14：生产部署、高可用、备份恢复、保留策略、模板包、演示场景、交付追踪、全链路总验收 |
-| [A1-CONVENTIONS-ENUMS-ROUTES.md](./A1-CONVENTIONS-ENUMS-ROUTES.md) | 命名词表、路由前缀、页面注册表、公共枚举、错误码、身份约定、环境变量 |
-| [A2-DATABASE-MIGRATIONS-INDEX.md](./A2-DATABASE-MIGRATIONS-INDEX.md) | 迁移清单 0001～0014、表 → 迁移 → Step 索引、行级安全清单 |
+| [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md) | 命名词表、路由前缀、页面注册表、公共枚举、错误码、身份约定、环境变量 |
+| [A2-DATABASE-MIGRATIONS-INDEX.md](../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md) | 迁移清单 0001～0014、表 → 迁移 → Step 索引、行级安全清单 |
 | [A3-CONNECTOR-SPEC-CARDS.md](./A3-CONNECTOR-SPEC-CARDS.md) | 每类数据源的连接器规格卡（驱动、配置、探查、类型映射、增量、测试） |
-| [A4-API-CONTRACT-INDEX.md](./A4-API-CONTRACT-INDEX.md) | Core 与 Sidecar 全量接口索引（方法、路径、权限、鉴权方式、所属 Step） |
-| [A5-TEST-FIXTURES-AND-GATES.md](./A5-TEST-FIXTURES-AND-GATES.md) | 测试样本规格与生成器、门禁脚本框架、评测集、基准环境、前端冒烟 |
-| [A6-DEPENDENCY-BASELINE.md](./A6-DEPENDENCY-BASELINE.md) | 依赖基线表与许可证红线 |
-| [A7-REQUIREMENTS-TRACEABILITY.md](./A7-REQUIREMENTS-TRACEABILITY.md) | 需求追踪矩阵：全部能力项与数据源 → Step → 验收用例 |
+| [A4-API-CONTRACT-INDEX.md](../../../docs/standards/A4-API-CONTRACT-INDEX.md) | Core 与 Sidecar 全量接口索引（方法、路径、权限、鉴权方式、所属 Step） |
+| [A5-TEST-FIXTURES-AND-GATES.md](../../../docs/standards/A5-TEST-FIXTURES-AND-GATES.md) | 测试样本规格与生成器、门禁脚本框架、评测集、基准环境、前端冒烟 |
+| [A6-DEPENDENCY-BASELINE.md](../../../docs/standards/A6-DEPENDENCY-BASELINE.md) | 依赖基线表与许可证红线 |
+| [A7-REQUIREMENTS-TRACEABILITY.md](../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md) | 需求追踪矩阵：全部能力项与数据源 → Step → 验收用例 |
 
 ---
 
@@ -241,13 +241,13 @@ flowchart TD
 
 ## 8. 执行协议（每个 Step 相同）
 
-1. **阅读**：本文件、[IRON_RULES.md](../../IRON_RULES.md)、[A1](./A1-CONVENTIONS-ENUMS-ROUTES.md)、目标 Step 文件、[A2](./A2-DATABASE-MIGRATIONS-INDEX.md) 中该 Step 的迁移条目。
+1. **阅读**：本文件、[IRON_RULES.md](../../../IRON_RULES.md)、[A1](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)、目标 Step 文件、[A2](../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md) 中该 Step 的迁移条目。
 2. **契约 PR**：按 Step 文件“契约清单”提交迁移文件、`axpoint-domain` 类型与端口、`docs/API_CONTRACT.md` 条目、`axpoint-parser/schemas.py` 模型、`xbluenode-web/src/lib/api/<module>.ts` 类型、`A6` 中该 Step 的依赖。契约 PR 自身必须通过全局门禁。
 3. **实现 PR**：按“文件变更清单”逐个落地；Rust、Python、Web 可并行，各自以契约中的类型为准，未完成的对端用模块内 Mock 夹具联调。
 4. **门禁**：执行该 Step 的 `scripts/gate/stepNN.sh`，输出最后一行必须是 `GATE stepNN PASS`；同时执行全局门禁（§9）。
 5. **回归**：`scripts/gate/all.sh` 依次执行 `step00.sh` 到当前 Step，全部 `PASS` 才允许合入 `main`。
 
-门禁脚本统一约定（详见 [A5](./A5-TEST-FIXTURES-AND-GATES.md) §2）：
+门禁脚本统一约定（详见 [A5](../../../docs/standards/A5-TEST-FIXTURES-AND-GATES.md) §2）：
 
 - 读取 `.env.test`（由 `scripts/dev-up.sh` 生成）与 `.gate/ids.env`（由 `scripts/seed-demo.sh` 生成），门禁命令中不出现任何需要手工替换的占位符。
 - 使用 `scripts/gate/lib.sh` 中的 `api`（带 `Authorization: Bearer $AXPOINT_DEV_TOKEN` 的 curl）、`expect_eq`、`expect_code`、`expect_json`、`sql_owner`、`sql_app` 断言函数；任一断言失败立即以非零码退出并打印 `GATE stepNN FAIL: <断言名>`。
@@ -280,4 +280,4 @@ cd xbluenode-web && npm ci && npm run build && npx playwright test e2e/smoke.spe
 
 ## 10. 需求追踪
 
-全部能力项（59 项）与全部数据源类别（26 类）到 Step 与验收用例的映射见 [A7](./A7-REQUIREMENTS-TRACEABILITY.md)。每个能力项都有唯一负责的 Step 与至少一条可执行的验收断言。
+全部能力项（59 项）与全部数据源类别（26 类）到 Step 与验收用例的映射见 [A7](../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md)。每个能力项都有唯一负责的 Step 与至少一条可执行的验收断言。

@@ -4,7 +4,7 @@
 
 技术栈：Rust `1.100.0`（`edition = "2024"`）+ PostgreSQL 16（`pgvector`）+ DuckDB / DuckLake + Python 3.11 FastAPI Sidecar（AxParser / AxHub）+ Vite / React 19。
 
-完整的落地方案见 **[docs/blueprint/00-MASTER-INDEX.md](./docs/blueprint/00-MASTER-INDEX.md)**：Step 00～14 按依赖层逐步实施，每个 Step 给出目标、前置条件、迁移、文件清单、代码骨架、命令与可执行门禁。
+完整的阶段实施方案归档与演进路线见 **[plans/README.md](./plans/README.md)**（第一阶段 Step 00～14 已完成归档于 [plans/completed/v1-foundation-step00-14/00-MASTER-INDEX.md](./plans/completed/v1-foundation-step00-14/00-MASTER-INDEX.md)，第二阶段智能体验与本体无幻觉演进见 [plans/v2-ux-and-grounded-ai/00-V2-MASTER-INDEX.md](./plans/v2-ux-and-grounded-ai/00-V2-MASTER-INDEX.md)）。常驻工程标准、门禁与多团队/多代理协作规范见 **[docs/QUALITY_GATES_AND_VERIFICATION.md](./docs/QUALITY_GATES_AND_VERIFICATION.md)** 与 **[docs/MULTI_AGENT_TEAM_WORKFLOW.md](./docs/MULTI_AGENT_TEAM_WORKFLOW.md)**。
 
 ---
 
@@ -31,14 +31,17 @@
 ```text
 xBlueNode/
 ├── IRON_RULES.md          # 工程铁律（必读）
-├── .github/               # CODEOWNERS、PR 模板、按路径触发的 CI（含命名守卫）
+├── AGENTS.md              # 根级 AI 编码代理项目记忆（同步 GEMINI.md / CLAUDE.md）
+├── .agents/               # 按需加载工作流技能（skills/）
+├── .github/               # CODEOWNERS、PR 模板、按路径触发的 CI（含全栈静态守卫）
 ├── axpoint-core/          # Rust Workspace（clippy::pedantic、forbid(unsafe_code)）
-│   └── crates/            # axpoint-domain / -llm / -db / -server，以及按 Step 创建的 -security / -analytics / -flow / -agent
-├── axpoint-parser/        # Python FastAPI Sidecar：parsers/、connectors/、lake/、exporters/、charts/
-├── xbluenode-web/         # Vite + React + TypeScript + Tailwind CSS 工作台
-├── deploy/                # docker-compose、.env.example、migrations/（sqlx 格式 NNNN_<module>.sql）
-├── scripts/               # naming-guard.sh，以及按 Step 增加的环境、种子、门禁、运维脚本
-└── docs/                  # API_CONTRACT.md、TEAM_MULTI_AGENT_MANUAL.md、blueprint/
+│   └── crates/            # axpoint-domain / -llm / -db / -security / -analytics / -flow / -agent / -server
+├── axpoint-parser/        # Python FastAPI Sidecar：parsers/、connectors/、lake/、exporters/、charts/、pii/
+├── xbluenode-web/         # Vite + React 19 + TypeScript + Tailwind CSS 工作台
+├── deploy/                # docker-compose、k8s/、migrations/（sqlx 格式 NNNN_<module>.sql）
+├── scripts/               # 静态守卫、环境启停、种子数据、分步门禁（gate/）、运维演练脚本
+├── docs/                  # 常驻门禁规范、多团队/多代理协作宪章、API_CONTRACT.md、standards/
+└── plans/                 # 分阶段实施方案仓（completed/ 历史归档 + v2-ux-and-grounded-ai/ 演进蓝图）
 ```
 
 ---
@@ -71,7 +74,7 @@ cd axpoint-core && cargo run -p axpoint-server
 
 浏览器访问 `http://localhost:9995/`。前端开发模式：`cd xbluenode-web && npm run dev`。
 
-Step 00 落地后，本地环境统一由 `scripts/dev-up.sh` + `scripts/start-services.sh` 启动，门禁由 `scripts/gate/stepNN.sh` 执行（见蓝图 Step 00 §00.10）。
+本地环境统一由 `scripts/dev-up.sh` + `scripts/start-services.sh` 启动，分步与全量门禁由 `scripts/gate/stepNN.sh` 及 `scripts/gate/all.sh` 执行（详见 [docs/QUALITY_GATES_AND_VERIFICATION.md](./docs/QUALITY_GATES_AND_VERIFICATION.md)）。
 
 ---
 

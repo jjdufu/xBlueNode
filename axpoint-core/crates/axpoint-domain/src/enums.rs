@@ -1,4 +1,4 @@
-//! Canonical platform-wide enumerations defined in `docs/blueprint/A1-CONVENTIONS-ENUMS-ROUTES.md`.
+//! Canonical platform-wide enumerations defined in `docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md`.
 
 use std::collections::BTreeSet;
 use std::fmt;

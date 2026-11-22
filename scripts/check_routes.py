@@ -344,7 +344,7 @@ class RustRouterExtractor:
                 )
                 continue
 
-            if stmt.startswith("if ") or stmt.startswith("if("):
+            if stmt.startswith(("if ", "if(")):
                 last_val = self._eval_if_chain(cur_mod, stmt, strings, local_vars)
                 continue
 
@@ -390,7 +390,7 @@ class RustRouterExtractor:
         local_vars: dict[str, list[RouteEntry]],
     ) -> list[RouteEntry]:
         stripped = expr.strip()
-        if stripped.startswith("if ") or stripped.startswith("if("):
+        if stripped.startswith(("if ", "if(")):
             return self._eval_if_chain(cur_mod, stripped, strings, local_vars)
 
         routes: list[RouteEntry] = []
@@ -521,7 +521,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--index",
-        default="docs/blueprint/A4-API-CONTRACT-INDEX.md",
+        default="docs/standards/A4-API-CONTRACT-INDEX.md",
         help="Path to A4-API-CONTRACT-INDEX.md",
     )
     args = parser.parse_args()
