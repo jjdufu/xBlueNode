@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::enums::{Cardinality, DataType};
+use crate::enums::{Cardinality, DataType, SemanticLayerTier};
 use crate::expr::{ExprType, ExprTypeEnv, parse as parse_expr, typecheck_detailed};
 use crate::studio::doc::{
     AggRuleSpec, DatasetValidationMeta, IssueSeverity, LinkDirection, MappingSpec, NodeTypeSpec,
@@ -18,6 +18,29 @@ const RESERVED_PROPERTY_NAMES: &[&str] = &[
     "metrics",
     "properties",
 ];
+
+/// Combined validation output containing diagnostics and positive completeness check count (`04-STEP18` §18.2.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationSummary {
+    /// Blocking errors, warnings, and completeness advisories.
+    pub issues: Vec<ValidationIssue>,
+    /// Positive static check count (`pass_count`).
+    pub pass_count: u32,
+}
+
+/// Validates `doc` against `ctx` and computes positive completeness `pass_count` + advisory hints (`04-STEP18` §18.2.2).
+#[must_use]
+pub fn validate_with_metrics(doc: &SchemaDoc, ctx: &ValidationContext) -> ValidationSummary {
+    let mut issues = validate(doc, ctx);
+    let error_paths: BTreeSet<String> = issues
+        .iter()
+        .filter(|i| i.severity == IssueSeverity::Error)
+        .map(|i| i.path.clone())
+        .collect();
+
+    let pass_count = compute_pass_count_and_advisories(doc, &error_paths, &mut issues);
+    ValidationSummary { issues, pass_count }
+}
 
 /// Validates a [`SchemaDoc`] against [`ValidationContext`] according to `06-STEP05-06` §05.3 (rules 1–10).
 ///
@@ -1148,4 +1171,154 @@ fn check_expression(
     let info = typecheck_detailed(&ast, &env).map_err(|issue| issue.message)?;
     referenced_metrics.extend(info.referenced_metrics);
     Ok(info.result_type)
+}
+
+fn compute_pass_count_and_advisories(
+    doc: &SchemaDoc,
+    error_paths: &BTreeSet<String>,
+    issues: &mut Vec<ValidationIssue>,
+) -> u32 {
+    let mut pass_count = 0_u32;
+
+    for (nt_idx, nt) in doc.node_types.iter().enumerate() {
+        let nt_prefix = format!("node_types[{nt_idx}]");
+        if !has_error_under(error_paths, &nt_prefix, true) {
+            pass_count = pass_count.saturating_add(1);
+        }
+        check_node_advisories(doc, nt, nt_idx, issues);
+
+        for (p_idx, prop) in nt.properties.iter().enumerate() {
+            let p_path = format!("node_types[{nt_idx}].properties[{p_idx}]");
+            if !has_error_under(error_paths, &p_path, false) {
+                pass_count = pass_count.saturating_add(1);
+            }
+            if prop.kind == PropertyKind::Metric
+                && prop.unit.as_deref().is_none_or(|u| u.trim().is_empty())
+            {
+                issues.push(ValidationIssue {
+                    severity: IssueSeverity::Warn,
+                    path: format!("{p_path}.unit"),
+                    code: String::from("METRIC_UNIT_MISSING"),
+                    message: format!("metric '{}.{}' has no unit defined", nt.name, prop.name),
+                });
+            }
+        }
+
+        for (r_idx, _agg) in nt.agg_rules.iter().enumerate() {
+            let r_path = format!("node_types[{nt_idx}].agg_rules[{r_idx}]");
+            if !has_error_under(error_paths, &r_path, false)
+                && !error_paths.contains(&format!("node_types[{}].agg_rules", nt.name))
+            {
+                pass_count = pass_count.saturating_add(1);
+            }
+        }
+        for (d_idx, _der) in nt.derived_rules.iter().enumerate() {
+            let d_path = format!("node_types[{nt_idx}].derived_rules[{d_idx}]");
+            if !has_error_under(error_paths, &d_path, false) {
+                pass_count = pass_count.saturating_add(1);
+            }
+        }
+    }
+
+    for (e_idx, et) in doc.edge_types.iter().enumerate() {
+        let e_path = format!("edge_types[{e_idx}]");
+        if !has_error_under(error_paths, &e_path, false) {
+            pass_count = pass_count.saturating_add(1);
+        }
+        if et
+            .propagation
+            .as_object()
+            .is_some_and(serde_json::Map::is_empty)
+        {
+            issues.push(ValidationIssue {
+                severity: IssueSeverity::Info,
+                path: format!("{e_path}.propagation"),
+                code: String::from("EDGE_PROPAGATION_DEFAULT"),
+                message: format!("edge '{}' uses default propagation configuration", et.name),
+            });
+        }
+    }
+
+    for (m_idx, _m) in doc.mappings.iter().enumerate() {
+        let m_path = format!("mappings[{m_idx}]");
+        if !has_error_under(error_paths, &m_path, false) {
+            pass_count = pass_count.saturating_add(1);
+        }
+    }
+
+    let unconfirmed = doc.unconfirmed_proposal_count();
+    if unconfirmed == 0 {
+        pass_count = pass_count.saturating_add(1);
+    } else {
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Warn,
+            path: String::from("schema_doc.maturity"),
+            code: String::from("UNCONFIRMED_PROPOSAL"),
+            message: format!(
+                "{unconfirmed} AI-proposed schema element(s) require explicit confirmation before publishing"
+            ),
+        });
+    }
+
+    pass_count
+}
+
+fn check_node_advisories(
+    doc: &SchemaDoc,
+    nt: &NodeTypeSpec,
+    nt_idx: usize,
+    issues: &mut Vec<ValidationIssue>,
+) {
+    if nt.description.trim().is_empty() {
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Info,
+            path: format!("node_types[{nt_idx}].description"),
+            code: String::from("NODE_DESCRIPTION_EMPTY"),
+            message: format!("node type '{}' has an empty description", nt.name),
+        });
+    }
+    let has_edge = doc
+        .edge_types
+        .iter()
+        .any(|e| e.src_type_name == nt.name || e.dst_type_name == nt.name);
+    let has_mapping = doc.mappings.iter().any(|m| m.node_type == nt.name);
+    if !has_edge && !has_mapping && doc.node_types.len() > 1 {
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Warn,
+            path: format!("node_types[{nt_idx}]"),
+            code: String::from("ISOLATED_NODE_TYPE"),
+            message: format!(
+                "node type '{}' has neither incident edges nor dataset mappings",
+                nt.name
+            ),
+        });
+    } else if !has_mapping && nt.semantic_layer_tier != Some(SemanticLayerTier::CubeRollup) {
+        issues.push(ValidationIssue {
+            severity: IssueSeverity::Warn,
+            path: format!("node_types[{nt_idx}].mappings"),
+            code: String::from("NODE_UNMAPPED"),
+            message: format!("node type '{}' has no bound dataset mapping", nt.name),
+        });
+    }
+}
+
+fn has_error_under(error_paths: &BTreeSet<String>, prefix: &str, shallow_node_only: bool) -> bool {
+    error_paths.iter().any(|p| {
+        if p == prefix {
+            return true;
+        }
+        let Some(rest) = p.strip_prefix(prefix) else {
+            return false;
+        };
+        if !rest.starts_with('.') {
+            return false;
+        }
+        if shallow_node_only {
+            !rest.starts_with(".properties[")
+                && !rest.starts_with(".agg_rules[")
+                && !rest.starts_with(".derived_rules[")
+        } else {
+            true
+        }
+    })
 }

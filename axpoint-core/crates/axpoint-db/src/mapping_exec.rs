@@ -1983,6 +1983,9 @@ async fn load_mapping_and_model(
             sync_to_knowledge: r.get("sync_to_knowledge"),
             pos_x: r.get("pos_x"),
             pos_y: r.get("pos_y"),
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            semantic_layer_tier: None,
+            domain_group: None,
         };
         node_types.insert(nt.name.clone(), nt);
     }
@@ -2333,6 +2336,7 @@ mod tests {
             required: true,
             pii_category: PiiCategory::None,
             allowed_values: None,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         };
         assert_eq!(prop.data_type, DataType::Int64);
     }

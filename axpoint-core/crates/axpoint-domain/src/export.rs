@@ -258,6 +258,14 @@ pub enum ExportSource {
         /// Conversation/session UUID.
         conversation_id: Uuid,
     },
+    /// Exports an inline Markdown deliverable (such as `SubgraphSpecDoc.markdown`, `04-STEP18` §18.4.2).
+    Markdown {
+        /// Optional document title override.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<String>,
+        /// Source Markdown body.
+        markdown: String,
+    },
 }
 
 /// Watermark option accepting either a boolean toggle or an explicit custom string (`10-STEP11-12` §12.2).

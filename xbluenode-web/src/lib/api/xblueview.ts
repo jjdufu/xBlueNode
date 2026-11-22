@@ -683,6 +683,11 @@ export type ExportSource =
   | {
       kind: "CONVERSATION";
       conversation_id: string;
+    }
+  | {
+      kind: "MARKDOWN";
+      title?: string;
+      markdown: string;
     };
 
 export interface ExportOptions {

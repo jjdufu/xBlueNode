@@ -135,6 +135,7 @@ fn warehouse_schema_doc() -> SchemaDoc {
                     required: false,
                     pii_category: PiiCategory::None,
                     allowed_values: None,
+                    maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                 },
                 PropertySpec {
                     name: String::from("status"),
@@ -146,6 +147,7 @@ fn warehouse_schema_doc() -> SchemaDoc {
                     required: true,
                     pii_category: PiiCategory::None,
                     allowed_values: Some(vec![String::from("ACTIVE"), String::from("MAINTENANCE")]),
+                    maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                 },
                 PropertySpec {
                     name: String::from("inventory"),
@@ -157,6 +159,7 @@ fn warehouse_schema_doc() -> SchemaDoc {
                     required: false,
                     pii_category: PiiCategory::None,
                     allowed_values: None,
+                    maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                 },
             ],
             agg_rules: Vec::new(),
@@ -164,6 +167,9 @@ fn warehouse_schema_doc() -> SchemaDoc {
             sync_to_knowledge: false,
             pos_x: 120.0,
             pos_y: 120.0,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            semantic_layer_tier: None,
+            domain_group: None,
         }],
         edge_types: Vec::new(),
         mappings: Vec::new(),

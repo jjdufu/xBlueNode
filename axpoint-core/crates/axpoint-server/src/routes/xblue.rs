@@ -46,7 +46,7 @@ use axpoint_domain::studio::{
     PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest,
     SchemaDiff, SchemaDoc, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary, SubgraphInfo,
     SubgraphQueryParam, TriggerMappingRunRequest, TriggerMappingRunResponse, UpdateDraftRequest,
-    UpdateSubgraphRequest, ValidateSchemaResponse, validate,
+    UpdateSubgraphRequest, ValidateSchemaResponse, validate_with_metrics,
 };
 use axpoint_domain::topology::{BlueNode, UpsertBlueNodeRequest};
 use axpoint_llm::{SchemaDraftInput, generate_schema_draft};
@@ -559,9 +559,16 @@ async fn validate_schema_handler(
         .store
         .load_validation_context(&principal.tenant_id, sub.slug_or_main())
         .await?;
-    let issues = validate(&doc, &ctx);
-    let valid = !issues.iter().any(|i| i.severity == IssueSeverity::Error);
-    Ok(Json(ValidateSchemaResponse { valid, issues }))
+    let summary = validate_with_metrics(&doc, &ctx);
+    let valid = !summary
+        .issues
+        .iter()
+        .any(|i| i.severity == IssueSeverity::Error);
+    Ok(Json(ValidateSchemaResponse {
+        valid,
+        issues: summary.issues,
+        pass_count: summary.pass_count,
+    }))
 }
 
 async fn list_schema_versions_handler(
@@ -686,11 +693,18 @@ async fn create_draft_handler(
     ApiJson(req): ApiJson<CreateDraftRequest>,
 ) -> Result<Json<SchemaDraft>, HttpError> {
     principal.require(Permission::StudioEdit)?;
+    let target_slug = req
+        .subgraph_slug
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| sub.slug_or_main())
+        .to_owned();
     let draft = state
         .store
         .create_draft(
             &principal.tenant_id,
-            sub.slug_or_main(),
+            &target_slug,
             actor_uuid(&principal),
             req,
         )
@@ -835,6 +849,7 @@ async fn create_ai_draft_handler(
                     "doc_ids": req.doc_ids,
                     "attempts": generated.attempts,
                 })),
+                subgraph_slug: None,
             },
         )
         .await?;
@@ -1050,6 +1065,7 @@ async fn preview_mapping_handler(
             sync_to_knowledge: false,
             pos_x: 0.0,
             pos_y: 0.0,
+            ..NodeTypeSpec::default()
         });
 
     let _ = acquire_tenant_session(&state, &principal.tenant_id, false).await?;

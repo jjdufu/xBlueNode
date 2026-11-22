@@ -1080,6 +1080,7 @@ where
                     base_version: Some(current.version),
                     source: Some(DraftSource::Template),
                     ai_context: None,
+                    subgraph_slug: None,
                 },
             )
             .await?;
@@ -1377,6 +1378,7 @@ where
                     base_version: Some(base_version),
                     source: Some(DraftSource::Template),
                     ai_context: None,
+                    subgraph_slug: None,
                 },
             )
             .await?;
@@ -3075,6 +3077,7 @@ where
                         ai_context: Some(serde_json::json!({
                             "source_template_id": manifest.id,
                         })),
+                        subgraph_slug: None,
                     },
                 )
                 .await?;

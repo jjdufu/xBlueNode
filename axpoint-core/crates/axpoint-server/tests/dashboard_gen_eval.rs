@@ -142,6 +142,7 @@ fn build_eval_context() -> DashboardGenContext {
         description: String::from("供应"),
         properties: Vec::new(),
         propagation: serde_json::json!({}),
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
     }];
     seed_eval_metrics(&mut ctx, ds_orders_id);
     seed_eval_datasets(&mut ctx, ds_orders_id);
@@ -317,6 +318,7 @@ fn make_node_type(name: &str, display_name: &str, metrics: &[&str]) -> NodeTypeS
                 required: false,
                 pii_category: PiiCategory::None,
                 allowed_values: None,
+                maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             })
             .collect(),
         agg_rules: Vec::new(),
@@ -324,6 +326,9 @@ fn make_node_type(name: &str, display_name: &str, metrics: &[&str]) -> NodeTypeS
         sync_to_knowledge: false,
         pos_x: 0.0,
         pos_y: 0.0,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     }
 }
 

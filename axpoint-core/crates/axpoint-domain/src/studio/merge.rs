@@ -247,6 +247,7 @@ fn classify_and_append_sub_types(
                     description: format!("Cross-subgraph bridge from '{subgraph_slug}'"),
                     properties: Vec::new(),
                     propagation: serde_json::Value::Object(serde_json::Map::new()),
+                    ..EdgeTypeSpec::default()
                 });
             }
         }

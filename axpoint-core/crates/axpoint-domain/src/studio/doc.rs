@@ -7,7 +7,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
-use crate::enums::{AggFn, Cardinality, DataType, PiiCategory, SubgraphMergeStrategy};
+use crate::enums::{
+    AggFn, Cardinality, CopilotActionMode, DataType, DesignMaturity, PiiCategory,
+    SemanticLayerTier, SubgraphMergeStrategy,
+};
 use crate::graph::GeoPoint;
 
 /// Complete `xBlueStudio` schema document exchanged across drafts, published versions,
@@ -103,6 +106,26 @@ pub struct PropertySpec {
     /// Optional enumerated allowed values for `STRING` attributes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_values: Option<Vec<String>>,
+    /// Design sign-off maturity (`PROPOSED` vs `CONFIRMED`, defaults to `CONFIRMED`, `04-STEP18` §18.2.1).
+    #[serde(default)]
+    pub maturity: DesignMaturity,
+}
+
+impl Default for PropertySpec {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            display_name: String::new(),
+            description: String::new(),
+            unit: None,
+            data_type: DataType::String,
+            kind: PropertyKind::Attribute,
+            required: false,
+            pii_category: PiiCategory::None,
+            allowed_values: None,
+            maturity: DesignMaturity::Confirmed,
+        }
+    }
 }
 
 const fn default_pii_none() -> PiiCategory {
@@ -159,6 +182,25 @@ pub struct AggRuleSpec {
     /// Whether `SUM` / `AVG` weights neighbor values by `xb_links.weight`.
     #[serde(default)]
     pub weight_by_link: bool,
+    /// Design sign-off maturity (`PROPOSED` vs `CONFIRMED`, defaults to `CONFIRMED`, `04-STEP18` §18.2.1).
+    #[serde(default)]
+    pub maturity: DesignMaturity,
+}
+
+impl Default for AggRuleSpec {
+    fn default() -> Self {
+        Self {
+            target_metric: String::new(),
+            op: AggFn::Sum,
+            via_link_type: String::new(),
+            direction: LinkDirection::Out,
+            source_type_name: String::new(),
+            source_metric: String::new(),
+            filter: None,
+            weight_by_link: false,
+            maturity: DesignMaturity::Confirmed,
+        }
+    }
 }
 
 /// Intra-node derived formula metric rule (`06-STEP05-06` §05.2.4).
@@ -171,6 +213,20 @@ pub struct DerivedRuleSpec {
     /// Whether this rule is active.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Design sign-off maturity (`PROPOSED` vs `CONFIRMED`, defaults to `CONFIRMED`, `04-STEP18` §18.2.1).
+    #[serde(default)]
+    pub maturity: DesignMaturity,
+}
+
+impl Default for DerivedRuleSpec {
+    fn default() -> Self {
+        Self {
+            target_metric: String::new(),
+            expression: String::new(),
+            enabled: true,
+            maturity: DesignMaturity::Confirmed,
+        }
+    }
 }
 
 const fn default_true() -> bool {
@@ -233,6 +289,93 @@ pub struct NodeTypeSpec {
     /// Studio canvas Y coordinate.
     #[serde(default = "default_pos")]
     pub pos_y: f64,
+    /// Design sign-off maturity (`PROPOSED` vs `CONFIRMED`, defaults to `CONFIRMED`, `04-STEP18` §18.2.1).
+    #[serde(default)]
+    pub maturity: DesignMaturity,
+    /// Optional semantic architecture tier (`STATIC_FACT` | `EVENT_DYNAMIC` | `CUBE_ROLLUP`, `04-STEP18` §18.2.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_layer_tier: Option<SemanticLayerTier>,
+    /// Optional business domain group label (e.g. `"采购域"`, `"履约域"`, `04-STEP18` §18.2.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domain_group: Option<String>,
+}
+
+/// Compact `Np·Nm·Nr` element counts displayed on `NodeTypeCard` and `NodeLineageGraph` (`04-STEP18` §18.2.1, §18.4.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeBadgeCounts {
+    /// Total property count (`Np = properties.len()`).
+    pub property_count: u32,
+    /// Metric property count (`Nm`).
+    pub metric_count: u32,
+    /// Total compute rule count (`Nr = agg_rules.len() + derived_rules.len()`).
+    pub rule_count: u32,
+}
+
+impl Default for NodeTypeSpec {
+    fn default() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            display_name: String::new(),
+            description: String::new(),
+            icon: default_icon(),
+            color: default_color(),
+            title_template: default_title_template(),
+            properties: Vec::new(),
+            agg_rules: Vec::new(),
+            derived_rules: Vec::new(),
+            sync_to_knowledge: false,
+            pos_x: default_pos(),
+            pos_y: default_pos(),
+            maturity: DesignMaturity::Confirmed,
+            semantic_layer_tier: None,
+            domain_group: None,
+        }
+    }
+}
+
+impl NodeTypeSpec {
+    /// Computes compact `Np·Nm·Nr` badge counters (`04-STEP18` §18.2.1).
+    #[must_use]
+    pub fn badge_counts(&self) -> NodeBadgeCounts {
+        let property_count = u32::try_from(self.properties.len()).unwrap_or(u32::MAX);
+        let metric_count = u32::try_from(
+            self.properties
+                .iter()
+                .filter(|p| p.kind == PropertyKind::Metric)
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
+        let rule_count = u32::try_from(
+            self.agg_rules
+                .len()
+                .saturating_add(self.derived_rules.len()),
+        )
+        .unwrap_or(u32::MAX);
+        NodeBadgeCounts {
+            property_count,
+            metric_count,
+            rule_count,
+        }
+    }
+
+    /// Returns `true` if the node type itself or any child property/rule is `PROPOSED`.
+    #[must_use]
+    pub fn has_proposed_elements(&self) -> bool {
+        self.maturity == DesignMaturity::Proposed
+            || self
+                .properties
+                .iter()
+                .any(|p| p.maturity == DesignMaturity::Proposed)
+            || self
+                .agg_rules
+                .iter()
+                .any(|r| r.maturity == DesignMaturity::Proposed)
+            || self
+                .derived_rules
+                .iter()
+                .any(|r| r.maturity == DesignMaturity::Proposed)
+    }
 }
 
 const fn default_impact_weight() -> f64 {
@@ -274,6 +417,92 @@ pub struct EdgeTypeSpec {
     /// Causal propagation configuration used by `AxSim` (Step 10).
     #[serde(default = "default_empty_object")]
     pub propagation: serde_json::Value,
+    /// Design sign-off maturity (`PROPOSED` vs `CONFIRMED`, defaults to `CONFIRMED`, `04-STEP18` §18.2.1).
+    #[serde(default)]
+    pub maturity: DesignMaturity,
+}
+
+impl Default for EdgeTypeSpec {
+    fn default() -> Self {
+        Self {
+            id: None,
+            name: String::new(),
+            src_type_name: String::new(),
+            dst_type_name: String::new(),
+            impact_weight: default_impact_weight(),
+            cardinality: default_cardinality(),
+            description: String::new(),
+            properties: Vec::new(),
+            propagation: default_empty_object(),
+            maturity: DesignMaturity::Confirmed,
+        }
+    }
+}
+
+impl SchemaDoc {
+    /// Counts all `PROPOSED` elements (`NodeTypeSpec`, `PropertySpec`, `EdgeTypeSpec`, `AggRuleSpec`, `DerivedRuleSpec`).
+    #[must_use]
+    pub fn unconfirmed_proposal_count(&self) -> u32 {
+        let mut count = 0_u32;
+        for nt in &self.node_types {
+            if nt.maturity == DesignMaturity::Proposed {
+                count = count.saturating_add(1);
+            }
+            for p in &nt.properties {
+                if p.maturity == DesignMaturity::Proposed {
+                    count = count.saturating_add(1);
+                }
+            }
+            for r in &nt.agg_rules {
+                if r.maturity == DesignMaturity::Proposed {
+                    count = count.saturating_add(1);
+                }
+            }
+            for d in &nt.derived_rules {
+                if d.maturity == DesignMaturity::Proposed {
+                    count = count.saturating_add(1);
+                }
+            }
+        }
+        for et in &self.edge_types {
+            if et.maturity == DesignMaturity::Proposed {
+                count = count.saturating_add(1);
+            }
+            for p in &et.properties {
+                if p.maturity == DesignMaturity::Proposed {
+                    count = count.saturating_add(1);
+                }
+            }
+        }
+        count
+    }
+
+    /// Transitions matching `PROPOSED` elements (and their child items) to `CONFIRMED` (`04-STEP18` §18.3.1).
+    pub fn confirm_proposals(&mut self, req: &ConfirmProposalsRequest) {
+        let confirm_all = req.scope == ConfirmProposalsScope::All;
+        for nt in &mut self.node_types {
+            if confirm_all || req.node_types.iter().any(|n| n == &nt.name) {
+                nt.maturity = DesignMaturity::Confirmed;
+                for p in &mut nt.properties {
+                    p.maturity = DesignMaturity::Confirmed;
+                }
+                for r in &mut nt.agg_rules {
+                    r.maturity = DesignMaturity::Confirmed;
+                }
+                for d in &mut nt.derived_rules {
+                    d.maturity = DesignMaturity::Confirmed;
+                }
+            }
+        }
+        for et in &mut self.edge_types {
+            if confirm_all || req.edge_types.iter().any(|e| e == &et.name) {
+                et.maturity = DesignMaturity::Confirmed;
+                for p in &mut et.properties {
+                    p.maturity = DesignMaturity::Confirmed;
+                }
+            }
+        }
+    }
 }
 
 /// Optional WGS-84 coordinate column binding in `MappingSpec` (`06-STEP05-06` §05.2.5).
@@ -401,7 +630,7 @@ pub struct MappingSpec {
     pub mode: MappingMode,
 }
 
-/// Severity of a schema validation issue (`06-STEP05-06` §05.3).
+/// Severity of a schema validation issue (`06-STEP05-06` §05.3, `04-STEP18` §18.2.2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum IssueSeverity {
     /// Blocks schema publication.
@@ -410,12 +639,15 @@ pub enum IssueSeverity {
     /// Advisory warning (or `BREAKING_CHANGE` requiring `force = true` on publish).
     #[serde(rename = "WARN")]
     Warn,
+    /// Informational completeness hint (`04-STEP18` §18.2.2).
+    #[serde(rename = "INFO")]
+    Info,
 }
 
 /// Single schema validation diagnostic (`06-STEP05-06` §05.3).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidationIssue {
-    /// Diagnostic severity (`ERROR` or `WARN`).
+    /// Diagnostic severity (`ERROR`, `WARN`, or `INFO`).
     pub severity: IssueSeverity,
     /// JSON-style path to the offending element, e.g., `node_types[0].derived_rules[0].expression`.
     pub path: String,
@@ -432,6 +664,9 @@ pub struct ValidateSchemaResponse {
     pub valid: bool,
     /// Collected validation diagnostics.
     pub issues: Vec<ValidationIssue>,
+    /// Count of positive completeness checks passed (`04-STEP18` §18.2.2).
+    #[serde(default)]
+    pub pass_count: u32,
 }
 
 /// Dataset metadata snapshot supplied to `studio::validate` for rule #8 (`MAPPING_INVALID`).
@@ -942,6 +1177,9 @@ pub struct SchemaDraft {
     pub ai_context: serde_json::Value,
     /// Latest computed validation diagnostics.
     pub issues: Vec<ValidationIssue>,
+    /// Positive static completeness check count (`04-STEP18` §18.1, §18.2.2).
+    #[serde(default)]
+    pub pass_count: u32,
     /// Lifecycle status (`DRAFT`, `PUBLISHED`, `DISCARDED`).
     pub status: DraftStatus,
     /// Creator user UUID.
@@ -953,10 +1191,13 @@ pub struct SchemaDraft {
     pub updated_at: DateTime<Utc>,
 }
 
-/// Request body for `POST /api/xblue/drafts` (`06-STEP05-06` §05.7).
+/// Request body for `POST /api/xblue/drafts` (`06-STEP05-06` §05.7, `04-STEP18` §18.6).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateDraftRequest {
+    /// Optional target subgraph slug in body (takes precedence over `?subgraph=`, `04-STEP18` §18.6).
+    #[serde(default)]
+    pub subgraph_slug: Option<String>,
     /// Draft title.
     pub title: String,
     /// Draft `SchemaDoc`.
@@ -1449,6 +1690,240 @@ pub struct DomainObjectListResponse {
     pub items: Vec<DomainObjectRecord>,
     /// Next pagination cursor, if more objects exist.
     pub next_cursor: Option<String>,
+}
+
+/// Snapshot creation reason stored in `xb_schema_draft_snapshots.reason` (`04-STEP18` §18.1).
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DraftSnapshotReason {
+    /// Manually saved checkpoint.
+    Manual,
+    /// Recorded automatically before `PATCH_DRAFT` Copilot mutation.
+    #[default]
+    CopilotPatch,
+    /// Recorded automatically before `confirm-proposals`.
+    BatchConfirm,
+    /// Recorded automatically before cross-subgraph merge.
+    PreMerge,
+}
+
+impl DraftSnapshotReason {
+    /// Canonical database string representation.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "MANUAL",
+            Self::CopilotPatch => "COPILOT_PATCH",
+            Self::BatchConfirm => "BATCH_CONFIRM",
+            Self::PreMerge => "PRE_MERGE",
+        }
+    }
+}
+
+impl FromStr for DraftSnapshotReason {
+    type Err = crate::AppError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "MANUAL" => Ok(Self::Manual),
+            "COPILOT_PATCH" => Ok(Self::CopilotPatch),
+            "BATCH_CONFIRM" => Ok(Self::BatchConfirm),
+            "PRE_MERGE" => Ok(Self::PreMerge),
+            other => Err(crate::AppError::bad(
+                "INVALID_ARGUMENT",
+                format!("unknown DraftSnapshotReason: {other}"),
+            )),
+        }
+    }
+}
+
+/// Summary row returned by `GET /api/xblue/drafts/{id}/snapshots` (`04-STEP18` §18.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftSnapshotSummary {
+    /// Snapshot UUID.
+    pub id: Uuid,
+    /// Owning draft UUID.
+    pub draft_id: Uuid,
+    /// Monotonic per-draft snapshot sequence number (`>= 1`).
+    pub snapshot_no: i32,
+    /// Snapshot trigger reason.
+    pub reason: DraftSnapshotReason,
+    /// Actor user UUID, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_by: Option<Uuid>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Envelope response for `GET /api/xblue/drafts/{id}/snapshots`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DraftSnapshotListResponse {
+    /// Ordered snapshot summaries (`snapshot_no DESC`).
+    pub items: Vec<DraftSnapshotSummary>,
+}
+
+/// Canvas selection focus passed to `POST /api/xblue/drafts/{id}/copilot` (`04-STEP18` §18.3.1).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopilotFocusContext {
+    /// Currently selected `NodeTypeSpec.name`, if any.
+    #[serde(default)]
+    pub selected_node_type: Option<String>,
+    /// Currently selected `EdgeTypeSpec.name`, if any.
+    #[serde(default)]
+    pub selected_edge_type: Option<String>,
+    /// Active inspector tab (`properties`, `rules`, `mappings`, etc.).
+    #[serde(default)]
+    pub active_tab: Option<String>,
+}
+
+/// Optional reference mounts (`@dataset`, `@spec`) passed to `POST /api/xblue/drafts/{id}/copilot`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CopilotRefs {
+    /// Referenced `AxHub` dataset UUIDs (profile metadata only; sample values stripped).
+    #[serde(default)]
+    pub dataset_ids: Vec<Uuid>,
+    /// Whether to mount the compiled panoramic specification summary (`@spec`).
+    #[serde(default)]
+    pub include_spec_doc: bool,
+}
+
+/// Request body for `POST /api/xblue/drafts/{id}/copilot` (`04-STEP18` §18.3.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StudioCopilotRequest {
+    /// Execution mode (`DIAGNOSE_ONLY` vs `PATCH_DRAFT`).
+    #[serde(default)]
+    pub mode: CopilotActionMode,
+    /// User instruction or quick-action prompt.
+    pub prompt: String,
+    /// Optional active canvas focus context.
+    #[serde(default)]
+    pub focus: Option<CopilotFocusContext>,
+    /// Optional `@dataset` / `@spec` reference mounts.
+    #[serde(default)]
+    pub refs: Option<CopilotRefs>,
+}
+
+/// Single diagnostic finding produced by `xBlueStudio` Copilot (`04-STEP18` §18.3.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopilotFinding {
+    /// Severity (`ERROR`, `WARN`, `INFO`).
+    pub severity: IssueSeverity,
+    /// JSON-style target path (e.g. `node_types[Warehouse].properties[stock_qty]`).
+    pub target_path: String,
+    /// Factual rationale grounded in current schema/dataset metadata.
+    pub rationale: String,
+    /// Actionable remediation recommendation.
+    pub suggested_fix: String,
+}
+
+/// Structured diagnosis block inside [`StudioCopilotResponse`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CopilotDiagnosis {
+    /// Concise overall assessment.
+    pub summary: String,
+    /// Structured findings list.
+    #[serde(default)]
+    pub findings: Vec<CopilotFinding>,
+}
+
+/// Response body for `POST /api/xblue/drafts/{id}/copilot` (`04-STEP18` §18.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StudioCopilotResponse {
+    /// Executed mode (`DIAGNOSE_ONLY` or `PATCH_DRAFT`).
+    pub mode: CopilotActionMode,
+    /// `true` iff `PATCH_DRAFT` modified `schema_doc` and persisted a pre-mutation snapshot.
+    pub mutated: bool,
+    /// Pre-mutation snapshot UUID (`None` in `DIAGNOSE_ONLY`).
+    pub snapshot_id: Option<Uuid>,
+    /// Pre-mutation snapshot sequence number (`None` in `DIAGNOSE_ONLY`).
+    pub snapshot_no: Option<i32>,
+    /// Structured inspection findings.
+    pub diagnosis: CopilotDiagnosis,
+    /// Structural diff introduced by `PATCH_DRAFT` (`None` in `DIAGNOSE_ONLY`).
+    pub diff: Option<SchemaDiff>,
+    /// Positive static validation check count.
+    pub pass_count: u32,
+    /// Current validation issues on the draft.
+    pub issues: Vec<ValidationIssue>,
+}
+
+/// Scope selector for `POST /api/xblue/drafts/{id}/confirm-proposals` (`04-STEP18` §18.3.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ConfirmProposalsScope {
+    /// Confirm every `PROPOSED` element in the draft.
+    #[default]
+    All,
+    /// Confirm only elements listed in `node_types` and `edge_types`.
+    Selected,
+}
+
+/// Request body for `POST /api/xblue/drafts/{id}/confirm-proposals` (`04-STEP18` §18.3.1).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConfirmProposalsRequest {
+    /// Confirmation scope (`ALL` or `SELECTED`).
+    #[serde(default)]
+    pub scope: ConfirmProposalsScope,
+    /// Selected `NodeTypeSpec.name` list when `scope == SELECTED`.
+    #[serde(default)]
+    pub node_types: Vec<String>,
+    /// Selected `EdgeTypeSpec.name` list when `scope == SELECTED`.
+    #[serde(default)]
+    pub edge_types: Vec<String>,
+}
+
+/// Downstream consumer kind in Stage 5 of `NodeLineageGraph` (`04-STEP18` §18.4.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum DownstreamConsumerKind {
+    /// `AxFlow` operational metric alert rule (`ax_rules`).
+    AlertRule,
+    /// `AxAgent` published object endpoint (`ax_published_endpoints`).
+    Endpoint,
+    /// `xBlueView` twin dashboard (`xv_dashboards`).
+    Dashboard,
+}
+
+impl DownstreamConsumerKind {
+    /// Canonical wire string.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AlertRule => "ALERT_RULE",
+            Self::Endpoint => "ENDPOINT",
+            Self::Dashboard => "DASHBOARD",
+        }
+    }
+
+    /// Lineage edge label connecting `NodeSchema` to this consumer.
+    #[must_use]
+    pub const fn edge_label(self) -> &'static str {
+        match self {
+            Self::AlertRule => "EVAL",
+            Self::Endpoint => "EXPOSE",
+            Self::Dashboard => "VIEW",
+        }
+    }
+}
+
+/// Downstream consumer reference resolved from `ax_rules`, `ax_published_endpoints`, and `xv_dashboards`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DownstreamConsumerBinding {
+    /// Lineage node ID (`"rule:..."`, `"ep:..."`, `"dash:..."`).
+    pub id: String,
+    /// Human-readable label.
+    pub label: String,
+    /// Consumer category.
+    pub consumer_kind: DownstreamConsumerKind,
+    /// Optional metric property referenced on the owning node type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_metric: Option<String>,
 }
 
 #[cfg(test)]

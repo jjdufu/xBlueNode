@@ -1339,6 +1339,9 @@ async fn load_main_schema_doc(store: &PgStore, tenant_id: &str) -> Result<Schema
             sync_to_knowledge: r.get("sync_to_knowledge"),
             pos_x: r.get("pos_x"),
             pos_y: r.get("pos_y"),
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            semantic_layer_tier: None,
+            domain_group: None,
         })
         .collect();
 
@@ -1383,6 +1386,9 @@ async fn load_single_main_node_type_tx(
         sync_to_knowledge: r.get("sync_to_knowledge"),
         pos_x: r.get("pos_x"),
         pos_y: r.get("pos_y"),
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        semantic_layer_tier: None,
+        domain_group: None,
     }))
 }
 
@@ -1530,6 +1536,7 @@ mod tests {
             source_metric: String::from("demand"),
             filter: None,
             weight_by_link,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }
     }
 

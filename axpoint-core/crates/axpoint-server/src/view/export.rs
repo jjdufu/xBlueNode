@@ -407,6 +407,14 @@ where
         ExportSource::Conversation { conversation_id } => {
             validate_conversation_readable(store, principal, *conversation_id).await?;
         }
+        ExportSource::Markdown { markdown, .. } => {
+            if markdown.trim().is_empty() {
+                return Err(AppError::bad(
+                    "INVALID_ARGUMENT",
+                    "markdown export content cannot be empty",
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -457,6 +465,7 @@ pub const fn export_source_kind_str(source: &ExportSource) -> &'static str {
         ExportSource::Pivot { .. } => "PIVOT",
         ExportSource::Scenario { .. } => "SCENARIO",
         ExportSource::Conversation { .. } => "CONVERSATION",
+        ExportSource::Markdown { .. } => "MARKDOWN",
     }
 }
 
@@ -672,6 +681,18 @@ where
             let (title, sections) =
                 build_conversation_sections(deps.store, creator, *conversation_id).await?;
             Ok((title, sections, None))
+        }
+        ExportSource::Markdown { title, markdown } => {
+            let resolved_title = title
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map_or_else(|| String::from("模型全景规格书"), ToOwned::to_owned);
+            let sections = vec![ExportSection::Markdown {
+                text: markdown.clone(),
+                level: 2,
+            }];
+            Ok((resolved_title, sections, None))
         }
     }
 }

@@ -4,11 +4,15 @@ import { ApiError, ApiErrorBodySchema, requestJson } from "./client";
 import type {
   AggFn,
   Cardinality,
+  CopilotActionMode,
   DataType,
+  DesignMaturity,
   GraphAlgo,
+  GroundingMode,
   MetricSourceTag,
   PiiCategory,
   RollupGrain,
+  SemanticLayerTier,
   SubgraphMergeStrategy,
 } from "./enums";
 import type { AxSandboxRecord, AxSimResult } from "./axsim";
@@ -17,7 +21,7 @@ export type PropertyKind = "ATTRIBUTE" | "METRIC";
 export type LinkDirection = "OUT" | "IN";
 export type OnSourceDelete = "KEEP" | "DELETE";
 export type MappingMode = "FULL" | "INCREMENTAL";
-export type IssueSeverity = "ERROR" | "WARN";
+export type IssueSeverity = "ERROR" | "WARN" | "INFO";
 export type DraftSource = "MANUAL" | "AI" | "RESTORE" | "TEMPLATE" | "MERGE";
 export type DraftStatus = "DRAFT" | "PUBLISHED" | "DISCARDED";
 export type MergeConflictKind =
@@ -325,6 +329,7 @@ export interface PropertySpec {
   required: boolean;
   pii_category: PiiCategory;
   allowed_values?: string[] | null;
+  maturity?: DesignMaturity;
 }
 
 export interface AggRuleSpec {
@@ -336,12 +341,14 @@ export interface AggRuleSpec {
   source_metric: string;
   filter?: string | null;
   weight_by_link: boolean;
+  maturity?: DesignMaturity;
 }
 
 export interface DerivedRuleSpec {
   target_metric: string;
   expression: string;
   enabled: boolean;
+  maturity?: DesignMaturity;
 }
 
 export interface NodeTypeSpec {
@@ -358,6 +365,9 @@ export interface NodeTypeSpec {
   sync_to_knowledge: boolean;
   pos_x: number;
   pos_y: number;
+  maturity?: DesignMaturity;
+  semantic_layer_tier?: SemanticLayerTier | null;
+  domain_group?: string | null;
 }
 
 export interface EdgeTypeSpec {
@@ -370,6 +380,7 @@ export interface EdgeTypeSpec {
   description: string;
   properties: PropertySpec[];
   propagation: Record<string, unknown>;
+  maturity?: DesignMaturity;
 }
 
 export interface MappingGeoSpec {
@@ -418,6 +429,7 @@ export interface ValidationIssue {
 export interface ValidateSchemaResponse {
   valid: boolean;
   issues: ValidationIssue[];
+  pass_count?: number;
 }
 
 export interface FieldDiff {
@@ -540,6 +552,7 @@ export interface SchemaDraft {
   schema_doc: SchemaDoc;
   ai_context: Record<string, unknown>;
   issues: ValidationIssue[];
+  pass_count?: number;
   status: DraftStatus;
   created_by?: string | null;
   created_at: string;
@@ -547,11 +560,140 @@ export interface SchemaDraft {
 }
 
 export interface CreateDraftRequest {
+  subgraph_slug?: string;
   title: string;
   schema_doc: SchemaDoc;
   base_version?: number;
   source?: DraftSource;
   ai_context?: Record<string, unknown>;
+}
+
+export type DraftSnapshotReason =
+  | "MANUAL"
+  | "COPILOT_PATCH"
+  | "BATCH_CONFIRM"
+  | "PRE_MERGE";
+
+export interface DraftSnapshotSummary {
+  id: string;
+  draft_id: string;
+  snapshot_no: number;
+  reason: DraftSnapshotReason;
+  created_by?: string | null;
+  created_at: string;
+}
+
+export interface CopilotFocusContext {
+  selected_node_type?: string | null;
+  selected_edge_type?: string | null;
+  active_tab?: string | null;
+}
+
+export interface CopilotRefs {
+  dataset_ids?: string[];
+  include_spec_doc?: boolean;
+}
+
+export interface StudioCopilotRequest {
+  mode: CopilotActionMode;
+  prompt: string;
+  focus?: CopilotFocusContext;
+  refs?: CopilotRefs;
+}
+
+export interface CopilotFinding {
+  severity: IssueSeverity;
+  target_path: string;
+  rationale: string;
+  suggested_fix: string;
+}
+
+export interface CopilotDiagnosis {
+  summary: string;
+  findings: CopilotFinding[];
+}
+
+export interface StudioCopilotResponse {
+  mode: CopilotActionMode;
+  mutated: boolean;
+  snapshot_id: string | null;
+  snapshot_no: number | null;
+  diagnosis: CopilotDiagnosis;
+  diff: SchemaDiff | null;
+  pass_count: number;
+  issues: ValidationIssue[];
+}
+
+export interface ConfirmProposalsRequest {
+  scope: "ALL" | "SELECTED";
+  node_types?: string[];
+  edge_types?: string[];
+}
+
+export interface NodeBadgeCounts {
+  property_count: number;
+  metric_count: number;
+  rule_count: number;
+}
+
+export type LineageStageKind =
+  | "DATASET_COLUMNS"
+  | "MAPPING_SPEC"
+  | "NODE_SCHEMA"
+  | "COMPUTE_RULES"
+  | "DOWNSTREAM_CONSUMERS";
+
+export interface LineageStageNode {
+  id: string;
+  label: string;
+  meta: Record<string, unknown>;
+}
+
+export interface LineageStage {
+  stage: LineageStageKind;
+  nodes: LineageStageNode[];
+}
+
+export interface LineageEdge {
+  from: string;
+  to: string;
+  label: string;
+}
+
+export interface NodeLineageGraph {
+  subgraph_slug: string;
+  node_type: string;
+  display_name: string;
+  badge_counts: NodeBadgeCounts;
+  stages: LineageStage[];
+  edges: LineageEdge[];
+}
+
+export interface AcceptancePromptItem {
+  id: string;
+  question: string;
+  expected_grounding_mode: GroundingMode;
+  target_node_types: string[];
+  target_metrics: string[];
+}
+
+export interface SpecDocSection {
+  key: string;
+  title: string;
+  summary: string;
+  rows: Record<string, unknown>[];
+}
+
+export interface SubgraphSpecDoc {
+  subgraph_slug: string;
+  display_name: string;
+  version: number;
+  draft_id?: string | null;
+  pass_count: number;
+  unconfirmed_count: number;
+  sections: SpecDocSection[];
+  acceptance_prompts: AcceptancePromptItem[];
+  markdown: string;
 }
 
 export interface UpdateDraftRequest {
@@ -991,6 +1133,19 @@ export const SubgraphMergeStrategySchema = z
   .unknown()
   .transform(normalizeMergeStrategy);
 
+const DesignMaturitySchema = z
+  .unknown()
+  .transform((v): DesignMaturity => (v === "PROPOSED" ? "PROPOSED" : "CONFIRMED"));
+
+const SemanticLayerTierSchema = z
+  .unknown()
+  .transform((v): SemanticLayerTier | null => {
+    if (v === "STATIC_FACT" || v === "EVENT_DYNAMIC" || v === "CUBE_ROLLUP") {
+      return v;
+    }
+    return null;
+  });
+
 export const PropertySpecSchema: z.ZodType<PropertySpec> = z.object({
   name: z.string().default(""),
   display_name: z.string().default(""),
@@ -1001,6 +1156,7 @@ export const PropertySpecSchema: z.ZodType<PropertySpec> = z.object({
   required: z.boolean().default(false),
   pii_category: PiiCategorySchema,
   allowed_values: z.array(z.string()).nullable().optional(),
+  maturity: DesignMaturitySchema.optional(),
 });
 
 export const AggRuleSpecSchema: z.ZodType<AggRuleSpec> = z.object({
@@ -1012,12 +1168,14 @@ export const AggRuleSpecSchema: z.ZodType<AggRuleSpec> = z.object({
   source_metric: z.string().default(""),
   filter: z.string().nullable().optional(),
   weight_by_link: z.boolean().default(false),
+  maturity: DesignMaturitySchema.optional(),
 });
 
 export const DerivedRuleSpecSchema: z.ZodType<DerivedRuleSpec> = z.object({
   target_metric: z.string().default(""),
   expression: z.string().default(""),
   enabled: z.boolean().default(true),
+  maturity: DesignMaturitySchema.optional(),
 });
 
 export const NodeTypeSpecSchema: z.ZodType<NodeTypeSpec> = z.object({
@@ -1034,6 +1192,9 @@ export const NodeTypeSpecSchema: z.ZodType<NodeTypeSpec> = z.object({
   sync_to_knowledge: z.boolean().default(false),
   pos_x: z.number().default(120),
   pos_y: z.number().default(120),
+  maturity: DesignMaturitySchema.optional(),
+  semantic_layer_tier: SemanticLayerTierSchema.optional(),
+  domain_group: z.string().nullable().optional(),
 });
 
 export const EdgeTypeSpecSchema: z.ZodType<EdgeTypeSpec> = z.object({
@@ -1046,6 +1207,7 @@ export const EdgeTypeSpecSchema: z.ZodType<EdgeTypeSpec> = z.object({
   description: z.string().default(""),
   properties: z.array(PropertySpecSchema).default([]),
   propagation: z.record(z.string(), z.unknown()).default({}),
+  maturity: DesignMaturitySchema.optional(),
 });
 
 export const MappingGeoSpecSchema: z.ZodType<MappingGeoSpec> = z.object({
@@ -1091,7 +1253,12 @@ export const SchemaDocSchema: z.ZodType<SchemaDoc> = z.object({
 export const ValidationIssueSchema: z.ZodType<ValidationIssue> = z.object({
   severity: z
     .unknown()
-    .transform((v): IssueSeverity => (v === "ERROR" ? "ERROR" : "WARN")),
+    .transform((v): IssueSeverity => {
+      if (v === "ERROR" || v === "INFO") {
+        return v;
+      }
+      return "WARN";
+    }),
   path: z.string().default(""),
   code: z.string().default("UNKNOWN"),
   message: z.string().default(""),
@@ -1101,6 +1268,7 @@ export const ValidateSchemaResponseSchema: z.ZodType<ValidateSchemaResponse> =
   z.object({
     valid: z.boolean().default(true),
     issues: z.array(ValidationIssueSchema).default([]),
+    pass_count: z.number().optional(),
   });
 
 export const FieldDiffSchema: z.ZodType<FieldDiff> = z.object({
@@ -1213,6 +1381,7 @@ export const SchemaDraftSchema: z.ZodType<SchemaDraft> = z.object({
   }),
   ai_context: z.record(z.string(), z.unknown()).default({}),
   issues: z.array(ValidationIssueSchema).default([]),
+  pass_count: z.number().optional(),
   status: z
     .unknown()
     .transform((v): DraftStatus => {
@@ -1677,6 +1846,9 @@ function sanitizePropertyForWire(p: PropertySpec): PropertySpec {
   if (p.allowed_values && p.allowed_values.length > 0) {
     out.allowed_values = p.allowed_values;
   }
+  if (p.maturity) {
+    out.maturity = p.maturity;
+  }
   return out;
 }
 
@@ -1705,19 +1877,37 @@ export function sanitizeSchemaDocForWire(doc: SchemaDoc): SchemaDoc {
           if (r.filter && r.filter.trim().length > 0) {
             rule.filter = r.filter.trim();
           }
+          if (r.maturity) {
+            rule.maturity = r.maturity;
+          }
           return rule;
         }),
-        derived_rules: nt.derived_rules.map((d) => ({
-          target_metric: d.target_metric.trim(),
-          expression: d.expression,
-          enabled: d.enabled !== false,
-        })),
+        derived_rules: nt.derived_rules.map((d) => {
+          const rule: DerivedRuleSpec = {
+            target_metric: d.target_metric.trim(),
+            expression: d.expression,
+            enabled: d.enabled !== false,
+          };
+          if (d.maturity) {
+            rule.maturity = d.maturity;
+          }
+          return rule;
+        }),
         sync_to_knowledge: Boolean(nt.sync_to_knowledge),
         pos_x: Number.isFinite(nt.pos_x) ? nt.pos_x : 120,
         pos_y: Number.isFinite(nt.pos_y) ? nt.pos_y : 120,
       };
       if (nt.id && UUID_REGEX.test(nt.id)) {
         cleaned.id = nt.id;
+      }
+      if (nt.maturity) {
+        cleaned.maturity = nt.maturity;
+      }
+      if (nt.semantic_layer_tier) {
+        cleaned.semantic_layer_tier = nt.semantic_layer_tier;
+      }
+      if (nt.domain_group && nt.domain_group.trim().length > 0) {
+        cleaned.domain_group = nt.domain_group.trim();
       }
       return cleaned;
     }),
@@ -1734,6 +1924,9 @@ export function sanitizeSchemaDocForWire(doc: SchemaDoc): SchemaDoc {
       };
       if (et.id && UUID_REGEX.test(et.id)) {
         cleaned.id = et.id;
+      }
+      if (et.maturity) {
+        cleaned.maturity = et.maturity;
       }
       return cleaned;
     }),
@@ -2431,6 +2624,9 @@ export const xblueApi = {
       title: payload.title.trim() || "未命名草案",
       schema_doc: sanitized,
     };
+    if (payload.subgraph_slug !== undefined) {
+      body.subgraph_slug = payload.subgraph_slug;
+    }
     if (payload.base_version !== undefined) {
       body.base_version = payload.base_version;
     }
@@ -2847,5 +3043,70 @@ export const xblueApi = {
       entity_id: entityId,
       confirmed: true,
     });
+  },
+  runDraftCopilot: (
+    draftId: string,
+    body: StudioCopilotRequest
+  ): Promise<StudioCopilotResponse> =>
+    requestJson<StudioCopilotResponse>(
+      `/api/xblue/drafts/${encodeURIComponent(draftId)}/copilot`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    ),
+  listDraftSnapshots: (
+    draftId: string,
+    limit = 20
+  ): Promise<{ items: DraftSnapshotSummary[] }> =>
+    requestJson<{ items: DraftSnapshotSummary[] }>(
+      `/api/xblue/drafts/${encodeURIComponent(draftId)}/snapshots?limit=${encodeURIComponent(String(limit))}`
+    ),
+  restoreDraftSnapshot: (
+    draftId: string,
+    snapshotId: string
+  ): Promise<SchemaDraft> =>
+    requestJson<SchemaDraft>(
+      `/api/xblue/drafts/${encodeURIComponent(draftId)}/snapshots/${encodeURIComponent(snapshotId)}/restore`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      }
+    ),
+  confirmDraftProposals: (
+    draftId: string,
+    body: ConfirmProposalsRequest
+  ): Promise<SchemaDraft> =>
+    requestJson<SchemaDraft>(
+      `/api/xblue/drafts/${encodeURIComponent(draftId)}/confirm-proposals`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    ),
+  getNodeLineage: (
+    subgraphSlug: string,
+    nodeType: string,
+    draftId?: string
+  ): Promise<NodeLineageGraph> => {
+    const qs = draftId ? `?draft_id=${encodeURIComponent(draftId)}` : "";
+    return requestJson<NodeLineageGraph>(
+      `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/lineage/${encodeURIComponent(nodeType)}${qs}`
+    );
+  },
+  getSubgraphSpecDoc: (
+    subgraphSlug: string,
+    draftId?: string
+  ): Promise<SubgraphSpecDoc> => {
+    const params = new URLSearchParams({ format: "json" });
+    if (draftId) {
+      params.set("draft_id", draftId);
+    }
+    return requestJson<SubgraphSpecDoc>(
+      `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/spec-doc?${params.toString()}`
+    );
   },
 };

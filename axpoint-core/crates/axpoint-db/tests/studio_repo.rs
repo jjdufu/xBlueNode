@@ -117,6 +117,7 @@ fn prop_attr(name: &str, dt: DataType) -> PropertySpec {
         required: false,
         pii_category: PiiCategory::None,
         allowed_values: None,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
     }
 }
 
@@ -131,6 +132,7 @@ fn prop_metric(name: &str) -> PropertySpec {
         required: false,
         pii_category: PiiCategory::None,
         allowed_values: None,
+        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
     }
 }
 
@@ -160,6 +162,7 @@ fn base_supply_doc(sync_wh_knowledge: bool) -> SchemaDoc {
                     source_metric: String::from("demand"),
                     filter: None,
                     weight_by_link: false,
+                    maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                 }],
                 derived_rules: vec![DerivedRuleSpec {
                     target_metric: String::from("fill_rate"),
@@ -167,10 +170,14 @@ fn base_supply_doc(sync_wh_knowledge: bool) -> SchemaDoc {
                         "if(total_demand > 0, inventory / total_demand, null)",
                     ),
                     enabled: true,
+                    maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                 }],
                 sync_to_knowledge: sync_wh_knowledge,
                 pos_x: 240.0,
                 pos_y: 120.0,
+                maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+                semantic_layer_tier: None,
+                domain_group: None,
             },
             NodeTypeSpec {
                 id: None,
@@ -186,6 +193,9 @@ fn base_supply_doc(sync_wh_knowledge: bool) -> SchemaDoc {
                 sync_to_knowledge: false,
                 pos_x: 520.0,
                 pos_y: 120.0,
+                maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+                semantic_layer_tier: None,
+                domain_group: None,
             },
         ],
         edge_types: vec![EdgeTypeSpec {
@@ -198,6 +208,7 @@ fn base_supply_doc(sync_wh_knowledge: bool) -> SchemaDoc {
             description: String::new(),
             properties: Vec::new(),
             propagation: serde_json::json!({}),
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }],
         mappings: Vec::new(),
     }
@@ -240,6 +251,9 @@ fn shipment_subgraph_doc() -> SchemaDoc {
             sync_to_knowledge: true,
             pos_x: 400.0,
             pos_y: 160.0,
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            semantic_layer_tier: None,
+            domain_group: None,
         }],
         edge_types: vec![EdgeTypeSpec {
             id: None,
@@ -251,6 +265,7 @@ fn shipment_subgraph_doc() -> SchemaDoc {
             description: String::new(),
             properties: Vec::new(),
             propagation: serde_json::json!({}),
+            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         }],
         mappings: Vec::new(),
     }
@@ -263,6 +278,7 @@ fn new_draft_req(title: &str, doc: SchemaDoc) -> CreateDraftRequest {
         schema_doc: doc,
         source: Some(DraftSource::Manual),
         ai_context: None,
+        subgraph_slug: None,
     }
 }
 
