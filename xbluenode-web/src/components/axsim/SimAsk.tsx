@@ -13,6 +13,7 @@ import {
   type SimAskResponse,
 } from "@/lib/api/axsim";
 import { Badge, Button, Card, Textarea } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
 
 export interface SimAskProps {
   sandboxId: string;
@@ -22,11 +23,6 @@ export interface SimAskProps {
   onScenarioCreated?: (scenarioId: string) => void;
 }
 
-const SAMPLE_PROMPTS: readonly string[] = [
-  "如果 F-1 产能下降 30%，会对哪些订单履约造成影响？",
-  "当前场景中受影响幅度最大的前 5 个订单节点有哪些？",
-];
-
 export function SimAsk({
   sandboxId,
   scenarios,
@@ -34,6 +30,7 @@ export function SimAsk({
   onSelectScenario,
   onScenarioCreated,
 }: SimAskProps) {
+  const { tx, fmtNum } = useI18n();
   const [question, setQuestion] = useState("");
   const [contextScenarioId, setContextScenarioId] = useState<string>(
     activeScenarioId ?? ""
@@ -41,6 +38,17 @@ export function SimAsk({
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<SimAskResponse | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const samplePrompts: readonly string[] = [
+    tx(
+      "如果 F-1 产能下降 30%，会对哪些订单履约造成影响？",
+      "What happens to order fulfillment if F-1 output drops by 30%?"
+    ),
+    tx(
+      "当前场景中受影响幅度最大的前 5 个订单节点有哪些？",
+      "Which top 5 order nodes have the largest impact in the current scenario?"
+    ),
+  ];
 
   const effectiveScenarioId = contextScenarioId || activeScenarioId || undefined;
 
@@ -67,7 +75,7 @@ export function SimAsk({
   };
 
   const applyCandidate = (cand: SimAskCandidate) => {
-    const refined = `${question.trim()}（明确指代对象：${cand.type_name} ${cand.title} [${cand.node_key}]）`;
+    const refined = `${question.trim()} (${cand.type_name} ${cand.title} [${cand.node_key}])`;
     setQuestion(refined);
     void submitQuestion(refined);
   };
@@ -77,18 +85,20 @@ export function SimAsk({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2.5">
         <div className="flex items-center gap-2 text-sm font-medium">
           <MessageSquare className="h-4 w-4 text-xblue" />
-          <span>AxSim 推演问数 (What-If 与 DuckDB 影响追问)</span>
+          <span>{tx("推演自然语言追问", "Simulation Copilot")}</span>
         </div>
 
         <div className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">追问上下文场景:</span>
+          <span className="text-muted-foreground">
+            {tx("上下文场景:", "Context:")}
+          </span>
           <select
             value={contextScenarioId || activeScenarioId || ""}
             onChange={(e) => setContextScenarioId(e.target.value)}
             className="h-7 rounded border border-input bg-background px-2 text-xs"
             data-testid="sim-ask-scenario-select"
           >
-            <option value="">自动 / 新建推演</option>
+            <option value="">{tx("自动 / 新建推演", "Auto / New What-If")}</option>
             {scenarios.map((s) => (
               <option key={s.id} value={s.id}>
                 {s.name}
@@ -100,8 +110,10 @@ export function SimAsk({
 
       {/* Quick prompts */}
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="text-[11px] text-muted-foreground">示例提问:</span>
-        {SAMPLE_PROMPTS.map((prompt) => (
+        <span className="text-[11px] text-muted-foreground">
+          {tx("示例:", "Examples:")}
+        </span>
+        {samplePrompts.map((prompt) => (
           <button
             key={prompt}
             type="button"
@@ -124,7 +136,10 @@ export function SimAsk({
           rows={2}
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
-          placeholder="输入假设推演（如：如果华东工厂产能下降 30% 会怎样？）或对已有推演结果追问 SQL 统计..."
+          placeholder={tx(
+            "如果华东一厂产能下降 30%，哪些订单会受影响？",
+            "If East Factory output drops 30%, which orders are affected?"
+          )}
           className="text-xs"
           data-testid="sim-ask-input"
         />
@@ -135,7 +150,9 @@ export function SimAsk({
             data-testid="sim-ask-submit"
           >
             <Send className="h-3.5 w-3.5" />
-            {loading ? "推演分析中..." : "发起推演问数"}
+            {loading
+              ? tx("分析中…", "Analyzing…")
+              : tx("发起追问", "Ask")}
           </Button>
         </div>
       </form>
@@ -160,8 +177,8 @@ export function SimAsk({
                 {response.intent}
               </Badge>
               {response.need_clarification && (
-                <Badge variant="outline" className="border-amber-500 text-amber-600 dark:text-amber-400">
-                  需要澄清目标对象
+                <Badge variant="warning">
+                  {tx("需指明对象", "Clarification Needed")}
                 </Badge>
               )}
             </div>
@@ -170,10 +187,10 @@ export function SimAsk({
               <Button
                 type="button"
                 variant="outline"
-                className="h-7 px-2.5 text-[11px]"
+                size="sm"
                 onClick={() => onSelectScenario?.(response.scenario_id ?? "")}
               >
-                跳转至推演场景视图
+                {tx("查看场景", "Open Scenario")}
                 <ArrowRight className="h-3 w-3" />
               </Button>
             )}
@@ -186,7 +203,12 @@ export function SimAsk({
               <div className="rounded border border-amber-500/40 bg-amber-500/10 p-2.5 space-y-2">
                 <div className="flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-300">
                   <HelpCircle className="h-3.5 w-3.5" />
-                  <span>匹配到多个候选节点，请选择一项以应用并重新执行：</span>
+                  <span>
+                    {tx(
+                      "匹配到多个候选节点：",
+                      "Multiple candidate nodes matched:"
+                    )}
+                  </span>
                 </div>
                 <div className="flex flex-wrap gap-1.5">
                   {response.candidates.map((cand) => (
@@ -213,7 +235,7 @@ export function SimAsk({
             <div className="space-y-1">
               <div className="flex items-center gap-1 text-[11px] text-muted-foreground font-mono-tech">
                 <Terminal className="h-3 w-3" />
-                <span>生成 DuckDB 影响查询 SQL</span>
+                <span>{tx("影响查询 SQL", "Impact Query SQL")}</span>
               </div>
               <pre className="overflow-x-auto rounded border border-border bg-background p-2.5 font-mono-tech text-[11px]">
                 {response.sql}
@@ -224,7 +246,10 @@ export function SimAsk({
           {/* DuckDB Query Rows */}
           {Array.isArray(response.rows) && response.rows.length > 0 && (
             <div className="overflow-x-auto">
-              <table className="w-full text-xs" data-testid="sim-ask-rows-table">
+              <table
+                className="w-full text-xs"
+                data-testid="sim-ask-rows-table"
+              >
                 <thead>
                   <tr className="border-b border-border text-left text-muted-foreground">
                     {(response.columns?.length
@@ -244,11 +269,19 @@ export function SimAsk({
                       : Object.keys(r);
                     return (
                       <tr key={rIdx} className="border-b border-border/60">
-                        {colNames.map((col) => (
-                          <td key={col} className="py-1.5 pr-3 font-mono-tech">
-                            {String(r[col] ?? "—")}
-                          </td>
-                        ))}
+                        {colNames.map((col) => {
+                          const cell = r[col];
+                          return (
+                            <td
+                              key={col}
+                              className="py-1.5 pr-3 font-mono-tech"
+                            >
+                              {typeof cell === "number"
+                                ? fmtNum(cell, 4)
+                                : String(cell ?? "-")}
+                            </td>
+                          );
+                        })}
                       </tr>
                     );
                   })}
@@ -261,7 +294,10 @@ export function SimAsk({
           {Array.isArray(response.impacts) && response.impacts.length > 0 && (
             <div className="space-y-1.5">
               <div className="text-[11px] font-medium text-muted-foreground">
-                关键影响节点预览 ({response.impacts.length})
+                {tx(
+                  `关键影响预览 (${response.impacts.length})`,
+                  `Top Impacts (${response.impacts.length})`
+                )}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
                 {response.impacts.slice(0, 6).map((imp) => (
@@ -282,7 +318,7 @@ export function SimAsk({
                     >
                       {imp.delta_ratio != null
                         ? `${imp.delta_ratio > 0 ? "+" : ""}${(imp.delta_ratio * 100).toFixed(1)}%`
-                        : imp.after_val.toFixed(2)}
+                        : fmtNum(imp.after_val, 4)}
                     </span>
                   </div>
                 ))}

@@ -524,7 +524,8 @@ test("all registered routes and /login (password + OIDC + PAT accordion) render 
 
   for (const routeSpec of SHELL_SMOKE_ROUTES) {
     await page.goto(routeSpec.path);
-    await expect(page.locator("aside")).toContainText("xBlueNode");
+    await expect(page.getByTestId("app-top-header")).toContainText("xBlueNode");
+    await expect(page.locator("aside")).toBeVisible();
     await expect(
       page.getByRole("link", { name: routeSpec.sidebarLabel })
     ).toBeVisible();
@@ -554,7 +555,7 @@ test("all registered routes and /login (password + OIDC + PAT accordion) render 
   await page.goto("/login");
   await page.getByTestId("pat-accordion-toggle").click();
   await page.locator("#access-token-input").fill("smoke-candidate-token-0000000000000000");
-  await page.getByRole("button", { name: "验证并进入工作台" }).click();
+  await page.getByTestId("pat-submit-btn").click();
   await expect(page).toHaveURL(/\/$/);
   await expect(
     page.getByRole("heading", { level: 1, name: "系统概览" })

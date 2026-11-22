@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import ReactMarkdown from "react-markdown";
 import {
   Bot,
   CheckCircle2,
@@ -11,6 +12,7 @@ import {
 } from "lucide-react";
 import type { MessageRecord, ToolCallSpec } from "@/lib/api/axagent";
 import { Badge } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 export interface StreamingToolItem {
@@ -76,6 +78,14 @@ function parseToolContent(raw: string): ParsedToolOutput {
   }
 }
 
+function AssistantMarkdown({ content }: { content: string }) {
+  return (
+    <div className="leading-relaxed break-words text-xs sm:text-sm space-y-2 [&_p]:leading-relaxed [&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1 [&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-1 [&_h1]:text-base [&_h1]:font-semibold [&_h2]:text-sm [&_h2]:font-semibold [&_h3]:text-xs [&_h3]:font-semibold [&_strong]:font-semibold [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono-tech [&_code]:text-[11px] [&_pre]:rounded-md [&_pre]:border [&_pre]:border-border [&_pre]:bg-muted/50 [&_pre]:p-2.5 [&_pre]:overflow-x-auto [&_pre_code]:bg-transparent [&_pre_code]:p-0 [&_table]:w-full [&_table]:border-collapse [&_table]:text-xs [&_th]:border [&_th]:border-border [&_th]:bg-muted/50 [&_th]:px-2 [&_th]:py-1 [&_th]:text-left [&_td]:border [&_td]:border-border [&_td]:px-2 [&_td]:py-1">
+      <ReactMarkdown>{content}</ReactMarkdown>
+    </div>
+  );
+}
+
 function ToolCallCardItem({
   callId,
   toolName,
@@ -93,6 +103,7 @@ function ToolCallCardItem({
   agentName?: string;
   pending: boolean;
 }) {
+  const { tx } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const parsedResult = useMemo(
     () => (resultContent !== undefined ? parseToolContent(resultContent) : null),
@@ -111,7 +122,7 @@ function ToolCallCardItem({
             return `${k}: ${strVal.length > 36 ? `${strVal.slice(0, 36)}…` : strVal}`;
           })
           .join(", ")
-      : "无参数";
+      : tx("无参数", "no args");
 
   return (
     <div
@@ -145,16 +156,18 @@ function ToolCallCardItem({
           </span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {truncated ? <Badge variant="outline">已截断</Badge> : null}
+          {truncated ? (
+            <Badge variant="outline">{tx("已截断", "Truncated")}</Badge>
+          ) : null}
           {pending ? (
             <span className="inline-flex items-center gap-1 text-[11px] text-xblue font-mono-tech">
               <Loader2 className="h-3 w-3 animate-spin" />
-              执行中
+              {tx("运行中…", "Running…")}
             </span>
           ) : (
             <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground font-mono-tech">
               <CheckCircle2 className="h-3 w-3 text-xblue" />
-              已完成
+              {tx("已完成", "Done")}
             </span>
           )}
         </div>
@@ -164,7 +177,7 @@ function ToolCallCardItem({
         <div className="border-t border-border bg-background/80 p-3 space-y-2.5">
           <div>
             <div className="text-[11px] font-medium text-muted-foreground mb-1">
-              调用入参 (Arguments JSON)
+              {tx("调用参数", "Arguments")}
             </div>
             <pre className="rounded border border-border bg-muted/50 p-2 text-[11px] font-mono-tech overflow-x-auto max-h-40">
               {JSON.stringify(args, null, 2)}
@@ -174,7 +187,7 @@ function ToolCallCardItem({
           {resultContent !== undefined ? (
             <div className="space-y-2">
               <div className="text-[11px] font-medium text-muted-foreground">
-                执行结果 (Tool Result)
+                {tx("返回结果", "Tool Output")}
               </div>
               {parsedResult?.rows && parsedResult.columns.length > 0 ? (
                 <div className="overflow-x-auto rounded border border-border">
@@ -229,8 +242,12 @@ export function MessageView({
   streamingText = "",
   streamingAgentName = null,
   isStreaming = false,
-  emptyHint = "发送问题开始多轮推理、问数与知识检索对话",
+  emptyHint,
 }: MessageViewProps) {
+  const { tx, fmtNum } = useI18n();
+  const resolvedEmptyHint =
+    emptyHint ?? tx("输入问题开始多轮推理与问数", "Ask a question to start");
+
   const { pairedItems } = useMemo(() => {
     const toolResultMap = new Map<string, MessageRecord>();
     const toolCallNameMap = new Map<string, ToolCallSpec>();
@@ -248,7 +265,11 @@ export function MessageView({
 
     const consumedToolIds = new Set<number>();
     const items: Array<
-      | { kind: "message"; msg: MessageRecord; pairedTools: Array<{ call: ToolCallSpec; result?: MessageRecord }> }
+      | {
+          kind: "message";
+          msg: MessageRecord;
+          pairedTools: Array<{ call: ToolCallSpec; result?: MessageRecord }>;
+        }
       | { kind: "orphan_tool"; msg: MessageRecord; inferredName: string }
     > = [];
 
@@ -257,7 +278,10 @@ export function MessageView({
         continue;
       }
       if (msg.role === "ASSISTANT") {
-        const pairedTools: Array<{ call: ToolCallSpec; result?: MessageRecord }> = [];
+        const pairedTools: Array<{
+          call: ToolCallSpec;
+          result?: MessageRecord;
+        }> = [];
         if (msg.tool_calls && msg.tool_calls.length > 0) {
           for (const tc of msg.tool_calls) {
             const matched = toolResultMap.get(tc.id);
@@ -299,7 +323,7 @@ export function MessageView({
     return (
       <div className="h-full min-h-[260px] flex flex-col items-center justify-center text-center p-6 text-muted-foreground">
         <Bot className="h-8 w-8 mb-2.5 text-muted-foreground/60" />
-        <p className="text-xs">{emptyHint}</p>
+        <p className="text-xs">{resolvedEmptyHint}</p>
       </div>
     );
   }
@@ -345,7 +369,9 @@ export function MessageView({
 
             {showBubble ? (
               <div
-                data-testid={isUser ? "chat-message-user" : "chat-message-assistant"}
+                data-testid={
+                  isUser ? "chat-message-user" : "chat-message-assistant"
+                }
                 className={cn(
                   "flex gap-2.5",
                   isUser ? "justify-end" : "justify-start"
@@ -379,23 +405,29 @@ export function MessageView({
                       ) : null}
                       {typeof msg.prompt_tokens === "number" ? (
                         <Badge variant="outline" title="Prompt Tokens">
-                          in:{msg.prompt_tokens}
+                          in:{fmtNum(msg.prompt_tokens, 0)}
                         </Badge>
                       ) : null}
                       {typeof msg.completion_tokens === "number" ? (
                         <Badge variant="outline" title="Completion Tokens">
-                          out:{msg.completion_tokens}
+                          out:{fmtNum(msg.completion_tokens, 0)}
                         </Badge>
                       ) : null}
                       {typeof msg.latency_ms === "number" ? (
-                        <Badge variant="outline">{msg.latency_ms}ms</Badge>
+                        <Badge variant="outline">
+                          {fmtNum(msg.latency_ms, 0)}ms
+                        </Badge>
                       ) : null}
                     </div>
                   ) : null}
 
-                  <div className="whitespace-pre-wrap leading-relaxed break-words text-xs sm:text-sm">
-                    {msg.content}
-                  </div>
+                  {isUser ? (
+                    <div className="whitespace-pre-wrap leading-relaxed break-words text-xs sm:text-sm">
+                      {msg.content}
+                    </div>
+                  ) : (
+                    <AssistantMarkdown content={msg.content} />
+                  )}
                 </div>
 
                 {isUser ? (
@@ -444,13 +476,11 @@ export function MessageView({
               </div>
             ) : null}
             {streamingText.length > 0 ? (
-              <div className="whitespace-pre-wrap leading-relaxed break-words text-xs sm:text-sm">
-                {streamingText}
-              </div>
+              <AssistantMarkdown content={streamingText} />
             ) : (
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-xblue" />
-                正在思考与调度工具…
+                {tx("思考中…", "Thinking…")}
               </div>
             )}
           </div>

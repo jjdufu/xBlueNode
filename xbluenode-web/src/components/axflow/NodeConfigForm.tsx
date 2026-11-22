@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Braces, FormInput, Sparkles, Trash2 } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import {
   computeDagAncestors,
   type BackoffStrategy,
@@ -11,7 +13,15 @@ import {
   type OperatorSpecDto,
 } from "@/lib/api/axflow";
 import type { FlowOperator } from "@/lib/api/enums";
-import { Badge, Button, Input, Textarea } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  Input,
+  Select,
+  Textarea,
+} from "@/components/ui/primitives";
+import { resolveOperatorDesc } from "./OperatorPalette";
 
 function suggestedOutputPathsForOperator(kind: FlowOperator): string[] {
   switch (kind) {
@@ -68,6 +78,10 @@ export function NodeConfigForm({
   onUpdateEdge,
   onDeleteEdge,
 }: NodeConfigFormProps) {
+  const { isZh, tx } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("FLOW_EDIT");
+
   const [rawJsonMode, setRawJsonMode] = useState(false);
   const [rawJsonDraft, setRawJsonDraft] = useState("{}");
   const [rawJsonError, setRawJsonError] = useState<string | null>(null);
@@ -81,10 +95,11 @@ export function NodeConfigForm({
     setRawJsonError(null);
     setObjectDrafts({});
     setObjectErrors({});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [node?.id]);
 
   const operatorSpec = useMemo(
-    () => (node ? operators.find((o) => o.kind === node.kind) ?? null : null),
+    () => (node ? (operators.find((o) => o.kind === node.kind) ?? null) : null),
     [node, operators]
   );
 
@@ -109,46 +124,59 @@ export function NodeConfigForm({
       <div className="space-y-4 text-xs" data-testid="axflow-edge-config-form">
         <div className="flex items-center justify-between border-b border-border pb-2">
           <div>
-            <div className="font-semibold">依赖边条件配置</div>
+            <div className="font-semibold">
+              {tx("依赖边条件", "Dependency Condition")}
+            </div>
             <div className="font-mono-tech text-[11px] text-xblue mt-0.5">
               {edge.from} → {edge.to}
             </div>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            className="h-7 px-2.5 text-xs"
-            onClick={() => onDeleteEdge(index)}
-          >
-            <Trash2 className="h-3.5 w-3.5" />
-            删除边
-          </Button>
+          {canEdit && (
+            <Button
+              type="button"
+              variant="danger"
+              size="sm"
+              onClick={() => onDeleteEdge(index)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {tx("删除边", "Delete")}
+            </Button>
+          )}
         </div>
 
         <div className="space-y-1.5">
           <label className="block font-medium">
-            条件守卫表达式 (when)
+            {tx("分支守卫条件", "Guard Expression")}
           </label>
           <Input
             data-testid="inspector-edge-when-input"
             value={edge.when ?? ""}
+            disabled={!canEdit}
             onChange={(e) =>
               onUpdateEdge(index, {
                 ...edge,
                 when: e.target.value.length > 0 ? e.target.value : null,
               })
             }
-            placeholder="例如: n > 0 或 row_count >= 1"
+            placeholder="n > 0"
             className="h-8 font-mono-tech text-xs"
           />
           <p className="text-[11px] text-muted-foreground">
-            基于上游节点输出的顶层字段求值；表达式为假时下游按汇合策略置 SKIPPED。
+            {tx(
+              "按上游输出字段求值；不满足时下游按汇合策略跳过",
+              "Evaluated against upstream output fields"
+            )}
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-1.5">
-          {["n > 0", "row_count > 0", "approved == true", "affected_count > 0"].map(
-            (expr) => (
+        {canEdit && (
+          <div className="flex flex-wrap gap-1.5">
+            {[
+              "n > 0",
+              "row_count > 0",
+              "approved == true",
+              "affected_count > 0",
+            ].map((expr) => (
               <button
                 key={expr}
                 type="button"
@@ -157,28 +185,25 @@ export function NodeConfigForm({
               >
                 {expr}
               </button>
-            )
-          )}
-        </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   }
 
   if (!node) {
     return (
-      <div
-        className="py-10 text-center text-xs text-muted-foreground space-y-1"
-        data-testid="axflow-node-config-empty"
-      >
-        <div>请在画布中点击任意算子节点或依赖边进行配置</div>
-        <div className="text-[11px]">
-          或从左侧算子库添加新节点至工作流
-        </div>
+      <div data-testid="axflow-node-config-empty">
+        <EmptyState
+          title={tx("未选中算子节点或依赖边", "No step or edge selected")}
+        />
       </div>
     );
   }
 
   const updateConfigField = (key: string, val: unknown) => {
+    if (!canEdit) return;
     const nextCfg = { ...node.config };
     if (val === undefined) {
       delete nextCfg[key];
@@ -190,6 +215,7 @@ export function NodeConfigForm({
   };
 
   const insertTemplatePlaceholder = (token: string) => {
+    if (!canEdit) return;
     if (rawJsonMode) {
       const next = `${rawJsonDraft}\n`
         ? rawJsonDraft.replace(/\}\s*$/, `  "_ref": "${token}"\n}`)
@@ -216,6 +242,10 @@ export function NodeConfigForm({
     }
   };
 
+  const opDescription = operatorSpec
+    ? resolveOperatorDesc(operatorSpec, isZh)
+    : "";
+
   return (
     <div className="space-y-3.5 text-xs" data-testid="axflow-node-config-form">
       {/* Node Header */}
@@ -227,43 +257,51 @@ export function NodeConfigForm({
             </span>
             <Badge variant="xblue">{node.kind}</Badge>
           </div>
-          {operatorSpec?.description && (
+          {opDescription && (
             <p className="text-[11px] text-muted-foreground mt-0.5">
-              {operatorSpec.description}
+              {opDescription}
             </p>
           )}
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          className="h-7 px-2 text-[11px] shrink-0"
-          data-testid="delete-node-btn"
-          onClick={() => onDeleteNode(node.id)}
-        >
-          <Trash2 className="h-3 w-3" />
-          删除
-        </Button>
+        {canEdit && (
+          <Button
+            type="button"
+            variant="danger"
+            size="sm"
+            data-testid="delete-node-btn"
+            onClick={() => onDeleteNode(node.id)}
+          >
+            <Trash2 className="h-3 w-3" />
+            {tx("删除", "Delete")}
+          </Button>
+        )}
       </div>
 
       {/* Execution & Resilience Controls */}
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-2 gap-2.5">
         <div className="col-span-2">
-          <label className="block font-medium mb-1">节点名称 (label)</label>
+          <label className="block font-medium mb-1">
+            {tx("节点名称", "Step Name")}
+          </label>
           <Input
             data-testid="node-label-input"
             value={node.label}
+            disabled={!canEdit}
             onChange={(e) => onChangeNode({ ...node, label: e.target.value })}
             className="h-8 text-xs"
-            placeholder="节点显示名称"
+            placeholder={tx("同步订单数据", "Sync orders")}
           />
         </div>
 
         <div>
-          <label className="block font-medium mb-1">单次超时 (秒)</label>
+          <label className="block font-medium mb-1">
+            {tx("超时上限 (秒)", "Timeout (s)")}
+          </label>
           <Input
             type="number"
             min={1}
             max={86400}
+            disabled={!canEdit}
             value={node.timeout_s}
             onChange={(e) =>
               onChangeNode({
@@ -279,53 +317,72 @@ export function NodeConfigForm({
         </div>
 
         <div>
-          <label className="block font-medium mb-1">失败策略 (on_failure)</label>
-          <select
+          <label className="block font-medium mb-1">
+            {tx("失败策略", "Failure Policy")}
+          </label>
+          <Select
             value={node.on_failure}
+            disabled={!canEdit}
             onChange={(e) =>
               onChangeNode({
                 ...node,
                 on_failure: e.target.value as OnFailure,
               })
             }
-            className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono-tech text-xs"
+            className="h-8 w-full px-2 font-mono-tech"
           >
-            <option value="FAIL_RUN">FAIL_RUN (立即终止流程)</option>
-            <option value="CONTINUE">CONTINUE (允许独立分支继续)</option>
-          </select>
+            <option value="FAIL_RUN">
+              {tx("终止流程 (FAIL_RUN)", "Abort Run (FAIL_RUN)")}
+            </option>
+            <option value="CONTINUE">
+              {tx("继续分支 (CONTINUE)", "Continue (CONTINUE)")}
+            </option>
+          </Select>
         </div>
 
         <div className="col-span-2">
-          <label className="block font-medium mb-1">前驱汇合语义 (join)</label>
-          <select
+          <label className="block font-medium mb-1">
+            {tx("前驱汇合策略", "Join Policy")}
+          </label>
+          <Select
             value={node.join}
+            disabled={!canEdit}
             onChange={(e) =>
               onChangeNode({
                 ...node,
                 join: e.target.value as JoinMode,
               })
             }
-            className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono-tech text-xs"
+            className="h-8 w-full px-2 font-mono-tech"
           >
-            <option value="ALL_SUCCESS">ALL_SUCCESS (全部入边激活)</option>
-            <option value="ANY_SUCCESS">ANY_SUCCESS (任一入边激活)</option>
-            <option value="ALL_DONE">ALL_DONE (全部前驱终态即执行)</option>
-          </select>
+            <option value="ALL_SUCCESS">
+              {tx("全部入边满足 (ALL_SUCCESS)", "All Active (ALL_SUCCESS)")}
+            </option>
+            <option value="ANY_SUCCESS">
+              {tx("任一入边满足 (ANY_SUCCESS)", "Any Active (ANY_SUCCESS)")}
+            </option>
+            <option value="ALL_DONE">
+              {tx("全部前驱终态 (ALL_DONE)", "All Settled (ALL_DONE)")}
+            </option>
+          </Select>
         </div>
       </div>
 
       {/* Retry Policy */}
       <div className="rounded-md border border-border bg-muted/20 p-2.5 space-y-2">
-        <div className="font-medium text-[11px]">重试退避策略 (retry)</div>
-        <div className="grid grid-cols-3 gap-1.5">
+        <div className="font-medium text-[11px]">
+          {tx("重试策略", "Retry Policy")}
+        </div>
+        <div className="grid grid-cols-3 gap-2">
           <div>
-            <label className="block text-[10px] text-muted-foreground mb-0.5">
-              最大尝试 (1-10)
+            <label className="block text-[10px] text-muted-foreground whitespace-nowrap mb-0.5">
+              {tx("最大尝试", "Max Retries")}
             </label>
             <Input
               type="number"
               min={1}
               max={10}
+              disabled={!canEdit}
               value={node.retry.max_attempts}
               onChange={(e) =>
                 onChangeNode({
@@ -343,13 +400,14 @@ export function NodeConfigForm({
             />
           </div>
           <div>
-            <label className="block text-[10px] text-muted-foreground mb-0.5">
-              初始间隔(s)
+            <label className="block text-[10px] text-muted-foreground whitespace-nowrap mb-0.5">
+              {tx("退避间隔 (s)", "Interval (s)")}
             </label>
             <Input
               type="number"
               min={1}
               max={3600}
+              disabled={!canEdit}
               value={node.retry.backoff_s}
               onChange={(e) =>
                 onChangeNode({
@@ -367,11 +425,12 @@ export function NodeConfigForm({
             />
           </div>
           <div>
-            <label className="block text-[10px] text-muted-foreground mb-0.5">
-              退避曲线
+            <label className="block text-[10px] text-muted-foreground whitespace-nowrap mb-0.5">
+              {tx("退避方式", "Backoff")}
             </label>
-            <select
+            <Select
               value={node.retry.backoff}
+              disabled={!canEdit}
               onChange={(e) =>
                 onChangeNode({
                   ...node,
@@ -381,23 +440,26 @@ export function NodeConfigForm({
                   },
                 })
               }
-              className="h-7 w-full rounded-md border border-input bg-background px-1.5 font-mono-tech text-[11px]"
+              className="h-7 w-full px-1.5 font-mono-tech text-[11px]"
             >
-              <option value="FIXED">FIXED</option>
-              <option value="EXPONENTIAL">EXPONENTIAL</option>
-            </select>
+              <option value="FIXED">{tx("固定", "FIXED")}</option>
+              <option value="EXPONENTIAL">{tx("指数", "EXP")}</option>
+            </Select>
           </div>
         </div>
       </div>
 
-      {/* Operator Config Section (JSON-Schema Form + Raw JSON Toggle) */}
+      {/* Operator Config Section */}
       <div className="space-y-2 pt-1 border-t border-border">
         <div className="flex items-center justify-between">
-          <span className="font-semibold">算子参数 (config)</span>
+          <span className="font-semibold">
+            {tx("算子参数", "Parameters")}
+          </span>
           <Button
             type="button"
             variant="ghost"
-            className="h-6 px-2 py-0 text-[11px]"
+            size="sm"
+            className="h-6 px-2 text-[11px]"
             data-testid="toggle-config-json-btn"
             onClick={() => {
               if (!rawJsonMode) {
@@ -410,12 +472,12 @@ export function NodeConfigForm({
             {rawJsonMode ? (
               <>
                 <FormInput className="h-3 w-3" />
-                表单模式
+                {tx("表单视图", "Form")}
               </>
             ) : (
               <>
                 <Braces className="h-3 w-3" />
-                JSON 源码
+                {tx("JSON 视图", "JSON")}
               </>
             )}
           </Button>
@@ -427,6 +489,7 @@ export function NodeConfigForm({
               data-testid="node-config-raw-json"
               rows={7}
               value={rawJsonDraft}
+              disabled={!canEdit}
               onChange={(e) => {
                 const txt = e.target.value;
                 setRawJsonDraft(txt);
@@ -443,11 +506,15 @@ export function NodeConfigForm({
                       config: parsed as Record<string, unknown>,
                     });
                   } else {
-                    setRawJsonError("算子 config 必须是 JSON 对象");
+                    setRawJsonError(
+                      tx("参数需为 JSON 对象", "Config must be JSON object")
+                    );
                   }
                 } catch (err) {
                   setRawJsonError(
-                    err instanceof Error ? err.message : "JSON 语法错误"
+                    err instanceof Error
+                      ? err.message
+                      : tx("JSON 语法错误", "Invalid JSON")
                   );
                 }
               }}
@@ -465,26 +532,30 @@ export function NodeConfigForm({
               const pType = primaryJsonSchemaType(propSpec);
               const isRequired = requiredSet.has(propKey);
               const val = node.config[propKey] ?? propSpec.default;
+              const fieldLabel = isZh
+                ? (propSpec.title ?? propKey)
+                : propKey;
 
               if (Array.isArray(propSpec.enum) && propSpec.enum.length > 0) {
                 return (
                   <div key={propKey}>
                     <label className="block font-medium mb-1">
-                      {propSpec.title ?? propKey}
+                      {fieldLabel}
                       {isRequired && <span className="text-xblue ml-0.5">*</span>}
                     </label>
-                    <select
+                    <Select
                       data-testid={`config-field-${propKey}`}
                       value={String(val ?? propSpec.enum[0])}
+                      disabled={!canEdit}
                       onChange={(e) => updateConfigField(propKey, e.target.value)}
-                      className="h-8 w-full rounded-md border border-input bg-background px-2 font-mono-tech text-xs"
+                      className="h-8 w-full font-mono-tech"
                     >
                       {propSpec.enum.map((opt) => (
                         <option key={String(opt)} value={String(opt)}>
                           {String(opt)}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </div>
                 );
               }
@@ -495,11 +566,12 @@ export function NodeConfigForm({
                     key={propKey}
                     className="flex items-center justify-between rounded border border-border bg-muted/20 px-2.5 py-1.5 cursor-pointer"
                   >
-                    <span>{propSpec.title ?? propKey}</span>
+                    <span>{fieldLabel}</span>
                     <input
                       data-testid={`config-field-${propKey}`}
                       type="checkbox"
                       checked={Boolean(val)}
+                      disabled={!canEdit}
                       onChange={(e) =>
                         updateConfigField(propKey, e.target.checked)
                       }
@@ -513,7 +585,7 @@ export function NodeConfigForm({
                 return (
                   <div key={propKey}>
                     <label className="block font-medium mb-1">
-                      {propSpec.title ?? propKey}
+                      {fieldLabel}
                       {isRequired && <span className="text-xblue ml-0.5">*</span>}
                     </label>
                     <Input
@@ -521,6 +593,7 @@ export function NodeConfigForm({
                       type="number"
                       min={propSpec.minimum}
                       max={propSpec.maximum}
+                      disabled={!canEdit}
                       value={typeof val === "number" ? val : ""}
                       onChange={(e) => {
                         const rawStr = e.target.value;
@@ -553,18 +626,19 @@ export function NodeConfigForm({
                 return (
                   <div key={propKey}>
                     <label className="block font-medium mb-1">
-                      {propSpec.title ?? propKey}
-                      <span className="ml-1 font-mono-tech text-[10px] text-muted-foreground">
-                        ({pType})
-                      </span>
+                      {fieldLabel}
                     </label>
                     <Textarea
                       data-testid={`config-field-${propKey}`}
                       rows={3}
                       value={textValue}
+                      disabled={!canEdit}
                       onChange={(e) => {
                         const txt = e.target.value;
-                        setObjectDrafts((prev) => ({ ...prev, [propKey]: txt }));
+                        setObjectDrafts((prev) => ({
+                          ...prev,
+                          [propKey]: txt,
+                        }));
                         try {
                           const parsed: unknown = JSON.parse(txt);
                           setObjectErrors((prev) => {
@@ -576,7 +650,7 @@ export function NodeConfigForm({
                         } catch {
                           setObjectErrors((prev) => ({
                             ...prev,
-                            [propKey]: "无效 JSON",
+                            [propKey]: tx("无效 JSON", "Invalid JSON"),
                           }));
                         }
                       }}
@@ -596,7 +670,7 @@ export function NodeConfigForm({
               return (
                 <div key={propKey}>
                   <label className="block font-medium mb-1">
-                    {propSpec.title ?? propKey}
+                    {fieldLabel}
                     {isRequired && <span className="text-xblue ml-0.5">*</span>}
                   </label>
                   {isMultiline ? (
@@ -604,22 +678,24 @@ export function NodeConfigForm({
                       data-testid={`config-field-${propKey}`}
                       rows={3}
                       value={typeof val === "string" ? val : ""}
+                      disabled={!canEdit}
                       onFocus={() => setFocusedFieldKey(propKey)}
                       onChange={(e) =>
                         updateConfigField(propKey, e.target.value)
                       }
-                      placeholder={propSpec.description ?? ""}
+                      placeholder={isZh ? (propSpec.description ?? "") : propKey}
                       className="font-mono-tech text-xs"
                     />
                   ) : (
                     <Input
                       data-testid={`config-field-${propKey}`}
                       value={typeof val === "string" ? val : ""}
+                      disabled={!canEdit}
                       onFocus={() => setFocusedFieldKey(propKey)}
                       onChange={(e) =>
                         updateConfigField(propKey, e.target.value)
                       }
-                      placeholder={propSpec.description ?? ""}
+                      placeholder={isZh ? (propSpec.description ?? "") : propKey}
                       className="h-8 font-mono-tech text-xs"
                     />
                   )}
@@ -630,14 +706,14 @@ export function NodeConfigForm({
         )}
       </div>
 
-      {/* Ancestor Output Template Helper (§07.2.1) */}
+      {/* Ancestor Output Template Helper */}
       <div
         className="rounded-md border border-border bg-muted/30 p-2.5 space-y-2"
         data-testid="ancestor-template-helper"
       >
         <div className="flex items-center gap-1 text-[11px] font-medium">
           <Sparkles className="h-3 w-3 text-xblue" />
-          参数模板占位符（严格祖先节点输出）
+          {tx("上游参数占位符", "Upstream Placeholders")}
         </div>
         {ancestors.length > 0 ? (
           <div className="space-y-1.5">
@@ -646,7 +722,7 @@ export function NodeConfigForm({
               return (
                 <div key={anc.id} className="space-y-1">
                   <div className="font-mono-tech text-[10px] text-muted-foreground">
-                    上游 {anc.id} ({anc.kind})
+                    {anc.id} ({anc.kind})
                   </div>
                   <div className="flex flex-wrap gap-1">
                     {fields.map((f) => {
@@ -655,8 +731,9 @@ export function NodeConfigForm({
                         <button
                           key={token}
                           type="button"
+                          disabled={!canEdit}
                           onClick={() => insertTemplatePlaceholder(token)}
-                          className="rounded border border-border bg-card px-1.5 py-0.5 font-mono-tech text-[10px] hover:border-xblue cursor-pointer"
+                          className="rounded border border-border bg-card px-1.5 py-0.5 font-mono-tech text-[10px] hover:border-xblue cursor-pointer disabled:opacity-50"
                         >
                           {token}
                         </button>
@@ -669,7 +746,7 @@ export function NodeConfigForm({
           </div>
         ) : (
           <div className="text-[10px] text-muted-foreground">
-            当前节点为根节点（无上游祖先），可引用触发载荷与运行上下文：
+            {tx("根节点上下文变量:", "Root context variables:")}
           </div>
         )}
 
@@ -683,8 +760,9 @@ export function NodeConfigForm({
             <button
               key={ctxToken}
               type="button"
+              disabled={!canEdit}
               onClick={() => insertTemplatePlaceholder(ctxToken)}
-              className="rounded border border-border bg-card px-1.5 py-0.5 font-mono-tech text-[10px] text-muted-foreground hover:text-foreground hover:border-xblue cursor-pointer"
+              className="rounded border border-border bg-card px-1.5 py-0.5 font-mono-tech text-[10px] text-muted-foreground hover:text-foreground hover:border-xblue cursor-pointer disabled:opacity-50"
             >
               {ctxToken}
             </button>

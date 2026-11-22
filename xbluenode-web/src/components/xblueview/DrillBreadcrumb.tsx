@@ -1,4 +1,5 @@
 import { ChevronRight } from "lucide-react";
+import { useI18n } from "@/i18n";
 import type { DrillPathItem } from "@/lib/api/xblueview";
 
 export interface DrillBreadcrumbProps {
@@ -10,6 +11,7 @@ export function DrillBreadcrumb({
   drillPath,
   onPopToLevel,
 }: DrillBreadcrumbProps) {
+  const { tx } = useI18n();
   if (drillPath.length === 0) return null;
 
   return (
@@ -22,10 +24,13 @@ export function DrillBreadcrumb({
         onClick={() => onPopToLevel(0)}
         className="rounded px-1.5 py-0.5 bg-muted hover:bg-xblue-soft hover:text-xblue cursor-pointer"
       >
-        全部
+        {tx("全部", "All")}
       </button>
       {drillPath.map((item, idx) => (
-        <span key={`${item.field}-${idx}`} className="inline-flex items-center gap-1">
+        <span
+          key={`${item.field}-${idx}`}
+          className="inline-flex items-center gap-1"
+        >
           <ChevronRight className="h-3 w-3 text-muted-foreground" />
           <button
             type="button"

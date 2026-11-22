@@ -11,19 +11,15 @@ import {
   type ScenarioRecord,
 } from "@/lib/api/axsim";
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
 
 export interface ScenarioCompareProps {
   sandboxId: string;
   scenarios: ScenarioRecord[];
 }
 
-function formatNum(val: number | null | undefined): string {
-  if (val === null || val === undefined || !Number.isFinite(val)) return "—";
-  return Number.isInteger(val) ? String(val) : val.toFixed(2);
-}
-
 function formatRatio(val: number | null | undefined): string {
-  if (val === null || val === undefined || !Number.isFinite(val)) return "—";
+  if (val === null || val === undefined || !Number.isFinite(val)) return "-";
   const pct = val * 100;
   return `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`;
 }
@@ -32,6 +28,7 @@ export function ScenarioCompare({
   sandboxId,
   scenarios,
 }: ScenarioCompareProps) {
+  const { tx, fmtNum } = useI18n();
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [typeFilter, setTypeFilter] = useState("");
   const [metricsFilter, setMetricsFilter] = useState("");
@@ -41,7 +38,6 @@ export function ScenarioCompare({
   const [briefingLoading, setBriefingLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Auto-select first 2 scenarios when sandbox or scenarios list changes
   useEffect(() => {
     setCompareData(null);
     const validIds = new Set(scenarios.map((s) => s.id));
@@ -66,7 +62,12 @@ export function ScenarioCompare({
 
   const runCompare = async (withBriefing: boolean) => {
     if (selectedIds.length < 2) {
-      setErrorMsg("请至少选择 2 个方案进行并排对比（最多 5 个）");
+      setErrorMsg(
+        tx(
+          "请勾选至少 2 个方案（最多 5 个）",
+          "Select 2 to 5 scenarios to compare"
+        )
+      );
       return;
     }
     setErrorMsg(null);
@@ -114,19 +115,24 @@ export function ScenarioCompare({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2.5">
         <div className="flex items-center gap-2 text-sm font-medium">
           <GitCompare className="h-4 w-4 text-xblue" />
-          <span>多方案并排对比与 AI 决策简报</span>
+          <span>{tx("多方案并排对比", "Scenario Comparison")}</span>
         </div>
-        <Badge variant="outline">支持 2–5 个同沙盘方案</Badge>
+        <Badge variant="outline">
+          {tx("2–5 个方案", "2–5 Scenarios")}
+        </Badge>
       </div>
 
       {/* Scenario checkboxes */}
       <div className="space-y-2">
         <div className="text-xs text-muted-foreground">
-          选择待对比场景（已选 {selectedIds.length}/5）：
+          {tx(
+            `待对比场景（已选 ${selectedIds.length}/5）：`,
+            `Scenarios (${selectedIds.length}/5 selected):`
+          )}
         </div>
         {scenarios.length === 0 ? (
           <div className="text-xs text-muted-foreground">
-            当前沙盘暂无已保存场景，请先在「干预推演」页创建至少 2 个方案。
+            {tx("暂无已保存场景", "No saved scenarios")}
           </div>
         ) : (
           <div className="flex flex-wrap gap-2">
@@ -149,8 +155,8 @@ export function ScenarioCompare({
                   />
                   <span>{sc.name}</span>
                   {sc.is_stale && (
-                    <Badge variant="outline" className="text-[10px]">
-                      过期
+                    <Badge variant="warning" className="text-[10px]">
+                      {tx("已过期", "Stale")}
                     </Badge>
                   )}
                 </label>
@@ -166,13 +172,13 @@ export function ScenarioCompare({
           <Input
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
-            placeholder="过滤对象类型 (如 Order)"
+            placeholder="Order / Warehouse"
             className="h-8 w-44 text-xs font-mono-tech"
           />
           <Input
             value={metricsFilter}
             onChange={(e) => setMetricsFilter(e.target.value)}
-            placeholder="限定指标 (逗号分隔)"
+            placeholder="fulfillment,inventory"
             className="h-8 w-48 text-xs font-mono-tech"
           />
         </div>
@@ -186,7 +192,9 @@ export function ScenarioCompare({
             data-testid="compare-run-btn"
           >
             <GitCompare className="h-3.5 w-3.5" />
-            {loading ? "对比中..." : "对比方案"}
+            {loading
+              ? tx("对比中…", "Comparing…")
+              : tx("对比方案", "Compare")}
           </Button>
           <Button
             type="button"
@@ -195,7 +203,9 @@ export function ScenarioCompare({
             data-testid="compare-briefing-btn"
           >
             <Sparkles className="h-3.5 w-3.5" />
-            {briefingLoading ? "生成简报中..." : "生成决策简报"}
+            {briefingLoading
+              ? tx("生成中…", "Generating…")
+              : tx("生成简报", "AI Briefing")}
           </Button>
         </div>
       </div>
@@ -215,11 +225,11 @@ export function ScenarioCompare({
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2 font-semibold text-xblue">
               <Sparkles className="h-4 w-4" />
-              <span>AI 研判与决策简报</span>
+              <span>{tx("AI 决策简报", "AI Decision Briefing")}</span>
             </div>
             {compareData.briefing.recommended_scenario_id && (
               <Badge variant="xblue">
-                推荐方案：
+                {tx("推荐方案：", "Recommended: ")}
                 {scenarioNameMap.get(
                   compareData.briefing.recommended_scenario_id
                 ) ?? compareData.briefing.recommended_scenario_id}
@@ -230,7 +240,7 @@ export function ScenarioCompare({
           {compareData.briefing.error && (
             <div className="rounded border border-amber-500/40 bg-amber-500/10 px-2.5 py-1.5 text-amber-700 dark:text-amber-300 flex items-center gap-1.5">
               <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-              <span>简报生成校验提示：{compareData.briefing.error}</span>
+              <span>{compareData.briefing.error}</span>
             </div>
           )}
 
@@ -246,7 +256,7 @@ export function ScenarioCompare({
                 <div className="space-y-1">
                   <div className="font-medium text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
                     <CheckCircle2 className="h-3.5 w-3.5" />
-                    依据与推荐理由 (Citations)
+                    {tx("推荐依据", "Rationale")}
                   </div>
                   <ul className="list-disc pl-4 space-y-1 text-muted-foreground">
                     {compareData.briefing.reasons.map((r, i) => (
@@ -261,7 +271,7 @@ export function ScenarioCompare({
                 <div className="space-y-1">
                   <div className="font-medium text-amber-700 dark:text-amber-400 flex items-center gap-1">
                     <AlertTriangle className="h-3.5 w-3.5" />
-                    风险与注意事项 (Warnings)
+                    {tx("潜在风险", "Risks")}
                   </div>
                   <ul className="list-disc pl-4 space-y-1 text-muted-foreground">
                     {compareData.briefing.risks.map((w, i) => (
@@ -278,14 +288,18 @@ export function ScenarioCompare({
       {compareData && (
         <div className="space-y-4">
           <div className="space-y-2">
-            <div className="text-xs font-semibold">汇总 KPI 对比矩阵</div>
+            <div className="text-xs font-semibold">
+              {tx("汇总指标对比矩阵", "Aggregate KPI Matrix")}
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-xs" data-testid="compare-kpi-table">
                 <thead>
                   <tr className="border-b border-border text-left text-muted-foreground">
-                    <th className="py-2 pr-3">对象类型</th>
-                    <th className="py-2 pr-3">指标</th>
-                    <th className="py-2 pr-3 text-right">基线总和</th>
+                    <th className="py-2 pr-3">{tx("对象类型", "Type")}</th>
+                    <th className="py-2 pr-3">{tx("指标", "Metric")}</th>
+                    <th className="py-2 pr-3 text-right">
+                      {tx("基线总和", "Baseline Sum")}
+                    </th>
                     {compareData.scenarios.map((col) => (
                       <th key={col.id} className="py-2 px-2 text-right">
                         {col.name}
@@ -302,7 +316,7 @@ export function ScenarioCompare({
                       <td className="py-2 pr-3 font-medium">{row.type_name}</td>
                       <td className="py-2 pr-3 font-mono-tech">{row.metric}</td>
                       <td className="py-2 pr-3 text-right font-mono-tech text-muted-foreground">
-                        {formatNum(row.before_sum)}
+                        {fmtNum(row.before_sum, 4)}
                       </td>
                       {compareData.scenarios.map((col) => {
                         const cell = row.values?.[col.id];
@@ -321,14 +335,19 @@ export function ScenarioCompare({
                             {cell ? (
                               <div>
                                 <div className="font-medium">
-                                  {formatNum(cell.after_sum)}
+                                  {fmtNum(cell.after_sum, 4)}
                                 </div>
                                 <div className={`text-[11px] ${tone}`}>
-                                  {formatRatio(cell.delta_ratio)} ({cell.affected_nodes} 节点)
+                                  {formatRatio(cell.delta_ratio)} (
+                                  {tx(
+                                    `${cell.affected_nodes} 节点`,
+                                    `${cell.affected_nodes} nodes`
+                                  )}
+                                  )
                                 </div>
                               </div>
                             ) : (
-                              "—"
+                              "-"
                             )}
                           </td>
                         );
@@ -341,7 +360,7 @@ export function ScenarioCompare({
                         colSpan={3 + compareData.scenarios.length}
                         className="py-4 text-center text-muted-foreground"
                       >
-                        暂无 KPI 对比行
+                        {tx("暂无汇总对比行", "No aggregate KPI rows")}
                       </td>
                     </tr>
                   )}
@@ -353,16 +372,25 @@ export function ScenarioCompare({
           {/* Key Nodes Matrix */}
           <div className="space-y-2">
             <div className="text-xs font-semibold">
-              关键节点差异对比矩阵（按跨方案差异 max_spread 降序）
+              {tx("关键节点差异矩阵", "Key Node Spread Matrix")}
             </div>
             <div className="overflow-x-auto">
-              <table className="w-full text-xs" data-testid="compare-nodes-table">
+              <table
+                className="w-full text-xs"
+                data-testid="compare-nodes-table"
+              >
                 <thead>
                   <tr className="border-b border-border text-left text-muted-foreground">
-                    <th className="py-2 pr-3">节点名称</th>
-                    <th className="py-2 pr-3">类型 · 指标</th>
-                    <th className="py-2 pr-3 text-right">基线值</th>
-                    <th className="py-2 pr-3 text-right">差异跨度</th>
+                    <th className="py-2 pr-3">{tx("节点名称", "Node")}</th>
+                    <th className="py-2 pr-3">
+                      {tx("类型 · 指标", "Type · Metric")}
+                    </th>
+                    <th className="py-2 pr-3 text-right">
+                      {tx("基线值", "Baseline")}
+                    </th>
+                    <th className="py-2 pr-3 text-right">
+                      {tx("差异跨度", "Max Spread")}
+                    </th>
                     {compareData.scenarios.map((col) => (
                       <th key={col.id} className="py-2 px-2 text-right">
                         {col.name}
@@ -381,10 +409,10 @@ export function ScenarioCompare({
                         {row.type_name}.{row.metric}
                       </td>
                       <td className="py-2 pr-3 text-right font-mono-tech text-muted-foreground">
-                        {formatNum(row.before_val)}
+                        {fmtNum(row.before_val, 4)}
                       </td>
                       <td className="py-2 pr-3 text-right font-mono-tech">
-                        {formatNum(row.max_spread)}
+                        {fmtNum(row.max_spread, 4)}
                       </td>
                       {compareData.scenarios.map((col) => {
                         const cell = row.values?.[col.id];
@@ -403,14 +431,14 @@ export function ScenarioCompare({
                             {cell ? (
                               <div>
                                 <span className="font-medium">
-                                  {formatNum(cell.after_val)}
+                                  {fmtNum(cell.after_val, 4)}
                                 </span>
                                 <span className={`ml-1 text-[11px] ${tone}`}>
                                   ({formatRatio(cell.delta_ratio)})
                                 </span>
                               </div>
                             ) : (
-                              "—"
+                              "-"
                             )}
                           </td>
                         );
@@ -423,7 +451,7 @@ export function ScenarioCompare({
                         colSpan={4 + compareData.scenarios.length}
                         className="py-4 text-center text-muted-foreground"
                       >
-                        暂无节点级差异行
+                        {tx("暂无节点差异行", "No node-level rows")}
                       </td>
                     </tr>
                   )}

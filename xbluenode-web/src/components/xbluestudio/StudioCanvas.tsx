@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BaseEdge,
@@ -7,23 +7,28 @@ import {
   MarkerType,
   MiniMap,
   ReactFlow,
+  applyNodeChanges,
   getSmoothStepPath,
   type Connection,
   type Edge,
   type EdgeProps,
   type EdgeTypes,
   type NodeTypes,
+  type OnNodesChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import ELK from "elkjs/lib/elk.bundled.js";
 import { LayoutGrid, Link2, Plus } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
+import { useTheme } from "@/lib/theme";
 import type { Cardinality } from "@/lib/api/enums";
 import type {
   EdgeTypeSpec,
   NodeTypeSpec,
   ValidationIssue,
 } from "@/lib/api/xblue";
-import { Button, Input } from "@/components/ui/primitives";
+import { Button, Input, Select } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import {
   StudioCanvasNodeCard,
@@ -34,6 +39,7 @@ export interface StudioEdgeData extends Record<string, unknown> {
   spec: EdgeTypeSpec;
   edgeIndex: number;
   selected: boolean;
+  isDark: boolean;
   onSelectEdge: (index: number) => void;
 }
 
@@ -69,9 +75,17 @@ function StudioRelationshipEdge({
 
   const spec = data?.spec;
   const selected = Boolean(data?.selected);
+  const isDark = Boolean(data?.isDark);
   const badgeText = spec
     ? CARDINALITY_SHORT[spec.cardinality] ?? "M:N"
     : "M:N";
+  const strokeColor = selected
+    ? isDark
+      ? "#3b82f6"
+      : "#2563eb"
+    : isDark
+      ? "#a1a1aa"
+      : "#71717a";
 
   return (
     <>
@@ -80,7 +94,7 @@ function StudioRelationshipEdge({
         path={edgePath}
         markerEnd={markerEnd}
         style={{
-          stroke: selected ? "#2563eb" : "#71717a",
+          stroke: strokeColor,
           strokeWidth: selected ? 2.2 : 1.5,
         }}
       />
@@ -144,7 +158,9 @@ export interface StudioCanvasProps {
   onSelectNode: (name: string | null) => void;
   onSelectEdge: (edgeIndex: number | null) => void;
   onUpdateNodePosition: (name: string, posX: number, posY: number) => void;
-  onApplyLayoutPositions: (positions: Record<string, { x: number; y: number }>) => void;
+  onApplyLayoutPositions: (
+    positions: Record<string, { x: number; y: number }>
+  ) => void;
   onCreateNodeType: (name: string, displayName: string) => void;
   onCreateEdgeType: (edge: EdgeTypeSpec) => void;
 }
@@ -162,6 +178,11 @@ export function StudioCanvas({
   onCreateNodeType,
   onCreateEdgeType,
 }: StudioCanvasProps) {
+  const { tx } = useI18n();
+  const { isDark } = useTheme();
+  const { can } = usePrincipal();
+  const canEdit = can("STUDIO_EDIT");
+
   const [quickAddNodeOpen, setQuickAddNodeOpen] = useState(false);
   const [newNodeName, setNewNodeName] = useState("");
   const [newNodeDisplay, setNewNodeDisplay] = useState("");
@@ -170,6 +191,8 @@ export function StudioCanvas({
   const [newEdgeSrc, setNewEdgeSrc] = useState("");
   const [newEdgeDst, setNewEdgeDst] = useState("");
   const [layoutRunning, setLayoutRunning] = useState(false);
+
+  const draggingNodeIdRef = useRef<string | null>(null);
 
   const issueStatsByNode = useMemo(() => {
     const stats: Record<string, { count: number; hasError: boolean }> = {};
@@ -190,26 +213,66 @@ export function StudioCanvas({
     return stats;
   }, [issues, nodeTypes]);
 
-  const flowNodes: StudioFlowNode[] = useMemo(
-    () =>
-      nodeTypes.map((nt, idx) => {
-        const st = issueStatsByNode[nt.name] ?? { count: 0, hasError: false };
-        return {
-          id: nt.name,
-          type: "studioNode",
-          position: {
-            x: Number.isFinite(nt.pos_x) ? nt.pos_x : 100 + idx * 280,
-            y: Number.isFinite(nt.pos_y) ? nt.pos_y : 120,
-          },
-          data: {
-            spec: nt,
-            selected: selectedNodeName === nt.name,
-            issueCount: st.count,
-            hasError: st.hasError,
-          },
-        };
-      }),
-    [nodeTypes, selectedNodeName, issueStatsByNode]
+  const flowNodes: StudioFlowNode[] = useMemo(() => {
+    const placed: Array<{ x: number; y: number }> = [];
+    return nodeTypes.map((nt, idx) => {
+      const st = issueStatsByNode[nt.name] ?? { count: 0, hasError: false };
+      const x = Number.isFinite(nt.pos_x) ? nt.pos_x : 100 + idx * 340;
+      let y = Number.isFinite(nt.pos_y) ? nt.pos_y : 120;
+      while (
+        placed.some((p) => Math.abs(p.x - x) < 80 && Math.abs(p.y - y) < 80)
+      ) {
+        y += 280;
+      }
+      placed.push({ x, y });
+      return {
+        id: nt.name,
+        type: "studioNode",
+        position: { x, y },
+        data: {
+          spec: nt,
+          selected: selectedNodeName === nt.name,
+          issueCount: st.count,
+          hasError: st.hasError,
+        },
+      };
+    });
+  }, [nodeTypes, selectedNodeName, issueStatsByNode]);
+
+  const [liveNodes, setLiveNodes] = useState<StudioFlowNode[]>(flowNodes);
+
+  useEffect(() => {
+    setLiveNodes((prev) => {
+      const prevMap = new Map(prev.map((n) => [n.id, n]));
+      return flowNodes.map((nextNode) => {
+        const existing = prevMap.get(nextNode.id);
+        if (
+          existing &&
+          (existing.dragging || draggingNodeIdRef.current === nextNode.id)
+        ) {
+          return {
+            ...nextNode,
+            position: existing.position,
+            measured: existing.measured,
+            dragging: existing.dragging,
+          };
+        }
+        if (existing?.measured) {
+          return {
+            ...nextNode,
+            measured: existing.measured,
+          };
+        }
+        return nextNode;
+      });
+    });
+  }, [flowNodes]);
+
+  const handleNodesChange: OnNodesChange<StudioFlowNode> = useCallback(
+    (changes) => {
+      setLiveNodes((nds) => applyNodeChanges(changes, nds));
+    },
+    []
   );
 
   const nodeNameSet = useMemo(
@@ -217,40 +280,40 @@ export function StudioCanvas({
     [nodeTypes]
   );
 
-  const flowEdges: StudioFlowEdge[] = useMemo(
-    () =>
-      edgeTypes
-        .map((et, idx) => ({ et, idx }))
-        .filter(
-          ({ et }) =>
-            nodeNameSet.has(et.src_type_name) &&
-            nodeNameSet.has(et.dst_type_name)
-        )
-        .map(({ et, idx }) => ({
-          id: `edge-${idx}-${et.src_type_name}-${et.name}-${et.dst_type_name}`,
-          source: et.src_type_name,
-          target: et.dst_type_name,
-          type: "studioEdge",
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            color: selectedEdgeIndex === idx ? "#2563eb" : "#71717a",
+  const flowEdges: StudioFlowEdge[] = useMemo(() => {
+    const activeStroke = isDark ? "#3b82f6" : "#2563eb";
+    const idleStroke = isDark ? "#a1a1aa" : "#71717a";
+    return edgeTypes
+      .map((et, idx) => ({ et, idx }))
+      .filter(
+        ({ et }) =>
+          nodeNameSet.has(et.src_type_name) && nodeNameSet.has(et.dst_type_name)
+      )
+      .map(({ et, idx }) => ({
+        id: `edge-${idx}-${et.src_type_name}-${et.name}-${et.dst_type_name}`,
+        source: et.src_type_name,
+        target: et.dst_type_name,
+        type: "studioEdge",
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: selectedEdgeIndex === idx ? activeStroke : idleStroke,
+        },
+        data: {
+          spec: et,
+          edgeIndex: idx,
+          selected: selectedEdgeIndex === idx,
+          isDark,
+          onSelectEdge: (edgeIdx: number) => {
+            onSelectNode(null);
+            onSelectEdge(edgeIdx);
           },
-          data: {
-            spec: et,
-            edgeIndex: idx,
-            selected: selectedEdgeIndex === idx,
-            onSelectEdge: (edgeIdx: number) => {
-              onSelectNode(null);
-              onSelectEdge(edgeIdx);
-            },
-          },
-        })),
-    [edgeTypes, nodeNameSet, selectedEdgeIndex, onSelectEdge, onSelectNode]
-  );
+        },
+      }));
+  }, [edgeTypes, isDark, nodeNameSet, selectedEdgeIndex, onSelectEdge, onSelectNode]);
 
   const handleConnect = useCallback(
     (connection: Connection) => {
-      if (!connection.source || !connection.target) return;
+      if (!canEdit || !connection.source || !connection.target) return;
       const candidateBase = `${connection.source.toUpperCase()}_TO_${connection.target.toUpperCase()}`;
       onCreateEdgeType({
         name: candidateBase.slice(0, 32),
@@ -263,7 +326,7 @@ export function StudioCanvas({
         propagation: {},
       });
     },
-    [onCreateEdgeType]
+    [canEdit, onCreateEdgeType]
   );
 
   const runElkLayout = async () => {
@@ -276,14 +339,14 @@ export function StudioCanvas({
         layoutOptions: {
           "elk.algorithm": "layered",
           "elk.direction": "RIGHT",
-          "elk.layered.spacing.nodeNodeBetweenLayers": "120",
-          "elk.spacing.nodeNode": "72",
-          "elk.padding": "[top=48,left=48,bottom=48,right=48]",
+          "elk.layered.spacing.nodeNodeBetweenLayers": "160",
+          "elk.spacing.nodeNode": "84",
+          "elk.padding": "[top=56,left=48,bottom=48,right=48]",
         },
         children: nodeTypes.map((nt) => ({
           id: nt.name,
           width: 224,
-          height: 136,
+          height: 140,
         })),
         edges: edgeTypes
           .filter(
@@ -300,18 +363,24 @@ export function StudioCanvas({
 
       const positions: Record<string, { x: number; y: number }> = {};
       for (const child of graph.children ?? []) {
-        if (child.id && typeof child.x === "number" && typeof child.y === "number") {
-          positions[child.id] = { x: Math.round(child.x), y: Math.round(child.y) };
+        if (
+          child.id &&
+          typeof child.x === "number" &&
+          typeof child.y === "number"
+        ) {
+          positions[child.id] = {
+            x: Math.round(child.x / 16) * 16,
+            y: Math.round(child.y / 16) * 16,
+          };
         }
       }
       onApplyLayoutPositions(positions);
     } catch {
-      // Fallback deterministic grid layout if ELK encounters an edge case
       const fallback: Record<string, { x: number; y: number }> = {};
       nodeTypes.forEach((nt, idx) => {
         fallback[nt.name] = {
-          x: 80 + (idx % 3) * 290,
-          y: 80 + Math.floor(idx / 3) * 190,
+          x: 96 + (idx % 3) * 352,
+          y: 96 + Math.floor(idx / 3) * 192,
         };
       });
       onApplyLayoutPositions(fallback);
@@ -356,64 +425,73 @@ export function StudioCanvas({
       {/* Top Floating Canvas Toolbar */}
       <div className="absolute top-2.5 left-2.5 right-2.5 z-10 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
         <div className="flex flex-wrap items-center gap-1.5 pointer-events-auto rounded-md border border-border bg-card/95 px-2 py-1.5 shadow-xs">
+          {canEdit && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="canvas-add-node-btn"
+                onClick={() => {
+                  setQuickAddNodeOpen((v) => !v);
+                  setQuickAddEdgeOpen(false);
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {tx("新增节点类型", "Add Node Type")}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="canvas-add-edge-btn"
+                onClick={() => {
+                  setNewEdgeSrc(nodeTypes[0]?.name ?? "");
+                  setNewEdgeDst(nodeTypes[1]?.name ?? nodeTypes[0]?.name ?? "");
+                  setQuickAddEdgeOpen((v) => !v);
+                  setQuickAddNodeOpen(false);
+                }}
+              >
+                <Link2 className="h-3.5 w-3.5" />
+                {tx("新增关系连线", "Add Relation")}
+              </Button>
+            </>
+          )}
           <Button
             variant="outline"
-            className="h-7 px-2.5 py-1 text-xs"
-            data-testid="canvas-add-node-btn"
-            onClick={() => {
-              setQuickAddNodeOpen((v) => !v);
-              setQuickAddEdgeOpen(false);
-            }}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            新增节点类型
-          </Button>
-          <Button
-            variant="outline"
-            className="h-7 px-2.5 py-1 text-xs"
-            data-testid="canvas-add-edge-btn"
-            onClick={() => {
-              setNewEdgeSrc(nodeTypes[0]?.name ?? "");
-              setNewEdgeDst(nodeTypes[1]?.name ?? nodeTypes[0]?.name ?? "");
-              setQuickAddEdgeOpen((v) => !v);
-              setQuickAddNodeOpen(false);
-            }}
-          >
-            <Link2 className="h-3.5 w-3.5" />
-            新增关系连线
-          </Button>
-          <Button
-            variant="outline"
-            className="h-7 px-2.5 py-1 text-xs"
+            size="sm"
             data-testid="canvas-elk-layout-btn"
             onClick={() => void runElkLayout()}
             disabled={layoutRunning || nodeTypes.length === 0}
           >
             <LayoutGrid className="h-3.5 w-3.5 text-xblue" />
-            {layoutRunning ? "布局计算中..." : "ELK 自动分层布局"}
+            {layoutRunning
+              ? tx("排布中…", "Arranging…")
+              : tx("自动分层布局", "Auto Layout")}
           </Button>
         </div>
 
         <div className="pointer-events-auto rounded-md border border-border bg-card/95 px-2.5 py-1 text-[11px] font-mono-tech text-muted-foreground">
-          类型 {nodeTypes.length} · 关系 {edgeTypes.length} · 拖拽右侧锚点可连线
+          {tx("类型", "Types")} {nodeTypes.length} · {tx("关系", "Relations")}{" "}
+          {edgeTypes.length}
         </div>
       </div>
 
       {/* Quick Create Node Popover */}
-      {quickAddNodeOpen && (
+      {quickAddNodeOpen && canEdit && (
         <div className="absolute top-14 left-2.5 z-20 w-80 rounded-md border border-border bg-card p-3 shadow-md space-y-2 text-xs">
-          <div className="font-medium">新建业务节点类型</div>
+          <div className="font-medium">
+            {tx("新建节点类型", "New Node Type")}
+          </div>
           <div className="grid grid-cols-2 gap-1.5">
             <Input
               data-testid="quick-node-name-input"
-              placeholder="英文名 (如 Factory)"
+              placeholder="Factory"
               value={newNodeName}
               onChange={(e) => setNewNodeName(e.target.value)}
               className="h-8 text-xs font-mono-tech"
             />
             <Input
               data-testid="quick-node-display-input"
-              placeholder="中文名 (如 制造工厂)"
+              placeholder={tx("制造工厂", "Factory")}
               value={newNodeDisplay}
               onChange={(e) => setNewNodeDisplay(e.target.value)}
               className="h-8 text-xs"
@@ -422,83 +500,90 @@ export function StudioCanvas({
           <div className="flex justify-end gap-1.5">
             <Button
               variant="ghost"
-              className="h-7 px-2 py-1"
+              size="sm"
               onClick={() => setQuickAddNodeOpen(false)}
             >
-              取消
+              {tx("取消", "Cancel")}
             </Button>
             <Button
               data-testid="quick-node-submit-btn"
-              className="h-7 px-2.5 py-1"
+              size="sm"
               onClick={submitQuickNode}
             >
-              创建
+              {tx("创建", "Create")}
             </Button>
           </div>
         </div>
       )}
 
       {/* Quick Create Edge Popover */}
-      {quickAddEdgeOpen && (
+      {quickAddEdgeOpen && canEdit && (
         <div className="absolute top-14 left-2.5 z-20 w-96 rounded-md border border-border bg-card p-3 shadow-md space-y-2 text-xs">
-          <div className="font-medium">新建因果/业务关系类型</div>
+          <div className="font-medium">
+            {tx("新建关系类型", "New Relation Type")}
+          </div>
           <div className="grid grid-cols-3 gap-1.5">
-            <select
+            <Select
               value={newEdgeSrc}
               onChange={(e) => setNewEdgeSrc(e.target.value)}
-              className="h-8 rounded border border-input bg-background px-1.5 text-xs font-mono-tech"
+              className="h-8 px-1.5 font-mono-tech"
             >
-              <option value="">源类型</option>
+              <option value="">{tx("源类型", "Source")}</option>
               {nodeTypes.map((nt) => (
                 <option key={nt.name} value={nt.name}>
                   {nt.name}
                 </option>
               ))}
-            </select>
+            </Select>
             <Input
               data-testid="quick-edge-name-input"
               value={newEdgeName}
               onChange={(e) => setNewEdgeName(e.target.value)}
-              placeholder="如 FULFILLS"
+              placeholder="FULFILLS"
               className="h-8 text-xs font-mono-tech"
             />
-            <select
+            <Select
               value={newEdgeDst}
               onChange={(e) => setNewEdgeDst(e.target.value)}
-              className="h-8 rounded border border-input bg-background px-1.5 text-xs font-mono-tech"
+              className="h-8 px-1.5 font-mono-tech"
             >
-              <option value="">目标类型</option>
+              <option value="">{tx("目标类型", "Target")}</option>
               {nodeTypes.map((nt) => (
                 <option key={nt.name} value={nt.name}>
                   {nt.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <div className="flex justify-end gap-1.5">
             <Button
               variant="ghost"
-              className="h-7 px-2 py-1"
+              size="sm"
               onClick={() => setQuickAddEdgeOpen(false)}
             >
-              取消
+              {tx("取消", "Cancel")}
             </Button>
             <Button
               data-testid="quick-edge-submit-btn"
-              className="h-7 px-2.5 py-1"
+              size="sm"
               onClick={submitQuickEdge}
             >
-              创建关系
+              {tx("创建", "Create")}
             </Button>
           </div>
         </div>
       )}
 
       <ReactFlow
-        nodes={flowNodes}
+        nodes={liveNodes}
         edges={flowEdges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
+        onNodesChange={handleNodesChange}
+        nodesDraggable={canEdit}
+        nodesConnectable={canEdit}
+        snapToGrid
+        snapGrid={[16, 16]}
         onNodeClick={(_event, node) => {
           onSelectEdge(null);
           onSelectNode(node.id);
@@ -513,7 +598,12 @@ export function StudioCanvas({
           onSelectNode(null);
           onSelectEdge(null);
         }}
+        onNodeDragStart={(_event, node) => {
+          draggingNodeIdRef.current = node.id;
+        }}
         onNodeDragStop={(_event, node) => {
+          draggingNodeIdRef.current = null;
+          if (!canEdit) return;
           onUpdateNodePosition(
             node.id,
             Math.round(node.position.x),
@@ -522,22 +612,33 @@ export function StudioCanvas({
         }}
         onConnect={handleConnect}
         fitView
-        fitViewOptions={{ padding: 0.22, maxZoom: 1.1 }}
+        fitViewOptions={{ padding: 0.28, maxZoom: 1.0 }}
         proOptions={{ hideAttribution: true }}
       >
-        <Background gap={18} size={1} />
+        <Background
+          color={isDark ? "#27272a" : "#d4d4d8"}
+          gap={16}
+          size={1}
+        />
         <Controls showInteractive={false} />
         <MiniMap
           pannable
           zoomable
+          style={{ width: 130, height: 88 }}
+          nodeColor={(n) => {
+            const spec = (n.data as StudioFlowNode["data"] | undefined)?.spec;
+            return spec?.color || (isDark ? "#3b82f6" : "#2563eb");
+          }}
           className="!bg-card !border !border-border !rounded"
         />
       </ReactFlow>
 
-      {/* Non-anchored cross-subgraph edges indicator (if dst_type_name lives in main while editing a dept subgraph) */}
+      {/* Non-anchored cross-subgraph edges indicator */}
       {edgeTypes.length > flowEdges.length && (
         <div className="absolute bottom-2.5 left-12 z-10 flex flex-wrap items-center gap-1 rounded border border-border bg-card/95 px-2.5 py-1 text-[11px]">
-          <span className="text-muted-foreground">跨子图引用关系:</span>
+          <span className="text-muted-foreground">
+            {tx("跨子图关系:", "Cross-subgraph:")}
+          </span>
           {edgeTypes
             .map((et, idx) => ({ et, idx }))
             .filter(

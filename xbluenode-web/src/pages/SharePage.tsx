@@ -7,11 +7,13 @@ import {
   FileText,
   GitBranch,
   KeyRound,
+  Languages,
   Lock,
   Moon,
   ShieldCheck,
   Sun,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import { ApiError } from "@/lib/api/client";
 import type { ExportFormat } from "@/lib/api/enums";
 import {
@@ -22,7 +24,15 @@ import {
   type SharePublicResponse,
   type WidgetDataResponse,
 } from "@/lib/api/xblueview";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { useTheme } from "@/lib/theme";
+import {
+  Badge,
+  Button,
+  Card,
+  IconButton,
+  PasswordInput,
+  Select,
+} from "@/components/ui/primitives";
 import { DashboardGrid } from "@/components/xblueview/DashboardGrid";
 import { FilterBar } from "@/components/xblueview/FilterBar";
 import {
@@ -42,8 +52,10 @@ const SHARE_EXPORT_FORMATS: readonly ExportFormat[] = [
 
 interface ShareErrorView {
   status: number | null;
-  title: string;
-  detail: string;
+  titleZh: string;
+  titleEn: string;
+  detailZh: string;
+  detailEn: string;
 }
 
 function classifySharePageError(err: unknown): ShareErrorView {
@@ -51,66 +63,81 @@ function classifySharePageError(err: unknown): ShareErrorView {
     if (err.status === 404) {
       return {
         status: 404,
-        title: "分享链接无效、已过期或已撤销 (404)",
-        detail:
-          "该安全分享链接不存在、已超过有效期、已被创建者撤销，或已达到最大访问次数上限。",
+        titleZh: "分享链接无效、已过期或已撤销 (404)",
+        titleEn: "Share Link Invalid, Expired, or Revoked (404)",
+        detailZh:
+          "该安全分享链接不存在、已超过有效期、已被创建者撤销，或已达到访问次数上限。",
+        detailEn:
+          "This share link does not exist, has expired, was revoked, or reached its view limit.",
       };
     }
     if (err.status === 429) {
       return {
         status: 429,
-        title: "访问请求过于频繁 (429)",
-        detail: "当前 IP 访问或口令验证频率已达安全上限，请稍后再试。",
+        titleZh: "访问请求过于频繁 (429)",
+        titleEn: "Too Many Requests (429)",
+        detailZh: "当前访问或口令验证频率已达安全上限，请稍后重试。",
+        detailEn: "Rate limit exceeded. Please wait and try again.",
       };
     }
     if (err.status === 401) {
       return {
         status: 401,
-        title: "访问会话已失效 (401)",
-        detail: "口令验证会话已过期，请重新输入访问口令。",
+        titleZh: "访问会话已失效 (401)",
+        titleEn: "Session Expired (401)",
+        detailZh: "口令验证会话已过期，请重新解锁。",
+        detailEn: "Your password session expired. Please unlock again.",
       };
     }
     return {
       status: err.status,
-      title: `加载分享内容失败 (${err.errorCode})`,
-      detail: err.message,
+      titleZh: `加载分享内容失败 (${err.errorCode})`,
+      titleEn: `Failed to Load Share (${err.errorCode})`,
+      detailZh: err.message,
+      detailEn: err.message,
     };
   }
+  const msg = err instanceof Error ? err.message : String(err);
   return {
     status: null,
-    title: "无法连接分享服务",
-    detail: err instanceof Error ? err.message : String(err),
+    titleZh: "无法连接分享服务",
+    titleEn: "Unable to Reach Share Service",
+    detailZh: msg,
+    detailEn: msg,
   };
 }
 
-function classifyUnlockError(err: unknown): string {
+function classifyUnlockError(
+  err: unknown,
+  tx: (zh: string, en: string) => string
+): string {
   if (err instanceof ApiError) {
     if (err.status === 401) {
-      return "访问口令不正确，请核对后重新输入 (401)";
+      return tx("访问口令不正确 (401)", "Invalid access password (401)");
     }
     if (err.status === 429) {
-      return "口令尝试次数过多，请稍后再试 (429)";
+      return tx("口令尝试次数过多 (429)", "Too many attempts (429)");
     }
     if (err.status === 404) {
-      return "分享链接已过期、已撤销或不存在 (404)";
+      return tx(
+        "分享链接已过期、已撤销或不存在 (404)",
+        "Share link expired, revoked, or not found (404)"
+      );
     }
-    return err.message || `验证失败 (${err.status})`;
+    return err.message || `${tx("验证失败", "Verification failed")} (${err.status})`;
   }
-  return err instanceof Error ? err.message : "口令验证请求失败";
-}
-
-function formatShareTimestamp(raw: string | null | undefined): string {
-  if (!raw) return "—";
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return raw;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
-    d.getHours()
-  )}:${pad(d.getMinutes())}`;
+  return err instanceof Error
+    ? err.message
+    : tx("口令验证请求失败", "Verification request failed");
 }
 
 function formatBytes(bytes: number | null | undefined): string {
-  if (bytes === null || bytes === undefined || !Number.isFinite(bytes) || bytes < 0) {
+  if (
+    bytes === null ||
+    bytes === undefined ||
+    !Number.isFinite(bytes) ||
+    bytes < 0
+  ) {
     return "—";
   }
   if (bytes < 1024) return `${bytes} B`;
@@ -155,7 +182,11 @@ function extractScenarioImpacts(
       if (!isRecord(item)) continue;
       rows.push({
         nodeTitle: String(
-          item.title ?? item.node_title ?? item.node_key ?? item.node_id ?? "节点"
+          item.title ??
+            item.node_title ??
+            item.node_key ??
+            item.node_id ??
+            "Node"
         ),
         typeName: String(item.type_name ?? "Entity"),
         metric: String(item.metric ?? item.metric_name ?? "value"),
@@ -172,12 +203,8 @@ function extractScenarioImpacts(
 
 export function SharePage() {
   const { token } = useParams<{ token: string }>();
-
-  const [dark, setDark] = useState<boolean>(
-    () =>
-      typeof document !== "undefined" &&
-      document.documentElement.classList.contains("dark")
-  );
+  const { tx, tEnum, fmtTime, isZh, toggleLocale } = useI18n();
+  const { isDark, toggleTheme } = useTheme();
 
   // Strictly in-memory session token (NEVER persisted to localStorage / URL)
   const [shareSession, setShareSession] = useState<string | undefined>(
@@ -216,14 +243,6 @@ export function SharePage() {
       setShareAssetScope(null);
     };
   }, []);
-
-  const toggleTheme = () => {
-    const next = !dark;
-    setDark(next);
-    if (typeof document !== "undefined") {
-      document.documentElement.classList.toggle("dark", next);
-    }
-  };
 
   const fetchSharedWidget = useCallback(
     async (
@@ -330,7 +349,9 @@ export function SharePage() {
         if (err instanceof ApiError && err.status === 401 && sessionOverride) {
           setShareSession(undefined);
           setShareData({ password_required: true });
-          setUnlockError("访问会话已过期，请重新输入口令");
+          setUnlockError(
+            tx("访问会话已过期 (401)", "Session expired (401)")
+          );
         } else {
           setPageError(classifySharePageError(err));
           setShareData(null);
@@ -339,7 +360,7 @@ export function SharePage() {
         setLoading(false);
       }
     },
-    [fetchSharedWidget]
+    [fetchSharedWidget, tx]
   );
 
   useEffect(() => {
@@ -353,8 +374,10 @@ export function SharePage() {
       setLoading(false);
       setPageError({
         status: 404,
-        title: "缺少分享令牌 (404)",
-        detail: "请检查分享链接是否完整。",
+        titleZh: "缺少分享令牌 (404)",
+        titleEn: "Missing Share Token (404)",
+        detailZh: "分享链接不完整。",
+        detailEn: "The share URL is incomplete.",
       });
       return;
     }
@@ -366,7 +389,7 @@ export function SharePage() {
     if (!token) return;
     const trimmed = passwordInput.trim();
     if (!trimmed) {
-      setUnlockError("请输入访问口令");
+      setUnlockError(tx("访问口令不能为空", "Access password is required"));
       return;
     }
 
@@ -383,7 +406,7 @@ export function SharePage() {
         setPageError(classifySharePageError(err));
         setShareData(null);
       } else {
-        setUnlockError(classifyUnlockError(err));
+        setUnlockError(classifyUnlockError(err, tx));
       }
     } finally {
       setUnlocking(false);
@@ -404,7 +427,9 @@ export function SharePage() {
       );
     } catch (err) {
       setDownloadError(
-        err instanceof Error ? err.message : "下载分享文件失败"
+        err instanceof Error
+          ? err.message
+          : tx("下载失败", "Download failed")
       );
     } finally {
       setDownloading(false);
@@ -516,7 +541,7 @@ export function SharePage() {
 
   const forceDarkCanvas =
     dashboard?.theme === "dark" || dashboard?.theme === "screen";
-  const effectiveDark = Boolean(dark || forceDarkCanvas);
+  const effectiveDark = Boolean(isDark || forceDarkCanvas);
 
   return (
     <div
@@ -525,18 +550,32 @@ export function SharePage() {
     >
       {/* Strictly Isolated Public Header (No internal routes / No sidebar) */}
       <header
-        className="border-b border-border bg-card px-4 md:px-6 py-3 flex flex-wrap items-center justify-between gap-3 shrink-0"
+        className="border-b border-border bg-card px-4 md:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 shrink-0"
         data-testid="share-page-header"
       >
-        <div className="flex flex-wrap items-center gap-2.5 min-w-0">
-          <div className="flex items-center gap-1.5 text-sm font-semibold tracking-tight">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <div className="flex items-center gap-1.5 text-sm font-semibold tracking-tight select-none">
             <span className="inline-block h-2 w-2 rounded-full bg-xblue" />
-            <span>xBlueView 安全分享</span>
+            <span>{tx("xBlueView 安全分享", "xBlueView Share")}</span>
           </div>
+
           <Badge variant="xblue" className="gap-1">
             <ShieldCheck className="h-3 w-3" />
-            只读视图
+            {tx("只读视图", "Read-Only")}
           </Badge>
+
+          <button
+            type="button"
+            data-testid="locale-toggle-btn"
+            onClick={toggleLocale}
+            aria-label={tx("切换语言", "Switch language")}
+            title={tx("切换为 English", "Switch to 简体中文")}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+          >
+            <Languages className="h-3.5 w-3.5 text-xblue" />
+            <span className="font-mono-tech">{isZh ? "中文" : "EN"}</span>
+          </button>
+
           {dashboard && (
             <span
               className="text-sm font-medium text-foreground truncate"
@@ -548,7 +587,6 @@ export function SharePage() {
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {/* Locked Filter Badges */}
           {lockedEntries.map(([key, val]) => {
             const filterLabel =
               dashboard?.filters.find((f) => f.key === key)?.label ?? key;
@@ -565,7 +603,6 @@ export function SharePage() {
             );
           })}
 
-          {/* Expiration Badge */}
           {shareData?.expires_at && (
             <Badge
               variant="neutral"
@@ -573,20 +610,19 @@ export function SharePage() {
               data-testid="share-expires-badge"
             >
               <Clock className="h-3 w-3 text-xblue" />
-              到期: {formatShareTimestamp(shareData.expires_at)}
+              {tx("到期", "Exp")}: {fmtTime(shareData.expires_at, false)}
             </Badge>
           )}
 
-          {/* Download Controls */}
           {canDownloadInHeader && (
             <div className="flex items-center gap-1.5">
               {shareData?.target_kind !== "EXPORT_FILE" && (
-                <select
+                <Select
                   value={downloadFormat}
                   onChange={(e) =>
                     setDownloadFormat(e.target.value as ExportFormat)
                   }
-                  className="h-8 rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+                  className="h-8 text-xs font-mono-tech"
                   data-testid="share-download-format"
                 >
                   {SHARE_EXPORT_FORMATS.map((fmt) => (
@@ -594,41 +630,50 @@ export function SharePage() {
                       {fmt}
                     </option>
                   ))}
-                </select>
+                </Select>
               )}
               <Button
                 type="button"
                 variant="outline"
+                size="sm"
                 disabled={downloading}
                 onClick={() => void handleDownload()}
-                className="h-8 px-2.5 text-xs"
+                className="h-8 px-2.5"
                 data-testid="share-download-btn"
               >
                 <Download className="h-3.5 w-3.5 text-xblue" />
-                {downloading ? "下载中..." : "下载报告"}
+                {downloading
+                  ? tx("下载中…", "Downloading…")
+                  : tx("下载报告", "Download")}
               </Button>
             </div>
           )}
 
-          {/* Theme Toggle */}
-          <button
-            type="button"
-            onClick={toggleTheme}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
+          <IconButton
             data-testid="share-theme-toggle"
+            onClick={toggleTheme}
+            aria-label={
+              isDark
+                ? tx("亮色模式", "Light mode")
+                : tx("暗色模式", "Dark mode")
+            }
+            title={
+              isDark
+                ? tx("亮色模式", "Light mode")
+                : tx("暗色模式", "Dark mode")
+            }
           >
-            {dark ? (
-              <Sun className="h-3.5 w-3.5" />
+            {isDark ? (
+              <Sun className="h-4 w-4" />
             ) : (
-              <Moon className="h-3.5 w-3.5" />
+              <Moon className="h-4 w-4" />
             )}
-            {dark ? "浅色" : "深色"}
-          </button>
+          </IconButton>
         </div>
       </header>
 
       {downloadError && (
-        <div className="mx-4 md:mx-6 mt-3 rounded border border-foreground/30 bg-muted px-3 py-2 text-xs">
+        <div className="mx-4 md:mx-6 mt-3 rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">
           {downloadError}
         </div>
       )}
@@ -640,7 +685,7 @@ export function SharePage() {
             className="p-12 text-center text-xs text-muted-foreground"
             data-testid="share-loading-card"
           >
-            正在验证并加载安全分享内容...
+            {tx("加载中…", "Loading…")}
           </Card>
         ) : pageError ? (
           <div className="max-w-md mx-auto py-16">
@@ -651,35 +696,34 @@ export function SharePage() {
               <div className="mx-auto h-10 w-10 rounded-full border border-border bg-muted flex items-center justify-center">
                 <AlertTriangle className="h-5 w-5 text-xblue" />
               </div>
-              <h1 className="text-base font-semibold">{pageError.title}</h1>
+              <h1 className="text-base font-semibold">
+                {isZh ? pageError.titleZh : pageError.titleEn}
+              </h1>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                {pageError.detail}
+                {isZh ? pageError.detailZh : pageError.detailEn}
               </p>
             </Card>
           </div>
         ) : shareData?.password_required ? (
           <div className="max-w-md mx-auto py-16">
-            <Card
-              className="p-6 space-y-4"
-              data-testid="share-password-card"
-            >
+            <Card className="p-6 space-y-4" data-testid="share-password-card">
               <div className="flex items-center gap-2.5">
                 <div className="h-9 w-9 rounded-md border border-border bg-muted flex items-center justify-center shrink-0">
                   <KeyRound className="h-4 w-4 text-xblue" />
                 </div>
                 <div>
                   <h1 className="text-sm font-semibold">
-                    受口令保护的安全分享
+                    {tx("口令保护分享", "Password-Protected Share")}
                   </h1>
                   <p className="text-xs text-muted-foreground">
-                    请输入分享创建者设置的访问口令以查看内容
+                    {tx("访问前需验证口令", "Access requires a valid password")}
                   </p>
                 </div>
               </div>
 
               {unlockError && (
                 <div
-                  className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs"
+                  className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300"
                   data-testid="share-unlock-error"
                 >
                   {unlockError}
@@ -690,11 +734,10 @@ export function SharePage() {
                 onSubmit={(e) => void handleUnlockSubmit(e)}
                 className="space-y-3"
               >
-                <Input
-                  type="password"
+                <PasswordInput
                   value={passwordInput}
                   onChange={(e) => setPasswordInput(e.target.value)}
-                  placeholder="输入访问口令"
+                  placeholder="••••••••"
                   autoFocus
                   className="h-9 text-xs"
                   data-testid="share-unlock-password-input"
@@ -706,7 +749,9 @@ export function SharePage() {
                   data-testid="share-unlock-submit-btn"
                 >
                   <Lock className="h-3.5 w-3.5" />
-                  {unlocking ? "验证口令中..." : "验证口令并查看"}
+                  {unlocking
+                    ? tx("验证中…", "Verifying…")
+                    : tx("解锁查看", "Unlock")}
                 </Button>
               </form>
             </Card>
@@ -795,7 +840,8 @@ export function SharePage() {
 
               {shareData.export_file.finished_at && (
                 <div className="text-xs font-mono-tech tabular-nums text-muted-foreground border-t border-border pt-3">
-                  生成时间: {formatShareTimestamp(shareData.export_file.finished_at)}
+                  {tx("生成时间", "Generated")}:{" "}
+                  {fmtTime(shareData.export_file.finished_at, true)}
                 </div>
               )}
 
@@ -807,7 +853,9 @@ export function SharePage() {
                 data-testid="share-file-download-btn"
               >
                 <Download className="h-4 w-4" />
-                {downloading ? "正在下载文件..." : "下载出品文件"}
+                {downloading
+                  ? tx("下载中…", "Downloading…")
+                  : tx("下载文件", "Download File")}
               </Button>
             </Card>
           </div>
@@ -820,10 +868,10 @@ export function SharePage() {
                   {String(
                     shareData.scenario.name ??
                       shareData.scenario.title ??
-                      "AxSim 因果推演方案"
+                      tx("因果推演方案", "Causal Scenario")
                   )}
                 </h1>
-                <Badge variant="xblue">SCENARIO</Badge>
+                <Badge variant="xblue">{tEnum("SCENARIO")}</Badge>
               </div>
               {typeof shareData.scenario.description === "string" &&
                 shareData.scenario.description.length > 0 && (
@@ -850,17 +898,23 @@ export function SharePage() {
                     <table className="w-full text-xs border-collapse">
                       <thead>
                         <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
-                          <th className="px-3 py-2 font-medium">业务节点</th>
-                          <th className="px-3 py-2 font-medium">对象类型</th>
-                          <th className="px-3 py-2 font-medium">指标</th>
-                          <th className="px-3 py-2 font-medium text-right">
-                            基线值
+                          <th className="px-3 py-2 font-medium">
+                            {tx("业务节点", "Node")}
+                          </th>
+                          <th className="px-3 py-2 font-medium">
+                            {tx("对象类型", "Type")}
+                          </th>
+                          <th className="px-3 py-2 font-medium">
+                            {tx("指标", "Metric")}
                           </th>
                           <th className="px-3 py-2 font-medium text-right">
-                            推演值
+                            {tx("基线值", "Baseline")}
                           </th>
                           <th className="px-3 py-2 font-medium text-right">
-                            变化量
+                            {tx("推演值", "Simulated")}
+                          </th>
+                          <th className="px-3 py-2 font-medium text-right">
+                            {tx("变化量", "Delta")}
                           </th>
                         </tr>
                       </thead>
@@ -874,7 +928,7 @@ export function SharePage() {
                               {row.nodeTitle}
                             </td>
                             <td className="px-3 py-2 font-mono-tech text-muted-foreground">
-                              {row.typeName}
+                              {tEnum(row.typeName)}
                             </td>
                             <td className="px-3 py-2 font-mono-tech">
                               {row.metric}

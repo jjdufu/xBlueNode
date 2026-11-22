@@ -9,6 +9,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   analyticsApi,
   type AnalyticsCatalogResponse,
@@ -18,10 +19,20 @@ import {
   type MetricDimension,
   type MetricQuery,
   type MetricQueryResult,
-  type QueryColumn,
 } from "@/lib/api/analytics";
 import type { RollupGrain } from "@/lib/api/enums";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { usePrincipal } from "@/lib/permissions";
+import { ChartPanel } from "@/components/analytics/ChartPanel";
+import { ResultGrid } from "@/components/analytics/ResultGrid";
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  Input,
+  Select,
+} from "@/components/ui/primitives";
 
 const GRAIN_OPTIONS: readonly RollupGrain[] = ["MINUTE", "HOUR", "DAY", "MONTH"];
 
@@ -29,20 +40,17 @@ export interface MetricManagerProps {
   catalog: AnalyticsCatalogResponse;
   metrics: MetricDef[];
   onRefreshMetrics: () => Promise<void> | void;
-  onSyncBottomResult?: (payload: {
-    columns: QueryColumn[];
-    rows: Record<string, unknown>[];
-    sql: string;
-    durationMs: number;
-  }) => void;
 }
 
 export function MetricManager({
   catalog,
   metrics,
   onRefreshMetrics,
-  onSyncBottomResult,
 }: MetricManagerProps) {
+  const { tx, fmtNum } = useI18n();
+  const { canAny } = usePrincipal();
+  const canEditMetrics = canAny(["STUDIO_EDIT", "DATA_SYNC", "DATA_ADMIN"]);
+
   const [selectedMetricName, setSelectedMetricName] = useState<string>("");
   const [multiSelectedNames, setMultiSelectedNames] = useState<string[]>([]);
 
@@ -66,6 +74,10 @@ export function MetricManager({
   const [submittingForm, setSubmittingForm] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
 
+  const [pendingDeleteMetric, setPendingDeleteMetric] =
+    useState<MetricDef | null>(null);
+  const [deletingMetric, setDeletingMetric] = useState(false);
+
   // Query trial state
   const [queryDims, setQueryDims] = useState<string[]>([]);
   const [queryGrain, setQueryGrain] = useState<RollupGrain>("MONTH");
@@ -76,6 +88,21 @@ export function MetricManager({
   const [queryError, setQueryError] = useState<string | null>(null);
   const [lastMetricResult, setLastMetricResult] =
     useState<MetricQueryResult | null>(null);
+
+  const grainLabel = (g: RollupGrain): string => {
+    switch (g) {
+      case "MINUTE":
+        return tx("分钟", "Minute");
+      case "HOUR":
+        return tx("小时", "Hour");
+      case "DAY":
+        return tx("日", "Day");
+      case "MONTH":
+        return tx("月", "Month");
+      default:
+        return g;
+    }
+  };
 
   useEffect(() => {
     if (!selectedMetricName && metrics[0]) {
@@ -103,6 +130,7 @@ export function MetricManager({
   );
 
   const openCreateForm = () => {
+    if (!canEditMetrics) return;
     const firstDs = catalog.datasets?.[0];
     setFormMode("create");
     setFormName("");
@@ -122,6 +150,7 @@ export function MetricManager({
   };
 
   const openEditForm = (m: MetricDef) => {
+    if (!canEditMetrics) return;
     setFormMode("edit");
     setFormName(m.name);
     setFormDisplayName(m.display_name);
@@ -140,6 +169,7 @@ export function MetricManager({
   };
 
   const handleSaveForm = async () => {
+    if (!canEditMetrics) return;
     setSubmittingForm(true);
     setFormError(null);
     try {
@@ -197,13 +227,19 @@ export function MetricManager({
     }
   };
 
-  const handleDeleteMetric = async (name: string) => {
+  const handleConfirmDeleteMetric = async () => {
+    if (!pendingDeleteMetric || !canEditMetrics) return;
+    setDeletingMetric(true);
     try {
+      const name = pendingDeleteMetric.name;
       await analyticsApi.deleteMetric(name);
       setMultiSelectedNames((prev) => prev.filter((n) => n !== name));
+      setPendingDeleteMetric(null);
       await onRefreshMetrics();
     } catch (err) {
       setQueryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingMetric(false);
     }
   };
 
@@ -247,12 +283,6 @@ export function MetricManager({
       }
 
       setLastMetricResult(res);
-      onSyncBottomResult?.({
-        columns: res.columns,
-        rows: res.rows,
-        sql: res.sql,
-        durationMs: res.duration_ms,
-      });
     } catch (err) {
       setQueryError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -269,17 +299,19 @@ export function MetricManager({
   }, [catalog.datasets]);
 
   return (
-    <div className="space-y-3" data-testid="analytics-metric-manager">
+    <div className="space-y-4" data-testid="analytics-metric-manager">
       {/* Header Bar */}
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
         <div className="flex items-center gap-2">
           <Award className="h-3.5 w-3.5 text-xblue" />
-          <span className="font-semibold">统一指标语义层</span>
-          <Badge variant="neutral">共 {metrics.length} 项</Badge>
+          <span className="font-semibold">
+            {tx("统一指标语义层", "Semantic Metrics")}
+          </span>
+          <Badge variant="neutral">{fmtNum(metrics.length, 0)}</Badge>
           {metrics.some((m) => m.broken) && (
-            <Badge variant="outline" data-testid="metric-broken-summary">
-              <AlertTriangle className="mr-1 h-3 w-3 text-xblue" />
-              存在上游结构破损指标
+            <Badge variant="warning" data-testid="metric-broken-summary">
+              <AlertTriangle className="mr-1 h-3 w-3" />
+              {tx("存在上游结构异常", "Broken upstream schema")}
             </Badge>
           )}
         </div>
@@ -287,26 +319,31 @@ export function MetricManager({
         <Button
           type="button"
           variant="primary"
+          disabled={!canEditMetrics}
           onClick={openCreateForm}
           data-testid="metric-new-btn"
         >
           <Plus className="h-3.5 w-3.5" />
-          新建语义指标
+          {tx("新建指标", "New Metric")}
         </Button>
       </div>
 
       {/* Create / Edit Form */}
       {formMode !== "closed" && (
-        <Card className="p-4 space-y-3 bg-muted/20" data-testid="metric-form-card">
+        <Card
+          className="p-4 space-y-3 bg-muted/20"
+          data-testid="metric-form-card"
+        >
           <div className="flex items-center justify-between border-b border-border pb-2 text-xs font-semibold">
             <span>
               {formMode === "create"
-                ? "新建统一语义指标"
-                : `编辑指标 · ${formName}`}
+                ? tx("新建语义指标", "Create Semantic Metric")
+                : `${tx("编辑指标", "Edit Metric")} · ${formName}`}
             </span>
             <button
               type="button"
               onClick={() => setFormMode("closed")}
+              aria-label={tx("关闭", "Close")}
               className="text-muted-foreground hover:text-foreground cursor-pointer"
             >
               <X className="h-3.5 w-3.5" />
@@ -315,31 +352,37 @@ export function MetricManager({
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
             <div className="space-y-1">
-              <label className="text-muted-foreground">指标标识名 (a-z0-9_)</label>
+              <label className="text-muted-foreground">
+                {tx("指标标识", "Metric Key")}
+              </label>
               <Input
                 value={formName}
                 disabled={formMode === "edit"}
                 onChange={(e) => setFormName(e.target.value)}
-                placeholder="例如: paid_amount"
+                placeholder="paid_amount"
                 className="h-8 text-xs font-mono-tech"
                 data-testid="metric-form-name"
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-muted-foreground">展示名称</label>
+              <label className="text-muted-foreground">
+                {tx("显示名称", "Display Name")}
+              </label>
               <Input
                 value={formDisplayName}
                 onChange={(e) => setFormDisplayName(e.target.value)}
-                placeholder="例如: 已支付订单总金额"
+                placeholder={tx("已支付订单总金额", "Total Paid Order Amount")}
                 className="h-8 text-xs"
                 data-testid="metric-form-display-name"
               />
             </div>
 
             <div className="space-y-1">
-              <label className="text-muted-foreground">来源数据集</label>
-              <select
+              <label className="text-muted-foreground">
+                {tx("来源数据集", "Source Dataset")}
+              </label>
+              <Select
                 value={formDatasetId || selectedFormDataset?.id || ""}
                 disabled={formMode === "edit"}
                 onChange={(e) => {
@@ -347,20 +390,22 @@ export function MetricManager({
                   setFormDimensions([]);
                   setFormTimeColumn("");
                 }}
-                className="h-8 w-full rounded-md border border-input bg-background px-2.5 font-mono-tech text-xs"
+                className="h-8 w-full font-mono-tech"
                 data-testid="metric-form-dataset"
               >
                 {(catalog.datasets ?? []).map((ds) => (
                   <option key={ds.id} value={ds.id}>
-                    {ds.name} ({ds.display_name || "dataset"})
+                    {ds.display_name && ds.display_name !== ds.name
+                      ? `${ds.name} · ${ds.display_name}`
+                      : ds.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
 
             <div className="space-y-1 md:col-span-2">
               <label className="text-muted-foreground">
-                聚合 SQL 表达式 (SUM / AVG / COUNT 等)
+                {tx("聚合表达式", "SQL Aggregation Expression")}
               </label>
               <Input
                 value={formExpression}
@@ -372,7 +417,9 @@ export function MetricManager({
             </div>
 
             <div className="space-y-1">
-              <label className="text-muted-foreground">固定布尔过滤条件</label>
+              <label className="text-muted-foreground">
+                {tx("固定过滤条件", "Filter Predicate")}
+              </label>
               <Input
                 value={formFilterSql}
                 onChange={(e) => setFormFilterSql(e.target.value)}
@@ -383,13 +430,15 @@ export function MetricManager({
             </div>
 
             <div className="space-y-1">
-              <label className="text-muted-foreground">时间列 (可选)</label>
-              <select
+              <label className="text-muted-foreground">
+                {tx("时间列", "Time Column")}
+              </label>
+              <Select
                 value={formTimeColumn}
                 onChange={(e) => setFormTimeColumn(e.target.value)}
-                className="h-8 w-full rounded-md border border-input bg-background px-2.5 font-mono-tech text-xs"
+                className="h-8 w-full font-mono-tech"
               >
-                <option value="">不绑定时间列</option>
+                <option value="">{tx("无", "None")}</option>
                 {(selectedFormDataset?.columns ?? [])
                   .filter(
                     (c) =>
@@ -400,39 +449,43 @@ export function MetricManager({
                       {c.column_name} ({c.data_type})
                     </option>
                   ))}
-              </select>
+              </Select>
             </div>
 
             <div className="space-y-1">
-              <label className="text-muted-foreground">默认时间粒度</label>
-              <select
+              <label className="text-muted-foreground">
+                {tx("默认粒度", "Default Grain")}
+              </label>
+              <Select
                 value={formDefaultGrain}
                 onChange={(e) =>
                   setFormDefaultGrain(e.target.value as RollupGrain)
                 }
-                className="h-8 w-full rounded-md border border-input bg-background px-2.5 font-mono-tech text-xs"
+                className="h-8 w-full"
               >
                 {GRAIN_OPTIONS.map((g) => (
                   <option key={g} value={g}>
-                    {g}
+                    {grainLabel(g)}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
 
             <div className="space-y-1">
-              <label className="text-muted-foreground">单位 / 同义词</label>
+              <label className="text-muted-foreground">
+                {tx("单位 / 同义词", "Unit / Synonyms")}
+              </label>
               <div className="flex gap-1.5">
                 <Input
                   value={formUnit}
                   onChange={(e) => setFormUnit(e.target.value)}
-                  placeholder="单位(CNY)"
+                  placeholder="CNY"
                   className="h-8 w-24 text-xs font-mono-tech"
                 />
                 <Input
                   value={formSynonyms}
                   onChange={(e) => setFormSynonyms(e.target.value)}
-                  placeholder="同义词逗号分隔"
+                  placeholder={tx("实收金额, 已付款金额", "paid_total, revenue")}
                   className="h-8 flex-1 text-xs"
                 />
               </div>
@@ -441,7 +494,9 @@ export function MetricManager({
 
           {selectedFormDataset && selectedFormDataset.columns.length > 0 && (
             <div className="space-y-1 text-xs">
-              <div className="text-muted-foreground">可下钻分析维度:</div>
+              <div className="text-muted-foreground">
+                {tx("可下钻维度", "Drill-down Dimensions")}:
+              </div>
               <div className="flex flex-wrap gap-1.5">
                 {selectedFormDataset.columns.map((col) => {
                   const checked = formDimensions.includes(col.column_name);
@@ -488,32 +543,36 @@ export function MetricManager({
                 className="accent-xblue"
                 data-testid="metric-form-certified"
               />
-              <span>标记为官方认证口径 (Certified)</span>
+              <span>{tx("标记为官方认证口径", "Certified Metric")}</span>
             </label>
 
             <div className="flex items-center gap-2">
               {formError && (
-                <span className="font-mono-tech text-xs text-foreground">
+                <span className="font-mono-tech text-xs text-red-600 dark:text-red-400">
                   {formError}
                 </span>
               )}
               <Button
                 type="button"
                 variant="ghost"
+                size="sm"
                 onClick={() => setFormMode("closed")}
               >
-                取消
+                {tx("取消", "Cancel")}
               </Button>
               <Button
                 type="button"
                 variant="primary"
+                size="sm"
                 disabled={
                   submittingForm || !formName.trim() || !formExpression.trim()
                 }
                 onClick={() => void handleSaveForm()}
                 data-testid="metric-form-submit"
               >
-                {submittingForm ? "提交中..." : "保存指标定义"}
+                {submittingForm
+                  ? tx("保存中…", "Saving…")
+                  : tx("保存", "Save")}
               </Button>
             </div>
           </div>
@@ -525,13 +584,13 @@ export function MetricManager({
         {/* Metric List */}
         <Card className="lg:col-span-7 p-3 space-y-2">
           <div className="text-xs font-medium text-muted-foreground">
-            已注册指标目录（勾选多项可联合对比查询）
+            {tx("指标目录", "Registered Metrics")}
           </div>
 
           {metrics.length === 0 ? (
-            <div className="py-8 text-center text-xs text-muted-foreground">
-              当前租户尚未定义语义指标，点击右上角「新建语义指标」创建
-            </div>
+            <EmptyState
+              title={tx("暂无语义指标", "No semantic metrics defined")}
+            />
           ) : (
             <div className="space-y-2 max-h-72 overflow-y-auto">
               {metrics.map((m) => {
@@ -565,7 +624,7 @@ export function MetricManager({
                             }
                           }}
                           className="mt-1 accent-xblue"
-                          title="加入多指标联合查询"
+                          title={tx("联合试算", "Compare metric")}
                         />
                         <button
                           type="button"
@@ -580,25 +639,27 @@ export function MetricManager({
                             <span className="text-xs font-semibold text-foreground">
                               {m.display_name}
                             </span>
-                            <span className="font-mono-tech text-[11px] text-muted-foreground">
-                              ({m.name})
-                            </span>
+                            {m.display_name !== m.name && (
+                              <span className="font-mono-tech text-[11px] text-muted-foreground">
+                                {m.name}
+                              </span>
+                            )}
                             {m.certified && (
                               <Badge
                                 variant="xblue"
                                 data-testid={`metric-certified-${m.name}`}
                               >
                                 <CheckCircle2 className="mr-0.5 h-3 w-3" />
-                                已认证
+                                {tx("已认证", "Certified")}
                               </Badge>
                             )}
                             {m.broken && (
                               <Badge
-                                variant="neutral"
+                                variant="warning"
                                 data-testid={`metric-broken-${m.name}`}
                               >
-                                <AlertTriangle className="mr-0.5 h-3 w-3 text-xblue" />
-                                结构破损
+                                <AlertTriangle className="mr-0.5 h-3 w-3" />
+                                {tx("结构破损", "Broken")}
                               </Badge>
                             )}
                             <Badge variant="outline">v{m.version}</Badge>
@@ -606,7 +667,7 @@ export function MetricManager({
                           <div className="mt-1 font-mono-tech text-[11px] text-muted-foreground truncate">
                             {m.expression}
                             {m.filter_sql ? ` WHERE ${m.filter_sql}` : ""} ·{" "}
-                            {datasetNameMap[m.dataset_id] ?? "dataset"}
+                            {datasetNameMap[m.dataset_id] ?? "-"}
                           </div>
                         </button>
                       </div>
@@ -614,19 +675,21 @@ export function MetricManager({
                       <div className="flex shrink-0 items-center gap-1">
                         <button
                           type="button"
+                          disabled={!canEditMetrics}
                           onClick={() => openEditForm(m)}
                           data-testid={`metric-edit-${m.name}`}
-                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer"
-                          title="编辑指标"
+                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 cursor-pointer"
+                          title={tx("编辑", "Edit")}
                         >
                           <Edit3 className="h-3.5 w-3.5" />
                         </button>
                         <button
                           type="button"
-                          onClick={() => void handleDeleteMetric(m.name)}
+                          disabled={!canEditMetrics}
+                          onClick={() => setPendingDeleteMetric(m)}
                           data-testid={`metric-delete-${m.name}`}
-                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer"
-                          title="删除指标"
+                          className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40 cursor-pointer"
+                          title={tx("删除", "Delete")}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
                         </button>
@@ -642,10 +705,15 @@ export function MetricManager({
         {/* Trial Runner Panel */}
         <Card className="lg:col-span-5 p-3 space-y-3 text-xs">
           <div className="flex items-center justify-between border-b border-border pb-2">
-            <span className="font-semibold">指标试算与同环比分析</span>
+            <span className="font-semibold">
+              {tx("指标试算与同环比", "Metric Trial & Comparison")}
+            </span>
             {multiSelectedNames.length >= 2 ? (
               <Badge variant="xblue">
-                联合 {multiSelectedNames.length} 指标
+                {tx(
+                  `联合 ${fmtNum(multiSelectedNames.length, 0)} 项`,
+                  `${fmtNum(multiSelectedNames.length, 0)} metrics`
+                )}
               </Badge>
             ) : activeMetric ? (
               <Badge variant="neutral">{activeMetric.name}</Badge>
@@ -654,13 +722,15 @@ export function MetricManager({
 
           {!activeMetric && multiSelectedNames.length === 0 ? (
             <div className="py-6 text-center text-muted-foreground">
-              请从左侧选择一个或多个指标进行试算
+              {tx("从左侧选择指标进行试算", "Select a metric on the left")}
             </div>
           ) : (
             <>
               {activeMetric && activeMetric.dimensions.length > 0 && (
                 <div className="space-y-1">
-                  <div className="text-muted-foreground">分组维度:</div>
+                  <div className="text-muted-foreground">
+                    {tx("分组维度", "Dimensions")}:
+                  </div>
                   <div className="flex flex-wrap gap-1.5">
                     {activeMetric.dimensions.map((dim) => {
                       const active = queryDims.includes(dim.name);
@@ -697,47 +767,55 @@ export function MetricManager({
 
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <label className="text-muted-foreground">时间粒度</label>
-                  <select
+                  <label className="text-muted-foreground">
+                    {tx("时间粒度", "Time Grain")}
+                  </label>
+                  <Select
                     value={queryGrain}
                     onChange={(e) =>
                       setQueryGrain(e.target.value as RollupGrain)
                     }
-                    className="h-8 w-full rounded border border-input bg-background px-2 font-mono-tech text-xs"
+                    className="h-8 w-full"
                     data-testid="metric-query-grain"
                   >
                     {GRAIN_OPTIONS.map((g) => (
                       <option key={g} value={g}>
-                        {g}
+                        {grainLabel(g)}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-muted-foreground">同环比模式</label>
-                  <select
+                  <label className="text-muted-foreground">
+                    {tx("对比模式", "Comparison")}
+                  </label>
+                  <Select
                     value={queryCompare}
                     onChange={(e) =>
                       setQueryCompare(
                         e.target.value as "" | MetricCompareMode
                       )
                     }
-                    className="h-8 w-full rounded border border-input bg-background px-2 text-xs"
+                    className="h-8 w-full"
                     data-testid="metric-query-compare"
                   >
-                    <option value="">不对比</option>
-                    <option value="PREVIOUS_PERIOD">环比 (PREVIOUS_PERIOD)</option>
-                    <option value="SAME_PERIOD_LAST_YEAR">
-                      同比 (SAME_PERIOD_LAST_YEAR)
+                    <option value="">{tx("无对比", "None")}</option>
+                    <option value="PREVIOUS_PERIOD">
+                      {tx("环比", "Previous Period")}
                     </option>
-                  </select>
+                    <option value="SAME_PERIOD_LAST_YEAR">
+                      {tx("同比", "Year-over-Year")}
+                    </option>
+                  </Select>
                 </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
                 <div className="space-y-1">
-                  <label className="text-muted-foreground">起始日期 (可选)</label>
+                  <label className="text-muted-foreground">
+                    {tx("开始日期", "From Date")}
+                  </label>
                   <Input
                     type="date"
                     value={queryFromDate}
@@ -746,7 +824,9 @@ export function MetricManager({
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-muted-foreground">结束日期 (可选)</label>
+                  <label className="text-muted-foreground">
+                    {tx("结束日期", "To Date")}
+                  </label>
                   <Input
                     type="date"
                     value={queryToDate}
@@ -765,11 +845,13 @@ export function MetricManager({
                 data-testid="metric-run-query-btn"
               >
                 <Play className="h-3.5 w-3.5" />
-                {runningQuery ? "正在编译并计算..." : "运行指标试算"}
+                {runningQuery
+                  ? tx("计算中…", "Computing…")
+                  : tx("运行试算", "Run Metric")}
               </Button>
 
               {queryError && (
-                <div className="rounded border border-foreground/30 bg-muted/50 p-2 font-mono-tech text-[11px]">
+                <div className="rounded border border-red-500/30 bg-red-500/5 p-2 font-mono-tech text-[11px] text-red-600 dark:text-red-400">
                   {queryError}
                 </div>
               )}
@@ -780,9 +862,12 @@ export function MetricManager({
                   data-testid="metric-query-summary"
                 >
                   <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-                    <span>返回 {lastMetricResult.rows.length} 行</span>
+                    <span>
+                      {fmtNum(lastMetricResult.rows.length, 0)}{" "}
+                      {tx("行", "rows")}
+                    </span>
                     <span className="font-mono-tech">
-                      {lastMetricResult.duration_ms} ms
+                      {fmtNum(lastMetricResult.duration_ms, 0)} ms
                     </span>
                   </div>
                   <pre className="max-h-20 overflow-auto font-mono-tech text-[10px] text-foreground whitespace-pre-wrap">
@@ -794,6 +879,39 @@ export function MetricManager({
           )}
         </Card>
       </div>
+
+      {/* Metric-scoped Isolated ResultGrid + ChartPanel */}
+      {lastMetricResult && (
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
+          <div className="xl:col-span-7">
+            <ResultGrid
+              columns={lastMetricResult.columns}
+              rows={lastMetricResult.rows}
+              rowCount={lastMetricResult.rows.length}
+              durationMs={lastMetricResult.duration_ms}
+              sql={lastMetricResult.sql}
+            />
+          </div>
+          <div className="xl:col-span-5">
+            <ChartPanel
+              columns={lastMetricResult.columns}
+              rows={lastMetricResult.rows}
+            />
+          </div>
+        </div>
+      )}
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteMetric)}
+        onClose={() => setPendingDeleteMetric(null)}
+        onConfirm={() => void handleConfirmDeleteMetric()}
+        loading={deletingMetric}
+        title={tx("删除语义指标", "Delete Metric")}
+        description={tx(
+          `确定删除指标「${pendingDeleteMetric?.display_name ?? ""}」？`,
+          `Delete metric "${pendingDeleteMetric?.display_name ?? ""}"?`
+        )}
+      />
     </div>
   );
 }

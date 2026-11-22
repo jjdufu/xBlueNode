@@ -1,4 +1,5 @@
 import { ArrowRight } from "lucide-react";
+import { useI18n } from "@/i18n";
 import type { SchemaDiff, SectionDiff } from "@/lib/api/xblue";
 
 export interface DiffViewProps {
@@ -26,6 +27,7 @@ function SectionBlock({
   title: string;
   section: SectionDiff;
 }) {
+  const { tx } = useI18n();
   const empty =
     section.added.length === 0 &&
     section.removed.length === 0 &&
@@ -46,7 +48,9 @@ function SectionBlock({
           className="flex items-center justify-between rounded border border-emerald-500/35 bg-emerald-500/10 px-2.5 py-1.5 font-mono-tech text-xs text-emerald-700 dark:text-emerald-300"
         >
           <span>+ {name}</span>
-          <span className="text-[10px] font-semibold">新增</span>
+          <span className="text-[10px] font-semibold">
+            {tx("新增", "Added")}
+          </span>
         </div>
       ))}
 
@@ -57,7 +61,9 @@ function SectionBlock({
           className="flex items-center justify-between rounded border border-red-500/35 bg-red-500/10 px-2.5 py-1.5 font-mono-tech text-xs text-red-700 dark:text-red-300"
         >
           <span>- {name}</span>
-          <span className="text-[10px] font-semibold">删除</span>
+          <span className="text-[10px] font-semibold">
+            {tx("删除", "Removed")}
+          </span>
         </div>
       ))}
 
@@ -70,7 +76,10 @@ function SectionBlock({
           <div className="flex items-center justify-between font-mono-tech font-semibold text-amber-700 dark:text-amber-300">
             <span>~ {item.name}</span>
             <span className="text-[10px]">
-              变更 ({item.fields.length} 项字段)
+              {tx(
+                `变更 (${item.fields.length} 项)`,
+                `Modified (${item.fields.length})`
+              )}
             </span>
           </div>
           <div className="space-y-1 pt-0.5">
@@ -97,6 +106,7 @@ function SectionBlock({
 }
 
 export function DiffView({ diff, fromLabel, toLabel }: DiffViewProps) {
+  const { tx } = useI18n();
   const isEmpty =
     diff.node_types.added.length === 0 &&
     diff.node_types.removed.length === 0 &&
@@ -112,23 +122,32 @@ export function DiffView({ diff, fromLabel, toLabel }: DiffViewProps) {
     <div className="space-y-3 text-xs" data-testid="studio-diff-view">
       {(fromLabel || toLabel) && (
         <div className="flex items-center gap-2 font-mono-tech text-[11px] text-muted-foreground">
-          <span>{fromLabel ?? "基准版本"}</span>
+          <span>{fromLabel ?? tx("基准版本", "Baseline")}</span>
           <ArrowRight className="h-3 w-3" />
           <span className="text-foreground font-semibold">
-            {toLabel ?? "目标版本"}
+            {toLabel ?? tx("目标版本", "Target")}
           </span>
         </div>
       )}
 
       {isEmpty ? (
         <div className="rounded border border-border bg-muted/20 p-3 text-center text-muted-foreground">
-          两版本模型结构完全一致，无新增、删除或字段差异。
+          {tx("两版本结构一致，无差异", "No structural differences")}
         </div>
       ) : (
         <div className="space-y-3">
-          <SectionBlock title="节点类型 (node_types)" section={diff.node_types} />
-          <SectionBlock title="关系类型 (edge_types)" section={diff.edge_types} />
-          <SectionBlock title="数据映射 (mappings)" section={diff.mappings} />
+          <SectionBlock
+            title={tx("节点类型", "Node Types")}
+            section={diff.node_types}
+          />
+          <SectionBlock
+            title={tx("关系类型", "Relation Types")}
+            section={diff.edge_types}
+          />
+          <SectionBlock
+            title={tx("数据映射", "Data Mappings")}
+            section={diff.mappings}
+          />
         </div>
       )}
     </div>

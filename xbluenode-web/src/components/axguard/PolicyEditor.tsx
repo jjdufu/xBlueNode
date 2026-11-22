@@ -11,6 +11,7 @@ import {
   XCircle,
 } from "lucide-react";
 import { ApiError } from "@/lib/api";
+import type { Dataset } from "@/lib/api/axhub";
 import {
   axguardApi,
   type CedarPolicyRecord,
@@ -21,7 +22,16 @@ import {
   type SimulateCedarPolicyResponse,
   type ValidateCedarPolicyResponse,
 } from "@/lib/api/axguard";
-import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Select,
+  StatusBadge,
+  Textarea,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
   ALL_PERMISSIONS,
@@ -34,6 +44,7 @@ interface PolicyEditorProps {
   policies: CedarPolicyRecord[];
   users: GuardUserRecord[];
   departments: DepartmentRecord[];
+  datasets?: Dataset[];
   onReload: () => Promise<void>;
 }
 
@@ -41,12 +52,14 @@ export function PolicyEditor({
   policies,
   users,
   departments,
+  datasets = [],
   onReload,
 }: PolicyEditorProps) {
+  const { isZh, tx, tEnum } = useI18n();
   const [selectedName, setSelectedName] = useState<string | null>(null);
   const [policyName, setPolicyName] = useState("forbid_offhours_export");
   const [description, setDescription] = useState(
-    "非工作时间禁止执行数据出品动作"
+    CEDAR_SNIPPET_TEMPLATES[0]?.description ?? ""
   );
   const [policyText, setPolicyText] = useState(
     CEDAR_SNIPPET_TEMPLATES[0]?.policyText ?? ""
@@ -58,12 +71,12 @@ export function PolicyEditor({
   const [saving, setSaving] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
 
-  // Simulator state
+  // Simulator state (dynamic first dataset name instead of hardcoded "demo_orders")
   const [simUserId, setSimUserId] = useState("");
   const [simAction, setSimAction] = useState<string>("DATA_READ");
   const [simResourceKind, setSimResourceKind] =
     useState<GrantResourceKind>("DATASET");
-  const [simResourceRef, setSimResourceRef] = useState("demo_orders");
+  const [simResourceRef, setSimResourceRef] = useState("");
   const [simOwnerDept, setSimOwnerDept] = useState("east");
   const [simSensitivity, setSimSensitivity] =
     useState<Sensitivity>("CONFIDENTIAL");
@@ -81,6 +94,15 @@ export function PolicyEditor({
       }
     }
   }, [users, simUserId]);
+
+  useEffect(() => {
+    if (!simResourceRef && datasets.length > 0) {
+      const firstDs = datasets[0];
+      if (firstDs) {
+        setSimResourceRef(firstDs.name);
+      }
+    }
+  }, [datasets, simResourceRef]);
 
   useEffect(() => {
     if (selectedName) {
@@ -127,7 +149,12 @@ export function PolicyEditor({
   const handleSave = async () => {
     const cleanName = policyName.trim();
     if (!cleanName || !policyText.trim()) {
-      setBanner("请填写策略名称与 Cedar 策略正文");
+      setBanner(
+        tx(
+          "策略名称与策略正文不能为空",
+          "Policy name and Cedar body are required"
+        )
+      );
       return;
     }
     setSaving(true);
@@ -140,7 +167,12 @@ export function PolicyEditor({
       });
       await onReload();
       setSelectedName(saved.name);
-      setBanner(`已保存并生效 Cedar 策略 ${saved.name} (v${saved.version})`);
+      setBanner(
+        tx(
+          `已保存策略 ${saved.name} (v${saved.version})`,
+          `Saved policy ${saved.name} (v${saved.version})`
+        )
+      );
     } catch (err) {
       setBanner(
         err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
@@ -158,7 +190,7 @@ export function PolicyEditor({
         handleStartNew();
       }
       await onReload();
-      setBanner(`已删除 Cedar 策略 ${name}`);
+      setBanner(tx(`已删除策略 ${name}`, `Deleted policy ${name}`));
     } catch (err) {
       setBanner(
         err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
@@ -167,8 +199,15 @@ export function PolicyEditor({
   };
 
   const handleSimulate = async () => {
-    if (!simUserId.trim() || !simResourceRef.trim()) {
-      setBanner("策略模拟需指定目标用户与资源标识");
+    const effectiveResourceRef =
+      simResourceRef.trim() || datasets[0]?.name || "demo_orders";
+    if (!simUserId.trim() || !effectiveResourceRef) {
+      setBanner(
+        tx(
+          "需指定模拟用户与目标资源标识",
+          "Target user and resource identifier are required"
+        )
+      );
       return;
     }
     setSimulating(true);
@@ -179,7 +218,7 @@ export function PolicyEditor({
         user_id: simUserId.trim(),
         action: simAction,
         resource_kind: simResourceKind,
-        resource_ref: simResourceRef.trim(),
+        resource_ref: effectiveResourceRef,
         owner_dept: simOwnerDept.trim() || undefined,
         sensitivity: simSensitivity,
         hour:
@@ -213,24 +252,24 @@ export function PolicyEditor({
         {/* Left: Tenant Custom Cedar Policies */}
         <Card className="xl:col-span-4 p-4 space-y-3">
           <div className="flex items-center justify-between border-b border-border pb-3">
-            <div>
-              <div className="text-xs font-semibold flex items-center gap-1.5">
-                <Code2 className="h-3.5 w-3.5 text-xblue" />
-                租户自定义 Cedar 策略
-              </div>
-              <p className="text-[11px] text-muted-foreground">
-                基线 5 条 permit 策略已内置固化；自定义 forbid 策略拥有最高否决优先级。
-              </p>
+            <div className="text-xs font-semibold flex items-center gap-1.5">
+              <Code2 className="h-3.5 w-3.5 text-xblue" />
+              {tx("自定义 Cedar 策略", "Custom Cedar Policies")}
             </div>
-            <Button variant="outline" type="button" onClick={handleStartNew}>
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              onClick={handleStartNew}
+            >
               <Plus className="h-3.5 w-3.5" />
-              新建
+              {tx("新建", "New")}
             </Button>
           </div>
 
           {policies.length === 0 ? (
             <div className="rounded border border-dashed border-border px-3 py-6 text-center text-xs text-muted-foreground">
-              当前仅运行平台基线策略，可从右侧模板快速添加自定义策略
+              {tx("当前仅运行基线策略", "Running built-in baseline policies only")}
             </div>
           ) : (
             <div className="space-y-1.5">
@@ -259,14 +298,12 @@ export function PolicyEditor({
                       className="flex items-center gap-1.5 shrink-0"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <Badge variant={p.enabled ? "xblue" : "outline"}>
-                        {p.enabled ? "启用" : "停用"}
-                      </Badge>
+                      <StatusBadge status={p.enabled ? "ENABLED" : "DISABLED"} />
                       <button
                         type="button"
                         onClick={() => void handleDelete(p.name)}
                         className="text-muted-foreground hover:text-foreground p-1 cursor-pointer"
-                        title="删除策略"
+                        title={tx("删除", "Delete")}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </button>
@@ -283,7 +320,7 @@ export function PolicyEditor({
           <Card className="p-4 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
               <div className="text-xs font-semibold">
-                Cedar 策略编辑器（AxPoint Schema 强类型校验）
+                {tx("Cedar 策略编辑器", "Cedar Policy Editor")}
               </div>
               <div className="flex flex-wrap items-center gap-1.5">
                 {CEDAR_SNIPPET_TEMPLATES.map((tpl) => (
@@ -294,14 +331,14 @@ export function PolicyEditor({
                       if (!selectedName) {
                         setPolicyName(tpl.suggestedName);
                       }
-                      setDescription(tpl.description);
+                      setDescription(isZh ? tpl.description : tpl.enDescription);
                       setPolicyText(tpl.policyText);
                       setValidation(null);
                     }}
                     className="inline-flex items-center gap-1 rounded border border-border bg-muted/40 hover:bg-muted px-2 py-1 text-[11px] cursor-pointer"
                   >
                     <Sparkles className="h-3 w-3 text-xblue" />
-                    {tpl.title}
+                    {isZh ? tpl.title : tpl.enTitle}
                   </button>
                 ))}
               </div>
@@ -310,10 +347,10 @@ export function PolicyEditor({
             <div className="grid grid-cols-1 md:grid-cols-12 gap-3">
               <div className="md:col-span-4 space-y-1">
                 <label className="text-[11px] text-muted-foreground">
-                  策略唯一名称 (name)
+                  {tx("策略名称", "Policy Name")}
                 </label>
                 <Input
-                  placeholder="如 no_export"
+                  placeholder="no_export"
                   value={policyName}
                   disabled={Boolean(selectedName)}
                   onChange={(e) => setPolicyName(e.target.value)}
@@ -322,9 +359,11 @@ export function PolicyEditor({
                 />
               </div>
               <div className="md:col-span-6 space-y-1">
-                <label className="text-[11px] text-muted-foreground">策略说明</label>
+                <label className="text-[11px] text-muted-foreground">
+                  {tx("策略说明", "Description")}
+                </label>
                 <Input
-                  placeholder="简要说明管控意图与适用范围"
+                  placeholder={tx("非工作时间限制数据导出", "Restrict off-hours exports")}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   className="h-8 text-xs"
@@ -338,14 +377,14 @@ export function PolicyEditor({
                     onChange={(e) => setEnabled(e.target.checked)}
                     className="accent-[#2563eb]"
                   />
-                  立即启用
+                  {tx("启用", "Enable")}
                 </label>
               </div>
             </div>
 
             <div className="space-y-1.5">
               <label className="text-[11px] text-muted-foreground font-mono-tech">
-                Cedar Policy Text
+                Cedar Policy
               </label>
               <Textarea
                 rows={7}
@@ -373,12 +412,15 @@ export function PolicyEditor({
                   {validation.valid ? (
                     <>
                       <CheckCircle2 className="h-3.5 w-3.5 text-xblue" />
-                      校验通过 · 符合 AxPoint Cedar Schema
+                      {tx(
+                        "校验通过 · 符合 AxPoint Cedar Schema",
+                        "Valid · Conforms to AxPoint Cedar Schema"
+                      )}
                     </>
                   ) : (
                     <>
                       <XCircle className="h-3.5 w-3.5" />
-                      语法或 Schema 校验未通过
+                      {tx("校验未通过", "Validation failed")}
                     </>
                   )}
                 </div>
@@ -401,7 +443,9 @@ export function PolicyEditor({
                 data-testid="validate-cedar-btn"
               >
                 <FileCheck2 className="h-3.5 w-3.5 text-xblue" />
-                {validating ? "校验中..." : "语法与 Schema 校验"}
+                {validating
+                  ? tx("校验中…", "Validating…")
+                  : tx("语法校验", "Validate")}
               </Button>
               <Button
                 type="button"
@@ -410,7 +454,9 @@ export function PolicyEditor({
                 data-testid="save-cedar-btn"
               >
                 <Save className="h-3.5 w-3.5" />
-                {saving ? "保存中..." : "保存策略"}
+                {saving
+                  ? tx("保存中…", "Saving…")
+                  : tx("保存策略", "Save Policy")}
               </Button>
             </div>
           </Card>
@@ -419,32 +465,31 @@ export function PolicyEditor({
           <Card className="p-4 space-y-3" data-testid="cedar-simulator-card">
             <div className="border-b border-border pb-2.5">
               <div className="text-xs font-semibold">
-                ABAC 策略沙盘模拟器（POST /api/axguard/policies/simulate）
+                {tx("ABAC 策略模拟器", "ABAC Policy Simulator")}
               </div>
-              <p className="text-[11px] text-muted-foreground">
-                输入主体、动作、资源密级及时间/IP 上下文，实时检视基线 + 跨部门授权 + 自定义策略的综合判定结果。
-              </p>
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2.5">
               <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">模拟用户</label>
+                <label className="text-[11px] text-muted-foreground">
+                  {tx("模拟用户", "User")}
+                </label>
                 {users.length > 0 ? (
-                  <select
+                  <Select
                     value={simUserId}
                     onChange={(e) => setSimUserId(e.target.value)}
                     data-testid="sim-user-select"
-                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                    className="h-8 w-full"
                   >
                     {users.map((u) => (
                       <option key={u.id} value={u.id}>
-                        {u.username} ({u.dept_id} · {u.clearance})
+                        {u.username} ({u.dept_id} · {tEnum(u.clearance)})
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 ) : (
                   <Input
-                    placeholder="用户 UUID"
+                    placeholder="00000000-0000-0000-0000-000000000000"
                     value={simUserId}
                     onChange={(e) => setSimUserId(e.target.value)}
                     data-testid="sim-user-select"
@@ -454,53 +499,66 @@ export function PolicyEditor({
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">请求动作</label>
-                <select
+                <label className="text-[11px] text-muted-foreground">
+                  {tx("请求动作", "Action")}
+                </label>
+                <Select
                   value={simAction}
                   onChange={(e) => setSimAction(e.target.value)}
                   data-testid="sim-action-select"
-                  className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+                  className="h-8 w-full"
                 >
                   {ALL_PERMISSIONS.map((perm) => (
                     <option key={perm} value={perm}>
-                      {perm}
+                      {tEnum(perm)} ({perm})
                     </option>
                   ))}
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">资源类别</label>
-                <select
-                  value={simResourceKind}
-                  onChange={(e) =>
-                    setSimResourceKind(e.target.value as GrantResourceKind)
-                  }
-                  className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                >
-                  {GRANT_RESOURCE_KINDS.map((k) => (
-                    <option key={k.value} value={k.value}>
-                      {k.label}
-                    </option>
-                  ))}
-                </select>
+                </Select>
               </div>
 
               <div className="space-y-1">
                 <label className="text-[11px] text-muted-foreground">
-                  资源标识 (resource_ref)
+                  {tx("资源类别", "Resource Kind")}
+                </label>
+                <Select
+                  value={simResourceKind}
+                  onChange={(e) =>
+                    setSimResourceKind(e.target.value as GrantResourceKind)
+                  }
+                  className="h-8 w-full"
+                >
+                  {GRANT_RESOURCE_KINDS.map((k) => (
+                    <option key={k.value} value={k.value}>
+                      {isZh ? k.label : k.enLabel}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[11px] text-muted-foreground">
+                  {tx("资源标识", "Resource ID")}
                 </label>
                 <Input
+                  list="cedar-sim-dataset-list"
+                  placeholder={datasets[0]?.name ?? "sales_orders"}
                   value={simResourceRef}
                   onChange={(e) => setSimResourceRef(e.target.value)}
                   data-testid="sim-resource-ref-input"
                   className="h-8 text-xs font-mono-tech"
                 />
+                <datalist id="cedar-sim-dataset-list">
+                  {datasets.map((d) => (
+                    <option key={d.id} value={d.name}>
+                      {d.display_name}
+                    </option>
+                  ))}
+                </datalist>
               </div>
 
               <div className="space-y-1">
                 <label className="text-[11px] text-muted-foreground">
-                  资源属主部门
+                  {tx("归属部门", "Owner Department")}
                 </label>
                 <Input
                   list="axguard-dept-datalist"
@@ -516,25 +574,27 @@ export function PolicyEditor({
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">资源密级</label>
-                <select
+                <label className="text-[11px] text-muted-foreground">
+                  {tx("资源密级", "Sensitivity")}
+                </label>
+                <Select
                   value={simSensitivity}
                   onChange={(e) =>
                     setSimSensitivity(e.target.value as Sensitivity)
                   }
-                  className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+                  className="h-8 w-full"
                 >
                   {SENSITIVITY_OPTIONS.map((opt) => (
                     <option key={opt.value} value={opt.value}>
-                      {opt.label}
+                      {isZh ? opt.label : opt.enLabel}
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
 
               <div className="space-y-1">
                 <label className="text-[11px] text-muted-foreground">
-                  模拟小时 (0-23)
+                  {tx("模拟小时 (0–23)", "Hour (0–23)")}
                 </label>
                 <Input
                   type="number"
@@ -549,7 +609,7 @@ export function PolicyEditor({
 
               <div className="space-y-1">
                 <label className="text-[11px] text-muted-foreground">
-                  客户端 IP
+                  {tx("来源 IP", "Client IP")}
                 </label>
                 <Input
                   value={simIp}
@@ -565,19 +625,21 @@ export function PolicyEditor({
                   data-testid="cedar-simulate-result"
                   className="flex flex-wrap items-center gap-2 text-xs"
                 >
-                  <Badge variant={simResult.allowed ? "xblue" : "neutral"}>
-                    {simResult.allowed ? "ALLOW · 允许访问" : "DENY · 拒绝访问"}
+                  <Badge variant={simResult.allowed ? "xblue" : "danger"}>
+                    {simResult.allowed
+                      ? tx("ALLOW · 允许访问", "ALLOW · Access Allowed")
+                      : tx("DENY · 拒绝访问", "DENY · Access Denied")}
                   </Badge>
                   <span className="font-mono-tech text-[11px] text-muted-foreground">
-                    命中策略:{" "}
+                    {tx("命中策略", "Policies")}:{" "}
                     {simResult.determining_policies.length > 0
                       ? simResult.determining_policies.join(", ")
-                      : "默认隐式拒绝 (implicit deny)"}
+                      : tx("隐式拒绝", "Implicit deny")}
                   </span>
                 </div>
               ) : (
                 <span className="text-[11px] text-muted-foreground">
-                  点击右侧按钮运行策略判定模拟
+                  {tx("配置上下文参数后执行判定模拟", "Configure context parameters to simulate")}
                 </span>
               )}
 
@@ -588,7 +650,9 @@ export function PolicyEditor({
                 data-testid="run-cedar-simulate-btn"
               >
                 <Play className="h-3.5 w-3.5" />
-                {simulating ? "推演判定中..." : "执行策略模拟"}
+                {simulating
+                  ? tx("模拟中…", "Simulating…")
+                  : tx("执行模拟", "Simulate")}
               </Button>
             </div>
           </Card>

@@ -261,6 +261,38 @@ pub struct IngestResponse {
     pub embedding_dim: usize,
 }
 
+/// Summary record for an ingested knowledge document (`hg_docs`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentSummary {
+    /// Document UUID (`hg_docs.id`).
+    pub id: Uuid,
+    /// Document title.
+    pub title: String,
+    /// Original source filename or URI.
+    pub source_name: String,
+    /// Short summary or excerpt.
+    pub summary: String,
+    /// Stored paragraph count (`hg_paras`).
+    pub para_count: i64,
+    /// Distinct linked entity count (`hg_edges.rel_type = 'MENTIONS'`).
+    pub entity_count: i64,
+    /// Document ingestion timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Document last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Paginated list response returned by `GET /api/documents`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentListResponse {
+    /// Current page of document summaries.
+    pub items: Vec<DocumentSummary>,
+    /// Total matching document count in the tenant.
+    pub total: i64,
+    /// Optional opaque cursor for the next page.
+    pub next_cursor: Option<String>,
+}
+
 /// Chat / RAG / Hybrid query request payload (`05-STEP04` §04.8; tenant resolved strictly from `AuthPrincipal`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]

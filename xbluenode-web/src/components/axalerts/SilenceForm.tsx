@@ -7,6 +7,7 @@ import type {
   Severity,
 } from "@/lib/api";
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { getSeverityBadgeClass } from "./AlertTable";
 
@@ -15,6 +16,7 @@ export interface SilenceFormProps {
   rules: readonly RuleDef[];
   knownTypeNames: readonly string[];
   saving: boolean;
+  canSilence: boolean;
   onCreateSilence: (req: CreateSilenceRequest) => Promise<void>;
   onDeleteSilence: (id: string) => Promise<void>;
 }
@@ -28,40 +30,16 @@ function toLocalDatetimeInputValue(date: Date): string {
   )}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function formatWindowTime(iso: string): string {
-  if (!iso) return "—";
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return iso;
-  return parsed.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-}
-
-function getSilenceWindowState(
-  silence: AlertSilenceRecord
-): { label: string; active: boolean } {
-  const now = Date.now();
-  const start = new Date(silence.starts_at).getTime();
-  const end = new Date(silence.ends_at).getTime();
-  if (Number.isFinite(start) && Number.isFinite(end)) {
-    if (now < start) return { label: "UPCOMING · 待生效", active: false };
-    if (now >= end) return { label: "EXPIRED · 已过期", active: false };
-  }
-  return { label: "ACTIVE · 生效中", active: true };
-}
-
 export function SilenceForm({
   silences,
   rules,
   knownTypeNames,
   saving,
+  canSilence,
   onCreateSilence,
   onDeleteSilence,
 }: SilenceFormProps) {
+  const { tx, tEnum, fmtTime } = useI18n();
   const [selectedSeverities, setSelectedSeverities] = useState<Severity[]>([
     "WARN",
   ]);
@@ -76,6 +54,23 @@ export function SilenceForm({
   );
   const [reason, setReason] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
+
+  const getSilenceWindowState = (
+    silence: AlertSilenceRecord
+  ): { label: string; active: boolean } => {
+    const now = Date.now();
+    const start = new Date(silence.starts_at).getTime();
+    const end = new Date(silence.ends_at).getTime();
+    if (Number.isFinite(start) && Number.isFinite(end)) {
+      if (now < start) {
+        return { label: tx("待生效", "Upcoming"), active: false };
+      }
+      if (now >= end) {
+        return { label: tx("已过期", "Expired"), active: false };
+      }
+    }
+    return { label: tx("ACTIVE · 生效中", "Active"), active: true };
+  };
 
   const ruleNameMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -116,8 +111,9 @@ export function SilenceForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSilence) return;
     if (!reason.trim()) {
-      setFormError("请填写静默原因 (reason)");
+      setFormError(tx("静默原因不能为空", "Silence reason is required"));
       return;
     }
 
@@ -128,7 +124,9 @@ export function SilenceForm({
       Number.isNaN(endDate.getTime()) ||
       endDate.getTime() <= startDate.getTime()
     ) {
-      setFormError("静默结束时间 (ends_at) 必须晚于开始时间 (starts_at)");
+      setFormError(
+        tx("结束时间必须晚于开始时间", "End time must be after start time")
+      );
       return;
     }
 
@@ -160,11 +158,17 @@ export function SilenceForm({
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
       {/* Left: Silences List */}
-      <Card className="lg:col-span-7 overflow-hidden" data-testid="silences-list">
+      <Card
+        className={cn(
+          "overflow-hidden",
+          canSilence ? "lg:col-span-7" : "lg:col-span-12"
+        )}
+        data-testid="silences-list"
+      >
         <div className="flex items-center justify-between border-b border-border bg-muted/30 px-3.5 py-3">
           <div className="flex items-center gap-2 text-xs font-medium">
             <BellOff className="h-3.5 w-3.5 text-xblue" />
-            <span>告警静默窗口 (ax_alert_silences)</span>
+            <span>{tx("静默窗口", "Silence Windows")}</span>
             <Badge variant="outline">{silences.length}</Badge>
           </div>
         </div>
@@ -172,7 +176,7 @@ export function SilenceForm({
         <div className="divide-y divide-border">
           {silences.length === 0 ? (
             <div className="p-8 text-center text-xs text-muted-foreground">
-              当前无静默窗口，所有活动告警按渠道配置正常投递
+              {tx("暂无静默窗口", "No silence windows")}
             </div>
           ) : (
             silences.map((s) => {
@@ -196,24 +200,27 @@ export function SilenceForm({
                       <div className="inline-flex items-center gap-1.5 text-[11px] font-mono-tech text-muted-foreground">
                         <Clock className="h-3 w-3" />
                         <span>
-                          {formatWindowTime(s.starts_at)} →{" "}
-                          {formatWindowTime(s.ends_at)}
+                          {fmtTime(s.starts_at, true)} →{" "}
+                          {fmtTime(s.ends_at, true)}
                         </span>
                       </div>
                     </div>
 
-                    <Button
-                      type="button"
-                      variant="ghost"
-                      className="h-7 px-2 text-[11px] text-red-600 dark:text-red-400"
-                      data-testid={`delete-silence-btn-${s.id}`}
-                      onClick={() => {
-                        void onDeleteSilence(s.id);
-                      }}
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      删除
-                    </Button>
+                    {canSilence && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-600 dark:text-red-400"
+                        data-testid={`delete-silence-btn-${s.id}`}
+                        onClick={() => {
+                          void onDeleteSilence(s.id);
+                        }}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        {tx("删除", "Delete")}
+                      </Button>
+                    )}
                   </div>
 
                   {/* Matcher Summary */}
@@ -226,25 +233,26 @@ export function SilenceForm({
                           getSeverityBadgeClass(sev)
                         )}
                       >
-                        {sev}
+                        {tEnum(sev)}
                       </span>
                     ))}
 
                     {s.matcher.type_names.map((tn) => (
                       <Badge key={tn} variant="neutral">
-                        类型: {tn}
+                        {tx("类型", "Type")}: {tn}
                       </Badge>
                     ))}
 
                     {s.matcher.rule_ids.map((rid) => (
                       <Badge key={rid} variant="outline">
-                        规则: {ruleNameMap.get(rid) ?? rid.slice(0, 8)}
+                        {tx("规则", "Rule")}:{" "}
+                        {ruleNameMap.get(rid) ?? rid.slice(0, 8)}
                       </Badge>
                     ))}
 
                     {s.matcher.node_ids.map((nid) => (
                       <Badge key={nid} variant="outline">
-                        节点: {nid.slice(0, 8)}
+                        {tx("节点", "Node")}: {nid.slice(0, 8)}
                       </Badge>
                     ))}
 
@@ -252,7 +260,9 @@ export function SilenceForm({
                       s.matcher.type_names.length === 0 &&
                       s.matcher.rule_ids.length === 0 &&
                       s.matcher.node_ids.length === 0 && (
-                        <Badge variant="outline">全局匹配（全部告警）</Badge>
+                        <Badge variant="outline">
+                          {tx("全局匹配", "All Alerts")}
+                        </Badge>
                       )}
                   </div>
                 </div>
@@ -263,204 +273,210 @@ export function SilenceForm({
       </Card>
 
       {/* Right: Create Silence Form */}
-      <Card className="lg:col-span-5 p-4">
-        <form
-          onSubmit={(e) => {
-            void handleSubmit(e);
-          }}
-          className="space-y-3.5"
-          data-testid="silence-form"
-        >
-          <div className="text-xs font-semibold border-b border-border pb-2.5">
-            创建维护期静默窗口
-          </div>
-
-          {formError && (
-            <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
-              {formError}
+      {canSilence && (
+        <Card className="lg:col-span-5 p-4">
+          <form
+            onSubmit={(e) => {
+              void handleSubmit(e);
+            }}
+            className="space-y-3.5"
+            data-testid="silence-form"
+          >
+            <div className="text-xs font-semibold border-b border-border pb-2.5">
+              {tx("新建静默窗口", "New Silence Window")}
             </div>
-          )}
 
-          {/* Severity Matcher */}
-          <div className="space-y-1.5">
-            <label className="block text-[11px] text-muted-foreground">
-              限定严重级别 (severities，留空不限)
-            </label>
-            <div className="flex flex-wrap gap-1.5">
-              {ALL_SEVERITIES.map((sev) => {
-                const active = selectedSeverities.includes(sev);
-                return (
-                  <button
-                    key={sev}
-                    type="button"
-                    data-testid={`silence-severity-${sev}`}
-                    onClick={() => toggleSeverity(sev)}
-                    className={cn(
-                      "rounded px-2.5 py-1 text-[11px] font-mono-tech border transition-colors cursor-pointer",
-                      active
-                        ? "border-xblue bg-xblue-soft text-xblue font-semibold"
-                        : "border-border bg-background text-muted-foreground"
-                    )}
-                  >
-                    {sev}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+            {formError && (
+              <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
+                {formError}
+              </div>
+            )}
 
-          {/* Rule IDs Matcher */}
-          <div className="space-y-1.5">
-            <label className="block text-[11px] text-muted-foreground">
-              限定规则 (rule_ids，留空不限)
-            </label>
-            {rules.length === 0 ? (
-              <div className="text-[11px] text-muted-foreground">暂无规则可选</div>
-            ) : (
-              <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
-                {rules.map((r) => {
-                  const active = selectedRuleIds.includes(r.id);
+            {/* Severity Matcher */}
+            <div className="space-y-1.5">
+              <label className="block text-[11px] text-muted-foreground">
+                {tx("告警级别", "Severities")}
+              </label>
+              <div className="flex flex-wrap gap-1.5">
+                {ALL_SEVERITIES.map((sev) => {
+                  const active = selectedSeverities.includes(sev);
                   return (
                     <button
-                      key={r.id}
+                      key={sev}
                       type="button"
-                      data-testid={`silence-rule-${r.id}`}
-                      onClick={() => toggleRuleId(r.id)}
+                      data-testid={`silence-severity-${sev}`}
+                      onClick={() => toggleSeverity(sev)}
                       className={cn(
-                        "rounded px-2 py-0.5 text-[11px] border transition-colors cursor-pointer",
+                        "rounded px-2.5 py-1 text-[11px] font-mono-tech border transition-colors cursor-pointer",
                         active
-                          ? "border-xblue bg-xblue-soft text-xblue font-medium"
+                          ? "border-xblue bg-xblue-soft text-xblue font-semibold"
                           : "border-border bg-background text-muted-foreground"
                       )}
                     >
-                      {r.name}
+                      {tEnum(sev)}
                     </button>
                   );
                 })}
               </div>
-            )}
-          </div>
+            </div>
 
-          {/* Type Names & Node IDs */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="text-[11px] text-muted-foreground">
-                限定业务节点类型 (type_names，逗号分隔)
+            {/* Rule IDs Matcher */}
+            <div className="space-y-1.5">
+              <label className="block text-[11px] text-muted-foreground">
+                {tx("限定规则", "Rules")}
               </label>
-              <div className="flex items-center gap-1">
-                {knownTypeNames.slice(0, 3).map((tn) => (
-                  <button
-                    key={tn}
-                    type="button"
-                    onClick={() => appendTypeName(tn)}
-                    className="text-[10px] font-mono-tech text-xblue hover:underline cursor-pointer"
-                  >
-                    +{tn}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <Input
-              data-testid="silence-type-names-input"
-              value={typeNamesCsv}
-              onChange={(e) => setTypeNamesCsv(e.target.value)}
-              placeholder="Warehouse, Order"
-              className="h-8 text-xs font-mono-tech"
-            />
-          </div>
-
-          <div>
-            <label className="block text-[11px] text-muted-foreground mb-1">
-              限定特定节点 UUID (node_ids，可选，逗号分隔)
-            </label>
-            <Input
-              data-testid="silence-node-ids-input"
-              value={nodeIdsCsv}
-              onChange={(e) => setNodeIdsCsv(e.target.value)}
-              placeholder="00000000-0000-0000-0000-000000000000"
-              className="h-8 text-xs font-mono-tech"
-            />
-          </div>
-
-          {/* Time Window */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[11px] text-muted-foreground">
-                静默时间窗口 (ends_at &gt; starts_at)
-              </span>
-              <div className="flex items-center gap-1">
-                {[
-                  { label: "30m", min: 30 },
-                  { label: "2h", min: 120 },
-                  { label: "6h", min: 360 },
-                  { label: "24h", min: 1440 },
-                ].map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => applyDurationPreset(preset.min)}
-                    className="rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[10px] font-mono-tech hover:border-xblue hover:text-xblue cursor-pointer"
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
+              {rules.length === 0 ? (
+                <div className="text-[11px] text-muted-foreground">
+                  {tx("暂无规则", "No rules")}
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-1.5 max-h-28 overflow-y-auto">
+                  {rules.map((r) => {
+                    const active = selectedRuleIds.includes(r.id);
+                    return (
+                      <button
+                        key={r.id}
+                        type="button"
+                        data-testid={`silence-rule-${r.id}`}
+                        onClick={() => toggleRuleId(r.id)}
+                        className={cn(
+                          "rounded px-2 py-0.5 text-[11px] border transition-colors cursor-pointer",
+                          active
+                            ? "border-xblue bg-xblue-soft text-xblue font-medium"
+                            : "border-border bg-background text-muted-foreground"
+                        )}
+                      >
+                        {r.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              <div>
-                <label className="block text-[10px] text-muted-foreground mb-0.5">
-                  开始时间 (starts_at)
+            {/* Type Names & Node IDs */}
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="text-[11px] text-muted-foreground">
+                  {tx("节点类型", "Node Types")}
                 </label>
-                <Input
-                  type="datetime-local"
-                  data-testid="silence-starts-input"
-                  value={startsLocal}
-                  onChange={(e) => setStartsLocal(e.target.value)}
-                  className="h-8 text-xs font-mono-tech"
-                />
+                <div className="flex items-center gap-1">
+                  {knownTypeNames.slice(0, 3).map((tn) => (
+                    <button
+                      key={tn}
+                      type="button"
+                      onClick={() => appendTypeName(tn)}
+                      className="text-[10px] font-mono-tech text-xblue hover:underline cursor-pointer"
+                    >
+                      +{tn}
+                    </button>
+                  ))}
+                </div>
               </div>
-              <div>
-                <label className="block text-[10px] text-muted-foreground mb-0.5">
-                  结束时间 (ends_at)
-                </label>
-                <Input
-                  type="datetime-local"
-                  data-testid="silence-ends-input"
-                  value={endsLocal}
-                  onChange={(e) => setEndsLocal(e.target.value)}
-                  className="h-8 text-xs font-mono-tech"
-                />
+              <Input
+                data-testid="silence-type-names-input"
+                value={typeNamesCsv}
+                onChange={(e) => setTypeNamesCsv(e.target.value)}
+                placeholder="Warehouse, Order"
+                className="h-8 text-xs font-mono-tech"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] text-muted-foreground mb-1">
+                {tx("节点 ID", "Node IDs")}
+              </label>
+              <Input
+                data-testid="silence-node-ids-input"
+                value={nodeIdsCsv}
+                onChange={(e) => setNodeIdsCsv(e.target.value)}
+                placeholder="00000000-0000-0000-0000-000000000000"
+                className="h-8 text-xs font-mono-tech"
+              />
+            </div>
+
+            {/* Time Window */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-muted-foreground">
+                  {tx("时间窗口", "Time Window")}
+                </span>
+                <div className="flex items-center gap-1">
+                  {[
+                    { label: "30m", min: 30 },
+                    { label: "2h", min: 120 },
+                    { label: "6h", min: 360 },
+                    { label: "24h", min: 1440 },
+                  ].map((preset) => (
+                    <button
+                      key={preset.label}
+                      type="button"
+                      onClick={() => applyDurationPreset(preset.min)}
+                      className="rounded border border-border bg-muted/50 px-1.5 py-0.5 text-[10px] font-mono-tech hover:border-xblue hover:text-xblue cursor-pointer"
+                    >
+                      {preset.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-[10px] text-muted-foreground mb-0.5">
+                    {tx("开始时间", "Start Time")}
+                  </label>
+                  <Input
+                    type="datetime-local"
+                    data-testid="silence-starts-input"
+                    value={startsLocal}
+                    onChange={(e) => setStartsLocal(e.target.value)}
+                    className="h-8 text-xs font-mono-tech"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-muted-foreground mb-0.5">
+                    {tx("结束时间", "End Time")}
+                  </label>
+                  <Input
+                    type="datetime-local"
+                    data-testid="silence-ends-input"
+                    value={endsLocal}
+                    onChange={(e) => setEndsLocal(e.target.value)}
+                    className="h-8 text-xs font-mono-tech"
+                  />
+                </div>
               </div>
             </div>
-          </div>
 
-          <div>
-            <label className="block text-[11px] text-muted-foreground mb-1">
-              静默原因说明 (reason)
-            </label>
-            <Input
-              data-testid="silence-reason-input"
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              placeholder="例如：华东仓例行盘点维护窗口"
-              className="h-8 text-xs"
-            />
-          </div>
+            <div>
+              <label className="block text-[11px] text-muted-foreground mb-1">
+                {tx("静默原因", "Reason")}
+              </label>
+              <Input
+                data-testid="silence-reason-input"
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                placeholder={tx("华东仓盘点维护窗口", "Scheduled warehouse maintenance")}
+                className="h-8 text-xs"
+              />
+            </div>
 
-          <div className="flex justify-end pt-1">
-            <Button
-              type="submit"
-              variant="primary"
-              data-testid="create-silence-btn"
-              disabled={saving}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {saving ? "创建中..." : "创建静默窗口"}
-            </Button>
-          </div>
-        </form>
-      </Card>
+            <div className="flex justify-end pt-1">
+              <Button
+                type="submit"
+                variant="primary"
+                data-testid="create-silence-btn"
+                disabled={saving}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {saving
+                  ? tx("创建中…", "Creating…")
+                  : tx("创建静默", "Create Silence")}
+              </Button>
+            </div>
+          </form>
+        </Card>
+      )}
     </div>
   );
 }

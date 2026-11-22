@@ -3,7 +3,33 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>xBlueNode / AxPoint — 本体智能与动态超图工作台</title>
+    <title>xBlueNode / AxPoint</title>
+    <script>
+      (function () {
+        try {
+          var savedTheme = localStorage.getItem("axpoint_theme");
+          var prefersDark =
+            window.matchMedia &&
+            window.matchMedia("(prefers-color-scheme: dark)").matches;
+          var isDark =
+            savedTheme === "dark" || (savedTheme !== "light" && prefersDark);
+          document.documentElement.classList.toggle("dark", Boolean(isDark));
+
+          var savedLocale = localStorage.getItem("axpoint_locale");
+          var navLang =
+            (navigator.languages && navigator.languages[0]) ||
+            navigator.language ||
+            "zh-CN";
+          var locale =
+            savedLocale === "en-US" || savedLocale === "zh-CN"
+              ? savedLocale
+              : navLang.toLowerCase().indexOf("zh") === 0
+                ? "zh-CN"
+                : "en-US";
+          document.documentElement.lang = locale;
+        } catch (_e) {}
+      })();
+    </script>
   </head>
   <body class="bg-background text-foreground antialiased">
     <div id="root"></div>

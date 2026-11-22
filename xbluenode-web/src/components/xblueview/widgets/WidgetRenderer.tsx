@@ -1,9 +1,14 @@
+import { useMemo } from "react";
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
 import { ActionWidget } from "../ActionWidget";
 import { FloorPlanWidget } from "../FloorPlanWidget";
 import { MapWidget } from "../MapWidget";
 import { Scene3dWidget } from "../Scene3dWidget";
-import { parseCrossFilter, type SelectedNodeContext } from "../utils";
+import {
+  parseCrossFilter,
+  type KnownNodeSummary,
+  type SelectedNodeContext,
+} from "../utils";
 import { AlertListWidget } from "./AlertListWidget";
 import { EChartsWidget } from "./EChartsWidget";
 import { KpiWidget } from "./KpiWidget";
@@ -20,6 +25,7 @@ export interface WidgetRendererProps {
   readOnly?: boolean;
   selectedNodeId?: string | null;
   filterValues?: Record<string, unknown>;
+  knownNodes?: Readonly<Record<string, KnownNodeSummary>>;
   onDrill?: (
     widgetId: string,
     field: string,
@@ -39,6 +45,7 @@ export function WidgetRenderer({
   readOnly = false,
   selectedNodeId,
   filterValues,
+  knownNodes,
   onDrill,
   onCrossFilter,
   onSelectNode,
@@ -46,17 +53,25 @@ export function WidgetRenderer({
 }: WidgetRendererProps) {
   const crossFilter = parseCrossFilter(widget.options);
 
+  const nodeLabelMap = useMemo(() => {
+    if (!knownNodes) return undefined;
+    const out: Record<string, string> = {};
+    for (const [id, info] of Object.entries(knownNodes)) {
+      out[id] =
+        info.nodeKey && info.nodeKey !== info.title
+          ? `${info.title} (${info.nodeKey})`
+          : info.title;
+    }
+    return out;
+  }, [knownNodes]);
+
   const handleItemClick = (
     field: string,
     value: unknown,
     rowObj?: Record<string, unknown>
   ) => {
     if (crossFilter && onCrossFilter) {
-      if (crossFilter.field === field || !crossFilter.field) {
-        onCrossFilter(crossFilter.target_filter_key, value);
-      } else {
-        onCrossFilter(crossFilter.target_filter_key, value);
-      }
+      onCrossFilter(crossFilter.target_filter_key, value);
     }
     if (widget.drill.length > 0 && onDrill) {
       onDrill(widget.id, field, value, rowObj);
@@ -91,8 +106,11 @@ export function WidgetRenderer({
                 nodeId: nodeIdVal,
                 typeName: nodeTypeVal,
                 nodeKey:
-                  typeof rowObj.node_key === "string" ? rowObj.node_key : undefined,
-                title: typeof rowObj.title === "string" ? rowObj.title : undefined,
+                  typeof rowObj.node_key === "string"
+                    ? rowObj.node_key
+                    : undefined,
+                title:
+                  typeof rowObj.title === "string" ? rowObj.title : undefined,
               });
               return;
             }
@@ -127,6 +145,7 @@ export function WidgetRenderer({
           widget={widget}
           data={data}
           isDark={isDark}
+          nodeLabelMap={nodeLabelMap}
           onDataPointClick={
             widget.widget_kind === "GRAPH_TOPOLOGY"
               ? (_field, val) => {
@@ -159,6 +178,7 @@ export function WidgetRenderer({
         <FloorPlanWidget
           widget={widget}
           data={data}
+          isDark={isDark}
           editable={isEditing && !readOnly}
           onSelectNode={onSelectNode}
           onCrossFilter={(_field, val) => {
@@ -189,9 +209,7 @@ export function WidgetRenderer({
           data={data}
           readOnly={readOnly}
           onAckSuccess={onActionSuccess}
-          onSelectNode={(nodeId, title) =>
-            onSelectNode?.({ nodeId, title })
-          }
+          onSelectNode={(nodeId, title) => onSelectNode?.({ nodeId, title })}
         />
       );
     case "SIM_COMPARE":
@@ -205,6 +223,7 @@ export function WidgetRenderer({
           readOnly={readOnly}
           selectedNodeId={selectedNodeId}
           filterValues={filterValues}
+          knownNodes={knownNodes}
           onActionSuccess={onActionSuccess}
         />
       );

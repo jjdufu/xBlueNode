@@ -17,10 +17,13 @@ import {
 } from "@/lib/api/axsim";
 import { axflowApi, type FlowRecord } from "@/lib/api/axflow";
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 
 export interface DecisionPanelProps {
   scenario: ScenarioRecord | null;
   nodes: SandboxGraphNode[];
+  onDecisionTracked?: (decision: DecisionRecord) => void;
 }
 
 interface DraftChangeItem {
@@ -32,37 +35,15 @@ interface DraftChangeItem {
   target_value: string;
 }
 
-const STATUS_BADGE_MAP: Record<
-  DecisionStatus,
-  { label: string; className: string }
-> = {
-  PENDING_APPROVAL: {
-    label: "待审批 (PENDING_APPROVAL)",
-    className: "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  },
-  APPROVED: {
-    label: "已批准 (APPROVED)",
-    className: "border-xblue/50 bg-xblue-soft text-xblue",
-  },
-  APPLIED: {
-    label: "已写入生产 (APPLIED)",
-    className: "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  },
-  REJECTED: {
-    label: "已驳回 (REJECTED)",
-    className: "border-red-500/50 bg-red-500/10 text-red-700 dark:text-red-300",
-  },
-  CONFLICT: {
-    label: "基线冲突 (CONFLICT)",
-    className: "border-red-500/60 bg-red-500/15 text-red-700 dark:text-red-300",
-  },
-  FAILED: {
-    label: "下发失败 (FAILED)",
-    className: "border-red-500/50 bg-red-500/10 text-red-700 dark:text-red-300",
-  },
-};
+export function DecisionPanel({
+  scenario,
+  nodes,
+  onDecisionTracked,
+}: DecisionPanelProps) {
+  const { tx, tEnum, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canSimApply = can("SIM_APPLY");
 
-export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
   const [title, setTitle] = useState("");
   const [toleranceRatio, setToleranceRatio] = useState("0.05");
   const [triggerFlowId, setTriggerFlowId] = useState("");
@@ -77,6 +58,47 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [rebasingId, setRebasingId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const statusMeta: Record<
+    DecisionStatus,
+    { zh: string; en: string; className: string }
+  > = {
+    PENDING_APPROVAL: {
+      zh: "待审批",
+      en: "Awaiting Approval",
+      className:
+        "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300",
+    },
+    APPROVED: {
+      zh: "已批准",
+      en: "Approved",
+      className: "border-xblue/50 bg-xblue-soft text-xblue",
+    },
+    APPLIED: {
+      zh: "已写入生产",
+      en: "Applied",
+      className:
+        "border-emerald-500/50 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
+    },
+    REJECTED: {
+      zh: "已驳回",
+      en: "Rejected",
+      className:
+        "border-red-500/50 bg-red-500/10 text-red-700 dark:text-red-300",
+    },
+    CONFLICT: {
+      zh: "基线冲突",
+      en: "Conflict",
+      className:
+        "border-red-500/60 bg-red-500/15 text-red-700 dark:text-red-300",
+    },
+    FAILED: {
+      zh: "下发失败",
+      en: "Failed",
+      className:
+        "border-red-500/50 bg-red-500/10 text-red-700 dark:text-red-300",
+    },
+  };
 
   const nodeMap = useMemo(() => {
     const map = new Map<string, SandboxGraphNode>();
@@ -103,14 +125,13 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
     };
   }, []);
 
-  // Derive draft decision changes whenever scenario changes
   useEffect(() => {
     if (!scenario) {
       setTitle("");
       setDraftChanges([]);
       return;
     }
-    setTitle(`采纳方案：${scenario.name}`);
+    setTitle(tx(`采纳方案：${scenario.name}`, `Adopt: ${scenario.name}`));
     const derived: DraftChangeItem[] = (scenario.actions ?? []).map(
       (act, idx) => {
         const node = nodeMap.get(act.target_node_id);
@@ -147,7 +168,7 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
       }
     );
     setDraftChanges(derived);
-  }, [nodeMap, scenario]);
+  }, [nodeMap, scenario, tx]);
 
   const activeDecision = useMemo(
     () =>
@@ -162,13 +183,14 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
       return prev.map((d) => (d.id === rec.id ? rec : d));
     });
     setActiveDecisionId(rec.id);
+    onDecisionTracked?.(rec);
   };
 
   const handleCreateDecision = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!scenario) return;
+    if (!scenario || !canSimApply) return;
     if (!title.trim()) {
-      setErrorMsg("请输入决策提案标题");
+      setErrorMsg(tx("请填写决策提案标题", "Proposal title is required"));
       return;
     }
     const tol = Number.parseFloat(toleranceRatio);
@@ -216,6 +238,7 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
   };
 
   const handleRebaseDecision = async (decisionId: string) => {
+    if (!canSimApply) return;
     setRebasingId(decisionId);
     setErrorMsg(null);
     try {
@@ -230,8 +253,14 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
 
   if (!scenario) {
     return (
-      <Card className="p-4 text-xs text-muted-foreground" data-testid="decision-panel-empty">
-        请先运行并选择一个推演场景，再发起决策下发提案。
+      <Card
+        className="p-4 text-xs text-muted-foreground"
+        data-testid="decision-panel-empty"
+      >
+        {tx(
+          "请先运行或选择一个推演场景",
+          "Run or select a simulation scenario first"
+        )}
       </Card>
     );
   }
@@ -242,9 +271,12 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2.5">
           <div className="flex items-center gap-2 text-sm font-medium">
             <ShieldCheck className="h-4 w-4 text-xblue" />
-            <span>决策提案与生产回写（审批门禁 · 冲突检测）</span>
+            <span>{tx("决策提案与生产回写", "Decision Proposal & Writeback")}</span>
           </div>
-          <Badge variant="outline">场景: {scenario.name}</Badge>
+          <Badge variant="outline">
+            {tx("场景: ", "Scenario: ")}
+            {scenario.name}
+          </Badge>
         </div>
 
         {errorMsg && (
@@ -253,14 +285,23 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
           </div>
         )}
 
-        <form onSubmit={(e) => void handleCreateDecision(e)} className="space-y-3">
+        <form
+          onSubmit={(e) => void handleCreateDecision(e)}
+          className="space-y-3"
+        >
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
             <div className="space-y-1">
-              <label className="text-muted-foreground">决策提案标题</label>
+              <label className="text-muted-foreground">
+                {tx("提案标题", "Proposal Title")}
+              </label>
               <Input
                 value={title}
+                disabled={!canSimApply}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="例如：下调 F-1 产能并切换备选仓"
+                placeholder={tx(
+                  "下调 F-1 产能并切换备选仓",
+                  "Cut F-1 output and switch backup warehouse"
+                )}
                 className="h-9 text-xs"
                 data-testid="decision-title-input"
               />
@@ -268,12 +309,13 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
 
             <div className="space-y-1">
               <label className="text-muted-foreground">
-                基线漂移容差 (tolerance_ratio)
+                {tx("基线漂移容差", "Drift Tolerance")}
               </label>
               <Input
                 type="number"
                 step="any"
                 min="0"
+                disabled={!canSimApply}
                 value={toleranceRatio}
                 onChange={(e) => setToleranceRatio(e.target.value)}
                 className="h-9 text-xs font-mono-tech"
@@ -283,18 +325,19 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
 
             <div className="space-y-1">
               <label className="text-muted-foreground">
-                审批后联动触发 AxFlow (可选)
+                {tx("联动编排流程", "Linked Flow")}
               </label>
               <select
                 value={triggerFlowId}
+                disabled={!canSimApply}
                 onChange={(e) => setTriggerFlowId(e.target.value)}
-                className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs"
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs disabled:opacity-50"
                 data-testid="decision-flow-select"
               >
-                <option value="">不触发联动流程</option>
+                <option value="">{tx("不联动流程", "None")}</option>
                 {flows.map((f) => (
                   <option key={f.id} value={f.id}>
-                    {f.name} ({f.status})
+                    {f.name} ({tEnum(f.status)})
                   </option>
                 ))}
               </select>
@@ -303,20 +346,27 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
 
           <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-              <span className="font-medium">拟下发变更项清单</span>
-              <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={useExplicitChanges}
-                  onChange={(e) => setUseExplicitChanges(e.target.checked)}
-                />
-                <span>自定义调整目标值（不勾选则自动由场景干预推导）</span>
-              </label>
+              <span className="font-medium">
+                {tx("拟下发变更项", "Proposed Metric Changes")}
+              </span>
+              {canSimApply && (
+                <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={useExplicitChanges}
+                    onChange={(e) => setUseExplicitChanges(e.target.checked)}
+                  />
+                  <span>{tx("自定义目标值", "Customize target values")}</span>
+                </label>
+              )}
             </div>
 
             {draftChanges.length === 0 ? (
               <div className="text-[11px] text-muted-foreground">
-                将使用当前场景的干预动作自动换算下发变更。
+                {tx(
+                  "自动按当前场景干预动作推导目标值",
+                  "Target values derived automatically from scenario interventions"
+                )}
               </div>
             ) : (
               <div className="space-y-1.5">
@@ -344,16 +394,19 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
                           />
                         )}
                         <span className="font-medium">
-                          {node ? `[${node.type_name}] ${node.title}` : item.node_id}
+                          {node
+                            ? `[${node.type_name}] ${node.title}`
+                            : item.node_id}
                         </span>
                         <Badge variant="outline">{item.metric}</Badge>
                       </div>
 
                       <div className="flex items-center gap-2 font-mono-tech text-[11px]">
                         <span className="text-muted-foreground">
-                          沙盘基线: {item.base_value ?? "—"}
+                          {tx("基线: ", "Base: ")}
+                          {fmtNum(item.base_value, 4)}
                         </span>
-                        <span>→ 目标值:</span>
+                        <span>→ {tx("目标:", "Target:")}</span>
                         {useExplicitChanges ? (
                           <Input
                             type="number"
@@ -383,16 +436,20 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
             )}
           </div>
 
-          <div className="flex justify-end">
-            <Button
-              type="submit"
-              disabled={submitting}
-              data-testid="create-decision-btn"
-            >
-              <Send className="h-3.5 w-3.5" />
-              {submitting ? "提交提案中..." : "创建决策提案"}
-            </Button>
-          </div>
+          {canSimApply && (
+            <div className="flex justify-end">
+              <Button
+                type="submit"
+                disabled={submitting}
+                data-testid="create-decision-btn"
+              >
+                <Send className="h-3.5 w-3.5" />
+                {submitting
+                  ? tx("提交中…", "Submitting…")
+                  : tx("创建提案", "Create Proposal")}
+              </Button>
+            </div>
+          )}
         </form>
       </Card>
 
@@ -405,11 +462,12 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
               <span
                 data-testid="decision-status-badge"
                 className={`inline-flex items-center rounded border px-2 py-0.5 text-[11px] font-mono-tech font-medium ${
-                  STATUS_BADGE_MAP[activeDecision.status]?.className ?? ""
+                  statusMeta[activeDecision.status]?.className ?? ""
                 }`}
               >
-                {STATUS_BADGE_MAP[activeDecision.status]?.label ??
-                  activeDecision.status}
+                {statusMeta[activeDecision.status]
+                  ? `${tx(statusMeta[activeDecision.status].zh, statusMeta[activeDecision.status].en)} · ${activeDecision.status}`
+                  : activeDecision.status}
               </span>
             </div>
 
@@ -417,7 +475,7 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
               <Button
                 type="button"
                 variant="outline"
-                className="h-7 px-2.5 text-xs"
+                size="sm"
                 onClick={() => void handleRefreshDecision(activeDecision.id)}
                 disabled={refreshingId === activeDecision.id}
                 data-testid="decision-refresh-btn"
@@ -427,34 +485,43 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
                     refreshingId === activeDecision.id ? "animate-spin" : ""
                   }`}
                 />
-                刷新审批状态
+                {tx("刷新状态", "Refresh")}
               </Button>
 
-              {activeDecision.status === "CONFLICT" && (
+              {activeDecision.status === "CONFLICT" && canSimApply && (
                 <Button
                   type="button"
+                  size="sm"
                   onClick={() => void handleRebaseDecision(activeDecision.id)}
                   disabled={rebasingId === activeDecision.id}
-                  className="h-7 px-2.5 text-xs"
                   data-testid="decision-rebase-btn"
                 >
                   <GitPullRequestArrow className="h-3.5 w-3.5" />
                   {rebasingId === activeDecision.id
-                    ? "变基中..."
-                    : "Rebase 变基重提"}
+                    ? tx("变基中…", "Rebasing…")
+                    : tx("变基重提", "Rebase")}
                 </Button>
               )}
             </div>
           </div>
 
           <div className="flex flex-wrap gap-3 text-[11px] font-mono-tech text-muted-foreground">
-            <span>决策 ID: {activeDecision.id}</span>
+            <span>
+              {tx("决策 ID", "Decision ID")}: {activeDecision.id}
+            </span>
             {activeDecision.approval_id && (
-              <span>审批单 ID: {activeDecision.approval_id}</span>
+              <span>
+                {tx("审批单", "Approval")}: {activeDecision.approval_id}
+              </span>
             )}
-            <span>容差: {(activeDecision.tolerance_ratio * 100).toFixed(1)}%</span>
+            <span>
+              {tx("容差", "Tolerance")}:{" "}
+              {(activeDecision.tolerance_ratio * 100).toFixed(1)}%
+            </span>
             {activeDecision.trigger_flow_id && (
-              <span>联动流程: {activeDecision.trigger_flow_id}</span>
+              <span>
+                {tx("联动流程", "Flow")}: {activeDecision.trigger_flow_id}
+              </span>
             )}
           </div>
 
@@ -462,7 +529,10 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
             <div className="rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-300 flex items-center gap-2">
               <CheckCircle2 className="h-4 w-4 shrink-0" />
               <span>
-                决策已通过审批并原子写入生产主图节点指标（已记录 SIM_APPLY 审计）。
+                {tx(
+                  "决策已通过审批并原子写入生产主图节点指标",
+                  "Approved and atomically written back to production graph metrics"
+                )}
               </span>
             </div>
           )}
@@ -478,21 +548,35 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
               <div className="flex items-center gap-1.5 text-xs font-semibold text-red-700 dark:text-red-300">
                 <AlertTriangle className="h-4 w-4" />
                 <span>
-                  检测到生产基线漂移冲突（超过容差阈值），已中止写入生产。请核对差异并点击「Rebase 变基重提」：
+                  {tx(
+                    "检测到生产基线漂移超过容差阈值，写入已中止，请核对差异并变基重提：",
+                    "Production baseline drifted beyond tolerance; writeback halted. Review diff and rebase:"
+                  )}
                 </span>
               </div>
 
               <div className="overflow-x-auto">
-                <table className="w-full text-xs" data-testid="decision-conflict-table">
+                <table
+                  className="w-full text-xs"
+                  data-testid="decision-conflict-table"
+                >
                   <thead>
                     <tr className="border-b border-border text-left text-muted-foreground">
-                      <th className="py-1.5 pr-3">节点</th>
-                      <th className="py-1.5 pr-3">指标</th>
-                      <th className="py-1.5 pr-3 text-right">沙盘基线</th>
-                      <th className="py-1.5 pr-3 text-right">当前生产值</th>
-                      <th className="py-1.5 pr-3 text-right">拟写入目标</th>
-                      <th className="py-1.5 pr-3 text-right">漂移幅度</th>
-                      <th className="py-1.5">冲突原因</th>
+                      <th className="py-1.5 pr-3">{tx("节点", "Node")}</th>
+                      <th className="py-1.5 pr-3">{tx("指标", "Metric")}</th>
+                      <th className="py-1.5 pr-3 text-right">
+                        {tx("沙盘基线", "Sandbox Base")}
+                      </th>
+                      <th className="py-1.5 pr-3 text-right">
+                        {tx("当前生产值", "Current Prod")}
+                      </th>
+                      <th className="py-1.5 pr-3 text-right">
+                        {tx("拟写入目标", "Target")}
+                      </th>
+                      <th className="py-1.5 pr-3 text-right">
+                        {tx("漂移幅度", "Drift")}
+                      </th>
+                      <th className="py-1.5">{tx("冲突原因", "Reason")}</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -506,20 +590,24 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
                           <td className="py-1.5 pr-3 font-medium">
                             {node ? node.title : c.node_id}
                           </td>
-                          <td className="py-1.5 pr-3 font-mono-tech">{c.metric}</td>
+                          <td className="py-1.5 pr-3 font-mono-tech">
+                            {c.metric}
+                          </td>
                           <td className="py-1.5 pr-3 text-right font-mono-tech">
-                            {c.base_value ?? "—"}
+                            {fmtNum(c.base_value, 4)}
                           </td>
                           <td className="py-1.5 pr-3 text-right font-mono-tech font-semibold text-red-600 dark:text-red-400">
-                            {c.current_value ?? "—"}
+                            {c.current_value ?? "-"}
                           </td>
                           <td className="py-1.5 pr-3 text-right font-mono-tech">
-                            {c.target_value}
+                            {fmtNum(c.target_value, 4)}
                           </td>
                           <td className="py-1.5 pr-3 text-right font-mono-tech text-red-600 dark:text-red-400">
                             {(c.drift_ratio * 100).toFixed(1)}%
                           </td>
-                          <td className="py-1.5 text-muted-foreground">{c.reason}</td>
+                          <td className="py-1.5 text-muted-foreground">
+                            {c.reason}
+                          </td>
                         </tr>
                       );
                     })}
@@ -536,10 +624,16 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
                 <table className="w-full text-xs">
                   <thead>
                     <tr className="border-b border-border text-left text-muted-foreground">
-                      <th className="py-1.5 pr-3">目标节点</th>
-                      <th className="py-1.5 pr-3">指标</th>
-                      <th className="py-1.5 pr-3 text-right">提案基线值</th>
-                      <th className="py-1.5 text-right">目标下发值</th>
+                      <th className="py-1.5 pr-3">
+                        {tx("目标节点", "Target Node")}
+                      </th>
+                      <th className="py-1.5 pr-3">{tx("指标", "Metric")}</th>
+                      <th className="py-1.5 pr-3 text-right">
+                        {tx("提案基线值", "Proposal Base")}
+                      </th>
+                      <th className="py-1.5 text-right">
+                        {tx("目标下发值", "Target Value")}
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
@@ -551,14 +645,18 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
                           className="border-b border-border/60"
                         >
                           <td className="py-1.5 pr-3 font-medium">
-                            {node ? `${node.title} (${node.node_key})` : chg.node_id}
+                            {node
+                              ? `${node.title} (${node.node_key})`
+                              : chg.node_id}
                           </td>
-                          <td className="py-1.5 pr-3 font-mono-tech">{chg.metric}</td>
+                          <td className="py-1.5 pr-3 font-mono-tech">
+                            {chg.metric}
+                          </td>
                           <td className="py-1.5 pr-3 text-right font-mono-tech text-muted-foreground">
-                            {chg.base_value ?? "—"}
+                            {fmtNum(chg.base_value, 4)}
                           </td>
                           <td className="py-1.5 text-right font-mono-tech font-semibold text-xblue">
-                            {chg.target_value}
+                            {fmtNum(chg.target_value, 4)}
                           </td>
                         </tr>
                       );
@@ -572,7 +670,9 @@ export function DecisionPanel({ scenario, nodes }: DecisionPanelProps) {
 
       {decisions.length > 1 && (
         <div className="flex flex-wrap items-center gap-1.5 text-xs">
-          <span className="text-muted-foreground">历史提案:</span>
+          <span className="text-muted-foreground">
+            {tx("历史提案:", "History:")}
+          </span>
           {decisions.map((d) => (
             <button
               key={d.id}

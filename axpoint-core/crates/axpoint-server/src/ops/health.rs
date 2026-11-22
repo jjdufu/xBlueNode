@@ -335,9 +335,15 @@ async fn probe_embed<S: AgentRepository>(
     tenant_id: &str,
     cassette: bool,
 ) -> EmbedHealth {
+    let default_model = std::env::var("EMBED_MODEL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| String::from("text-embedding-v4"));
+
     if cassette {
         return EmbedHealth {
             ok: true,
+            provider: Some(String::from("cassette")),
             error: None,
         };
     }
@@ -351,10 +357,12 @@ async fn probe_embed<S: AgentRepository>(
             return match probe_gateway_models_endpoint(http, &active.base_url, None).await {
                 Ok(()) => EmbedHealth {
                     ok: true,
+                    provider: Some(active.name.clone()),
                     error: None,
                 },
                 Err(err) => EmbedHealth {
                     ok: false,
+                    provider: Some(active.name.clone()),
                     error: Some(err),
                 },
             };
@@ -376,16 +384,19 @@ async fn probe_embed<S: AgentRepository>(
         if env_key.is_none() {
             return EmbedHealth {
                 ok: false,
+                provider: Some(default_model.clone()),
                 error: Some(String::from("EMBED_API_KEY is not configured")),
             };
         }
         match probe_gateway_models_endpoint(http, &env_base, env_key.as_deref()).await {
             Ok(()) => EmbedHealth {
                 ok: true,
+                provider: Some(default_model.clone()),
                 error: None,
             },
             Err(err) => EmbedHealth {
                 ok: false,
+                provider: Some(default_model.clone()),
                 error: Some(err),
             },
         }
@@ -396,6 +407,7 @@ async fn probe_embed<S: AgentRepository>(
     } else {
         EmbedHealth {
             ok: false,
+            provider: Some(default_model),
             error: Some(String::from("embedding probe timed out after 3s")),
         }
     }

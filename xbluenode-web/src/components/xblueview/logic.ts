@@ -604,6 +604,51 @@ export interface BuildEChartsOptionParams {
   options?: Record<string, unknown>;
   data: LogicTabularData;
   isDark?: boolean;
+  nodeLabelMap?: Readonly<Record<string, string>>;
+}
+
+const ISO_AXIS_TS_RE =
+  /^\d{4}-(\d{2})-(\d{2})[T\s](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?$/;
+
+const UUID_SERIES_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function formatAxisTimestampLabel(raw: string): string {
+  const m = ISO_AXIS_TS_RE.exec(raw.trim());
+  if (m) {
+    return `${m[1]}-${m[2]} ${m[3]}:${m[4]}`;
+  }
+  return raw;
+}
+
+function resolveReadableSeriesName(
+  rawSeries: string,
+  row: readonly unknown[],
+  colMap: Map<string, number>,
+  nodeLabelMap?: Readonly<Record<string, string>>
+): string {
+  const trimmed = rawSeries.trim();
+  if (!UUID_SERIES_RE.test(trimmed)) {
+    return rawSeries;
+  }
+  const fromTitle =
+    nonEmptyStr(readCellByName(row, colMap, "title")) ??
+    nonEmptyStr(readCellByName(row, colMap, "node_title")) ??
+    nonEmptyStr(readCellByName(row, colMap, "name"));
+  const fromKey = nonEmptyStr(readCellByName(row, colMap, "node_key"));
+  if (fromTitle && !UUID_SERIES_RE.test(fromTitle)) {
+    return fromKey && fromKey !== fromTitle && !UUID_SERIES_RE.test(fromKey)
+      ? `${fromTitle} (${fromKey})`
+      : fromTitle;
+  }
+  if (fromKey && !UUID_SERIES_RE.test(fromKey)) {
+    return fromKey;
+  }
+  const mapped = nodeLabelMap?.[trimmed];
+  if (mapped && mapped.trim().length > 0) {
+    return mapped.trim();
+  }
+  return `#${trimmed.slice(-6)}`;
 }
 
 export interface BuiltEChartsOptionResult {
@@ -738,7 +783,15 @@ function matchCandidateColumn(
 export function buildEChartsOption(
   params: BuildEChartsOptionParams
 ): BuiltEChartsOptionResult {
-  const { kind, title = "", encoding, options, data, isDark = false } = params;
+  const {
+    kind,
+    title = "",
+    encoding,
+    options,
+    data,
+    isDark = false,
+    nodeLabelMap,
+  } = params;
   const palette = [...(isDark ? chartSpec.palette.dark : chartSpec.palette.light)];
   const tokens = isDark ? chartSpec.tokens.dark : chartSpec.tokens.light;
   const fontFamily = chartSpec.fontFamily;
@@ -756,8 +809,11 @@ export function buildEChartsOption(
     fontFamily,
     color: tokens.text,
   };
+  const isCartesianAxisChart =
+    kind === "LINE_CHART" || kind === "BAR_CHART" || kind === "AREA_CHART";
+  const isLineLike = kind === "LINE_CHART" || kind === "AREA_CHART";
   const baseTooltip: Record<string, unknown> = {
-    trigger: kind === "LINE_CHART" || kind === "BAR_CHART" ? "axis" : "item",
+    trigger: isCartesianAxisChart ? "axis" : "item",
     backgroundColor: tokens.tooltipBg,
     borderColor: tokens.tooltipBorder,
     textStyle: {
@@ -767,19 +823,18 @@ export function buildEChartsOption(
     },
   };
 
-  if (kind === "LINE_CHART" || kind === "BAR_CHART") {
+  if (isCartesianAxisChart) {
     const explicitSeries = readLogicStr(encoding, "series");
     const implicitGroup = detectImplicitNodeMetricGrouping(data, explicitSeries);
-    const xCandidates =
-      kind === "LINE_CHART"
-        ? [
-            ...chartSpec.encodingFallbacks.timeCandidates,
-            ...chartSpec.encodingFallbacks.categoryCandidates,
-          ]
-        : [
-            ...chartSpec.encodingFallbacks.categoryCandidates,
-            ...chartSpec.encodingFallbacks.timeCandidates,
-          ];
+    const xCandidates = isLineLike
+      ? [
+          ...chartSpec.encodingFallbacks.timeCandidates,
+          ...chartSpec.encodingFallbacks.categoryCandidates,
+        ]
+      : [
+          ...chartSpec.encodingFallbacks.categoryCandidates,
+          ...chartSpec.encodingFallbacks.timeCandidates,
+        ];
     const xField =
       readLogicStr(encoding, "x") ??
       implicitGroup?.xField ??
@@ -841,8 +896,9 @@ export function buildEChartsOption(
 
       const categories: string[] = [];
       const catSet = new Set<string>();
-      const seriesNames: string[] = [];
+      const seriesKeys: string[] = [];
       const serSet = new Set<string>();
+      const seriesLabelMap = new Map<string, string>();
       const matrix = new Map<string, number>();
 
       for (const r of rows) {
@@ -855,10 +911,16 @@ export function buildEChartsOption(
         }
         if (!serSet.has(sv)) {
           serSet.add(sv);
-          seriesNames.push(sv);
+          seriesKeys.push(sv);
+          seriesLabelMap.set(
+            sv,
+            resolveReadableSeriesName(sv, r, colMap, nodeLabelMap)
+          );
         }
         matrix.set(`${sv}::${xv}`, (matrix.get(`${sv}::${xv}`) ?? 0) + yv);
       }
+
+      const displayCategories = categories.map(formatAxisTimestampLabel);
 
       return {
         clickField: xField,
@@ -869,34 +931,59 @@ export function buildEChartsOption(
           tooltip: baseTooltip,
           legend: {
             top: 0,
+            type: "scroll",
             textStyle: { color: tokens.subtext, fontFamily, fontSize: 11 },
           },
           grid: baseGrid,
           xAxis: {
             type: "category",
-            data: categories,
-            axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+            data: displayCategories,
+            axisLabel: {
+              color: tokens.subtext,
+              fontFamily,
+              fontSize: 11,
+              hideOverlap: true,
+            },
             axisLine: { lineStyle: { color: tokens.axisLine } },
           },
           yAxis: {
             type: "value",
-            axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+            splitNumber: 4,
+            axisLabel: {
+              color: tokens.subtext,
+              fontFamily,
+              fontSize: 11,
+              hideOverlap: true,
+            },
             splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
           },
-          series: seriesNames.map((sn) => ({
-            name: sn,
-            type: kind === "LINE_CHART" ? "line" : "bar",
-            smooth: kind === "LINE_CHART",
-            barMaxWidth: 36,
-            data: categories.map((c) => matrix.get(`${sn}::${c}`) ?? 0),
-          })),
+          series: seriesKeys.map((sk, seriesIdx) => {
+            const seriesColor =
+              palette[seriesIdx % palette.length] ?? "#2563eb";
+            const sLabel = seriesLabelMap.get(sk) ?? sk;
+            return {
+              name: sLabel,
+              type: isLineLike ? "line" : "bar",
+              smooth: isLineLike,
+              barMaxWidth: 36,
+              itemStyle: { color: seriesColor },
+              ...(isLineLike
+                ? { lineStyle: { color: seriesColor, width: 2 } }
+                : {}),
+              ...(kind === "AREA_CHART"
+                ? { areaStyle: { opacity: 0.18 } }
+                : {}),
+              data: categories.map((c) => matrix.get(`${sk}::${c}`) ?? 0),
+            };
+          }),
         },
       };
     }
 
-    const categories = rows.map((r) =>
+    const rawCategories = rows.map((r) =>
       String(readCellByName(r, colMap, xField, 0) ?? "")
     );
+    const categories = rawCategories.map(formatAxisTimestampLabel);
     const defaultNumericIdx = findFirstNumericColIdx(data, new Set([xIdx]));
     const baseOption: Record<string, unknown> = {
       animation: false,
@@ -907,28 +994,53 @@ export function buildEChartsOption(
       xAxis: {
         type: "category",
         data: categories,
-        axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+        axisLabel: {
+          color: tokens.subtext,
+          fontFamily,
+          fontSize: 11,
+          hideOverlap: true,
+        },
         axisLine: { lineStyle: { color: tokens.axisLine } },
       },
       yAxis: {
         type: "value",
-        axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+        splitNumber: 4,
+        axisLabel: {
+          color: tokens.subtext,
+          fontFamily,
+          fontSize: 11,
+          hideOverlap: true,
+        },
         splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
       },
-      series: yFields.map((yf) => ({
-        name: yf,
-        type: kind === "LINE_CHART" ? "line" : "bar",
-        smooth: kind === "LINE_CHART",
-        barMaxWidth: 40,
-        data: rows.map(
-          (r) =>
-            toFiniteNumber(readCellByName(r, colMap, yf, defaultNumericIdx)) ?? 0
-        ),
-      })),
+      series: yFields.map((yf, seriesIdx) => {
+        const seriesColor = palette[seriesIdx % palette.length] ?? "#2563eb";
+        const displaySeriesName = rows[0]
+          ? resolveReadableSeriesName(yf, rows[0], colMap, nodeLabelMap)
+          : yf;
+        return {
+          name: displaySeriesName,
+          type: isLineLike ? "line" : "bar",
+          smooth: isLineLike,
+          barMaxWidth: 40,
+          itemStyle: { color: seriesColor },
+          ...(isLineLike
+            ? { lineStyle: { color: seriesColor, width: 2 } }
+            : {}),
+          ...(kind === "AREA_CHART" ? { areaStyle: { opacity: 0.18 } } : {}),
+          data: rows.map(
+            (r) =>
+              toFiniteNumber(
+                readCellByName(r, colMap, yf, defaultNumericIdx)
+              ) ?? 0
+          ),
+        };
+      }),
     };
     if (yFields.length > 1) {
       baseOption.legend = {
         top: 0,
+        type: "scroll",
         textStyle: { color: tokens.subtext, fontFamily, fontSize: 11 },
       };
     }
@@ -972,6 +1084,7 @@ export function buildEChartsOption(
         tooltip: baseTooltip,
         legend: {
           bottom: 0,
+          type: "scroll",
           textStyle: { color: tokens.subtext, fontFamily, fontSize: 11 },
         },
         series: [
@@ -1024,14 +1137,26 @@ export function buildEChartsOption(
         xAxis: {
           type: "value",
           name: xField,
-          axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+          splitNumber: 4,
+          axisLabel: {
+            color: tokens.subtext,
+            fontFamily,
+            fontSize: 11,
+            hideOverlap: true,
+          },
           axisLine: { lineStyle: { color: tokens.axisLine } },
           splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
         },
         yAxis: {
           type: "value",
           name: yField,
-          axisLabel: { color: tokens.subtext, fontFamily, fontSize: 11 },
+          splitNumber: 4,
+          axisLabel: {
+            color: tokens.subtext,
+            fontFamily,
+            fontSize: 11,
+            hideOverlap: true,
+          },
           axisLine: { lineStyle: { color: tokens.axisLine } },
           splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
         },

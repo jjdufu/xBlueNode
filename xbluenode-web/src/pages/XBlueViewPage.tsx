@@ -21,6 +21,7 @@ import {
   Sparkles,
   Trash2,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   xblueviewApi,
   type DashboardDetail,
@@ -31,8 +32,22 @@ import {
   type WidgetDataResponse,
   type WidgetRecord,
 } from "@/lib/api/xblueview";
+import { usePrincipal } from "@/lib/permissions";
 import { subscribeDashboardSse } from "@/lib/sse";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { useTheme } from "@/lib/theme";
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  IconButton,
+  Input,
+  PageHeader,
+  SegmentedControl,
+  Select,
+  StatusBadge,
+} from "@/components/ui/primitives";
 import { AiDashboardWizard } from "@/components/xblueview/AiDashboardWizard";
 import { AskSlideOver } from "@/components/xblueview/AskSlideOver";
 import { AssetManagerPanel } from "@/components/xblueview/AssetManagerPanel";
@@ -56,7 +71,11 @@ import {
   type ShareDialogTarget,
 } from "@/components/xblueview/ShareDialog";
 import { WidgetEditor } from "@/components/xblueview/WidgetEditor";
-import { DEFAULT_CANVAS, WIDGET_KIND_LABELS, type SelectedNodeContext } from "@/components/xblueview/utils";
+import {
+  DEFAULT_CANVAS,
+  getWidgetKindLabel,
+  type SelectedNodeContext,
+} from "@/components/xblueview/utils";
 
 type GalleryTab = "dashboards" | "assets";
 
@@ -65,25 +84,14 @@ export function XBlueViewPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
 
+  const { tx, isZh } = useI18n();
+  const { isDark } = useTheme();
+  const { can } = usePrincipal();
+  const canEdit = can("VIEW_EDIT");
+  const canShare = can("VIEW_SHARE");
+  const canExport = can("EXPORT_DATA");
+
   const isScreenMode = Boolean(slug && searchParams.get("screen") === "1");
-
-  const [isDark, setIsDark] = useState(
-    () =>
-      typeof document !== "undefined" &&
-      document.documentElement.classList.contains("dark")
-  );
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const observer = new MutationObserver(() => {
-      setIsDark(document.documentElement.classList.contains("dark"));
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
-  }, []);
 
   // =========================================================================
   // Gallery Mode (/view)
@@ -101,6 +109,9 @@ export function XBlueViewPage() {
   const [newTheme, setNewTheme] = useState<DashboardTheme>("light");
   const [creating, setCreating] = useState(false);
   const [aiWizardOpen, setAiWizardOpen] = useState(false);
+  const [pendingDeleteDashboard, setPendingDeleteDashboard] =
+    useState<DashboardRecord | null>(null);
+  const [deletingDashboard, setDeletingDashboard] = useState(false);
 
   const loadDashboards = useCallback(async () => {
     setGalleryLoading(true);
@@ -134,13 +145,19 @@ export function XBlueViewPage() {
 
   const handleCreateDashboard = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canEdit) return;
     const trimmedName = newName.trim();
     const trimmedSlug = newSlug
       .trim()
       .toLowerCase()
       .replace(/[^a-z0-9-]/g, "-");
     if (!trimmedName || !trimmedSlug) {
-      setGalleryError("请填写驾驶舱名称与合法 Slug（小写字母/数字/连字符）");
+      setGalleryError(
+        tx(
+          "驾驶舱名称与合法 Slug（小写字母/数字/连字符）不能为空",
+          "Dashboard name and valid slug (lowercase letters, digits, hyphens) are required"
+        )
+      );
       return;
     }
     setCreating(true);
@@ -166,9 +183,10 @@ export function XBlueViewPage() {
   };
 
   const handleDuplicateDashboard = async (d: DashboardRecord) => {
+    if (!canEdit) return;
     try {
       await xblueviewApi.duplicateDashboard(d.id, {
-        name: `${d.name} (副本)`,
+        name: tx(`${d.name} (副本)`, `${d.name} (Copy)`),
         slug: `${d.slug}-copy-${Date.now().toString(36).slice(-4)}`,
       });
       await loadDashboards();
@@ -177,12 +195,19 @@ export function XBlueViewPage() {
     }
   };
 
-  const handleDeleteDashboard = async (d: DashboardRecord) => {
+  const confirmDeleteDashboard = async () => {
+    if (!pendingDeleteDashboard || !canEdit) return;
+    setDeletingDashboard(true);
     try {
-      await xblueviewApi.deleteDashboard(d.id);
-      setDashboards((prev) => prev.filter((item) => item.id !== d.id));
+      await xblueviewApi.deleteDashboard(pendingDeleteDashboard.id);
+      setDashboards((prev) =>
+        prev.filter((item) => item.id !== pendingDeleteDashboard.id)
+      );
+      setPendingDeleteDashboard(null);
     } catch (err) {
       setGalleryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingDashboard(false);
     }
   };
 
@@ -211,6 +236,10 @@ export function XBlueViewPage() {
   const [editorOpen, setEditorOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [editingWidget, setEditingWidget] = useState<WidgetRecord | null>(null);
+  const [pendingDeleteWidgetId, setPendingDeleteWidgetId] = useState<
+    string | null
+  >(null);
+  const [deletingWidget, setDeletingWidget] = useState(false);
   const [selectedNode, setSelectedNode] = useState<SelectedNodeContext | null>(
     null
   );
@@ -228,9 +257,9 @@ export function XBlueViewPage() {
   );
 
   const lastFetchAtRef = useRef<Record<string, number>>({});
-  const throttleTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>(
-    {}
-  );
+  const throttleTimersRef = useRef<
+    Record<string, ReturnType<typeof setTimeout>>
+  >({});
   const dashboardRef = useRef<DashboardDetail | null>(null);
   const filterValuesRef = useRef<Record<string, unknown>>({});
   const drillMapRef = useRef<Record<string, DrillPathItem[]>>({});
@@ -356,7 +385,6 @@ export function XBlueViewPage() {
     }
   }, [loadDashboardDetail, slug]);
 
-  // Schedule throttled widget refresh (2s per-widget throttle for SSE invalidate)
   const scheduleThrottledWidgetRefresh = useCallback(
     (widgetId: string) => {
       const now = Date.now();
@@ -380,7 +408,6 @@ export function XBlueViewPage() {
     [fetchWidgetData]
   );
 
-  // Clean up throttle timers on unmount
   useEffect(() => {
     return () => {
       for (const t of Object.values(throttleTimersRef.current)) {
@@ -443,7 +470,12 @@ export function XBlueViewPage() {
       setSseConnected(false);
       unsubscribe();
     };
-  }, [dashboardId, isEditing, refreshAllWidgets, scheduleThrottledWidgetRefresh]);
+  }, [
+    dashboardId,
+    isEditing,
+    refreshAllWidgets,
+    scheduleThrottledWidgetRefresh,
+  ]);
 
   // INTERVAL polling timer for widgets with refresh_mode === "INTERVAL"
   useEffect(() => {
@@ -510,7 +542,6 @@ export function XBlueViewPage() {
     const currentLevelDef = widget.drill[currentPath.length];
     if (!currentLevelDef) return;
 
-    // If current drill level configures node_type (leaf entity), open NodeDrawer
     if (currentLevelDef.node_type) {
       const resolvedKey = resolveLeafDrillNodeKey({
         clickedField: field,
@@ -535,7 +566,6 @@ export function XBlueViewPage() {
       return;
     }
 
-    // Drill down if there is a next drill level defined
     if (currentPath.length + 1 < widget.drill.length) {
       const nextPath: DrillPathItem[] = [
         ...currentPath,
@@ -555,7 +585,7 @@ export function XBlueViewPage() {
   };
 
   const handleSaveLayout = async () => {
-    if (!dashboard || !pendingLayout) return;
+    if (!dashboard || !pendingLayout || !canEdit) return;
     setSavingLayout(true);
     setDetailError(null);
     try {
@@ -576,7 +606,7 @@ export function XBlueViewPage() {
   };
 
   const handlePublish = async () => {
-    if (!dashboard) return;
+    if (!dashboard || !canEdit) return;
     setPublishing(true);
     setDetailError(null);
     try {
@@ -597,19 +627,26 @@ export function XBlueViewPage() {
     }
   };
 
-  const handleDeleteWidget = async (widgetId: string) => {
+  const confirmDeleteWidget = async () => {
+    if (!pendingDeleteWidgetId || !canEdit) return;
+    setDeletingWidget(true);
     try {
-      await xblueviewApi.deleteWidget(widgetId);
+      await xblueviewApi.deleteWidget(pendingDeleteWidgetId);
       setDashboard((prev) =>
         prev
           ? {
               ...prev,
-              widgets: prev.widgets.filter((w) => w.id !== widgetId),
+              widgets: prev.widgets.filter(
+                (w) => w.id !== pendingDeleteWidgetId
+              ),
             }
           : prev
       );
+      setPendingDeleteWidgetId(null);
     } catch (err) {
       setDetailError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingWidget(false);
     }
   };
 
@@ -628,71 +665,55 @@ export function XBlueViewPage() {
   if (!slug) {
     return (
       <div className="space-y-5" data-testid="xblueview-gallery-page">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
-          <div>
-            <h1 className="text-lg font-semibold tracking-tight">
-              xBlueView · 孪生驾驶舱
-            </h1>
-            <p className="text-xs text-muted-foreground mt-0.5">
-              20 种可视化组件、AI 一句话建看板、2D/3D 数字孪生场景、动作回写闭环与实时大屏
-            </p>
-          </div>
+        <PageHeader
+          title={tx("xBlueView · 孪生驾驶舱", "xBlueView · Twin Cockpit")}
+          actions={
+            <>
+              <SegmentedControl<GalleryTab>
+                value={galleryTab}
+                onChange={setGalleryTab}
+                items={[
+                  {
+                    key: "dashboards",
+                    label: tx("驾驶舱列表", "Dashboards"),
+                    icon: <FolderKanban className="h-3.5 w-3.5 text-xblue" />,
+                  },
+                  {
+                    key: "assets",
+                    label: tx("空间资产", "Spatial Assets"),
+                    icon: <Layers className="h-3.5 w-3.5 text-xblue" />,
+                    testId: "tab-asset-manager",
+                  },
+                ]}
+              />
 
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center rounded-md border border-border bg-muted/40 p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setGalleryTab("dashboards")}
-                className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 font-medium cursor-pointer ${
-                  galleryTab === "dashboards"
-                    ? "bg-background text-foreground border border-border"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <FolderKanban className="h-3.5 w-3.5 text-xblue" />
-                驾驶舱列表
-              </button>
-              <button
-                type="button"
-                onClick={() => setGalleryTab("assets")}
-                data-testid="tab-asset-manager"
-                className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 font-medium cursor-pointer ${
-                  galleryTab === "assets"
-                    ? "bg-background text-foreground border border-border"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <Layers className="h-3.5 w-3.5 text-xblue" />
-                空间资产与 3D 绑定
-              </button>
-            </div>
-
-            {galleryTab === "dashboards" && (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setAiWizardOpen(true)}
-                  data-testid="open-ai-wizard-btn"
-                >
-                  <Sparkles className="h-3.5 w-3.5 text-xblue" />
-                  AI 一句话建看板
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() => setCreateOpen((prev) => !prev)}
-                  data-testid="open-create-dashboard-btn"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  新建驾驶舱
-                </Button>
-              </>
-            )}
-          </div>
-        </div>
+              {galleryTab === "dashboards" && canEdit && (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setAiWizardOpen(true)}
+                    data-testid="open-ai-wizard-btn"
+                  >
+                    <Sparkles className="h-3.5 w-3.5 text-xblue" />
+                    {tx("AI 生成看板", "AI Builder")}
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => setCreateOpen((prev) => !prev)}
+                    data-testid="open-create-dashboard-btn"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {tx("新建驾驶舱", "New Dashboard")}
+                  </Button>
+                </>
+              )}
+            </>
+          }
+        />
 
         {galleryError && (
-          <div className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs">
+          <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300">
             {galleryError}
           </div>
         )}
@@ -701,23 +722,25 @@ export function XBlueViewPage() {
           <AssetManagerPanel />
         ) : (
           <>
-            {createOpen && (
+            {createOpen && canEdit && (
               <Card className="p-4">
                 <form
                   onSubmit={(e) => void handleCreateDashboard(e)}
                   className="grid grid-cols-1 md:grid-cols-12 gap-3 items-end text-xs"
                 >
                   <div className="md:col-span-3 space-y-1">
-                    <label className="text-muted-foreground block">驾驶舱名称</label>
+                    <label className="text-muted-foreground block">
+                      {tx("驾驶舱名称", "Name")}
+                    </label>
                     <Input
                       value={newName}
                       onChange={(e) => setNewName(e.target.value)}
-                      placeholder="例如：供应链总览"
+                      placeholder={tx("供应链总览", "Supply Overview")}
                       className="h-8 text-xs"
                     />
                   </div>
                   <div className="md:col-span-3 space-y-1">
-                    <label className="text-muted-foreground block">Slug 标识</label>
+                    <label className="text-muted-foreground block">Slug</label>
                     <Input
                       value={newSlug}
                       onChange={(e) => setNewSlug(e.target.value)}
@@ -726,38 +749,47 @@ export function XBlueViewPage() {
                     />
                   </div>
                   <div className="md:col-span-3 space-y-1">
-                    <label className="text-muted-foreground block">描述</label>
+                    <label className="text-muted-foreground block">
+                      {tx("描述", "Description")}
+                    </label>
                     <Input
                       value={newDesc}
                       onChange={(e) => setNewDesc(e.target.value)}
-                      placeholder="可选描述"
+                      placeholder={tx(
+                        "华东供应链实时监控",
+                        "East China supply monitoring"
+                      )}
                       className="h-8 text-xs"
                     />
                   </div>
                   <div className="md:col-span-1 space-y-1">
-                    <label className="text-muted-foreground block">主题</label>
-                    <select
+                    <label className="text-muted-foreground block">
+                      {tx("主题", "Theme")}
+                    </label>
+                    <Select
                       value={newTheme}
                       onChange={(e) =>
                         setNewTheme(e.target.value as DashboardTheme)
                       }
-                      className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                      className="h-8 w-full text-xs"
                     >
-                      <option value="light">light</option>
-                      <option value="dark">dark</option>
-                      <option value="screen">screen</option>
-                    </select>
+                      <option value="light">{tx("浅色", "Light")}</option>
+                      <option value="dark">{tx("深色", "Dark")}</option>
+                      <option value="screen">{tx("大屏", "Screen")}</option>
+                    </Select>
                   </div>
                   <div className="md:col-span-2 flex gap-2">
                     <Button type="submit" disabled={creating} className="flex-1">
-                      {creating ? "创建中..." : "创建"}
+                      {creating
+                        ? tx("创建中…", "Creating…")
+                        : tx("创建", "Create")}
                     </Button>
                     <Button
                       type="button"
                       variant="outline"
                       onClick={() => setCreateOpen(false)}
                     >
-                      取消
+                      {tx("取消", "Cancel")}
                     </Button>
                   </div>
                 </form>
@@ -770,7 +802,10 @@ export function XBlueViewPage() {
                 <Input
                   value={gallerySearch}
                   onChange={(e) => setGallerySearch(e.target.value)}
-                  placeholder="搜索驾驶舱名称、slug 或描述..."
+                  placeholder={tx(
+                    "名称、Slug 或描述…",
+                    "Name, slug, or description…"
+                  )}
                   className="h-8 pl-8 text-xs"
                   data-testid="dashboard-search-input"
                 />
@@ -783,18 +818,22 @@ export function XBlueViewPage() {
                 className="h-8 px-2.5 text-xs"
               >
                 <RefreshCw
-                  className={`h-3.5 w-3.5 ${galleryLoading ? "animate-spin" : ""}`}
+                  className={`h-3.5 w-3.5 ${
+                    galleryLoading ? "animate-spin" : ""
+                  }`}
                 />
-                刷新
+                {tx("刷新", "Refresh")}
               </Button>
             </div>
 
             {filteredDashboards.length === 0 ? (
-              <Card className="p-10 text-center text-xs text-muted-foreground">
-                {galleryLoading
-                  ? "正在加载驾驶舱列表..."
-                  : "暂无驾驶舱，点击右上角「新建驾驶舱」或「AI 一句话建看板」开始构建。"}
-              </Card>
+              <EmptyState
+                title={
+                  galleryLoading
+                    ? tx("加载中…", "Loading…")
+                    : tx("暂无驾驶舱", "No dashboards")
+                }
+              />
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {filteredDashboards.map((d) => (
@@ -808,14 +847,13 @@ export function XBlueViewPage() {
                       onClick={() => void navigate(`/view/${d.slug}`)}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <h3 className="text-sm font-semibold truncate">{d.name}</h3>
-                        <Badge
-                          variant={
-                            d.status === "PUBLISHED" ? "xblue" : "outline"
-                          }
-                        >
-                          {d.status} v{d.version}
-                        </Badge>
+                        <h3 className="text-sm font-semibold truncate">
+                          {d.name}
+                        </h3>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <StatusBadge status={d.status} />
+                          <Badge variant="outline">v{d.version}</Badge>
+                        </div>
                       </div>
                       <div className="font-mono-tech text-[11px] text-muted-foreground">
                         /view/{d.slug} · {d.theme}
@@ -832,42 +870,43 @@ export function XBlueViewPage() {
                         <Button
                           type="button"
                           variant="outline"
-                          className="px-2.5 py-1 text-xs"
+                          size="sm"
                           onClick={() => void navigate(`/view/${d.slug}`)}
                         >
-                          打开
+                          {tx("打开", "Open")}
                         </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="px-2 py-1 text-xs"
+                        <IconButton
+                          size="sm"
                           onClick={() =>
                             void navigate(`/view/${d.slug}?screen=1`)
                           }
-                          title="大屏模式"
+                          aria-label={tx("大屏模式", "Big Screen")}
+                          title={tx("大屏模式", "Big Screen")}
                         >
                           <Monitor className="h-3.5 w-3.5 text-xblue" />
-                        </Button>
+                        </IconButton>
                       </div>
 
-                      <div className="flex items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => void handleDuplicateDashboard(d)}
-                          className="rounded p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
-                          title="复制驾驶舱"
-                        >
-                          <Copy className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void handleDeleteDashboard(d)}
-                          className="rounded p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
-                          title="删除驾驶舱"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
+                      {canEdit && (
+                        <div className="flex items-center gap-1">
+                          <IconButton
+                            size="sm"
+                            onClick={() => void handleDuplicateDashboard(d)}
+                            aria-label={tx("复制驾驶舱", "Duplicate")}
+                            title={tx("复制驾驶舱", "Duplicate")}
+                          >
+                            <Copy className="h-3.5 w-3.5" />
+                          </IconButton>
+                          <IconButton
+                            size="sm"
+                            onClick={() => setPendingDeleteDashboard(d)}
+                            aria-label={tx("删除驾驶舱", "Delete")}
+                            title={tx("删除驾驶舱", "Delete")}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </IconButton>
+                        </div>
+                      )}
                     </div>
                   </Card>
                 ))}
@@ -883,6 +922,22 @@ export function XBlueViewPage() {
             setAiWizardOpen(false);
             void navigate(`/view/${created.slug}`);
           }}
+        />
+
+        <ConfirmDialog
+          open={Boolean(pendingDeleteDashboard)}
+          onClose={() => setPendingDeleteDashboard(null)}
+          onConfirm={() => void confirmDeleteDashboard()}
+          loading={deletingDashboard}
+          title={tx("删除驾驶舱", "Delete Dashboard")}
+          description={
+            pendingDeleteDashboard
+              ? tx(
+                  `删除「${pendingDeleteDashboard.name}」后，其包含的全部组件与分享链接将同步移除。`,
+                  `Deleting "${pendingDeleteDashboard.name}" removes all of its widgets and share links.`
+                )
+              : ""
+          }
         />
       </div>
     );
@@ -924,50 +979,51 @@ export function XBlueViewPage() {
   const forceDarkCanvas =
     dashboard?.theme === "dark" || dashboard?.theme === "screen";
   const effectiveDark = Boolean(isDark || forceDarkCanvas);
+  const pendingDeleteWidgetObj = pendingDeleteWidgetId
+    ? dashboard?.widgets.find((w) => w.id === pendingDeleteWidgetId) ?? null
+    : null;
 
   // =========================================================================
   // Render: Dashboard Detail View / Edit (/view/:slug)
   // =========================================================================
   return (
     <div className="space-y-4" data-testid="xblueview-detail-page">
-      {/* Top Toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
-        <div className="flex items-center gap-3 min-w-0">
-          <Button
-            type="button"
-            variant="ghost"
-            className="px-2 py-1"
+        <div className="flex items-center gap-2.5 min-w-0">
+          <IconButton
+            size="sm"
             onClick={() => void navigate("/view")}
+            aria-label={tx("返回列表", "Back")}
+            title={tx("返回列表", "Back")}
           >
             <ArrowLeft className="h-4 w-4" />
-          </Button>
+          </IconButton>
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h1 className="text-lg font-semibold tracking-tight truncate">
-                {dashboard?.name ?? `驾驶舱 · ${slug}`}
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-base font-semibold tracking-tight truncate">
+                {dashboard?.name ?? `${tx("驾驶舱", "Dashboard")} · ${slug}`}
               </h1>
               {dashboard && (
-                <Badge
-                  variant={
-                    dashboard.status === "PUBLISHED" ? "xblue" : "outline"
-                  }
-                >
-                  {dashboard.status} v{dashboard.version}
-                </Badge>
+                <>
+                  <StatusBadge status={dashboard.status} />
+                  <Badge variant="outline">v{dashboard.version}</Badge>
+                </>
               )}
               {!isEditing && dashboard && (
-                <span className="inline-flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[10px] font-mono-tech text-muted-foreground">
+                <Badge variant="outline" className="gap-1">
                   <Radio
                     className={`h-2.5 w-2.5 ${
                       sseConnected ? "text-xblue" : "text-muted-foreground"
                     }`}
                   />
-                  {sseConnected ? "SSE LIVE" : "POLL"}
-                </span>
+                  {sseConnected
+                    ? tx("实时推送", "LIVE")
+                    : tx("轮询", "POLL")}
+                </Badge>
               )}
             </div>
             {dashboard?.description && (
-              <p className="text-xs text-muted-foreground truncate">
+              <p className="text-xs text-muted-foreground truncate mt-0.5">
                 {dashboard.description}
               </p>
             )}
@@ -985,7 +1041,7 @@ export function XBlueViewPage() {
                   data-testid="refresh-all-widgets-btn"
                 >
                   <RefreshCw className="h-3.5 w-3.5" />
-                  刷新
+                  {tx("刷新", "Refresh")}
                 </Button>
                 <Button
                   type="button"
@@ -994,51 +1050,57 @@ export function XBlueViewPage() {
                   data-testid="open-ask-slideover-btn"
                 >
                   <MessageSquare className="h-3.5 w-3.5 text-xblue" />
-                  问一问
+                  {tx("智能问数", "Ask")}
                 </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() =>
-                    setExportTarget({
-                      kind: "DASHBOARD",
-                      dashboardId: dashboard.id,
-                      dashboardName: dashboard.name,
-                      filters: sanitizeExportFilters(filterValues),
-                    })
-                  }
-                  data-testid="open-export-dialog-btn"
-                >
-                  <Download className="h-3.5 w-3.5 text-xblue" />
-                  出品导出
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setExportListOpen(true)}
-                  data-testid="open-export-list-btn"
-                >
-                  <FileArchive className="h-3.5 w-3.5 text-xblue" />
-                  出品中心
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() =>
-                    setShareTarget({
-                      targetKind: "DASHBOARD",
-                      targetId: dashboard.id,
-                      targetName: dashboard.name,
-                      dashboardStatus: dashboard.status,
-                      dashboardFilters: dashboard.filters,
-                      activeFilterValues: filterValues,
-                    })
-                  }
-                  data-testid="open-share-dialog-btn"
-                >
-                  <Share2 className="h-3.5 w-3.5 text-xblue" />
-                  安全分享
-                </Button>
+                {canExport && (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() =>
+                        setExportTarget({
+                          kind: "DASHBOARD",
+                          dashboardId: dashboard.id,
+                          dashboardName: dashboard.name,
+                          filters: sanitizeExportFilters(filterValues),
+                        })
+                      }
+                      data-testid="open-export-dialog-btn"
+                    >
+                      <Download className="h-3.5 w-3.5 text-xblue" />
+                      {tx("出品导出", "Export")}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setExportListOpen(true)}
+                      data-testid="open-export-list-btn"
+                    >
+                      <FileArchive className="h-3.5 w-3.5 text-xblue" />
+                      {tx("出品中心", "Exports")}
+                    </Button>
+                  </>
+                )}
+                {canShare && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() =>
+                      setShareTarget({
+                        targetKind: "DASHBOARD",
+                        targetId: dashboard.id,
+                        targetName: dashboard.name,
+                        dashboardStatus: dashboard.status,
+                        dashboardFilters: dashboard.filters,
+                        activeFilterValues: filterValues,
+                      })
+                    }
+                    data-testid="open-share-dialog-btn"
+                  >
+                    <Share2 className="h-3.5 w-3.5 text-xblue" />
+                    {tx("安全分享", "Share")}
+                  </Button>
+                )}
                 <Button
                   type="button"
                   variant="outline"
@@ -1046,16 +1108,18 @@ export function XBlueViewPage() {
                   data-testid="enter-big-screen-btn"
                 >
                   <Monitor className="h-3.5 w-3.5 text-xblue" />
-                  大屏模式
+                  {tx("大屏模式", "Big Screen")}
                 </Button>
-                <Button
-                  type="button"
-                  onClick={() => setIsEditing(true)}
-                  data-testid="toggle-edit-mode-btn"
-                >
-                  <Edit3 className="h-3.5 w-3.5" />
-                  编辑布局
-                </Button>
+                {canEdit && (
+                  <Button
+                    type="button"
+                    onClick={() => setIsEditing(true)}
+                    data-testid="toggle-edit-mode-btn"
+                  >
+                    <Edit3 className="h-3.5 w-3.5" />
+                    {tx("编辑布局", "Edit Layout")}
+                  </Button>
+                )}
               </>
             ) : (
               <>
@@ -1066,7 +1130,7 @@ export function XBlueViewPage() {
                   data-testid="open-dashboard-settings-btn"
                 >
                   <Settings2 className="h-3.5 w-3.5 text-xblue" />
-                  驾驶舱设置
+                  {tx("驾驶舱设置", "Settings")}
                 </Button>
                 <Button
                   type="button"
@@ -1078,7 +1142,7 @@ export function XBlueViewPage() {
                   data-testid="add-widget-btn"
                 >
                   <Plus className="h-3.5 w-3.5 text-xblue" />
-                  添加组件
+                  {tx("添加组件", "Add Widget")}
                 </Button>
                 <Button
                   type="button"
@@ -1088,7 +1152,9 @@ export function XBlueViewPage() {
                   data-testid="save-layout-btn"
                 >
                   <Save className="h-3.5 w-3.5" />
-                  {savingLayout ? "保存中..." : "保存布局"}
+                  {savingLayout
+                    ? tx("保存中…", "Saving…")
+                    : tx("保存布局", "Save Layout")}
                 </Button>
                 <Button
                   type="button"
@@ -1097,7 +1163,9 @@ export function XBlueViewPage() {
                   data-testid="publish-dashboard-btn"
                 >
                   <CheckCircle2 className="h-3.5 w-3.5" />
-                  {publishing ? "发布中..." : "发布驾驶舱"}
+                  {publishing
+                    ? tx("发布中…", "Publishing…")
+                    : tx("发布驾驶舱", "Publish")}
                 </Button>
                 <Button
                   type="button"
@@ -1107,7 +1175,7 @@ export function XBlueViewPage() {
                     setPendingLayout(null);
                   }}
                 >
-                  完成
+                  {tx("完成", "Done")}
                 </Button>
               </>
             )}
@@ -1117,7 +1185,7 @@ export function XBlueViewPage() {
 
       {detailError && (
         <div
-          className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs"
+          className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-700 dark:text-red-300"
           data-testid="view-error-banner"
         >
           {detailError}
@@ -1126,7 +1194,7 @@ export function XBlueViewPage() {
 
       {detailLoading && !dashboard ? (
         <Card className="p-12 text-center text-xs text-muted-foreground">
-          正在加载孪生驾驶舱...
+          {tx("加载中…", "Loading…")}
         </Card>
       ) : dashboard ? (
         <>
@@ -1160,21 +1228,35 @@ export function XBlueViewPage() {
               filterValues={filterValues}
               onLayoutChange={(items) => setPendingLayout(items)}
               onRefreshWidget={(wid) => void fetchWidgetData(wid)}
-              onEditWidget={(w) => {
-                setEditingWidget(w);
-                setEditorOpen(true);
-              }}
-              onDeleteWidget={(wid) => void handleDeleteWidget(wid)}
-              onExportWidget={(w) =>
-                setExportTarget({
-                  kind: "WIDGET",
-                  dashboardId: dashboard.id,
-                  dashboardName: dashboard.name,
-                  widgetId: w.id,
-                  widgetTitle: w.title || WIDGET_KIND_LABELS[w.widget_kind],
-                  filters: buildWidgetFilters(w.id, dashboard, filterValues),
-                  drillPath: drillMap[w.id] ?? [],
-                })
+              onEditWidget={
+                canEdit
+                  ? (w) => {
+                      setEditingWidget(w);
+                      setEditorOpen(true);
+                    }
+                  : undefined
+              }
+              onDeleteWidget={
+                canEdit ? (wid) => setPendingDeleteWidgetId(wid) : undefined
+              }
+              onExportWidget={
+                canExport
+                  ? (w) =>
+                      setExportTarget({
+                        kind: "WIDGET",
+                        dashboardId: dashboard.id,
+                        dashboardName: dashboard.name,
+                        widgetId: w.id,
+                        widgetTitle:
+                          w.title || getWidgetKindLabel(w.widget_kind, isZh),
+                        filters: buildWidgetFilters(
+                          w.id,
+                          dashboard,
+                          filterValues
+                        ),
+                        drillPath: drillMap[w.id] ?? [],
+                      })
+                  : undefined
               }
               onDrill={handleDrill}
               onPopDrill={handlePopDrill}
@@ -1186,6 +1268,7 @@ export function XBlueViewPage() {
 
           {settingsOpen && (
             <DashboardSettingsModal
+              open={settingsOpen}
               dashboard={dashboard}
               onClose={() => setSettingsOpen(false)}
               onSaved={(updatedRecord) => {
@@ -1210,6 +1293,7 @@ export function XBlueViewPage() {
 
           {editorOpen && (
             <WidgetEditor
+              open={editorOpen}
               dashboardId={dashboard.id}
               editingWidget={editingWidget}
               existingWidgets={dashboard.widgets}
@@ -1232,6 +1316,25 @@ export function XBlueViewPage() {
               }}
             />
           )}
+
+          <ConfirmDialog
+            open={Boolean(pendingDeleteWidgetId)}
+            onClose={() => setPendingDeleteWidgetId(null)}
+            onConfirm={() => void confirmDeleteWidget()}
+            loading={deletingWidget}
+            title={tx("移除组件", "Delete Widget")}
+            description={
+              pendingDeleteWidgetObj
+                ? tx(
+                    `将从当前驾驶舱移除组件「${pendingDeleteWidgetObj.title}」。`,
+                    `Remove widget "${pendingDeleteWidgetObj.title}" from this dashboard.`
+                  )
+                : tx(
+                    "将从当前驾驶舱移除该组件。",
+                    "Remove this widget from the dashboard."
+                  )
+            }
+          />
 
           <NodeDrawer
             selected={selectedNode}
@@ -1283,7 +1386,7 @@ export function XBlueViewPage() {
                 targetName:
                   job.file_name ||
                   job.options?.title ||
-                  `导出文件 · ${job.export_format}`,
+                  `${tx("导出文件", "Export")} · ${job.export_format}`,
               });
             }}
           />

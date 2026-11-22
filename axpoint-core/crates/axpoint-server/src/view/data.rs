@@ -1000,13 +1000,45 @@ fn resolve_node_metric_window_size(grain: Option<&str>) -> Result<String, AppErr
     ))
 }
 
+async fn resolve_node_group_labels<S>(
+    env: &WidgetExecEnv<'_, S>,
+    type_name: &str,
+) -> HashMap<String, String>
+where
+    S: GraphQueryPort + ?Sized,
+{
+    let mut labels = HashMap::new();
+    if let Ok(sub) = env
+        .store
+        .query_subgraph(
+            &env.principal.tenant_id,
+            SubgraphQuery {
+                type_names: Some(type_name.to_owned()),
+                link_types: None,
+                limit: 2_000,
+            },
+        )
+        .await
+    {
+        for n in sub.nodes {
+            let text = if n.title.trim().is_empty() || n.title == n.node_key {
+                n.node_key
+            } else {
+                format!("{} ({})", n.title.trim(), n.node_key)
+            };
+            labels.insert(n.id.to_string(), text);
+        }
+    }
+    labels
+}
+
 async fn execute_node_metric_widget<S>(
     env: &WidgetExecEnv<'_, S>,
     input: &NodeMetricInput<'_>,
     drill_level: usize,
 ) -> Result<WidgetDataResponse, AppError>
 where
-    S: MetricStorePort + ?Sized,
+    S: MetricStorePort + GraphQueryPort + ?Sized,
 {
     let range = parse_metric_time_range_opt(input.time_range)?.unwrap_or_else(|| {
         let to = Utc::now();
@@ -1049,6 +1081,12 @@ where
         )
         .await?;
 
+    let node_labels = if parsed_group_by == WindowGroupBy::Node {
+        resolve_node_group_labels(env, input.type_name).await
+    } else {
+        HashMap::new()
+    };
+
     let columns = vec![
         WidgetColumn {
             name: String::from("ts"),
@@ -1067,10 +1105,12 @@ where
         .items
         .into_iter()
         .map(|item| {
+            let resolved_group = item
+                .group_key
+                .map(|gk| node_labels.get(&gk).cloned().unwrap_or(gk));
             vec![
                 serde_json::Value::String(item.ts.to_rfc3339()),
-                item.group_key
-                    .map_or(serde_json::Value::Null, serde_json::Value::String),
+                resolved_group.map_or(serde_json::Value::Null, serde_json::Value::String),
                 item.value
                     .and_then(serde_json::Number::from_f64)
                     .map_or(serde_json::Value::Null, serde_json::Value::Number),

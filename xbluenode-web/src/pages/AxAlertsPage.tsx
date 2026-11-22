@@ -55,7 +55,9 @@ import { AlertTable } from "@/components/axalerts/AlertTable";
 import { ChannelForm } from "@/components/axalerts/ChannelForm";
 import { RuleEditor } from "@/components/axalerts/RuleEditor";
 import { SilenceForm } from "@/components/axalerts/SilenceForm";
-import { Badge, Button, Card } from "@/components/ui/primitives";
+import { Badge, Card, PageHeader, Tabs } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 
 type AlertsTabKey = "alerts" | "rules" | "channels" | "silences";
@@ -79,6 +81,12 @@ function isSilenceActiveNow(silence: AlertSilenceRecord): boolean {
 
 export function AxAlertsPage() {
   const queryClient = useQueryClient();
+  const { tx, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+
+  const canAck = can("ALERT_ACK");
+  const canEditRules = can("RULE_EDIT");
+  const canSilence = canAck || canEditRules;
 
   const [activeTab, setActiveTab] = useState<AlertsTabKey>("alerts");
   const [filters, setFilters] = useState<AlertListQuery>({});
@@ -112,28 +120,34 @@ export function AxAlertsPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [noticeMessage, setNoticeMessage] = useState<string | null>(null);
 
-  const handleConvertAlertToWorkItem = useCallback(async (alert: AlertRecord) => {
-    setErrorMessage(null);
-    setNoticeMessage(null);
-    setConvertingAlertId(alert.id);
-    try {
-      const created = await axopsApi.createWorkItem({
-        title: `[告警处置] ${alert.title}`,
-        description: alert.body || `告警去重键 ${alert.dedup_key} 转入交付追踪`,
-        item_kind: "ISSUE",
-        priority: alert.severity === "CRITICAL" ? "P0" : "P1",
-        source_kind: "ALERT",
-        source_ref: alert.id,
-        node_ids: alert.node_id ? [alert.node_id] : [],
-      });
-      const code = created.code?.trim() || `WI-${created.item_no}`;
-      setCreatedWorkItem({ code, alertId: alert.id });
-    } catch (err) {
-      setErrorMessage(formatErrorMessage(err, "转工作项失败"));
-    } finally {
-      setConvertingAlertId(null);
-    }
-  }, []);
+  const handleConvertAlertToWorkItem = useCallback(
+    async (alert: AlertRecord) => {
+      if (!canAck) return;
+      setErrorMessage(null);
+      setNoticeMessage(null);
+      setConvertingAlertId(alert.id);
+      try {
+        const created = await axopsApi.createWorkItem({
+          title: `[${tx("告警", "Alert")}] ${alert.title}`,
+          description: alert.body || alert.dedup_key,
+          item_kind: "ISSUE",
+          priority: alert.severity === "CRITICAL" ? "P0" : "P1",
+          source_kind: "ALERT",
+          source_ref: alert.id,
+          node_ids: alert.node_id ? [alert.node_id] : [],
+        });
+        const code = created.code?.trim() || `WI-${created.item_no}`;
+        setCreatedWorkItem({ code, alertId: alert.id });
+      } catch (err) {
+        setErrorMessage(
+          formatErrorMessage(err, tx("转工作项失败", "Failed to create work item"))
+        );
+      } finally {
+        setConvertingAlertId(null);
+      }
+    },
+    [canAck, tx]
+  );
 
   const hasActiveFilters = Boolean(
     filters.status ||
@@ -143,7 +157,7 @@ export function AxAlertsPage() {
       filters.type_name
   );
 
-  // 1. Operational Alerts Queue (`refetchInterval: 15_000` per Step 08 §08.5)
+  // 1. Operational Alerts Queue (`refetchInterval: 15_000`)
   const alertsQuery = useQuery({
     queryKey: ["axalerts", "alerts", filters],
     queryFn: () => listAlerts({ ...filters, limit: 100 }),
@@ -176,7 +190,7 @@ export function AxAlertsPage() {
     queryFn: () => listAlertSilences({ limit: 100 }),
   });
 
-  // 5. Reference metadata for RuleEditor & filters (graceful fallback on empty/stub responses)
+  // 5. Reference metadata for RuleEditor & filters
   const flowsQuery = useQuery({
     queryKey: ["axalerts", "flows"],
     queryFn: async (): Promise<FlowRecord[]> => {
@@ -352,6 +366,7 @@ export function AxAlertsPage() {
 
   const handleAckAlert = useCallback(
     async (alertId: string, comment = "") => {
+      if (!canAck) return;
       setErrorMessage(null);
       setNoticeMessage(null);
       setActingAlertId(alertId);
@@ -361,18 +376,23 @@ export function AxAlertsPage() {
           prev?.id === alertId || selectedAlertId === alertId ? updated : prev
         );
         await refreshAlertsCaches();
-        setNoticeMessage(`告警已确认 (ACK)：${updated.title}`);
+        setNoticeMessage(
+          tx(`告警已确认：${updated.title}`, `Alert acknowledged: ${updated.title}`)
+        );
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "确认告警失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("确认告警失败", "Failed to acknowledge alert"))
+        );
       } finally {
         setActingAlertId(null);
       }
     },
-    [refreshAlertsCaches, selectedAlertId]
+    [canAck, refreshAlertsCaches, selectedAlertId, tx]
   );
 
   const handleResolveAlert = useCallback(
     async (alertId: string, comment = "") => {
+      if (!canAck) return;
       setErrorMessage(null);
       setNoticeMessage(null);
       setActingAlertId(alertId);
@@ -382,37 +402,49 @@ export function AxAlertsPage() {
           prev?.id === alertId || selectedAlertId === alertId ? updated : prev
         );
         await refreshAlertsCaches();
-        setNoticeMessage(`告警已手动恢复 (RESOLVED)：${updated.title}`);
+        setNoticeMessage(
+          tx(`告警已恢复：${updated.title}`, `Alert resolved: ${updated.title}`)
+        );
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "手动恢复告警失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("恢复告警失败", "Failed to resolve alert"))
+        );
       } finally {
         setActingAlertId(null);
       }
     },
-    [refreshAlertsCaches, selectedAlertId]
+    [canAck, refreshAlertsCaches, selectedAlertId, tx]
   );
 
   const handleBatchAck = useCallback(
     async (alertIds: string[], comment: string) => {
-      if (alertIds.length === 0) return;
+      if (!canAck || alertIds.length === 0) return;
       setErrorMessage(null);
       setNoticeMessage(null);
       setBatchAcking(true);
       try {
         const res = await ackAlertsBatch({ alert_ids: alertIds, comment });
         await refreshAlertsCaches();
-        setNoticeMessage(`批量确认完成：共确认 ${res.acked_count} 条活动告警`);
+        setNoticeMessage(
+          tx(
+            `已确认 ${res.acked_count} 条活动告警`,
+            `Acknowledged ${res.acked_count} alerts`
+          )
+        );
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "批量确认告警失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("批量确认失败", "Batch acknowledge failed"))
+        );
       } finally {
         setBatchAcking(false);
       }
     },
-    [refreshAlertsCaches]
+    [canAck, refreshAlertsCaches, tx]
   );
 
   const handleCreateRule = useCallback(
     async (req: CreateRuleRequest) => {
+      if (!canEditRules) return;
       setErrorMessage(null);
       setNoticeMessage(null);
       setSavingRule(true);
@@ -421,18 +453,26 @@ export function AxAlertsPage() {
         await queryClient.invalidateQueries({
           queryKey: ["axalerts", "rules"],
         });
-        setNoticeMessage(`规则已创建：${created.name} (v${created.version})`);
+        setNoticeMessage(
+          tx(
+            `规则已创建：${created.name} (v${created.version})`,
+            `Rule created: ${created.name} (v${created.version})`
+          )
+        );
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "创建规则失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("创建规则失败", "Failed to create rule"))
+        );
       } finally {
         setSavingRule(false);
       }
     },
-    [queryClient]
+    [canEditRules, queryClient, tx]
   );
 
   const handleUpdateRule = useCallback(
     async (id: string, req: UpdateRuleRequest) => {
+      if (!canEditRules) return;
       setErrorMessage(null);
       setNoticeMessage(null);
       setSavingRule(true);
@@ -442,18 +482,26 @@ export function AxAlertsPage() {
           queryClient.invalidateQueries({ queryKey: ["axalerts", "rules"] }),
           refreshAlertsCaches(),
         ]);
-        setNoticeMessage(`规则已更新：${updated.name} (v${updated.version})`);
+        setNoticeMessage(
+          tx(
+            `规则已更新：${updated.name} (v${updated.version})`,
+            `Rule updated: ${updated.name} (v${updated.version})`
+          )
+        );
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "更新规则失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("更新规则失败", "Failed to update rule"))
+        );
       } finally {
         setSavingRule(false);
       }
     },
-    [queryClient, refreshAlertsCaches]
+    [canEditRules, queryClient, refreshAlertsCaches, tx]
   );
 
   const handleDeleteRule = useCallback(
     async (id: string) => {
+      if (!canEditRules) return;
       setErrorMessage(null);
       setNoticeMessage(null);
       setSavingRule(true);
@@ -463,32 +511,42 @@ export function AxAlertsPage() {
           queryClient.invalidateQueries({ queryKey: ["axalerts", "rules"] }),
           refreshAlertsCaches(),
         ]);
-        setNoticeMessage("规则已删除，关联未恢复告警已自动归档");
+        setNoticeMessage(tx("规则已删除", "Rule deleted"));
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "删除规则失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("删除规则失败", "Failed to delete rule"))
+        );
       } finally {
         setSavingRule(false);
       }
     },
-    [queryClient, refreshAlertsCaches]
+    [canEditRules, queryClient, refreshAlertsCaches, tx]
   );
 
-  const handleDryRunSaved = useCallback(async (id: string) => {
-    setErrorMessage(null);
-    setNoticeMessage(null);
-    setDryRunningId(id);
-    try {
-      const result = await dryRunSavedRule(id);
-      setDryRunResult(result);
-      setNoticeMessage(
-        `规则试判定完成：扫描 ${result.evaluated_objects} 个对象，命中 ${result.matched_count} 条候选告警`
-      );
-    } catch (err) {
-      setErrorMessage(formatErrorMessage(err, "规则试判定失败"));
-    } finally {
-      setDryRunningId(null);
-    }
-  }, []);
+  const handleDryRunSaved = useCallback(
+    async (id: string) => {
+      setErrorMessage(null);
+      setNoticeMessage(null);
+      setDryRunningId(id);
+      try {
+        const result = await dryRunSavedRule(id);
+        setDryRunResult(result);
+        setNoticeMessage(
+          tx(
+            `试判定完成：扫描 ${result.evaluated_objects} 个对象，命中 ${result.matched_count} 条`,
+            `Dry run complete: ${result.evaluated_objects} evaluated, ${result.matched_count} matched`
+          )
+        );
+      } catch (err) {
+        setErrorMessage(
+          formatErrorMessage(err, tx("试判定失败", "Dry run failed"))
+        );
+      } finally {
+        setDryRunningId(null);
+      }
+    },
+    [tx]
+  );
 
   const handleDryRunAdhoc = useCallback(
     async (req: CreateRuleRequest, editingRuleId: string | null) => {
@@ -501,19 +559,25 @@ export function AxAlertsPage() {
           : await dryRunAdhocRule(req);
         setDryRunResult(result);
         setNoticeMessage(
-          `试判定预览完成：扫描 ${result.evaluated_objects} 个对象，命中 ${result.matched_count} 条候选告警`
+          tx(
+            `试判定完成：扫描 ${result.evaluated_objects} 个对象，命中 ${result.matched_count} 条`,
+            `Dry run complete: ${result.evaluated_objects} evaluated, ${result.matched_count} matched`
+          )
         );
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "试判定预览失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("试判定失败", "Dry run failed"))
+        );
       } finally {
         setDryRunningId(null);
       }
     },
-    []
+    [tx]
   );
 
   const handleCreateChannel = useCallback(
     async (req: CreateNotifyChannelRequest) => {
+      if (!canEditRules) return;
       setErrorMessage(null);
       setNoticeMessage(null);
       setSavingChannel(true);
@@ -522,18 +586,26 @@ export function AxAlertsPage() {
         await queryClient.invalidateQueries({
           queryKey: ["axalerts", "channels"],
         });
-        setNoticeMessage(`通知渠道已创建：${created.name} (${created.kind})`);
+        setNoticeMessage(
+          tx(
+            `通知渠道已创建：${created.name}`,
+            `Channel created: ${created.name}`
+          )
+        );
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "创建通知渠道失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("创建渠道失败", "Failed to create channel"))
+        );
       } finally {
         setSavingChannel(false);
       }
     },
-    [queryClient]
+    [canEditRules, queryClient, tx]
   );
 
   const handleUpdateChannel = useCallback(
     async (id: string, req: UpdateNotifyChannelRequest) => {
+      if (!canEditRules) return;
       setErrorMessage(null);
       setNoticeMessage(null);
       setSavingChannel(true);
@@ -542,18 +614,26 @@ export function AxAlertsPage() {
         await queryClient.invalidateQueries({
           queryKey: ["axalerts", "channels"],
         });
-        setNoticeMessage(`通知渠道已更新：${updated.name}`);
+        setNoticeMessage(
+          tx(
+            `通知渠道已更新：${updated.name}`,
+            `Channel updated: ${updated.name}`
+          )
+        );
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "更新通知渠道失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("更新渠道失败", "Failed to update channel"))
+        );
       } finally {
         setSavingChannel(false);
       }
     },
-    [queryClient]
+    [canEditRules, queryClient, tx]
   );
 
   const handleDeleteChannel = useCallback(
     async (id: string) => {
+      if (!canEditRules) return;
       setErrorMessage(null);
       setNoticeMessage(null);
       setSavingChannel(true);
@@ -562,46 +642,56 @@ export function AxAlertsPage() {
         await queryClient.invalidateQueries({
           queryKey: ["axalerts", "channels"],
         });
-        setNoticeMessage("通知渠道已删除");
+        setNoticeMessage(tx("通知渠道已删除", "Channel deleted"));
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "删除通知渠道失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("删除渠道失败", "Failed to delete channel"))
+        );
       } finally {
         setSavingChannel(false);
       }
     },
-    [queryClient]
+    [canEditRules, queryClient, tx]
   );
 
-  const handleTestChannel = useCallback(async (id: string) => {
-    setErrorMessage(null);
-    setNoticeMessage(null);
-    setTestingChannelId(id);
-    try {
-      const res = await testNotifyChannel(id);
-      setTestResults((prev) => ({ ...prev, [id]: res }));
-      if (res.ok && res.delivery.status === "SENT") {
-        setNoticeMessage(
-          `测试投递成功 (${res.delivery.status}${
-            res.delivery.response_code !== null
-              ? ` · HTTP ${res.delivery.response_code}`
-              : ""
-          })`
-        );
-      } else {
+  const handleTestChannel = useCallback(
+    async (id: string) => {
+      setErrorMessage(null);
+      setNoticeMessage(null);
+      setTestingChannelId(id);
+      try {
+        const res = await testNotifyChannel(id);
+        setTestResults((prev) => ({ ...prev, [id]: res }));
+        if (res.ok && res.delivery.status === "SENT") {
+          setNoticeMessage(
+            tx(
+              `测试投递已送达 (${res.delivery.status})`,
+              `Test delivery sent (${res.delivery.status})`
+            )
+          );
+        } else {
+          setErrorMessage(
+            res.delivery.error_message ??
+              tx(
+                `测试投递未送达 (${res.delivery.status})`,
+                `Test delivery failed (${res.delivery.status})`
+              )
+          );
+        }
+      } catch (err) {
         setErrorMessage(
-          res.delivery.error_message ??
-            `测试投递未送达 (status=${res.delivery.status})`
+          formatErrorMessage(err, tx("测试投递失败", "Test delivery failed"))
         );
+      } finally {
+        setTestingChannelId(null);
       }
-    } catch (err) {
-      setErrorMessage(formatErrorMessage(err, "测试通知渠道失败"));
-    } finally {
-      setTestingChannelId(null);
-    }
-  }, []);
+    },
+    [tx]
+  );
 
   const handleCreateSilence = useCallback(
     async (req: CreateSilenceRequest) => {
+      if (!canSilence) return;
       setErrorMessage(null);
       setNoticeMessage(null);
       setSavingSilence(true);
@@ -610,18 +700,26 @@ export function AxAlertsPage() {
         await queryClient.invalidateQueries({
           queryKey: ["axalerts", "silences"],
         });
-        setNoticeMessage(`静默窗口已创建：${created.reason}`);
+        setNoticeMessage(
+          tx(
+            `静默窗口已创建：${created.reason}`,
+            `Silence created: ${created.reason}`
+          )
+        );
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "创建静默窗口失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("创建静默窗口失败", "Failed to create silence"))
+        );
       } finally {
         setSavingSilence(false);
       }
     },
-    [queryClient]
+    [canSilence, queryClient, tx]
   );
 
   const handleDeleteSilence = useCallback(
     async (id: string) => {
+      if (!canSilence) return;
       setErrorMessage(null);
       setNoticeMessage(null);
       setSavingSilence(true);
@@ -630,78 +728,70 @@ export function AxAlertsPage() {
         await queryClient.invalidateQueries({
           queryKey: ["axalerts", "silences"],
         });
-        setNoticeMessage("静默窗口已移除");
+        setNoticeMessage(tx("静默窗口已移除", "Silence removed"));
       } catch (err) {
-        setErrorMessage(formatErrorMessage(err, "移除静默窗口失败"));
+        setErrorMessage(
+          formatErrorMessage(err, tx("移除静默窗口失败", "Failed to remove silence"))
+        );
       } finally {
         setSavingSilence(false);
       }
     },
-    [queryClient]
+    [canSilence, queryClient, tx]
   );
 
-  const tabs: readonly {
-    key: AlertsTabKey;
-    label: string;
-    testId: string;
-    icon: typeof Bell;
-    count: number;
-    highlight?: boolean;
-  }[] = [
-    {
-      key: "alerts",
-      label: "告警中心",
-      testId: "tab-alerts",
-      icon: Bell,
-      count: kpiMetrics.openCount,
-      highlight: kpiMetrics.openCount > 0,
-    },
-    {
-      key: "rules",
-      label: "规则引擎",
-      testId: "tab-rules",
-      icon: SlidersHorizontal,
-      count: rules.length,
-    },
-    {
-      key: "channels",
-      label: "通知渠道",
-      testId: "tab-channels",
-      icon: Send,
-      count: channels.length,
-    },
-    {
-      key: "silences",
-      label: "静默窗口",
-      testId: "tab-silences",
-      icon: BellOff,
-      count: silences.length,
-    },
-  ];
+  const tabItems = useMemo(
+    () => [
+      {
+        key: "alerts" as const,
+        label: tx("告警队列", "Alerts"),
+        testId: "tab-alerts",
+        icon: (
+          <Bell
+            className={cn(
+              "h-3.5 w-3.5",
+              kpiMetrics.openCount > 0 && "text-red-600 dark:text-red-400"
+            )}
+          />
+        ),
+        count: kpiMetrics.openCount,
+      },
+      {
+        key: "rules" as const,
+        label: tx("判定规则", "Rules"),
+        testId: "tab-rules",
+        icon: <SlidersHorizontal className="h-3.5 w-3.5" />,
+        count: rules.length,
+      },
+      {
+        key: "channels" as const,
+        label: tx("通知渠道", "Channels"),
+        testId: "tab-channels",
+        icon: <Send className="h-3.5 w-3.5" />,
+        count: channels.length,
+      },
+      {
+        key: "silences" as const,
+        label: tx("静默窗口", "Silences"),
+        testId: "tab-silences",
+        icon: <BellOff className="h-3.5 w-3.5" />,
+        count: silences.length,
+      },
+    ],
+    [channels.length, kpiMetrics.openCount, rules.length, silences.length, tx]
+  );
 
   return (
     <div className="space-y-5" data-testid="axalerts-page">
-      {/* Header */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">
-            AxAlerts · 告警与规则中心
-          </h1>
-          <p className="text-xs text-muted-foreground">
-            指标、数据质量与事件规则判定，告警去重、升级、静默与多渠道通知投递
-          </p>
-        </div>
-
-        <div className="flex items-center gap-2">
+      <PageHeader
+        title={tx("AxAlerts · 告警与规则中心", "AxAlerts · Alerts & Rules")}
+        badges={
           <Badge variant="xblue" data-testid="alerts-polling-badge">
             <Activity className="h-3 w-3 mr-1" />
-            15s 自动轮询
+            {tx("15s 自动轮询", "15s Auto-Poll")}
           </Badge>
-          <Badge variant="outline" className="font-mono-tech">
-            Step 08 · AxFlow Rules
-          </Badge>
-        </div>
-      </div>
+        }
+      />
 
       {/* KPI Summary Cards */}
       <div
@@ -710,7 +800,7 @@ export function AxAlertsPage() {
       >
         <Card className="p-3.5 space-y-1.5" data-testid="kpi-open-alerts">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>待确认活动告警 (OPEN)</span>
+            <span>{tx("待确认告警", "Open Alerts")}</span>
             <AlertTriangle
               className={cn(
                 "h-3.5 w-3.5",
@@ -722,58 +812,57 @@ export function AxAlertsPage() {
           </div>
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-2xl font-semibold font-mono-tech text-foreground">
-              {kpiMetrics.openCount}
+              {fmtNum(kpiMetrics.openCount, 0)}
             </span>
             <Badge
-              variant={kpiMetrics.criticalOpenCount > 0 ? "xblue" : "outline"}
-              className="font-mono-tech"
+              variant={kpiMetrics.criticalOpenCount > 0 ? "danger" : "outline"}
             >
-              CRITICAL ×{kpiMetrics.criticalOpenCount}
+              {tx("紧急", "Critical")} ×{fmtNum(kpiMetrics.criticalOpenCount, 0)}
             </Badge>
           </div>
         </Card>
 
         <Card className="p-3.5 space-y-1.5" data-testid="kpi-acked-alerts">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>处理中告警 (ACK)</span>
+            <span>{tx("处理中告警", "Acknowledged")}</span>
             <CheckCircle2 className="h-3.5 w-3.5 text-xblue" />
           </div>
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-2xl font-semibold font-mono-tech text-foreground">
-              {kpiMetrics.ackCount}
+              {fmtNum(kpiMetrics.ackCount, 0)}
             </span>
             <span className="text-[11px] font-mono-tech text-muted-foreground">
-              已恢复 ×{kpiMetrics.resolvedCount}
+              {tx("已恢复", "Resolved")} ×{fmtNum(kpiMetrics.resolvedCount, 0)}
             </span>
           </div>
         </Card>
 
         <Card className="p-3.5 space-y-1.5" data-testid="kpi-active-rules">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>启用判定规则 (Rules)</span>
+            <span>{tx("启用规则", "Active Rules")}</span>
             <ShieldCheck className="h-3.5 w-3.5 text-xblue" />
           </div>
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-2xl font-semibold font-mono-tech text-foreground">
-              {kpiMetrics.enabledRulesCount}
+              {fmtNum(kpiMetrics.enabledRulesCount, 0)}
             </span>
             <span className="text-[11px] font-mono-tech text-muted-foreground">
-              共 {kpiMetrics.totalRulesCount} 条定义
+              / {fmtNum(kpiMetrics.totalRulesCount, 0)}
             </span>
           </div>
         </Card>
 
         <Card className="p-3.5 space-y-1.5" data-testid="kpi-channels-silences">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>投递渠道 / 生效静默</span>
+            <span>{tx("通知渠道 / 静默", "Channels / Silences")}</span>
             <Send className="h-3.5 w-3.5 text-xblue" />
           </div>
           <div className="flex items-baseline justify-between gap-2">
             <span className="text-2xl font-semibold font-mono-tech text-foreground">
-              {kpiMetrics.enabledChannelsCount}
+              {fmtNum(kpiMetrics.enabledChannelsCount, 0)}
             </span>
-            <Badge variant="outline" className="font-mono-tech">
-              静默生效 ×{kpiMetrics.activeSilencesCount}
+            <Badge variant="outline">
+              {tx("静默中", "Silenced")} ×{fmtNum(kpiMetrics.activeSilencesCount, 0)}
             </Badge>
           </div>
         </Card>
@@ -792,7 +881,7 @@ export function AxAlertsPage() {
             onClick={() => setErrorMessage(null)}
             className="text-[11px] underline cursor-pointer shrink-0"
           >
-            关闭
+            {tx("关闭", "Close")}
           </button>
         </div>
       )}
@@ -808,7 +897,7 @@ export function AxAlertsPage() {
             onClick={() => setNoticeMessage(null)}
             className="text-[11px] underline cursor-pointer shrink-0"
           >
-            关闭
+            {tx("关闭", "Close")}
           </button>
         </div>
       )}
@@ -821,14 +910,17 @@ export function AxAlertsPage() {
           <div className="flex flex-wrap items-center gap-2">
             <Kanban className="h-3.5 w-3.5" />
             <span className="font-medium">
-              已创建工作项 {createdWorkItem.code}
+              {tx(
+                `已创建工作项 ${createdWorkItem.code}`,
+                `Work item created: ${createdWorkItem.code}`
+              )}
             </span>
             <Link
               to="/ops"
               data-testid="axalerts-workitem-ops-link"
               className="inline-flex items-center gap-1 underline font-semibold"
             >
-              前往 AxOps 查看交付进度 (/ops)
+              {tx("查看工作项看板", "Open Work Items")}
               <ExternalLink className="h-3 w-3" />
             </Link>
           </div>
@@ -837,58 +929,14 @@ export function AxAlertsPage() {
             onClick={() => setCreatedWorkItem(null)}
             className="text-[11px] underline cursor-pointer shrink-0"
           >
-            关闭
+            {tx("关闭", "Close")}
           </button>
         </div>
       )}
 
       {/* Workspace Tabs Navigation */}
-      <div
-        role="tablist"
-        aria-label="AxAlerts 工作台视图"
-        className="flex flex-wrap items-center gap-1.5 border-b border-border pb-2"
-        data-testid="axalerts-tabs"
-      >
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          const isActive = activeTab === tab.key;
-          return (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              data-testid={tab.testId}
-              onClick={() => setActiveTab(tab.key)}
-              className={cn(
-                "inline-flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer",
-                isActive
-                  ? "bg-foreground text-background"
-                  : "text-muted-foreground hover:text-foreground hover:bg-muted"
-              )}
-            >
-              <Icon
-                className={cn(
-                  "h-3.5 w-3.5",
-                  !isActive && tab.highlight && "text-red-600 dark:text-red-400"
-                )}
-              />
-              <span>{tab.label}</span>
-              <span
-                className={cn(
-                  "inline-flex items-center justify-center rounded px-1.5 py-0.2 text-[10px] font-mono-tech",
-                  isActive
-                    ? "bg-background/20 text-background"
-                    : tab.highlight
-                      ? "bg-red-500/15 text-red-600 dark:text-red-400"
-                      : "bg-muted text-muted-foreground"
-                )}
-              >
-                {tab.count}
-              </span>
-            </button>
-          );
-        })}
+      <div data-testid="axalerts-tabs">
+        <Tabs items={tabItems} value={activeTab} onChange={setActiveTab} />
       </div>
 
       {/* Tab Panels */}
@@ -902,113 +950,38 @@ export function AxAlertsPage() {
             selectedAlertId={selectedAlertId}
             loading={alertsQuery.isFetching}
             actingAlertId={actingAlertId}
+            convertingAlertId={convertingAlertId}
             batchAcking={batchAcking}
+            canAck={canAck}
             onFiltersChange={setFilters}
             onSelectAlert={handleSelectAlert}
             onAckAlert={(id) => handleAckAlert(id, "")}
             onResolveAlert={(id) => handleResolveAlert(id, "")}
+            onConvertWorkItem={handleConvertAlertToWorkItem}
             onBatchAck={handleBatchAck}
             onRefresh={() => {
               void refreshAlertsCaches();
             }}
           />
 
-          {alerts.length > 0 && (
-            <Card
-              className="p-3.5 space-y-2.5"
-              data-testid="axalerts-workitem-dispatch-card"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                <div className="flex items-center gap-2 font-medium">
-                  <Kanban className="h-3.5 w-3.5 text-xblue" />
-                  <span>告警协同转工作项（写入 AxOps 交付看板 · ISSUE）</span>
-                </div>
-                <span className="text-[11px] text-muted-foreground">
-                  告警恢复时将自动在关联工作项上追加 LINK 事件
-                </span>
-              </div>
-
-              <div className="divide-y divide-border/60">
-                {alerts.slice(0, 10).map((alert) => {
-                  const isConverting = convertingAlertId === alert.id;
-                  return (
-                    <div
-                      key={alert.id}
-                      data-testid={`alert-workitem-row-${alert.id}`}
-                      className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs"
-                    >
-                      <div className="flex flex-wrap items-center gap-2 min-w-0">
-                        <Badge
-                          variant={
-                            alert.severity === "CRITICAL" ? "xblue" : "outline"
-                          }
-                        >
-                          {alert.severity}
-                        </Badge>
-                        <Badge variant="outline">{alert.status}</Badge>
-                        <span className="font-medium truncate">
-                          {alert.title}
-                        </span>
-                      </div>
-
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="h-7 px-2.5 text-[11px] border-xblue/40 text-xblue hover:bg-xblue-soft"
-                        data-testid={`convert-alert-workitem-btn-${alert.id}`}
-                        disabled={isConverting}
-                        onClick={() => void handleConvertAlertToWorkItem(alert)}
-                      >
-                        <Kanban className="h-3 w-3" />
-                        {isConverting ? "创建中..." : "转工作项"}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
-            </Card>
-          )}
-
           {selectedAlert && (
-            <>
-              <AlertDetail
-                alert={selectedAlert}
-                rule={selectedAlertRule}
-                channels={channels}
-                acting={actingAlertId === selectedAlert.id}
-                onClose={() => setSelectedAlertId(null)}
-                onAck={handleAckAlert}
-                onResolve={handleResolveAlert}
-              />
-              <div className="fixed top-4 right-14 z-[60] flex items-center gap-2">
-                {createdWorkItem &&
-                  createdWorkItem.alertId === selectedAlert.id && (
-                    <Link
-                      to="/ops"
-                      data-testid="alert-detail-workitem-link"
-                      className="inline-flex items-center gap-1 rounded-md border border-xblue/40 bg-xblue-soft px-2.5 py-1.5 text-[11px] font-mono-tech font-semibold text-xblue shadow-sm"
-                    >
-                      已创建工作项 {createdWorkItem.code}
-                      <ExternalLink className="h-3 w-3" />
-                    </Link>
-                  )}
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-8 px-2.5 text-xs bg-background border-xblue/40 text-xblue hover:bg-xblue-soft shadow-sm"
-                  data-testid="alert-detail-convert-workitem-btn"
-                  disabled={convertingAlertId === selectedAlert.id}
-                  onClick={() =>
-                    void handleConvertAlertToWorkItem(selectedAlert)
-                  }
-                >
-                  <Kanban className="h-3.5 w-3.5" />
-                  {convertingAlertId === selectedAlert.id
-                    ? "创建中..."
-                    : "转工作项"}
-                </Button>
-              </div>
-            </>
+            <AlertDetail
+              alert={selectedAlert}
+              rule={selectedAlertRule}
+              channels={channels}
+              acting={actingAlertId === selectedAlert.id}
+              canAck={canAck}
+              convertingWorkItem={convertingAlertId === selectedAlert.id}
+              createdWorkItemCode={
+                createdWorkItem?.alertId === selectedAlert.id
+                  ? createdWorkItem.code
+                  : null
+              }
+              onClose={() => setSelectedAlertId(null)}
+              onAck={handleAckAlert}
+              onResolve={handleResolveAlert}
+              onConvertWorkItem={handleConvertAlertToWorkItem}
+            />
           )}
         </>
       )}
@@ -1021,6 +994,7 @@ export function AxAlertsPage() {
           datasets={datasets}
           knownTypeNames={knownTypeNames}
           saving={savingRule}
+          canEdit={canEditRules}
           dryRunningId={dryRunningId}
           dryRunResult={dryRunResult}
           onCreateRule={handleCreateRule}
@@ -1035,6 +1009,7 @@ export function AxAlertsPage() {
         <ChannelForm
           channels={channels}
           saving={savingChannel}
+          canEdit={canEditRules}
           testingChannelId={testingChannelId}
           testResults={testResults}
           onCreateChannel={handleCreateChannel}
@@ -1050,6 +1025,7 @@ export function AxAlertsPage() {
           rules={rules}
           knownTypeNames={knownTypeNames}
           saving={savingSilence}
+          canSilence={canSilence}
           onCreateSilence={handleCreateSilence}
           onDeleteSilence={handleDeleteSilence}
         />

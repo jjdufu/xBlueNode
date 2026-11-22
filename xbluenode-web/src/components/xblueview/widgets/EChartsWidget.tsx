@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as echarts from "echarts";
+import { useI18n } from "@/i18n";
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
+import { useTheme } from "@/lib/theme";
 import { buildEChartsOption } from "../logic";
 import { buildColumnIndexMap, getCell, readString } from "../utils";
 
@@ -8,8 +10,11 @@ export interface EChartsWidgetProps {
   widget: WidgetRecord;
   data: WidgetDataResponse | null;
   isDark?: boolean;
+  nodeLabelMap?: Readonly<Record<string, string>>;
   onDataPointClick?: (field: string, value: unknown) => void;
 }
+
+const ISO_TIMESTAMP_PREFIX_RE = /^\d{4}-\d{2}-\d{2}[T\s]/;
 
 function extractClickValue(params: echarts.ECElementEvent): unknown {
   if (typeof params.data === "object" && params.data !== null) {
@@ -31,9 +36,14 @@ function extractClickValue(params: echarts.ECElementEvent): unknown {
 export function EChartsWidget({
   widget,
   data,
-  isDark = false,
+  isDark,
+  nodeLabelMap,
   onDataPointClick,
 }: EChartsWidgetProps) {
+  const { tx } = useI18n();
+  const { isDark: themeDark } = useTheme();
+  const effectiveDark = isDark ?? themeDark;
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
   const clickHandlerRef = useRef(onDataPointClick);
@@ -50,9 +60,10 @@ export function EChartsWidget({
       encoding: widget.encoding,
       options: widget.options,
       data,
-      isDark,
+      isDark: effectiveDark,
+      nodeLabelMap,
     });
-  }, [data, isDark, widget]);
+  }, [data, effectiveDark, nodeLabelMap, widget]);
 
   const clickFieldRef = useRef("value");
   useEffect(() => {
@@ -104,12 +115,12 @@ export function EChartsWidget({
     chart.setOption(computed.option as echarts.EChartsOption, true);
   }, [computed]);
 
+  // Only render discrete category drilldown pills for BAR_CHART and PIE_CHART (never LINE_CHART / AREA_CHART)
   const quickCategories = useMemo(() => {
     if (
       !data ||
       !onDataPointClick ||
       (widget.widget_kind !== "BAR_CHART" &&
-        widget.widget_kind !== "LINE_CHART" &&
         widget.widget_kind !== "PIE_CHART")
     ) {
       return [];
@@ -126,29 +137,44 @@ export function EChartsWidget({
     const colMap = buildColumnIndexMap(data);
     for (const row of data.rows) {
       const raw = getCell(row, colMap, xField, 0);
-      const label = raw === undefined || raw === null ? "" : String(raw);
-      if (label && !seen.has(label)) {
+      const label = raw === undefined || raw === null ? "" : String(raw).trim();
+      if (!label) continue;
+      if (ISO_TIMESTAMP_PREFIX_RE.test(label)) {
+        return [];
+      }
+      if (!seen.has(label)) {
         seen.add(label);
         items.push(label);
+        if (items.length > 8) {
+          return [];
+        }
       }
-      if (items.length >= 8) break;
     }
     return items.map((label) => ({ field: xField, label }));
-  }, [computed?.clickField, data, onDataPointClick, widget.encoding, widget.widget_kind]);
+  }, [
+    computed?.clickField,
+    data,
+    onDataPointClick,
+    widget.encoding,
+    widget.widget_kind,
+  ]);
 
   if (!data || (data.rows.length === 0 && widget.widget_kind !== "GAUGE")) {
     return (
       <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-        暂无图表数据
+        {tx("暂无图表数据", "No chart data")}
       </div>
     );
   }
 
   return (
-    <div className="h-full flex flex-col" data-testid={`widget-chart-${widget.id}`}>
+    <div
+      className="h-full flex flex-col"
+      data-testid={`widget-chart-${widget.id}`}
+    >
       <div ref={containerRef} className="flex-1 min-h-[140px] w-full" />
       {quickCategories.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-border/60">
+        <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-border/60 shrink-0">
           {quickCategories.map((item) => (
             <button
               key={item.label}

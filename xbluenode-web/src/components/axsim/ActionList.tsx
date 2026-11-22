@@ -11,6 +11,8 @@ import {
 } from "@/lib/api/axsim";
 import type { InterventionMode } from "@/lib/api/enums";
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 
 export interface ActionListProps {
   sandboxId: string;
@@ -27,12 +29,6 @@ interface ActionDraft {
   value: string;
   at_step: string;
 }
-
-const MODE_OPTIONS: ReadonlyArray<{ value: InterventionMode; label: string }> = [
-  { value: "RATIO", label: "RATIO (比例变动)" },
-  { value: "ADD", label: "ADD (增量叠加)" },
-  { value: "ABSOLUTE", label: "ABSOLUTE (绝对设定)" },
-];
 
 const RATIO_PRESETS: ReadonlyArray<{ label: string; value: string }> = [
   { label: "-50%", value: "-0.5" },
@@ -60,6 +56,10 @@ export function ActionList({
   onScenarioCreated,
   onQuickSimulated,
 }: ActionListProps) {
+  const { tx } = useI18n();
+  const { can } = usePrincipal();
+  const canSimRun = can("SIM_RUN");
+
   const [actions, setActions] = useState<ActionDraft[]>(() => [
     createEmptyAction(nodes),
   ]);
@@ -82,7 +82,13 @@ export function ActionList({
   const [quickRunning, setQuickRunning] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Sync first empty node when nodes load asynchronously
+  const modeOptions: ReadonlyArray<{ value: InterventionMode; label: string }> =
+    [
+      { value: "RATIO", label: tx("比例变动", "Ratio") },
+      { value: "ADD", label: tx("增量叠加", "Additive") },
+      { value: "ABSOLUTE", label: tx("绝对设定", "Absolute") },
+    ];
+
   useEffect(() => {
     if (nodes.length === 0) return;
     setActions((prev) =>
@@ -125,7 +131,9 @@ export function ActionList({
   };
 
   const removeActionRow = (id: string) => {
-    setActions((prev) => (prev.length > 1 ? prev.filter((r) => r.id !== id) : prev));
+    setActions((prev) =>
+      prev.length > 1 ? prev.filter((r) => r.id !== id) : prev
+    );
   };
 
   const buildPayload = (): {
@@ -135,20 +143,29 @@ export function ActionList({
     const wireActions: AxSimAction[] = [];
     for (const draft of actions) {
       if (!draft.target_node_id) {
-        setErrorMsg("请为每条干预选择目标节点");
+        setErrorMsg(
+          tx("请为每条干预指定目标节点", "Select a target node for every intervention")
+        );
         return null;
       }
       if (!draft.metric_key.trim()) {
-        setErrorMsg("请填写干预指标名 (metric_key)");
+        setErrorMsg(tx("请填写干预指标键", "Metric key is required"));
         return null;
       }
       const numVal = Number.parseFloat(draft.value);
       if (!Number.isFinite(numVal)) {
-        setErrorMsg("干预数值必须是有效数字");
+        setErrorMsg(
+          tx("干预数值必须是有效数字", "Intervention value must be a valid number")
+        );
         return null;
       }
       if (draft.mode === "RATIO" && numVal <= -1) {
-        setErrorMsg("RATIO 模式下变动比例必须大于 -1（例如 -0.3 表示下降 30%）");
+        setErrorMsg(
+          tx(
+            "比例变动值必须大于 -1（-0.3 表示下调 30%）",
+            "Ratio delta must be greater than -1 (e.g. -0.3 for -30%)"
+          )
+        );
         return null;
       }
       const atStep = Number.parseInt(draft.at_step, 10);
@@ -169,7 +186,9 @@ export function ActionList({
     const params: SimParams = {
       mode: simMode,
       damping:
-        Number.isFinite(parsedDamping) && parsedDamping > 0 && parsedDamping <= 1
+        Number.isFinite(parsedDamping) &&
+        parsedDamping > 0 &&
+        parsedDamping <= 1
           ? parsedDamping
           : 0.85,
       horizon_steps:
@@ -181,7 +200,9 @@ export function ActionList({
           ? parsedCkptEvery
           : 1,
       max_hops:
-        parsedMaxHops !== null && Number.isFinite(parsedMaxHops) && parsedMaxHops >= 1
+        parsedMaxHops !== null &&
+        Number.isFinite(parsedMaxHops) &&
+        parsedMaxHops >= 1
           ? parsedMaxHops
           : null,
       uncertainty: uncertaintyEnabled
@@ -204,13 +225,17 @@ export function ActionList({
 
   const handleRunScenario = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSimRun) return;
     setErrorMsg(null);
     const built = buildPayload();
     if (!built) return;
 
     const effectiveName =
       scenarioName.trim() ||
-      `sim-${simMode.toLowerCase()}-${new Date().toISOString().slice(11, 19).replace(/:/g, "")}`;
+      `sim-${simMode.toLowerCase()}-${new Date()
+        .toISOString()
+        .slice(11, 19)
+        .replace(/:/g, "")}`;
 
     setRunning(true);
     try {
@@ -230,6 +255,7 @@ export function ActionList({
   };
 
   const handleQuickSimulate = async () => {
+    if (!canSimRun) return;
     setErrorMsg(null);
     const built = buildPayload();
     if (!built) return;
@@ -253,18 +279,20 @@ export function ActionList({
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2.5">
         <div className="flex items-center gap-2 text-sm font-medium">
           <Sliders className="h-4 w-4 text-xblue" />
-          <span>干预设定 (do 算子) 与传导参数</span>
+          <span>{tx("干预设定", "Interventions")}</span>
         </div>
-        <Button
-          type="button"
-          variant="outline"
-          className="h-7 px-2.5 text-xs"
-          onClick={addActionRow}
-          data-testid="add-action-btn"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          添加干预项
-        </Button>
+        {canSimRun && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={addActionRow}
+            data-testid="add-action-btn"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {tx("添加干预", "Add Action")}
+          </Button>
+        )}
       </div>
 
       {errorMsg && (
@@ -273,7 +301,10 @@ export function ActionList({
         </div>
       )}
 
-      <form onSubmit={(e) => void handleRunScenario(e)} className="space-y-4">
+      <form
+        onSubmit={(e) => void handleRunScenario(e)}
+        className="space-y-4"
+      >
         {/* Interventions list */}
         <div className="space-y-2.5">
           {actions.map((row, idx) => {
@@ -296,14 +327,15 @@ export function ActionList({
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
                   <div className="md:col-span-4 space-y-1">
                     <label className="text-[11px] text-muted-foreground">
-                      干预目标节点
+                      {tx("目标节点", "Target Node")}
                     </label>
                     <select
                       value={row.target_node_id}
+                      disabled={!canSimRun}
                       onChange={(e) =>
                         updateAction(row.id, { target_node_id: e.target.value })
                       }
-                      className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                      className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs disabled:opacity-50"
                       data-testid={`action-node-select-${idx}`}
                     >
                       {nodes.map((n) => (
@@ -316,10 +348,11 @@ export function ActionList({
 
                   <div className="md:col-span-2 space-y-1">
                     <label className="text-[11px] text-muted-foreground">
-                      指标键 (metric_key)
+                      {tx("指标键", "Metric Key")}
                     </label>
                     <Input
                       list={`metrics-datalist-${row.id}`}
+                      disabled={!canSimRun}
                       value={row.metric_key}
                       onChange={(e) =>
                         updateAction(row.id, { metric_key: e.target.value })
@@ -336,19 +369,20 @@ export function ActionList({
 
                   <div className="md:col-span-2 space-y-1">
                     <label className="text-[11px] text-muted-foreground">
-                      干预方式
+                      {tx("干预方式", "Mode")}
                     </label>
                     <select
                       value={row.mode}
+                      disabled={!canSimRun}
                       onChange={(e) =>
                         updateAction(row.id, {
                           mode: e.target.value as InterventionMode,
                         })
                       }
-                      className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                      className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs disabled:opacity-50"
                       data-testid={`action-mode-select-${idx}`}
                     >
-                      {MODE_OPTIONS.map((opt) => (
+                      {modeOptions.map((opt) => (
                         <option key={opt.value} value={opt.value}>
                           {opt.label}
                         </option>
@@ -358,7 +392,7 @@ export function ActionList({
 
                   <div className="md:col-span-2 space-y-1">
                     <label className="text-[11px] text-muted-foreground flex items-center justify-between">
-                      <span>数值</span>
+                      <span>{tx("数值", "Value")}</span>
                       {ratioPctLabel && (
                         <span className="font-mono-tech text-xblue">
                           {ratioPctLabel}
@@ -368,6 +402,7 @@ export function ActionList({
                     <Input
                       type="number"
                       step="any"
+                      disabled={!canSimRun}
                       value={row.value}
                       onChange={(e) =>
                         updateAction(row.id, { value: e.target.value })
@@ -379,11 +414,12 @@ export function ActionList({
 
                   <div className="md:col-span-1 space-y-1">
                     <label className="text-[11px] text-muted-foreground">
-                      生效步
+                      {tx("生效步", "At Step")}
                     </label>
                     <Input
                       type="number"
                       min={0}
+                      disabled={!canSimRun}
                       value={row.at_step}
                       onChange={(e) =>
                         updateAction(row.id, { at_step: e.target.value })
@@ -399,21 +435,25 @@ export function ActionList({
                       variant="ghost"
                       className="h-8 px-2 text-muted-foreground hover:text-red-600"
                       onClick={() => removeActionRow(row.id)}
-                      disabled={actions.length <= 1}
+                      disabled={!canSimRun || actions.length <= 1}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                   </div>
                 </div>
 
-                {row.mode === "RATIO" && (
+                {row.mode === "RATIO" && canSimRun && (
                   <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                    <span className="text-muted-foreground">快捷比例:</span>
+                    <span className="text-muted-foreground">
+                      {tx("快捷比例:", "Presets:")}
+                    </span>
                     {RATIO_PRESETS.map((p) => (
                       <button
                         key={p.value}
                         type="button"
-                        onClick={() => updateAction(row.id, { value: p.value })}
+                        onClick={() =>
+                          updateAction(row.id, { value: p.value })
+                        }
                         className={`rounded border px-1.5 py-0.5 font-mono-tech cursor-pointer ${
                           row.value === p.value
                             ? "border-xblue bg-xblue-soft text-xblue"
@@ -433,7 +473,9 @@ export function ActionList({
         {/* Simulation Params */}
         <div className="rounded-md border border-border p-3 space-y-3 bg-muted/10">
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-xs font-medium">传导求解参数 (SimParams)</span>
+            <span className="text-xs font-medium">
+              {tx("传导求解参数", "Propagation Settings")}
+            </span>
             <div className="inline-flex rounded-md border border-border bg-background p-0.5">
               <button
                 type="button"
@@ -445,7 +487,7 @@ export function ActionList({
                 }`}
                 data-testid="sim-mode-steady"
               >
-                稳态求解 (STEADY)
+                {tx("稳态收敛", "Steady-State")}
               </button>
               <button
                 type="button"
@@ -457,7 +499,7 @@ export function ActionList({
                 }`}
                 data-testid="sim-mode-stepped"
               >
-                分步回放 (STEPPED)
+                {tx("分步演化", "Time-Stepped")}
               </button>
             </div>
           </div>
@@ -465,7 +507,7 @@ export function ActionList({
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5 text-xs">
             <div className="space-y-1">
               <label className="text-[11px] text-muted-foreground">
-                阻尼系数 (0–1]
+                {tx("阻尼系数", "Damping")}
               </label>
               <Input
                 type="number"
@@ -480,21 +522,21 @@ export function ActionList({
 
             <div className="space-y-1">
               <label className="text-[11px] text-muted-foreground">
-                最大传导跳数 (留空不限)
+                {tx("最大传导跳数", "Max Hops")}
               </label>
               <Input
                 type="number"
                 min={1}
                 value={maxHops}
                 onChange={(e) => setMaxHops(e.target.value)}
-                placeholder="不限"
+                placeholder={tx("不限", "Unlimited")}
                 className="h-8 text-xs font-mono-tech"
               />
             </div>
 
             <div className="space-y-1">
               <label className="text-[11px] text-muted-foreground">
-                推演步数 (horizon_steps)
+                {tx("推演步数", "Horizon Steps")}
               </label>
               <Input
                 type="number"
@@ -510,7 +552,7 @@ export function ActionList({
 
             <div className="space-y-1">
               <label className="text-[11px] text-muted-foreground">
-                检查点间隔 (checkpoint_every)
+                {tx("检查点间隔", "Checkpoint Step")}
               </label>
               <Input
                 type="number"
@@ -531,15 +573,22 @@ export function ActionList({
                 onChange={(e) => setUncertaintyEnabled(e.target.checked)}
                 data-testid="sim-uncertainty-toggle"
               />
-              <span>启用蒙特卡洛不确定性抽样（输出 P10–P90 置信区间）</span>
-              {uncertaintyEnabled && <Badge variant="xblue">MC SAMPLING</Badge>}
+              <span>
+                {tx(
+                  "蒙特卡洛不确定性抽样（P10–P90 置信带）",
+                  "Monte Carlo Uncertainty (P10–P90 Band)"
+                )}
+              </span>
+              {uncertaintyEnabled && (
+                <Badge variant="xblue">{tx("蒙特卡洛", "MC")}</Badge>
+              )}
             </label>
 
             {uncertaintyEnabled && (
               <div className="grid grid-cols-3 gap-2.5">
                 <div className="space-y-1">
                   <label className="text-[11px] text-muted-foreground">
-                    抽样次数 (samples, 1–500)
+                    {tx("抽样次数", "Samples")}
                   </label>
                   <Input
                     type="number"
@@ -553,7 +602,7 @@ export function ActionList({
                 </div>
                 <div className="space-y-1">
                   <label className="text-[11px] text-muted-foreground">
-                    边权扰动标准差 (sigma_rel)
+                    {tx("边权标准差", "Edge CV")}
                   </label>
                   <Input
                     type="number"
@@ -567,7 +616,7 @@ export function ActionList({
                 </div>
                 <div className="space-y-1">
                   <label className="text-[11px] text-muted-foreground">
-                    随机种子 (seed)
+                    {tx("随机种子", "Random Seed")}
                   </label>
                   <Input
                     type="number"
@@ -586,24 +635,24 @@ export function ActionList({
         <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end">
           <div className="md:col-span-4 space-y-1">
             <label className="text-[11px] text-muted-foreground">
-              场景名称 (用于保存、对比与决策)
+              {tx("场景名称", "Scenario Name")}
             </label>
             <Input
               value={scenarioName}
               onChange={(e) => setScenarioName(e.target.value)}
-              placeholder="如：F1_cut_30pct"
+              placeholder={tx("产能下调_15pct", "capacity_cut_15pct")}
               className="h-9 text-xs"
               data-testid="scenario-name-input"
             />
           </div>
           <div className="md:col-span-4 space-y-1">
             <label className="text-[11px] text-muted-foreground">
-              备注说明 (可选)
+              {tx("场景说明", "Description")}
             </label>
             <Input
               value={scenarioDesc}
               onChange={(e) => setScenarioDesc(e.target.value)}
-              placeholder="推演假设描述..."
+              placeholder={tx("华东一厂减产假设", "Factory outage assumption")}
               className="h-9 text-xs"
             />
           </div>
@@ -612,19 +661,27 @@ export function ActionList({
               type="button"
               variant="outline"
               onClick={() => void handleQuickSimulate()}
-              disabled={quickRunning || running || nodes.length === 0}
+              disabled={
+                !canSimRun || quickRunning || running || nodes.length === 0
+              }
               data-testid="quick-simulate-btn"
             >
               <Zap className="h-3.5 w-3.5" />
-              {quickRunning ? "试算中..." : "快速试算"}
+              {quickRunning
+                ? tx("试算中…", "Simulating…")
+                : tx("快速试算", "Quick Sim")}
             </Button>
             <Button
               type="submit"
-              disabled={running || quickRunning || nodes.length === 0}
+              disabled={
+                !canSimRun || running || quickRunning || nodes.length === 0
+              }
               data-testid="run-scenario-btn"
             >
               <Play className="h-3.5 w-3.5" />
-              {running ? "求解中..." : "创建并运行场景"}
+              {running
+                ? tx("求解中…", "Solving…")
+                : tx("运行场景", "Run Scenario")}
             </Button>
           </div>
         </div>

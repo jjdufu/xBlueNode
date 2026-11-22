@@ -8,6 +8,8 @@ import {
   type ScenarioRecord,
 } from "@/lib/api/axsim";
 import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 
 export interface ImpactTableProps {
   scenario: ScenarioRecord | null;
@@ -19,21 +21,21 @@ export interface ImpactTableProps {
   onImpactsLoaded?: (rows: ImpactRow[]) => void;
 }
 
-function formatNumber(val: number | null | undefined): string {
-  if (val === null || val === undefined || !Number.isFinite(val)) return "—";
-  return Number.isInteger(val) ? String(val) : val.toFixed(2);
-}
-
-function formatSignedDelta(val: number | null | undefined): string {
-  if (val === null || val === undefined || !Number.isFinite(val)) return "—";
-  const absFormatted = Number.isInteger(val) ? String(val) : val.toFixed(2);
-  return val > 0 ? `+${absFormatted}` : absFormatted;
-}
-
 function formatRatioPct(val: number | null | undefined): string {
-  if (val === null || val === undefined || !Number.isFinite(val)) return "—";
+  if (val === null || val === undefined || !Number.isFinite(val)) return "-";
   const pct = val * 100;
   return `${pct > 0 ? "+" : ""}${pct.toFixed(1)}%`;
+}
+
+function formatConfidenceBound(
+  val: number | null | undefined,
+  fmtNum: (n: number | null | undefined, maxDecimals?: number) => string
+): string {
+  if (val === null || val === undefined || !Number.isFinite(val)) return "-";
+  if (Math.abs(val) > 0 && Math.abs(val) < 1) {
+    return fmtNum(val, 4);
+  }
+  return val.toFixed(2);
 }
 
 function escapeCsvCell(raw: string): string {
@@ -52,6 +54,10 @@ export function ImpactTable({
   onSelectNode,
   onImpactsLoaded,
 }: ImpactTableProps) {
+  const { tx, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canExport = can("EXPORT_DATA");
+
   const [rows, setRows] = useState<ImpactRow[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -192,10 +198,7 @@ export function ImpactTable({
       ) {
         return false;
       }
-      if (
-        Number.isFinite(minDelta) &&
-        Math.abs(r.delta ?? 0) < minDelta
-      ) {
+      if (Number.isFinite(minDelta) && Math.abs(r.delta ?? 0) < minDelta) {
         return false;
       }
       if (q) {
@@ -207,7 +210,14 @@ export function ImpactTable({
     });
   }, [metricFilter, minAbsDelta, rows, searchText, typeFilter]);
 
+  const formatSignedMetric = (val: number | null | undefined): string => {
+    if (val === null || val === undefined || !Number.isFinite(val)) return "-";
+    const formatted = fmtNum(val, 4);
+    return val > 0 ? `+${formatted}` : formatted;
+  };
+
   const exportCsv = () => {
+    if (!canExport) return;
     const header = [
       "node_id",
       "type_name",
@@ -258,26 +268,32 @@ export function ImpactTable({
     <Card className="p-4 space-y-3" data-testid="impact-table-card">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-medium">因果影响传导明细表</h3>
-          <Badge variant="neutral">{filteredRows.length} 行</Badge>
+          <h3 className="text-sm font-medium">
+            {tx("因果影响传导明细", "Impact Breakdown")}
+          </h3>
+          <Badge variant="neutral">
+            {tx(`${filteredRows.length} 行`, `${filteredRows.length} rows`)}
+          </Badge>
           {scenario?.is_stale && (
-            <Badge variant="outline" className="border-amber-500/60 text-amber-600 dark:text-amber-400">
-              覆盖层已变更 · 结果过期
+            <Badge variant="warning">
+              {tx("覆盖层已变更 · 已过期", "Overlay Changed · Stale")}
             </Badge>
           )}
         </div>
 
-        <Button
-          type="button"
-          variant="outline"
-          className="h-7 px-2.5 text-xs"
-          onClick={exportCsv}
-          disabled={filteredRows.length === 0}
-          data-testid="impact-export-csv-btn"
-        >
-          <Download className="h-3.5 w-3.5" />
-          导出 CSV
-        </Button>
+        {canExport && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={exportCsv}
+            disabled={filteredRows.length === 0}
+            data-testid="impact-export-csv-btn"
+          >
+            <Download className="h-3.5 w-3.5" />
+            {tx("导出 CSV", "Export CSV")}
+          </Button>
+        )}
       </div>
 
       {/* Filters */}
@@ -287,7 +303,7 @@ export function ImpactTable({
           <Input
             value={searchText}
             onChange={(e) => setSearchText(e.target.value)}
-            placeholder="搜索节点名 / ID..."
+            placeholder={tx("节点名称 / ID", "Node title / ID")}
             className="h-8 pl-8 text-xs"
             data-testid="impact-search-input"
           />
@@ -297,7 +313,7 @@ export function ImpactTable({
           list="impact-type-options"
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value)}
-          placeholder="过滤类型 type_name..."
+          placeholder="Order / Warehouse"
           className="h-8 text-xs font-mono-tech"
           data-testid="impact-filter-type"
         />
@@ -311,7 +327,7 @@ export function ImpactTable({
           list="impact-metric-options"
           value={metricFilter}
           onChange={(e) => setMetricFilter(e.target.value)}
-          placeholder="过滤指标 metric_key..."
+          placeholder="fulfillment / inventory"
           className="h-8 text-xs font-mono-tech"
           data-testid="impact-filter-metric"
         />
@@ -327,7 +343,7 @@ export function ImpactTable({
           min="0"
           value={minAbsDelta}
           onChange={(e) => setMinAbsDelta(e.target.value)}
-          placeholder="最小绝对变化 |delta|..."
+          placeholder={tx("最小绝对变化 |Δ|", "Min |Δ|")}
           className="h-8 text-xs font-mono-tech"
           data-testid="impact-filter-min-delta"
         />
@@ -337,23 +353,34 @@ export function ImpactTable({
         <table className="w-full text-xs" data-testid="impact-table">
           <thead>
             <tr className="border-b border-border text-left text-muted-foreground">
-              <th className="py-2 pr-3">节点名称</th>
-              <th className="py-2 pr-3">类型</th>
-              <th className="py-2 pr-3">指标</th>
-              <th className="py-2 pr-3 text-right">基线值</th>
-              <th className="py-2 pr-3 text-right">推演后</th>
-              <th className="py-2 pr-3 text-right">变化量 (Δ)</th>
-              <th className="py-2 pr-3 text-right">变化率 (%)</th>
-              <th className="py-2 pr-3 text-right">P10–P90 置信带</th>
-              <th className="py-2 pr-3">跳数</th>
-              <th className="py-2">主传导路径 (top_path)</th>
+              <th className="py-2 pr-3">{tx("节点名称", "Node")}</th>
+              <th className="py-2 pr-3">{tx("类型", "Type")}</th>
+              <th className="py-2 pr-3">{tx("指标", "Metric")}</th>
+              <th className="py-2 pr-3 text-right">
+                {tx("基线值", "Before")}
+              </th>
+              <th className="py-2 pr-3 text-right">
+                {tx("推演后", "After")}
+              </th>
+              <th className="py-2 pr-3 text-right">{tx("变化量", "Delta")}</th>
+              <th className="py-2 pr-3 text-right">
+                {tx("变化率", "Delta %")}
+              </th>
+              <th className="py-2 pr-3 text-right">
+                {tx("P10–P90 置信带", "P10–P90 Band")}
+              </th>
+              <th className="py-2 pr-3">{tx("跳数", "Hops")}</th>
+              <th className="py-2">{tx("主导传导路径", "Top Path")}</th>
             </tr>
           </thead>
           <tbody>
             {loading && (
               <tr>
-                <td colSpan={10} className="py-6 text-center text-muted-foreground">
-                  加载传导影响明细中...
+                <td
+                  colSpan={10}
+                  className="py-6 text-center text-muted-foreground"
+                >
+                  {tx("加载传导明细中…", "Loading impact rows…")}
                 </td>
               </tr>
             )}
@@ -366,7 +393,9 @@ export function ImpactTable({
                     : deltaVal < 0
                       ? "text-red-600 dark:text-red-400"
                       : "text-muted-foreground";
-                const rowPath = Array.isArray(row.top_path) ? row.top_path : [];
+                const rowPath = Array.isArray(row.top_path)
+                  ? row.top_path
+                  : [];
                 const isPathActive =
                   rowPath.length > 0 && rowPath.join("->") === pathKey;
 
@@ -392,21 +421,25 @@ export function ImpactTable({
                     </td>
                     <td className="py-2 pr-3 font-mono-tech">{row.metric}</td>
                     <td className="py-2 pr-3 text-right font-mono-tech text-muted-foreground">
-                      {formatNumber(row.before_val)}
+                      {fmtNum(row.before_val, 4)}
                     </td>
                     <td className="py-2 pr-3 text-right font-mono-tech font-medium">
-                      {formatNumber(row.after_val)}
+                      {fmtNum(row.after_val, 4)}
                     </td>
-                    <td className={`py-2 pr-3 text-right font-mono-tech font-medium ${deltaTone}`}>
-                      {formatSignedDelta(row.delta)}
+                    <td
+                      className={`py-2 pr-3 text-right font-mono-tech font-medium ${deltaTone}`}
+                    >
+                      {formatSignedMetric(row.delta)}
                     </td>
-                    <td className={`py-2 pr-3 text-right font-mono-tech ${deltaTone}`}>
+                    <td
+                      className={`py-2 pr-3 text-right font-mono-tech ${deltaTone}`}
+                    >
                       {formatRatioPct(row.delta_ratio)}
                     </td>
                     <td className="py-2 pr-3 text-right font-mono-tech text-muted-foreground">
                       {row.p10 != null && row.p90 != null
-                        ? `${formatNumber(row.p10)} ~ ${formatNumber(row.p90)}`
-                        : "—"}
+                        ? `${formatConfidenceBound(row.p10, fmtNum)} ~ ${formatConfidenceBound(row.p90, fmtNum)}`
+                        : "-"}
                     </td>
                     <td className="py-2 pr-3 font-mono-tech">
                       {row.hop_distance} hop
@@ -429,7 +462,7 @@ export function ImpactTable({
                             .join(" → ")}
                         </button>
                       ) : (
-                        <span className="text-muted-foreground">—</span>
+                        <span className="text-muted-foreground">-</span>
                       )}
                     </td>
                   </tr>
@@ -437,10 +470,13 @@ export function ImpactTable({
               })}
             {!loading && filteredRows.length === 0 && (
               <tr>
-                <td colSpan={10} className="py-6 text-center text-muted-foreground">
+                <td
+                  colSpan={10}
+                  className="py-6 text-center text-muted-foreground"
+                >
                   {scenario
-                    ? "当前筛选条件下暂无受影响指标行"
-                    : "运行推演场景或选择已有场景后，将在此展示影响明细"}
+                    ? tx("暂无受影响指标行", "No affected metric rows")
+                    : tx("运行或选择推演场景后查看明细", "Run or select a scenario")}
                 </td>
               </tr>
             )}
@@ -453,12 +489,14 @@ export function ImpactTable({
           <Button
             type="button"
             variant="outline"
-            className="h-8 text-xs"
+            size="sm"
             onClick={() => void handleLoadMore()}
             disabled={loadingMore}
             data-testid="impact-load-more-btn"
           >
-            {loadingMore ? "加载中..." : "加载更多影响明细"}
+            {loadingMore
+              ? tx("加载中…", "Loading…")
+              : tx("加载更多", "Load More")}
           </Button>
         </div>
       )}

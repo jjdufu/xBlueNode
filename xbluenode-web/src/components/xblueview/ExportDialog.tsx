@@ -6,8 +6,8 @@ import {
   Presentation,
   Trash2,
   Upload,
-  X,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import type { ExportFormat } from "@/lib/api/enums";
 import {
   xblueviewApi,
@@ -19,7 +19,15 @@ import {
   type ExportSource,
   type ExportTemplateRecord,
 } from "@/lib/api/xblueview";
-import { Badge, Button, Input } from "@/components/ui/primitives";
+import { usePrincipal } from "@/lib/permissions";
+import {
+  Badge,
+  Button,
+  IconButton,
+  Input,
+  Modal,
+  Select,
+} from "@/components/ui/primitives";
 import { sanitizeExportFilters } from "./logic";
 
 export interface ExportDialogTarget {
@@ -42,14 +50,45 @@ export interface ExportDialogProps {
 const EXPORT_FORMAT_ITEMS: readonly {
   format: ExportFormat;
   label: string;
-  desc: string;
+  zhDesc: string;
+  enDesc: string;
 }[] = [
-  { format: "PDF", label: "PDF", desc: "A4/A3 矢量排版报告" },
-  { format: "XLSX", label: "XLSX", desc: "多工作表原生工作簿" },
-  { format: "CSV", label: "CSV", desc: "UTF-8 明细表文件" },
-  { format: "DOCX", label: "DOCX", desc: "Word 报告（支持模板）" },
-  { format: "PPTX", label: "PPTX", desc: "演示文稿（原生图表/模板）" },
-  { format: "MARKDOWN", label: "MARKDOWN", desc: "GFM 文本与 SVG 归档" },
+  {
+    format: "PDF",
+    label: "PDF",
+    zhDesc: "A4/A3 矢量排版报告",
+    enDesc: "A4/A3 vector report",
+  },
+  {
+    format: "XLSX",
+    label: "XLSX",
+    zhDesc: "多工作表原生工作簿",
+    enDesc: "Multi-sheet workbook",
+  },
+  {
+    format: "CSV",
+    label: "CSV",
+    zhDesc: "UTF-8 明细表文件",
+    enDesc: "UTF-8 tabular data",
+  },
+  {
+    format: "DOCX",
+    label: "DOCX",
+    zhDesc: "Word 报告与母版替换",
+    enDesc: "Word report with template",
+  },
+  {
+    format: "PPTX",
+    label: "PPTX",
+    zhDesc: "演示文稿与母版图表",
+    enDesc: "Slide deck with template",
+  },
+  {
+    format: "MARKDOWN",
+    label: "MARKDOWN",
+    zhDesc: "GFM 文本与 SVG 归档",
+    enDesc: "GFM text & SVG archive",
+  },
 ];
 
 function resolveBrowserTimezone(): string {
@@ -66,6 +105,10 @@ export function ExportDialog({
   onClose,
   onExportCreated,
 }: ExportDialogProps) {
+  const { tx, tEnum, isZh, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canExport = can("EXPORT_DATA");
+
   const [exportFormat, setExportFormat] = useState<ExportFormat>("PDF");
   const [title, setTitle] = useState("");
   const [subtitle, setSubtitle] = useState("");
@@ -166,22 +209,23 @@ export function ExportDialog({
     });
   }, [selectedTemplate]);
 
-  if (!open || !target) return null;
-
-  const activeFilterEntries = Object.entries(
-    sanitizeExportFilters(target.filters)
+  const activeFilterEntries = useMemo(
+    () =>
+      target ? Object.entries(sanitizeExportFilters(target.filters)) : [],
+    [target]
   );
 
   const handleUploadTemplate = async () => {
+    if (!canExport) return;
     if (exportFormat !== "DOCX" && exportFormat !== "PPTX") return;
     if (!uploadFile) {
-      setErrorMsg("请先选择要上传的模板文件");
+      setErrorMsg(tx("未附加母版文件", "Template file is required"));
       return;
     }
     const resolvedName =
       uploadName.trim() ||
       uploadFile.name.replace(/\.(docx|pptx)$/i, "").trim() ||
-      `模板-${Date.now().toString(36).slice(-4)}`;
+      `tpl-${Date.now().toString(36).slice(-4)}`;
 
     setUploadingTemplate(true);
     setErrorMsg(null);
@@ -206,6 +250,7 @@ export function ExportDialog({
   };
 
   const handleDeleteTemplate = async (templateId: string) => {
+    if (!canExport) return;
     setDeletingTemplateId(templateId);
     setErrorMsg(null);
     try {
@@ -223,6 +268,7 @@ export function ExportDialog({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!target || !canExport) return;
     const cleanedFilters = sanitizeExportFilters(target.filters);
     const source: ExportSource =
       target.kind === "WIDGET" && target.widgetId
@@ -284,73 +330,96 @@ export function ExportDialog({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
-      data-testid="export-dialog-backdrop"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-xl max-h-[90vh] rounded-md border border-border bg-background text-foreground shadow-xl flex flex-col overflow-hidden"
-        data-testid="export-dialog"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-2 shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
+    <Modal
+      open={open && Boolean(target)}
+      onClose={onClose}
+      testId="export-dialog"
+      maxWidthClass="max-w-xl"
+      title={
+        target ? (
+          <>
             <Download className="h-4 w-4 text-xblue shrink-0" />
-            <h3 className="text-sm font-semibold truncate">
+            <span className="truncate">
               {target.kind === "WIDGET"
-                ? `导出组件 · ${target.widgetTitle || "可视化组件"}`
-                : `出品导出 · ${target.dashboardName}`}
-            </h3>
-            <Badge variant="xblue">{target.kind}</Badge>
-          </div>
-          <button
+                ? `${tx("导出组件", "Export Widget")} · ${
+                    target.widgetTitle || tx("组件", "Widget")
+                  }`
+                : `${tx("出品导出", "Export")} · ${target.dashboardName}`}
+            </span>
+            <Badge variant="xblue">{tEnum(target.kind)}</Badge>
+          </>
+        ) : (
+          tx("出品导出", "Export")
+        )
+      }
+      footer={
+        <>
+          <Button
             type="button"
+            variant="outline"
             onClick={onClose}
-            className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
-            aria-label="关闭导出窗口"
+            disabled={submitting}
           >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        {/* Body */}
+            {tx("取消", "Cancel")}
+          </Button>
+          <Button
+            type="submit"
+            form="export-dialog-form"
+            disabled={submitting || !canExport}
+            data-testid="submit-export-btn"
+          >
+            <Download className="h-3.5 w-3.5" />
+            {submitting
+              ? tx("提交中…", "Submitting…")
+              : `${tx("导出", "Export")} ${exportFormat}`}
+          </Button>
+        </>
+      }
+    >
+      {target && (
         <form
+          id="export-dialog-form"
           onSubmit={(e) => void handleSubmit(e)}
-          className="flex-1 overflow-y-auto p-4 space-y-4 text-xs"
+          className="space-y-4 text-xs"
         >
           {errorMsg && (
             <div
-              className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs"
+              className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-red-700 dark:text-red-300"
               data-testid="export-dialog-error"
             >
               {errorMsg}
             </div>
           )}
 
-          {/* Active Context Summary */}
           <div className="rounded-md border border-border bg-muted/25 px-3 py-2 flex flex-wrap items-center justify-between gap-2">
             <span className="text-muted-foreground">
-              数据快照将按当前创建者行列策略执行服务端渲染
+              {tx(
+                "服务端快照受当前账号行列安全策略约束",
+                "Server snapshot respects active row/column security policies"
+              )}
             </span>
             <div className="flex items-center gap-1.5 font-mono-tech text-[11px] tabular-nums">
               <Badge variant="outline">
-                筛选条件 {activeFilterEntries.length}
+                {tx(
+                  `筛选 ${fmtNum(activeFilterEntries.length, 0)}`,
+                  `Filters ${fmtNum(activeFilterEntries.length, 0)}`
+                )}
               </Badge>
               {target.kind === "WIDGET" &&
                 (target.drillPath?.length ?? 0) > 0 && (
                   <Badge variant="outline">
-                    下钻层级 {target.drillPath?.length ?? 0}
+                    {tx(
+                      `下钻 ${fmtNum(target.drillPath?.length ?? 0, 0)}`,
+                      `Drill ${fmtNum(target.drillPath?.length ?? 0, 0)}`
+                    )}
                   </Badge>
                 )}
             </div>
           </div>
 
-          {/* 6 Format Selector */}
           <div className="space-y-1.5">
             <label className="block font-medium text-foreground">
-              选择出品格式
+              {tx("出品格式", "Format")}
             </label>
             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
               {EXPORT_FORMAT_ITEMS.map((item) => {
@@ -384,7 +453,7 @@ export function ExportDialog({
                       />
                     </div>
                     <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
-                      {item.desc}
+                      {isZh ? item.zhDesc : item.enDesc}
                     </div>
                   </button>
                 );
@@ -392,39 +461,44 @@ export function ExportDialog({
             </div>
           </div>
 
-          {/* Title & Subtitle */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label className="block text-muted-foreground">报告主标题</label>
+              <label className="block text-muted-foreground">
+                {tx("报告主标题", "Title")}
+              </label>
               <Input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="输入报告标题"
+                placeholder={tx("供应链全景周报", "Supply Chain Weekly Report")}
                 className="h-8 text-xs"
                 data-testid="export-title-input"
               />
             </div>
             <div className="space-y-1">
               <label className="block text-muted-foreground">
-                副标题（可选）
+                {tx("副标题", "Subtitle")}
               </label>
               <Input
                 value={subtitle}
                 onChange={(e) => setSubtitle(e.target.value)}
-                placeholder="例如：2026 Q1 经营复盘"
+                placeholder={tx("2026 Q1 经营复盘", "2026 Q1 Review")}
                 className="h-8 text-xs"
                 data-testid="export-subtitle-input"
               />
             </div>
           </div>
 
-          {/* Watermark */}
           <div className="rounded-md border border-border p-3 space-y-2.5">
             <label className="flex items-center justify-between gap-2 cursor-pointer">
               <div>
-                <div className="font-medium text-foreground">安全溯源水印</div>
+                <div className="font-medium text-foreground">
+                  {tx("安全溯源水印", "Audit Watermark")}
+                </div>
                 <div className="text-[11px] text-muted-foreground">
-                  开启后默认写入“当前账号 + 生成时间”，也可指定自定义文本
+                  {tx(
+                    "默认嵌入当前账号与生成时间戳",
+                    "Embeds username and timestamp by default"
+                  )}
                 </div>
               </div>
               <input
@@ -439,57 +513,65 @@ export function ExportDialog({
               <Input
                 value={watermarkCustomText}
                 onChange={(e) => setWatermarkCustomText(e.target.value)}
-                placeholder="留空自动生成用户名与时间戳，或输入自定义水印文本"
+                placeholder={tx(
+                  "内部机密 · 华东供应链中心",
+                  "CONFIDENTIAL · East China Ops"
+                )}
                 className="h-8 text-xs"
                 data-testid="export-watermark-text-input"
               />
             )}
           </div>
 
-          {/* PDF Specific Options */}
           {exportFormat === "PDF" && (
             <div className="grid grid-cols-2 gap-3 rounded-md border border-border p-3">
               <div className="space-y-1">
-                <label className="block text-muted-foreground">PDF 纸张尺寸</label>
-                <select
+                <label className="block text-muted-foreground">
+                  {tx("纸张尺寸", "Page Size")}
+                </label>
+                <Select
                   value={pageSize}
                   onChange={(e) =>
                     setPageSize(e.target.value as ExportPageSize)
                   }
-                  className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+                  className="h-8 w-full text-xs font-mono-tech"
                   data-testid="export-pdf-page-size"
                 >
                   <option value="A4">A4 (210 × 297 mm)</option>
                   <option value="A3">A3 (297 × 420 mm)</option>
-                </select>
+                </Select>
               </div>
               <div className="space-y-1">
-                <label className="block text-muted-foreground">排版方向</label>
-                <select
+                <label className="block text-muted-foreground">
+                  {tx("排版方向", "Orientation")}
+                </label>
+                <Select
                   value={orientation}
                   onChange={(e) =>
                     setOrientation(e.target.value as ExportOrientation)
                   }
-                  className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                  className="h-8 w-full text-xs"
                   data-testid="export-pdf-orientation"
                 >
-                  <option value="portrait">纵向 (Portrait)</option>
-                  <option value="landscape">横向 (Landscape)</option>
-                </select>
+                  <option value="portrait">{tx("纵向", "Portrait")}</option>
+                  <option value="landscape">{tx("横向", "Landscape")}</option>
+                </Select>
               </div>
             </div>
           )}
 
-          {/* CSV Specific Options */}
           {exportFormat === "CSV" && (
             <div className="rounded-md border border-border p-3">
               <label className="flex items-center justify-between gap-2 cursor-pointer">
                 <div>
                   <div className="font-medium text-foreground">
-                    写入 UTF-8 BOM 头
+                    {tx("UTF-8 BOM 头", "UTF-8 BOM Header")}
                   </div>
                   <div className="text-[11px] text-muted-foreground">
-                    开启后桌面电子表格软件可直接正确识别中文字符编码
+                    {tx(
+                      "桌面表格软件直接识别多语言字符编码",
+                      "Ensures desktop spreadsheets detect UTF-8 encoding"
+                    )}
                   </div>
                 </div>
                 <input
@@ -503,7 +585,6 @@ export function ExportDialog({
             </div>
           )}
 
-          {/* DOCX / PPTX Template Selection, Upload & Placeholders */}
           {supportsTemplates && (
             <div
               className="rounded-md border border-border p-3 space-y-3"
@@ -511,57 +592,60 @@ export function ExportDialog({
             >
               <div className="flex items-center justify-between gap-2">
                 <span className="font-medium text-foreground">
-                  {exportFormat} 报告母版模板
+                  {tx(
+                    `${exportFormat} 母版模板`,
+                    `${exportFormat} Master Template`
+                  )}
                 </span>
                 {templatesLoading && (
                   <span className="text-[11px] text-muted-foreground">
-                    加载模板中...
+                    {tx("加载中…", "Loading…")}
                   </span>
                 )}
               </div>
 
               <div className="flex items-center gap-2">
-                <select
+                <Select
                   value={selectedTemplateId}
                   onChange={(e) => setSelectedTemplateId(e.target.value)}
-                  className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs"
+                  className="h-8 flex-1 text-xs"
                   data-testid="export-template-select"
                 >
-                  <option value="">默认内置样式（不使用母版）</option>
+                  <option value="">
+                    {tx("内置默认样式", "Built-in Default Style")}
+                  </option>
                   {matchingTemplates.map((tpl) => (
                     <option key={tpl.id} value={tpl.id}>
                       {tpl.name}
                       {tpl.placeholders.length > 0
-                        ? ` (${tpl.placeholders.length} 个占位符)`
+                        ? ` (${tpl.placeholders.length})`
                         : ""}
                     </option>
                   ))}
-                </select>
-                {selectedTemplate && (
-                  <Button
-                    type="button"
-                    variant="outline"
+                </Select>
+                {selectedTemplate && canExport && (
+                  <IconButton
+                    size="sm"
                     disabled={deletingTemplateId === selectedTemplate.id}
                     onClick={() =>
                       void handleDeleteTemplate(selectedTemplate.id)
                     }
-                    className="h-8 px-2.5 text-xs"
-                    title="删除当前选中模板"
+                    aria-label={tx("删除模板", "Delete template")}
+                    title={tx("删除模板", "Delete template")}
                     data-testid={`delete-export-template-${selectedTemplate.id}`}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  </IconButton>
                 )}
               </div>
 
-              {/* Discovered {{key}} Placeholders */}
               {selectedTemplate && selectedTemplate.placeholders.length > 0 && (
                 <div
                   className="space-y-2 rounded border border-border bg-muted/20 p-2.5"
                   data-testid="export-placeholders-panel"
                 >
                   <div className="text-[11px] font-medium text-muted-foreground">
-                    填写模板占位符变量
+                    {tx("模板占位符变量", "Template Variables")}
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                     {selectedTemplate.placeholders.map((phKey) => (
@@ -577,7 +661,7 @@ export function ExportDialog({
                               [phKey]: e.target.value,
                             }))
                           }
-                          placeholder={`输入 ${phKey} 的替换内容`}
+                          placeholder={phKey}
                           className="h-7 text-xs"
                           data-testid={`export-placeholder-${phKey}`}
                         />
@@ -587,61 +671,51 @@ export function ExportDialog({
                 </div>
               )}
 
-              {/* Upload New Template */}
-              <div className="pt-2 border-t border-border/70 space-y-2">
-                <div className="text-[11px] text-muted-foreground">
-                  上传新 {exportFormat === "DOCX" ? ".docx" : ".pptx"} 母版（支持{" "}
-                  <span className="font-mono-tech">{"{{key}}"}</span> 占位符自动识别）
+              {canExport && (
+                <div className="pt-2 border-t border-border/70 space-y-2">
+                  <div className="text-[11px] text-muted-foreground">
+                    {tx("上传新母版文件", "Upload New Template")} (
+                    {exportFormat === "DOCX" ? ".docx" : ".pptx"} ·{" "}
+                    <span className="font-mono-tech">{"{{key}}"}</span>)
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Input
+                      value={uploadName}
+                      onChange={(e) => setUploadName(e.target.value)}
+                      placeholder={tx("集团周报母版", "Weekly Report Template")}
+                      className="h-8 text-xs flex-1 min-w-[130px]"
+                      data-testid="export-template-name-input"
+                    />
+                    <input
+                      type="file"
+                      accept={exportFormat === "DOCX" ? ".docx" : ".pptx"}
+                      onChange={(e) =>
+                        setUploadFile(e.target.files?.[0] ?? null)
+                      }
+                      className="text-[11px] text-muted-foreground file:mr-2 file:rounded file:border file:border-border file:bg-muted file:px-2 file:py-1 file:text-[11px] file:text-foreground cursor-pointer"
+                      data-testid="export-template-file-input"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={!uploadFile || uploadingTemplate}
+                      onClick={() => void handleUploadTemplate()}
+                      className="h-8 px-2.5"
+                      data-testid="upload-export-template-btn"
+                    >
+                      <Upload className="h-3.5 w-3.5 text-xblue" />
+                      {uploadingTemplate
+                        ? tx("上传中…", "Uploading…")
+                        : tx("上传模板", "Upload")}
+                    </Button>
+                  </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <Input
-                    value={uploadName}
-                    onChange={(e) => setUploadName(e.target.value)}
-                    placeholder="模板名称（可选）"
-                    className="h-8 text-xs flex-1 min-w-[130px]"
-                    data-testid="export-template-name-input"
-                  />
-                  <input
-                    type="file"
-                    accept={exportFormat === "DOCX" ? ".docx" : ".pptx"}
-                    onChange={(e) =>
-                      setUploadFile(e.target.files?.[0] ?? null)
-                    }
-                    className="text-[11px] text-muted-foreground file:mr-2 file:rounded file:border file:border-border file:bg-muted file:px-2 file:py-1 file:text-[11px] file:text-foreground cursor-pointer"
-                    data-testid="export-template-file-input"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={!uploadFile || uploadingTemplate}
-                    onClick={() => void handleUploadTemplate()}
-                    className="h-8 px-2.5 text-xs"
-                    data-testid="upload-export-template-btn"
-                  >
-                    <Upload className="h-3.5 w-3.5 text-xblue" />
-                    {uploadingTemplate ? "上传中..." : "上传模板"}
-                  </Button>
-                </div>
-              </div>
+              )}
             </div>
           )}
-
-          {/* Footer */}
-          <div className="pt-2 border-t border-border flex items-center justify-end gap-2">
-            <Button type="button" variant="outline" onClick={onClose}>
-              取消
-            </Button>
-            <Button
-              type="submit"
-              disabled={submitting}
-              data-testid="submit-export-btn"
-            >
-              <Download className="h-3.5 w-3.5" />
-              {submitting ? "提交出品任务中..." : `开始导出 ${exportFormat}`}
-            </Button>
-          </div>
         </form>
-      </div>
-    </div>
+      )}
+    </Modal>
   );
 }

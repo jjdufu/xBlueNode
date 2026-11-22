@@ -3,11 +3,13 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { AlertTriangle, Box } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   xblueviewApi,
   type WidgetDataResponse,
   type WidgetRecord,
 } from "@/lib/api/xblueview";
+import { useTheme } from "@/lib/theme";
 import {
   buildColumnIndexMap,
   formatDisplayValue,
@@ -105,10 +107,14 @@ function disposeObjectTree(root: THREE.Object3D): void {
 export function Scene3dWidget({
   widget,
   data,
-  isDark = false,
+  isDark,
   onSelectNode,
   onCrossFilter,
 }: Scene3dWidgetProps) {
+  const { tx } = useI18n();
+  const { isDark: themeDark } = useTheme();
+  const effectiveDark = isDark ?? themeDark;
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [webglActive, setWebglActive] = useState<boolean>(() =>
     canCreateWebGlContext()
@@ -130,7 +136,6 @@ export function Scene3dWidget({
     [widget.options]
   );
 
-  // Columns: node_id, type_name, node_key, title, mesh_name, pos_x, pos_y, pos_z, scale, metric_value, open_alerts
   const nodes = useMemo<Scene3dBindingNode[]>(() => {
     if (!data) return [];
     const colMap = buildColumnIndexMap(data);
@@ -147,7 +152,9 @@ export function Scene3dWidget({
         0.1,
         toNumericValue(getCell(r, colMap, "scale", 8)) ?? 1
       );
-      const metricValue = toNumericValue(getCell(r, colMap, "metric_value", 9));
+      const metricValue = toNumericValue(
+        getCell(r, colMap, "metric_value", 9)
+      );
       const openAlerts =
         toNumericValue(getCell(r, colMap, "open_alerts", 10)) ?? 0;
       return {
@@ -217,7 +224,7 @@ export function Scene3dWidget({
     container.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(isDark ? 0x09090b : 0xf4f4f5);
+    scene.background = new THREE.Color(effectiveDark ? 0x09090b : 0xf4f4f5);
 
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 500);
     camera.position.set(6, 5, 8);
@@ -235,8 +242,8 @@ export function Scene3dWidget({
     const gridHelper = new THREE.GridHelper(
       16,
       16,
-      isDark ? 0x3f3f46 : 0xd4d4d8,
-      isDark ? 0x27272a : 0xe4e4e7
+      effectiveDark ? 0x3f3f46 : 0xd4d4d8,
+      effectiveDark ? 0x27272a : 0xe4e4e7
     );
     scene.add(gridHelper);
 
@@ -329,9 +336,13 @@ export function Scene3dWidget({
             node: n,
           });
         } else {
-          const geom = new THREE.BoxGeometry(0.9 * n.scale, 1.2 * n.scale, 0.9 * n.scale);
+          const geom = new THREE.BoxGeometry(
+            0.9 * n.scale,
+            1.2 * n.scale,
+            0.9 * n.scale
+          );
           const mat = new THREE.MeshStandardMaterial({
-            color: isDark ? 0x27272a : 0xe4e4e7,
+            color: effectiveDark ? 0x27272a : 0xe4e4e7,
             emissive: new THREE.Color(colorHex),
             emissiveIntensity: n.openAlerts > 0 ? 0.95 : 0.4,
             roughness: 0.35,
@@ -500,7 +511,7 @@ export function Scene3dWidget({
         container.removeChild(renderer.domElement);
       }
     };
-  }, [assetId, isDark]);
+  }, [assetId, effectiveDark]);
 
   return (
     <div
@@ -551,7 +562,11 @@ export function Scene3dWidget({
             )}
           </div>
           <div className="absolute left-2 bottom-1.5 rounded bg-background/80 px-1.5 py-0.5 text-[10px] font-mono-tech text-muted-foreground border border-border">
-            Three.js 3D {modelLoaded ? "glTF 已加载" : "空间桩点视图"} · {nodes.length} 绑定对象
+            3D{" "}
+            {modelLoaded
+              ? tx("glTF 模型", "glTF Model")
+              : tx("空间桩点", "Spatial Stakes")}{" "}
+            · {tx(`${nodes.length} 节点`, `${nodes.length} nodes`)}
           </div>
         </>
       ) : (
@@ -562,15 +577,17 @@ export function Scene3dWidget({
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
             <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
               <Box className="h-3.5 w-3.5 text-xblue" />
-              3D 空间孪生态势视图（软件降级模式）
+              {tx("3D 空间孪生视图", "3D Spatial Twin")}
             </span>
-            <span className="font-mono-tech">{nodes.length} 绑定对象</span>
+            <span className="font-mono-tech">
+              {tx(`${nodes.length} 绑定对象`, `${nodes.length} bound nodes`)}
+            </span>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 my-2 overflow-y-auto">
             {nodes.length === 0 ? (
               <div className="col-span-full text-center py-6 text-xs text-muted-foreground">
-                暂无 3D 网格绑定节点
+                {tx("暂无 3D 绑定节点", "No 3D bound nodes")}
               </div>
             ) : (
               nodes.map((n) => {
@@ -606,7 +623,9 @@ export function Scene3dWidget({
                       )}
                     </div>
                     <div className="mt-1 flex items-center justify-between text-[11px] font-mono-tech text-muted-foreground">
-                      <span>{n.meshName || `(${n.posX}, ${n.posY}, ${n.posZ})`}</span>
+                      <span>
+                        {n.meshName || `(${n.posX}, ${n.posY}, ${n.posZ})`}
+                      </span>
                       <span className="text-foreground font-semibold">
                         {formatDisplayValue(n.metricValue)}
                       </span>

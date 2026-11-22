@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
   Compass,
@@ -12,6 +12,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   axhubApi,
   type Connection,
@@ -21,8 +22,19 @@ import {
   type PreviewResponse,
   type SchemaPolicy,
 } from "@/lib/api/axhub";
-import type { ConnectorType, SyncMode } from "@/lib/api/enums";
-import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
+import type { ConnectorType, SourceKind, SyncMode } from "@/lib/api/enums";
+import { usePrincipal } from "@/lib/permissions";
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  Input,
+  Select,
+  StatusBadge,
+  Textarea,
+} from "@/components/ui/primitives";
 
 interface SchemaPropertySpec {
   type?: string;
@@ -67,17 +79,6 @@ function extractSchemaProperties(
   return { properties, required };
 }
 
-const CATEGORY_LABELS: Record<string, string> = {
-  FILE: "文件与对象存储",
-  RELATIONAL: "关系型数据库",
-  DOMESTIC: "国产数据库",
-  ANALYTIC: "分析型数据库",
-  NOSQL: "NoSQL 与图数据库",
-  TIMESERIES: "时序数据库",
-  STREAM: "消息流",
-  API: "API 与 Webhook",
-};
-
 const FALLBACK_SPECS: ConnectorSpec[] = [
   {
     connector_type: "POSTGRES",
@@ -85,14 +86,14 @@ const FALLBACK_SPECS: ConnectorSpec[] = [
     category: "RELATIONAL",
     config_schema: {
       properties: {
-        host: { type: "string", title: "主机地址", default: "127.0.0.1" },
-        port: { type: "integer", title: "端口", default: 5432 },
-        database: { type: "string", title: "数据库名" },
-        schema: { type: "string", title: "模式名", default: "public" },
-        username: { type: "string", title: "用户名" },
+        host: { type: "string", title: "Host", default: "127.0.0.1" },
+        port: { type: "integer", title: "Port", default: 5432 },
+        database: { type: "string", title: "Database" },
+        schema: { type: "string", title: "Schema", default: "public" },
+        username: { type: "string", title: "Username" },
         sslmode: {
           type: "string",
-          title: "SSL 模式",
+          title: "SSL Mode",
           enum: ["disable", "prefer", "require"],
           default: "prefer",
         },
@@ -120,6 +121,11 @@ export function ConnectionForm({
   onChanged,
   onDatasetCreated,
 }: ConnectionFormProps) {
+  const { tx, tEnum, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canDataAdmin = can("DATA_ADMIN");
+  const canDataSync = can("DATA_SYNC");
+
   const specs = connectorSpecs.length > 0 ? connectorSpecs : FALLBACK_SPECS;
 
   const [formOpen, setFormOpen] = useState(false);
@@ -130,18 +136,29 @@ export function ConnectionForm({
   const [configValues, setConfigValues] = useState<Record<string, unknown>>({});
   const [rawJsonConfig, setRawJsonConfig] = useState("{}");
   const [secretInputs, setSecretInputs] = useState<Record<string, string>>({});
-  const [clearedSecrets, setClearedSecrets] = useState<Record<string, boolean>>({});
+  const [clearedSecrets, setClearedSecrets] = useState<Record<string, boolean>>(
+    {}
+  );
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
+
+  const [pendingDeleteConn, setPendingDeleteConn] = useState<Connection | null>(
+    null
+  );
+  const [deletingConn, setDeletingConn] = useState(false);
 
   const [testingId, setTestingId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<
     Record<string, ConnectionTestResult>
   >({});
 
-  const [discoveringConn, setDiscoveringConn] = useState<Connection | null>(null);
-  const [discoveredObjects, setDiscoveredObjects] = useState<DiscoveredObject[]>([]);
+  const [discoveringConn, setDiscoveringConn] = useState<Connection | null>(
+    null
+  );
+  const [discoveredObjects, setDiscoveredObjects] = useState<
+    DiscoveredObject[]
+  >([]);
   const [discoverLoading, setDiscoverLoading] = useState(false);
   const [sourcePreview, setSourcePreview] = useState<{
     title: string;
@@ -149,9 +166,61 @@ export function ConnectionForm({
   } | null>(null);
   const [quickCreateIdx, setQuickCreateIdx] = useState<number | null>(null);
   const [newDatasetName, setNewDatasetName] = useState("");
-  const [newDatasetSyncMode, setNewDatasetSyncMode] = useState<SyncMode>("SNAPSHOT");
-  const [newDatasetPolicy, setNewDatasetPolicy] = useState<SchemaPolicy>("ADDITIVE");
+  const [newDatasetSyncMode, setNewDatasetSyncMode] =
+    useState<SyncMode>("SNAPSHOT");
+  const [newDatasetPolicy, setNewDatasetPolicy] =
+    useState<SchemaPolicy>("ADDITIVE");
   const [newDatasetCron, setNewDatasetCron] = useState("");
+
+  const categoryLabel = (cat: string): string => {
+    switch (cat) {
+      case "FILE":
+        return tx("文件与对象存储", "File & Object Storage");
+      case "RELATIONAL":
+        return tx("关系型数据库", "Relational Databases");
+      case "DOMESTIC":
+        return tx("国产数据库", "Domestic Databases");
+      case "ANALYTIC":
+        return tx("分析型数据库", "Analytical Engines");
+      case "NOSQL":
+        return tx("文档与图数据库", "Document & Graph");
+      case "TIMESERIES":
+        return tx("时序数据库", "Time-Series");
+      case "STREAM":
+        return tx("消息流", "Streaming");
+      case "API":
+        return tx("接口与推送", "API & Webhooks");
+      default:
+        return cat;
+    }
+  };
+
+  const formatSourceKind = (kind: SourceKind): string => {
+    switch (kind) {
+      case "NOSQL_COLLECTION":
+        return tx("文档集合", "NoSQL Collection");
+      case "TIMESERIES":
+        return tx("时序表", "Time-Series");
+      case "STREAM":
+        return tx("流数据", "Stream");
+      case "API_RESOURCE":
+        return tx("接口资源", "API Resource");
+      default:
+        return tEnum(kind);
+    }
+  };
+
+  const formatTestMessage = (msg: string): string => {
+    const trimmed = msg.trim();
+    if (!trimmed) return "";
+    if (trimmed.toLowerCase() === "connected") {
+      return tEnum("connected");
+    }
+    if (/\s+connected$/i.test(trimmed)) {
+      return `${trimmed.replace(/\s+connected$/i, "")} · ${tEnum("connected")}`;
+    }
+    return trimmed;
+  };
 
   const activeSpec = useMemo(
     () =>
@@ -209,6 +278,7 @@ export function ConnectionForm({
   }, [activeSpec, editingConn]);
 
   const openCreateForm = () => {
+    if (!canDataAdmin) return;
     setEditingConn(null);
     setConnName("");
     setAllowPrivateNetwork(false);
@@ -223,6 +293,7 @@ export function ConnectionForm({
   };
 
   const openEditForm = (conn: Connection) => {
+    if (!canDataAdmin) return;
     setEditingConn(conn);
     setSelectedType(conn.connector_type);
     setConnName(conn.name);
@@ -233,7 +304,6 @@ export function ConnectionForm({
     }
     setConfigValues(safeCopy);
     setRawJsonConfig(JSON.stringify(safeCopy, null, 2));
-    // Never prefill secret values; leave empty so unchanged secrets stay intact
     setSecretInputs({});
     setClearedSecrets({});
     setErrorMsg(null);
@@ -244,7 +314,7 @@ export function ConnectionForm({
     if (nonSecretEntries.length === 0) {
       const parsed: unknown = JSON.parse(rawJsonConfig || "{}");
       if (!isRecord(parsed)) {
-        throw new Error("配置 JSON 必须是对象结构");
+        throw new Error(tx("配置 JSON 需为对象结构", "Config JSON must be an object"));
       }
       return parsed;
     }
@@ -274,8 +344,9 @@ export function ConnectionForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canDataAdmin) return;
     if (!connName.trim()) {
-      setErrorMsg("请输入连接名称");
+      setErrorMsg(tx("连接名称不能为空", "Connection name is required"));
       return;
     }
     setSubmitting(true);
@@ -301,7 +372,9 @@ export function ConnectionForm({
             Object.keys(patchSecrets).length > 0 ? patchSecrets : undefined,
           allow_private_network: allowPrivateNetwork,
         });
-        setStatusBanner(`已更新连接「${connName.trim()}」`);
+        setStatusBanner(
+          tx(`已更新连接「${connName.trim()}」`, `Updated "${connName.trim()}"`)
+        );
       } else {
         const createSecrets: Record<string, string> = {};
         for (const sf of activeSpec.secret_fields) {
@@ -318,7 +391,9 @@ export function ConnectionForm({
             Object.keys(createSecrets).length > 0 ? createSecrets : undefined,
           allow_private_network: allowPrivateNetwork,
         });
-        setStatusBanner(`已创建连接「${connName.trim()}」`);
+        setStatusBanner(
+          tx(`已创建连接「${connName.trim()}」`, `Created "${connName.trim()}"`)
+        );
       }
       setFormOpen(false);
       setEditingConn(null);
@@ -344,18 +419,26 @@ export function ConnectionForm({
     }
   };
 
-  const handleDelete = async (conn: Connection) => {
+  const handleConfirmDelete = async () => {
+    if (!pendingDeleteConn || !canDataAdmin) return;
+    setDeletingConn(true);
     setErrorMsg(null);
     try {
-      await axhubApi.deleteConnection(conn.id);
-      setStatusBanner(`已删除连接「${conn.name}」`);
-      if (editingConn?.id === conn.id) {
+      const target = pendingDeleteConn;
+      await axhubApi.deleteConnection(target.id);
+      setStatusBanner(
+        tx(`已删除连接「${target.name}」`, `Deleted "${target.name}"`)
+      );
+      if (editingConn?.id === target.id) {
         setFormOpen(false);
         setEditingConn(null);
       }
+      setPendingDeleteConn(null);
       await onChanged();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingConn(false);
     }
   };
 
@@ -376,7 +459,10 @@ export function ConnectionForm({
     }
   };
 
-  const handlePreviewObject = async (conn: Connection, obj: DiscoveredObject) => {
+  const handlePreviewObject = async (
+    conn: Connection,
+    obj: DiscoveredObject
+  ) => {
     setErrorMsg(null);
     try {
       const preview = await axhubApi.previewConnection(conn.id, {
@@ -390,7 +476,13 @@ export function ConnectionForm({
   };
 
   const handleCreateDatasetFromObject = async (obj: DiscoveredObject) => {
-    if (!discoveringConn || !newDatasetName.trim()) return;
+    if (
+      (!canDataSync && !canDataAdmin) ||
+      !discoveringConn ||
+      !newDatasetName.trim()
+    ) {
+      return;
+    }
     setErrorMsg(null);
     try {
       await axhubApi.createDataset({
@@ -405,7 +497,12 @@ export function ConnectionForm({
         schema_policy: newDatasetPolicy,
         schedule_cron: newDatasetCron.trim() || null,
       });
-      setStatusBanner(`已创建数据集「${newDatasetName.trim()}」`);
+      setStatusBanner(
+        tx(
+          `已注册数据集「${newDatasetName.trim()}」`,
+          `Registered dataset "${newDatasetName.trim()}"`
+        )
+      );
       setQuickCreateIdx(null);
       if (onDatasetCreated) {
         await onDatasetCreated();
@@ -416,71 +513,74 @@ export function ConnectionForm({
   };
 
   const handleRotateCredentials = async () => {
+    if (!canDataAdmin) return;
     setErrorMsg(null);
     try {
       const res = await axhubApi.rotateCredentials();
-      setStatusBanner(`已提交密钥环轮换任务 (${res.job_id})`);
+      setStatusBanner(
+        tx(
+          `密钥轮换任务已入队 (${res.job_id.slice(0, 8)})`,
+          `Key rotation queued (${res.job_id.slice(0, 8)})`
+        )
+      );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     }
   };
 
   const renderStatusBadge = (status: Connection["status"]) => {
-    if (status === "OK") {
-      return <Badge variant="xblue">OK</Badge>;
+    if (status === "UNTESTED") {
+      return <Badge variant="neutral">{tx("未测试", "Untested")}</Badge>;
     }
-    if (status === "FAILED") {
-      return (
-        <Badge variant="outline" className="text-foreground border-foreground/40">
-          FAILED
-        </Badge>
-      );
-    }
-    return <Badge variant="neutral">UNTESTED</Badge>;
+    return <StatusBadge status={status} />;
   };
 
   return (
     <Card className="p-4 space-y-4" data-testid="connections-section">
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
-        <div>
-          <h2 className="text-sm font-semibold">数据源连接器管理</h2>
-          <p className="text-xs text-muted-foreground">
-            支持 {specs.length} 种连接器规格，秘密凭证通过 AES-256-GCM 密钥环加密托管，绝不回显明文
-          </p>
+        <div className="flex items-center gap-2">
+          <h2 className="text-sm font-semibold">
+            {tx("数据源连接", "Data Connections")}
+          </h2>
+          <Badge variant="outline">
+            {fmtNum(specs.length, 0)} {tx("种规格", "Specs")}
+          </Badge>
         </div>
         <div className="flex items-center gap-2">
           <Button
             type="button"
             variant="outline"
+            disabled={!canDataAdmin}
             onClick={() => void handleRotateCredentials()}
             data-testid="rotate-credentials-btn"
           >
             <KeyRound className="h-3.5 w-3.5" />
-            轮换密钥
+            {tx("轮换密钥", "Rotate Keys")}
           </Button>
           <Button
             type="button"
+            disabled={!canDataAdmin}
             onClick={openCreateForm}
             data-testid="new-connection-btn"
           >
             <Plus className="h-3.5 w-3.5" />
-            新建连接
+            {tx("新建连接", "New Connection")}
           </Button>
         </div>
       </div>
 
       {errorMsg && (
         <div
-          className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs flex items-center justify-between"
+          className="rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs flex items-center justify-between"
           data-testid="connection-error-banner"
         >
-          <span>{errorMsg}</span>
+          <span className="text-red-600 dark:text-red-400">{errorMsg}</span>
           <button
             type="button"
             className="text-muted-foreground hover:text-foreground cursor-pointer"
             onClick={() => setErrorMsg(null)}
           >
-            关闭
+            {tx("关闭", "Dismiss")}
           </button>
         </div>
       )}
@@ -496,16 +596,24 @@ export function ConnectionForm({
             className="text-xblue hover:opacity-80 cursor-pointer"
             onClick={() => setStatusBanner(null)}
           >
-            关闭
+            {tx("关闭", "Dismiss")}
           </button>
         </div>
       )}
 
       {/* Existing Connections List */}
       {connections.length === 0 ? (
-        <div className="rounded border border-dashed border-border py-6 text-center text-xs text-muted-foreground">
-          暂无已配置的数据源连接，点击右上角「新建连接」接入外部数据源。
-        </div>
+        <EmptyState
+          title={tx("暂无数据源连接", "No data connections configured")}
+          action={
+            canDataAdmin ? (
+              <Button size="sm" onClick={openCreateForm}>
+                <Plus className="h-3.5 w-3.5" />
+                {tx("新建连接", "New Connection")}
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
         <div
           className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"
@@ -523,18 +631,21 @@ export function ConnectionForm({
                 data-testid={`connection-card-${conn.name}`}
               >
                 <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <div className="text-xs font-semibold flex items-center gap-1.5">
-                      <span>{conn.name}</span>
+                  <div className="min-w-0">
+                    <div className="text-xs font-semibold flex flex-wrap items-center gap-1.5">
+                      <span className="truncate">{conn.name}</span>
                       {conn.allow_private_network && (
-                        <Badge variant="outline">私网允许</Badge>
+                        <Badge variant="outline">
+                          {tx("私网互通", "Private Net")}
+                        </Badge>
                       )}
                     </div>
-                    <div className="text-[11px] font-mono-tech text-muted-foreground mt-0.5">
-                      {conn.connector_type}
+                    <div className="text-[11px] font-mono-tech text-muted-foreground mt-0.5 truncate">
+                      {specForConn?.display_name ?? conn.connector_type}
                       {conn.secret_fields_set.length > 0 && (
                         <span className="ml-2">
-                          · 已加密字段: {conn.secret_fields_set.join(", ")}
+                          · {tx("已加密", "Encrypted")}:{" "}
+                          {conn.secret_fields_set.join(", ")}
                         </span>
                       )}
                     </div>
@@ -549,23 +660,30 @@ export function ConnectionForm({
                     className="rounded bg-muted px-2.5 py-1.5 text-[11px] font-mono-tech flex items-center justify-between"
                     data-testid={`conn-test-result-${conn.name}`}
                   >
-                    <span className="flex items-center gap-1">
+                    <span className="flex items-center gap-1 truncate">
                       {testResult.ok ? (
-                        <CheckCircle2 className="h-3.5 w-3.5 text-xblue" />
+                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                       ) : (
-                        <XCircle className="h-3.5 w-3.5 text-muted-foreground" />
+                        <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />
                       )}
-                      {testResult.ok ? "连通正常" : testResult.message || "测试失败"}
+                      <span className="truncate">
+                        {testResult.ok
+                          ? tx("连通正常", "Healthy")
+                          : testResult.message || tx("连接失败", "Failed")}
+                      </span>
                     </span>
                     <Badge variant={testResult.ok ? "xblue" : "outline"}>
-                      {testResult.latency_ms} ms
+                      {fmtNum(testResult.latency_ms, 0)} ms
                     </Badge>
                   </div>
                 )}
 
                 {!testResult && conn.last_test_message && (
-                  <div className="text-[11px] text-muted-foreground truncate">
-                    {conn.last_test_message}
+                  <div
+                    className="text-[11px] text-muted-foreground truncate"
+                    title={conn.last_test_message}
+                  >
+                    {formatTestMessage(conn.last_test_message)}
                   </div>
                 )}
 
@@ -573,7 +691,7 @@ export function ConnectionForm({
                   <Button
                     type="button"
                     variant="outline"
-                    className="px-2.5 py-1 text-[11px]"
+                    size="sm"
                     disabled={testingId === conn.id}
                     onClick={() => void handleTest(conn)}
                     data-testid={`test-connection-btn-${conn.name}`}
@@ -583,38 +701,41 @@ export function ConnectionForm({
                     ) : (
                       <Play className="h-3 w-3" />
                     )}
-                    测试连接
+                    {tx("测试", "Test")}
                   </Button>
 
                   {(specForConn?.supports_discover ?? true) && (
                     <Button
                       type="button"
                       variant="outline"
-                      className="px-2.5 py-1 text-[11px]"
+                      size="sm"
                       onClick={() => void handleDiscover(conn)}
                       data-testid={`discover-connection-btn-${conn.name}`}
                     >
                       <Compass className="h-3 w-3" />
-                      对象发现
+                      {tx("探查", "Discover")}
                     </Button>
                   )}
 
                   <Button
                     type="button"
                     variant="ghost"
-                    className="px-2 py-1 text-[11px]"
+                    size="sm"
+                    disabled={!canDataAdmin}
                     onClick={() => openEditForm(conn)}
                     data-testid={`edit-connection-btn-${conn.name}`}
                   >
                     <Pencil className="h-3 w-3" />
-                    编辑
+                    {tx("编辑", "Edit")}
                   </Button>
 
                   <Button
                     type="button"
                     variant="ghost"
-                    className="px-2 py-1 text-[11px]"
-                    onClick={() => void handleDelete(conn)}
+                    size="sm"
+                    disabled={!canDataAdmin}
+                    onClick={() => setPendingDeleteConn(conn)}
+                    aria-label={tx("删除", "Delete")}
                     data-testid={`delete-connection-btn-${conn.name}`}
                   >
                     <Trash2 className="h-3 w-3" />
@@ -636,32 +757,32 @@ export function ConnectionForm({
           <div className="flex items-center justify-between border-b border-border pb-2.5">
             <h3 className="text-xs font-semibold">
               {editingConn
-                ? `编辑连接 · ${editingConn.name}`
-                : "新建数据源连接（按 config_schema 动态渲染）"}
+                ? `${tx("编辑连接", "Edit Connection")} · ${editingConn.name}`
+                : tx("新建数据源连接", "New Data Connection")}
             </h3>
             <Button
               type="button"
               variant="ghost"
-              className="px-2 py-1 text-xs"
+              size="sm"
               onClick={() => {
                 setFormOpen(false);
                 setEditingConn(null);
               }}
             >
-              取消
+              {tx("取消", "Cancel")}
             </Button>
           </div>
 
           {!editingConn && (
             <div className="space-y-2">
               <label className="text-xs font-medium block">
-                1. 选择连接器类型（共 {specs.length} 种）
+                {tx("连接器类型", "Connector Type")}
               </label>
               <div className="space-y-2 max-h-48 overflow-y-auto rounded border border-border bg-background p-2.5">
                 {groupedSpecs.map(([cat, catSpecs]) => (
                   <div key={cat} className="space-y-1">
-                    <div className="text-[11px] font-mono-tech text-muted-foreground">
-                      {CATEGORY_LABELS[cat] ?? cat}
+                    <div className="text-[11px] font-medium text-muted-foreground">
+                      {categoryLabel(cat)}
                     </div>
                     <div className="flex flex-wrap gap-1.5">
                       {catSpecs.map((spec) => {
@@ -678,8 +799,7 @@ export function ConnectionForm({
                                 : "border-border bg-background text-foreground hover:bg-muted"
                             }`}
                           >
-                            {spec.display_name} ({spec.connector_type})
-                            {spec.image_tier === "full" ? " [full]" : ""}
+                            {spec.display_name}
                           </button>
                         );
                       })}
@@ -692,11 +812,13 @@ export function ConnectionForm({
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div className="space-y-1">
-              <label className="text-xs font-medium block">连接名称 *</label>
+              <label className="text-xs font-medium block">
+                {tx("连接名称", "Connection Name")} *
+              </label>
               <Input
                 value={connName}
                 onChange={(e) => setConnName(e.target.value)}
-                placeholder="例如 demo_pg"
+                placeholder="demo_pg"
                 data-testid="connection-name-input"
               />
             </div>
@@ -710,17 +832,22 @@ export function ConnectionForm({
                   className="rounded border-border"
                   data-testid="allow-private-network-checkbox"
                 />
-                允许连接私有网络地址（DATA_ADMIN）
+                <span>
+                  {tx("允许连接私有网络地址", "Allow private network addresses")}
+                </span>
               </label>
             </div>
           </div>
 
-          {/* Non-secret dynamic fields from config_schema */}
+          {/* Non-secret dynamic fields */}
           <div className="space-y-2">
-            <div className="text-xs font-medium flex items-center justify-between">
-              <span>连接参数（{activeSpec.connector_type}）</span>
-              <span className="text-[11px] font-mono-tech text-muted-foreground">
-                支持同步模式: {activeSpec.supports_modes.join(" / ")}
+            <div className="text-xs font-medium flex flex-wrap items-center justify-between gap-2">
+              <span>
+                {tx("连接参数", "Parameters")} · {activeSpec.display_name}
+              </span>
+              <span className="text-[11px] text-muted-foreground">
+                {tx("支持模式", "Sync Modes")}:{" "}
+                {activeSpec.supports_modes.map((m) => tEnum(m)).join(" / ")}
               </span>
             </div>
 
@@ -729,15 +856,25 @@ export function ConnectionForm({
                 {nonSecretEntries.map(([field, prop]) => {
                   const isReq = requiredFields.has(field);
                   const val = configValues[field];
+                  const labelTitle = prop.title?.trim() || field;
+                  const showFieldCode =
+                    Boolean(prop.title) &&
+                    prop.title!.trim().toLowerCase() !==
+                      field.trim().toLowerCase();
+
                   return (
                     <div key={field} className="space-y-1">
                       <label className="text-xs text-muted-foreground block">
-                        {prop.title ?? field}{" "}
-                        <span className="font-mono-tech">({field})</span>
+                        {labelTitle}
+                        {showFieldCode && (
+                          <span className="ml-1 font-mono-tech text-[11px]">
+                            ({field})
+                          </span>
+                        )}
                         {isReq ? " *" : ""}
                       </label>
                       {prop.enum && prop.enum.length > 0 ? (
-                        <select
+                        <Select
                           value={String(val ?? "")}
                           onChange={(e) =>
                             setConfigValues((prev) => ({
@@ -745,16 +882,16 @@ export function ConnectionForm({
                               [field]: e.target.value,
                             }))
                           }
-                          className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs"
+                          className="w-full"
                           data-testid={`config-field-${field}`}
                         >
-                          <option value="">请选择</option>
+                          <option value="">-</option>
                           {prop.enum.map((opt) => (
                             <option key={String(opt)} value={String(opt)}>
                               {String(opt)}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       ) : prop.type === "boolean" ? (
                         <label className="inline-flex items-center gap-2 text-xs py-2 cursor-pointer">
                           <input
@@ -768,7 +905,7 @@ export function ConnectionForm({
                             }
                             data-testid={`config-field-${field}`}
                           />
-                          启用 {prop.title ?? field}
+                          <span>{labelTitle}</span>
                         </label>
                       ) : prop.type === "object" || prop.type === "array" ? (
                         <Textarea
@@ -786,7 +923,7 @@ export function ConnectionForm({
                               [field]: e.target.value,
                             }))
                           }
-                          placeholder={prop.description ?? "JSON 结构"}
+                          placeholder="{}"
                           className="font-mono-tech text-xs"
                           data-testid={`config-field-${field}`}
                         />
@@ -797,14 +934,20 @@ export function ConnectionForm({
                               ? "number"
                               : "text"
                           }
-                          value={val === undefined || val === null ? "" : String(val)}
+                          value={
+                            val === undefined || val === null ? "" : String(val)
+                          }
                           onChange={(e) =>
                             setConfigValues((prev) => ({
                               ...prev,
                               [field]: e.target.value,
                             }))
                           }
-                          placeholder={prop.description ?? field}
+                          placeholder={
+                            prop.default !== undefined
+                              ? String(prop.default)
+                              : field
+                          }
                           data-testid={`config-field-${field}`}
                         />
                       )}
@@ -815,7 +958,7 @@ export function ConnectionForm({
             ) : (
               <div className="space-y-1">
                 <label className="text-xs text-muted-foreground block">
-                  连接配置 JSON
+                  {tx("参数 JSON", "Config JSON")}
                 </label>
                 <Textarea
                   rows={3}
@@ -828,12 +971,12 @@ export function ConnectionForm({
             )}
           </div>
 
-          {/* Secret fields section: NEVER echoes plaintext */}
+          {/* Secret fields section */}
           {activeSpec.secret_fields.length > 0 && (
             <div className="space-y-2 rounded border border-border bg-background p-3">
               <div className="text-xs font-medium flex items-center gap-1.5">
                 <Lock className="h-3.5 w-3.5 text-xblue" />
-                加密秘密字段（仅单向提交至 Keyring，不回显明文）
+                <span>{tx("加密凭证", "Encrypted Credentials")}</span>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 {activeSpec.secret_fields.map((sf) => {
@@ -849,7 +992,7 @@ export function ConnectionForm({
                             variant="xblue"
                             data-testid={`secret-set-badge-${sf}`}
                           >
-                            已设置
+                            {tx("已设置", "Configured")}
                           </Badge>
                         )}
                       </div>
@@ -866,8 +1009,11 @@ export function ConnectionForm({
                         }
                         placeholder={
                           alreadySet
-                            ? "已设置（留空保持不变）"
-                            : `输入 ${sf} 秘密值`
+                            ? tx(
+                                "已设置（留空保持不变）",
+                                "Configured (leave blank to keep)"
+                              )
+                            : "••••••••"
                         }
                         data-testid={`secret-field-${sf}`}
                       />
@@ -883,7 +1029,9 @@ export function ConnectionForm({
                               }))
                             }
                           />
-                          清除已保存的 {sf}
+                          <span>
+                            {tx(`清除 ${sf}`, `Clear ${sf}`)}
+                          </span>
                         </label>
                       )}
                     </div>
@@ -896,14 +1044,10 @@ export function ConnectionForm({
           <div className="flex justify-end gap-2">
             <Button
               type="submit"
-              disabled={submitting}
+              disabled={submitting || !canDataAdmin}
               data-testid="connection-submit-btn"
             >
-              {submitting
-                ? "保存中..."
-                : editingConn
-                  ? "保存连接变更"
-                  : "创建连接"}
+              {submitting ? tx("保存中…", "Saving…") : tx("保存", "Save")}
             </Button>
           </div>
         </form>
@@ -917,28 +1061,28 @@ export function ConnectionForm({
         >
           <div className="flex items-center justify-between">
             <div className="text-xs font-semibold">
-              源端对象发现 · {discoveringConn.name}
+              {tx("源端对象探查", "Discovered Objects")} · {discoveringConn.name}
             </div>
             <Button
               type="button"
               variant="ghost"
-              className="px-2 py-1 text-xs"
+              size="sm"
               onClick={() => {
                 setDiscoveringConn(null);
                 setSourcePreview(null);
               }}
             >
-              收起
+              {tx("收起", "Close")}
             </Button>
           </div>
 
           {discoverLoading ? (
             <div className="text-xs text-muted-foreground py-3">
-              正在探查源端表 / 集合 / 主题结构...
+              {tx("探查中…", "Discovering…")}
             </div>
           ) : discoveredObjects.length === 0 ? (
             <div className="text-xs text-muted-foreground py-2">
-              未发现可导入对象。
+              {tx("未发现可导入对象", "No importable objects found")}
             </div>
           ) : (
             <div className="space-y-2">
@@ -957,15 +1101,17 @@ export function ConnectionForm({
                     className="rounded border border-border bg-background p-2.5 space-y-2 text-xs"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="font-mono-tech font-medium">
                           {obj.display_name}
                         </span>
-                        <Badge variant="outline">{obj.source_kind}</Badge>
-                        <span className="text-muted-foreground">
-                          {obj.columns.length} 列
+                        <Badge variant="outline">
+                          {formatSourceKind(obj.source_kind)}
+                        </Badge>
+                        <span className="text-muted-foreground font-mono-tech">
+                          {fmtNum(obj.columns.length, 0)} {tx("列", "cols")}
                           {obj.estimated_rows !== null
-                            ? ` · 约 ${obj.estimated_rows} 行`
+                            ? ` · ~${fmtNum(obj.estimated_rows, 0)} ${tx("行", "rows")}`
                             : ""}
                         </span>
                       </div>
@@ -973,18 +1119,19 @@ export function ConnectionForm({
                         <Button
                           type="button"
                           variant="outline"
-                          className="px-2 py-1 text-[11px]"
+                          size="sm"
                           onClick={() =>
                             void handlePreviewObject(discoveringConn, obj)
                           }
                         >
                           <Eye className="h-3 w-3" />
-                          源表预览
+                          {tx("预览", "Preview")}
                         </Button>
                         <Button
                           type="button"
                           variant="primary"
-                          className="px-2.5 py-1 text-[11px]"
+                          size="sm"
+                          disabled={!canDataSync && !canDataAdmin}
                           onClick={() => {
                             setQuickCreateIdx(idx);
                             const normalized = obj.display_name
@@ -992,11 +1139,13 @@ export function ConnectionForm({
                               .replace(/[^a-z0-9_]+/g, "_")
                               .replace(/^[^a-z]+/, "ds_");
                             setNewDatasetName(normalized.slice(0, 48));
-                            setNewDatasetSyncMode(supportedModes[0] ?? "SNAPSHOT");
+                            setNewDatasetSyncMode(
+                              supportedModes[0] ?? "SNAPSHOT"
+                            );
                           }}
                         >
                           <Plus className="h-3 w-3" />
-                          注册为数据集
+                          {tx("注册数据集", "Register")}
                         </Button>
                       </div>
                     </div>
@@ -1006,14 +1155,13 @@ export function ConnectionForm({
                         <Input
                           value={newDatasetName}
                           onChange={(e) => setNewDatasetName(e.target.value)}
-                          placeholder="数据集标识 (^[a-z][a-z0-9_]*$)"
+                          placeholder="demo_orders"
                         />
-                        <select
+                        <Select
                           value={newDatasetSyncMode}
                           onChange={(e) =>
                             setNewDatasetSyncMode(e.target.value as SyncMode)
                           }
-                          className="h-9 rounded-md border border-input bg-background px-2 text-xs"
                         >
                           {(["SNAPSHOT", "APPEND", "UPSERT"] as const).map(
                             (m) => (
@@ -1022,28 +1170,26 @@ export function ConnectionForm({
                                 value={m}
                                 disabled={!supportedModes.includes(m)}
                               >
-                                {m}
-                                {!supportedModes.includes(m) ? " (不支持)" : ""}
+                                {tEnum(m)}
                               </option>
                             )
                           )}
-                        </select>
-                        <select
+                        </Select>
+                        <Select
                           value={newDatasetPolicy}
                           onChange={(e) =>
                             setNewDatasetPolicy(e.target.value as SchemaPolicy)
                           }
-                          className="h-9 rounded-md border border-input bg-background px-2 text-xs"
                         >
-                          <option value="ADDITIVE">Schema: ADDITIVE</option>
-                          <option value="STRICT">Schema: STRICT</option>
-                          <option value="EVOLVE">Schema: EVOLVE</option>
-                        </select>
+                          <option value="ADDITIVE">{tEnum("ADDITIVE")}</option>
+                          <option value="STRICT">{tEnum("STRICT")}</option>
+                          <option value="EVOLVE">{tEnum("EVOLVE")}</option>
+                        </Select>
                         <div className="flex gap-1.5">
                           <Input
                             value={newDatasetCron}
                             onChange={(e) => setNewDatasetCron(e.target.value)}
-                            placeholder="Cron (可选)"
+                            placeholder="0 */6 * * *"
                           />
                           <Button
                             type="button"
@@ -1051,7 +1197,7 @@ export function ConnectionForm({
                               void handleCreateDatasetFromObject(obj)
                             }
                           >
-                            确定
+                            {tx("保存", "Save")}
                           </Button>
                         </div>
                       </div>
@@ -1065,16 +1211,16 @@ export function ConnectionForm({
           {sourcePreview && (
             <div className="space-y-1.5 pt-2 border-t border-border">
               <div className="text-xs font-medium">
-                源数据抽样预览 · {sourcePreview.title}
+                {tx("源表预览", "Source Preview")} · {sourcePreview.title}
               </div>
-              <div className="overflow-x-auto rounded border border-border bg-background">
+              <div className="max-h-60 overflow-auto rounded border border-border bg-background">
                 <table className="w-full text-left text-xs">
-                  <thead className="bg-muted border-b border-border">
+                  <thead className="sticky top-0 bg-muted border-b border-border">
                     <tr>
                       {sourcePreview.data.columns.map((col) => (
                         <th
                           key={col.name}
-                          className="px-2.5 py-1.5 font-mono-tech font-medium"
+                          className="px-2.5 py-1.5 font-mono-tech font-medium whitespace-nowrap"
                         >
                           {col.name}
                         </th>
@@ -1082,12 +1228,15 @@ export function ConnectionForm({
                     </tr>
                   </thead>
                   <tbody>
-                    {sourcePreview.data.rows.slice(0, 5).map((row, rIdx) => (
-                      <tr key={rIdx} className="border-b border-border last:border-0">
+                    {sourcePreview.data.rows.slice(0, 10).map((row, rIdx) => (
+                      <tr
+                        key={rIdx}
+                        className="border-b border-border last:border-0"
+                      >
                         {sourcePreview.data.columns.map((col) => (
                           <td
                             key={col.name}
-                            className="px-2.5 py-1.5 font-mono-tech"
+                            className="px-2.5 py-1.5 font-mono-tech whitespace-nowrap"
                           >
                             {String(row[col.name] ?? "")}
                           </td>
@@ -1101,6 +1250,18 @@ export function ConnectionForm({
           )}
         </div>
       )}
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteConn)}
+        onClose={() => setPendingDeleteConn(null)}
+        onConfirm={() => void handleConfirmDelete()}
+        loading={deletingConn}
+        title={tx("删除数据源连接", "Delete Connection")}
+        description={tx(
+          `确定删除连接「${pendingDeleteConn?.name ?? ""}」及其加密凭证？`,
+          `Delete connection "${pendingDeleteConn?.name ?? ""}" and its encrypted credentials?`
+        )}
+      />
     </Card>
   );
 }

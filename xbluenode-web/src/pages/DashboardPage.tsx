@@ -1,15 +1,31 @@
-import { useEffect, useState } from "react";
-import { RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import {
+  Database,
+  FileText,
+  GitBranch,
+  Layers,
+  RefreshCw,
+  Sparkles,
+} from "lucide-react";
+import { useI18n } from "@/i18n";
 import { api, type HealthInfo, type SystemStats } from "@/lib/api";
-import { Badge, Button, Card } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  PageHeader,
+  StatCard,
+  StatusBadge,
+} from "@/components/ui/primitives";
 
 export function DashboardPage() {
+  const { tx, fmtNum, fmtTime } = useI18n();
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
-  const load = async () => {
+  const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -21,97 +37,203 @@ export function DashboardPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     void load();
-  }, []);
+  }, [load]);
+
+  const serviceStatus = health
+    ? health.status.toLowerCase() === "ok"
+      ? "ONLINE"
+      : "OFFLINE"
+    : undefined;
+
+  const detectedDims = stats?.embedding_dims?.length
+    ? stats.embedding_dims.map((d) => `${fmtNum(d, 0)}d`).join(", ")
+    : health?.embedding_dim
+      ? `${fmtNum(health.embedding_dim, 0)}d`
+      : tx("待探测", "Pending");
 
   const metrics = [
-    { label: "文档节点 (Doc)", value: stats?.doc_count ?? 0 },
-    { label: "段落节点 (Para)", value: stats?.para_count ?? 0 },
-    { label: "实体节点 (Entity)", value: stats?.entity_count ?? 0 },
-    { label: "超图关联边 (Edge)", value: stats?.edge_count ?? 0 },
-    { label: "向量索引 (Embedding)", value: stats?.embedding_count ?? 0 },
+    {
+      key: "docs",
+      label: tx("文档节点", "Documents"),
+      value: fmtNum(stats?.doc_count ?? 0, 0),
+      icon: <FileText className="h-3.5 w-3.5" />,
+    },
+    {
+      key: "paras",
+      label: tx("段落节点", "Paragraphs"),
+      value: fmtNum(stats?.para_count ?? 0, 0),
+      icon: <Layers className="h-3.5 w-3.5" />,
+    },
+    {
+      key: "entities",
+      label: tx("实体节点", "Entities"),
+      value: fmtNum(stats?.entity_count ?? 0, 0),
+      icon: <Database className="h-3.5 w-3.5" />,
+    },
+    {
+      key: "edges",
+      label: tx("超图关联边", "Hyperedges"),
+      value: fmtNum(stats?.edge_count ?? 0, 0),
+      icon: <GitBranch className="h-3.5 w-3.5" />,
+    },
+    {
+      key: "embeddings",
+      label: tx("向量索引", "Embeddings"),
+      value: fmtNum(stats?.embedding_count ?? 0, 0),
+      icon: <Sparkles className="h-3.5 w-3.5" />,
+    },
+  ];
+
+  const recallChannels = [
+    {
+      key: "vector",
+      title: tx("语义向量检索", "Vector Similarity"),
+      desc: tx("多维稠密向量 HNSW 近邻匹配", "Multi-dimensional HNSW dense recall"),
+    },
+    {
+      key: "bm25",
+      title: tx("全文词法检索", "BM25 Lexical"),
+      desc: tx("倒排分词索引与词频权重匹配", "Inverted index term-frequency scoring"),
+    },
+    {
+      key: "entity",
+      title: tx("种子实体桥接", "Entity Linking"),
+      desc: tx("跨文档同义实体与超边关联对齐", "Cross-document seed entity alignment"),
+    },
+    {
+      key: "context",
+      title: tx("相邻上下文扩展", "Context Window"),
+      desc: tx("命中段落前后相邻章节补全", "Adjacent paragraph sequence expansion"),
+    },
+    {
+      key: "multihop",
+      title: tx("多跳关系推理", "Multi-Hop Traversal"),
+      desc: tx("实体关系子图多跳路径遍历", "Multi-hop entity relation path reasoning"),
+    },
+    {
+      key: "rrf",
+      title: tx("倒数秩融合重排", "RRF Rank Fusion"),
+      desc: tx("多通道统一去重与融合排序 (k = 60)", "Unified reciprocal rank fusion (k = 60)"),
+    },
   ];
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between border-b border-border pb-4">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">系统概览</h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            xBlueNode 动态超图底座与 AxPoint 多路检索引擎实时运行态势
-          </p>
-        </div>
-        <Button variant="outline" onClick={() => void load()} disabled={loading}>
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-          刷新状态
-        </Button>
-      </div>
+    <div className="space-y-5" data-testid="dashboard-page">
+      <PageHeader
+        title={tx("系统概览", "System Overview")}
+        badges={
+          <>
+            {serviceStatus && <StatusBadge status={serviceStatus} />}
+            {stats?.timestamp && (
+              <Badge variant="outline">{fmtTime(stats.timestamp, true)}</Badge>
+            )}
+          </>
+        }
+        actions={
+          <Button
+            variant="outline"
+            onClick={() => void load()}
+            disabled={loading}
+            data-testid="dashboard-refresh-btn"
+          >
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
+            />
+            {tx("刷新", "Refresh")}
+          </Button>
+        }
+      />
 
       {error && (
-        <Card className="p-3.5 border-foreground/30 bg-muted/40 text-xs">
-          <span className="font-mono-tech font-semibold">连接提示：</span>
-          {error}（请确认 PostgreSQL 与 axpoint-core 已启动）
+        <Card className="p-3.5 border-red-500/30 bg-red-500/5 text-xs">
+          <span className="font-semibold text-red-600 dark:text-red-400">
+            {tx("服务连接异常：", "Service unreachable: ")}
+          </span>
+          <span>{error}</span>
         </Card>
       )}
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         {metrics.map((m) => (
-          <Card key={m.label} className="p-4">
-            <div className="text-[11px] text-muted-foreground">{m.label}</div>
-            <div className="text-2xl font-semibold font-mono-tech mt-2 tracking-tight">
-              {m.value.toLocaleString()}
-            </div>
-          </Card>
+          <StatCard
+            key={m.key}
+            label={m.label}
+            value={m.value}
+            icon={m.icon}
+          />
         ))}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <Card className="p-5 space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-medium">AxPoint Core 服务状态</h2>
-            <Badge variant={health?.status === "ok" ? "xblue" : "outline"}>
-              {health?.status === "ok" ? "ONLINE" : "OFFLINE"}
-            </Badge>
+        <Card className="p-4 space-y-3">
+          <div className="flex items-center justify-between border-b border-border pb-2.5">
+            <h2 className="text-sm font-semibold">
+              {tx("核心服务运行态", "Core Service Runtime")}
+            </h2>
+            <StatusBadge status={serviceStatus ?? "OFFLINE"} />
           </div>
+
           <div className="space-y-2 text-xs">
-            <div className="flex justify-between py-1.5 border-b border-border">
-              <span className="text-muted-foreground">核心引擎</span>
-              <span className="font-mono-tech">Rust 1.100.0 / Axum</span>
+            <div className="flex items-center justify-between py-1.5 border-b border-border/70">
+              <span className="text-muted-foreground">
+                {tx("服务标识", "Service")}
+              </span>
+              <span className="font-mono-tech font-medium">
+                {health?.service || "axpoint-core"}
+              </span>
             </div>
-            <div className="flex justify-between py-1.5 border-b border-border">
-              <span className="text-muted-foreground">Embedding 模型</span>
-              <span className="font-mono-tech">{health?.embedding_model ?? "-"}</span>
+            <div className="flex items-center justify-between py-1.5 border-b border-border/70">
+              <span className="text-muted-foreground">
+                {tx("向量模型", "Embedding Model")}
+              </span>
+              <span className="font-mono-tech font-medium">
+                {health?.embedding_model || "-"}
+              </span>
             </div>
-            <div className="flex justify-between py-1.5">
-              <span className="text-muted-foreground">已探测向量维度</span>
-              <span className="font-mono-tech">
-                {stats?.embedding_dims.length
-                  ? stats.embedding_dims.map((d) => `${d}d`).join(", ")
-                  : health?.embedding_dim
-                    ? `${health.embedding_dim}d`
-                    : "自适应 (待首次写入探测)"}
+            <div className="flex items-center justify-between py-1.5 border-b border-border/70">
+              <span className="text-muted-foreground">
+                {tx("向量维度", "Vector Dimensions")}
+              </span>
+              <span className="font-mono-tech font-medium">{detectedDims}</span>
+            </div>
+            <div className="flex items-center justify-between py-1.5">
+              <span className="text-muted-foreground">
+                {tx("最近统计时间", "Last Snapshot")}
+              </span>
+              <span className="font-mono-tech text-muted-foreground">
+                {fmtTime(stats?.timestamp)}
               </span>
             </div>
           </div>
         </Card>
 
-        <Card className="p-5 space-y-3">
-          <h2 className="text-sm font-medium">五路并行召回架构</h2>
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            {[
-              ["1. Vector", "pgvector 多维条件 HNSW"],
-              ["2. BM25", "PostgreSQL tsvector + 词频"],
-              ["3. Entity Link", "种子实体跨文档桥接"],
-              ["4. Context", "NEXT_PARA 相邻段落扩展"],
-              ["5. Multi-Hop", "RELATES 实体多跳路径推理"],
-              ["RRF Fusion", "k=60 倒数秩融合排序"],
-            ].map(([name, desc]) => (
-              <div key={name} className="rounded border border-border p-2.5">
-                <div className="font-mono-tech font-medium text-[11px]">{name}</div>
-                <div className="text-muted-foreground text-[11px] mt-0.5">{desc}</div>
+        <Card className="p-4 space-y-3">
+          <div className="flex items-center justify-between border-b border-border pb-2.5">
+            <h2 className="text-sm font-semibold">
+              {tx("五路融合召回架构", "5-Way Recall Channels")}
+            </h2>
+            <Badge variant="xblue">5 + RRF</Badge>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+            {recallChannels.map((ch, idx) => (
+              <div
+                key={ch.key}
+                className="rounded border border-border bg-background/60 p-2.5 space-y-0.5"
+              >
+                <div className="flex items-center gap-1.5 font-medium text-foreground">
+                  <span className="font-mono-tech text-[10px] text-xblue">
+                    {idx < 5 ? `0${idx + 1}` : "RRF"}
+                  </span>
+                  <span>{ch.title}</span>
+                </div>
+                <div className="text-[11px] text-muted-foreground leading-snug">
+                  {ch.desc}
+                </div>
               </div>
             ))}
           </div>

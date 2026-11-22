@@ -1,15 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  CheckCircle2,
   Database,
   FileText,
   FileUp,
   Loader2,
   RefreshCw,
-  XCircle,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import { axhubApi, type UploadRecord } from "@/lib/api/axhub";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { usePrincipal } from "@/lib/permissions";
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Select,
+  StatusBadge,
+} from "@/components/ui/primitives";
 
 export interface UploadDropzoneProps {
   onCommitted?: () => Promise<void>;
@@ -26,7 +33,13 @@ export function UploadDropzone({
   onCommitted,
   onSelectDatasetId,
 }: UploadDropzoneProps) {
+  const { tx, fmtNum, fmtTime } = useI18n();
+  const { can } = usePrincipal();
+  const canSync = can("DATA_SYNC");
+
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const dragDepthRef = useRef(0);
+
   const [dragging, setDragging] = useState(false);
   const [toKnowledge, setToKnowledge] = useState(true);
   const [toDatasets, setToDatasets] = useState(true);
@@ -41,6 +54,7 @@ export function UploadDropzone({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const handleFiles = async (fileList: FileList | File[]) => {
+    if (!canSync) return;
     const files = Array.from(fileList);
     if (files.length === 0) return;
 
@@ -84,7 +98,6 @@ export function UploadDropzone({
     }
   };
 
-  // Poll PENDING / PARSED uploads until COMMITTED or FAILED
   useEffect(() => {
     const activeIds = uploads
       .filter((u) => u.status === "PENDING" || u.status === "PARSED")
@@ -141,27 +154,41 @@ export function UploadDropzone({
     }
   };
 
+  const renderUploadStatus = (rec: UploadRecord) => {
+    if (rec.status === "PARSED") {
+      return (
+        <Badge variant="xblue" className="gap-1">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          {tx("已解析", "Parsed")}
+        </Badge>
+      );
+    }
+    return <StatusBadge status={rec.status} />;
+  };
+
   return (
     <Card className="p-4 space-y-4" data-testid="upload-dropzone-panel">
-      <div className="border-b border-border pb-3">
-        <h2 className="text-sm font-semibold">双轨文件解析与一键入湖</h2>
-        <p className="text-xs text-muted-foreground">
-          支持 CSV / TSV / XLSX / XLS / DOCX / PPTX / PDF / JSON / JSONL / XML / LOG 等多格式文件，自动完成表格轨写 DuckLake 数据集与文本轨写超图知识库
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
+        <h2 className="text-sm font-semibold">
+          {tx("双轨文件解析入湖", "Dual-Track File Ingestion")}
+        </h2>
+        <Badge variant="outline">
+          CSV · XLSX · DOCX · PDF · JSON · LOG
+        </Badge>
       </div>
 
       {errorMsg && (
         <div
-          className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs flex items-center justify-between"
+          className="rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs flex items-center justify-between"
           data-testid="upload-error-banner"
         >
-          <span>{errorMsg}</span>
+          <span className="text-red-600 dark:text-red-400">{errorMsg}</span>
           <button
             type="button"
             className="text-muted-foreground hover:text-foreground cursor-pointer"
             onClick={() => setErrorMsg(null)}
           >
-            关闭
+            {tx("关闭", "Dismiss")}
           </button>
         </div>
       )}
@@ -169,28 +196,34 @@ export function UploadDropzone({
       {/* Upload Options */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
         <div className="space-y-1">
-          <label className="text-muted-foreground block">数据集前缀（可选）</label>
+          <label className="text-muted-foreground block">
+            {tx("数据集前缀", "Dataset Prefix")}
+          </label>
           <Input
             value={datasetPrefix}
+            disabled={!canSync}
             onChange={(e) => setDatasetPrefix(e.target.value)}
-            placeholder="默认按文件名规范化"
+            placeholder="supply_chain"
             data-testid="upload-prefix-input"
           />
         </div>
 
         <div className="space-y-1">
-          <label className="text-muted-foreground block">日志格式提示</label>
-          <select
+          <label className="text-muted-foreground block">
+            {tx("日志格式", "Log Format")}
+          </label>
+          <Select
             value={logFormat}
+            disabled={!canSync}
             onChange={(e) => setLogFormat(e.target.value)}
-            className="flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs"
+            className="w-full"
           >
-            <option value="">自动探测</option>
+            <option value="">{tx("自动识别", "Auto-detect")}</option>
             <option value="nginx">Nginx Combined</option>
-            <option value="log4j">Java / Log4j 多行堆栈</option>
+            <option value="log4j">Log4j</option>
             <option value="syslog">RFC 3164 Syslog</option>
-            <option value="json">容器 JSON 日志</option>
-          </select>
+            <option value="json">JSON Lines</option>
+          </Select>
         </div>
 
         <div className="flex flex-col justify-center gap-1.5 pt-2">
@@ -198,19 +231,21 @@ export function UploadDropzone({
             <input
               type="checkbox"
               checked={toDatasets}
+              disabled={!canSync}
               onChange={(e) => setToDatasets(e.target.checked)}
               data-testid="upload-to-datasets"
             />
-            表格轨写入 DuckLake 数据集
+            <span>{tx("写入结构化数据集", "Create Lake Datasets")}</span>
           </label>
           <label className="inline-flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
               checked={toKnowledge}
+              disabled={!canSync}
               onChange={(e) => setToKnowledge(e.target.checked)}
               data-testid="upload-to-knowledge"
             />
-            文本轨写入超图知识库
+            <span>{tx("写入超图知识库", "Ingest Knowledge Graph")}</span>
           </label>
         </div>
 
@@ -219,40 +254,65 @@ export function UploadDropzone({
             <input
               type="checkbox"
               checked={jsonExplode}
+              disabled={!canSync}
               onChange={(e) => setJsonExplode(e.target.checked)}
             />
-            嵌套 JSON 数组拆分子表
+            <span>{tx("嵌套数组拆分子表", "Explode Nested Arrays")}</span>
           </label>
           <label className="inline-flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
               checked={ocrEnabled}
+              disabled={!canSync}
               onChange={(e) => setOcrEnabled(e.target.checked)}
             />
-            启用扫描件 OCR 识别
+            <span>{tx("启用光学字符识别", "Enable OCR")}</span>
           </label>
         </div>
       </div>
 
       {/* Dropzone */}
       <div
-        onDragOver={(e) => {
+        onDragEnter={(e) => {
           e.preventDefault();
+          if (!canSync) return;
+          dragDepthRef.current += 1;
           setDragging(true);
         }}
-        onDragLeave={() => setDragging(false)}
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (!canSync) return;
+          e.dataTransfer.dropEffect = "copy";
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+          if (
+            dragDepthRef.current === 0 ||
+            !e.currentTarget.contains(e.relatedTarget as Node | null)
+          ) {
+            dragDepthRef.current = 0;
+            setDragging(false);
+          }
+        }}
         onDrop={(e) => {
           e.preventDefault();
+          dragDepthRef.current = 0;
           setDragging(false);
+          if (!canSync) return;
           if (e.dataTransfer.files.length > 0) {
             void handleFiles(e.dataTransfer.files);
           }
         }}
-        onClick={() => fileInputRef.current?.click()}
-        className={`rounded-md border-2 border-dashed p-8 text-center transition-colors cursor-pointer ${
-          dragging
-            ? "border-xblue bg-xblue-soft"
-            : "border-border hover:border-foreground/40 bg-muted/20"
+        onClick={() => {
+          if (canSync) fileInputRef.current?.click();
+        }}
+        className={`rounded-md border-2 border-dashed p-8 text-center transition-colors ${
+          !canSync
+            ? "border-border bg-muted/20 opacity-60 cursor-not-allowed"
+            : dragging
+              ? "border-xblue bg-xblue-soft/30 cursor-copy"
+              : "border-border hover:border-foreground/40 bg-muted/20 cursor-pointer"
         }`}
         data-testid="upload-dropzone"
       >
@@ -260,6 +320,7 @@ export function UploadDropzone({
           ref={fileInputRef}
           type="file"
           multiple
+          disabled={!canSync}
           className="hidden"
           onChange={(e) => {
             if (e.target.files) {
@@ -272,18 +333,20 @@ export function UploadDropzone({
         <FileUp className="h-6 w-6 mx-auto text-xblue mb-2" />
         <div className="text-xs font-medium">
           {uploading
-            ? "正在流式上传并入队解析任务..."
-            : "拖拽文件到此处，或点击选择本地文件上传"}
+            ? tx("上传解析中…", "Uploading & parsing…")
+            : tx("拖拽文件至此，或浏览本地文件", "Drop files here or browse")}
         </div>
         <div className="text-[11px] text-muted-foreground mt-1">
-          同租户相同 SHA-256 已提交文件将自动幂等复用已有资产
+          {tx("SHA-256 哈希自动幂等去重", "Automatic SHA-256 deduplication")}
         </div>
       </div>
 
       {/* Upload Records */}
       {uploads.length > 0 && (
         <div className="space-y-2" data-testid="upload-records-list">
-          <div className="text-xs font-medium">上传与入湖任务追踪 ({uploads.length})</div>
+          <div className="text-xs font-medium">
+            {tx("入湖任务记录", "Upload Tasks")} ({fmtNum(uploads.length, 0)})
+          </div>
           {uploads.map((rec) => (
             <div
               key={rec.id}
@@ -291,39 +354,32 @@ export function UploadDropzone({
               data-testid={`upload-record-${rec.filename}`}
             >
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <span className="font-medium">{rec.filename}</span>
                   <span className="font-mono-tech text-muted-foreground">
-                    {formatBytes(rec.size_bytes)} · sha256:{rec.sha256.slice(0, 10)}
+                    {formatBytes(rec.size_bytes)} · {rec.sha256.slice(0, 10)}
                   </span>
                   {dedupFlags[rec.id] && (
-                    <Badge variant="outline">SHA-256 去重命中</Badge>
+                    <Badge variant="outline">
+                      {tx("幂等复用", "Deduplicated")}
+                    </Badge>
                   )}
                 </div>
 
                 <div className="flex items-center gap-2">
-                  {rec.status === "COMMITTED" ? (
-                    <Badge variant="xblue" className="gap-1">
-                      <CheckCircle2 className="h-3 w-3" />
-                      COMMITTED
-                    </Badge>
-                  ) : rec.status === "FAILED" ? (
-                    <Badge variant="outline" className="gap-1">
-                      <XCircle className="h-3 w-3" />
-                      FAILED {rec.error_code ? `(${rec.error_code})` : ""}
-                    </Badge>
-                  ) : (
-                    <Badge variant="neutral" className="gap-1">
-                      <Loader2 className="h-3 w-3 animate-spin" />
-                      {rec.status}
-                    </Badge>
+                  {renderUploadStatus(rec)}
+                  {rec.error_code && (
+                    <Badge variant="danger">{rec.error_code}</Badge>
                   )}
-
+                  <span className="font-mono-tech text-[11px] text-muted-foreground">
+                    {fmtTime(rec.created_at, true)}
+                  </span>
                   <Button
                     type="button"
                     variant="ghost"
-                    className="px-2 py-1 text-[11px]"
+                    size="sm"
                     onClick={() => void refreshSingle(rec.id)}
+                    aria-label={tx("刷新", "Refresh")}
                   >
                     <RefreshCw className="h-3 w-3" />
                   </Button>
@@ -333,9 +389,10 @@ export function UploadDropzone({
               <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
                 <span className="inline-flex items-center gap-1">
                   <Database className="h-3 w-3 text-xblue" />
-                  生成数据集 ({rec.dataset_ids.length}):
+                  {tx("数据集", "Datasets")} ({fmtNum(rec.dataset_ids.length, 0)}
+                  ):
                   {rec.dataset_ids.length === 0 ? (
-                    <span>暂无</span>
+                    <span>-</span>
                   ) : (
                     rec.dataset_ids.map((dsId) => (
                       <button
@@ -352,9 +409,9 @@ export function UploadDropzone({
 
                 <span className="inline-flex items-center gap-1">
                   <FileText className="h-3 w-3 text-xblue" />
-                  关联知识库文档:{" "}
+                  {tx("知识文档", "Document")}:{" "}
                   <span className="font-mono-tech text-foreground">
-                    {rec.doc_id ?? "未生成"}
+                    {rec.doc_id ? rec.doc_id.slice(0, 8) : "-"}
                   </span>
                 </span>
               </div>

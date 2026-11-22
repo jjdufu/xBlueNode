@@ -7,6 +7,7 @@ import {
   type ScenarioRecord,
 } from "@/lib/api/axsim";
 import { Badge, Button, Card } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
 
 export interface ReplayTimelineProps {
   scenario: ScenarioRecord | null;
@@ -19,6 +20,7 @@ export function ReplayTimeline({
   nodes,
   onCheckpointChange,
 }: ReplayTimelineProps) {
+  const { tx, tEnum, fmtNum } = useI18n();
   const [checkpoints, setCheckpoints] = useState<Checkpoint[]>([]);
   const [stepIdx, setStepIdx] = useState<number>(0);
   const [playing, setPlaying] = useState(false);
@@ -108,11 +110,7 @@ export function ReplayTimeline({
   }, [checkpoints]);
 
   const maxBar = useMemo(
-    () =>
-      Math.max(
-        1,
-        ...sparklineStats.map((s) => s.changedCount)
-      ),
+    () => Math.max(1, ...sparklineStats.map((s) => s.changedCount)),
     [sparklineStats]
   );
 
@@ -127,7 +125,9 @@ export function ReplayTimeline({
       stepVal: number;
       delta: number | null;
     }> = [];
-    for (const [nodeId, metrics] of Object.entries(activeCheckpoint.changes ?? {})) {
+    for (const [nodeId, metrics] of Object.entries(
+      activeCheckpoint.changes ?? {}
+    )) {
       const node = nodeMap.get(nodeId);
       for (const [metric, val] of Object.entries(metrics)) {
         const baseVal =
@@ -152,14 +152,53 @@ export function ReplayTimeline({
     return null;
   }
 
+  const modeCode = scenario.params?.mode ?? "STEADY";
+  const isSingleOrEmpty = checkpoints.length <= 1;
+
+  // Compact steady-state summary bar when STEADY or single checkpoint (t=0)
+  if (!loading && isSingleOrEmpty) {
+    return (
+      <Card
+        className="px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs"
+        data-testid="replay-timeline-card"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium">
+            {tx("传导回放", "Propagation Replay")}
+          </span>
+          <Badge variant="outline">{tEnum(modeCode)}</Badge>
+          {activeCheckpoint && (
+            <Badge variant="xblue" data-testid="replay-current-step-badge">
+              t = {activeCheckpoint.seq} · {activeCheckpoint.label}
+            </Badge>
+          )}
+          {scenario.result && (
+            <span className="font-mono-tech text-[11px] text-muted-foreground">
+              {tx(
+                `收敛轮次 ${scenario.result.iterations} · 受影响节点 ${scenario.result.affected_count}`,
+                `Iterations ${scenario.result.iterations} · Affected ${scenario.result.affected_count}`
+              )}
+            </span>
+          )}
+        </div>
+        <span className="text-[11px] text-muted-foreground">
+          {tx(
+            "稳态终值已输出；切换「分步演化」可按时间步回放传导波次",
+            "Steady-state equilibrium reached; use Time-Stepped mode to replay waves"
+          )}
+        </span>
+      </Card>
+    );
+  }
+
   return (
     <Card className="p-4 space-y-3" data-testid="replay-timeline-card">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2">
-          <h3 className="text-sm font-medium">传导检查点回放时间轴</h3>
-          <Badge variant="outline">
-            {scenario.params?.mode ?? "STEADY"}
-          </Badge>
+          <h3 className="text-sm font-medium">
+            {tx("传导检查点回放", "Propagation Replay")}
+          </h3>
+          <Badge variant="outline">{tEnum(modeCode)}</Badge>
           {activeCheckpoint && (
             <Badge variant="xblue" data-testid="replay-current-step-badge">
               t = {activeCheckpoint.seq} · {activeCheckpoint.label}
@@ -171,33 +210,35 @@ export function ReplayTimeline({
           <Button
             type="button"
             variant="outline"
+            size="sm"
             className="h-7 px-2"
             onClick={() => {
               setPlaying(false);
               setStepIdx(0);
             }}
             disabled={checkpoints.length === 0 || stepIdx === 0}
-            aria-label="回到起点"
+            aria-label={tx("回到起点", "First step")}
           >
             <RotateCcw className="h-3.5 w-3.5" />
           </Button>
           <Button
             type="button"
             variant="outline"
+            size="sm"
             className="h-7 px-2"
             onClick={() => {
               setPlaying(false);
               setStepIdx((i) => Math.max(0, i - 1));
             }}
             disabled={checkpoints.length === 0 || stepIdx <= 0}
-            aria-label="上一步"
+            aria-label={tx("上一步", "Previous step")}
           >
             <SkipBack className="h-3.5 w-3.5" />
           </Button>
           <Button
             type="button"
             variant={playing ? "outline" : "primary"}
-            className="h-7 px-2.5 text-xs"
+            size="sm"
             onClick={() => {
               if (!playing && stepIdx >= checkpoints.length - 1) {
                 setStepIdx(0);
@@ -210,18 +251,19 @@ export function ReplayTimeline({
             {playing ? (
               <>
                 <Pause className="h-3.5 w-3.5" />
-                暂停
+                {tx("暂停", "Pause")}
               </>
             ) : (
               <>
                 <Play className="h-3.5 w-3.5" />
-                播放
+                {tx("播放", "Play")}
               </>
             )}
           </Button>
           <Button
             type="button"
             variant="outline"
+            size="sm"
             className="h-7 px-2"
             onClick={() => {
               setPlaying(false);
@@ -230,7 +272,7 @@ export function ReplayTimeline({
             disabled={
               checkpoints.length === 0 || stepIdx >= checkpoints.length - 1
             }
-            aria-label="下一步"
+            aria-label={tx("下一步", "Next step")}
           >
             <SkipForward className="h-3.5 w-3.5" />
           </Button>
@@ -238,10 +280,8 @@ export function ReplayTimeline({
       </div>
 
       {loading ? (
-        <div className="py-4 text-xs text-muted-foreground">加载检查点序列中...</div>
-      ) : checkpoints.length === 0 ? (
         <div className="py-3 text-xs text-muted-foreground">
-          当前场景暂无分步检查点（切换为 STEPPED 模式运行后可按时间步回放传导波次）
+          {tx("加载检查点序列中…", "Loading checkpoints…")}
         </div>
       ) : (
         <div className="space-y-3">
@@ -280,10 +320,10 @@ export function ReplayTimeline({
           </div>
 
           {/* Sparkline bars per checkpoint */}
-          <div className="flex items-end gap-1.5 h-12 rounded border border-border bg-muted/20 px-2.5 py-1.5">
+          <div className="flex items-end gap-1.5 h-10 rounded border border-border bg-muted/20 px-2.5 py-1.5">
             {sparklineStats.map((st, idx) => {
               const heightPct = Math.max(
-                15,
+                18,
                 Math.round((st.changedCount / maxBar) * 100)
               );
               return (
@@ -294,7 +334,10 @@ export function ReplayTimeline({
                     setPlaying(false);
                     setStepIdx(idx);
                   }}
-                  title={`${st.label}: ${st.changedCount} 项变化`}
+                  title={tx(
+                    `${st.label}: ${st.changedCount} 项变化`,
+                    `${st.label}: ${st.changedCount} changes`
+                  )}
                   className={`flex-1 rounded-t transition-colors cursor-pointer ${
                     idx === stepIdx
                       ? "bg-xblue"
@@ -309,11 +352,12 @@ export function ReplayTimeline({
           {/* Step diff readout */}
           <div className="space-y-1.5">
             <div className="text-[11px] font-medium text-muted-foreground">
-              步长变更快照 ({activeCheckpoint?.label ?? ""})
+              {tx("步长变更快照", "Step Changes")} (
+              {activeCheckpoint?.label ?? ""})
             </div>
             {changeRows.length === 0 ? (
               <div className="text-xs text-muted-foreground">
-                该时间步无新增节点指标变化
+                {tx("该时间步无新增指标变化", "No metric changes at this step")}
               </div>
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
@@ -331,9 +375,7 @@ export function ReplayTimeline({
                     </div>
                     <div className="font-mono-tech text-[11px] shrink-0">
                       <span className="font-semibold">
-                        {Number.isInteger(row.stepVal)
-                          ? row.stepVal
-                          : row.stepVal.toFixed(2)}
+                        {fmtNum(row.stepVal, 4)}
                       </span>
                       {row.delta !== null && (
                         <span
@@ -346,10 +388,7 @@ export function ReplayTimeline({
                           }`}
                         >
                           ({row.delta > 0 ? "+" : ""}
-                          {Number.isInteger(row.delta)
-                            ? row.delta
-                            : row.delta.toFixed(2)}
-                          )
+                          {fmtNum(row.delta, 4)})
                         </span>
                       )}
                     </div>

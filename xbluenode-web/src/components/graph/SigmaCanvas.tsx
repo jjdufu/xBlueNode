@@ -2,7 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import FA2Layout from "graphology-layout-forceatlas2/worker";
-import Sigma from "sigma";
+import Sigma, { DEFAULT_STYLES } from "sigma";
+import { useI18n } from "@/i18n";
+import { useTheme } from "@/lib/theme";
+import { cn } from "@/lib/utils";
 import type { AlgoTopEntry, BlueNode } from "@/lib/api/xblue";
 import type { AlgoVisualMode } from "@/components/xbluegraph/AlgoPanel";
 
@@ -26,29 +29,71 @@ export interface SigmaCanvasProps {
   algoMode: AlgoVisualMode;
   algoEntries: AlgoTopEntry[];
   fa2Running: boolean;
-  isDark: boolean;
+  isDark?: boolean;
+  testId?: string;
   onSelectNode: (nodeId: string) => void;
-  onExpandNode: (nodeId: string) => void;
-  onSetPathEndpoint: (role: "from" | "to", nodeId: string) => void;
+  onExpandNode?: (nodeId: string) => void;
+  onSetPathEndpoint?: (role: "from" | "to", nodeId: string) => void;
 }
 
-const LIGHT_PALETTE = [
-  "#2563eb",
-  "#09090b",
-  "#52525b",
-  "#1d4ed8",
-  "#3f3f46",
-  "#60a5fa",
-];
+export const LIGHT_TYPE_PALETTE = [
+  "#2563eb", // Blue (Factory)
+  "#059669", // Emerald (Warehouse)
+  "#d97706", // Amber (Order)
+  "#7c3aed", // Violet (Supplier)
+  "#db2777", // Pink (Store)
+  "#0891b2", // Cyan (Shipment / DOC)
+  "#ea580c", // Orange (ENTITY)
+  "#4f46e5", // Indigo
+] as const;
 
-const DARK_PALETTE = [
-  "#3b82f6",
-  "#fafafa",
-  "#a1a1aa",
-  "#60a5fa",
-  "#d4d4d8",
-  "#93c5fd",
-];
+export const DARK_TYPE_PALETTE = [
+  "#3b82f6", // Blue (Factory)
+  "#10b981", // Emerald (Warehouse)
+  "#f59e0b", // Amber (Order)
+  "#8b5cf6", // Violet (Supplier)
+  "#ec4899", // Pink (Store)
+  "#06b6d4", // Cyan (Shipment / DOC)
+  "#f97316", // Orange (ENTITY)
+  "#6366f1", // Indigo
+] as const;
+
+const SEMANTIC_TYPE_SLOT: Readonly<Record<string, number>> = {
+  factory: 0,
+  plant: 0,
+  warehouse: 1,
+  storagehub: 1,
+  hub: 1,
+  order: 2,
+  salesorder: 2,
+  supplier: 3,
+  vendor: 3,
+  store: 4,
+  customer: 4,
+  shipment: 5,
+  doc: 5,
+  entity: 6,
+  para: 7,
+};
+
+export function resolveNodeTypeColor(
+  typeName: string,
+  fallbackIndex: number,
+  isDark: boolean
+): string {
+  const palette = isDark ? DARK_TYPE_PALETTE : LIGHT_TYPE_PALETTE;
+  const key = typeName.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  const semanticIdx = SEMANTIC_TYPE_SLOT[key];
+  if (semanticIdx !== undefined) {
+    return palette[semanticIdx % palette.length] ?? palette[0];
+  }
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+  }
+  const slot = key.length > 0 ? hash % palette.length : fallbackIndex % palette.length;
+  return palette[slot] ?? palette[0];
+}
 
 function isWebGl2Supported(): boolean {
   if (typeof document === "undefined") return false;
@@ -63,6 +108,17 @@ function isWebGl2Supported(): boolean {
 interface NodeVisual {
   color: string;
   size: number;
+  highlighted: boolean;
+}
+
+interface FallbackProjection {
+  minX: number;
+  spanX: number;
+  minY: number;
+  spanY: number;
+  w: number;
+  h: number;
+  pad: number;
 }
 
 export function SigmaCanvas({
@@ -75,20 +131,37 @@ export function SigmaCanvas({
   algoMode,
   algoEntries,
   fa2Running,
-  isDark,
+  isDark: isDarkProp,
+  testId = "xbluegraph-canvas",
   onSelectNode,
   onExpandNode,
   onSetPathEndpoint,
 }: SigmaCanvasProps) {
+  const { tx } = useI18n();
+  const { isDark: themeDark } = useTheme();
+  const isDark = isDarkProp ?? themeDark;
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fallbackCanvasRef = useRef<HTMLCanvasElement | null>(null);
-  const graphRef = useRef<Graph | null>(null);
+  const graph = useMemo(() => new Graph({ multi: true, type: "directed" }), []);
   const sigmaRef = useRef<Sigma | null>(null);
   const fa2Ref = useRef<FA2Layout | null>(null);
+  const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
+  const initialLayoutDoneRef = useRef<boolean>(false);
+  const drawFallbackRef = useRef<(() => void) | null>(null);
+  const projectionRef = useRef<FallbackProjection | null>(null);
+  const fallbackDragRef = useRef<{
+    nodeId: string;
+    lockedProj: FallbackProjection;
+    moved: boolean;
+  } | null>(null);
 
   const [webglReady, setWebglReady] = useState<boolean>(() =>
     isWebGl2Supported()
   );
+  const [cursorMode, setCursorMode] = useState<
+    "default" | "grab" | "grabbing"
+  >("default");
   const [contextMenu, setContextMenu] = useState<{
     nodeId: string;
     title: string;
@@ -98,15 +171,16 @@ export function SigmaCanvas({
 
   const selectRef = useRef(onSelectNode);
   const expandRef = useRef(onExpandNode);
+  const isDarkRef = useRef(isDark);
   useEffect(() => {
     selectRef.current = onSelectNode;
     expandRef.current = onExpandNode;
-  }, [onExpandNode, onSelectNode]);
+    isDarkRef.current = isDark;
+  }, [isDark, onExpandNode, onSelectNode]);
 
   const visualByNodeId = useMemo(() => {
-    const palette = isDark ? DARK_PALETTE : LIGHT_PALETTE;
+    const palette = isDark ? DARK_TYPE_PALETTE : LIGHT_TYPE_PALETTE;
     const accentBlue = isDark ? "#3b82f6" : "#2563eb";
-    const fg = isDark ? "#fafafa" : "#09090b";
 
     const distinctTypes = Array.from(
       new Set(nodes.map((n) => n.type_name).filter(Boolean))
@@ -140,16 +214,17 @@ export function SigmaCanvas({
       const algoEntry = algoMap.get(n.id);
       const typeIdx = typeIdxMap.get(n.type_name) ?? 0;
 
-      let size = isSelected || isInPath ? 15 : 10;
-      let color = palette[typeIdx % palette.length] ?? fg;
+      let baseSize = 10;
+      let color = resolveNodeTypeColor(n.type_name, typeIdx, isDark);
 
       if (colorMode === "METRIC" && colorMetricKey) {
         const val = n.metrics?.[colorMetricKey];
         if (typeof val === "number" && Number.isFinite(val)) {
           const span = maxMetric - minMetric;
           const ratio = span > 0 ? (val - minMetric) / span : 0.5;
-          size = Math.round(8 + ratio * 12);
-          color = ratio >= 0.7 ? accentBlue : ratio >= 0.35 ? "#60a5fa" : "#71717a";
+          baseSize = Math.round(8 + ratio * 12);
+          color =
+            ratio >= 0.7 ? accentBlue : ratio >= 0.35 ? "#06b6d4" : "#71717a";
         }
       }
 
@@ -160,22 +235,31 @@ export function SigmaCanvas({
           algoEntry?.score !== undefined &&
           maxScore > 0
         ) {
-          size = Math.round(8 + (algoEntry.score / maxScore) * 14);
+          baseSize = Math.round(8 + (algoEntry.score / maxScore) * 14);
         }
         if (
           algoMode === "COMMUNITY_COLOR" &&
           algoEntry?.community !== null &&
           algoEntry?.community !== undefined
         ) {
-          color = palette[Math.abs(algoEntry.community) % palette.length] ?? accentBlue;
+          color =
+            palette[Math.abs(algoEntry.community) % palette.length] ??
+            accentBlue;
         }
       }
 
-      if (isSelected || isInPath) {
-        color = accentBlue;
-      }
+      // Preserve distinct node type color on selection; highlight via size + outer halo
+      const size = isSelected
+        ? Math.max(baseSize + 5, 16)
+        : isInPath
+          ? Math.max(baseSize + 3, 14)
+          : baseSize;
 
-      map.set(n.id, { color, size });
+      map.set(n.id, {
+        color,
+        size,
+        highlighted: isSelected || isInPath,
+      });
     }
     return map;
   }, [
@@ -189,34 +273,71 @@ export function SigmaCanvas({
     selectedNodeId,
   ]);
 
-  // Build / sync Graphology graph & positions
-  const graph = useMemo(() => {
-    const prevGraph = graphRef.current;
-    const g = new Graph({ multi: true, type: "directed" });
+  // Sync nodes, edges, and visual attributes into the persistent Graphology instance
+  useEffect(() => {
+    const incomingIds = new Set(nodes.map((n) => n.id));
+    const existingIds = graph.nodes();
+    for (const oldId of existingIds) {
+      if (!incomingIds.has(oldId)) {
+        graph.dropNode(oldId);
+      }
+    }
+
     const count = Math.max(nodes.length, 1);
+    let addedNewNodes = false;
 
     nodes.forEach((n, idx) => {
-      const prevAttrs =
-        prevGraph && prevGraph.hasNode(n.id)
-          ? prevGraph.getNodeAttributes(n.id)
-          : null;
+      const savedPos = positionsRef.current.get(n.id);
+      const hasInGraph = graph.hasNode(n.id);
       const angle = (2 * Math.PI * idx) / count;
-      const radius = count <= 1 ? 0 : 120;
-      const x =
-        typeof prevAttrs?.x === "number" ? prevAttrs.x : Math.cos(angle) * radius;
-      const y =
-        typeof prevAttrs?.y === "number" ? prevAttrs.y : Math.sin(angle) * radius;
-      const vis = visualByNodeId.get(n.id) ?? { color: "#2563eb", size: 10 };
+      const radius = count <= 1 ? 0 : 140;
+      const defaultX = Math.cos(angle) * radius;
+      const defaultY = Math.sin(angle) * radius;
 
-      g.addNode(n.id, {
-        x,
-        y,
-        size: vis.size,
-        color: vis.color,
-        label: `${n.title} (${n.node_key})`,
-        nodeType: n.type_name,
-      });
+      const x = hasInGraph
+        ? Number(graph.getNodeAttribute(n.id, "x") ?? savedPos?.x ?? defaultX)
+        : (savedPos?.x ?? defaultX);
+      const y = hasInGraph
+        ? Number(graph.getNodeAttribute(n.id, "y") ?? savedPos?.y ?? defaultY)
+        : (savedPos?.y ?? defaultY);
+
+      const vis = visualByNodeId.get(n.id) ?? {
+        color: resolveNodeTypeColor(n.type_name, idx, isDark),
+        size: 10,
+        highlighted: false,
+      };
+      const label = n.node_key ? `${n.title} (${n.node_key})` : n.title;
+
+      const nodeLabelColor = isDark ? "#fafafa" : "#09090b";
+
+      if (hasInGraph) {
+        graph.mergeNodeAttributes(n.id, {
+          x,
+          y,
+          size: vis.size,
+          color: vis.color,
+          highlighted: vis.highlighted,
+          label,
+          labelColor: nodeLabelColor,
+          nodeType: n.type_name,
+        });
+      } else {
+        addedNewNodes = true;
+        graph.addNode(n.id, {
+          x,
+          y,
+          size: vis.size,
+          color: vis.color,
+          highlighted: vis.highlighted,
+          label,
+          labelColor: nodeLabelColor,
+          nodeType: n.type_name,
+        });
+      }
+      positionsRef.current.set(n.id, { x, y });
     });
+
+    graph.clearEdges();
 
     const pathPairSet = new Set<string>();
     for (let i = 0; i < highlightedPathIds.length - 1; i += 1) {
@@ -228,34 +349,49 @@ export function SigmaCanvas({
       }
     }
 
-    const edgeColorMuted = isDark ? "#3f3f46" : "#d4d4d8";
+    const edgeColorMuted = isDark ? "#52525b" : "#cbd5e1";
+    const edgeLabelColor = isDark ? "#a1a1aa" : "#71717a";
     const accentBlue = isDark ? "#3b82f6" : "#2563eb";
 
     edges.forEach((e, idx) => {
-      if (!g.hasNode(e.src_node_id) || !g.hasNode(e.dst_node_id)) return;
+      if (!graph.hasNode(e.src_node_id) || !graph.hasNode(e.dst_node_id)) return;
       const inPath = pathPairSet.has(`${e.src_node_id}->${e.dst_node_id}`);
       const edgeKey = `${e.id}-${idx}`;
-      if (!g.hasEdge(edgeKey)) {
-        g.addDirectedEdgeWithKey(edgeKey, e.src_node_id, e.dst_node_id, {
-          size: inPath ? 3 : 1.2,
+      if (!graph.hasEdge(edgeKey)) {
+        graph.addDirectedEdgeWithKey(edgeKey, e.src_node_id, e.dst_node_id, {
+          size: inPath ? 3 : 1.4,
           color: inPath ? accentBlue : edgeColorMuted,
           label: e.link_type,
+          labelColor: edgeLabelColor,
         });
       }
     });
 
-    if (nodes.length > 1 && nodes.length <= 2500 && !prevGraph) {
-      forceAtlas2.assign(g, {
-        iterations: 40,
-        settings: forceAtlas2.inferSettings(g),
+    if (
+      nodes.length > 1 &&
+      nodes.length <= 2500 &&
+      !initialLayoutDoneRef.current &&
+      addedNewNodes
+    ) {
+      initialLayoutDoneRef.current = true;
+      forceAtlas2.assign(graph, {
+        iterations: 45,
+        settings: forceAtlas2.inferSettings(graph),
+      });
+      graph.forEachNode((id, attrs) => {
+        if (typeof attrs.x === "number" && typeof attrs.y === "number") {
+          positionsRef.current.set(id, { x: attrs.x, y: attrs.y });
+        }
       });
     }
 
-    graphRef.current = g;
-    return g;
-  }, [edges, highlightedPathIds, isDark, nodes, visualByNodeId]);
+    if (sigmaRef.current) {
+      sigmaRef.current.refresh();
+    }
+    drawFallbackRef.current?.();
+  }, [edges, graph, highlightedPathIds, isDark, nodes, visualByNodeId]);
 
-  // Mount Sigma (WebGL2) or fallback cleanly if WebGL2 is absent
+  // Mount Sigma (WebGL2) once with interactive node dragging
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -268,9 +404,26 @@ export function SigmaCanvas({
     let sigma: Sigma;
     try {
       sigma = new Sigma(graph, container, {
+        styles: {
+          ...DEFAULT_STYLES,
+          nodes: {
+            ...DEFAULT_STYLES.nodes,
+            labelColor: {
+              attribute: "labelColor",
+              defaultValue: isDarkRef.current ? "#fafafa" : "#09090b",
+            },
+          },
+          edges: {
+            ...DEFAULT_STYLES.edges,
+            labelColor: {
+              attribute: "labelColor",
+              defaultValue: isDarkRef.current ? "#a1a1aa" : "#71717a",
+            },
+          },
+        },
         settings: {
           renderLabels: true,
-          renderEdgeLabels: edges.length <= 80,
+          renderEdgeLabels: true,
           labelDensity: 0.7,
           labelRenderedSizeThreshold: 6,
           allowInvalidContainer: true,
@@ -284,6 +437,65 @@ export function SigmaCanvas({
     setWebglReady(true);
     sigmaRef.current = sigma;
 
+    let draggedNode: string | null = null;
+    let isDragging = false;
+
+    sigma.on("enterNode", () => {
+      if (!isDragging) {
+        setCursorMode("grab");
+      }
+    });
+
+    sigma.on("leaveNode", () => {
+      if (!isDragging) {
+        setCursorMode("default");
+      }
+    });
+
+    sigma.on("downNode", ({ node, event, preventSigmaDefault }) => {
+      if (
+        event.original instanceof MouseEvent &&
+        event.original.button !== 0
+      ) {
+        return;
+      }
+      preventSigmaDefault();
+      setContextMenu(null);
+      draggedNode = node;
+      isDragging = true;
+      setCursorMode("grabbing");
+      if (!sigma.getCustomBBox()) {
+        sigma.setCustomBBox(sigma.getBBox());
+      }
+    });
+
+    const captor = sigma.getMouseCaptor();
+
+    captor.on("mousemovebody", (e) => {
+      if (!isDragging || !draggedNode) return;
+      const pos = sigma.viewportToGraph({ x: e.x, y: e.y });
+      graph.setNodeAttribute(draggedNode, "x", pos.x);
+      graph.setNodeAttribute(draggedNode, "y", pos.y);
+      positionsRef.current.set(draggedNode, { x: pos.x, y: pos.y });
+      e.preventSigmaDefault();
+      if (e.original instanceof Event) {
+        e.original.preventDefault();
+        e.original.stopPropagation();
+      }
+    });
+
+    const finishDrag = () => {
+      if (draggedNode) {
+        sigma.setCustomBBox(null);
+        sigma.refresh();
+      }
+      draggedNode = null;
+      isDragging = false;
+      setCursorMode("default");
+    };
+
+    captor.on("mouseup", finishDrag);
+
     sigma.on("clickNode", ({ node }) => {
       setContextMenu(null);
       selectRef.current(node);
@@ -293,7 +505,7 @@ export function SigmaCanvas({
       preventSigmaDefault();
       setContextMenu(null);
       selectRef.current(node);
-      expandRef.current(node);
+      expandRef.current?.(node);
     });
 
     sigma.on("rightClickNode", ({ node, event, preventSigmaDefault }) => {
@@ -315,10 +527,26 @@ export function SigmaCanvas({
       setContextMenu(null);
     });
 
-    let fa2: FA2Layout | null = null;
+    return () => {
+      if (fa2Ref.current) {
+        fa2Ref.current.kill();
+        fa2Ref.current = null;
+      }
+      sigma.kill();
+      sigmaRef.current = null;
+    };
+  }, [graph]);
+
+  // Manage ForceAtlas2 background layout worker
+  useEffect(() => {
+    if (!webglReady || !sigmaRef.current) return;
+    if (fa2Ref.current) {
+      fa2Ref.current.kill();
+      fa2Ref.current = null;
+    }
     if (fa2Running && graph.order > 1) {
       try {
-        fa2 = new FA2Layout(graph, {
+        const fa2 = new FA2Layout(graph, {
           settings: forceAtlas2.inferSettings(graph),
         });
         fa2.start();
@@ -327,26 +555,28 @@ export function SigmaCanvas({
         fa2Ref.current = null;
       }
     }
-
     return () => {
-      if (fa2) {
-        fa2.kill();
+      if (fa2Ref.current) {
+        fa2Ref.current.kill();
+        fa2Ref.current = null;
       }
-      fa2Ref.current = null;
-      sigma.kill();
-      sigmaRef.current = null;
     };
-  }, [edges.length, fa2Running, graph]);
+  }, [fa2Running, graph, nodes.length, webglReady]);
 
   const projectedNodesRef = useRef<
     { id: string; title: string; x: number; y: number; r: number }[]
   >([]);
 
-  // 2D Canvas fallback renderer when WebGL2 is unavailable (e.g. headless browser)
+  // 2D Canvas fallback renderer when WebGL2 is unavailable (with interactive node dragging)
   useEffect(() => {
-    if (webglReady) return;
+    if (webglReady) {
+      drawFallbackRef.current = null;
+      return;
+    }
     const canvas = fallbackCanvasRef.current;
     if (!canvas) return;
+
+    const pathSet = new Set(highlightedPathIds);
 
     const draw = () => {
       const parent = canvas.parentElement;
@@ -362,43 +592,74 @@ export function SigmaCanvas({
 
       if (nodes.length === 0) {
         projectedNodesRef.current = [];
+        projectionRef.current = null;
         return;
       }
 
-      let minX = Infinity;
-      let maxX = -Infinity;
-      let minY = Infinity;
-      let maxY = -Infinity;
-      graph.forEachNode((_id, attrs) => {
-        const x = typeof attrs.x === "number" ? attrs.x : 0;
-        const y = typeof attrs.y === "number" ? attrs.y : 0;
-        minX = Math.min(minX, x);
-        maxX = Math.max(maxX, x);
-        minY = Math.min(minY, y);
-        maxY = Math.max(maxY, y);
-      });
+      let proj: FallbackProjection;
+      if (fallbackDragRef.current) {
+        proj = {
+          ...fallbackDragRef.current.lockedProj,
+          w,
+          h,
+        };
+      } else {
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+        graph.forEachNode((_id, attrs) => {
+          const x = typeof attrs.x === "number" ? attrs.x : 0;
+          const y = typeof attrs.y === "number" ? attrs.y : 0;
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+        });
+        const pad = 64;
+        proj = {
+          minX,
+          spanX: Math.max(maxX - minX, 1),
+          minY,
+          spanY: Math.max(maxY - minY, 1),
+          w,
+          h,
+          pad,
+        };
+      }
+      projectionRef.current = proj;
 
-      const pad = 64;
-      const spanX = Math.max(maxX - minX, 1);
-      const spanY = Math.max(maxY - minY, 1);
-      const project = (gx: number, gy: number): [number, number] => [
-        pad + ((gx - minX) / spanX) * (w - pad * 2),
-        pad + ((gy - minY) / spanY) * (h - pad * 2),
-      ];
+      const project = (gx: number, gy: number): [number, number] => {
+        if (nodes.length === 1 && !fallbackDragRef.current) {
+          return [proj.w / 2, proj.h / 2];
+        }
+        return [
+          proj.pad +
+            ((gx - proj.minX) / proj.spanX) * (proj.w - proj.pad * 2),
+          proj.pad +
+            ((gy - proj.minY) / proj.spanY) * (proj.h - proj.pad * 2),
+        ];
+      };
 
       // Draw edges
       graph.forEachEdge((_eid, attrs, _src, _dst, srcAttrs, dstAttrs) => {
-        const [x1, y1] = project(Number(srcAttrs.x ?? 0), Number(srcAttrs.y ?? 0));
-        const [x2, y2] = project(Number(dstAttrs.x ?? 0), Number(dstAttrs.y ?? 0));
-        ctx.strokeStyle = String(attrs.color ?? "#d4d4d8");
-        ctx.lineWidth = Number(attrs.size ?? 1.2);
+        const [x1, y1] = project(
+          Number(srcAttrs.x ?? 0),
+          Number(srcAttrs.y ?? 0)
+        );
+        const [x2, y2] = project(
+          Number(dstAttrs.x ?? 0),
+          Number(dstAttrs.y ?? 0)
+        );
+        ctx.strokeStyle = String(attrs.color ?? "#cbd5e1");
+        ctx.lineWidth = Number(attrs.size ?? 1.4);
         ctx.beginPath();
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
         ctx.stroke();
       });
 
-      // Draw nodes and record hit-testing targets
+      // Draw nodes with outer selection/path halo while preserving palette color
       const nextProjected: {
         id: string;
         title: string;
@@ -406,47 +667,93 @@ export function SigmaCanvas({
         y: number;
         r: number;
       }[] = [];
+
       graph.forEachNode((id, attrs) => {
         const [px, py] = project(Number(attrs.x ?? 0), Number(attrs.y ?? 0));
         const r = Number(attrs.size ?? 10);
         const title = String(attrs.label ?? id);
+        const fillColor = String(attrs.color ?? "#2563eb");
+        const isSel = id === selectedNodeId;
+        const inPath = pathSet.has(id);
         nextProjected.push({ id, title, x: px, y: py, r });
 
-        ctx.fillStyle = String(attrs.color ?? "#2563eb");
+        if (isSel || inPath) {
+          ctx.save();
+          ctx.globalAlpha = 0.22;
+          ctx.fillStyle = fillColor;
+          ctx.beginPath();
+          ctx.arc(px, py, r + 6, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+
+        ctx.fillStyle = fillColor;
         ctx.beginPath();
         ctx.arc(px, py, r, 0, Math.PI * 2);
         ctx.fill();
-        if (id === selectedNodeId) {
-          ctx.strokeStyle = isDark ? "#fafafa" : "#09090b";
+
+        if (isSel || inPath) {
+          ctx.strokeStyle = isDark ? "#09090b" : "#ffffff";
+          ctx.lineWidth = 2;
+          ctx.stroke();
+
+          ctx.strokeStyle = isSel
+            ? isDark
+              ? "#fafafa"
+              : "#09090b"
+            : isDark
+              ? "#3b82f6"
+              : "#2563eb";
           ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          ctx.arc(px, py, r + 2, 0, Math.PI * 2);
           ctx.stroke();
         }
+
         ctx.fillStyle = isDark ? "#fafafa" : "#09090b";
-        ctx.font = "11px sans-serif";
+        ctx.font = isSel ? "600 11px sans-serif" : "11px sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText(title, px, py + r + 13);
+        ctx.fillText(title, px, py + r + 15);
       });
       projectedNodesRef.current = nextProjected;
     };
 
+    drawFallbackRef.current = draw;
     draw();
     const ro = new ResizeObserver(draw);
     if (canvas.parentElement) ro.observe(canvas.parentElement);
-    return () => ro.disconnect();
-  }, [graph, isDark, nodes.length, selectedNodeId, webglReady]);
+    return () => {
+      drawFallbackRef.current = null;
+      ro.disconnect();
+    };
+  }, [
+    edges,
+    graph,
+    highlightedPathIds,
+    isDark,
+    nodes,
+    selectedNodeId,
+    visualByNodeId,
+    webglReady,
+  ]);
 
   const hitTestFallbackCanvas = (
-    e: React.MouseEvent<HTMLCanvasElement>
+    clientX: number,
+    clientY: number
   ): {
     hit: { id: string; title: string; x: number; y: number; r: number } | null;
     localX: number;
     localY: number;
+    canvasX: number;
+    canvasY: number;
   } => {
     const canvas = fallbackCanvasRef.current;
-    if (!canvas) return { hit: null, localX: 0, localY: 0 };
+    if (!canvas) {
+      return { hit: null, localX: 0, localY: 0, canvasX: 0, canvasY: 0 };
+    }
     const rect = canvas.getBoundingClientRect();
-    const localX = e.clientX - rect.left;
-    const localY = e.clientY - rect.top;
+    const localX = clientX - rect.left;
+    const localY = clientY - rect.top;
     const scaleX = rect.width > 0 ? canvas.width / rect.width : 1;
     const scaleY = rect.height > 0 ? canvas.height / rect.height : 1;
     const cx = localX * scaleX;
@@ -458,43 +765,115 @@ export function SigmaCanvas({
       if (!item) continue;
       const dist = Math.hypot(cx - item.x, cy - item.y);
       if (dist <= Math.max(item.r + 4, 12)) {
-        return { hit: item, localX, localY };
+        return { hit: item, localX, localY, canvasX: cx, canvasY: cy };
       }
     }
-    return { hit: null, localX, localY };
+    return { hit: null, localX, localY, canvasX: cx, canvasY: cy };
   };
+
+  const cursorClass =
+    cursorMode === "grabbing"
+      ? "cursor-grabbing"
+      : cursorMode === "grab"
+        ? "cursor-grab"
+        : "cursor-default";
 
   return (
     <div
-      className="relative w-full h-[540px] bg-background overflow-hidden"
-      data-testid="xbluegraph-canvas"
+      className={cn(
+        "relative w-full h-[540px] bg-background overflow-hidden",
+        cursorClass
+      )}
+      data-testid={testId}
       onContextMenu={(e) => e.preventDefault()}
     >
       {webglReady ? (
-        <div ref={containerRef} className="w-full h-full" />
+        <div ref={containerRef} className={cn("w-full h-full", cursorClass)} />
       ) : (
         <canvas
           ref={fallbackCanvasRef}
-          className="w-full h-full block cursor-pointer"
+          className={cn("w-full h-full block", cursorClass)}
+          onMouseDown={(e) => {
+            if (e.button !== 0) return;
+            const { hit } = hitTestFallbackCanvas(e.clientX, e.clientY);
+            if (hit && projectionRef.current) {
+              setContextMenu(null);
+              const lockedProj =
+                nodes.length === 1
+                  ? {
+                      ...projectionRef.current,
+                      minX: -100,
+                      spanX: 200,
+                      minY: -100,
+                      spanY: 200,
+                    }
+                  : projectionRef.current;
+              fallbackDragRef.current = {
+                nodeId: hit.id,
+                lockedProj,
+                moved: false,
+              };
+              setCursorMode("grabbing");
+            }
+          }}
+          onMouseMove={(e) => {
+            const drag = fallbackDragRef.current;
+            if (drag) {
+              const { canvasX, canvasY } = hitTestFallbackCanvas(
+                e.clientX,
+                e.clientY
+              );
+              const lp = drag.lockedProj;
+              const usableW = Math.max(1, lp.w - lp.pad * 2);
+              const usableH = Math.max(1, lp.h - lp.pad * 2);
+              const gx = lp.minX + ((canvasX - lp.pad) / usableW) * lp.spanX;
+              const gy = lp.minY + ((canvasY - lp.pad) / usableH) * lp.spanY;
+              drag.moved = true;
+              if (graph.hasNode(drag.nodeId)) {
+                graph.setNodeAttribute(drag.nodeId, "x", gx);
+                graph.setNodeAttribute(drag.nodeId, "y", gy);
+                positionsRef.current.set(drag.nodeId, { x: gx, y: gy });
+                drawFallbackRef.current?.();
+              }
+              return;
+            }
+            const { hit } = hitTestFallbackCanvas(e.clientX, e.clientY);
+            setCursorMode(hit ? "grab" : "default");
+          }}
+          onMouseUp={() => {
+            if (fallbackDragRef.current) {
+              fallbackDragRef.current = null;
+              setCursorMode("grab");
+            }
+          }}
+          onMouseLeave={() => {
+            if (fallbackDragRef.current) {
+              fallbackDragRef.current = null;
+            }
+            setCursorMode("default");
+          }}
           onClick={(e) => {
-            const { hit } = hitTestFallbackCanvas(e);
+            const { hit } = hitTestFallbackCanvas(e.clientX, e.clientY);
             setContextMenu(null);
             if (hit) {
               selectRef.current(hit.id);
             }
           }}
           onDoubleClick={(e) => {
-            const { hit } = hitTestFallbackCanvas(e);
+            const { hit } = hitTestFallbackCanvas(e.clientX, e.clientY);
             setContextMenu(null);
             if (hit) {
               selectRef.current(hit.id);
-              expandRef.current(hit.id);
+              expandRef.current?.(hit.id);
             }
           }}
           onContextMenu={(e) => {
             e.preventDefault();
-            const { hit, localX, localY } = hitTestFallbackCanvas(e);
-            if (hit) {
+            const { hit, localX, localY } = hitTestFallbackCanvas(
+              e.clientX,
+              e.clientY
+            );
+            if (hit && (onExpandNode || onSetPathEndpoint)) {
               setContextMenu({
                 nodeId: hit.id,
                 title: hit.title,
@@ -508,48 +887,54 @@ export function SigmaCanvas({
         />
       )}
 
-      {contextMenu && (
+      {contextMenu && (onExpandNode || onSetPathEndpoint) && (
         <div
           style={{
             left: `${Math.max(8, Math.min(contextMenu.x, 420))}px`,
             top: `${Math.max(8, Math.min(contextMenu.y, 380))}px`,
           }}
-          className="absolute z-20 w-48 rounded-md border border-border bg-background shadow-lg p-1.5 text-xs space-y-1"
+          className="absolute z-20 w-48 rounded-md border border-border bg-card shadow-lg p-1.5 text-xs space-y-1"
           data-testid="graph-context-menu"
         >
           <div className="px-2 py-1 font-medium truncate border-b border-border">
             {contextMenu.title}
           </div>
-          <button
-            type="button"
-            onClick={() => {
-              onExpandNode(contextMenu.nodeId);
-              setContextMenu(null);
-            }}
-            className="w-full text-left rounded px-2 py-1 hover:bg-muted cursor-pointer"
-          >
-            展开 1 跳邻居
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onSetPathEndpoint("from", contextMenu.nodeId);
-              setContextMenu(null);
-            }}
-            className="w-full text-left rounded px-2 py-1 hover:bg-muted cursor-pointer"
-          >
-            查找路径：设为起点
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              onSetPathEndpoint("to", contextMenu.nodeId);
-              setContextMenu(null);
-            }}
-            className="w-full text-left rounded px-2 py-1 hover:bg-muted text-xblue cursor-pointer"
-          >
-            查找路径：设为终点
-          </button>
+          {onExpandNode && (
+            <button
+              type="button"
+              onClick={() => {
+                onExpandNode(contextMenu.nodeId);
+                setContextMenu(null);
+              }}
+              className="w-full text-left rounded px-2 py-1 hover:bg-muted cursor-pointer"
+            >
+              {tx("展开 1 跳邻居", "Expand 1-Hop")}
+            </button>
+          )}
+          {onSetPathEndpoint && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  onSetPathEndpoint("from", contextMenu.nodeId);
+                  setContextMenu(null);
+                }}
+                className="w-full text-left rounded px-2 py-1 hover:bg-muted cursor-pointer"
+              >
+                {tx("设为路径起点", "Set Path Start")}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  onSetPathEndpoint("to", contextMenu.nodeId);
+                  setContextMenu(null);
+                }}
+                className="w-full text-left rounded px-2 py-1 hover:bg-muted text-xblue cursor-pointer"
+              >
+                {tx("设为路径终点", "Set Path End")}
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

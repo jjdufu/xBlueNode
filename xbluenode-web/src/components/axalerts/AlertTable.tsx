@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Eye,
   Filter,
+  Kanban,
   RefreshCw,
   RotateCcw,
 } from "lucide-react";
@@ -15,7 +16,8 @@ import type {
   RuleDef,
   Severity,
 } from "@/lib/api";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { Badge, Button, Card, Input, Select } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 export interface AlertTableProps {
@@ -26,27 +28,16 @@ export interface AlertTableProps {
   selectedAlertId: string | null;
   loading: boolean;
   actingAlertId: string | null;
+  convertingAlertId?: string | null;
   batchAcking: boolean;
+  canAck: boolean;
   onFiltersChange: (next: AlertListQuery) => void;
   onSelectAlert: (alertId: string) => void;
   onAckAlert: (alertId: string) => Promise<void>;
   onResolveAlert: (alertId: string) => Promise<void>;
+  onConvertWorkItem?: (alert: AlertRecord) => Promise<void>;
   onBatchAck: (alertIds: string[], comment: string) => Promise<void>;
   onRefresh: () => void;
-}
-
-function formatShortTime(iso: string): string {
-  if (!iso) return "—";
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return iso;
-  return parsed.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: false,
-  });
 }
 
 export function getSeverityBadgeClass(severity: Severity): string {
@@ -79,14 +70,18 @@ export function AlertTable({
   selectedAlertId,
   loading,
   actingAlertId,
+  convertingAlertId = null,
   batchAcking,
+  canAck,
   onFiltersChange,
   onSelectAlert,
   onAckAlert,
   onResolveAlert,
+  onConvertWorkItem,
   onBatchAck,
   onRefresh,
 }: AlertTableProps) {
+  const { tx, tEnum, fmtNum, fmtTime } = useI18n();
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [batchComment, setBatchComment] = useState("");
 
@@ -112,6 +107,7 @@ export function AlertTable({
     openAlertIds.length > 0 && validSelectedIds.length === openAlertIds.length;
 
   const toggleSelectAll = () => {
+    if (!canAck) return;
     if (allOpenSelected) {
       setSelectedIds([]);
     } else {
@@ -120,13 +116,14 @@ export function AlertTable({
   };
 
   const toggleSelectOne = (id: string) => {
+    if (!canAck) return;
     setSelectedIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
   };
 
   const handleBatchSubmit = async () => {
-    if (validSelectedIds.length === 0) return;
+    if (!canAck || validSelectedIds.length === 0) return;
     await onBatchAck(validSelectedIds, batchComment);
     setSelectedIds([]);
     setBatchComment("");
@@ -143,32 +140,34 @@ export function AlertTable({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2 text-xs font-medium text-foreground">
             <Filter className="h-3.5 w-3.5 text-xblue" />
-            <span>运营告警队列</span>
-            <Badge variant="outline">{alerts.length} 条记录</Badge>
+            <span>{tx("运营告警队列", "Operational Alert Queue")}</span>
+            <Badge variant="outline">
+              {tx(`${fmtNum(alerts.length, 0)} 条`, `${fmtNum(alerts.length, 0)} items`)}
+            </Badge>
           </div>
           <div className="flex items-center gap-2">
             {hasFilters && (
               <Button
                 type="button"
                 variant="ghost"
-                className="h-8 px-2.5 text-xs"
+                size="sm"
                 data-testid="alert-filter-reset-btn"
                 onClick={() => onFiltersChange({})}
               >
                 <RotateCcw className="h-3 w-3" />
-                重置筛选
+                {tx("重置筛选", "Reset")}
               </Button>
             )}
             <Button
               type="button"
               variant="outline"
-              className="h-8 px-2.5 text-xs"
+              size="sm"
               data-testid="alert-refresh-btn"
               onClick={onRefresh}
               disabled={loading}
             >
               <RefreshCw className={cn("h-3 w-3", loading && "animate-spin")} />
-              刷新 (15s 轮询)
+              {tx("刷新", "Refresh")}
             </Button>
           </div>
         </div>
@@ -176,9 +175,9 @@ export function AlertTable({
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
           <div>
             <label className="block text-[11px] text-muted-foreground mb-1">
-              生命周期状态 (Status)
+              {tx("状态", "Status")}
             </label>
-            <select
+            <Select
               data-testid="alert-filter-status"
               value={filters.status ?? ""}
               onChange={(e) => {
@@ -191,20 +190,20 @@ export function AlertTable({
                       : undefined,
                 });
               }}
-              className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-foreground"
+              className="h-8 w-full"
             >
-              <option value="">全部状态 (ALL)</option>
-              <option value="OPEN">OPEN · 待确认</option>
-              <option value="ACK">ACK · 已确认处理中</option>
-              <option value="RESOLVED">RESOLVED · 已恢复</option>
-            </select>
+              <option value="">{tx("全部状态", "All Statuses")}</option>
+              <option value="OPEN">{tx("待处理", "Open")}</option>
+              <option value="ACK">{tx("已确认", "Acknowledged")}</option>
+              <option value="RESOLVED">{tx("已恢复", "Resolved")}</option>
+            </Select>
           </div>
 
           <div>
             <label className="block text-[11px] text-muted-foreground mb-1">
-              严重级别 (Severity)
+              {tx("级别", "Severity")}
             </label>
-            <select
+            <Select
               data-testid="alert-filter-severity"
               value={filters.severity ?? ""}
               onChange={(e) => {
@@ -217,20 +216,20 @@ export function AlertTable({
                       : undefined,
                 });
               }}
-              className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-foreground"
+              className="h-8 w-full"
             >
-              <option value="">全部级别 (ALL)</option>
-              <option value="CRITICAL">CRITICAL · 紧急</option>
-              <option value="WARN">WARN · 警告</option>
-              <option value="INFO">INFO · 提示</option>
-            </select>
+              <option value="">{tx("全部级别", "All Severities")}</option>
+              <option value="CRITICAL">{tEnum("CRITICAL")}</option>
+              <option value="WARN">{tEnum("WARN")}</option>
+              <option value="INFO">{tEnum("INFO")}</option>
+            </Select>
           </div>
 
           <div>
             <label className="block text-[11px] text-muted-foreground mb-1">
-              归属规则 (Rule)
+              {tx("归属规则", "Rule")}
             </label>
-            <select
+            <Select
               data-testid="alert-filter-rule"
               value={filters.rule_id ?? ""}
               onChange={(e) =>
@@ -239,25 +238,25 @@ export function AlertTable({
                   rule_id: e.target.value || undefined,
                 })
               }
-              className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-foreground"
+              className="h-8 w-full"
             >
-              <option value="">全部规则</option>
+              <option value="">{tx("全部规则", "All Rules")}</option>
               {rules.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.name}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
 
           <div>
             <label className="block text-[11px] text-muted-foreground mb-1">
-              业务节点类型 (Type Name)
+              {tx("节点类型", "Node Type")}
             </label>
             <Input
               list="axalerts-known-type-names"
               data-testid="alert-filter-type-name"
-              placeholder="例如 Warehouse"
+              placeholder="Warehouse"
               value={filters.type_name ?? ""}
               onChange={(e) =>
                 onFiltersChange({
@@ -276,32 +275,23 @@ export function AlertTable({
         </div>
 
         {/* Batch ACK Bar */}
-        {openAlertIds.length > 0 && (
+        {canAck && openAlertIds.length > 0 && (
           <div
             className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-background px-3 py-2"
             data-testid="batch-ack-bar"
           >
-            <label className="inline-flex items-center gap-2 text-xs text-foreground cursor-pointer">
-              <input
-                type="checkbox"
-                data-testid="alert-select-all"
-                checked={allOpenSelected}
-                onChange={toggleSelectAll}
-                className="h-3.5 w-3.5 rounded border-border accent-xblue"
-              />
-              <span>
-                全选待确认告警（已选{" "}
-                <span className="font-mono-tech font-semibold text-xblue">
-                  {validSelectedIds.length}
-                </span>{" "}
-                / {openAlertIds.length}）
-              </span>
-            </label>
+            <span className="text-xs text-foreground">
+              {tx("已选待确认告警", "Selected open alerts")}{" "}
+              <span className="font-mono-tech font-semibold text-xblue">
+                {validSelectedIds.length}
+              </span>{" "}
+              / {openAlertIds.length}
+            </span>
 
             <div className="flex flex-wrap items-center gap-2">
               <Input
                 data-testid="batch-ack-comment-input"
-                placeholder="批量确认备注（可选）..."
+                placeholder={tx("批量确认备注", "Batch acknowledgment note")}
                 value={batchComment}
                 onChange={(e) => setBatchComment(e.target.value)}
                 className="h-8 w-52 text-xs"
@@ -309,7 +299,7 @@ export function AlertTable({
               <Button
                 type="button"
                 variant="primary"
-                className="h-8 px-3 text-xs"
+                size="sm"
                 data-testid="batch-ack-btn"
                 disabled={validSelectedIds.length === 0 || batchAcking}
                 onClick={() => {
@@ -318,8 +308,11 @@ export function AlertTable({
               >
                 <CheckCheck className="h-3.5 w-3.5" />
                 {batchAcking
-                  ? "批量确认中..."
-                  : `批量确认 ACK (${validSelectedIds.length})`}
+                  ? tx("确认中…", "Acknowledging…")
+                  : tx(
+                      `批量确认 (${validSelectedIds.length})`,
+                      `Acknowledge (${validSelectedIds.length})`
+                    )}
               </Button>
             </div>
           </div>
@@ -331,12 +324,32 @@ export function AlertTable({
         <table className="w-full text-left border-collapse text-xs">
           <thead>
             <tr className="border-b border-border bg-muted/40 text-[11px] text-muted-foreground font-medium">
-              <th className="py-2.5 px-3 w-9">选</th>
-              <th className="py-2.5 px-3">级别 / 状态</th>
-              <th className="py-2.5 px-3">告警摘要与归属规则</th>
-              <th className="py-2.5 px-3">观测值 / 频次</th>
-              <th className="py-2.5 px-3">最近触发时间</th>
-              <th className="py-2.5 px-3 text-right">处置动作</th>
+              <th className="py-2.5 px-3 w-9 whitespace-nowrap">
+                <input
+                  type="checkbox"
+                  data-testid="alert-select-all"
+                  aria-label={tx("全选待确认告警", "Select all open alerts")}
+                  disabled={!canAck || openAlertIds.length === 0}
+                  checked={allOpenSelected}
+                  onChange={toggleSelectAll}
+                  className="h-3.5 w-3.5 rounded border-border accent-xblue disabled:opacity-30 cursor-pointer"
+                />
+              </th>
+              <th className="py-2.5 px-3 whitespace-nowrap">
+                {tx("级别 / 状态", "Severity / Status")}
+              </th>
+              <th className="py-2.5 px-3 whitespace-nowrap">
+                {tx("告警摘要与归属规则", "Alert Summary & Rule")}
+              </th>
+              <th className="py-2.5 px-3 whitespace-nowrap">
+                {tx("观测值 / 频次", "Value / Count")}
+              </th>
+              <th className="py-2.5 px-3 whitespace-nowrap">
+                {tx("最近触发时间", "Last Triggered")}
+              </th>
+              <th className="py-2.5 px-3 text-right whitespace-nowrap">
+                {tx("处置动作", "Actions")}
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
@@ -347,7 +360,7 @@ export function AlertTable({
                   className="py-10 text-center text-muted-foreground text-xs"
                   data-testid="alert-empty-state"
                 >
-                  当前筛选条件下暂无告警记录
+                  {tx("暂无告警记录", "No alerts")}
                 </td>
               </tr>
             ) : (
@@ -355,6 +368,7 @@ export function AlertTable({
                 const isSelectedRow = selectedAlertId === alert.id;
                 const isChecked = validSelectedIds.includes(alert.id);
                 const isActing = actingAlertId === alert.id;
+                const isConverting = convertingAlertId === alert.id;
                 const ruleName =
                   ruleNameMap.get(alert.rule_id) ??
                   alert.rule_id.slice(0, 8);
@@ -382,26 +396,29 @@ export function AlertTable({
                       <input
                         type="checkbox"
                         data-testid={`alert-select-${alert.id}`}
-                        disabled={alert.status !== "OPEN"}
+                        aria-label={alert.title}
+                        disabled={!canAck || alert.status !== "OPEN"}
                         checked={isChecked}
                         onChange={() => toggleSelectOne(alert.id)}
-                        className="h-3.5 w-3.5 rounded border-border accent-xblue disabled:opacity-30"
+                        className="h-3.5 w-3.5 rounded border-border accent-xblue disabled:opacity-30 cursor-pointer"
                       />
                     </td>
 
                     <td className="py-3 px-3 align-top whitespace-nowrap">
                       <div className="flex flex-col items-start gap-1.5">
                         <span
+                          title={tEnum(alert.severity)}
                           className={cn(
                             "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-mono-tech font-medium",
                             getSeverityBadgeClass(alert.severity)
                           )}
                         >
                           <AlertTriangle className="h-3 w-3" />
-                          {alert.severity}
+                          {tEnum(alert.severity)}
                         </span>
                         <span
                           data-testid={`alert-status-${alert.id}`}
+                          title={tEnum(alert.status)}
                           className={cn(
                             "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-mono-tech font-semibold",
                             getStatusBadgeClass(alert.status)
@@ -422,16 +439,22 @@ export function AlertTable({
                         </div>
                       )}
                       <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                        <Badge variant="outline">规则: {ruleName}</Badge>
+                        <Badge variant="outline">
+                          {tx("规则", "Rule")}: {ruleName}
+                        </Badge>
                         {nodeTitle && (
-                          <Badge variant="neutral">对象: {nodeTitle}</Badge>
+                          <Badge variant="neutral">
+                            {tx("对象", "Object")}: {nodeTitle}
+                          </Badge>
                         )}
                         {alert.escalated_at && (
-                          <Badge variant="xblue">已升级 ESCALATED</Badge>
+                          <Badge variant="xblue">
+                            {tx("已升级", "Escalated")}
+                          </Badge>
                         )}
                         {alert.resolve_reason && (
                           <Badge variant="outline">
-                            恢复: {alert.resolve_reason}
+                            {tx("恢复", "Resolved")}: {alert.resolve_reason}
                           </Badge>
                         )}
                       </div>
@@ -440,18 +463,18 @@ export function AlertTable({
                     <td className="py-3 px-3 align-top font-mono-tech whitespace-nowrap">
                       <div className="text-foreground font-medium">
                         {alert.last_value !== null
-                          ? Number(alert.last_value.toFixed(4))
+                          ? fmtNum(alert.last_value, 4)
                           : "—"}
                       </div>
                       <div className="text-[11px] text-muted-foreground mt-0.5">
-                        触发 ×{alert.occurrences}
+                        {tx(`触发 ×${fmtNum(alert.occurrences, 0)}`, `Hits ×${fmtNum(alert.occurrences, 0)}`)}
                       </div>
                     </td>
 
                     <td className="py-3 px-3 align-top font-mono-tech text-[11px] text-muted-foreground whitespace-nowrap">
-                      <div>{formatShortTime(alert.last_seen_at)}</div>
+                      <div>{fmtTime(alert.last_seen_at)}</div>
                       <div className="text-[10px] opacity-80 mt-0.5">
-                        首见 {formatShortTime(alert.first_seen_at)}
+                        {tx("首见", "First")} {fmtTime(alert.first_seen_at, true)}
                       </div>
                     </td>
 
@@ -460,11 +483,12 @@ export function AlertTable({
                       onClick={(e) => e.stopPropagation()}
                     >
                       <div className="inline-flex items-center justify-end gap-1.5">
-                        {alert.status === "OPEN" && (
+                        {canAck && alert.status === "OPEN" && (
                           <Button
                             type="button"
                             variant="outline"
-                            className="h-7 px-2.5 text-[11px] border-xblue/40 text-xblue hover:bg-xblue-soft"
+                            size="sm"
+                            className="border-xblue/40 text-xblue hover:bg-xblue-soft"
                             data-testid={`ack-alert-btn-${alert.id}`}
                             disabled={isActing}
                             onClick={() => {
@@ -472,34 +496,53 @@ export function AlertTable({
                             }}
                           >
                             <CheckCircle2 className="h-3 w-3" />
-                            确认 (ACK)
+                            {tx("确认", "Acknowledge")}
                           </Button>
                         )}
 
-                        {alert.status !== "RESOLVED" && (
+                        {canAck && alert.status !== "RESOLVED" && (
                           <Button
                             type="button"
                             variant="outline"
-                            className="h-7 px-2.5 text-[11px]"
+                            size="sm"
                             data-testid={`resolve-alert-btn-${alert.id}`}
                             disabled={isActing}
                             onClick={() => {
                               void onResolveAlert(alert.id);
                             }}
                           >
-                            手动恢复 (RESOLVE)
+                            {tx("手动恢复", "Resolve")}
+                          </Button>
+                        )}
+
+                        {canAck && onConvertWorkItem && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="border-xblue/40 text-xblue hover:bg-xblue-soft"
+                            data-testid={`convert-alert-workitem-btn-${alert.id}`}
+                            disabled={isConverting}
+                            onClick={() => {
+                              void onConvertWorkItem(alert);
+                            }}
+                          >
+                            <Kanban className="h-3 w-3" />
+                            {isConverting
+                              ? tx("创建中…", "Creating…")
+                              : tx("转工作项", "Convert to Work Item")}
                           </Button>
                         )}
 
                         <Button
                           type="button"
                           variant="ghost"
-                          className="h-7 px-2 text-[11px]"
+                          size="sm"
                           data-testid={`open-alert-detail-btn-${alert.id}`}
                           onClick={() => onSelectAlert(alert.id)}
                         >
                           <Eye className="h-3.5 w-3.5" />
-                          详情
+                          {tx("详情", "Details")}
                         </Button>
                       </div>
                     </td>

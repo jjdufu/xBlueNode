@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Layers } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   xblueviewApi,
   type WidgetDataResponse,
   type WidgetRecord,
 } from "@/lib/api/xblueview";
+import { useTheme } from "@/lib/theme";
 import {
   buildColumnIndexMap,
   formatDisplayValue,
@@ -19,6 +21,7 @@ import {
 export interface FloorPlanWidgetProps {
   widget: WidgetRecord;
   data: WidgetDataResponse | null;
+  isDark?: boolean;
   editable?: boolean;
   onSelectNode?: (node: SelectedNodeContext) => void;
   onCrossFilter?: (field: string, value: unknown) => void;
@@ -38,10 +41,15 @@ interface FloorMarker {
 export function FloorPlanWidget({
   widget,
   data,
+  isDark,
   editable = false,
   onSelectNode,
   onCrossFilter,
 }: FloorPlanWidgetProps) {
+  const { tx } = useI18n();
+  const { isDark: themeDark } = useTheme();
+  const effectiveDark = isDark ?? themeDark;
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [loadErr, setLoadErr] = useState(false);
@@ -113,11 +121,18 @@ export function FloorPlanWidget({
       const title = String(getCell(r, colMap, "title", 3) ?? nodeKey);
       const override = dragOverrides[nodeId];
       const xRatio =
-        override?.xRatio ?? toNumericValue(getCell(r, colMap, "x_ratio", 4)) ?? 0.5;
+        override?.xRatio ??
+        toNumericValue(getCell(r, colMap, "x_ratio", 4)) ??
+        0.5;
       const yRatio =
-        override?.yRatio ?? toNumericValue(getCell(r, colMap, "y_ratio", 5)) ?? 0.5;
-      const metricValue = toNumericValue(getCell(r, colMap, "metric_value", 6));
-      const openAlerts = toNumericValue(getCell(r, colMap, "open_alerts", 7)) ?? 0;
+        override?.yRatio ??
+        toNumericValue(getCell(r, colMap, "y_ratio", 5)) ??
+        0.5;
+      const metricValue = toNumericValue(
+        getCell(r, colMap, "metric_value", 6)
+      );
+      const openAlerts =
+        toNumericValue(getCell(r, colMap, "open_alerts", 7)) ?? 0;
       return {
         nodeId,
         typeName,
@@ -140,10 +155,15 @@ export function FloorPlanWidget({
     const rect = el.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) return null;
     const xRatio = Number(
-      Math.max(0.02, Math.min(0.98, (clientX - rect.left) / rect.width)).toFixed(4)
+      Math.max(0.02, Math.min(0.98, (clientX - rect.left) / rect.width)).toFixed(
+        4
+      )
     );
     const yRatio = Number(
-      Math.max(0.02, Math.min(0.98, (clientY - rect.top) / rect.height)).toFixed(4)
+      Math.max(
+        0.02,
+        Math.min(0.98, (clientY - rect.top) / rect.height)
+      ).toFixed(4)
     );
     return { xRatio, yRatio };
   };
@@ -167,8 +187,10 @@ export function FloorPlanWidget({
     const finalPos = computeRatioFromPointer(e.clientX, e.clientY);
     const placements = markers.map((m) => ({
       node_id: m.nodeId,
-      x_ratio: m.nodeId === targetNodeId && finalPos ? finalPos.xRatio : m.xRatio,
-      y_ratio: m.nodeId === targetNodeId && finalPos ? finalPos.yRatio : m.yRatio,
+      x_ratio:
+        m.nodeId === targetNodeId && finalPos ? finalPos.xRatio : m.xRatio,
+      y_ratio:
+        m.nodeId === targetNodeId && finalPos ? finalPos.yRatio : m.yRatio,
     }));
     try {
       await xblueviewApi.putPlacements(assetId, placements);
@@ -187,13 +209,17 @@ export function FloorPlanWidget({
           void handlePointerUp(e);
         }
       }}
-      className="h-full relative rounded border border-border bg-muted/30 overflow-hidden select-none"
+      className={`h-full relative rounded border overflow-hidden select-none ${
+        effectiveDark
+          ? "border-zinc-800 bg-zinc-900/50"
+          : "border-border bg-muted/30"
+      }`}
       data-testid={`widget-floorplan-${widget.id}`}
     >
       {imageUrl && !loadErr ? (
         <img
           src={imageUrl}
-          alt={widget.title || "平面图"}
+          alt={widget.title || tx("平面图", "Floor plan")}
           className="w-full h-full object-contain pointer-events-none"
         />
       ) : (
@@ -206,7 +232,11 @@ export function FloorPlanWidget({
           }}
         >
           <Layers className="h-5 w-5 mb-1 opacity-50" />
-          <span>{assetId ? "平面图底图坐标视图" : "未绑定平面图资产"}</span>
+          <span>
+            {assetId
+              ? tx("平面坐标视图", "Coordinate Canvas")
+              : tx("未绑定平面图资产", "No floor plan asset bound")}
+          </span>
         </div>
       )}
 
@@ -242,7 +272,11 @@ export function FloorPlanWidget({
               top: `${m.yRatio * 100}%`,
               borderColor: color,
             }}
-            className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-md border-2 bg-background/95 px-2 py-1 text-[11px] shadow-sm transition-transform hover:scale-105 ${
+            className={`absolute -translate-x-1/2 -translate-y-1/2 rounded-md border-2 px-2 py-1 text-[11px] shadow-sm transition-transform hover:scale-105 ${
+              effectiveDark
+                ? "bg-zinc-900/95 text-zinc-100"
+                : "bg-background/95 text-foreground"
+            } ${
               editable ? "cursor-grab active:cursor-grabbing" : "cursor-pointer"
             } ${hasAlert ? "animate-pulse ring-2 ring-xblue" : ""}`}
             data-testid={`floorplan-marker-${m.nodeId}`}
@@ -253,7 +287,9 @@ export function FloorPlanWidget({
                 style={{ backgroundColor: color }}
               />
               <span className="truncate max-w-[96px]">{m.title}</span>
-              {hasAlert && <AlertTriangle className="h-3 w-3 text-xblue shrink-0" />}
+              {hasAlert && (
+                <AlertTriangle className="h-3 w-3 text-xblue shrink-0" />
+              )}
             </div>
             {m.metricValue !== null && (
               <div className="font-mono-tech text-[10px] text-muted-foreground">

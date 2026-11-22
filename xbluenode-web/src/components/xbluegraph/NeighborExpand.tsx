@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { Share2 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   xblueApi,
   type BlueNode,
   type SubgraphResponse,
   type TraversalDirection,
 } from "@/lib/api/xblue";
-import { Badge, Button, Input } from "@/components/ui/primitives";
+import { Badge, Button, Input, Select } from "@/components/ui/primitives";
 
 export interface NeighborExpandProps {
   nodes: BlueNode[];
@@ -21,6 +22,7 @@ export function NeighborExpand({
   knownLinkTypes,
   onMergeSubgraph,
 }: NeighborExpandProps) {
+  const { tx } = useI18n();
   const [targetId, setTargetId] = useState<string>(selectedNodeId ?? "");
   const [depth, setDepth] = useState<number>(1);
   const [direction, setDirection] = useState<TraversalDirection>("BOTH");
@@ -53,7 +55,7 @@ export function NeighborExpand({
   const handleExpand = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!targetId) {
-      setErrorMsg("请先选择起始业务节点");
+      setErrorMsg(tx("需指定起始节点", "Start node required"));
       return;
     }
     setLoading(true);
@@ -74,9 +76,14 @@ export function NeighborExpand({
         truncated: Boolean(res?.truncated),
       });
       setResultSummary(
-        `已返回 ${safeNodes.length} 个邻居节点、${safeLinks.length} 条关系边${
-          res?.truncated ? "（已达截断上限）" : ""
-        }`
+        tx(
+          `已合并 ${safeNodes.length} 节点 · ${safeLinks.length} 关系${
+            res?.truncated ? "（截断）" : ""
+          }`,
+          `Merged ${safeNodes.length} nodes · ${safeLinks.length} edges${
+            res?.truncated ? " (truncated)" : ""
+          }`
+        )
       );
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -94,70 +101,73 @@ export function NeighborExpand({
       <div className="border-b border-border pb-2">
         <h3 className="font-semibold flex items-center gap-1.5">
           <Share2 className="h-3.5 w-3.5 text-xblue" />
-          多跳邻居扩展
+          {tx("多跳邻居扩展", "Multi-Hop Expansion")}
         </h3>
-        <p className="text-[11px] text-muted-foreground mt-0.5">
-          支持 1～4 跳有向或双向遍历及关系类型过滤，增量去重合并至当前画布
-        </p>
       </div>
 
       <div className="space-y-1">
-        <label className="text-muted-foreground block">中心节点</label>
-        <select
+        <label className="text-muted-foreground block">
+          {tx("中心节点", "Center Node")}
+        </label>
+        <Select
           value={targetId}
           onChange={(e) => setTargetId(e.target.value)}
-          className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-xs"
+          className="w-full"
           data-testid="neighbor-target-select"
         >
-          <option value="">请选择节点</option>
+          <option value="">{tx("未指定", "None")}</option>
           {nodes.map((n) => (
             <option key={n.id} value={n.id}>
               {n.title} ({n.node_key} · {n.type_name})
             </option>
           ))}
-        </select>
+        </Select>
       </div>
 
       <div className="grid grid-cols-2 gap-2">
         <div className="space-y-1">
-          <label className="text-muted-foreground block">扩展跳数 (1..4)</label>
-          <select
+          <label className="text-muted-foreground block">
+            {tx("扩展跳数", "Hops")}
+          </label>
+          <Select
             value={depth}
             onChange={(e) => setDepth(Number(e.target.value))}
-            className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
+            className="w-full font-mono-tech"
             data-testid="neighbor-depth-select"
           >
             {[1, 2, 3, 4].map((d) => (
               <option key={d} value={d}>
-                {d} 跳
+                {tx(`${d} 跳`, `${d} Hops`)}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div className="space-y-1">
-          <label className="text-muted-foreground block">遍历方向</label>
-          <select
+          <label className="text-muted-foreground block">
+            {tx("遍历方向", "Direction")}
+          </label>
+          <Select
             value={direction}
             onChange={(e) => setDirection(e.target.value as TraversalDirection)}
-            className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
+            className="w-full font-mono-tech"
             data-testid="neighbor-direction-select"
           >
-            <option value="BOTH">双向 (BOTH)</option>
-            <option value="OUT">出边下游 (OUT)</option>
-            <option value="IN">入边上游 (IN)</option>
-          </select>
+            <option value="BOTH">{tx("双向", "Both")}</option>
+            <option value="OUT">{tx("下游出边", "Outbound")}</option>
+            <option value="IN">{tx("上游入边", "Inbound")}</option>
+          </Select>
         </div>
       </div>
 
       <div className="space-y-1">
         <label className="text-muted-foreground block">
-          关系类型过滤（逗号分隔，留空不限）
+          {tx("关系类型过滤", "Relation Filter")}
         </label>
         <Input
           value={linkTypesInput}
           onChange={(e) => setLinkTypesInput(e.target.value)}
-          placeholder="例如 SUPPLIES,FULFILLS"
+          placeholder="SUPPLIES,FULFILLS"
           className="font-mono-tech text-xs"
           data-testid="neighbor-link-types-input"
         />
@@ -172,7 +182,10 @@ export function NeighborExpand({
               >
                 <Badge
                   variant={
-                    linkTypesInput.split(",").map((s) => s.trim()).includes(lt)
+                    linkTypesInput
+                      .split(",")
+                      .map((s) => s.trim())
+                      .includes(lt)
                       ? "xblue"
                       : "outline"
                   }
@@ -186,7 +199,9 @@ export function NeighborExpand({
       </div>
 
       <div className="space-y-1">
-        <label className="text-muted-foreground block">返回节点上限</label>
+        <label className="text-muted-foreground block">
+          {tx("返回节点上限", "Node Limit")}
+        </label>
         <Input
           type="number"
           min={10}
@@ -219,7 +234,9 @@ export function NeighborExpand({
         data-testid="neighbor-expand-submit"
       >
         <Share2 className="h-3.5 w-3.5" />
-        {loading ? "正在查询并合并邻居..." : "执行多跳扩展并合并画布"}
+        {loading
+          ? tx("扩展中…", "Expanding…")
+          : tx("扩展邻居", "Expand Neighbors")}
       </Button>
     </form>
   );

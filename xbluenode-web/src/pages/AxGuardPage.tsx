@@ -37,28 +37,78 @@ import { PolicyEditor } from "@/components/axguard/PolicyEditor";
 import { RolesPanel } from "@/components/axguard/RolesPanel";
 import { RowPolicyEditor } from "@/components/axguard/RowPolicyEditor";
 import { UsersPanel } from "@/components/axguard/UsersPanel";
-import { Badge, Card } from "@/components/ui/primitives";
-import { cn } from "@/lib/utils";
+import { Badge, Card, PageHeader, Tabs } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
 
 interface AxGuardTabSpec {
   readonly key: AxGuardTabKey;
-  readonly label: string;
+  readonly zhLabel: string;
+  readonly enLabel: string;
   readonly icon: typeof Users;
   readonly access: "admin" | "audit" | "grants";
 }
 
 const AXGUARD_TABS: readonly AxGuardTabSpec[] = [
-  { key: "users", label: "用户管理", icon: Users, access: "admin" },
-  { key: "roles", label: "角色与权限", icon: Shield, access: "admin" },
-  { key: "depts", label: "部门树", icon: FolderTree, access: "admin" },
-  { key: "policies", label: "ABAC 策略", icon: Code2, access: "admin" },
-  { key: "row_policies", label: "行级策略", icon: Filter, access: "admin" },
-  { key: "column_policies", label: "列脱敏", icon: EyeOff, access: "admin" },
-  { key: "grants", label: "跨部门授权", icon: FileKey2, access: "grants" },
-  { key: "audit", label: "审计日志", icon: ScrollText, access: "audit" },
+  {
+    key: "users",
+    zhLabel: "用户管理",
+    enLabel: "Users",
+    icon: Users,
+    access: "admin",
+  },
+  {
+    key: "roles",
+    zhLabel: "角色与权限",
+    enLabel: "Roles & Permissions",
+    icon: Shield,
+    access: "admin",
+  },
+  {
+    key: "depts",
+    zhLabel: "部门树",
+    enLabel: "Departments",
+    icon: FolderTree,
+    access: "admin",
+  },
+  {
+    key: "policies",
+    zhLabel: "ABAC 策略",
+    enLabel: "ABAC Policies",
+    icon: Code2,
+    access: "admin",
+  },
+  {
+    key: "row_policies",
+    zhLabel: "行级策略",
+    enLabel: "Row Policies",
+    icon: Filter,
+    access: "admin",
+  },
+  {
+    key: "column_policies",
+    zhLabel: "列脱敏",
+    enLabel: "Column Masking",
+    icon: EyeOff,
+    access: "admin",
+  },
+  {
+    key: "grants",
+    zhLabel: "跨部门授权",
+    enLabel: "Cross-Dept Grants",
+    icon: FileKey2,
+    access: "grants",
+  },
+  {
+    key: "audit",
+    zhLabel: "审计日志",
+    enLabel: "Audit Logs",
+    icon: ScrollText,
+    access: "audit",
+  },
 ];
 
 export function AxGuardPage() {
+  const { isZh, tx } = useI18n();
   const [me, setMe] = useState<MeResponse | null>(() => getCachedMe());
   const [meResolved, setMeResolved] = useState<boolean>(
     () => getCachedMe() !== null
@@ -176,41 +226,78 @@ export function AxGuardPage() {
       ) {
         setNodeTypes(schemaRes.value.node_types);
       }
-    } else if (hasGrantsAccess) {
-      const [gRes, dsRes] = await Promise.allSettled([
-        axguardApi.listGrants(),
-        axhubApi.listDatasets({ limit: 100 }),
+    } else if (hasGrantsAccess || hasAuditRead) {
+      const [gRes, dsRes, dRes] = await Promise.allSettled([
+        hasGrantsAccess ? axguardApi.listGrants() : Promise.resolve([]),
+        hasGrantsAccess
+          ? axhubApi.listDatasets({ limit: 100 })
+          : Promise.resolve({ items: [], next_cursor: null }),
+        hasGrantsAccess ? axguardApi.listDepartments() : Promise.resolve([]),
       ]);
       if (gRes.status === "fulfilled") setGrants(gRes.value);
       if (dsRes.status === "fulfilled" && Array.isArray(dsRes.value?.items)) {
         setDatasets(dsRes.value.items);
       }
+      if (dRes.status === "fulfilled") setDepartments(dRes.value);
     }
-  }, [hasGuardAdmin, hasGrantsAccess]);
+  }, [hasAuditRead, hasGuardAdmin, hasGrantsAccess]);
 
   useEffect(() => {
     if (!meResolved) return;
     void loadCoreGovernanceData();
   }, [meResolved, loadCoreGovernanceData]);
 
-  const canAccessTab = (spec: AxGuardTabSpec): boolean => {
-    if (spec.access === "admin") return hasGuardAdmin;
-    if (spec.access === "audit") return hasAuditRead;
-    return hasGrantsAccess;
-  };
+  const canAccessTab = useCallback(
+    (spec: AxGuardTabSpec): boolean => {
+      if (spec.access === "admin") return hasGuardAdmin;
+      if (spec.access === "audit") return hasAuditRead;
+      return hasGrantsAccess;
+    },
+    [hasAuditRead, hasGrantsAccess, hasGuardAdmin]
+  );
+
+  const tabItems = useMemo(
+    () =>
+      AXGUARD_TABS.map((tab) => {
+        const Icon = tab.icon;
+        const allowed = canAccessTab(tab);
+        return {
+          key: tab.key,
+          label: (
+            <span className="inline-flex items-center gap-1">
+              <span>{isZh ? tab.zhLabel : tab.enLabel}</span>
+              {!allowed && <Lock className="h-2.5 w-2.5" />}
+            </span>
+          ),
+          icon: <Icon className="h-3.5 w-3.5" />,
+          disabled: !allowed,
+          testId: `axguard-tab-${tab.key}`,
+        };
+      }),
+    [canAccessTab, isZh]
+  );
 
   if (!hasGuardAdmin && !hasAuditRead && !hasGrantsAccess) {
     return (
       <div className="space-y-4">
-        <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
-          <ShieldCheck className="h-5 w-5 text-xblue" />
-          AxGuard · 安全治理中心
-        </h1>
+        <PageHeader
+          title={
+            <span className="inline-flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-xblue shrink-0" />
+              {tx("AxGuard · 安全治理中心", "AxGuard · Security Governance")}
+            </span>
+          }
+        />
         <Card className="p-8 text-center space-y-2">
           <Lock className="h-6 w-6 text-muted-foreground mx-auto" />
-          <div className="text-sm font-semibold">权限不足</div>
+          <div className="text-sm font-semibold">
+            {tx("权限不足", "Access Denied")}
+          </div>
           <p className="text-xs text-muted-foreground">
-            需要 GUARD_ADMIN 或 AUDIT_READ 权限访问安全治理与审计验真控制台。
+            {tx(
+              "需要安全治理或审计查阅权限。",
+              "Requires GUARD_ADMIN or AUDIT_READ permission."
+            )}
           </p>
         </Card>
       </div>
@@ -219,68 +306,20 @@ export function AxGuardPage() {
 
   return (
     <div className="space-y-5" data-testid="axguard-page">
-      {/* Page Header */}
-      <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold tracking-tight flex items-center gap-2">
-              <ShieldCheck className="h-5 w-5 text-xblue" />
-              AxGuard · 安全治理中心
-            </h1>
-            <Badge variant="xblue">Cedar ABAC · RLS · SHA-256 Chain</Badge>
-          </div>
-          <p className="text-xs text-muted-foreground">
-            统一管控租户身份认证、RBAC 角色矩阵、部门层级、Cedar 资源策略、行列级动态脱敏、跨部门数据授权与防篡改审计链。
-          </p>
-        </div>
-
-        {me && me.username && (
-          <div className="flex items-center gap-2 text-xs font-mono-tech">
-            <Badge variant="outline">租户: {me.tenant_id}</Badge>
-            <Badge variant="outline">
-              主体: {me.username} ({me.dept_id})
-            </Badge>
-          </div>
-        )}
-      </header>
+      <PageHeader
+        title={
+          <span className="inline-flex items-center gap-2">
+            <ShieldCheck className="h-4 w-4 text-xblue shrink-0" />
+            {tx("AxGuard · 安全治理中心", "AxGuard · Security Governance")}
+          </span>
+        }
+        badges={
+          <Badge variant="xblue">Cedar ABAC · RLS · SHA-256 Chain</Badge>
+        }
+      />
 
       {/* 8-Panel Tab Bar */}
-      <div
-        role="tablist"
-        aria-label="AxGuard 安全治理模块"
-        className="flex flex-wrap items-center gap-1 rounded-md border border-border bg-muted/40 p-1"
-      >
-        {AXGUARD_TABS.map((tab) => {
-          const Icon = tab.icon;
-          const allowed = canAccessTab(tab);
-          const active = activeTab === tab.key;
-          return (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              disabled={!allowed}
-              data-testid={`axguard-tab-${tab.key}`}
-              onClick={() => {
-                if (allowed) {
-                  setActiveTab(tab.key);
-                }
-              }}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer disabled:opacity-40 disabled:pointer-events-none",
-                active
-                  ? "bg-background text-foreground border border-border shadow-xs"
-                  : "text-muted-foreground hover:text-foreground hover:bg-background/50"
-              )}
-            >
-              <Icon className={cn("h-3.5 w-3.5", active && "text-xblue")} />
-              {tab.label}
-              {!allowed && <Lock className="h-2.5 w-2.5 ml-0.5" />}
-            </button>
-          );
-        })}
-      </div>
+      <Tabs items={tabItems} value={activeTab} onChange={setActiveTab} />
 
       {/* Active Sub-Panel */}
       <section>
@@ -309,6 +348,7 @@ export function AxGuardPage() {
             policies={policies}
             users={users}
             departments={departments}
+            datasets={datasets}
             onReload={loadCoreGovernanceData}
           />
         )}
@@ -348,7 +388,9 @@ export function AxGuardPage() {
           />
         )}
 
-        {activeTab === "audit" && hasAuditRead && <AuditExplorer />}
+        {activeTab === "audit" && hasAuditRead && (
+          <AuditExplorer datasets={datasets} users={users} />
+        )}
       </section>
     </div>
   );

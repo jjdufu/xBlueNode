@@ -1,17 +1,31 @@
-import { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import { BookOpen, Database, Plus, Search, Trash2 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   axhubApi,
   type CatalogSearchHit,
   type GlossaryTerm,
 } from "@/lib/api/axhub";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import type { SourceKind } from "@/lib/api/enums";
+import { usePrincipal } from "@/lib/permissions";
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  Input,
+} from "@/components/ui/primitives";
 
 export interface CatalogSearchProps {
   onSelectDataset?: (datasetId: string) => void;
 }
 
 export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
+  const { tx, tEnum, fmtNum } = useI18n();
+  const { canAny } = usePrincipal();
+  const canEditGlossary = canAny(["DATA_ADMIN", "DATA_SYNC"]);
+
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<CatalogSearchHit[]>([]);
   const [searchedOnce, setSearchedOnce] = useState(false);
@@ -21,14 +35,32 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
   const [termName, setTermName] = useState("");
   const [termDef, setTermDef] = useState("");
   const [termSynonyms, setTermSynonyms] = useState("");
+  const [pendingDeleteTerm, setPendingDeleteTerm] =
+    useState<GlossaryTerm | null>(null);
+  const [deletingTerm, setDeletingTerm] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const formatSourceKind = (kind: SourceKind): string => {
+    switch (kind) {
+      case "NOSQL_COLLECTION":
+        return tx("文档集合", "NoSQL Collection");
+      case "TIMESERIES":
+        return tx("时序表", "Time-Series");
+      case "STREAM":
+        return tx("流数据", "Stream");
+      case "API_RESOURCE":
+        return tx("接口资源", "API Resource");
+      default:
+        return tEnum(kind);
+    }
+  };
 
   const loadGlossary = useCallback(async () => {
     try {
       const res = await axhubApi.listGlossary();
       setGlossary(Array.isArray(res?.items) ? res.items : []);
     } catch {
-      // Ignore empty initial glossary error
+      // Non-blocking
     }
   }, []);
 
@@ -57,7 +89,7 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
 
   const handleCreateTerm = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!termName.trim()) return;
+    if (!canEditGlossary || !termName.trim()) return;
     setErrorMsg(null);
     try {
       const synonyms = termSynonyms
@@ -78,38 +110,50 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
     }
   };
 
-  const handleDeleteTerm = async (id: string) => {
+  const handleConfirmDeleteTerm = async () => {
+    if (!pendingDeleteTerm || !canEditGlossary) return;
+    setDeletingTerm(true);
     setErrorMsg(null);
     try {
-      await axhubApi.deleteGlossaryTerm(id);
+      await axhubApi.deleteGlossaryTerm(pendingDeleteTerm.id);
+      setPendingDeleteTerm(null);
       await loadGlossary();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingTerm(false);
     }
   };
 
   return (
     <div className="space-y-4" data-testid="catalog-search-panel">
       {errorMsg && (
-        <div className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs">
+        <div
+          className="rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-600 dark:text-red-400"
+          data-testid="catalog-error-banner"
+        >
           {errorMsg}
         </div>
       )}
 
       {/* Catalog Full-Text Search */}
       <Card className="p-4 space-y-3">
-        <div className="border-b border-border pb-2.5">
-          <h2 className="text-sm font-semibold">全域数据资产目录检索</h2>
-          <p className="text-xs text-muted-foreground">
-            联合检索数据集名称、描述、标签、列级元数据与业务术语同义词扩展
-          </p>
+        <div className="flex items-center justify-between border-b border-border pb-2.5">
+          <h2 className="text-sm font-semibold">
+            {tx("数据资产目录检索", "Data Asset Catalog")}
+          </h2>
+          {searchedOnce && (
+            <Badge variant="neutral">
+              {fmtNum(hits.length, 0)} {tx("项", "hits")}
+            </Badge>
+          )}
         </div>
 
-        <form onSubmit={handleSearchSubmit} className="flex gap-2">
+        <form onSubmit={handleSearchSubmit} className="flex items-center gap-2">
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="输入表名、列名、业务术语或标签（如 orders）..."
+            placeholder="demo_orders / warehouse_code / supply_chain"
             data-testid="catalog-search-input"
           />
           <Button
@@ -118,19 +162,14 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
             data-testid="catalog-search-btn"
           >
             <Search className="h-3.5 w-3.5" />
-            {searching ? "检索中..." : "搜索目录"}
+            {searching ? tx("检索中…", "Searching…") : tx("搜索", "Search")}
           </Button>
         </form>
 
         {searchedOnce && (
           <div className="space-y-2 pt-1" data-testid="catalog-search-results">
-            <div className="text-xs text-muted-foreground">
-              检索命中 {hits.length} 个数据集资产
-            </div>
             {hits.length === 0 ? (
-              <div className="rounded border border-dashed border-border py-6 text-center text-xs text-muted-foreground">
-                未找到匹配的目录资产。
-              </div>
+              <EmptyState title={tx("无匹配资产", "No matching assets")} />
             ) : (
               <div className="space-y-2">
                 {hits.map((hit) => (
@@ -140,19 +179,21 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
                     data-testid={`catalog-hit-${hit.name}`}
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <div className="flex items-center gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
                         <Database className="h-3.5 w-3.5 text-xblue" />
                         <span className="font-mono-tech font-semibold">
                           {hit.name}
                         </span>
-                        {hit.display_name && (
+                        {hit.display_name && hit.display_name !== hit.name && (
                           <span className="text-muted-foreground">
-                            ({hit.display_name})
+                            {hit.display_name}
                           </span>
                         )}
-                        <Badge variant="outline">{hit.source_kind}</Badge>
+                        <Badge variant="outline">
+                          {formatSourceKind(hit.source_kind)}
+                        </Badge>
                         <span className="font-mono-tech text-muted-foreground">
-                          {hit.row_count} 行
+                          {fmtNum(hit.row_count, 0)} {tx("行", "rows")}
                         </span>
                       </div>
 
@@ -160,11 +201,11 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
                         <Button
                           type="button"
                           variant="outline"
-                          className="px-2.5 py-1 text-[11px]"
+                          size="sm"
                           onClick={() => onSelectDataset(hit.id)}
                           data-testid={`catalog-open-${hit.name}`}
                         >
-                          查看数据集
+                          {tx("查看", "Inspect")}
                         </Button>
                       )}
                     </div>
@@ -177,7 +218,7 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
                       {hit.matched_columns.length > 0 && (
                         <div className="flex flex-wrap items-center gap-1">
                           <span className="text-[11px] text-muted-foreground">
-                            命中列:
+                            {tx("命中列", "Columns")}:
                           </span>
                           {hit.matched_columns.map((col) => (
                             <Badge
@@ -194,7 +235,7 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
                       {hit.tags.length > 0 && (
                         <div className="flex flex-wrap items-center gap-1">
                           <span className="text-[11px] text-muted-foreground">
-                            标签:
+                            {tx("标签", "Tags")}:
                           </span>
                           {hit.tags.map((tag) => (
                             <Badge key={tag} variant="neutral">
@@ -214,14 +255,14 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
 
       {/* Business Glossary Management */}
       <Card className="p-4 space-y-3" data-testid="glossary-section">
-        <div className="flex items-center gap-2 border-b border-border pb-2.5">
-          <BookOpen className="h-4 w-4 text-xblue" />
-          <div>
-            <h2 className="text-sm font-semibold">业务术语表（Glossary）</h2>
-            <p className="text-xs text-muted-foreground">
-              定义标准业务术语与同义词，自动增强目录检索与智能问数语义对齐
-            </p>
+        <div className="flex items-center justify-between border-b border-border pb-2.5">
+          <div className="flex items-center gap-2">
+            <BookOpen className="h-4 w-4 text-xblue" />
+            <h2 className="text-sm font-semibold">
+              {tx("业务术语表", "Business Glossary")}
+            </h2>
           </div>
+          <Badge variant="neutral">{fmtNum(glossary.length, 0)}</Badge>
         </div>
 
         <form
@@ -230,32 +271,41 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
         >
           <Input
             value={termName}
+            disabled={!canEditGlossary}
             onChange={(e) => setTermName(e.target.value)}
-            placeholder="标准术语名称 *"
+            placeholder={tx("履约订单", "Fulfilled Order")}
             data-testid="glossary-term-input"
           />
           <Input
             value={termDef}
+            disabled={!canEditGlossary}
             onChange={(e) => setTermDef(e.target.value)}
-            placeholder="业务口径定义"
+            placeholder={tx(
+              "已完成支付并分配仓库的订单",
+              "Paid order assigned to a warehouse"
+            )}
             data-testid="glossary-definition-input"
           />
           <Input
             value={termSynonyms}
+            disabled={!canEditGlossary}
             onChange={(e) => setTermSynonyms(e.target.value)}
-            placeholder="同义词（逗号分隔，如 履约单,订单）"
+            placeholder="demo_orders, orders"
             data-testid="glossary-synonyms-input"
           />
-          <Button type="submit" variant="outline" data-testid="glossary-add-btn">
+          <Button
+            type="submit"
+            variant="outline"
+            disabled={!canEditGlossary || !termName.trim()}
+            data-testid="glossary-add-btn"
+          >
             <Plus className="h-3.5 w-3.5" />
-            添加术语
+            {tx("新增术语", "Add Term")}
           </Button>
         </form>
 
         {glossary.length === 0 ? (
-          <div className="text-xs text-muted-foreground py-2">
-            暂无已登记的业务术语。
-          </div>
+          <EmptyState title={tx("暂无业务术语", "No glossary terms")} />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
             {glossary.map((item) => (
@@ -264,8 +314,8 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
                 className="rounded border border-border p-2.5 text-xs flex items-start justify-between gap-2 bg-background"
                 data-testid={`glossary-item-${item.term}`}
               >
-                <div className="space-y-1">
-                  <div className="font-semibold flex items-center gap-2">
+                <div className="space-y-1 min-w-0">
+                  <div className="font-semibold flex flex-wrap items-center gap-1.5">
                     <span>{item.term}</span>
                     {item.synonyms.map((syn) => (
                       <Badge key={syn} variant="neutral">
@@ -274,14 +324,18 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
                     ))}
                   </div>
                   {item.definition && (
-                    <div className="text-muted-foreground">{item.definition}</div>
+                    <div className="text-muted-foreground">
+                      {item.definition}
+                    </div>
                   )}
                 </div>
                 <Button
                   type="button"
                   variant="ghost"
-                  className="px-2 py-1 text-xs"
-                  onClick={() => void handleDeleteTerm(item.id)}
+                  size="sm"
+                  disabled={!canEditGlossary}
+                  onClick={() => setPendingDeleteTerm(item)}
+                  aria-label={tx("删除", "Delete")}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
@@ -290,6 +344,18 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
           </div>
         )}
       </Card>
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteTerm)}
+        onClose={() => setPendingDeleteTerm(null)}
+        onConfirm={() => void handleConfirmDeleteTerm()}
+        loading={deletingTerm}
+        title={tx("删除业务术语", "Delete Term")}
+        description={tx(
+          `确定删除业务术语「${pendingDeleteTerm?.term ?? ""}」？`,
+          `Delete glossary term "${pendingDeleteTerm?.term ?? ""}"?`
+        )}
+      />
     </div>
   );
 }

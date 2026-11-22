@@ -7,9 +7,17 @@ import {
   RefreshCw,
   RotateCcw,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import type { FlowRunRecord, StartFlowRunRequest } from "@/lib/api/axflow";
 import type { Environment, RunStatus } from "@/lib/api/enums";
-import { Badge, Button, Input, Textarea } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Input,
+  Select,
+  Textarea,
+} from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 export function formatDurationMs(
@@ -88,6 +96,10 @@ export function RunHistory({
   onRetryRun,
   onRefresh,
 }: RunHistoryProps) {
+  const { tx } = useI18n();
+  const { can } = usePrincipal();
+  const canRun = can("FLOW_RUN");
+
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [payloadText, setPayloadText] = useState("{}");
@@ -95,13 +107,15 @@ export function RunHistory({
 
   const selectedRun = runs.find((r) => r.id === selectedRunId) ?? null;
   const canCancel =
+    canRun &&
     selectedRun !== null &&
     (selectedRun.status === "PENDING" ||
       selectedRun.status === "RUNNING" ||
       selectedRun.status === "WAITING_APPROVAL");
-  const canRetry = selectedRun !== null && selectedRun.status === "FAILED";
+  const canRetry = canRun && selectedRun !== null && selectedRun.status === "FAILED";
 
   const triggerManualRun = async () => {
+    if (!canRun) return;
     let parsedPayload: Record<string, unknown> = {};
     if (payloadText.trim().length > 0) {
       try {
@@ -111,13 +125,13 @@ export function RunHistory({
           parsed === null ||
           Array.isArray(parsed)
         ) {
-          setPayloadErr("触发载荷必须是 JSON 对象");
+          setPayloadErr(tx("载荷需为 JSON 对象", "Payload must be JSON object"));
           return;
         }
         parsedPayload = parsed as Record<string, unknown>;
         setPayloadErr(null);
       } catch {
-        setPayloadErr("触发载荷 JSON 语法错误");
+        setPayloadErr(tx("JSON 语法错误", "Invalid JSON"));
         return;
       }
     }
@@ -131,43 +145,51 @@ export function RunHistory({
 
   return (
     <div
-      className="flex flex-col rounded-md border border-border bg-card text-card-foreground overflow-hidden"
+      className="flex flex-col h-[320px] rounded-md border border-border bg-card text-card-foreground overflow-hidden"
       data-testid="axflow-run-history"
     >
       {/* Run Control Header */}
-      <div className="p-3 border-b border-border space-y-2.5">
+      <div className="p-3 border-b border-border space-y-2 shrink-0">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-1.5">
-            <span className="text-xs font-semibold">运行历史与调度</span>
+            <span className="text-xs font-semibold">
+              {tx("运行历史", "Run History")}
+            </span>
             <Badge variant="neutral">{runs.length}</Badge>
           </div>
           <div className="flex items-center gap-1.5">
-            <select
+            <Select
               data-testid="run-history-env-select"
               value={runEnvironment}
               onChange={(e) =>
                 onChangeEnvironment(e.target.value as Environment)
               }
-              className="h-7 rounded border border-input bg-background px-2 font-mono-tech text-[11px]"
+              className="h-7 px-2 font-mono-tech text-[11px]"
             >
-              <option value="TEST">TEST 环境</option>
-              <option value="PROD">PROD 环境</option>
-            </select>
-            <Button
-              type="button"
-              className="h-7 px-2.5 py-1 text-xs"
-              data-testid="run-history-start-btn"
-              disabled={startingRun}
-              onClick={() => void triggerManualRun()}
-            >
-              <Play className="h-3 w-3" />
-              {startingRun ? "启动中..." : "立即执行"}
-            </Button>
+              <option value="TEST">TEST</option>
+              <option value="PROD">PROD</option>
+            </Select>
+            {canRun && (
+              <Button
+                type="button"
+                size="sm"
+                className="h-7 px-2.5"
+                data-testid="run-history-start-btn"
+                disabled={startingRun}
+                onClick={() => void triggerManualRun()}
+              >
+                <Play className="h-3 w-3" />
+                {startingRun
+                  ? tx("启动中…", "Starting…")
+                  : tx("立即执行", "Run")}
+              </Button>
+            )}
             <Button
               type="button"
               variant="ghost"
-              className="h-7 px-2 py-1"
-              title="高级参数"
+              size="sm"
+              className="h-7 px-2"
+              title={tx("运行参数", "Run Options")}
               onClick={() => setAdvancedOpen((v) => !v)}
             >
               {advancedOpen ? (
@@ -179,8 +201,9 @@ export function RunHistory({
             <Button
               type="button"
               variant="ghost"
-              className="h-7 px-2 py-1"
-              title="刷新运行列表"
+              size="sm"
+              className="h-7 px-2"
+              title={tx("刷新列表", "Refresh")}
               data-testid="refresh-runs-btn"
               onClick={() => void onRefresh()}
             >
@@ -189,23 +212,62 @@ export function RunHistory({
           </div>
         </div>
 
+        {(canCancel || canRetry) && selectedRun && (
+          <div className="flex items-center justify-between rounded border border-border bg-muted/30 px-2.5 py-1 text-[11px]">
+            <span className="font-mono-tech truncate">
+              #{selectedRun.id.slice(0, 8)}
+            </span>
+            <div className="flex items-center gap-1.5">
+              {canCancel && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-6 px-2 text-[11px]"
+                  data-testid="cancel-run-btn"
+                  onClick={() => void onCancelRun(selectedRun.id)}
+                >
+                  <Ban className="h-3 w-3" />
+                  {tx("取消", "Cancel")}
+                </Button>
+              )}
+              {canRetry && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-6 px-2 text-[11px]"
+                  data-testid="retry-run-btn"
+                  onClick={() => void onRetryRun(selectedRun.id)}
+                >
+                  <RotateCcw className="h-3 w-3 text-xblue" />
+                  {tx("重试", "Retry")}
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Runs List & Optional Advanced Drawer */}
+      <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-border">
         {advancedOpen && (
-          <div className="rounded border border-border bg-muted/20 p-2.5 space-y-2 text-xs">
+          <div className="p-2.5 bg-muted/20 space-y-2 text-xs">
             <div>
               <label className="block text-[11px] text-muted-foreground mb-1">
-                幂等键 (idempotency_key, 可选)
+                {tx("幂等键", "Idempotency Key")}
               </label>
               <Input
                 data-testid="run-idempotency-input"
                 value={idempotencyKey}
                 onChange={(e) => setIdempotencyKey(e.target.value)}
-                placeholder="相同 (flow_id, key) 自动去重复用已有运行"
+                placeholder="batch-2026-01-31"
                 className="h-7 font-mono-tech text-xs"
               />
             </div>
             <div>
               <label className="block text-[11px] text-muted-foreground mb-1">
-                触发载荷 JSON (trigger.*)
+                {tx("触发载荷 JSON", "Payload JSON")}
               </label>
               <Textarea
                 data-testid="run-payload-textarea"
@@ -223,46 +285,9 @@ export function RunHistory({
           </div>
         )}
 
-        {(canCancel || canRetry) && selectedRun && (
-          <div className="flex items-center justify-between rounded border border-border bg-muted/30 px-2.5 py-1.5 text-[11px]">
-            <span className="font-mono-tech truncate">
-              当前选中: {selectedRun.id.slice(0, 8)}
-            </span>
-            <div className="flex items-center gap-1.5">
-              {canCancel && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-6 px-2 py-0 text-[11px]"
-                  data-testid="cancel-run-btn"
-                  onClick={() => void onCancelRun(selectedRun.id)}
-                >
-                  <Ban className="h-3 w-3" />
-                  取消运行
-                </Button>
-              )}
-              {canRetry && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="h-6 px-2 py-0 text-[11px]"
-                  data-testid="retry-run-btn"
-                  onClick={() => void onRetryRun(selectedRun.id)}
-                >
-                  <RotateCcw className="h-3 w-3 text-xblue" />
-                  失败重试
-                </Button>
-              )}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Runs List */}
-      <div className="max-h-80 overflow-y-auto divide-y divide-border">
         {runs.length === 0 ? (
-          <div className="py-10 text-center text-xs text-muted-foreground">
-            暂无运行记录，点击上方「运行流水线」或「立即执行」启动实例
+          <div className="h-full flex items-center justify-center p-6 text-center text-xs text-muted-foreground">
+            {tx("暂无运行记录", "No run records")}
           </div>
         ) : (
           runs.map((run) => {
@@ -300,7 +325,10 @@ export function RunHistory({
                     {run.trigger_source} · #{run.id.slice(0, 8)}
                   </span>
                   {run.idempotency_key && (
-                    <span className="truncate max-w-28" title={run.idempotency_key}>
+                    <span
+                      className="truncate max-w-28"
+                      title={run.idempotency_key}
+                    >
                       key:{run.idempotency_key}
                     </span>
                   )}

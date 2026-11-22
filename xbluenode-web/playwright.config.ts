@@ -16,6 +16,7 @@ export default defineConfig({
   reporter: "list",
   use: {
     baseURL: "http://127.0.0.1:4173",
+    locale: "zh-CN",
     trace: "on-first-retry",
   },
   projects: [

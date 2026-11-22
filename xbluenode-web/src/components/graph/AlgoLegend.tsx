@@ -1,6 +1,13 @@
+import { useI18n } from "@/i18n";
+import { useTheme } from "@/lib/theme";
 import type { AlgoTopEntry } from "@/lib/api/xblue";
 import type { AlgoVisualMode } from "@/components/xbluegraph/AlgoPanel";
-import type { GraphColorMode } from "./SigmaCanvas";
+import {
+  DARK_TYPE_PALETTE,
+  LIGHT_TYPE_PALETTE,
+  resolveNodeTypeColor,
+  type GraphColorMode,
+} from "./SigmaCanvas";
 
 export interface AlgoLegendProps {
   colorMode: GraphColorMode;
@@ -8,26 +15,8 @@ export interface AlgoLegendProps {
   distinctTypes: string[];
   algoMode: AlgoVisualMode;
   algoEntries: AlgoTopEntry[];
-  isDark: boolean;
+  isDark?: boolean;
 }
-
-const LIGHT_PALETTE = [
-  "#2563eb",
-  "#09090b",
-  "#52525b",
-  "#1d4ed8",
-  "#3f3f46",
-  "#60a5fa",
-];
-
-const DARK_PALETTE = [
-  "#3b82f6",
-  "#fafafa",
-  "#a1a1aa",
-  "#60a5fa",
-  "#d4d4d8",
-  "#93c5fd",
-];
 
 export function AlgoLegend({
   colorMode,
@@ -35,9 +24,12 @@ export function AlgoLegend({
   distinctTypes,
   algoMode,
   algoEntries,
-  isDark,
+  isDark: isDarkProp,
 }: AlgoLegendProps) {
-  const palette = isDark ? DARK_PALETTE : LIGHT_PALETTE;
+  const { tx } = useI18n();
+  const { isDark: themeDark } = useTheme();
+  const isDark = isDarkProp ?? themeDark;
+  const palette = isDark ? DARK_TYPE_PALETTE : LIGHT_TYPE_PALETTE;
 
   if (colorMode === "METRIC") {
     return (
@@ -46,16 +38,22 @@ export function AlgoLegend({
         data-testid="algo-legend"
       >
         <span className="font-medium text-foreground">
-          指标热度 ({colorMetricKey || "—"}):
+          {tx("指标热度", "Metric Heat")} ({colorMetricKey || "—"}):
         </span>
         <span className="inline-flex items-center gap-1">
-          <span className="h-2.5 w-2.5 rounded-full bg-[#71717a]" /> 低值
+          <span className="h-2.5 w-2.5 rounded-full bg-[#71717a]" />
+          {tx("低值", "Low")}
         </span>
         <span className="inline-flex items-center gap-1">
-          <span className="h-2.5 w-2.5 rounded-full bg-[#60a5fa]" /> 中值
+          <span className="h-2.5 w-2.5 rounded-full bg-[#06b6d4]" />
+          {tx("中值", "Medium")}
         </span>
         <span className="inline-flex items-center gap-1">
-          <span className="h-2.5 w-2.5 rounded-full bg-[#2563eb]" /> 高值
+          <span
+            className="h-2.5 w-2.5 rounded-full"
+            style={{ backgroundColor: isDark ? "#3b82f6" : "#2563eb" }}
+          />
+          {tx("高值", "High")}
         </span>
       </div>
     );
@@ -68,7 +66,7 @@ export function AlgoLegend({
           .map((e) => e.community)
           .filter((c): c is number => c !== null && c !== undefined)
       )
-    ).slice(0, 6);
+    ).slice(0, 8);
 
     return (
       <div
@@ -76,20 +74,30 @@ export function AlgoLegend({
         data-testid="algo-legend"
       >
         <span className="font-medium text-foreground">
-          图算法映射 ({algoMode}):
+          {tx("算法映射", "Algorithm Mapping")} ({algoMode}):
         </span>
         {communities.length > 0 ? (
           communities.map((c) => (
-            <span key={c} className="inline-flex items-center gap-1 font-mono-tech">
+            <span
+              key={c}
+              className="inline-flex items-center gap-1 font-mono-tech"
+            >
               <span
                 className="h-2.5 w-2.5 rounded-full"
-                style={{ backgroundColor: palette[Math.abs(c) % palette.length] }}
+                style={{
+                  backgroundColor: palette[Math.abs(c) % palette.length],
+                }}
               />
               C-{c}
             </span>
           ))
         ) : (
-          <span>节点尺寸按算法中心性得分缩放</span>
+          <span>
+            {tx(
+              "节点尺寸按中心性得分缩放",
+              "Node size scaled by centrality score"
+            )}
+          </span>
         )}
       </div>
     );
@@ -100,15 +108,22 @@ export function AlgoLegend({
       className="flex flex-wrap items-center gap-3 px-3 py-1.5 border-t border-border text-[11px] text-muted-foreground"
       data-testid="algo-legend"
     >
-      <span className="font-medium text-foreground">节点类型:</span>
+      <span className="font-medium text-foreground">
+        {tx("节点类型", "Node Types")}:
+      </span>
       {distinctTypes.length === 0 ? (
-        <span>暂无类型</span>
+        <span>{tx("暂无类型", "No types")}</span>
       ) : (
         distinctTypes.map((t, idx) => (
-          <span key={t} className="inline-flex items-center gap-1 font-mono-tech">
+          <span
+            key={t}
+            className="inline-flex items-center gap-1 font-mono-tech"
+          >
             <span
               className="h-2.5 w-2.5 rounded-full"
-              style={{ backgroundColor: palette[idx % palette.length] }}
+              style={{
+                backgroundColor: resolveNodeTypeColor(t, idx, isDark),
+              }}
             />
             {t}
           </span>

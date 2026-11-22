@@ -11,7 +11,6 @@ import {
   RefreshCw,
   Rocket,
   Trash2,
-  X,
 } from "lucide-react";
 import {
   axopsApi,
@@ -23,12 +22,21 @@ import {
   type TemplatePackDetail,
   type TemplateUninstallResponse,
 } from "@/lib/api/axops";
-import { Badge, Button, Card } from "@/components/ui/primitives";
+import { xblueviewApi } from "@/lib/api/xblueview";
+import {
+  Badge,
+  Button,
+  Card,
+  Modal,
+  Select,
+  StatusBadge,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import {
   DEMO_SCENARIO_SPECS,
   TEMPLATE_CONFLICT_OPTIONS,
-  TEMPLATE_INSTALL_STATUS_LABELS,
 } from "./constants";
 import { summarizeTemplatePlanConflicts } from "./logic";
 
@@ -37,8 +45,15 @@ export interface TemplateGalleryProps {
 }
 
 export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
+  const { isZh, tx, fmtNum, fmtTime } = useI18n();
+  const { can } = usePrincipal();
+  const canWrite = canManageOps && can("OPS_ADMIN");
+
   const [templates, setTemplates] = useState<TemplateManifest[]>([]);
   const [installs, setInstalls] = useState<TemplateInstallRecord[]>([]);
+  const [existingDashboardSlugs, setExistingDashboardSlugs] = useState<
+    Set<string>
+  >(new Set());
   const [loading, setLoading] = useState(false);
 
   // Conflict strategy per pack
@@ -78,18 +93,31 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const [tplRes, instRes] = await Promise.all([
+      const [tplRes, instRes, dashRes] = await Promise.all([
         axopsApi.listTemplates(),
         axopsApi.listTemplateInstalls(),
+        xblueviewApi.listDashboards({ limit: 100 }).catch(() => ({
+          items: [],
+          next_cursor: null,
+        })),
       ]);
       setTemplates(Array.isArray(tplRes?.items) ? tplRes.items : []);
       setInstalls(Array.isArray(instRes?.items) ? instRes.items : []);
+      const slugs = new Set<string>();
+      for (const d of dashRes?.items ?? []) {
+        if (d.slug) slugs.add(d.slug);
+      }
+      setExistingDashboardSlugs(slugs);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "加载模板库数据失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("加载模板库失败", "Failed to load templates")
+      );
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [tx]);
 
   useEffect(() => {
     void loadAll();
@@ -102,7 +130,11 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
       const detail = await axopsApi.getTemplate(packId);
       setReadmeDetail(detail);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "读取模板说明失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("读取模板说明失败", "Failed to load template README")
+      );
     } finally {
       setReadmeLoadingId(null);
     }
@@ -121,10 +153,17 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
         ...prev.filter((item) => item.id !== planned.id),
       ]);
       setNoticeMsg(
-        `已生成模板包 ${packId} 安装计划（冲突策略: ${strategy}），请核对下方对象清单后点击「执行安装」`
+        tx(
+          `已生成模板包 ${packId} 安装计划（策略: ${strategy}）`,
+          `Generated install plan for ${packId} (strategy: ${strategy})`
+        )
       );
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "生成安装计划失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("生成安装计划失败", "Failed to plan template install")
+      );
     } finally {
       setPlanningPackId(null);
     }
@@ -146,13 +185,17 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
         setActivePlanRecord(applied);
       }
       setNoticeMsg(
-        `模板安装执行完成：${applied.pack_id} · 状态 ${applied.status}（已创建对象 ${Object.keys(applied.object_map ?? {}).length} 个）`
+        tx(
+          `模板安装完成：${applied.pack_id}（已物化 ${Object.keys(applied.object_map ?? {}).length} 个对象）`,
+          `Installed ${applied.pack_id} (${Object.keys(applied.object_map ?? {}).length} objects materialized)`
+        )
       );
+      await loadAll();
     } catch (err) {
       setErrorMsg(
         err instanceof Error
-          ? `安装中断（可点击断点续装恢复）: ${err.message}`
-          : "执行模板安装失败"
+          ? tx(`安装中断：${err.message}`, `Install interrupted: ${err.message}`)
+          : tx("执行模板安装失败", "Template install failed")
       );
       await loadAll();
     } finally {
@@ -168,11 +211,18 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
       const res = await axopsApi.uninstallTemplate(installId);
       setLastUninstallSummary(res);
       setNoticeMsg(
-        `安全卸载完成：删除未改动对象 ${res.deleted.length} 个，保留用户已修改对象 ${res.kept.length} 个`
+        tx(
+          `卸载完成：移除未改动对象 ${res.deleted.length} 个，保留已修改对象 ${res.kept.length} 个`,
+          `Uninstalled: removed ${res.deleted.length} untouched objects, preserved ${res.kept.length} modified objects`
+        )
       );
       await loadAll();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "安全卸载模板失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("卸载模板失败", "Failed to uninstall template")
+      );
     } finally {
       setUninstallingId(null);
     }
@@ -185,12 +235,26 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
     try {
       const res = await axopsApi.loadDemoScenario(scenario);
       setDemoResults((prev) => ({ ...prev, [scenario]: res }));
+      if (res.dashboard_slug) {
+        setExistingDashboardSlugs((prev) => {
+          const next = new Set(prev);
+          next.add(res.dashboard_slug);
+          return next;
+        });
+      }
       setNoticeMsg(
-        `演示场景 ${scenario} 装载完成：已写入 ${res.metric_points_written} 条 30 日回放时序点，驾驶舱 /view/${res.dashboard_slug} 已就绪`
+        tx(
+          `演示场景 ${scenario} 装载完成：写入 ${res.metric_points_written} 条时序点`,
+          `Demo scenario ${scenario} loaded: ${res.metric_points_written} metric points written`
+        )
       );
       await loadAll();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "装载演示场景失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("装载演示场景失败", "Failed to load demo scenario")
+      );
     } finally {
       setLoadingScenario(null);
     }
@@ -224,21 +288,24 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
           <div className="space-y-0.5">
             <div className="text-sm font-semibold flex items-center gap-2">
               <Rocket className="h-4 w-4 text-xblue" />
-              一键装载全栈演示场景 (Demo Scenarios)
+              {tx("全栈演示场景", "Full-Stack Demo Scenarios")}
             </div>
             <p className="text-xs text-muted-foreground">
-              自动安装对应行业模板包、执行首次数据刷新流程、生成 30 日历史时序回放，并预置因果推演沙盘与驾驶舱。
+              {tx(
+                "自动安装行业模板包、刷新业务数据、写入 30 日历史时序回放并生成推演沙盘与驾驶舱。",
+                "Installs template packs, syncs datasets, replays 30-day telemetry, and provisions simulation scenarios and dashboards."
+              )}
             </p>
           </div>
           <Button
             type="button"
             variant="outline"
-            className="h-8 px-2.5 text-xs"
+            size="sm"
             disabled={loading}
             onClick={() => void loadAll()}
           >
             <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-            刷新状态
+            {tx("刷新", "Refresh")}
           </Button>
         </div>
 
@@ -246,6 +313,12 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
           {DEMO_SCENARIO_SPECS.map((spec) => {
             const loaded = demoResults[spec.scenario];
             const isRunning = loadingScenario === spec.scenario;
+            const targetSlug =
+              loaded?.dashboard_slug ?? spec.defaultDashboardSlug;
+            const isDashboardReady =
+              Boolean(loaded?.dashboard_slug) ||
+              existingDashboardSlugs.has(targetSlug);
+
             return (
               <Card
                 key={spec.scenario}
@@ -255,9 +328,11 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
                 <div className="space-y-2">
                   <div className="flex items-center justify-between gap-2">
                     <span className="text-xs font-semibold text-foreground">
-                      {spec.title}
+                      {isZh ? spec.title : spec.enTitle}
                     </span>
-                    <Badge variant="outline">{spec.industry}</Badge>
+                    <Badge variant="outline">
+                      {isZh ? spec.industry : spec.enIndustry}
+                    </Badge>
                   </div>
                   <div className="flex flex-wrap gap-1">
                     {spec.nodeTypes.map((nt) => (
@@ -267,7 +342,7 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
                     ))}
                   </div>
                   <p className="text-[11px] text-muted-foreground leading-relaxed">
-                    {spec.highlights}
+                    {isZh ? spec.highlights : spec.enHighlights}
                   </p>
                 </div>
 
@@ -278,41 +353,54 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
                       className="rounded border border-xblue/35 bg-xblue-soft/60 p-2 text-[11px] space-y-1"
                     >
                       <div className="font-mono-tech text-xblue font-medium">
-                        时序写入: {loaded.metric_points_written} 点
+                        {tx(
+                          `时序写入: ${fmtNum(loaded.metric_points_written, 0)} 点`,
+                          `Telemetry: ${fmtNum(loaded.metric_points_written, 0)} pts`
+                        )}
                       </div>
                       <Link
                         to={`/view/${encodeURIComponent(loaded.dashboard_slug)}`}
                         data-testid={`demo-dashboard-link-${spec.scenario}`}
                         className="inline-flex items-center gap-1 font-medium text-xblue underline"
                       >
-                        打开驾驶舱 (/view/{loaded.dashboard_slug})
+                        {tx("打开驾驶舱", "Open Dashboard")} (/view/
+                        {loaded.dashboard_slug})
                         <ExternalLink className="h-3 w-3" />
                       </Link>
                     </div>
                   )}
 
                   <div className="flex items-center justify-between gap-2">
-                    <Link
-                      to={`/view/${encodeURIComponent(
-                        loaded?.dashboard_slug ?? spec.defaultDashboardSlug
-                      )}`}
-                      className="text-[11px] font-mono-tech text-muted-foreground hover:text-xblue inline-flex items-center gap-1"
-                    >
-                      /view/{loaded?.dashboard_slug ?? spec.defaultDashboardSlug}
-                      <ExternalLink className="h-2.5 w-2.5" />
-                    </Link>
+                    {isDashboardReady ? (
+                      <Link
+                        to={`/view/${encodeURIComponent(targetSlug)}`}
+                        className="text-[11px] font-mono-tech text-xblue hover:underline inline-flex items-center gap-1"
+                      >
+                        /view/{targetSlug}
+                        <ExternalLink className="h-2.5 w-2.5" />
+                      </Link>
+                    ) : (
+                      <Badge
+                        variant="outline"
+                        data-testid={`demo-dashboard-unavailable-${spec.scenario}`}
+                      >
+                        {tx("装载后可用", "Install to enable")}
+                      </Badge>
+                    )}
 
-                    {canManageOps && (
+                    {canWrite && (
                       <Button
                         type="button"
                         variant="primary"
-                        className="h-7 px-2.5 text-xs"
+                        size="sm"
                         data-testid={`load-demo-btn-${spec.scenario}`}
                         disabled={loadingScenario !== null}
                         onClick={() => void handleLoadDemo(spec.scenario)}
                       >
                         <Play className="h-3 w-3" />
-                        {isRunning ? "装载中..." : "一键装载演示"}
+                        {isRunning
+                          ? tx("装载中…", "Loading…")
+                          : tx("装载演示", "Load Demo")}
                       </Button>
                     )}
                   </div>
@@ -327,8 +415,8 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
       <div className="space-y-3">
         <div className="flex items-center gap-2 text-sm font-semibold">
           <Package className="h-4 w-4 text-xblue" />
-          <span>行业标准模板包 (SHA-256 完整性校验 · 两步冲突感知安装)</span>
-          <Badge variant="outline">{templates.length} 套</Badge>
+          <span>{tx("行业标准模板包", "Industry Template Packs")}</span>
+          <Badge variant="outline">{fmtNum(templates.length, 0)}</Badge>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -360,69 +448,81 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
 
                   <div className="flex flex-wrap gap-1.5 pt-1">
                     <Badge variant="outline">
-                      数据集 ×{pack.contents?.datasets?.length ?? 0}
+                      {tx("数据集", "Datasets")} ×
+                      {pack.contents?.datasets?.length ?? 0}
                     </Badge>
                     <Badge variant="outline">
-                      流程 ×{pack.contents?.flows?.length ?? 0}
+                      {tx("流程", "Flows")} ×{pack.contents?.flows?.length ?? 0}
                     </Badge>
                     <Badge variant="outline">
-                      驾驶舱 ×{pack.contents?.dashboards?.length ?? 0}
+                      {tx("驾驶舱", "Dashboards")} ×
+                      {pack.contents?.dashboards?.length ?? 0}
                     </Badge>
                     <Badge variant="outline">
-                      智能体 ×{pack.contents?.agents?.length ?? 0}
+                      {tx("智能体", "Agents")} ×
+                      {pack.contents?.agents?.length ?? 0}
                     </Badge>
                     <Badge variant="neutral">SHA-256 ×{shaCount}</Badge>
                   </div>
                 </div>
 
                 <div className="space-y-2 pt-2.5 border-t border-border">
-                  <div className="flex items-center gap-2">
-                    <label className="text-[11px] text-muted-foreground shrink-0">
-                      冲突策略:
-                    </label>
-                    <select
-                      data-testid={`template-conflict-select-${pack.id}`}
-                      value={strategy}
-                      onChange={(e) =>
-                        setStrategyByPack((prev) => ({
-                          ...prev,
-                          [pack.id]: e.target.value as TemplateConflictStrategy,
-                        }))
-                      }
-                      className="h-7 flex-1 rounded border border-input bg-background px-2 text-[11px]"
-                    >
-                      {TEMPLATE_CONFLICT_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                  {canWrite && (
+                    <div className="flex items-center gap-2">
+                      <label className="text-[11px] text-muted-foreground shrink-0">
+                        {tx("冲突策略", "Conflict")}
+                      </label>
+                      <Select
+                        data-testid={`template-conflict-select-${pack.id}`}
+                        value={strategy}
+                        onChange={(e) =>
+                          setStrategyByPack((prev) => ({
+                            ...prev,
+                            [pack.id]: e.target
+                              .value as TemplateConflictStrategy,
+                          }))
+                        }
+                        className="h-7 flex-1 text-[11px]"
+                      >
+                        {TEMPLATE_CONFLICT_OPTIONS.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {isZh ? opt.label : opt.enLabel}
+                          </option>
+                        ))}
+                      </Select>
+                    </div>
+                  )}
 
                   <div className="flex items-center justify-between gap-2">
                     <Button
                       type="button"
                       variant="outline"
-                      className="h-8 px-2.5 text-xs"
+                      size="sm"
                       data-testid={`open-template-readme-btn-${pack.id}`}
                       disabled={readmeLoadingId === pack.id}
                       onClick={() => void handleOpenReadme(pack.id)}
                     >
                       <BookOpen className="h-3.5 w-3.5 text-xblue" />
-                      {readmeLoadingId === pack.id ? "读取中..." : "查看说明"}
+                      {readmeLoadingId === pack.id
+                        ? tx("读取中…", "Loading…")
+                        : tx("说明文档", "README")}
                     </Button>
 
-                    <Button
-                      type="button"
-                      variant="primary"
-                      className="h-8 px-3 text-xs"
-                      data-testid={`plan-template-btn-${pack.id}`}
-                      disabled={isPlanning}
-                      onClick={() => void handlePlanInstall(pack.id)}
-                    >
-                      <Layers className="h-3.5 w-3.5" />
-                      {isPlanning ? "规划中..." : "生成安装计划"}
-                    </Button>
+                    {canWrite && (
+                      <Button
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        data-testid={`plan-template-btn-${pack.id}`}
+                        disabled={isPlanning}
+                        onClick={() => void handlePlanInstall(pack.id)}
+                      >
+                        <Layers className="h-3.5 w-3.5" />
+                        {isPlanning
+                          ? tx("规划中…", "Planning…")
+                          : tx("规划安装", "Plan Install")}
+                      </Button>
+                    )}
                   </div>
                 </div>
               </Card>
@@ -440,50 +540,48 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2.5">
             <div className="flex flex-wrap items-center gap-2">
               <span className="text-sm font-semibold">
-                安装计划预览：{activePlanRecord.pack_id} (v
+                {tx("安装计划", "Install Plan")}: {activePlanRecord.pack_id} (v
                 {activePlanRecord.pack_version})
               </span>
-              <Badge variant="xblue">
-                {TEMPLATE_INSTALL_STATUS_LABELS[activePlanRecord.status] ??
-                  activePlanRecord.status}
+              <StatusBadge status={activePlanRecord.status} />
+              <Badge variant="outline">
+                {activePlanRecord.plan.on_conflict}
               </Badge>
               <Badge variant="outline">
-                策略: {activePlanRecord.plan.on_conflict}
-              </Badge>
-              <Badge variant="outline">
-                总对象: {planSummary.totalObjects} · 冲突:{" "}
-                {planSummary.conflictCount} · 重命名: {planSummary.renameCount} ·
-                跳过: {planSummary.skipCount}
+                {tx(
+                  `对象 ${planSummary.totalObjects} · 冲突 ${planSummary.conflictCount} · 重命名 ${planSummary.renameCount} · 跳过 ${planSummary.skipCount}`,
+                  `Objects ${planSummary.totalObjects} · Conflicts ${planSummary.conflictCount} · Rename ${planSummary.renameCount} · Skip ${planSummary.skipCount}`
+                )}
               </Badge>
             </div>
 
             <div className="flex items-center gap-2">
-              {canManageOps &&
+              {canWrite &&
                 (activePlanRecord.status === "PLANNED" ||
                   activePlanRecord.status === "FAILED") && (
                   <Button
                     type="button"
                     variant="primary"
-                    className="h-8 px-3 text-xs"
+                    size="sm"
                     data-testid="apply-template-install-btn"
                     disabled={applyingInstallId === activePlanRecord.id}
                     onClick={() => void handleApplyInstall(activePlanRecord.id)}
                   >
                     <CheckCircle2 className="h-3.5 w-3.5" />
                     {applyingInstallId === activePlanRecord.id
-                      ? "安装执行中..."
+                      ? tx("安装中…", "Installing…")
                       : activePlanRecord.status === "FAILED"
-                        ? "断点续装"
-                        : "确认执行安装"}
+                        ? tx("断点续装", "Resume")
+                        : tx("执行安装", "Install")}
                   </Button>
                 )}
               <Button
                 type="button"
                 variant="ghost"
-                className="h-8 px-2 text-xs"
+                size="sm"
                 onClick={() => setActivePlanRecord(null)}
               >
-                收起
+                {tx("收起", "Collapse")}
               </Button>
             </div>
           </div>
@@ -492,11 +590,11 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-border text-[11px] text-muted-foreground">
-                  <th className="py-1.5 pr-3">类别</th>
-                  <th className="py-1.5 pr-3">模板键</th>
-                  <th className="py-1.5 pr-3">源名称</th>
-                  <th className="py-1.5 pr-3">目标名称</th>
-                  <th className="py-1.5">冲突与动作</th>
+                  <th className="py-1.5 pr-3">{tx("类别", "Category")}</th>
+                  <th className="py-1.5 pr-3">{tx("键名", "Key")}</th>
+                  <th className="py-1.5 pr-3">{tx("源名称", "Source")}</th>
+                  <th className="py-1.5 pr-3">{tx("目标名称", "Target")}</th>
+                  <th className="py-1.5">{tx("动作", "Action")}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60 font-mono-tech text-[11px]">
@@ -509,7 +607,7 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
                       {obj.target_name}
                     </td>
                     <td className="py-1.5">
-                      <Badge variant={obj.conflict ? "xblue" : "neutral"}>
+                      <Badge variant={obj.conflict ? "warning" : "neutral"}>
                         {obj.action}
                       </Badge>
                     </td>
@@ -528,47 +626,59 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
           data-testid="template-uninstall-summary"
         >
           <div>
-            <span className="font-semibold">安全卸载哈希核验结果：</span>{" "}
-            已移除未改动对象{" "}
-            <span className="font-mono-tech font-semibold text-xblue">
-              {lastUninstallSummary.deleted.length}
-            </span>{" "}
-            项，保留用户自定义改动对象{" "}
-            <span className="font-mono-tech font-semibold">
-              {lastUninstallSummary.kept.length}
-            </span>{" "}
-            项。
+            <span className="font-semibold">
+              {tx("安全卸载结果：", "Safe Uninstall Summary: ")}
+            </span>
+            {tx(
+              `移除未改动对象 ${lastUninstallSummary.deleted.length} 项，保留已修改对象 ${lastUninstallSummary.kept.length} 项。`,
+              `Removed ${lastUninstallSummary.deleted.length} untouched objects; preserved ${lastUninstallSummary.kept.length} user-modified objects.`
+            )}
           </div>
           <Button
             type="button"
             variant="ghost"
-            className="h-7 px-2 text-xs"
+            size="sm"
             onClick={() => setLastUninstallSummary(null)}
           >
-            关闭
+            {tx("关闭", "Close")}
           </Button>
         </Card>
       )}
 
       {/* 4. Installed Packs Table */}
-      <Card className="overflow-hidden" data-testid="template-installs-table-card">
+      <Card
+        className="overflow-hidden"
+        data-testid="template-installs-table-card"
+      >
         <div className="px-4 py-3 border-b border-border bg-muted/30 flex items-center justify-between">
           <span className="text-xs font-semibold">
-            模板安装记录与生命周期管控 (ax_template_installs)
+            {tx("模板安装记录", "Template Installations")}
           </span>
-          <Badge variant="outline">{installs.length} 条记录</Badge>
+          <Badge variant="outline">{fmtNum(installs.length, 0)}</Badge>
         </div>
 
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="border-b border-border bg-muted/20 text-[11px] text-muted-foreground">
-                <th className="py-2.5 px-3">模板包 / 版本</th>
-                <th className="py-2.5 px-3">状态</th>
-                <th className="py-2.5 px-3">冲突策略</th>
-                <th className="py-2.5 px-3">已物化对象数</th>
-                <th className="py-2.5 px-3">创建时间</th>
-                <th className="py-2.5 px-3 text-right">操作</th>
+                <th className="py-2.5 px-3 whitespace-nowrap">
+                  {tx("模板包 / 版本", "Pack / Version")}
+                </th>
+                <th className="py-2.5 px-3 whitespace-nowrap">
+                  {tx("状态", "Status")}
+                </th>
+                <th className="py-2.5 px-3 whitespace-nowrap">
+                  {tx("冲突策略", "Conflict")}
+                </th>
+                <th className="py-2.5 px-3 whitespace-nowrap">
+                  {tx("物化对象", "Objects")}
+                </th>
+                <th className="py-2.5 px-3 whitespace-nowrap">
+                  {tx("创建时间", "Created")}
+                </th>
+                <th className="py-2.5 px-3 text-right whitespace-nowrap">
+                  {tx("操作", "Actions")}
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -578,17 +688,19 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
                     colSpan={6}
                     className="py-8 text-center text-muted-foreground"
                   >
-                    暂无模板安装记录
+                    {tx("暂无安装记录", "No template installations")}
                   </td>
                 </tr>
               ) : (
                 installs.map((inst) => {
-                  const createdCount = Object.keys(inst.object_map ?? {}).length;
+                  const createdCount = Object.keys(
+                    inst.object_map ?? {}
+                  ).length;
                   const canApply =
-                    canManageOps &&
+                    canWrite &&
                     (inst.status === "PLANNED" || inst.status === "FAILED");
                   const canUninstall =
-                    canManageOps &&
+                    canWrite &&
                     (inst.status === "INSTALLED" ||
                       (inst.status === "FAILED" && createdCount > 0));
 
@@ -603,7 +715,7 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
                           {inst.pack_id} · v{inst.pack_version}
                         </div>
                         <div className="font-mono-tech text-[11px] text-muted-foreground">
-                          {inst.id}
+                          {inst.id.slice(0, 8)}…
                         </div>
                         {inst.error_message && (
                           <div className="text-[11px] text-red-600 dark:text-red-400 mt-0.5">
@@ -611,58 +723,53 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
                           </div>
                         )}
                       </td>
-                      <td className="py-2.5 px-3">
-                        <Badge
-                          variant={
-                            inst.status === "INSTALLED" ? "xblue" : "outline"
-                          }
-                        >
-                          {TEMPLATE_INSTALL_STATUS_LABELS[inst.status] ??
-                            inst.status}
-                        </Badge>
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        <StatusBadge status={inst.status} />
                       </td>
                       <td className="py-2.5 px-3 font-mono-tech">
                         {inst.plan?.on_conflict ?? "RENAME"}
                       </td>
                       <td className="py-2.5 px-3 font-mono-tech">
-                        {createdCount} 项
+                        {fmtNum(createdCount, 0)}
                       </td>
-                      <td className="py-2.5 px-3 font-mono-tech text-[11px] text-muted-foreground">
-                        {inst.created_at}
+                      <td className="py-2.5 px-3 font-mono-tech text-[11px] text-muted-foreground whitespace-nowrap">
+                        {fmtTime(inst.created_at, true)}
                       </td>
-                      <td className="py-2.5 px-3 text-right">
+                      <td className="py-2.5 px-3 text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1.5">
                           <Button
                             type="button"
                             variant="ghost"
-                            className="h-7 px-2 text-[11px]"
+                            size="sm"
                             onClick={() => setActivePlanRecord(inst)}
                           >
-                            查看计划
+                            {tx("计划详情", "Plan")}
                           </Button>
                           {canApply && (
                             <Button
                               type="button"
                               variant="outline"
-                              className="h-7 px-2.5 text-[11px] border-xblue/40 text-xblue"
+                              size="sm"
                               data-testid={`apply-install-row-btn-${inst.id}`}
                               disabled={applyingInstallId === inst.id}
                               onClick={() => void handleApplyInstall(inst.id)}
                             >
-                              {inst.status === "FAILED" ? "断点续装" : "执行安装"}
+                              {inst.status === "FAILED"
+                                ? tx("断点续装", "Resume")
+                                : tx("执行安装", "Install")}
                             </Button>
                           )}
                           {canUninstall && (
                             <Button
                               type="button"
                               variant="outline"
-                              className="h-7 px-2.5 text-[11px]"
+                              size="sm"
                               data-testid={`uninstall-template-btn-${inst.id}`}
                               disabled={uninstallingId === inst.id}
                               onClick={() => void handleUninstall(inst.id)}
                             >
                               <Trash2 className="h-3 w-3" />
-                              安全卸载
+                              {tx("卸载", "Uninstall")}
                             </Button>
                           )}
                         </div>
@@ -677,41 +784,32 @@ export function TemplateGallery({ canManageOps }: TemplateGalleryProps) {
       </Card>
 
       {/* README Preview Modal */}
-      {readmeDetail && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
-          data-testid="template-readme-modal"
-          onClick={() => setReadmeDetail(null)}
-        >
-          <Card
-            className="w-full max-w-2xl max-h-[85vh] flex flex-col overflow-hidden bg-background shadow-xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <BookOpen className="h-4 w-4 text-xblue" />
-                <span className="text-sm font-semibold">
-                  {readmeDetail.name} · 模板包业务说明 (README.md)
-                </span>
-                <Badge variant="outline">v{readmeDetail.version}</Badge>
-              </div>
-              <button
-                type="button"
-                onClick={() => setReadmeDetail(null)}
-                className="rounded p-1 text-muted-foreground hover:text-foreground cursor-pointer"
-                aria-label="关闭模板说明"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-            <div className="flex-1 overflow-y-auto p-5 text-xs leading-relaxed space-y-2 prose prose-sm dark:prose-invert max-w-none">
-              <ReactMarkdown>
-                {readmeDetail.readme || `# ${readmeDetail.name}\n\n${readmeDetail.description}`}
-              </ReactMarkdown>
-            </div>
-          </Card>
-        </div>
-      )}
+      <Modal
+        open={Boolean(readmeDetail)}
+        onClose={() => setReadmeDetail(null)}
+        testId="template-readme-modal"
+        maxWidthClass="max-w-2xl"
+        title={
+          readmeDetail ? (
+            <>
+              <BookOpen className="h-4 w-4 text-xblue shrink-0" />
+              <span className="truncate">{readmeDetail.name}</span>
+              <Badge variant="outline">v{readmeDetail.version}</Badge>
+            </>
+          ) : (
+            tx("模板说明", "Template README")
+          )
+        }
+      >
+        {readmeDetail && (
+          <div className="text-xs leading-relaxed space-y-2 prose prose-sm dark:prose-invert max-w-none">
+            <ReactMarkdown>
+              {readmeDetail.readme ||
+                `# ${readmeDetail.name}\n\n${readmeDetail.description}`}
+            </ReactMarkdown>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

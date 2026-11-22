@@ -26,6 +26,7 @@
 
 | 方法与路径 | 鉴权 | Step | 定义 |
 | :--- | :--- | :--- | :--- |
+| `GET /api/documents`、`DELETE /api/documents/{id}` | `DATA_READ` / `DATA_SYNC` | 仓库已有 / 00 | [01](./01-STEP00-FOUNDATION-AND-GUARD-SKELETON.md) §00.6.5 |
 | `POST /api/documents/ingest`、`POST /api/documents/upload` | `DATA_SYNC` | 仓库已有 / 00 | [01](./01-STEP00-FOUNDATION-AND-GUARD-SKELETON.md) §00.6.5 |
 | `POST /api/chat/query`（`session_id?`、`mode?: AUTO|DOC|DATA`） | `DATA_READ` | 仓库已有 / 04 | [05](./05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) §04.8 |
 

@@ -72,6 +72,7 @@ export interface LlmHealth {
 
 export interface EmbedHealth {
   ok: boolean;
+  provider?: string;
   error?: string;
 }
 

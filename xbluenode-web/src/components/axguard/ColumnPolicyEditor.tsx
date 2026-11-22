@@ -12,7 +12,15 @@ import {
   type MaskRule,
   type PolicyTargetKind,
 } from "@/lib/api/axguard";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Select,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { MASK_RULE_OPTIONS, PII_CATEGORY_LABELS } from "./constants";
 import { formatSubjectSelector, resolveEffectiveMaskRule } from "./logic";
@@ -41,6 +49,10 @@ export function ColumnPolicyEditor({
   departments,
   onReload,
 }: ColumnPolicyEditorProps) {
+  const { isZh, tx, tEnum } = useI18n();
+  const { canAny } = usePrincipal();
+  const canWrite = canAny(["GUARD_ADMIN", "DATA_ADMIN"]);
+
   const [targetKind, setTargetKind] = useState<PolicyTargetKind>("DATASET");
   const [targetRef, setTargetRef] = useState("");
   const [datasetColumns, setDatasetColumns] = useState<ColumnMeta[]>([]);
@@ -181,10 +193,17 @@ export function ColumnPolicyEditor({
         },
       });
       await onReload();
-      setBanner(`已保存字段 ${col.name} 的脱敏策略 (${chosenRule})`);
+      setBanner(
+        tx(
+          `已保存字段 ${col.name} 脱敏策略`,
+          `Saved masking policy for ${col.name}`
+        )
+      );
     } catch (err) {
       setBanner(
-        err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
       );
     } finally {
       setSavingCol(null);
@@ -197,10 +216,17 @@ export function ColumnPolicyEditor({
     try {
       await axguardApi.deleteColumnPolicy(policyId);
       await onReload();
-      setBanner(`已清除字段 ${colName} 的显式覆盖，恢复列画像默认脱敏规则`);
+      setBanner(
+        tx(
+          `已恢复字段 ${colName} 默认画像脱敏规则`,
+          `Restored profile default masking for ${colName}`
+        )
+      );
     } catch (err) {
       setBanner(
-        err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
       );
     } finally {
       setSavingCol(null);
@@ -209,7 +235,12 @@ export function ColumnPolicyEditor({
 
   const handleAddManualColumnPolicy = async () => {
     if (!targetRef.trim() || !customColName.trim()) {
-      setBanner("请输入目标标识与字段/属性名");
+      setBanner(
+        tx(
+          "目标标识与字段名称不能为空",
+          "Target identifier and field name are required"
+        )
+      );
       return;
     }
     setSavingCol(customColName.trim());
@@ -224,10 +255,17 @@ export function ColumnPolicyEditor({
       });
       setCustomColName("");
       await onReload();
-      setBanner(`已添加字段 ${customColName.trim()} 脱敏策略`);
+      setBanner(
+        tx(
+          `已新增字段 ${customColName.trim()} 脱敏策略`,
+          `Added masking policy for ${customColName.trim()}`
+        )
+      );
     } catch (err) {
       setBanner(
-        err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
       );
     } finally {
       setSavingCol(null);
@@ -261,7 +299,7 @@ export function ColumnPolicyEditor({
                   : "text-muted-foreground"
               )}
             >
-              数据集列 (DATASET)
+              {tx("数据集列", "Dataset Columns")}
             </button>
             <button
               type="button"
@@ -276,39 +314,41 @@ export function ColumnPolicyEditor({
                   : "text-muted-foreground"
               )}
             >
-              节点属性 (NODE_TYPE)
+              {tx("节点属性", "Node Properties")}
             </button>
           </div>
 
           {targetKind === "DATASET" && datasets.length > 0 ? (
-            <select
+            <Select
               value={targetRef}
               onChange={(e) => setTargetRef(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2.5 text-xs"
+              className="h-8 text-xs"
             >
               {datasets.map((ds) => (
                 <option key={ds.id} value={ds.id}>
                   {ds.display_name || ds.name} ({ds.name})
                 </option>
               ))}
-            </select>
+            </Select>
           ) : targetKind === "NODE_TYPE" && nodeTypes.length > 0 ? (
-            <select
+            <Select
               value={targetRef}
               onChange={(e) => setTargetRef(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2.5 text-xs"
+              className="h-8 text-xs"
             >
               {nodeTypes.map((nt) => (
                 <option key={nt.name} value={nt.name}>
                   {nt.display_name || nt.name} ({nt.name})
                 </option>
               ))}
-            </select>
+            </Select>
           ) : null}
 
           <Input
             placeholder={
-              targetKind === "DATASET" ? "数据集 UUID" : "节点类型名"
+              targetKind === "DATASET"
+                ? "00000000-0000-0000-0000-000000001310"
+                : "Warehouse"
             }
             value={targetRef}
             onChange={(e) => setTargetRef(e.target.value)}
@@ -317,9 +357,12 @@ export function ColumnPolicyEditor({
         </div>
 
         <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-          <ShieldCheck className="h-3.5 w-3.5 text-xblue" />
+          <ShieldCheck className="h-3.5 w-3.5 text-xblue shrink-0" />
           <span>
-            默认全员脱敏；仅具备 PII_RAW_READ 或列入豁免名单且显式请求 reveal_pii: true 时记审计返原文
+            {tx(
+              "默认全员脱敏；原文调阅须具备豁免身份并记录审计。",
+              "Masked by default; raw PII reads require exemption and emit audit logs."
+            )}
           </span>
         </div>
       </Card>
@@ -329,13 +372,21 @@ export function ColumnPolicyEditor({
           <table className="w-full text-xs border-collapse">
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
-                <th className="px-3 py-2.5 font-medium">字段 / 属性名</th>
-                <th className="px-3 py-2.5 font-medium">Presidio 画像识别与置信度</th>
-                <th className="px-3 py-2.5 font-medium">生效脱敏规则 (MaskRule)</th>
-                <th className="px-3 py-2.5 font-medium">
-                  原文调阅豁免主体 (reveal_pii)
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("字段 / 属性", "Column / Property")}
                 </th>
-                <th className="px-3 py-2.5 font-medium text-right">操作</th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("敏感画像与置信度", "PII Profile & Confidence")}
+                </th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("生效脱敏规则", "Effective Mask Rule")}
+                </th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("原文调阅豁免主体", "Raw Read Exemptions")}
+                </th>
+                <th className="px-3 py-2.5 font-medium text-right whitespace-nowrap">
+                  {tx("操作", "Actions")}
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -345,7 +396,10 @@ export function ColumnPolicyEditor({
                     colSpan={5}
                     className="px-4 py-8 text-center text-muted-foreground"
                   >
-                    当前目标暂无已发现字段，可使用下方表单直接新增字段脱敏规则
+                    {tx(
+                      "当前目标暂无已发现字段",
+                      "No columns discovered for current target"
+                    )}
                   </td>
                 </tr>
               ) : (
@@ -383,44 +437,52 @@ export function ColumnPolicyEditor({
                               col.piiCategory !== "NONE" ? "xblue" : "outline"
                             }
                           >
-                            {PII_CATEGORY_LABELS[col.piiCategory]}
+                            {isZh
+                              ? PII_CATEGORY_LABELS[col.piiCategory]
+                              : tEnum(col.piiCategory)}
                           </Badge>
                           {col.confidenceRatio !== null &&
                             col.piiCategory !== "NONE" && (
                               <span className="text-[11px] font-mono-tech text-muted-foreground">
-                                命中 {(col.confidenceRatio * 100).toFixed(0)}%
+                                {tx(
+                                  `命中 ${(col.confidenceRatio * 100).toFixed(0)}%`,
+                                  `Hit ${(col.confidenceRatio * 100).toFixed(0)}%`
+                                )}
                               </span>
                             )}
                         </div>
                         <div className="text-[11px] text-muted-foreground mt-1">
                           {resolved.source === "EXPLICIT"
-                            ? "来源：管理员显式策略覆盖"
+                            ? tx("管理员显式覆盖", "Explicit admin override")
                             : resolved.source === "PROFILE_DEFAULT"
-                              ? "来源：列画像自动默认拦截 (§13.7)"
-                              : "未配置脱敏"}
+                              ? tx("画像自动拦截", "Profile default mask")
+                              : tx("未配置脱敏", "Unmasked")}
                         </div>
                       </td>
 
                       <td className="px-3 py-2.5 space-y-1">
-                        <select
+                        <Select
                           value={selectedRule}
+                          disabled={!canWrite}
                           onChange={(e) =>
                             setDraftRules((prev) => ({
                               ...prev,
                               [col.name]: e.target.value as MaskRule,
                             }))
                           }
-                          className="h-8 w-full max-w-[250px] rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+                          className="h-8 w-full max-w-[250px] text-xs"
                         >
                           {MASK_RULE_OPTIONS.map((opt) => (
                             <option key={opt.value} value={opt.value}>
-                              {opt.label}
+                              {isZh ? opt.label : opt.enLabel}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                         <div className="text-[11px] font-mono-tech text-muted-foreground flex items-center gap-1">
                           <EyeOff className="h-3 w-3 text-xblue" />
-                          样例输出: {samplePreview}
+                          <span>
+                            {tx("示例", "Sample")}: {samplePreview}
+                          </span>
                         </div>
                       </td>
 
@@ -431,8 +493,9 @@ export function ColumnPolicyEditor({
                             return (
                               <label
                                 key={r}
+                                title={r}
                                 className={cn(
-                                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-mono-tech border cursor-pointer",
+                                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] border cursor-pointer",
                                   checked
                                     ? "border-xblue bg-xblue-soft text-xblue"
                                     : "border-border text-muted-foreground"
@@ -441,6 +504,7 @@ export function ColumnPolicyEditor({
                                 <input
                                   type="checkbox"
                                   checked={checked}
+                                  disabled={!canWrite}
                                   onChange={(e) =>
                                     setDraftExemptRoles((prev) => ({
                                       ...prev,
@@ -451,7 +515,7 @@ export function ColumnPolicyEditor({
                                   }
                                   className="accent-[#2563eb]"
                                 />
-                                {r}
+                                {tEnum(r)}
                               </label>
                             );
                           })}
@@ -470,6 +534,7 @@ export function ColumnPolicyEditor({
                                 <input
                                   type="checkbox"
                                   checked={checked}
+                                  disabled={!canWrite}
                                   onChange={(e) =>
                                     setDraftExemptDepts((prev) => ({
                                       ...prev,
@@ -482,7 +547,7 @@ export function ColumnPolicyEditor({
                                   }
                                   className="accent-[#2563eb]"
                                 />
-                                部门:{d.dept_id}
+                                {tx("部门", "Dept")}:{d.dept_id}
                               </label>
                             );
                           })}
@@ -490,40 +555,45 @@ export function ColumnPolicyEditor({
                         <div className="text-[11px] text-muted-foreground">
                           {formatSubjectSelector(
                             { roles: exemptRoles, depts: exemptDepts },
-                            "仅限 PII_RAW_READ 权限持有者"
+                            tx(
+                              "仅敏感原文调阅权限持有者",
+                              "PII_RAW_READ holders only"
+                            )
                           )}
                         </div>
                       </td>
 
                       <td className="px-3 py-2.5 text-right">
-                        <div className="inline-flex items-center gap-1.5">
-                          {explicit && (
+                        {canWrite && (
+                          <div className="inline-flex items-center gap-1.5">
+                            {explicit && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                type="button"
+                                disabled={savingCol === col.name}
+                                onClick={() =>
+                                  void handleResetColumnPolicy(
+                                    explicit.id,
+                                    col.name
+                                  )
+                                }
+                                title={tx("恢复默认", "Reset to default")}
+                              >
+                                <RotateCcw className="h-3 w-3" />
+                              </Button>
+                            )}
                             <Button
-                              variant="outline"
+                              size="sm"
                               type="button"
                               disabled={savingCol === col.name}
-                              onClick={() =>
-                                void handleResetColumnPolicy(
-                                  explicit.id,
-                                  col.name
-                                )
-                              }
-                              className="px-2 py-1 text-[11px]"
-                              title="恢复画像默认规则"
+                              onClick={() => void handleSaveColumnPolicy(col)}
                             >
-                              <RotateCcw className="h-3 w-3" />
+                              <Save className="h-3 w-3" />
+                              {tx("保存", "Save")}
                             </Button>
-                          )}
-                          <Button
-                            type="button"
-                            disabled={savingCol === col.name}
-                            onClick={() => void handleSaveColumnPolicy(col)}
-                            className="px-2.5 py-1 text-[11px]"
-                          >
-                            <Save className="h-3 w-3" />
-                            保存
-                          </Button>
-                        </div>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   );
@@ -534,36 +604,39 @@ export function ColumnPolicyEditor({
         </div>
 
         {/* Manual Column/Property Policy Quick Adder */}
-        <div className="border-t border-border bg-muted/20 p-3 flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium text-muted-foreground">
-            按列名直接新增脱敏规则：
-          </span>
-          <Input
-            placeholder="字段或节点属性名（如 phone / id_card）"
-            value={customColName}
-            onChange={(e) => setCustomColName(e.target.value)}
-            className="h-8 w-56 text-xs font-mono-tech"
-          />
-          <select
-            value={customMaskRule}
-            onChange={(e) => setCustomMaskRule(e.target.value as MaskRule)}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
-          >
-            {MASK_RULE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          <Button
-            variant="outline"
-            type="button"
-            disabled={!customColName.trim() || !targetRef.trim()}
-            onClick={() => void handleAddManualColumnPolicy()}
-          >
-            新增字段策略
-          </Button>
-        </div>
+        {canWrite && (
+          <div className="border-t border-border bg-muted/20 p-3 flex flex-wrap items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">
+              {tx("自定义字段规则", "Custom Field Rule")}
+            </span>
+            <Input
+              placeholder="phone"
+              value={customColName}
+              onChange={(e) => setCustomColName(e.target.value)}
+              className="h-8 w-56 text-xs font-mono-tech"
+            />
+            <Select
+              value={customMaskRule}
+              onChange={(e) => setCustomMaskRule(e.target.value as MaskRule)}
+              className="h-8 text-xs"
+            >
+              {MASK_RULE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {isZh ? opt.label : opt.enLabel}
+                </option>
+              ))}
+            </Select>
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              disabled={!customColName.trim() || !targetRef.trim()}
+              onClick={() => void handleAddManualColumnPolicy()}
+            >
+              {tx("新增策略", "Add Policy")}
+            </Button>
+          </div>
+        )}
       </Card>
     </div>
   );

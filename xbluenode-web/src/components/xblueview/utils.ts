@@ -1,3 +1,4 @@
+import { getLocale } from "@/i18n";
 import type { WidgetKind } from "@/lib/api/enums";
 import type {
   CanvasConfig,
@@ -25,6 +26,11 @@ export interface SelectedNodeContext {
   title?: string;
   metricName?: string;
   metricValue?: number | null;
+}
+
+export interface KnownNodeSummary {
+  title: string;
+  nodeKey?: string;
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -70,7 +76,10 @@ export function readStringArray(
   if (!obj) return [];
   const v = obj[key];
   if (Array.isArray(v)) {
-    return v.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+    return v.filter(
+      (item): item is string =>
+        typeof item === "string" && item.trim().length > 0
+    );
   }
   if (typeof v === "string" && v.trim().length > 0) {
     return [v.trim()];
@@ -143,13 +152,18 @@ export function toNumericValue(val: unknown): number | null {
 
 export function formatDisplayValue(
   val: unknown,
-  options?: { unit?: string; decimals?: number; prefix?: string; suffix?: string }
+  options?: {
+    unit?: string;
+    decimals?: number;
+    prefix?: string;
+    suffix?: string;
+  }
 ): string {
-  if (val === null || val === undefined) return "—";
+  if (val === null || val === undefined) return "-";
   const num = toNumericValue(val);
   if (num !== null) {
     const decimals = options?.decimals ?? (Number.isInteger(num) ? 0 : 2);
-    const formatted = num.toLocaleString("zh-CN", {
+    const formatted = num.toLocaleString(getLocale(), {
       minimumFractionDigits: 0,
       maximumFractionDigits: Math.max(0, Math.min(6, decimals)),
     });
@@ -200,7 +214,12 @@ export function findFirstNumericColIndex(
     const col = data.columns[i];
     if (!col) continue;
     const dt = col.data_type.toUpperCase();
-    if (dt === "INT64" || dt === "FLOAT64" || dt === "DECIMAL" || dt === "NUMBER") {
+    if (
+      dt === "INT64" ||
+      dt === "FLOAT64" ||
+      dt === "DECIMAL" ||
+      dt === "NUMBER"
+    ) {
       return i;
     }
   }
@@ -212,6 +231,51 @@ export function findFirstNumericColIndex(
     }
   }
   return data.columns.length > 1 ? 1 : 0;
+}
+
+export function extractKnownNodesFromWidgetDataMap(
+  widgetDataMap: Readonly<Record<string, WidgetDataResponse | null>>
+): Record<string, KnownNodeSummary> {
+  const out: Record<string, KnownNodeSummary> = {};
+  for (const data of Object.values(widgetDataMap)) {
+    if (!data || !Array.isArray(data.columns) || !Array.isArray(data.rows)) {
+      continue;
+    }
+    const colMap = buildColumnIndexMap(data);
+    const nodeIdIdx = colMap.get("node_id") ?? colMap.get("id");
+    const titleIdx = colMap.get("title");
+    const nodeKeyIdx = colMap.get("node_key");
+    const recordKindIdx = colMap.get("record_kind");
+
+    if (nodeIdIdx === undefined || (titleIdx === undefined && nodeKeyIdx === undefined)) {
+      continue;
+    }
+
+    for (const r of data.rows) {
+      if (recordKindIdx !== undefined) {
+        const rk = String(r[recordKindIdx] ?? "").toUpperCase();
+        if (rk && rk !== "NODE") continue;
+      }
+      const rawId = r[nodeIdIdx];
+      if (typeof rawId !== "string" || !rawId.trim()) continue;
+      const nodeId = rawId.trim();
+      const rawTitle =
+        titleIdx !== undefined && typeof r[titleIdx] === "string"
+          ? r[titleIdx].trim()
+          : "";
+      const rawKey =
+        nodeKeyIdx !== undefined && typeof r[nodeKeyIdx] === "string"
+          ? r[nodeKeyIdx].trim()
+          : undefined;
+      if (rawTitle || rawKey) {
+        out[nodeId] = {
+          title: rawTitle || rawKey || nodeId,
+          nodeKey: rawKey,
+        };
+      }
+    }
+  }
+  return out;
 }
 
 export const WIDGET_KIND_LABELS: Record<WidgetKind, string> = {
@@ -229,13 +293,40 @@ export const WIDGET_KIND_LABELS: Record<WidgetKind, string> = {
   GRAPH_TOPOLOGY: "关系拓扑图",
   MAP: "空间地理地图",
   FLOOR_PLAN: "二维平面孪生",
-  SCENE_3D: "三维数字孪生 (glTF)",
+  SCENE_3D: "三维数字孪生",
   ALERT_LIST: "实时告警列表",
   SIM_COMPARE: "沙盘方案对比",
   ACTION_BUTTON: "动作触发按钮",
   ACTION_FORM: "交互回写表单",
-  MARKDOWN_NOTE: "Markdown 说明块",
+  MARKDOWN_NOTE: "说明卡片",
 };
+
+export const WIDGET_KIND_LABELS_EN: Record<WidgetKind, string> = {
+  KPI_CARD: "KPI Card",
+  TABLE: "Data Table",
+  PIVOT_TABLE: "Pivot Table",
+  LINE_CHART: "Line Chart",
+  BAR_CHART: "Bar Chart",
+  PIE_CHART: "Pie Chart",
+  SCATTER: "Scatter Plot",
+  SANKEY: "Sankey Diagram",
+  HEATMAP: "Heatmap",
+  GAUGE: "Gauge",
+  RADAR: "Radar Chart",
+  GRAPH_TOPOLOGY: "Topology Graph",
+  MAP: "Geo Map",
+  FLOOR_PLAN: "2D Floor Plan",
+  SCENE_3D: "3D Twin",
+  ALERT_LIST: "Alert Feed",
+  SIM_COMPARE: "Scenario Compare",
+  ACTION_BUTTON: "Action Button",
+  ACTION_FORM: "Writeback Form",
+  MARKDOWN_NOTE: "Markdown Note",
+};
+
+export function getWidgetKindLabel(kind: WidgetKind, isZh = true): string {
+  return isZh ? WIDGET_KIND_LABELS[kind] : WIDGET_KIND_LABELS_EN[kind];
+}
 
 export const ALL_WIDGET_KINDS: readonly WidgetKind[] = [
   "KPI_CARD",
@@ -264,7 +355,13 @@ export function defaultDataSourceForKind(kind: WidgetKind): WidgetDataSource {
   switch (kind) {
     case "KPI_CARD":
     case "GAUGE":
-      return { kind: "METRIC", metric: "paid_amount", dimensions: [], time_grain: "DAY", time_range: "LAST_30_DAYS" };
+      return {
+        kind: "METRIC",
+        metric: "paid_amount",
+        dimensions: [],
+        time_grain: "DAY",
+        time_range: "LAST_30_DAYS",
+      };
     case "LINE_CHART":
     case "BAR_CHART":
     case "PIE_CHART":
@@ -273,7 +370,10 @@ export function defaultDataSourceForKind(kind: WidgetKind): WidgetDataSource {
     case "HEATMAP":
     case "RADAR":
     case "TABLE":
-      return { kind: "SQL", sql: "SELECT status, sum(amount) AS amt FROM demo_orders GROUP BY 1" };
+      return {
+        kind: "SQL",
+        sql: "SELECT status, sum(amount) AS amt FROM demo_orders GROUP BY 1",
+      };
     case "PIVOT_TABLE":
       return {
         kind: "PIVOT",
@@ -291,7 +391,12 @@ export function defaultDataSourceForKind(kind: WidgetKind): WidgetDataSource {
         },
       };
     case "GRAPH_TOPOLOGY":
-      return { kind: "GRAPH", type_names: ["Factory", "Warehouse"], link_types: ["SUPPLIES"], limit: 500 };
+      return {
+        kind: "GRAPH",
+        type_names: ["Factory", "Warehouse"],
+        link_types: ["SUPPLIES"],
+        limit: 500,
+      };
     case "MAP":
       return { kind: "NODES_GEO", type_names: ["Factory", "Warehouse"] };
     case "FLOOR_PLAN":
@@ -299,7 +404,12 @@ export function defaultDataSourceForKind(kind: WidgetKind): WidgetDataSource {
     case "SCENE_3D":
       return { kind: "SCENE_3D", asset_id: "" };
     case "ALERT_LIST":
-      return { kind: "ALERTS", status: ["OPEN", "ACK"], severity: ["WARN", "CRITICAL"], limit: 20 };
+      return {
+        kind: "ALERTS",
+        status: ["OPEN", "ACK"],
+        severity: ["WARN", "CRITICAL"],
+        limit: 20,
+      };
     case "SIM_COMPARE":
       return { kind: "SIM_SCENARIOS", scenario_ids: [], metrics: [] };
     case "ACTION_BUTTON":
@@ -340,7 +450,8 @@ export function defaultPositionForKind(
     if (bottom > maxY) maxY = bottom;
   }
   if (kind === "KPI_CARD") return { x: 0, y: maxY, w: 6, h: 4 };
-  if (kind === "GAUGE" || kind === "ACTION_BUTTON") return { x: 0, y: maxY, w: 6, h: 6 };
+  if (kind === "GAUGE" || kind === "ACTION_BUTTON")
+    return { x: 0, y: maxY, w: 6, h: 6 };
   if (kind === "SCENE_3D" || kind === "MAP" || kind === "FLOOR_PLAN") {
     return { x: 0, y: maxY, w: 12, h: 9 };
   }

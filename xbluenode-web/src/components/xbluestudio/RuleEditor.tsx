@@ -9,6 +9,8 @@ import {
   RefreshCw,
   Trash2,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import type { AggFn } from "@/lib/api/enums";
 import {
   xblueApi,
@@ -23,7 +25,7 @@ import {
   type NodeTypeSpec,
   type ValidationIssue,
 } from "@/lib/api/xblue";
-import { Badge, Button, Input } from "@/components/ui/primitives";
+import { Badge, Button, Input, Select } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 export interface RuleEditorProps {
@@ -156,10 +158,13 @@ function highlightExpression(expr: string): React.ReactNode[] {
   return parts;
 }
 
-function checkLocalExprSyntax(expr: string): string | null {
+function checkLocalExprSyntax(
+  expr: string,
+  tx: (zh: string, en: string) => string
+): string | null {
   const trimmed = expr.trim();
-  if (!trimmed) return "表达式不能为空";
-  if (trimmed.length > 2000) return "表达式超出 2000 字符上限";
+  if (!trimmed) return tx("表达式为空", "Expression required");
+  if (trimmed.length > 2000) return tx("超出 2000 字符上限", "Exceeds 2000 chars");
   let depth = 0;
   let inQuotes = false;
   for (let i = 0; i < trimmed.length; i += 1) {
@@ -169,18 +174,20 @@ function checkLocalExprSyntax(expr: string): string | null {
     } else if (!inQuotes) {
       if (ch === "(") depth += 1;
       if (ch === ")") depth -= 1;
-      if (depth < 0) return "右括号 ')' 多余";
+      if (depth < 0) return tx("右括号多余", "Unmatched ')'");
     }
   }
-  if (inQuotes) return "单引号字符串未闭合";
-  if (depth !== 0) return "括号 '(' 与 ')' 未配对闭合";
+  if (inQuotes) return tx("单引号未闭合", "Unclosed quote");
+  if (depth !== 0) return tx("括号未闭合", "Unclosed '('");
   return null;
 }
 
 function formatEvalValue(val: unknown): string {
   if (val === null || val === undefined) return "null";
   if (typeof val === "number") {
-    return Number.isInteger(val) ? String(val) : Number(val.toFixed(6)).toString();
+    return Number.isInteger(val)
+      ? String(val)
+      : Number(val.toFixed(6)).toString();
   }
   if (typeof val === "boolean") return val ? "true" : "false";
   if (typeof val === "string") return `'${val}'`;
@@ -197,6 +204,10 @@ export function RuleEditor({
   onChangeAggRules,
   onChangeDerivedRules,
 }: RuleEditorProps) {
+  const { tx, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("STUDIO_EDIT");
+
   const ownMetrics = useMemo(
     () =>
       nodeType.properties
@@ -212,16 +223,13 @@ export function RuleEditor({
     [nodeType.properties]
   );
 
-  // Live backend validation map keyed by `${scopeType}::${expression}`
   const [exprDiagnostics, setExprDiagnostics] = useState<
     Record<string, LiveExprDiagnostic>
   >({});
 
-  // Full aggregate recompute state
   const [recomputing, setRecomputing] = useState(false);
   const [recomputeStatus, setRecomputeStatus] = useState<string | null>(null);
 
-  // Sample runtime node dry-run evaluator state
   const [sampleNodes, setSampleNodes] = useState<BlueNode[]>([]);
   const [loadingSampleNodes, setLoadingSampleNodes] = useState(false);
   const [selectedSampleNodeId, setSelectedSampleNodeId] = useState<string>("");
@@ -232,7 +240,6 @@ export function RuleEditor({
   );
   const [evalError, setEvalError] = useState<string | null>(null);
 
-  // Debounced live backend expression validation for derived formulas & agg filters
   useEffect(() => {
     const targets: { key: string; typeName: string; expression: string }[] = [];
 
@@ -275,7 +282,6 @@ export function RuleEditor({
             });
             return { key: item.key, res };
           } catch {
-            // Graceful fallback to local syntax check if type is not published yet
             return null;
           }
         })
@@ -303,7 +309,6 @@ export function RuleEditor({
     };
   }, [nodeType.name, nodeType.derived_rules, nodeType.agg_rules, subgraph]);
 
-  // Load sample runtime nodes when selected nodeType.name changes
   useEffect(() => {
     setRecomputeStatus(null);
     setEvalResult(null);
@@ -313,7 +318,7 @@ export function RuleEditor({
       nodeType.derived_rules[0]?.expression ||
       (ownMetrics.length >= 2
         ? `if(${ownMetrics[1]} > 0, ${ownMetrics[0]} / ${ownMetrics[1]}, null)`
-        : ownMetrics[0] ?? "0");
+        : (ownMetrics[0] ?? "0"));
     setDryRunExpr(defaultFormula);
 
     const typeName = nodeType.name.trim();
@@ -363,6 +368,7 @@ export function RuleEditor({
   }, [nodeType.name]);
 
   const handleRecomputeAggregate = async () => {
+    if (!canEdit) return;
     setRecomputing(true);
     setRecomputeStatus(null);
     try {
@@ -371,11 +377,16 @@ export function RuleEditor({
       });
       const shortJob = res.job_id ? res.job_id.slice(0, 8) : "queued";
       setRecomputeStatus(
-        `已入队全量聚合重算任务 (${res.type_name ?? nodeType.name} · job=${shortJob})`
+        tx(
+          `已提交重算任务 (${res.type_name ?? nodeType.name} · job=${shortJob})`,
+          `Recompute queued (${res.type_name ?? nodeType.name} · job=${shortJob})`
+        )
       );
     } catch (err) {
       setRecomputeStatus(
-        err instanceof Error ? err.message : "触发聚合重算失败"
+        err instanceof Error
+          ? err.message
+          : tx("重算任务提交失败", "Failed to queue recompute")
       );
     } finally {
       setRecomputing(false);
@@ -385,11 +396,11 @@ export function RuleEditor({
   const executeDryRun = async (exprOverride?: string) => {
     const targetExpr = (exprOverride ?? dryRunExpr).trim();
     if (!selectedSampleNodeId) {
-      setEvalError("请先选择一个已存在的运行时样本节点");
+      setEvalError(tx("需指定样本节点", "Sample node required"));
       return;
     }
     if (!targetExpr) {
-      setEvalError("试算表达式不能为空");
+      setEvalError(tx("试算表达式为空", "Expression required"));
       return;
     }
     setEvaluating(true);
@@ -402,13 +413,18 @@ export function RuleEditor({
       setEvalResult(res);
     } catch (err) {
       setEvalResult(null);
-      setEvalError(err instanceof Error ? err.message : "表达式样本试算失败");
+      setEvalError(
+        err instanceof Error
+          ? err.message
+          : tx("样本试算失败", "Dry-run failed")
+      );
     } finally {
       setEvaluating(false);
     }
   };
 
   const addAggRule = () => {
+    if (!canEdit) return;
     const firstEdge = edgeTypes.find(
       (et) =>
         et.src_type_name === nodeType.name || et.dst_type_name === nodeType.name
@@ -419,7 +435,7 @@ export function RuleEditor({
       ? defaultDir === "OUT"
         ? firstEdge.dst_type_name
         : firstEdge.src_type_name
-      : allNodeTypes[0]?.name ?? "";
+      : (allNodeTypes[0]?.name ?? "");
     const neighborMetrics =
       allNodeTypes
         .find((nt) => nt.name === defaultNeighbor)
@@ -442,16 +458,19 @@ export function RuleEditor({
   };
 
   const updateAggRule = (idx: number, patch: Partial<AggRuleSpec>) => {
+    if (!canEdit) return;
     onChangeAggRules(
       nodeType.agg_rules.map((r, i) => (i === idx ? { ...r, ...patch } : r))
     );
   };
 
   const removeAggRule = (idx: number) => {
+    if (!canEdit) return;
     onChangeAggRules(nodeType.agg_rules.filter((_, i) => i !== idx));
   };
 
   const addDerivedRule = () => {
+    if (!canEdit) return;
     const nextFormula =
       ownMetrics.length >= 2
         ? `if(${ownMetrics[1]} > 0, ${ownMetrics[0]} / ${ownMetrics[1]}, null)`
@@ -470,6 +489,7 @@ export function RuleEditor({
   };
 
   const updateDerivedRule = (idx: number, patch: Partial<DerivedRuleSpec>) => {
+    if (!canEdit) return;
     onChangeDerivedRules(
       nodeType.derived_rules.map((r, i) =>
         i === idx ? { ...r, ...patch } : r
@@ -478,10 +498,12 @@ export function RuleEditor({
   };
 
   const removeDerivedRule = (idx: number) => {
+    if (!canEdit) return;
     onChangeDerivedRules(nodeType.derived_rules.filter((_, i) => i !== idx));
   };
 
   const insertTokenIntoDerived = (idx: number, token: string) => {
+    if (!canEdit) return;
     const cur = nodeType.derived_rules[idx];
     if (!cur) return;
     const sep =
@@ -503,21 +525,18 @@ export function RuleEditor({
     <div className="space-y-4 text-xs" data-testid="rule-editor">
       {/* Top Action Bar: Full Aggregate Recompute Trigger */}
       <div className="flex flex-wrap items-center justify-between gap-2 rounded border border-border bg-muted/20 px-2.5 py-2">
-        <div className="space-y-0.5">
-          <div className="font-semibold flex items-center gap-1.5">
-            <span>传播重算控制 ({nodeType.name})</span>
-            <Badge variant="outline">DAG 拓扑序</Badge>
-          </div>
-          <div className="text-[11px] text-muted-foreground">
-            对企业主图该类型全部实例入队 GRAPH_AGGREGATE 重算任务
-          </div>
+        <div className="flex items-center gap-1.5">
+          <span className="font-semibold">
+            {tx("传播重算", "Aggregate Recompute")} ({nodeType.name})
+          </span>
+          <Badge variant="outline">{tx("拓扑序", "DAG Order")}</Badge>
         </div>
         <Button
           type="button"
           variant="outline"
-          className="h-7 px-2.5 py-1 text-xs"
+          size="sm"
           data-testid="recompute-agg-btn"
-          disabled={recomputing || !nodeType.name.trim()}
+          disabled={!canEdit || recomputing || !nodeType.name.trim()}
           onClick={() => void handleRecomputeAggregate()}
         >
           <RefreshCw
@@ -526,7 +545,9 @@ export function RuleEditor({
               recomputing && "animate-spin"
             )}
           />
-          {recomputing ? "入队重算中..." : "触发全量重算"}
+          {recomputing
+            ? tx("重算中…", "Queueing…")
+            : tx("全量重算", "Recompute All")}
         </Button>
       </div>
 
@@ -542,26 +563,25 @@ export function RuleEditor({
       {/* Section 1: Dynamic Aggregation Rules */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <div>
-            <span className="font-semibold">动态聚合规则 (agg_rules)</span>
-            <span className="ml-2 text-[11px] text-muted-foreground">
-              沿拓扑关系聚合邻居节点指标
-            </span>
-          </div>
-          <Button
-            variant="outline"
-            className="h-7 px-2 py-1 text-xs"
-            data-testid="add-agg-rule-btn"
-            onClick={addAggRule}
-          >
-            <Plus className="h-3 w-3" />
-            新增聚合规则
-          </Button>
+          <span className="font-semibold">
+            {tx("动态聚合规则", "Aggregation Rules")}
+          </span>
+          {canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="add-agg-rule-btn"
+              onClick={addAggRule}
+            >
+              <Plus className="h-3 w-3" />
+              {tx("新增聚合", "Add Rollup")}
+            </Button>
+          )}
         </div>
 
         {nodeType.agg_rules.length === 0 ? (
           <div className="rounded border border-dashed border-border p-3 text-center text-muted-foreground">
-            暂无跨关系动态聚合规则。
+            {tx("暂无动态聚合规则", "No aggregation rules")}
           </div>
         ) : (
           <div className="space-y-2">
@@ -590,7 +610,7 @@ export function RuleEditor({
                 : undefined;
               const localFilterErr =
                 filterTrimmed.length > 0 && !filterDiag
-                  ? checkLocalExprSyntax(filterTrimmed)
+                  ? checkLocalExprSyntax(filterTrimmed, tx)
                   : null;
 
               return (
@@ -598,46 +618,50 @@ export function RuleEditor({
                   key={idx}
                   className="rounded border border-border bg-muted/20 p-2.5 space-y-2"
                 >
-                  <div className="flex items-center justify-between">
-                    <span className="font-mono-tech text-[11px] font-semibold text-xblue">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-mono-tech text-[11px] font-semibold text-xblue truncate">
                       {rule.target_metric || "?"} = {rule.op}(
                       {rule.source_type_name || "?"}.{rule.source_metric || "?"}{" "}
                       via {rule.via_link_type || "?"} {rule.direction})
                     </span>
-                    <button
-                      type="button"
-                      onClick={() => removeAggRule(idx)}
-                      className="rounded p-1 text-muted-foreground hover:text-red-600 cursor-pointer"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {canEdit && (
+                      <button
+                        type="button"
+                        onClick={() => removeAggRule(idx)}
+                        className="rounded p-1 text-muted-foreground hover:text-red-600 cursor-pointer shrink-0"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    )}
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-0.5">
-                        目标指标 (target_metric)
+                        {tx("目标指标", "Target Metric")}
                       </label>
                       {ownMetrics.length > 0 ? (
-                        <select
+                        <Select
                           value={rule.target_metric}
+                          disabled={!canEdit}
                           onChange={(e) =>
                             updateAggRule(idx, {
                               target_metric: e.target.value,
                             })
                           }
-                          className="h-7 w-full rounded border border-input bg-background px-1.5 font-mono-tech text-xs"
+                          className="h-7 w-full px-1.5 font-mono-tech"
                         >
-                          <option value="">选择指标...</option>
+                          <option value="">{tx("未指定", "None")}</option>
                           {ownMetrics.map((m) => (
                             <option key={m} value={m}>
                               {m}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       ) : (
                         <Input
                           value={rule.target_metric}
+                          disabled={!canEdit}
                           onChange={(e) =>
                             updateAggRule(idx, {
                               target_metric: e.target.value,
@@ -651,111 +675,121 @@ export function RuleEditor({
 
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-0.5">
-                        聚合算子 (op)
+                        {tx("聚合算子", "Operator")}
                       </label>
-                      <select
+                      <Select
                         value={rule.op}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           updateAggRule(idx, { op: e.target.value as AggFn })
                         }
-                        className="h-7 w-full rounded border border-input bg-background px-1.5 font-mono-tech text-xs"
+                        className="h-7 w-full px-1.5 font-mono-tech"
                       >
                         {AGG_OPS.map((op) => (
                           <option key={op} value={op}>
                             {op}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
 
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-0.5">
-                        关联关系 (via_link_type)
+                        {tx("关联关系", "Via Relation")}
                       </label>
-                      <select
+                      <Select
                         value={rule.via_link_type}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           updateAggRule(idx, {
                             via_link_type: e.target.value,
                           })
                         }
-                        className="h-7 w-full rounded border border-input bg-background px-1.5 font-mono-tech text-xs"
+                        className="h-7 w-full px-1.5 font-mono-tech"
                       >
-                        <option value="">选择关系...</option>
+                        <option value="">{tx("未指定", "None")}</option>
                         {edgeTypes.map((et, eIdx) => (
                           <option key={`${et.name}-${eIdx}`} value={et.name}>
                             {et.name} ({et.src_type_name}→{et.dst_type_name})
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
 
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-0.5">
-                        遍历方向 (direction)
+                        {tx("遍历方向", "Direction")}
                       </label>
-                      <select
+                      <Select
                         value={rule.direction}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           updateAggRule(idx, {
                             direction: e.target.value as LinkDirection,
                           })
                         }
-                        className="h-7 w-full rounded border border-input bg-background px-1.5 font-mono-tech text-xs"
+                        className="h-7 w-full px-1.5 font-mono-tech"
                       >
-                        <option value="OUT">OUT (本节点为源)</option>
-                        <option value="IN">IN (本节点为目标)</option>
-                      </select>
+                        <option value="OUT">
+                          {tx("出边下游 (OUT)", "Outbound (OUT)")}
+                        </option>
+                        <option value="IN">
+                          {tx("入边上游 (IN)", "Inbound (IN)")}
+                        </option>
+                      </Select>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 items-end">
+                  <div className="grid grid-cols-2 gap-2 items-end">
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-0.5">
-                        邻居类型 (source_type_name)
+                        {tx("邻居类型", "Neighbor Type")}
                       </label>
-                      <select
+                      <Select
                         value={rule.source_type_name}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           updateAggRule(idx, {
                             source_type_name: e.target.value,
                           })
                         }
-                        className="h-7 w-full rounded border border-input bg-background px-1.5 font-mono-tech text-xs"
+                        className="h-7 w-full px-1.5 font-mono-tech"
                       >
-                        <option value="">选择源类型...</option>
+                        <option value="">{tx("未指定", "None")}</option>
                         {allNodeTypes.map((nt) => (
                           <option key={nt.name} value={nt.name}>
                             {nt.name} ({nt.display_name})
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
 
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-0.5">
-                        邻居指标 (source_metric)
+                        {tx("邻居指标", "Neighbor Metric")}
                       </label>
                       {sourceMetricCandidates.length > 0 ? (
-                        <select
+                        <Select
                           value={rule.source_metric}
+                          disabled={!canEdit}
                           onChange={(e) =>
                             updateAggRule(idx, {
                               source_metric: e.target.value,
                             })
                           }
-                          className="h-7 w-full rounded border border-input bg-background px-1.5 font-mono-tech text-xs"
+                          className="h-7 w-full px-1.5 font-mono-tech"
                         >
-                          <option value="">选择源指标...</option>
+                          <option value="">{tx("未指定", "None")}</option>
                           {sourceMetricCandidates.map((sm) => (
                             <option key={sm} value={sm}>
                               {sm}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       ) : (
                         <Input
                           value={rule.source_metric}
+                          disabled={!canEdit}
                           onChange={(e) =>
                             updateAggRule(idx, {
                               source_metric: e.target.value,
@@ -766,27 +800,28 @@ export function RuleEditor({
                         />
                       )}
                     </div>
-
-                    <label className="flex items-center gap-1.5 h-7 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={rule.weight_by_link}
-                        onChange={(e) =>
-                          updateAggRule(idx, {
-                            weight_by_link: e.target.checked,
-                          })
-                        }
-                      />
-                      <span className="text-[11px]">
-                        按边权重加权 (weight_by_link)
-                      </span>
-                    </label>
                   </div>
+
+                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={rule.weight_by_link}
+                      disabled={!canEdit}
+                      onChange={(e) =>
+                        updateAggRule(idx, {
+                          weight_by_link: e.target.checked,
+                        })
+                      }
+                    />
+                    <span className="text-[11px]">
+                      {tx("按关系权重加权", "Weight by link")}
+                    </span>
+                  </label>
 
                   <div className="space-y-1">
                     <div className="flex items-center justify-between">
                       <label className="block text-[11px] text-muted-foreground">
-                        子节点过滤表达式 (filter，可选)
+                        {tx("过滤条件", "Filter Expression")}
                       </label>
                       {filterDiag?.valid && filterDiag.inferred_type && (
                         <Badge
@@ -800,15 +835,16 @@ export function RuleEditor({
                     <Input
                       data-testid={`agg-filter-input-${idx}`}
                       value={rule.filter ?? ""}
+                      disabled={!canEdit}
                       onChange={(e) =>
                         updateAggRule(idx, { filter: e.target.value })
                       }
-                      placeholder="例如 prop.status != 'CANCELED'"
+                      placeholder="prop.status != 'CANCELED'"
                       className="h-7 px-2 text-xs font-mono-tech"
                     />
                     {localFilterErr && (
                       <div className="text-[11px] text-red-600 dark:text-red-400">
-                        语法提示: {localFilterErr}
+                        {localFilterErr}
                       </div>
                     )}
                     {filterDiag?.issues.map((fIss, fIdx) => (
@@ -820,7 +856,10 @@ export function RuleEditor({
                         <AlertCircle className="h-3 w-3 shrink-0" />
                         <span>
                           {fIss.column !== undefined
-                            ? `列 ${fIss.column}: ${fIss.message}`
+                            ? tx(
+                                `列 ${fIss.column}: ${fIss.message}`,
+                                `Col ${fIss.column}: ${fIss.message}`
+                              )
                             : fIss.message}
                         </span>
                       </div>
@@ -846,26 +885,25 @@ export function RuleEditor({
       {/* Section 2: Derived Formula Rules */}
       <div className="space-y-2 border-t border-border pt-3">
         <div className="flex items-center justify-between">
-          <div>
-            <span className="font-semibold">派生指标规则 (derived_rules)</span>
-            <span className="ml-2 text-[11px] text-muted-foreground">
-              节点内确定性表达式计算
-            </span>
-          </div>
-          <Button
-            variant="outline"
-            className="h-7 px-2 py-1 text-xs"
-            data-testid="add-derived-rule-btn"
-            onClick={addDerivedRule}
-          >
-            <Plus className="h-3 w-3 text-xblue" />
-            新增派生公式
-          </Button>
+          <span className="font-semibold">
+            {tx("派生指标公式", "Derived Formulas")}
+          </span>
+          {canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="add-derived-rule-btn"
+              onClick={addDerivedRule}
+            >
+              <Plus className="h-3 w-3 text-xblue" />
+              {tx("新增公式", "Add Formula")}
+            </Button>
+          )}
         </div>
 
         {nodeType.derived_rules.length === 0 ? (
           <div className="rounded border border-dashed border-border p-3 text-center text-muted-foreground">
-            暂无节点内派生公式规则。
+            {tx("暂无派生公式规则", "No derived formulas")}
           </div>
         ) : (
           <div className="space-y-2">
@@ -879,7 +917,7 @@ export function RuleEditor({
                 ? exprDiagnostics[diagKey]
                 : undefined;
               const localErr = !backendDiag
-                ? checkLocalExprSyntax(dRule.expression)
+                ? checkLocalExprSyntax(dRule.expression, tx)
                 : null;
               const rulePathPrefix = `node_types[${nodeIndex}].derived_rules[${idx}]`;
               const serverIssues = issues.filter((iss) =>
@@ -897,52 +935,57 @@ export function RuleEditor({
                   key={idx}
                   className="rounded border border-border bg-muted/20 p-2.5 space-y-2"
                 >
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-2 flex-1">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
                       <span className="text-[11px] text-muted-foreground shrink-0">
-                        目标指标:
+                        {tx("目标指标:", "Metric:")}
                       </span>
                       {ownMetrics.length > 0 ? (
-                        <select
+                        <Select
                           value={dRule.target_metric}
+                          disabled={!canEdit}
                           onChange={(e) =>
                             updateDerivedRule(idx, {
                               target_metric: e.target.value,
                             })
                           }
-                          className="h-7 rounded border border-input bg-background px-2 font-mono-tech text-xs"
+                          className="h-7 px-2 font-mono-tech"
                         >
-                          <option value="">选择指标...</option>
+                          <option value="">{tx("未指定", "None")}</option>
                           {ownMetrics.map((m) => (
                             <option key={m} value={m}>
                               {m}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       ) : (
                         <Input
                           value={dRule.target_metric}
+                          disabled={!canEdit}
                           onChange={(e) =>
                             updateDerivedRule(idx, {
                               target_metric: e.target.value,
                             })
                           }
                           placeholder="fill_rate"
-                          className="h-7 w-40 px-2 text-xs font-mono-tech"
+                          className="h-7 w-32 px-2 text-xs font-mono-tech"
                         />
                       )}
 
-                      <label className="flex items-center gap-1 cursor-pointer ml-2">
+                      <label className="flex items-center gap-1 cursor-pointer">
                         <input
                           type="checkbox"
                           checked={dRule.enabled}
+                          disabled={!canEdit}
                           onChange={(e) =>
                             updateDerivedRule(idx, {
                               enabled: e.target.checked,
                             })
                           }
                         />
-                        <span className="text-[11px]">启用</span>
+                        <span className="text-[11px]">
+                          {tx("启用", "Active")}
+                        </span>
                       </label>
                     </div>
 
@@ -956,20 +999,14 @@ export function RuleEditor({
                         </Badge>
                       )}
                       {hasIssue ? (
-                        <Badge
-                          variant="outline"
-                          className="border-red-500/40 text-red-600 dark:text-red-400"
-                        >
+                        <Badge variant="danger">
                           <AlertCircle className="h-3 w-3 mr-1" />
-                          需修正
+                          {tx("异常", "Error")}
                         </Badge>
                       ) : (
-                        <Badge
-                          variant="outline"
-                          className="border-emerald-500/40 text-emerald-600 dark:text-emerald-400"
-                        >
+                        <Badge variant="success">
                           <CheckCircle2 className="h-3 w-3 mr-1" />
-                          语法就绪
+                          {tx("就绪", "Valid")}
                         </Badge>
                       )}
                       <button
@@ -980,18 +1017,19 @@ export function RuleEditor({
                             void executeDryRun(dRule.expression);
                           }
                         }}
-                        title="带入样本节点试算"
                         className="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-xblue cursor-pointer"
                       >
-                        试算
+                        {tx("试算", "Test")}
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => removeDerivedRule(idx)}
-                        className="rounded p-1 text-muted-foreground hover:text-red-600 cursor-pointer"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      {canEdit && (
+                        <button
+                          type="button"
+                          onClick={() => removeDerivedRule(idx)}
+                          className="rounded p-1 text-muted-foreground hover:text-red-600 cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
 
@@ -1000,12 +1038,13 @@ export function RuleEditor({
                     rows={2}
                     data-testid={`derived-expr-input-${idx}`}
                     value={dRule.expression}
+                    disabled={!canEdit}
                     onChange={(e) =>
                       updateDerivedRule(idx, { expression: e.target.value })
                     }
                     placeholder="if(total_demand > 0, inventory / total_demand, null)"
                     className={cn(
-                      "w-full rounded border bg-background px-2.5 py-1.5 font-mono-tech text-xs focus:outline-none focus:ring-1 focus:ring-foreground",
+                      "w-full rounded border bg-background px-2.5 py-1.5 font-mono-tech text-xs focus:outline-none focus:ring-1 focus:ring-xblue disabled:opacity-50",
                       hasIssue ? "border-red-500/60" : "border-input"
                     )}
                   />
@@ -1013,51 +1052,55 @@ export function RuleEditor({
                   {/* Live Syntax Highlighted Preview */}
                   <div className="rounded border border-border bg-background/80 px-2.5 py-1.5 font-mono-tech text-[11px] overflow-x-auto">
                     <span className="text-muted-foreground mr-1.5 select-none">
-                      AST 预览:
+                      AST:
                     </span>
                     {highlightExpression(dRule.expression || "")}
                   </div>
 
                   {/* Reference Quick Insert Chips */}
-                  <div className="flex flex-wrap items-center gap-1">
-                    <span className="text-[10px] text-muted-foreground">
-                      引用插入:
-                    </span>
-                    {ownMetrics.map((m) => (
-                      <button
-                        key={`m-${m}`}
-                        type="button"
-                        onClick={() => insertTokenIntoDerived(idx, m)}
-                        className="rounded border border-xblue/30 bg-xblue-soft px-1.5 py-0.5 font-mono-tech text-[10px] text-xblue cursor-pointer"
-                      >
-                        {m}
-                      </button>
-                    ))}
-                    {ownAttrs.map((a) => (
-                      <button
-                        key={`a-${a}`}
-                        type="button"
-                        onClick={() => insertTokenIntoDerived(idx, `prop.${a}`)}
-                        className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono-tech text-[10px] cursor-pointer"
-                      >
-                        prop.{a}
-                      </button>
-                    ))}
-                    {["if(", "safe_div(", "coalesce(", "round("].map((fn) => (
-                      <button
-                        key={fn}
-                        type="button"
-                        onClick={() => insertTokenIntoDerived(idx, fn)}
-                        className="rounded border border-border bg-background px-1.5 py-0.5 font-mono-tech text-[10px] text-muted-foreground hover:text-foreground cursor-pointer"
-                      >
-                        {fn})
-                      </button>
-                    ))}
-                  </div>
+                  {canEdit && (
+                    <div className="flex flex-wrap items-center gap-1">
+                      <span className="text-[10px] text-muted-foreground">
+                        {tx("变量:", "Vars:")}
+                      </span>
+                      {ownMetrics.map((m) => (
+                        <button
+                          key={`m-${m}`}
+                          type="button"
+                          onClick={() => insertTokenIntoDerived(idx, m)}
+                          className="rounded border border-xblue/30 bg-xblue-soft px-1.5 py-0.5 font-mono-tech text-[10px] text-xblue cursor-pointer"
+                        >
+                          {m}
+                        </button>
+                      ))}
+                      {ownAttrs.map((a) => (
+                        <button
+                          key={`a-${a}`}
+                          type="button"
+                          onClick={() =>
+                            insertTokenIntoDerived(idx, `prop.${a}`)
+                          }
+                          className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono-tech text-[10px] cursor-pointer"
+                        >
+                          prop.{a}
+                        </button>
+                      ))}
+                      {["if(", "safe_div(", "coalesce(", "round("].map((fn) => (
+                        <button
+                          key={fn}
+                          type="button"
+                          onClick={() => insertTokenIntoDerived(idx, fn)}
+                          className="rounded border border-border bg-background px-1.5 py-0.5 font-mono-tech text-[10px] text-muted-foreground hover:text-foreground cursor-pointer"
+                        >
+                          {fn})
+                        </button>
+                      ))}
+                    </div>
+                  )}
 
                   {localErr && (
                     <div className="text-[11px] text-red-600 dark:text-red-400">
-                      语法提示: {localErr}
+                      {localErr}
                     </div>
                   )}
                   {backendIssues.map((bIss, bIdx) => (
@@ -1069,7 +1112,10 @@ export function RuleEditor({
                       <AlertCircle className="h-3 w-3 shrink-0" />
                       <span>
                         {bIss.column !== undefined
-                          ? `列 ${bIss.column}: ${bIss.message}`
+                          ? tx(
+                              `列 ${bIss.column}: ${bIss.message}`,
+                              `Col ${bIss.column}: ${bIss.message}`
+                            )
                           : bIss.message}
                       </span>
                     </div>
@@ -1097,33 +1143,34 @@ export function RuleEditor({
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-1.5">
             <FlaskConical className="h-3.5 w-3.5 text-xblue" />
-            <span className="font-semibold">样本节点试算 (Dry-Run 求值器)</span>
-            <span className="text-[11px] text-muted-foreground">
-              只读快照试算，不写库
+            <span className="font-semibold">
+              {tx("样本节点试算", "Sample Node Dry-Run")}
             </span>
           </div>
           <Badge variant="outline">
             {loadingSampleNodes
-              ? "加载中..."
-              : `样本 ${sampleNodes.length} 个`}
+              ? tx("加载中…", "Loading…")
+              : tx(`样本 ${sampleNodes.length}`, `${sampleNodes.length} Samples`)}
           </Badge>
         </div>
 
         <div className="rounded border border-border bg-muted/20 p-2.5 space-y-2">
-          <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
-            <div className="md:col-span-5">
+          <div className="space-y-2">
+            <div>
               <label className="block text-[11px] text-muted-foreground mb-0.5">
-                运行时样本节点 ({nodeType.name})
+                {tx("样本节点", "Sample Node")} ({nodeType.name})
               </label>
-              <select
+              <Select
                 data-testid="expr-dryrun-node-select"
                 value={selectedSampleNodeId}
                 onChange={(e) => setSelectedSampleNodeId(e.target.value)}
                 disabled={sampleNodes.length === 0}
-                className="h-7 w-full rounded border border-input bg-background px-2 font-mono-tech text-xs"
+                className="h-8 w-full font-mono-tech"
               >
                 {sampleNodes.length === 0 ? (
-                  <option value="">暂无运行时节点实例</option>
+                  <option value="">
+                    {tx("暂无运行时实例", "No runtime instances")}
+                  </option>
                 ) : (
                   sampleNodes.map((n) => (
                     <option key={n.id} value={n.id}>
@@ -1131,26 +1178,27 @@ export function RuleEditor({
                     </option>
                   ))
                 )}
-              </select>
+              </Select>
             </div>
 
-            <div className="md:col-span-5">
-              <label className="block text-[11px] text-muted-foreground mb-0.5">
-                试算表达式 (expression)
-              </label>
-              <Input
-                data-testid="expr-dryrun-input"
-                value={dryRunExpr}
-                onChange={(e) => setDryRunExpr(e.target.value)}
-                placeholder="例如 inventory / total_demand"
-                className="h-7 px-2 text-xs font-mono-tech"
-              />
-            </div>
+            <div className="flex items-end gap-2">
+              <div className="flex-1 min-w-0">
+                <label className="block text-[11px] text-muted-foreground mb-0.5">
+                  {tx("试算表达式", "Expression")}
+                </label>
+                <Input
+                  data-testid="expr-dryrun-input"
+                  value={dryRunExpr}
+                  onChange={(e) => setDryRunExpr(e.target.value)}
+                  placeholder="inventory / total_demand"
+                  className="h-8 px-2.5 text-xs font-mono-tech"
+                />
+              </div>
 
-            <div className="md:col-span-2">
               <Button
                 type="button"
-                className="h-7 w-full px-2 py-1 text-xs"
+                size="sm"
+                className="h-8 px-3"
                 data-testid="expr-dryrun-submit-btn"
                 disabled={
                   evaluating ||
@@ -1160,16 +1208,23 @@ export function RuleEditor({
                 onClick={() => void executeDryRun()}
               >
                 <Play className="h-3 w-3" />
-                {evaluating ? "计算中" : "执行试算"}
+                {evaluating ? tx("计算中…", "Running…") : tx("试算", "Evaluate")}
               </Button>
             </div>
           </div>
 
-          {selectedSampleNode && (
-            <div className="font-mono-tech text-[10px] text-muted-foreground truncate">
-              当前快照 metrics: {JSON.stringify(selectedSampleNode.metrics ?? {})}
-            </div>
-          )}
+          {selectedSampleNode &&
+            Object.keys(selectedSampleNode.metrics ?? {}).length > 0 && (
+              <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                {Object.entries(selectedSampleNode.metrics ?? {}).map(
+                  ([mk, mv]) => (
+                    <Badge key={mk} variant="outline">
+                      {mk}: {fmtNum(mv, 2)}
+                    </Badge>
+                  )
+                )}
+              </div>
+            )}
 
           {evalError && (
             <div className="text-[11px] text-red-600 dark:text-red-400 flex items-center gap-1">
@@ -1185,7 +1240,7 @@ export function RuleEditor({
             >
               <div className="flex items-center gap-2 font-mono-tech">
                 <span className="text-[11px] text-muted-foreground">
-                  求值结果:
+                  {tx("结果:", "Value:")}
                 </span>
                 <span
                   className="text-sm font-semibold text-foreground"
@@ -1204,11 +1259,7 @@ export function RuleEditor({
                   data-testid="expr-dryrun-warnings"
                 >
                   {evalResult.warnings.map((wCode) => (
-                    <Badge
-                      key={wCode}
-                      variant="outline"
-                      className="border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300"
-                    >
+                    <Badge key={wCode} variant="warning">
                       <AlertTriangle className="h-3 w-3 mr-1" />
                       {wCode}
                     </Badge>
@@ -1222,4 +1273,3 @@ export function RuleEditor({
     </div>
   );
 }
-

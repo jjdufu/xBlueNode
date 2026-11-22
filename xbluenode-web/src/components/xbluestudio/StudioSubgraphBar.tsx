@@ -1,19 +1,14 @@
 import { useState } from "react";
-import {
-  FolderGit2,
-  GitMerge,
-  Layers,
-  Plus,
-  Trash2,
-  X,
-} from "lucide-react";
+import { FolderGit2, GitMerge, Layers, Plus, Trash2 } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import type {
   CreateSubgraphRequest,
   NodeTypeSpec,
   SchemaDraft,
   SubgraphInfo,
 } from "@/lib/api/xblue";
-import { Badge, Button, Input } from "@/components/ui/primitives";
+import { Badge, Button, Input, Modal } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 export interface StudioSubgraphBarProps {
@@ -47,6 +42,10 @@ export function StudioSubgraphBar({
   onDeleteSubgraph,
   onOpenMergeDialog,
 }: StudioSubgraphBarProps) {
+  const { tx } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("STUDIO_EDIT");
+
   const [createOpen, setCreateOpen] = useState(false);
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -64,8 +63,8 @@ export function StudioSubgraphBar({
           {
             id: "00000000-0000-0000-0000-000000000000",
             slug: "main",
-            display_name: "企业主图",
-            description: "企业权威生产主图",
+            display_name: tx("企业主图", "Main Graph"),
+            description: tx("权威生产主图", "Production main graph"),
             owner_dept: "default",
             is_main: true,
             current_version: publishedVersion,
@@ -78,10 +77,10 @@ export function StudioSubgraphBar({
     normalizedList.find((s) => s.slug === activeSubgraph) ?? normalizedList[0];
 
   const effectiveDraftLabel = activeDraft
-    ? `${activeDraft.title}${isDirty ? " (未保存修改)" : ""}`
+    ? `${activeDraft.title}${isDirty ? tx(" (未保存)", " (Unsaved)") : ""}`
     : isDirty
-      ? `${draftTitle || "新建工作区草案"} (未保存)`
-      : "已发布快照浏览";
+      ? `${draftTitle || tx("工作区草案", "Workspace Draft")}${tx(" (未保存)", " (Unsaved)")}`
+      : tx("已发布快照", "Published Snapshot");
 
   const openModal = () => {
     setSlug("");
@@ -106,15 +105,22 @@ export function StudioSubgraphBar({
     const trimmedSlug = slug.trim();
     const trimmedDisplay = displayName.trim();
     if (!SLUG_PATTERN.test(trimmedSlug)) {
-      setFormError("子图标识需以小写字母开头，仅含小写字母、数字、下划线或连字符");
+      setFormError(
+        tx(
+          "标识需以小写字母开头，仅含小写字母、数字、下划线或连字符",
+          "Slug must start with lowercase letter and contain only a-z, 0-9, _, -"
+        )
+      );
       return;
     }
     if (trimmedSlug === "main") {
-      setFormError("main 为系统保留企业主图标识，请使用部门子图名称");
+      setFormError(
+        tx("main 为系统保留主图标识", "'main' is reserved for main graph")
+      );
       return;
     }
     if (!trimmedDisplay) {
-      setFormError("请输入部门子图中文名称");
+      setFormError(tx("子图名称为空", "Display name required"));
       return;
     }
     setSubmitting(true);
@@ -130,7 +136,11 @@ export function StudioSubgraphBar({
       });
       setCreateOpen(false);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : "创建子图失败");
+      setFormError(
+        err instanceof Error
+          ? err.message
+          : tx("创建子图失败", "Failed to create subgraph")
+      );
     } finally {
       setSubmitting(false);
     }
@@ -138,7 +148,7 @@ export function StudioSubgraphBar({
 
   return (
     <div className="rounded-md border border-border bg-card px-3 py-2 space-y-2">
-      {/* Top Status Strip: 当前子图 · 当前编辑草案 · 基于版本 vN */}
+      {/* Top Status Strip */}
       <div
         data-testid="studio-status-bar"
         className="flex flex-wrap items-center justify-between gap-2 text-xs border-b border-border pb-2"
@@ -146,52 +156,56 @@ export function StudioSubgraphBar({
         <div className="flex flex-wrap items-center gap-1.5">
           <Layers className="h-3.5 w-3.5 text-xblue shrink-0" />
           <span className="font-medium">
-            当前子图：{currentInfo?.display_name ?? activeSubgraph}
+            {currentInfo?.is_main
+              ? tx("企业主图", "Main Graph")
+              : (currentInfo?.display_name ?? activeSubgraph)}
           </span>
           <Badge variant={activeSubgraph === "main" ? "xblue" : "neutral"}>
             {activeSubgraph}
           </Badge>
           <span className="text-muted-foreground">·</span>
-          <span className="text-muted-foreground">当前编辑草案：</span>
+          <span className="text-muted-foreground">
+            {tx("当前草案:", "Draft:")}
+          </span>
           <span className="font-medium" data-testid="studio-active-draft-label">
             {effectiveDraftLabel}
           </span>
-          {activeDraft && (
-            <Badge variant="outline">{activeDraft.source}</Badge>
-          )}
+          {activeDraft && <Badge variant="outline">{activeDraft.source}</Badge>}
           <span className="text-muted-foreground">·</span>
-          <span className="font-mono-tech font-medium text-xblue" data-testid="studio-base-version">
-            基于版本 v{baseVersion}
+          <span
+            className="font-mono-tech font-medium text-xblue"
+            data-testid="studio-base-version"
+          >
+            {tx(`基线 v${baseVersion}`, `Base v${baseVersion}`)}
           </span>
           {publishedVersion !== baseVersion && (
-            <Badge variant="outline">最新已发布 v{publishedVersion}</Badge>
+            <Badge variant="outline">
+              {tx(`最新 v${publishedVersion}`, `Latest v${publishedVersion}`)}
+            </Badge>
           )}
         </div>
 
         <div className="flex items-center gap-1.5">
-          <Button
-            variant="outline"
-            className="h-7 px-2.5 py-1 text-xs"
-            data-testid="open-create-subgraph-btn"
-            onClick={openModal}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            新建部门子图
-          </Button>
+          {canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="open-create-subgraph-btn"
+              onClick={openModal}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {tx("新建子图", "New Subgraph")}
+            </Button>
+          )}
           <Button
             variant={activeSubgraph !== "main" ? "primary" : "outline"}
-            className="h-7 px-2.5 py-1 text-xs"
+            size="sm"
             data-testid="open-merge-dialog-btn"
             disabled={activeSubgraph === "main"}
             onClick={onOpenMergeDialog}
-            title={
-              activeSubgraph === "main"
-                ? "切换到部门子图后可与企业主图对比并合并"
-                : "预览跨子图同义实体对齐并合并到企业主图 main"
-            }
           >
             <GitMerge className="h-3.5 w-3.5" />
-            对比并合并到主图
+            {tx("合并至主图", "Merge to Main")}
           </Button>
         </div>
       </div>
@@ -200,7 +214,7 @@ export function StudioSubgraphBar({
       <div className="flex flex-wrap items-center gap-1.5">
         <span className="text-[11px] text-muted-foreground flex items-center gap-1 mr-1">
           <FolderGit2 className="h-3 w-3" />
-          多子图空间:
+          {tx("子图空间:", "Subgraphs:")}
         </span>
         {normalizedList.map((sg) => {
           const selected = sg.slug === activeSubgraph;
@@ -217,7 +231,9 @@ export function StudioSubgraphBar({
                     : "bg-background text-muted-foreground border-border hover:text-foreground hover:bg-muted"
                 )}
               >
-                <span>{sg.is_main ? "企业主图" : sg.display_name}</span>
+                <span>
+                  {sg.is_main ? tx("企业主图", "Main Graph") : sg.display_name}
+                </span>
                 <span className="font-mono-tech text-[11px] opacity-80">
                   {sg.slug}
                 </span>
@@ -225,10 +241,10 @@ export function StudioSubgraphBar({
                   v{sg.current_version}
                 </span>
               </button>
-              {!sg.is_main && selected && onDeleteSubgraph && (
+              {!sg.is_main && selected && onDeleteSubgraph && canEdit && (
                 <button
                   type="button"
-                  title={`删除子图 ${sg.slug}`}
+                  title={tx(`删除子图 ${sg.slug}`, `Delete ${sg.slug}`)}
                   onClick={() => void onDeleteSubgraph(sg.slug)}
                   className="ml-0.5 p-1 rounded text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
                 >
@@ -241,138 +257,130 @@ export function StudioSubgraphBar({
       </div>
 
       {/* Create Department Subgraph Modal */}
-      {createOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-          data-testid="create-subgraph-modal"
-        >
-          <div className="w-full max-w-md rounded-md border border-border bg-card p-4 shadow-lg space-y-3">
-            <div className="flex items-center justify-between border-b border-border pb-2">
-              <div>
-                <h3 className="text-sm font-semibold">新建部门隔离建模子图</h3>
-                <p className="text-[11px] text-muted-foreground">
-                  部门子图独立演进版本与映射预览，成熟后可对齐合并入企业主图 main
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setCreateOpen(false)}
-                className="p-1 rounded hover:bg-muted text-muted-foreground cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
+      <Modal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        testId="create-subgraph-modal"
+        maxWidthClass="max-w-md"
+        title={tx("新建部门子图", "New Department Subgraph")}
+        footer={
+          <>
+            <Button
+              variant="outline"
+              onClick={() => setCreateOpen(false)}
+              disabled={submitting}
+            >
+              {tx("取消", "Cancel")}
+            </Button>
+            <Button
+              data-testid="confirm-create-subgraph-btn"
+              onClick={() => void handleSubmitCreate()}
+              disabled={submitting}
+            >
+              {submitting
+                ? tx("创建中…", "Creating…")
+                : tx("创建子图", "Create")}
+            </Button>
+          </>
+        }
+      >
+        {formError && (
+          <div className="rounded border border-red-500/30 bg-red-500/10 px-2.5 py-1.5 text-xs text-red-600 dark:text-red-400">
+            {formError}
+          </div>
+        )}
+
+        <div className="space-y-2.5 text-xs">
+          <div>
+            <label className="block font-medium mb-1">
+              {tx("子图标识", "Subgraph Slug")}
+            </label>
+            <Input
+              data-testid="create-subgraph-slug"
+              placeholder="logistics"
+              value={slug}
+              onChange={(e) => setSlug(e.target.value)}
+              className="h-8 text-xs font-mono-tech"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="block font-medium mb-1">
+                {tx("显示名称", "Display Name")}
+              </label>
+              <Input
+                data-testid="create-subgraph-display-name"
+                placeholder={tx("物流履约子图", "Logistics Subgraph")}
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                className="h-8 text-xs"
+              />
             </div>
-
-            {formError && (
-              <div className="rounded border border-red-500/30 bg-red-500/10 px-2.5 py-1.5 text-xs text-red-600 dark:text-red-400">
-                {formError}
-              </div>
-            )}
-
-            <div className="space-y-2.5 text-xs">
-              <div>
-                <label className="block font-medium mb-1">
-                  子图英文标识 (slug)
-                </label>
-                <Input
-                  data-testid="create-subgraph-slug"
-                  placeholder="例如 logistics、finance、manufacturing"
-                  value={slug}
-                  onChange={(e) => setSlug(e.target.value)}
-                  className="h-8 text-xs font-mono-tech"
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block font-medium mb-1">子图中文名称</label>
-                  <Input
-                    data-testid="create-subgraph-display-name"
-                    placeholder="例如 物流履约子图"
-                    value={displayName}
-                    onChange={(e) => setDisplayName(e.target.value)}
-                    className="h-8 text-xs"
-                  />
-                </div>
-                <div>
-                  <label className="block font-medium mb-1">归属部门 ID</label>
-                  <Input
-                    data-testid="create-subgraph-dept"
-                    placeholder="例如 logistics"
-                    value={ownerDept}
-                    onChange={(e) => setOwnerDept(e.target.value)}
-                    className="h-8 text-xs font-mono-tech"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-medium mb-1">业务说明</label>
-                <Input
-                  placeholder="可选，描述本部门建模范围"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className="h-8 text-xs"
-                />
-              </div>
-
-              <div className="rounded border border-border bg-muted/40 p-2.5 space-y-2">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={seedFromMain}
-                    onChange={(e) => setSeedFromMain(e.target.checked)}
-                    className="rounded border-border"
-                  />
-                  <span className="font-medium">
-                    从企业主图 (main) 拷贝初始节点类型作为建模上下文
-                  </span>
-                </label>
-
-                {seedFromMain && mainNodeTypes.length > 0 && (
-                  <div className="flex flex-wrap gap-1.5 pt-1">
-                    {mainNodeTypes.map((nt) => {
-                      const checked = selectedSeedTypes.includes(nt.name);
-                      return (
-                        <button
-                          key={nt.name}
-                          type="button"
-                          onClick={() => toggleSeedType(nt.name)}
-                          className={cn(
-                            "rounded border px-2 py-0.5 text-[11px] font-mono-tech cursor-pointer",
-                            checked
-                              ? "border-xblue bg-xblue-soft text-xblue"
-                              : "border-border bg-background text-muted-foreground"
-                          )}
-                        >
-                          {nt.display_name} ({nt.name})
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
-              <Button
-                variant="outline"
-                onClick={() => setCreateOpen(false)}
-                disabled={submitting}
-              >
-                取消
-              </Button>
-              <Button
-                data-testid="confirm-create-subgraph-btn"
-                onClick={() => void handleSubmitCreate()}
-                disabled={submitting}
-              >
-                {submitting ? "创建中..." : "创建子图"}
-              </Button>
+            <div>
+              <label className="block font-medium mb-1">
+                {tx("归属部门", "Department")}
+              </label>
+              <Input
+                data-testid="create-subgraph-dept"
+                placeholder="logistics"
+                value={ownerDept}
+                onChange={(e) => setOwnerDept(e.target.value)}
+                className="h-8 text-xs font-mono-tech"
+              />
             </div>
           </div>
+
+          <div>
+            <label className="block font-medium mb-1">
+              {tx("业务说明", "Description")}
+            </label>
+            <Input
+              placeholder={tx("物流干线与仓配模型", "Logistics domain model")}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+
+          <div className="rounded border border-border bg-muted/40 p-2.5 space-y-2">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={seedFromMain}
+                onChange={(e) => setSeedFromMain(e.target.checked)}
+                className="rounded border-border"
+              />
+              <span className="font-medium">
+                {tx("继承主图基线节点类型", "Seed node types from Main Graph")}
+              </span>
+            </label>
+
+            {seedFromMain && mainNodeTypes.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-1">
+                {mainNodeTypes.map((nt) => {
+                  const checked = selectedSeedTypes.includes(nt.name);
+                  return (
+                    <button
+                      key={nt.name}
+                      type="button"
+                      onClick={() => toggleSeedType(nt.name)}
+                      className={cn(
+                        "rounded border px-2 py-0.5 text-[11px] font-mono-tech cursor-pointer",
+                        checked
+                          ? "border-xblue bg-xblue-soft text-xblue"
+                          : "border-border bg-background text-muted-foreground"
+                      )}
+                    >
+                      {nt.display_name} ({nt.name})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
         </div>
-      )}
+      </Modal>
     </div>
   );
 }

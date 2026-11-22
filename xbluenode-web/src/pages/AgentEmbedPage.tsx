@@ -3,6 +3,7 @@ import { useParams } from "react-router";
 import {
   AlertTriangle,
   Bot,
+  Languages,
   Moon,
   RotateCcw,
   Send,
@@ -16,8 +17,19 @@ import {
   type AgentEvent,
   type MessageRecord,
 } from "@/lib/api/axagent";
-import { MessageView, type StreamingToolItem } from "@/components/axagent/MessageView";
-import { Badge, Button, Card, Textarea } from "@/components/ui/primitives";
+import {
+  MessageView,
+  type StreamingToolItem,
+} from "@/components/axagent/MessageView";
+import {
+  Badge,
+  Button,
+  Card,
+  IconButton,
+  Textarea,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { useTheme } from "@/lib/theme";
 
 interface EmbedErrorBannerState {
   status: number | null;
@@ -25,53 +37,11 @@ interface EmbedErrorBannerState {
   detail: string;
 }
 
-function classifyEmbedError(err: unknown): EmbedErrorBannerState {
-  if (err instanceof ApiError) {
-    if (err.status === 404) {
-      return {
-        status: 404,
-        title: "嵌入分享链接无效或已撤销 (404)",
-        detail:
-          err.message || "该智能体嵌入链接不存在、已过期或已被创建者吊销。",
-      };
-    }
-    if (err.status === 403) {
-      return {
-        status: 403,
-        title: "来源域名受限 (403 Origin Blocked)",
-        detail:
-          err.message ||
-          "当前访问来源 Origin 不在该嵌入链接允许的白名单内。",
-      };
-    }
-    if (err.status === 429) {
-      return {
-        status: 429,
-        title: "访问频率超限 (429)",
-        detail: err.message || "当前嵌入窗口请求速率已达上限，请稍后再试。",
-      };
-    }
-    return {
-      status: err.status,
-      title: `请求异常 (${err.errorCode})`,
-      detail: err.message,
-    };
-  }
-  return {
-    status: null,
-    title: "对话连接异常",
-    detail: err instanceof Error ? err.message : "无法连接到智能体服务",
-  };
-}
-
 export function AgentEmbedPage() {
   const { token } = useParams<{ token: string }>();
+  const { isDark, toggleTheme } = useTheme();
+  const { isZh, toggleLocale, tx } = useI18n();
 
-  const [dark, setDark] = useState(
-    () =>
-      typeof document !== "undefined" &&
-      document.documentElement.classList.contains("dark")
-  );
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<MessageRecord[]>([]);
   const [inputText, setInputText] = useState("");
@@ -86,11 +56,62 @@ export function AgentEmbedPage() {
   const abortRef = useRef<AbortController | null>(null);
   const localMsgIdRef = useRef<number>(-1);
 
-  const toggleTheme = () => {
-    const next = !dark;
-    setDark(next);
-    document.documentElement.classList.toggle("dark", next);
-  };
+  const classifyEmbedError = useCallback(
+    (err: unknown): EmbedErrorBannerState => {
+      if (err instanceof ApiError) {
+        if (err.status === 404) {
+          return {
+            status: 404,
+            title: tx(
+              "嵌入链接无效或已撤销 (404)",
+              "Embed Link Invalid or Revoked (404)"
+            ),
+            detail:
+              err.message ||
+              tx(
+                "该链接不存在、已过期或已被撤销。",
+                "This embed link was not found, expired, or revoked."
+              ),
+          };
+        }
+        if (err.status === 403) {
+          return {
+            status: 403,
+            title: tx("来源域名受限 (403)", "Origin Not Allowed (403)"),
+            detail:
+              err.message ||
+              tx(
+                "当前来源不在允许名单内。",
+                "Current origin is not permitted for this embed link."
+              ),
+          };
+        }
+        if (err.status === 429) {
+          return {
+            status: 429,
+            title: tx("请求速率超限 (429)", "Rate Limit Exceeded (429)"),
+            detail:
+              err.message ||
+              tx("请求过于频繁，稍后重试。", "Too many requests."),
+          };
+        }
+        return {
+          status: err.status,
+          title: `${tx("请求异常", "Request Error")} (${err.errorCode})`,
+          detail: err.message,
+        };
+      }
+      return {
+        status: null,
+        title: tx("连接异常", "Connection Error"),
+        detail:
+          err instanceof Error
+            ? err.message
+            : tx("无法连接服务", "Unable to reach agent service"),
+      };
+    },
+    [tx]
+  );
 
   const handleResetConversation = useCallback(() => {
     abortRef.current?.abort();
@@ -220,7 +241,7 @@ export function AgentEmbedPage() {
         case "error": {
           setErrorState({
             status: null,
-            title: `智能体执行错误 (${ev.error_code})`,
+            title: `${tx("执行失败", "Execution Error")} (${ev.error_code})`,
             detail: ev.message,
           });
           break;
@@ -228,7 +249,10 @@ export function AgentEmbedPage() {
         case "approval_required": {
           resolvedConvId = ev.conversation_id;
           setConversationId(ev.conversation_id);
-          finalAnswer = `工具 ${ev.tool_name} 需要运营管理员审批确认后继续。`;
+          finalAnswer = tx(
+            `工具 ${ev.tool_name} 待管理员审批。`,
+            `Tool ${ev.tool_name} requires administrator approval.`
+          );
           break;
         }
       }
@@ -319,137 +343,162 @@ export function AgentEmbedPage() {
       setStreamingTools([]);
       abortRef.current = null;
     }
-  }, [conversationId, inputText, isStreaming, token]);
+  }, [classifyEmbedError, conversationId, inputText, isStreaming, token, tx]);
 
   return (
     <div
       data-testid="agent-embed-page"
-      className="min-h-screen bg-background text-foreground flex items-center justify-center p-3 sm:p-6"
+      className="min-h-screen bg-background text-foreground flex flex-col"
     >
-      <Card className="w-full max-w-3xl h-[86vh] min-h-[500px] flex flex-col overflow-hidden shadow-xs">
-        {/* Minimalist Standalone Embed Header */}
-        <header className="border-b border-border px-4 py-3 flex items-center justify-between gap-2 bg-muted/20">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="inline-block h-2 w-2 rounded-full bg-xblue shrink-0" />
-            <Bot className="h-4 w-4 text-xblue shrink-0" />
-            <h1 className="text-sm font-semibold tracking-tight truncate">
-              AxAgent · 智能体对话窗口
-            </h1>
-            {conversationId ? (
-              <Badge variant="xblue" data-testid="embed-conv-badge">
-                多轮续聊中
-              </Badge>
-            ) : (
-              <Badge variant="outline">
-                {token ? `embed:${token.slice(0, 10)}` : "embed"}
-              </Badge>
-            )}
-          </div>
-
-          <div className="flex items-center gap-1.5 shrink-0">
-            <Button
-              type="button"
-              variant="outline"
-              data-testid="embed-reset-btn"
-              onClick={handleResetConversation}
-              className="h-7 px-2.5"
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              新对话
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={toggleTheme}
-              className="h-7 w-7 p-0"
-              title="切换浅色/深色模式"
-            >
-              {dark ? (
-                <Sun className="h-3.5 w-3.5" />
-              ) : (
-                <Moon className="h-3.5 w-3.5" />
-              )}
-            </Button>
-          </div>
-        </header>
-
-        {/* Clear Error Banner for 404 (Invalid/Revoked) or 403 (Origin Blocked) */}
-        {errorState ? (
-          <div
-            data-testid="embed-error-banner"
-            data-error-status={errorState.status ?? "unknown"}
-            className="mx-4 mt-3 rounded-md border border-border bg-muted p-3 text-xs space-y-1"
-          >
-            <div className="flex items-center gap-2 font-semibold text-foreground">
-              <AlertTriangle className="h-4 w-4 text-xblue shrink-0" />
-              <span>{errorState.title}</span>
-            </div>
-            <p className="text-muted-foreground pl-6">{errorState.detail}</p>
-          </div>
-        ) : null}
-
-        {/* Conversation Messages Area */}
-        <div
-          data-testid="embed-messages"
-          className="flex-1 p-4 overflow-y-auto"
+      {/* Top Bar: Left Language Switcher + Right Borderless Sun/Moon IconButton */}
+      <div className="flex items-center justify-between px-4 py-2 shrink-0">
+        <button
+          type="button"
+          data-testid="locale-toggle-btn"
+          onClick={toggleLocale}
+          aria-label={tx("切换语言", "Switch language")}
+          title={tx("切换为 English", "Switch to 简体中文")}
+          className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0 cursor-pointer"
         >
-          <MessageView
-            messages={messages}
-            streamingToolCalls={streamingTools}
-            streamingText={streamingText}
-            streamingAgentName={streamingSpeaker}
-            isStreaming={isStreaming}
-            emptyHint="您好！请输入您的问题开始多轮智能问答。"
-          />
-        </div>
+          <Languages className="h-3.5 w-3.5 text-xblue" />
+          <span className="font-mono-tech">{isZh ? "中文" : "EN"}</span>
+        </button>
 
-        {/* Input Composer */}
-        <footer className="border-t border-border p-3 bg-muted/20">
-          <div className="flex items-end gap-2">
-            <Textarea
-              data-testid="embed-chat-input"
-              value={inputText}
-              onChange={(e) => setInputText(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleSend();
-                }
-              }}
-              rows={2}
-              placeholder={
-                token
-                  ? "输入问题（Enter 发送，Shift+Enter 换行）…"
-                  : "缺少有效嵌入令牌"
-              }
-              disabled={!token || isStreaming}
-              className="resize-none text-xs sm:text-sm min-h-[52px]"
-            />
-            {isStreaming ? (
+        <IconButton
+          data-testid="theme-toggle-btn"
+          onClick={toggleTheme}
+          aria-label={
+            isDark
+              ? tx("亮色模式", "Light mode")
+              : tx("暗色模式", "Dark mode")
+          }
+          title={
+            isDark
+              ? tx("亮色模式", "Light mode")
+              : tx("暗色模式", "Dark mode")
+          }
+        >
+          {isDark ? (
+            <Sun className="h-4 w-4" />
+          ) : (
+            <Moon className="h-4 w-4" />
+          )}
+        </IconButton>
+      </div>
+
+      <div className="flex-1 flex items-center justify-center px-3 pb-4 sm:px-6 sm:pb-6">
+        <Card className="w-full max-w-3xl h-[82vh] min-h-[500px] flex flex-col overflow-hidden shadow-xs">
+          {/* Minimalist Standalone Embed Header */}
+          <header className="border-b border-border px-4 py-3 flex items-center justify-between gap-2 bg-muted/20">
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="inline-block h-2 w-2 rounded-full bg-xblue shrink-0" />
+              <Bot className="h-4 w-4 text-xblue shrink-0" />
+              <h1 className="text-sm font-semibold tracking-tight truncate">
+                {tx("AxAgent · 智能对话", "AxAgent · Assistant")}
+              </h1>
+              {conversationId ? (
+                <Badge variant="xblue" data-testid="embed-conv-badge">
+                  {tx("多轮会话", "Multi-turn")}
+                </Badge>
+              ) : (
+                <Badge variant="outline">
+                  {token ? `embed:${token.slice(0, 10)}` : "embed"}
+                </Badge>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1.5 shrink-0">
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => abortRef.current?.abort()}
-                className="h-[52px] px-3.5 shrink-0"
+                size="sm"
+                data-testid="embed-reset-btn"
+                onClick={handleResetConversation}
               >
-                <Square className="h-3.5 w-3.5" />
-                停止
+                <RotateCcw className="h-3.5 w-3.5" />
+                {tx("新对话", "New Chat")}
               </Button>
-            ) : (
-              <Button
-                type="button"
-                data-testid="embed-send-btn"
-                disabled={!token || inputText.trim().length === 0}
-                onClick={() => void handleSend()}
-                className="h-[52px] px-4 shrink-0"
-              >
-                <Send className="h-3.5 w-3.5" />
-                发送
-              </Button>
-            )}
+            </div>
+          </header>
+
+          {/* Error Banner for 404 / 403 */}
+          {errorState ? (
+            <div
+              data-testid="embed-error-banner"
+              data-error-status={errorState.status ?? "unknown"}
+              className="mx-4 mt-3 rounded-md border border-border bg-muted p-3 text-xs space-y-1"
+            >
+              <div className="flex items-center gap-2 font-semibold text-foreground">
+                <AlertTriangle className="h-4 w-4 text-xblue shrink-0" />
+                <span>{errorState.title}</span>
+              </div>
+              <p className="text-muted-foreground pl-6">{errorState.detail}</p>
+            </div>
+          ) : null}
+
+          {/* Conversation Messages Area */}
+          <div
+            data-testid="embed-messages"
+            className="flex-1 p-4 overflow-y-auto"
+          >
+            <MessageView
+              messages={messages}
+              streamingToolCalls={streamingTools}
+              streamingText={streamingText}
+              streamingAgentName={streamingSpeaker}
+              isStreaming={isStreaming}
+              emptyHint={tx("输入问题开始对话", "Ask a question to begin")}
+            />
           </div>
-        </footer>
-      </Card>
+
+          {/* Input Composer */}
+          <footer className="border-t border-border p-3 bg-muted/20">
+            <div className="flex items-end gap-2">
+              <Textarea
+                data-testid="embed-chat-input"
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void handleSend();
+                  }
+                }}
+                rows={2}
+                placeholder={
+                  token
+                    ? tx("输入问题…", "Ask a question…")
+                    : tx("缺少有效嵌入令牌", "Missing embed token")
+                }
+                disabled={!token || isStreaming}
+                className="resize-none text-xs sm:text-sm min-h-[52px]"
+              />
+              {isStreaming ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => abortRef.current?.abort()}
+                  className="h-[52px] px-3.5 shrink-0"
+                >
+                  <Square className="h-3.5 w-3.5" />
+                  {tx("停止", "Stop")}
+                </Button>
+              ) : (
+                <Button
+                  type="button"
+                  data-testid="embed-send-btn"
+                  disabled={!token || inputText.trim().length === 0}
+                  onClick={() => void handleSend()}
+                  className="h-[52px] px-4 shrink-0"
+                >
+                  <Send className="h-3.5 w-3.5" />
+                  {tx("发送", "Send")}
+                </Button>
+              )}
+            </div>
+          </footer>
+        </Card>
+      </div>
     </div>
   );
 }

@@ -22,6 +22,9 @@
 ### `GET /api/stats`
 权限 `DATA_READ`。返回 `Doc / Para / Entity / Edge / Embedding` 计数与已存储的向量维度列表 `embedding_dims`。
 
+### `GET /api/documents` / `DELETE /api/documents/{id}`
+权限 `DATA_READ` / `DATA_SYNC`。分页查询已入库超图知识文档列表（含段落数、实体数、来源与摘要，支持 `?q=&limit=&cursor=`）及按 ID 级联删除文档与关联段落/向量/超图边。
+
 ### `POST /api/documents/ingest`
 权限 `DATA_SYNC`。提交 Markdown / 纯文本构建三级超图：
 

@@ -1,3 +1,4 @@
+import { useI18n } from "@/i18n";
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
 import { classifyPivotRow } from "../logic";
 import { formatDisplayValue, toNumericValue } from "../utils";
@@ -17,10 +18,11 @@ export function PivotTableWidget({
   data,
   onCellClick,
 }: PivotTableWidgetProps) {
+  const { tx } = useI18n();
   if (!data || data.columns.length === 0) {
     return (
       <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-        暂无透视表数据
+        {tx("暂无透视表数据", "No pivot data")}
       </div>
     );
   }
@@ -54,7 +56,7 @@ export function PivotTableWidget({
                 colSpan={Math.max(1, visibleCols.length)}
                 className="px-3 py-6 text-center text-muted-foreground"
               >
-                透视结果为空
+                {tx("暂无结果", "Empty result")}
               </td>
             </tr>
           ) : (
@@ -98,7 +100,9 @@ export function PivotTableWidget({
                       <td
                         key={`${rIdx}-${col.name}`}
                         className={`px-2.5 py-1.5 whitespace-nowrap ${
-                          isNum ? "text-right font-mono-tech tabular-nums" : "text-left"
+                          isNum
+                            ? "text-right font-mono-tech tabular-nums"
+                            : "text-left"
                         }`}
                       >
                         {formatDisplayValue(val)}

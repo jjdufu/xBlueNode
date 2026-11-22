@@ -1,8 +1,16 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, Trash2 } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import type { Cardinality } from "@/lib/api/enums";
 import type { EdgeTypeSpec, NodeTypeSpec } from "@/lib/api/xblue";
-import { Badge, Button, Input, Textarea } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Input,
+  Select,
+  Textarea,
+} from "@/components/ui/primitives";
 
 export interface EdgeTypeEditorProps {
   edgeType: EdgeTypeSpec;
@@ -11,11 +19,15 @@ export interface EdgeTypeEditorProps {
   onDelete: () => void;
 }
 
-const CARDINALITY_OPTIONS: readonly { value: Cardinality; label: string }[] = [
-  { value: "ONE_TO_ONE", label: "1:1 (ONE_TO_ONE)" },
-  { value: "ONE_TO_MANY", label: "1:N (ONE_TO_MANY)" },
-  { value: "MANY_TO_ONE", label: "N:1 (MANY_TO_ONE)" },
-  { value: "MANY_TO_MANY", label: "M:N (MANY_TO_MANY)" },
+const CARDINALITY_OPTIONS: readonly {
+  value: Cardinality;
+  zh: string;
+  en: string;
+}[] = [
+  { value: "ONE_TO_ONE", zh: "1:1 一对一", en: "1:1 One-to-One" },
+  { value: "ONE_TO_MANY", zh: "1:N 一对多", en: "1:N One-to-Many" },
+  { value: "MANY_TO_ONE", zh: "N:1 多对一", en: "N:1 Many-to-One" },
+  { value: "MANY_TO_MANY", zh: "M:N 多对多", en: "M:N Many-to-Many" },
 ];
 
 export function EdgeTypeEditor({
@@ -24,6 +36,10 @@ export function EdgeTypeEditor({
   onChange,
   onDelete,
 }: EdgeTypeEditorProps) {
+  const { tx } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("STUDIO_EDIT");
+
   const [propagationText, setPropagationText] = useState(() =>
     JSON.stringify(edgeType.propagation ?? {}, null, 2)
   );
@@ -43,7 +59,7 @@ export function EdgeTypeEditor({
         parsed === null ||
         Array.isArray(parsed)
       ) {
-        setJsonError("传导配置必须为 JSON 对象 {...}");
+        setJsonError(tx("需为 JSON 对象", "JSON object required"));
         return;
       }
       setJsonError(null);
@@ -52,7 +68,7 @@ export function EdgeTypeEditor({
         propagation: parsed as Record<string, unknown>,
       });
     } catch {
-      setJsonError("JSON 语法未闭合或格式有误");
+      setJsonError(tx("JSON 语法错误", "Invalid JSON"));
     }
   };
 
@@ -71,80 +87,90 @@ export function EdgeTypeEditor({
 
       <div>
         <label className="block font-medium mb-1">
-          关系英文标识 (UPPER_SNAKE_CASE)
+          {tx("关系标识", "Relation Key")}
         </label>
         <Input
           data-testid="edge-type-name-input"
           value={edgeType.name}
+          disabled={!canEdit}
           onChange={(e) => onChange({ ...edgeType, name: e.target.value })}
-          placeholder="如 FULFILLS、SUPPLIES"
+          placeholder="FULFILLS"
           className="h-8 text-xs font-mono-tech"
         />
       </div>
 
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <label className="block font-medium mb-1">源节点类型 (src)</label>
-          <select
+          <label className="block font-medium mb-1">
+            {tx("源节点类型", "Source Type")}
+          </label>
+          <Select
             value={edgeType.src_type_name}
+            disabled={!canEdit}
             onChange={(e) =>
               onChange({ ...edgeType, src_type_name: e.target.value })
             }
-            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+            className="h-8 w-full font-mono-tech"
           >
-            <option value="">选择源类型...</option>
+            <option value="">{tx("未指定", "None")}</option>
             {availableNodeTypes.map((nt) => (
               <option key={nt.name} value={nt.name}>
                 {nt.name} ({nt.display_name})
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div>
-          <label className="block font-medium mb-1">目标节点类型 (dst)</label>
-          <select
+          <label className="block font-medium mb-1">
+            {tx("目标节点类型", "Target Type")}
+          </label>
+          <Select
             value={edgeType.dst_type_name}
+            disabled={!canEdit}
             onChange={(e) =>
               onChange({ ...edgeType, dst_type_name: e.target.value })
             }
-            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+            className="h-8 w-full font-mono-tech"
           >
-            <option value="">选择目标类型...</option>
+            <option value="">{tx("未指定", "None")}</option>
             {availableNodeTypes.map((nt) => (
               <option key={nt.name} value={nt.name}>
                 {nt.name} ({nt.display_name})
               </option>
             ))}
-          </select>
+          </Select>
         </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2">
         <div>
-          <label className="block font-medium mb-1">关系基数 (cardinality)</label>
-          <select
+          <label className="block font-medium mb-1">
+            {tx("关系基数", "Cardinality")}
+          </label>
+          <Select
             data-testid="edge-cardinality-select"
             value={edgeType.cardinality}
+            disabled={!canEdit}
             onChange={(e) =>
               onChange({
                 ...edgeType,
                 cardinality: e.target.value as Cardinality,
               })
             }
-            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+            className="h-8 w-full font-mono-tech"
           >
             {CARDINALITY_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
-                {opt.label}
+                {tx(opt.zh, opt.en)}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div>
           <label className="block font-medium mb-1">
-            因果传导权重 impact_weight ∈ (0, 1]
+            {tx("因果传导权重", "Impact Weight")}
           </label>
           <div className="flex items-center gap-2">
             <input
@@ -152,6 +178,7 @@ export function EdgeTypeEditor({
               min="0.05"
               max="1"
               step="0.05"
+              disabled={!canEdit}
               value={edgeType.impact_weight}
               onChange={(e) =>
                 onChange({
@@ -166,6 +193,7 @@ export function EdgeTypeEditor({
               min={0.01}
               max={1}
               step={0.05}
+              disabled={!canEdit}
               value={edgeType.impact_weight}
               onChange={(e) =>
                 onChange({
@@ -180,13 +208,16 @@ export function EdgeTypeEditor({
       </div>
 
       <div>
-        <label className="block font-medium mb-1">关系说明 (description)</label>
+        <label className="block font-medium mb-1">
+          {tx("关系说明", "Description")}
+        </label>
         <Input
           value={edgeType.description}
+          disabled={!canEdit}
           onChange={(e) =>
             onChange({ ...edgeType, description: e.target.value })
           }
-          placeholder="描述业务关联语义与传导方向..."
+          placeholder={tx("仓库向订单履约发货", "Warehouse fulfills order")}
           className="h-8 text-xs"
         />
       </div>
@@ -194,7 +225,7 @@ export function EdgeTypeEditor({
       <div>
         <div className="flex items-center justify-between mb-1">
           <label className="font-medium">
-            AxSim 因果传导参数 (propagation JSON)
+            {tx("推演传导参数", "Propagation Config")}
           </label>
           {jsonError ? (
             <span className="text-[10px] text-red-600 dark:text-red-400">
@@ -202,29 +233,28 @@ export function EdgeTypeEditor({
             </span>
           ) : (
             <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-mono-tech">
-              JSON 合法
+              {tx("JSON 合法", "Valid JSON")}
             </span>
           )}
         </div>
         <Textarea
           rows={3}
           value={propagationText}
+          disabled={!canEdit}
           onChange={(e) => handlePropagationChange(e.target.value)}
           className="font-mono-tech text-xs"
           placeholder='{"lag_hours": 4, "attenuation": "linear"}'
         />
       </div>
 
-      <div className="flex justify-end pt-2 border-t border-border">
-        <Button
-          variant="outline"
-          onClick={onDelete}
-          className="h-7 px-2.5 py-1 text-red-600 dark:text-red-400 hover:bg-red-500/10"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-          删除关系类型
-        </Button>
-      </div>
+      {canEdit && (
+        <div className="flex justify-end pt-2 border-t border-border">
+          <Button variant="danger" size="sm" onClick={onDelete}>
+            <Trash2 className="h-3.5 w-3.5" />
+            {tx("删除关系", "Delete")}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

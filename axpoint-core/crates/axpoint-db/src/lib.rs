@@ -35,8 +35,8 @@ pub use tenant::begin_tenant_tx;
 
 use axpoint_domain::guard::PiiSpan;
 use axpoint_domain::{
-    AppError, ChannelCandidate, ExtractedTriple, RecallChannel, SystemStats, TopologyEdge,
-    TopologyGraph, TopologyNode,
+    AppError, ChannelCandidate, DocumentListResponse, DocumentSummary, ExtractedTriple,
+    RecallChannel, SystemStats, TopologyEdge, TopologyGraph, TopologyNode,
 };
 use chrono::Utc;
 use pgvector::Vector;
@@ -411,7 +411,7 @@ impl PgStore {
         }))
     }
 
-    /// Channel 2: Lexical BM25 / PostgreSQL `tsvector` + CJK `ILIKE` recall.
+    /// Channel 2: Lexical BM25 / PostgreSQL `tsvector` + CJK `ILIKE` recall (including document titles and subword bigrams).
     ///
     /// # Errors
     /// Returns [`AppError::Database`] if the full-text query fails.
@@ -422,20 +422,39 @@ impl PgStore {
         limit: i64,
     ) -> Result<Vec<ChannelCandidate>, AppError> {
         let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
-        let like_pattern = format!("%{}%", query_text.trim());
+        let trimmed = query_text.trim();
+        let like_pattern = format!("%{trimmed}%");
+        let sub_patterns = build_lexical_subpatterns(trimmed);
         let rows = sqlx::query(
             "SELECT p.id AS para_id, p.doc_id, d.title AS doc_title, p.content,
-                    ts_rank_cd(p.fts, websearch_to_tsquery('simple', $2)) AS score
+                    (
+                        ts_rank_cd(p.fts, websearch_to_tsquery('simple', $2))
+                        + ts_rank_cd(d.fts, websearch_to_tsquery('simple', $2)) * 1.5
+                        + CASE WHEN d.title ILIKE $3 THEN 4.0::real ELSE 0.0::real END
+                        + CASE WHEN p.content ILIKE $3 THEN 2.0::real ELSE 0.0::real END
+                        + COALESCE((
+                            SELECT COUNT(*)::real * 0.6::real
+                            FROM unnest($4::text[]) AS pat
+                            WHERE d.title ILIKE pat OR p.content ILIKE pat
+                        ), 0.0::real)
+                    ) AS score
              FROM hg_paras p
              JOIN hg_docs d ON d.id = p.doc_id
              WHERE p.tenant_id = $1
-               AND (p.fts @@ websearch_to_tsquery('simple', $2) OR p.content ILIKE $3)
-             ORDER BY score DESC, p.entity_density DESC
-             LIMIT $4",
+               AND (
+                   p.fts @@ websearch_to_tsquery('simple', $2)
+                   OR d.fts @@ websearch_to_tsquery('simple', $2)
+                   OR p.content ILIKE $3
+                   OR d.title ILIKE $3
+                   OR (cardinality($4::text[]) > 0 AND (p.content ILIKE ANY($4) OR d.title ILIKE ANY($4)))
+               )
+             ORDER BY score DESC, p.entity_density DESC, p.seq_no ASC
+             LIMIT $5",
         )
         .bind(tenant_id)
-        .bind(query_text)
+        .bind(trimmed)
         .bind(like_pattern)
+        .bind(&sub_patterns)
         .bind(limit)
         .fetch_all(&mut *tx)
         .await
@@ -707,6 +726,27 @@ impl PgStore {
         .await
         .map_err(|err| AppError::Database(format!("topology edges failed: {err}")))?;
 
+        let doc_ids: Vec<Uuid> = doc_rows.iter().map(|r| r.get("id")).collect();
+        let ent_ids: Vec<Uuid> = ent_rows.iter().map(|r| r.get("id")).collect();
+        let mention_rows = sqlx::query(
+            "SELECT DISTINCT ON (p.doc_id, e.dst_id)
+                    e.id, p.doc_id AS src_id, e.dst_id, 'MENTIONS'::text AS rel_type, d.title AS fact
+             FROM hg_paras p
+             JOIN hg_docs d ON d.id = p.doc_id
+             JOIN hg_edges e ON e.tenant_id = p.tenant_id AND e.src_id = p.id AND e.rel_type = 'MENTIONS'
+             WHERE p.tenant_id = $1
+               AND p.doc_id = ANY($2)
+               AND e.dst_id = ANY($3)
+             LIMIT $4",
+        )
+        .bind(tenant_id)
+        .bind(&doc_ids)
+        .bind(&ent_ids)
+        .bind(limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("topology mention edges failed: {err}")))?;
+
         tx.commit()
             .await
             .map_err(|err| AppError::Database(format!("commit topology tx failed: {err}")))?;
@@ -729,8 +769,9 @@ impl PgStore {
             });
         }
 
-        let edges = edge_rows
+        let mut edges: Vec<TopologyEdge> = edge_rows
             .into_iter()
+            .chain(mention_rows)
             .map(|r| TopologyEdge {
                 id: r.get("id"),
                 source: r.get("src_id"),
@@ -739,9 +780,180 @@ impl PgStore {
                 fact: r.get("fact"),
             })
             .collect();
+        edges.truncate(usize::try_from(limit.saturating_mul(2)).unwrap_or(120));
 
         Ok(TopologyGraph { nodes, edges })
     }
+
+    /// Lists ingested knowledge documents (`hg_docs`) with paragraph and entity counts.
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if the query fails.
+    pub async fn list_documents(
+        &self,
+        tenant_id: &str,
+        query: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<DocumentListResponse, AppError> {
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        let pattern = query
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("%{s}%"));
+
+        let total: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM hg_docs
+             WHERE tenant_id = $1
+               AND ($2::text IS NULL OR title ILIKE $2 OR source_name ILIKE $2 OR summary ILIKE $2)",
+        )
+        .bind(tenant_id)
+        .bind(pattern.as_deref())
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("count hg_docs failed: {err}")))?;
+
+        let rows = sqlx::query(
+            "SELECT d.id, d.title, d.source_name, d.summary, d.created_at, d.updated_at,
+                    (SELECT COUNT(*) FROM hg_paras p WHERE p.tenant_id = d.tenant_id AND p.doc_id = d.id) AS para_count,
+                    (SELECT COUNT(DISTINCT e.dst_id)
+                     FROM hg_paras p
+                     JOIN hg_edges e ON e.tenant_id = p.tenant_id AND e.src_id = p.id AND e.rel_type = 'MENTIONS'
+                     WHERE p.tenant_id = d.tenant_id AND p.doc_id = d.id) AS entity_count
+             FROM hg_docs d
+             WHERE d.tenant_id = $1
+               AND ($2::text IS NULL OR d.title ILIKE $2 OR d.source_name ILIKE $2 OR d.summary ILIKE $2)
+             ORDER BY d.created_at DESC, d.id DESC
+             LIMIT $3 OFFSET $4",
+        )
+        .bind(tenant_id)
+        .bind(pattern.as_deref())
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("list hg_docs failed: {err}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit list hg_docs tx failed: {err}")))?;
+
+        let items: Vec<DocumentSummary> = rows
+            .into_iter()
+            .map(|r| DocumentSummary {
+                id: r.get("id"),
+                title: r.get("title"),
+                source_name: r.get("source_name"),
+                summary: r.get("summary"),
+                para_count: r.get("para_count"),
+                entity_count: r.get("entity_count"),
+                created_at: r.get("created_at"),
+                updated_at: r.get("updated_at"),
+            })
+            .collect();
+
+        let next_offset = offset.saturating_add(i64::try_from(items.len()).unwrap_or(0));
+        let next_cursor = if next_offset < total && !items.is_empty() {
+            Some(next_offset.to_string())
+        } else {
+            None
+        };
+
+        Ok(DocumentListResponse {
+            items,
+            total,
+            next_cursor,
+        })
+    }
+
+    /// Deletes an ingested knowledge document (`hg_docs`) along with its paragraph embeddings and edges.
+    ///
+    /// # Errors
+    /// Returns [`AppError::NotFound`] if the document does not exist in the tenant, or [`AppError::Database`] on SQL failure.
+    pub async fn delete_document(&self, tenant_id: &str, doc_id: Uuid) -> Result<(), AppError> {
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        let para_ids: Vec<Uuid> =
+            sqlx::query_scalar("SELECT id FROM hg_paras WHERE tenant_id = $1 AND doc_id = $2")
+                .bind(tenant_id)
+                .bind(doc_id)
+                .fetch_all(&mut *tx)
+                .await
+                .map_err(|err| AppError::Database(format!("fetch doc paras failed: {err}")))?;
+
+        sqlx::query(
+            "DELETE FROM hg_embeddings
+             WHERE tenant_id = $1 AND (node_id = $2 OR node_id = ANY($3))",
+        )
+        .bind(tenant_id)
+        .bind(doc_id)
+        .bind(&para_ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("delete doc embeddings failed: {err}")))?;
+
+        sqlx::query(
+            "DELETE FROM hg_edges
+             WHERE tenant_id = $1
+               AND (src_id = $2 OR dst_id = $2 OR src_id = ANY($3) OR dst_id = ANY($3))",
+        )
+        .bind(tenant_id)
+        .bind(doc_id)
+        .bind(&para_ids)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("delete doc edges failed: {err}")))?;
+
+        let deleted = sqlx::query("DELETE FROM hg_docs WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id)
+            .bind(doc_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| AppError::Database(format!("delete hg_doc failed: {err}")))?;
+
+        if deleted.rows_affected() == 0 {
+            return Err(AppError::NotFound("NOT_FOUND"));
+        }
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit delete hg_doc tx failed: {err}")))?;
+        Ok(())
+    }
+}
+
+fn is_cjk_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{4E00}'..='\u{9FFF}'
+            | '\u{3400}'..='\u{4DBF}'
+            | '\u{F900}'..='\u{FAFF}'
+    )
+}
+
+fn build_lexical_subpatterns(query_text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push_unique = |term: &str| {
+        if out.len() >= 24 {
+            return;
+        }
+        let pat = format!("%{term}%");
+        if !out.contains(&pat) {
+            out.push(pat);
+        }
+    };
+
+    for token in query_text.split(|c: char| !c.is_alphanumeric() && !is_cjk_char(c)) {
+        let chars: Vec<char> = token.chars().collect();
+        if chars.len() >= 2 && chars.iter().all(char::is_ascii_alphanumeric) {
+            push_unique(token);
+        }
+        let cjk_run: Vec<char> = chars.into_iter().filter(|c| is_cjk_char(*c)).collect();
+        for pair in cjk_run.windows(2) {
+            let bi: String = pair.iter().collect();
+            push_unique(&bi);
+        }
+    }
+    out
 }
 
 fn rows_to_candidates<F>(

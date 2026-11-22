@@ -8,8 +8,8 @@ import {
   Lock,
   Share2,
   Trash2,
-  X,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   xblueviewApi,
   type CreateShareResponse,
@@ -17,7 +17,15 @@ import {
   type FilterDef,
   type ShareLinkRecord,
 } from "@/lib/api/xblueview";
-import { Badge, Button, Input } from "@/components/ui/primitives";
+import { usePrincipal } from "@/lib/permissions";
+import {
+  Badge,
+  Button,
+  Input,
+  Modal,
+  PasswordInput,
+  StatusBadge,
+} from "@/components/ui/primitives";
 import { isNonEmptyFilterValue } from "./logic";
 
 export interface ShareDialogTarget {
@@ -36,22 +44,16 @@ export interface ShareDialogProps {
   onPublishDashboard?: () => Promise<void>;
 }
 
-const EXPIRY_PRESETS: readonly { hours: number; label: string }[] = [
-  { hours: 24, label: "24h" },
-  { hours: 72, label: "72h (3天)" },
-  { hours: 168, label: "168h (7天)" },
-  { hours: 720, label: "720h (30天)" },
+const EXPIRY_PRESETS: readonly {
+  hours: number;
+  zh: string;
+  en: string;
+}[] = [
+  { hours: 24, zh: "24h", en: "24h" },
+  { hours: 72, zh: "3天", en: "3d" },
+  { hours: 168, zh: "7天", en: "7d" },
+  { hours: 720, zh: "30天", en: "30d" },
 ];
-
-function formatShareTime(raw: string | null | undefined): string {
-  if (!raw) return "—";
-  const d = new Date(raw);
-  if (Number.isNaN(d.getTime())) return raw;
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(
-    d.getHours()
-  )}:${pad(d.getMinutes())}`;
-}
 
 function summarizeFilterValue(val: unknown): string {
   if (Array.isArray(val)) {
@@ -63,24 +65,26 @@ function summarizeFilterValue(val: unknown): string {
   return String(val ?? "");
 }
 
-function resolveShareStatus(link: ShareLinkRecord): {
-  label: string;
+interface ResolvedShareState {
   active: boolean;
-} {
+  code: "ACTIVE" | "REVOKED" | "EXPIRED" | "EXHAUSTED";
+}
+
+function resolveShareState(link: ShareLinkRecord): ResolvedShareState {
   if (link.revoked_at) {
-    return { label: "已撤销", active: false };
+    return { active: false, code: "REVOKED" };
   }
   if (new Date(link.expires_at).getTime() <= Date.now()) {
-    return { label: "已过期", active: false };
+    return { active: false, code: "EXPIRED" };
   }
   if (
     link.max_views !== null &&
     link.max_views !== undefined &&
     link.view_count >= link.max_views
   ) {
-    return { label: "次数耗尽", active: false };
+    return { active: false, code: "EXHAUSTED" };
   }
-  return { label: "生效中", active: true };
+  return { active: true, code: "ACTIVE" };
 }
 
 export function ShareDialog({
@@ -89,6 +93,11 @@ export function ShareDialog({
   onClose,
   onPublishDashboard,
 }: ShareDialogProps) {
+  const { tx, tEnum, fmtTime, fmtNum, isZh } = useI18n();
+  const { can } = usePrincipal();
+  const canShare = can("VIEW_SHARE");
+  const canEdit = can("VIEW_EDIT");
+
   const [expiresInHours, setExpiresInHours] = useState<number>(72);
   const [maxViewsStr, setMaxViewsStr] = useState<string>("");
   const [password, setPassword] = useState<string>("");
@@ -104,6 +113,7 @@ export function ShareDialog({
     null
   );
   const [copied, setCopied] = useState<boolean>(false);
+  const [copiedRowId, setCopiedRowId] = useState<string | null>(null);
 
   const [shares, setShares] = useState<ShareLinkRecord[]>([]);
   const [loadingShares, setLoadingShares] = useState<boolean>(false);
@@ -156,6 +166,7 @@ export function ShareDialog({
     setAllowExport(target.targetKind === "EXPORT_FILE");
     setCreatedShare(null);
     setCopied(false);
+    setCopiedRowId(null);
     setErrorMsg(null);
     setLockedKeySet(
       new Set(activeFilterCandidates.map((item) => item.key))
@@ -163,10 +174,23 @@ export function ShareDialog({
     void loadShares(target.targetId);
   }, [activeFilterCandidates, loadShares, open, target]);
 
-  if (!open || !target) return null;
+  const { activeShares, inactiveShares } = useMemo(() => {
+    const active: { link: ShareLinkRecord; state: ResolvedShareState }[] = [];
+    const inactive: { link: ShareLinkRecord; state: ResolvedShareState }[] = [];
+    for (const link of shares) {
+      const st = resolveShareState(link);
+      if (st.active) {
+        active.push({ link, state: st });
+      } else {
+        inactive.push({ link, state: st });
+      }
+    }
+    return { activeShares: active, inactiveShares: inactive };
+  }, [shares]);
 
   const isDraftDashboard =
-    target.targetKind === "DASHBOARD" &&
+    Boolean(target) &&
+    target?.targetKind === "DASHBOARD" &&
     target.dashboardStatus !== undefined &&
     target.dashboardStatus !== "PUBLISHED";
 
@@ -185,8 +209,20 @@ export function ShareDialog({
     }
   };
 
+  const handleCopyRowValue = async (rowId: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedRowId(rowId);
+      setTimeout(() => {
+        setCopiedRowId((curr) => (curr === rowId ? null : curr));
+      }, 2000);
+    } catch {
+      setCopiedRowId(null);
+    }
+  };
+
   const handlePublishFirst = async () => {
-    if (!onPublishDashboard) return;
+    if (!onPublishDashboard || !canEdit) return;
     setPublishing(true);
     setErrorMsg(null);
     try {
@@ -200,8 +236,14 @@ export function ShareDialog({
 
   const handleCreateShare = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!target || !canShare) return;
     if (isDraftDashboard) {
-      setErrorMsg("请先发布驾驶舱后再生成分享链接");
+      setErrorMsg(
+        tx(
+          "驾驶舱需发布为正式版本后方可分享",
+          "Publish the dashboard before creating a share link"
+        )
+      );
       return;
     }
 
@@ -213,7 +255,12 @@ export function ShareDialog({
     if (maxViewsStr.trim().length > 0) {
       const n = Number(maxViewsStr);
       if (!Number.isInteger(n) || n < 1) {
-        setErrorMsg("最大访问次数必须为大于等于 1 的整数");
+        setErrorMsg(
+          tx(
+            "最大访问次数须为正整数",
+            "Max views must be a positive integer"
+          )
+        );
         return;
       }
       parsedMaxViews = n;
@@ -253,6 +300,7 @@ export function ShareDialog({
   };
 
   const handleRevoke = async (shareId: string) => {
+    if (!target || !canShare) return;
     setRevokingId(shareId);
     setErrorMsg(null);
     try {
@@ -265,79 +313,93 @@ export function ShareDialog({
     }
   };
 
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
-      data-testid="share-dialog-backdrop"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-2xl max-h-[90vh] rounded-md border border-border bg-background text-foreground shadow-xl flex flex-col overflow-hidden"
-        data-testid="share-dialog"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="px-4 py-3 border-b border-border flex items-center justify-between gap-2 shrink-0">
-          <div className="flex items-center gap-2 min-w-0">
-            <Share2 className="h-4 w-4 text-xblue shrink-0" />
-            <h3 className="text-sm font-semibold truncate">
-              安全分享 · {target.targetName}
-            </h3>
-            <Badge variant="xblue">{target.targetKind}</Badge>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
-            aria-label="关闭安全分享窗口"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
+  const renderStatusBadge = (state: ResolvedShareState) => {
+    if (state.code === "ACTIVE") {
+      return <StatusBadge status="ACTIVE" />;
+    }
+    if (state.code === "REVOKED") {
+      return (
+        <Badge variant="danger">{tx("已撤销", "Revoked")}</Badge>
+      );
+    }
+    if (state.code === "EXPIRED") {
+      return <StatusBadge status="EXPIRED" />;
+    }
+    return (
+      <Badge variant="warning">{tx("次数耗尽", "Limit Reached")}</Badge>
+    );
+  };
 
-        <div className="flex-1 overflow-y-auto p-4 space-y-5 text-xs">
+  return (
+    <Modal
+      open={open && Boolean(target)}
+      onClose={onClose}
+      testId="share-dialog"
+      maxWidthClass="max-w-2xl"
+      title={
+        target ? (
+          <>
+            <Share2 className="h-4 w-4 text-xblue shrink-0" />
+            <span className="truncate">
+              {tx("安全分享", "Share")} · {target.targetName}
+            </span>
+            <Badge variant="xblue">{tEnum(target.targetKind)}</Badge>
+          </>
+        ) : (
+          tx("安全分享", "Share")
+        )
+      }
+    >
+      {target && (
+        <div className="space-y-4 text-xs">
           {errorMsg && (
             <div
-              className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs"
+              className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-red-700 dark:text-red-300"
               data-testid="share-dialog-error"
             >
               {errorMsg}
             </div>
           )}
 
-          {/* Draft Dashboard Hint */}
           {isDraftDashboard && (
             <div
-              className="rounded-md border border-xblue/40 bg-xblue-soft/40 p-3 flex flex-wrap items-center justify-between gap-3"
+              className="rounded-md border border-amber-500/40 bg-amber-500/10 p-3 flex flex-wrap items-center justify-between gap-3"
               data-testid="share-draft-warning"
             >
               <div className="flex items-start gap-2">
-                <AlertTriangle className="h-4 w-4 text-xblue shrink-0 mt-0.5" />
+                <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                 <div>
                   <div className="font-semibold text-foreground">
-                    驾驶舱当前处于草稿 (DRAFT) 状态
+                    {tx(
+                      "驾驶舱处于草稿状态",
+                      "Dashboard is currently in Draft"
+                    )}
                   </div>
                   <div className="text-[11px] text-muted-foreground mt-0.5">
-                    安全分享要求驾驶舱状态为已发布 (PUBLISHED)，以确保外部受访视图版本稳定。
+                    {tx(
+                      "外部共享要求驾驶舱处于已发布版本",
+                      "External sharing requires a published dashboard version"
+                    )}
                   </div>
                 </div>
               </div>
-              {onPublishDashboard && (
+              {onPublishDashboard && canEdit && (
                 <Button
                   type="button"
+                  size="sm"
                   disabled={publishing}
                   onClick={() => void handlePublishFirst()}
-                  className="h-8 px-3 text-xs"
                   data-testid="share-publish-dashboard-btn"
                 >
                   <CheckCircle2 className="h-3.5 w-3.5" />
-                  {publishing ? "发布中..." : "立即发布驾驶舱"}
+                  {publishing
+                    ? tx("发布中…", "Publishing…")
+                    : tx("发布驾驶舱", "Publish")}
                 </Button>
               )}
             </div>
           )}
 
-          {/* One-Time Share Token Result Banner */}
           {createdShare && (
             <div
               className="rounded-md border border-xblue bg-xblue-soft/50 p-3.5 space-y-2"
@@ -346,10 +408,10 @@ export function ShareDialog({
               <div className="flex items-center justify-between gap-2">
                 <span className="font-semibold text-foreground flex items-center gap-1.5">
                   <CheckCircle2 className="h-4 w-4 text-xblue" />
-                  一次性安全分享链接已生成
+                  {tx("一次性分享链接已生成", "One-time share link created")}
                 </span>
                 <span className="font-mono-tech text-[11px] tabular-nums text-muted-foreground">
-                  到期: {formatShareTime(createdShare.expires_at)}
+                  {tx("到期", "Exp")}: {fmtTime(createdShare.expires_at, false)}
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -361,289 +423,393 @@ export function ShareDialog({
                 />
                 <Button
                   type="button"
+                  size="sm"
                   onClick={() => void handleCopyUrl()}
-                  className="h-8 px-3 text-xs shrink-0"
+                  className="h-8 px-3 shrink-0"
                   data-testid="copy-share-url-btn"
                 >
                   {copied ? (
                     <>
                       <Check className="h-3.5 w-3.5" />
-                      已复制
+                      {tx("已复制", "Copied")}
                     </>
                   ) : (
                     <>
                       <Copy className="h-3.5 w-3.5" />
-                      复制链接
+                      {tx("复制链接", "Copy URL")}
                     </>
                   )}
                 </Button>
               </div>
               <div className="text-[11px] text-muted-foreground">
-                注意：完整令牌（<span className="font-mono-tech">axs_...</span>）仅在创建时返回一次，服务端仅存储 SHA-256 摘要，请立即复制保存。
+                {tx(
+                  "完整令牌仅在创建时返回一次，服务端仅保存 SHA-256 摘要。",
+                  "Full token is returned once on creation; server stores only its SHA-256 digest."
+                )}
               </div>
             </div>
           )}
 
-          {/* Create Share Form */}
-          <form
-            onSubmit={(e) => void handleCreateShare(e)}
-            className="space-y-3.5 rounded-md border border-border p-3.5 bg-card"
-          >
-            <div className="font-semibold text-foreground">创建新分享链接</div>
-
-            {/* Validity Hours */}
-            <div className="space-y-1.5">
-              <label className="block text-muted-foreground">
-                有效期（小时，1 ~ 720h）
-              </label>
-              <div className="flex flex-wrap items-center gap-2">
-                {EXPIRY_PRESETS.map((preset) => (
-                  <button
-                    key={preset.hours}
-                    type="button"
-                    onClick={() => setExpiresInHours(preset.hours)}
-                    data-testid={`share-preset-${preset.hours}h`}
-                    className={`rounded border px-2.5 py-1 text-xs font-mono-tech cursor-pointer ${
-                      expiresInHours === preset.hours
-                        ? "border-xblue bg-xblue-soft text-xblue font-semibold"
-                        : "border-border bg-background text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-                <Input
-                  type="number"
-                  min={1}
-                  max={720}
-                  value={expiresInHours}
-                  onChange={(e) =>
-                    setExpiresInHours(Number(e.target.value) || 24)
-                  }
-                  className="h-8 w-24 text-xs font-mono-tech tabular-nums"
-                  data-testid="share-expires-hours-input"
-                />
+          {canShare && (
+            <form
+              onSubmit={(e) => void handleCreateShare(e)}
+              className="space-y-3.5 rounded-md border border-border p-3.5 bg-card"
+            >
+              <div className="font-semibold text-foreground">
+                {tx("新建分享链接", "New Share Link")}
               </div>
-            </div>
 
-            {/* Max Views & Password */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 <label className="block text-muted-foreground">
-                  最大访问次数上限（可选）
+                  {tx("有效期 (1–720 小时)", "Validity (1–720 hours)")}
                 </label>
-                <Input
-                  type="number"
-                  min={1}
-                  value={maxViewsStr}
-                  onChange={(e) => setMaxViewsStr(e.target.value)}
-                  placeholder="留空表示有效期内不限次数"
-                  className="h-8 text-xs font-mono-tech tabular-nums"
-                  data-testid="share-max-views-input"
-                />
+                <div className="flex flex-wrap items-center gap-2">
+                  {EXPIRY_PRESETS.map((preset) => (
+                    <button
+                      key={preset.hours}
+                      type="button"
+                      onClick={() => setExpiresInHours(preset.hours)}
+                      data-testid={`share-preset-${preset.hours}h`}
+                      className={`rounded border px-2.5 py-1 text-xs font-mono-tech cursor-pointer ${
+                        expiresInHours === preset.hours
+                          ? "border-xblue bg-xblue-soft text-xblue font-semibold"
+                          : "border-border bg-background text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {isZh ? preset.zh : preset.en}
+                    </button>
+                  ))}
+                  <Input
+                    type="number"
+                    min={1}
+                    max={720}
+                    value={expiresInHours}
+                    onChange={(e) =>
+                      setExpiresInHours(Number(e.target.value) || 24)
+                    }
+                    className="h-8 w-24 text-xs font-mono-tech tabular-nums"
+                    data-testid="share-expires-hours-input"
+                  />
+                </div>
               </div>
-              <div className="space-y-1">
-                <label className="block text-muted-foreground">
-                  访问口令保护（可选，Argon2id 存储）
-                </label>
-                <Input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="留空免口令访问"
-                  className="h-8 text-xs"
-                  data-testid="share-password-input"
-                />
-              </div>
-            </div>
 
-            {/* Dashboard-Specific Filter Locking & Permissions */}
-            {target.targetKind === "DASHBOARD" && (
-              <div className="space-y-3 pt-2 border-t border-border/70">
-                <div className="space-y-1.5">
-                  <div className="flex items-center gap-1.5 font-medium text-foreground">
-                    <Lock className="h-3.5 w-3.5 text-xblue" />
-                    锁定当前筛选条件（访客不可篡改或越权绕过）
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="block text-muted-foreground">
+                    {tx("访问次数上限", "Max Views")}
+                  </label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={maxViewsStr}
+                    onChange={(e) => setMaxViewsStr(e.target.value)}
+                    placeholder="100"
+                    className="h-8 text-xs font-mono-tech tabular-nums"
+                    data-testid="share-max-views-input"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="block text-muted-foreground">
+                    {tx("访问口令", "Access Password")}
+                  </label>
+                  <PasswordInput
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="••••••••"
+                    className="h-8 text-xs"
+                    data-testid="share-password-input"
+                  />
+                </div>
+              </div>
+
+              {target.targetKind === "DASHBOARD" && (
+                <div className="space-y-3 pt-2 border-t border-border/70">
+                  <div className="space-y-1.5">
+                    <div className="flex items-center gap-1.5 font-medium text-foreground">
+                      <Lock className="h-3.5 w-3.5 text-xblue" />
+                      {tx("锁定当前筛选条件", "Lock Active Filters")}
+                    </div>
+                    {activeFilterCandidates.length === 0 ? (
+                      <div className="text-[11px] text-muted-foreground">
+                        {tx(
+                          "当前看板无非空全局筛选值",
+                          "No active filter values set on current dashboard"
+                        )}
+                      </div>
+                    ) : (
+                      <div className="flex flex-wrap gap-2">
+                        {activeFilterCandidates.map((item) => {
+                          const checked = lockedKeySet.has(item.key);
+                          return (
+                            <label
+                              key={item.key}
+                              className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-1 cursor-pointer ${
+                                checked
+                                  ? "border-xblue bg-xblue-soft/50 text-foreground"
+                                  : "border-border bg-background text-muted-foreground"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={(e) => {
+                                  setLockedKeySet((prev) => {
+                                    const next = new Set(prev);
+                                    if (e.target.checked) {
+                                      next.add(item.key);
+                                    } else {
+                                      next.delete(item.key);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                className="h-3.5 w-3.5 accent-[#2563eb]"
+                                data-testid={`share-lock-filter-${item.key}`}
+                              />
+                              <span className="text-xs font-medium">
+                                {item.label}:
+                              </span>
+                              <span className="font-mono-tech text-[11px]">
+                                {summarizeFilterValue(item.value)}
+                              </span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                  {activeFilterCandidates.length === 0 ? (
-                    <div className="text-[11px] text-muted-foreground">
-                      当前驾驶舱未设置非空全局筛选值；如需固定租户/战区筛选，请先在看板筛选栏填入后再打开分享。
-                    </div>
-                  ) : (
-                    <div className="flex flex-wrap gap-2">
-                      {activeFilterCandidates.map((item) => {
-                        const checked = lockedKeySet.has(item.key);
-                        return (
-                          <label
-                            key={item.key}
-                            className={`inline-flex items-center gap-1.5 rounded border px-2.5 py-1 cursor-pointer ${
-                              checked
-                                ? "border-xblue bg-xblue-soft/50 text-foreground"
-                                : "border-border bg-background text-muted-foreground"
-                            }`}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(e) => {
-                                setLockedKeySet((prev) => {
-                                  const next = new Set(prev);
-                                  if (e.target.checked) {
-                                    next.add(item.key);
-                                  } else {
-                                    next.delete(item.key);
-                                  }
-                                  return next;
-                                });
-                              }}
-                              className="h-3.5 w-3.5 accent-[#2563eb]"
-                              data-testid={`share-lock-filter-${item.key}`}
-                            />
-                            <span className="text-xs font-medium">
-                              {item.label}:
-                            </span>
-                            <span className="font-mono-tech text-[11px]">
-                              {summarizeFilterValue(item.value)}
-                            </span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <label className="flex items-center justify-between gap-2 rounded border border-border bg-background px-3 py-2 cursor-pointer">
-                    <div>
-                      <div className="font-medium text-foreground">
-                        允许调整未锁定筛选
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label className="flex items-center justify-between gap-2 rounded border border-border bg-background px-3 py-2 cursor-pointer">
+                      <div>
+                        <div className="font-medium text-foreground">
+                          {tx("允许未锁定筛选", "Allow Unlocked Filters")}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {tx(
+                            "访客可调整未锁定的筛选条件",
+                            "Visitors can adjust unlocked filters"
+                          )}
+                        </div>
                       </div>
-                      <div className="text-[11px] text-muted-foreground">
-                        允许访客自由切换未锁定的筛选器
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={allowFilters}
-                      onChange={(e) => setAllowFilters(e.target.checked)}
-                      className="h-4 w-4 accent-[#2563eb] cursor-pointer"
-                      data-testid="share-allow-filters-toggle"
-                    />
-                  </label>
+                      <input
+                        type="checkbox"
+                        checked={allowFilters}
+                        onChange={(e) => setAllowFilters(e.target.checked)}
+                        className="h-4 w-4 accent-[#2563eb] cursor-pointer"
+                        data-testid="share-allow-filters-toggle"
+                      />
+                    </label>
 
-                  <label className="flex items-center justify-between gap-2 rounded border border-border bg-background px-3 py-2 cursor-pointer">
-                    <div>
-                      <div className="font-medium text-foreground">
-                        允许访客下载报告
+                    <label className="flex items-center justify-between gap-2 rounded border border-border bg-background px-3 py-2 cursor-pointer">
+                      <div>
+                        <div className="font-medium text-foreground">
+                          {tx("允许下载报告", "Allow Export Download")}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {tx(
+                            "访客可在分享页下载多格式文件",
+                            "Visitors can download reports from share view"
+                          )}
+                        </div>
                       </div>
-                      <div className="text-[11px] text-muted-foreground">
-                        允许在分享页触发多格式文件下载
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={allowExport}
-                      onChange={(e) => setAllowExport(e.target.checked)}
-                      className="h-4 w-4 accent-[#2563eb] cursor-pointer"
-                      data-testid="share-allow-export-toggle"
-                    />
-                  </label>
+                      <input
+                        type="checkbox"
+                        checked={allowExport}
+                        onChange={(e) => setAllowExport(e.target.checked)}
+                        className="h-4 w-4 accent-[#2563eb] cursor-pointer"
+                        data-testid="share-allow-export-toggle"
+                      />
+                    </label>
+                  </div>
                 </div>
+              )}
+
+              <div className="flex justify-end pt-1">
+                <Button
+                  type="submit"
+                  disabled={creating || isDraftDashboard}
+                  data-testid="submit-create-share-btn"
+                >
+                  <Share2 className="h-3.5 w-3.5" />
+                  {creating
+                    ? tx("生成中…", "Creating…")
+                    : tx("生成链接", "Create Link")}
+                </Button>
               </div>
-            )}
+            </form>
+          )}
 
-            <div className="flex justify-end pt-1">
-              <Button
-                type="submit"
-                disabled={creating || isDraftDashboard}
-                data-testid="submit-create-share-btn"
-              >
-                <Share2 className="h-3.5 w-3.5" />
-                {creating ? "生成分享链接中..." : "生成安全分享链接"}
-              </Button>
-            </div>
-          </form>
-
-          {/* Existing Share Links Management */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-foreground">
-                已创建分享链接 ({shares.length})
-              </span>
-              {loadingShares && (
-                <span className="text-[11px] text-muted-foreground">
-                  加载中...
+          {/* Active vs Expired/Revoked Share Links */}
+          <div className="space-y-3">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-semibold text-foreground">
+                  {tx("生效中链接", "Active Links")} ({activeShares.length})
                 </span>
+                {loadingShares && (
+                  <span className="text-[11px] text-muted-foreground">
+                    {tx("加载中…", "Loading…")}
+                  </span>
+                )}
+              </div>
+
+              {activeShares.length === 0 ? (
+                <div className="rounded-md border border-dashed border-border py-5 text-center text-muted-foreground">
+                  {tx("暂无生效中的分享链接", "No active share links")}
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {activeShares.map(({ link, state }) => {
+                    const lockedCount = Object.keys(
+                      link.locked_filters ?? {}
+                    ).length;
+                    const isJustCreated = createdShare?.id === link.id;
+                    const copyPayload = isJustCreated
+                      ? fullShareUrl
+                      : `axs_${link.token_prefix}`;
+                    return (
+                      <div
+                        key={link.id}
+                        data-testid={`share-link-row-${link.id}`}
+                        className="rounded-md border border-border bg-card px-3 py-2.5 flex flex-wrap items-center justify-between gap-2"
+                      >
+                        <div className="space-y-1 min-w-0">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-mono-tech font-semibold text-xs">
+                              axs_{link.token_prefix}…
+                            </span>
+                            {renderStatusBadge(state)}
+                            {link.has_password && (
+                              <Badge variant="neutral" className="gap-1">
+                                <KeyRound className="h-2.5 w-2.5" />
+                                {tx("口令保护", "Password")}
+                              </Badge>
+                            )}
+                            {lockedCount > 0 && (
+                              <Badge variant="outline">
+                                {tx(
+                                  `锁定筛选 ${fmtNum(lockedCount, 0)}`,
+                                  `Locked ${fmtNum(lockedCount, 0)}`
+                                )}
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono-tech tabular-nums text-muted-foreground">
+                            <span>
+                              {tx("访问", "Views")}: {link.view_count} /{" "}
+                              {link.max_views ?? "∞"}
+                            </span>
+                            <span>
+                              {tx("到期", "Exp")}:{" "}
+                              {fmtTime(link.expires_at, false)}
+                            </span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() =>
+                              void handleCopyRowValue(link.id, copyPayload)
+                            }
+                            title={
+                              isJustCreated
+                                ? tx("复制完整链接", "Copy share URL")
+                                : tx("复制令牌前缀", "Copy token prefix")
+                            }
+                          >
+                            {copiedRowId === link.id ? (
+                              <>
+                                <Check className="h-3 w-3 text-xblue" />
+                                {tx("已复制", "Copied")}
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="h-3 w-3" />
+                                {isJustCreated
+                                  ? tx("复制链接", "Copy URL")
+                                  : tx("复制标识", "Copy ID")}
+                              </>
+                            )}
+                          </Button>
+                          {canShare && (
+                            <Button
+                              type="button"
+                              variant="danger"
+                              size="sm"
+                              disabled={revokingId === link.id}
+                              onClick={() => void handleRevoke(link.id)}
+                              data-testid={`revoke-share-${link.id}`}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                              {revokingId === link.id
+                                ? tx("撤销中…", "Revoking…")
+                                : tx("撤销", "Revoke")}
+                            </Button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
 
-            {shares.length === 0 ? (
-              <div className="rounded-md border border-dashed border-border py-6 text-center text-muted-foreground">
-                当前对象暂无历史分享记录
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {shares.map((link) => {
-                  const st = resolveShareStatus(link);
-                  const lockedCount = Object.keys(
-                    link.locked_filters ?? {}
-                  ).length;
-                  return (
+            {inactiveShares.length > 0 && (
+              <div className="space-y-2 pt-2 border-t border-border">
+                <div className="font-semibold text-muted-foreground">
+                  {tx("已失效 / 已撤销", "Expired & Revoked")} (
+                  {inactiveShares.length})
+                </div>
+                <div className="space-y-1.5">
+                  {inactiveShares.map(({ link, state }) => (
                     <div
                       key={link.id}
                       data-testid={`share-link-row-${link.id}`}
-                      className="rounded-md border border-border bg-card px-3 py-2.5 flex flex-wrap items-center justify-between gap-2"
+                      className="rounded-md border border-border/70 bg-muted/20 px-3 py-2 flex flex-wrap items-center justify-between gap-2 opacity-80"
                     >
-                      <div className="space-y-1 min-w-0">
+                      <div className="space-y-0.5 min-w-0">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="font-mono-tech font-semibold text-xs">
-                            axs_{link.token_prefix}...
+                          <span className="font-mono-tech text-xs text-muted-foreground">
+                            axs_{link.token_prefix}…
                           </span>
-                          <Badge variant={st.active ? "xblue" : "outline"}>
-                            {st.label}
-                          </Badge>
+                          {renderStatusBadge(state)}
                           {link.has_password && (
-                            <Badge variant="neutral" className="gap-1">
+                            <Badge variant="outline" className="gap-1">
                               <KeyRound className="h-2.5 w-2.5" />
-                              口令保护
-                            </Badge>
-                          )}
-                          {lockedCount > 0 && (
-                            <Badge variant="outline">
-                              锁定筛选 {lockedCount}
+                              {tx("口令保护", "Password")}
                             </Badge>
                           )}
                         </div>
                         <div className="flex flex-wrap items-center gap-3 text-[11px] font-mono-tech tabular-nums text-muted-foreground">
                           <span>
-                            访问次数: {link.view_count} /{" "}
+                            {tx("访问", "Views")}: {link.view_count} /{" "}
                             {link.max_views ?? "∞"}
                           </span>
-                          <span>到期: {formatShareTime(link.expires_at)}</span>
+                          <span>
+                            {link.revoked_at
+                              ? `${tx("撤销", "Revoked")}: ${fmtTime(
+                                  link.revoked_at,
+                                  false
+                                )}`
+                              : `${tx("到期", "Exp")}: ${fmtTime(
+                                  link.expires_at,
+                                  false
+                                )}`}
+                          </span>
                         </div>
                       </div>
-
-                      {!link.revoked_at && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          disabled={revokingId === link.id}
-                          onClick={() => void handleRevoke(link.id)}
-                          className="h-7 px-2.5 text-xs"
-                          data-testid={`revoke-share-${link.id}`}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                          {revokingId === link.id ? "撤销中..." : "撤销"}
-                        </Button>
-                      )}
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
               </div>
             )}
           </div>
         </div>
-      </div>
-    </div>
+      )}
+    </Modal>
   );
 }
