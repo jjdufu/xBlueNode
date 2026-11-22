@@ -162,18 +162,21 @@ describe("AxOps operations, templates & work-item logic", () => {
     });
   });
 
-  it("mergeRetentionPoliciesWithDefaults returns all 11 targets and marks AUDIT as owner-script only", () => {
+  it("mergeRetentionPoliciesWithDefaults returns all 12 targets and marks AUDIT as owner-script only", () => {
     const merged = mergeRetentionPoliciesWithDefaults([
       { target: "JOB", keep_days: 45 },
       { target: "AUDIT", keep_days: 730 },
     ]);
-    assert.equal(merged.length, 11);
+    assert.equal(merged.length, 12);
     const jobEntry = merged.find((m) => m.target === "JOB");
     const auditEntry = merged.find((m) => m.target === "AUDIT");
+    const imDedupEntry = merged.find((m) => m.target === "IM_EVENT_DEDUP");
     assert.equal(jobEntry?.keep_days, 45);
     assert.equal(jobEntry?.ownerScriptOnly, false);
     assert.equal(auditEntry?.keep_days, 730);
     assert.equal(auditEntry?.ownerScriptOnly, true);
+    assert.equal(imDedupEntry?.keep_days, 7);
+    assert.equal(imDedupEntry?.ownerScriptOnly, false);
   });
 
   it("groupWorkItemsByStatus and formatWorkItemCode partition Kanban cards deterministically", () => {
