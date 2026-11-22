@@ -21,6 +21,7 @@ import { xblueApi } from "@/lib/api/xblue";
 import {
   createApiToken,
   fetchLlmUsage,
+  getUserLlmPreferences,
   listAgents,
   listApiTokens,
   listEndpoints,
@@ -35,6 +36,7 @@ import { ChatWorkbench } from "@/components/axagent/ChatWorkbench";
 import { EndpointList } from "@/components/axagent/EndpointList";
 import { McpClientForm } from "@/components/axagent/McpClientForm";
 import { ProviderTable } from "@/components/axagent/ProviderTable";
+import { UserLlmPreferencesBar } from "@/components/axagent/UserLlmPreferencesBar";
 import {
   Badge,
   Button,
@@ -157,6 +159,18 @@ export function AxAgentPage() {
     enabled: activeTab === "providers",
   });
 
+  const llmPreferencesQuery = useQuery({
+    queryKey: ["axagent", "llm-preferences"],
+    queryFn: async () => {
+      try {
+        return await getUserLlmPreferences();
+      } catch {
+        return [];
+      }
+    },
+    enabled: activeTab === "providers",
+  });
+
   const patListQuery = useQuery({
     queryKey: ["axagent", "pat-list"],
     queryFn: () => listApiTokens(),
@@ -230,6 +244,7 @@ export function AxAgentPage() {
       queryClient.invalidateQueries({ queryKey: ["axagent", "agents"] }),
       queryClient.invalidateQueries({ queryKey: ["axagent", "endpoints"] }),
       queryClient.invalidateQueries({ queryKey: ["axagent", "providers"] }),
+      queryClient.invalidateQueries({ queryKey: ["axagent", "llm-preferences"] }),
       queryClient.invalidateQueries({ queryKey: ["axagent", "mcp-clients"] }),
       queryClient.invalidateQueries({ queryKey: ["axagent", "usage"] }),
     ]);
@@ -469,17 +484,24 @@ export function AxAgentPage() {
           onRefresh={refreshAll}
         />
       ) : activeTab === "providers" ? (
-        <ProviderTable
-          providers={providers}
-          usage={usageQuery.data ?? []}
-          usageFrom={usageFrom}
-          usageTo={usageTo}
-          onChangeUsageRange={(from, to) => {
-            setUsageFrom(from);
-            setUsageTo(to);
-          }}
-          onRefresh={refreshAll}
-        />
+        <div className="space-y-5">
+          <UserLlmPreferencesBar
+            providers={providers}
+            preferences={llmPreferencesQuery.data ?? []}
+            onRefresh={refreshAll}
+          />
+          <ProviderTable
+            providers={providers}
+            usage={usageQuery.data ?? []}
+            usageFrom={usageFrom}
+            usageTo={usageTo}
+            onChangeUsageRange={(from, to) => {
+              setUsageFrom(from);
+              setUsageTo(to);
+            }}
+            onRefresh={refreshAll}
+          />
+        </div>
       ) : (
         <McpClientForm
           mcpClients={mcpClients}
@@ -557,7 +579,7 @@ export function AxAgentPage() {
                     type="checkbox"
                     checked={patScopes.includes(perm)}
                     onChange={() => togglePatScope(perm)}
-                    className="accent-[#2563eb]"
+                    className="accent-xblue"
                   />
                   <span>{tEnum(perm)}</span>
                 </label>

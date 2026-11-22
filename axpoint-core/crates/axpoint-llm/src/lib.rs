@@ -5,6 +5,7 @@ pub mod cassette;
 pub mod router;
 pub mod schema_draft;
 pub mod stream;
+pub mod structured;
 pub mod tools;
 
 use std::fmt::Write as _;
@@ -17,6 +18,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 pub use axpoint_domain::enums::Purpose;
+use axpoint_domain::json_schema::{JsonSchemaSpec, parse_and_validate_json};
 use axpoint_domain::{AppError, ExtractedTriple, FusedHit};
 pub use cassette::{
     CASSETTE_ENV_VAR, Cassette, CassetteEntry, CassetteMode, CassetteTurn,
@@ -34,6 +36,7 @@ use serde::{Deserialize, Serialize};
 pub use stream::{consume_sse_byte_stream, consume_sse_response};
 pub use tools::{TokenUsage, ToolChatMessage, ToolChatTurn, ToolDefinition, ToolFunctionDef};
 use tracing::warn;
+use uuid::Uuid;
 
 /// Maximum number of texts sent in a single `/embeddings` HTTP request (`04-STEP03` §03.0).
 pub const EMBED_BATCH_CHUNK_SIZE: usize = 64;
@@ -81,6 +84,7 @@ pub struct AiGateway {
     cassette: Option<Cassette>,
     router: Option<Arc<LlmRouter>>,
     default_tenant: String,
+    caller_user_id: Option<Uuid>,
     purpose_override: Option<Purpose>,
     max_retries: u32,
     base_backoff: Duration,
@@ -209,6 +213,7 @@ impl AiGateway {
             cassette,
             router: None,
             default_tenant: String::from("default"),
+            caller_user_id: None,
             purpose_override: None,
             max_retries: DEFAULT_EMBED_MAX_RETRIES,
             base_backoff: Duration::from_millis(DEFAULT_EMBED_BASE_BACKOFF_MS),
@@ -236,6 +241,7 @@ impl AiGateway {
             cassette: Some(cassette),
             router: None,
             default_tenant: String::from("default"),
+            caller_user_id: None,
             purpose_override: None,
             max_retries: DEFAULT_EMBED_MAX_RETRIES,
             base_backoff: Duration::from_millis(DEFAULT_EMBED_BASE_BACKOFF_MS),
@@ -260,6 +266,14 @@ impl AiGateway {
     pub fn for_tenant(&self, tenant_id: impl Into<String>) -> Self {
         let mut cloned = self.clone();
         cloned.default_tenant = tenant_id.into();
+        cloned
+    }
+
+    /// Returns a lightweight clone bound to `user_id` for personal provider visibility and preference routing (`01-STEP15` §15.3.4).
+    #[must_use]
+    pub fn for_user(&self, user_id: Uuid) -> Self {
+        let mut cloned = self.clone();
+        cloned.caller_user_id = Some(user_id);
         cloned
     }
 
@@ -501,10 +515,63 @@ impl AiGateway {
     ) -> Result<String, AppError> {
         if let Some(router) = &self.router {
             return router
-                .complete_chat(tenant_id, purpose, system_prompt, user_prompt)
+                .complete_chat_for_user(
+                    tenant_id,
+                    self.caller_user_id,
+                    purpose,
+                    system_prompt,
+                    user_prompt,
+                )
                 .await;
         }
         self.chat_direct(system_prompt, user_prompt).await
+    }
+
+    /// Executes a schema-constrained completion validated against `schema` with deterministic `temperature = 0.0` (`01-STEP15` §15.2.4).
+    ///
+    /// # Errors
+    /// Returns [`AppError`] on routing/upstream failure or [`AppError::Unprocessable`] (`STRUCTURED_OUTPUT_INVALID`)
+    /// when the output violates `schema`.
+    pub async fn chat_structured_for_tenant(
+        &self,
+        tenant_id: &str,
+        purpose: Purpose,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema: &JsonSchemaSpec,
+    ) -> Result<serde_json::Value, AppError> {
+        if let Some(router) = &self.router {
+            let req = RouterTurnRequest::new(
+                purpose,
+                vec![
+                    ToolChatMessage::system(system_prompt),
+                    ToolChatMessage::user(user_prompt),
+                ],
+            )
+            .with_caller_user(self.caller_user_id)
+            .with_require_tools(false)
+            .with_response_schema(schema.clone());
+            let turn = router.complete_tool_turn(tenant_id, req).await?;
+            return serde_json::from_str(&turn.content).map_err(|err| {
+                AppError::unprocessable(
+                    "STRUCTURED_OUTPUT_INVALID",
+                    format!("invalid JSON output: {err}"),
+                )
+            });
+        }
+        if let Some(cassette) = &self.cassette
+            && cassette.mode() == CassetteMode::Replay
+        {
+            let raw =
+                cassette.lookup_chat_with_schema(system_prompt, user_prompt, Some(&schema.name))?;
+            return parse_and_validate_json(&raw, &schema.schema);
+        }
+        let compact = serde_json::to_string(&schema.schema).unwrap_or_else(|_| String::from("{}"));
+        let aug_sys = format!(
+            "{system_prompt}\n\nOutput ONLY a valid JSON object matching this JSON Schema (no Markdown code fences):\n{compact}"
+        );
+        let raw = self.chat_direct(&aug_sys, user_prompt).await?;
+        parse_and_validate_json(&raw, &schema.schema)
     }
 
     /// Calls the chat completion API and returns the assistant message text.
@@ -736,6 +803,24 @@ impl axpoint_domain::ports::AiPort for AiGateway {
     async fn chat(&self, system_prompt: &str, user_prompt: &str) -> Result<String, AppError> {
         Self::chat(self, system_prompt, user_prompt).await
     }
+
+    async fn chat_structured(
+        &self,
+        purpose: Purpose,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema: &JsonSchemaSpec,
+    ) -> Result<serde_json::Value, AppError> {
+        Self::chat_structured_for_tenant(
+            self,
+            &self.default_tenant,
+            purpose,
+            system_prompt,
+            user_prompt,
+            schema,
+        )
+        .await
+    }
 }
 
 impl axpoint_domain::ports::TextEmbedderPort for AiGateway {
@@ -792,6 +877,7 @@ mod tests {
             cassette: None,
             router: None,
             default_tenant: String::from("default"),
+            caller_user_id: None,
             purpose_override: None,
             max_retries: DEFAULT_EMBED_MAX_RETRIES,
             base_backoff: Duration::from_millis(5),

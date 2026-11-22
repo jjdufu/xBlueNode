@@ -677,8 +677,12 @@ async fn create_ai_draft_handler(
         .load_validation_context(&principal.tenant_id, slug)
         .await?;
 
+    let studio_ai = state
+        .ai
+        .for_tenant(&principal.tenant_id)
+        .for_user(principal.user_id);
     let generated = generate_schema_draft(
-        &state.ai,
+        &studio_ai,
         &SchemaDraftInput {
             profiling: &profiling,
             doc_entities: &doc_entities,

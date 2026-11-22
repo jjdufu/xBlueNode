@@ -91,7 +91,7 @@ async fn ingest_text_handler(
     ApiJson(req): ApiJson<IngestTextRequest>,
 ) -> Result<Json<IngestResponse>, HttpError> {
     principal.require(Permission::DataSync)?;
-    let resp = run_ingest_pipeline(&state, &principal.tenant_id, req).await?;
+    let resp = run_ingest_pipeline(&state, &principal.tenant_id, principal.user_id, req).await?;
     Ok(Json(resp))
 }
 
@@ -165,6 +165,7 @@ async fn upload_document_handler(
     let resp = run_ingest_pipeline(
         &state,
         &principal.tenant_id,
+        principal.user_id,
         IngestTextRequest {
             title: parsed.title,
             source_name: file_name,
@@ -179,11 +180,13 @@ async fn upload_document_handler(
 async fn run_ingest_pipeline(
     state: &AppState,
     tenant_id: &str,
+    user_id: Uuid,
     req: IngestTextRequest,
 ) -> Result<IngestResponse, AppError> {
+    let scoped_ai = state.ai.for_tenant(tenant_id).for_user(user_id);
     ingest_text_with_deps(
         &state.store,
-        &state.ai,
+        &scoped_ai,
         Some(state.sidecar.as_ref()),
         tenant_id,
         req,
@@ -237,11 +240,12 @@ pub(crate) async fn ingest_text_with_deps(
         Vec::new()
     };
 
-    let (vectors, embed_dim) = ai.embed_batch(&chunks).await?;
+    let tenant_ai = ai.for_tenant(tenant_id);
+    let (vectors, embed_dim) = tenant_ai.embed_batch(&chunks).await?;
     let mut para_inputs = Vec::with_capacity(chunks.len());
 
     for (idx, (chunk, vec)) in chunks.into_iter().zip(vectors).enumerate() {
-        let triples = match ai.extract_triples(&chunk).await {
+        let triples = match tenant_ai.extract_triples(&chunk).await {
             Ok(t) => t,
             Err(err) => {
                 warn!("triple extraction skipped for chunk {idx}: {err}");
@@ -349,11 +353,25 @@ pub(crate) async fn recall_knowledge_hits(
     top_k: usize,
     doc_title_prefix: Option<&str>,
 ) -> Result<(Vec<FusedHit>, Vec<String>), AppError> {
+    recall_knowledge_hits_for_user(state, tenant_id, None, query, top_k, doc_title_prefix).await
+}
+
+async fn recall_knowledge_hits_for_user(
+    state: &AppState,
+    tenant_id: &str,
+    caller_user_id: Option<Uuid>,
+    query: &str,
+    top_k: usize,
+    doc_title_prefix: Option<&str>,
+) -> Result<(Vec<FusedHit>, Vec<String>), AppError> {
     let trimmed = query.trim();
     if trimmed.is_empty() || top_k == 0 {
         return Ok((Vec::new(), Vec::new()));
     }
-    let tenant_ai = state.ai.for_tenant(tenant_id);
+    let tenant_ai = match caller_user_id {
+        Some(uid) => state.ai.for_tenant(tenant_id).for_user(uid),
+        None => state.ai.for_tenant(tenant_id),
+    };
     let (embed_res, seed_entities) = tokio::join!(
         tenant_ai.embed_one(trimmed),
         tenant_ai.extract_query_entities(trimmed)
@@ -401,16 +419,26 @@ pub(crate) async fn recall_knowledge_hits(
 
 async fn run_doc_rag_pipeline(
     state: &AppState,
-    tenant_id: &str,
+    principal: &AuthPrincipal,
     query: &str,
     top_k: usize,
-    has_pii_raw: bool,
 ) -> Result<DocRagOutcome, AppError> {
-    let (mut hits, seeds) = recall_knowledge_hits(state, tenant_id, query, top_k, None).await?;
+    let tenant_id = &principal.tenant_id;
+    let has_pii_raw = principal.has(Permission::PiiRawRead);
+    let (mut hits, seeds) = recall_knowledge_hits_for_user(
+        state,
+        tenant_id,
+        Some(principal.user_id),
+        query,
+        top_k,
+        None,
+    )
+    .await?;
     mask_recalled_hits(state, tenant_id, &mut hits, has_pii_raw).await?;
     let answer = state
         .ai
         .for_tenant(tenant_id)
+        .for_user(principal.user_id)
         .with_purpose_override(axpoint_domain::enums::Purpose::Summarize)
         .synthesize_answer(query, &hits)
         .await?;
@@ -434,13 +462,14 @@ async fn run_doc_rag_pipeline(
 
 async fn resolve_auto_chat_intent(
     state: &AppState,
-    tenant_id: &str,
+    principal: &AuthPrincipal,
     question: &str,
     session_id: Option<Uuid>,
 ) -> Result<AskIntent, AppError> {
+    let tenant_id = &principal.tenant_id;
+    let scoped_ai = state.ai.for_tenant(tenant_id).for_user(principal.user_id);
     let (catalog, _, _, _) = load_tenant_catalog_and_live(state, tenant_id, false).await?;
-    let q_embed = state
-        .ai
+    let q_embed = scoped_ai
         .embed_one(question.trim())
         .await
         .ok()
@@ -476,7 +505,7 @@ async fn resolve_auto_chat_intent(
     }
 
     Ok(route_intent(
-        &state.ai,
+        &scoped_ai,
         question,
         linked.has_positive_hit,
         has_prior_data_turn,
@@ -512,6 +541,7 @@ fn strip_doc_citation_tags(text: &str) -> String {
 
 async fn synthesize_hybrid_answer(
     state: &AppState,
+    principal: &AuthPrincipal,
     question: &str,
     doc: &DocRagOutcome,
     data_answer: &str,
@@ -540,7 +570,11 @@ async fn synthesize_hybrid_answer(
     }
     let _fmt_ok = write!(prompt, "\n### 用户问题\n{}", question.trim());
 
-    let Ok(raw) = state.ai.chat(HYBRID_SYSTEM_PROMPT, &prompt).await else {
+    let scoped_ai = state
+        .ai
+        .for_tenant(&principal.tenant_id)
+        .for_user(principal.user_id);
+    let Ok(raw) = scoped_ai.chat(HYBRID_SYSTEM_PROMPT, &prompt).await else {
         return fallback;
     };
     let trimmed = raw.trim();
@@ -568,8 +602,7 @@ async fn handle_doc_chat_query(
     started: Instant,
 ) -> Result<ChatQueryResponse, AppError> {
     let tenant_id = &principal.tenant_id;
-    let has_pii_raw = principal.has(Permission::PiiRawRead);
-    let doc = run_doc_rag_pipeline(state, tenant_id, &req.query, req.top_k, has_pii_raw).await?;
+    let doc = run_doc_rag_pipeline(state, principal, &req.query, req.top_k).await?;
     let hit_para_ids: Vec<Uuid> = doc.hits.iter().map(|h| h.para_id).collect();
     let related_nodes = state
         .store
@@ -611,19 +644,20 @@ async fn handle_hybrid_chat_query(
     started: Instant,
 ) -> Result<ChatQueryResponse, AppError> {
     let tenant_id = &principal.tenant_id;
-    let has_pii_raw = principal.has(Permission::PiiRawRead);
     let ask_req = AskRequest {
         question: req.query.clone(),
         session_id: req.session_id,
         context: None,
     };
     let (doc_res, data_res) = tokio::join!(
-        run_doc_rag_pipeline(state, tenant_id, &req.query, req.top_k, has_pii_raw),
+        run_doc_rag_pipeline(state, principal, &req.query, req.top_k),
         execute_ask_for_principal(state, principal, ask_req, Some(AskIntent::Data), false)
     );
     let doc = doc_res?;
     let data = data_res?;
-    let answer = synthesize_hybrid_answer(state, &req.query, &doc, &data.answer, &data.rows).await;
+    let answer =
+        synthesize_hybrid_answer(state, principal, &req.query, &doc, &data.answer, &data.rows)
+            .await;
 
     let preview = (!data.sql.is_empty()).then(|| {
         serde_json::json!({
@@ -694,7 +728,7 @@ async fn chat_query_handler(
         ChatQueryMode::Doc => AskIntent::Doc,
         ChatQueryMode::Data => AskIntent::Data,
         ChatQueryMode::Auto => {
-            resolve_auto_chat_intent(&state, tenant_id, &req.query, req.session_id).await?
+            resolve_auto_chat_intent(&state, &principal, &req.query, req.session_id).await?
         }
     };
 

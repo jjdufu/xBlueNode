@@ -119,7 +119,7 @@ api POST /api/analytics/ask '{"question":"已支付订单总金额是多少？"}
 AFTER_REQ=$(sql_app default "SELECT COALESCE((SELECT requests FROM ax_llm_usage WHERE provider_id = '$USER_PROV_ID' AND purpose = 'NL2SQL' AND usage_date = CURRENT_DATE), 0)")
 
 expect_json "user-default-provider" "$PREF_SAVED" \
-  ".items | length == 1 and .items[0].purpose == \"NL2SQL\" and .items[0].provider_id == \"$USER_PROV_ID\" and ($AFTER_REQ > $BEFORE_REQ)"
+  "(.items | length) == 1 and .items[0].purpose == \"NL2SQL\" and .items[0].provider_id == \"$USER_PROV_ID\" and ($AFTER_REQ > $BEFORE_REQ)"
 
 # 6. 验证新增租户表 ax_user_llm_preferences 的跨租户 RLS 零可见性
 expect_eq "user-llm-pref-rls" "$(sql_app other "SELECT count(*) FROM ax_user_llm_preferences")" "0"

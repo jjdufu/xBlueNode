@@ -4,6 +4,8 @@ mod agents;
 mod endpoints;
 mod providers;
 
+use std::collections::BTreeMap;
+
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{
     AgentEmbedRecord, AgentRecord, AgentVersionRecord, ConversationListQuery, ConversationRecord,
@@ -11,9 +13,10 @@ use axpoint_domain::agent::{
     LlmUsageQuery, LlmUsageRecord, McpClientRecord, McpToolInfo, MessageRecord, NewAgentEmbedInput,
     NewConversationInput, NewMessageInput, ResolvedAgentEmbed, SaveEndpointInput,
     SaveLlmProviderInput, SaveMcpClientInput, UpdateAgentRequest, UpdateEndpointRequest,
+    UserLlmPreferenceRecord,
 };
 use axpoint_domain::axhub::{PaginatedList, SealedCredential};
-use axpoint_domain::enums::{ConversationStatus, Environment};
+use axpoint_domain::enums::{ConversationStatus, Environment, Purpose};
 use axpoint_domain::platform::BoxFuture;
 use axpoint_domain::ports::{AgentRepository, LlmProviderStore};
 use uuid::Uuid;
@@ -31,6 +34,16 @@ impl LlmProviderStore for PgStore {
     fn record_usage<'a>(&'a self, tenant_id: &'a str, delta: LlmUsageDelta) -> BoxFuture<'a, ()> {
         Box::pin(async move { providers::record_llm_usage_impl(self, tenant_id, delta).await })
     }
+
+    fn list_user_preferences<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        user_id: Uuid,
+    ) -> BoxFuture<'a, BTreeMap<Purpose, Uuid>> {
+        Box::pin(async move {
+            providers::list_user_preferences_map_impl(self, tenant_id, user_id).await
+        })
+    }
 }
 
 impl AgentRepository for PgStore {
@@ -39,6 +52,31 @@ impl AgentRepository for PgStore {
         tenant_id: &str,
     ) -> Result<Vec<LlmProviderRecord>, AppError> {
         providers::list_llm_providers_impl(self, tenant_id).await
+    }
+
+    async fn list_visible_llm_providers(
+        &self,
+        tenant_id: &str,
+        viewer_user_id: Uuid,
+    ) -> Result<Vec<LlmProviderRecord>, AppError> {
+        providers::list_visible_llm_providers_impl(self, tenant_id, viewer_user_id).await
+    }
+
+    async fn list_user_llm_preferences(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+    ) -> Result<Vec<UserLlmPreferenceRecord>, AppError> {
+        providers::list_user_llm_preferences_impl(self, tenant_id, user_id).await
+    }
+
+    async fn replace_user_llm_preferences(
+        &self,
+        tenant_id: &str,
+        user_id: Uuid,
+        items: &[(Purpose, Uuid)],
+    ) -> Result<Vec<UserLlmPreferenceRecord>, AppError> {
+        providers::replace_user_llm_preferences_impl(self, tenant_id, user_id, items).await
     }
 
     async fn get_llm_provider(

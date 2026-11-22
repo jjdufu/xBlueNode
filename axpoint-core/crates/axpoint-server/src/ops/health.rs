@@ -223,7 +223,8 @@ fn select_active_provider(
     want_embed: bool,
 ) -> Option<&LlmProviderRecord> {
     providers.iter().find(|p| {
-        p.enabled
+        p.owner_user_id.is_none()
+            && p.enabled
             && if want_embed {
                 p.purposes.contains(&Purpose::Embed)
             } else {

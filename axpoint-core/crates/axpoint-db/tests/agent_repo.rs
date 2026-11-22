@@ -12,7 +12,7 @@ use axpoint_domain::agent::{
 use axpoint_domain::axhub::SealedCredential;
 use axpoint_domain::enums::{
     ConversationChannel, ConversationStatus, EndpointKind, Environment, MessageRole, OutputShape,
-    Permission, Purpose,
+    Permission, Purpose, StructuredOutputMode,
 };
 use axpoint_domain::ports::{
     AgentRepository as _, ApiTokenRepository as _, CredentialStore as _, LlmProviderStore as _,
@@ -105,6 +105,7 @@ async fn cleanup_tenant(owner_pool: &PgPool, tenant_id: &str) -> TestResult {
         "DELETE FROM ax_agents WHERE tenant_id = $1",
         "DELETE FROM ax_mcp_clients WHERE tenant_id = $1",
         "DELETE FROM ax_published_endpoints WHERE tenant_id = $1",
+        "DELETE FROM ax_user_llm_preferences WHERE tenant_id = $1",
         "DELETE FROM ax_llm_usage WHERE tenant_id = $1",
         "DELETE FROM ax_llm_providers WHERE tenant_id = $1",
         "DELETE FROM ds_credentials WHERE tenant_id = $1",
@@ -858,6 +859,161 @@ async fn agent_repo_api_tokens_create_list_resolve_and_revoke_with_rls() -> Test
     assert!(!store.revoke_api_token(&t_b, user_a, pat.id).await?);
     assert!(store.revoke_api_token(&t_a, user_a, pat.id).await?);
     assert!(store.resolve_api_token(&pat_hash).await?.is_none());
+
+    cleanup_tenant(&owner_pool, &t_a).await?;
+    cleanup_tenant(&owner_pool, &t_b).await?;
+    Ok(())
+}
+
+fn scoped_provider_input(
+    name: &str,
+    priority: i32,
+    owner_user_id: Option<Uuid>,
+    purposes: Vec<Purpose>,
+    caps: LlmStructuredCaps,
+) -> SaveLlmProviderInput {
+    let mut input = sample_provider_input(name, priority, CredentialMutation::Keep);
+    input.purposes = purposes;
+    input.owner_user_id = owner_user_id;
+    input.structured_caps = caps;
+    input
+}
+
+async fn assert_preferences_and_cross_tenant_rls(
+    store: &PgStore,
+    tenants: (&str, &str),
+    user_a: Uuid,
+    prov_ids: (Uuid, Uuid, Uuid),
+) -> TestResult {
+    let (t_a, t_b) = tenants;
+    let (sys_prov_id, alice_prov_id, bob_prov_id) = prov_ids;
+    let upd_caps = LlmStructuredCaps {
+        structured_mode: StructuredOutputMode::JsonSchema,
+        deterministic_seed: Some(99),
+        is_local_model: true,
+        max_context_tokens: 24_576,
+    };
+    let updated_alice = store
+        .update_llm_provider(
+            t_a,
+            alice_prov_id,
+            scoped_provider_input(
+                "alice-coder-v2",
+                180,
+                None,
+                vec![Purpose::Nl2Sql, Purpose::Extract],
+                upd_caps,
+            ),
+        )
+        .await?
+        .ok_or("missing updated alice provider")?;
+    assert_eq!(updated_alice.owner_user_id, Some(user_a));
+    assert_eq!(updated_alice.structured_caps.max_context_tokens, 24_576);
+
+    let vis_alice = store.list_visible_llm_providers(t_a, user_a).await?;
+    assert_eq!(vis_alice.len(), 2);
+    assert!(!vis_alice.iter().any(|p| p.id == bob_prov_id));
+
+    let replaced = store
+        .replace_user_llm_preferences(
+            t_a,
+            user_a,
+            &[
+                (Purpose::Nl2Sql, alice_prov_id),
+                (Purpose::Chat, sys_prov_id),
+            ],
+        )
+        .await?;
+    assert_eq!(replaced.len(), 2);
+    assert_eq!(
+        store
+            .list_user_preferences(t_a, user_a)
+            .await?
+            .get(&Purpose::Nl2Sql),
+        Some(&alice_prov_id)
+    );
+    assert_eq!(store.list_user_llm_preferences(t_b, user_a).await?.len(), 0);
+    assert!(store.list_user_preferences(t_b, user_a).await?.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn agent_repo_personal_providers_partial_unique_visibility_and_preferences_rls() -> TestResult
+{
+    let Some((app_pool, owner_pool)) = test_pools().await? else {
+        return Ok(());
+    };
+    let store = PgStore::new(app_pool);
+    let t_a = unique_tenant("s15_a");
+    let t_b = unique_tenant("s15_b");
+    let user_a = Uuid::new_v4();
+    let user_b = Uuid::new_v4();
+    setup_tenant_with_user(&owner_pool, &t_a, user_a, "alice").await?;
+    setup_tenant_with_user(&owner_pool, &t_a, user_b, "bob").await?;
+    setup_tenant_with_user(&owner_pool, &t_b, Uuid::new_v4(), "charlie").await?;
+
+    let sys_caps = LlmStructuredCaps {
+        structured_mode: StructuredOutputMode::JsonSchema,
+        deterministic_seed: Some(42),
+        is_local_model: true,
+        max_context_tokens: 32_768,
+    };
+    let sys_prov = store
+        .create_llm_provider(
+            &t_a,
+            scoped_provider_input(
+                "shared-qwen",
+                10,
+                None,
+                vec![Purpose::Nl2Sql, Purpose::Chat],
+                sys_caps,
+            ),
+        )
+        .await?;
+    assert_eq!(sys_prov.owner_user_id, None);
+    assert_eq!(
+        sys_prov.structured_caps.structured_mode,
+        StructuredOutputMode::JsonSchema
+    );
+
+    let alice_in = scoped_provider_input(
+        "shared-qwen",
+        200,
+        Some(user_a),
+        vec![Purpose::Nl2Sql],
+        LlmStructuredCaps {
+            structured_mode: StructuredOutputMode::JsonObject,
+            deterministic_seed: Some(7),
+            is_local_model: true,
+            max_context_tokens: 16_384,
+        },
+    );
+    let alice_prov = store.create_llm_provider(&t_a, alice_in.clone()).await?;
+    assert!(matches!(
+        store.create_llm_provider(&t_a, alice_in).await,
+        Err(AppError::Conflict("NAME_TAKEN"))
+    ));
+
+    let bob_prov = store
+        .create_llm_provider(
+            &t_a,
+            scoped_provider_input(
+                "shared-qwen",
+                150,
+                Some(user_b),
+                vec![Purpose::Chat],
+                LlmStructuredCaps::default(),
+            ),
+        )
+        .await?;
+
+    assert_preferences_and_cross_tenant_rls(
+        &store,
+        (&t_a, &t_b),
+        user_a,
+        (sys_prov.id, alice_prov.id, bob_prov.id),
+    )
+    .await?;
 
     cleanup_tenant(&owner_pool, &t_a).await?;
     cleanup_tenant(&owner_pool, &t_b).await?;
