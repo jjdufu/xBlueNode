@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Sparkles } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Sparkles, X } from "lucide-react";
 import { useI18n } from "@/i18n";
 import {
   xblueviewApi,
@@ -7,6 +7,7 @@ import {
   type DashboardTheme,
 } from "@/lib/api/xblueview";
 import {
+  Badge,
   Button,
   Input,
   Modal,
@@ -16,6 +17,8 @@ import {
 
 export interface AiDashboardWizardProps {
   open: boolean;
+  initialSubgraphSlug?: string | null;
+  initialSeedNodeTypes?: string[];
   onClose: () => void;
   onGenerated: (dashboard: DashboardDetail) => void;
 }
@@ -34,6 +37,8 @@ const EXAMPLE_PROMPTS_EN = [
 
 export function AiDashboardWizard({
   open,
+  initialSubgraphSlug = null,
+  initialSeedNodeTypes = [],
   onClose,
   onGenerated,
 }: AiDashboardWizardProps) {
@@ -42,8 +47,42 @@ export function AiDashboardWizard({
   const [title, setTitle] = useState("");
   const [slug, setSlug] = useState("");
   const [theme, setTheme] = useState<DashboardTheme>("light");
+  const [subgraphSlug, setSubgraphSlug] = useState<string>("");
+  const [seedNodeTypes, setSeedNodeTypes] = useState<string[]>([]);
   const [generating, setGenerating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setErrorMsg(null);
+    const nextSubgraph = initialSubgraphSlug?.trim() ?? "";
+    const nextSeeds = (initialSeedNodeTypes ?? [])
+      .map((s) => s.trim())
+      .filter(Boolean);
+    setSubgraphSlug(nextSubgraph);
+    setSeedNodeTypes(nextSeeds);
+
+    if (nextSubgraph || nextSeeds.length > 0) {
+      const targetSubjectZh =
+        nextSeeds.length > 0 ? nextSeeds.join("、") : nextSubgraph;
+      const targetSubjectEn =
+        nextSeeds.length > 0 ? nextSeeds.join(", ") : nextSubgraph;
+      setPrompt((prev) =>
+        prev.trim().length > 0
+          ? prev
+          : isZh
+            ? `围绕 ${targetSubjectZh} 节点核心指标与拓扑生成监控驾驶舱`
+            : `Build a monitoring cockpit around ${targetSubjectEn} metrics and topology`
+      );
+      setTitle((prev) =>
+        prev.trim().length > 0
+          ? prev
+          : isZh
+            ? `${nextSeeds[0] ?? nextSubgraph} 孪生驾驶舱`
+            : `${nextSeeds[0] ?? nextSubgraph} Cockpit`
+      );
+    }
+  }, [open, initialSubgraphSlug, initialSeedNodeTypes, isZh]);
 
   const examplePrompts = isZh ? EXAMPLE_PROMPTS_ZH : EXAMPLE_PROMPTS_EN;
 
@@ -58,12 +97,34 @@ export function AiDashboardWizard({
     setGenerating(true);
     setErrorMsg(null);
     try {
-      const detail = await xblueviewApi.aiGenerateDashboard({
-        prompt: prompt.trim(),
-        title: title.trim() || undefined,
-        slug: slug.trim() || undefined,
-        theme,
-      });
+      const hasStudioContext =
+        subgraphSlug.trim().length > 0 || seedNodeTypes.length > 0;
+      const detail = hasStudioContext
+        ? await xblueviewApi.aiDraftDashboard({
+            name:
+              title.trim() ||
+              (seedNodeTypes.length > 0
+                ? tx(
+                    `${seedNodeTypes[0]} 孪生驾驶舱`,
+                    `${seedNodeTypes[0]} Cockpit`
+                  )
+                : tx(
+                    `${subgraphSlug.trim()} 孪生驾驶舱`,
+                    `${subgraphSlug.trim()} Cockpit`
+                  )),
+            slug: slug.trim() || undefined,
+            prompt: prompt.trim(),
+            subgraph_slug: subgraphSlug.trim() || undefined,
+            seed_node_types:
+              seedNodeTypes.length > 0 ? seedNodeTypes : undefined,
+            theme,
+          })
+        : await xblueviewApi.aiGenerateDashboard({
+            prompt: prompt.trim(),
+            title: title.trim() || undefined,
+            slug: slug.trim() || undefined,
+            theme,
+          });
       onGenerated(detail);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -113,6 +174,41 @@ export function AiDashboardWizard({
         onSubmit={(e) => void handleSubmit(e)}
         className="space-y-3 text-xs"
       >
+        {(subgraphSlug || seedNodeTypes.length > 0) && (
+          <div
+            data-testid="ai-wizard-studio-context"
+            className="flex flex-wrap items-center gap-1.5 rounded-md border border-xblue/35 bg-xblue-soft/35 px-2.5 py-2"
+          >
+            {subgraphSlug && (
+              <Badge variant="xblue" data-testid="ai-wizard-subgraph-badge">
+                {tx("子图", "Subgraph")}: {subgraphSlug}
+              </Badge>
+            )}
+            {seedNodeTypes.map((nt) => (
+              <Badge
+                key={nt}
+                variant="outline"
+                data-testid={`ai-wizard-seed-node-${nt}`}
+                className="gap-1 bg-background"
+              >
+                <span>{nt}</span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSeedNodeTypes((prev) =>
+                      prev.filter((item) => item !== nt)
+                    )
+                  }
+                  aria-label={tx(`移除 ${nt}`, `Remove ${nt}`)}
+                  className="text-muted-foreground hover:text-foreground cursor-pointer"
+                >
+                  <X className="h-2.5 w-2.5" />
+                </button>
+              </Badge>
+            ))}
+          </div>
+        )}
+
         <div className="space-y-1">
           <label className="text-muted-foreground block">
             {tx("业务需求", "Prompt")}

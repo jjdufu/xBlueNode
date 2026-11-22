@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type {
   DeepHealthReport,
+  OnboardingStatusResponse,
   TemplateInstallPlan,
   WorkItem,
 } from "../../lib/api/axops.ts";
@@ -12,14 +13,19 @@ import {
 import {
   canAccessAxOpsTab,
   evaluateOverallDeepHealth,
+  findFirstIncompleteStepKey,
   formatByteSize,
   formatDurationSeconds,
+  formatOnboardingStepMetric,
   formatWorkItemCode,
   getAllowedWorkItemTransitions,
   groupWorkItemsByStatus,
   hasOpsAdminAccess,
+  isOnboardingComplete,
   mergeRetentionPoliciesWithDefaults,
+  resolveAxOpsInitialTab,
   resolveDefaultAxOpsTab,
+  resolveOnboardingNextTarget,
   summarizeTemplatePlanConflicts,
 } from "./logic.ts";
 
@@ -213,5 +219,119 @@ describe("AxOps operations, templates & work-item logic", () => {
     writeLoggedOutFlag(true);
     assert.equal(typeof readLoggedOutFlag(), "boolean");
     writeLoggedOutFlag(false);
+  });
+
+  it("resolveAxOpsInitialTab honors ?tab=templates for DATA_READ analysts while guarding admin tabs", () => {
+    assert.equal(
+      resolveAxOpsInitialTab("templates", ["DATA_READ"], ["ANALYST"]),
+      "templates"
+    );
+    assert.equal(
+      resolveAxOpsInitialTab("backups", ["DATA_READ"], ["ANALYST"]),
+      "work_items"
+    );
+    assert.equal(
+      resolveAxOpsInitialTab("backups", ["OPS_ADMIN"], ["OPERATOR"]),
+      "backups"
+    );
+    assert.equal(
+      resolveAxOpsInitialTab(null, ["DATA_READ"], ["ANALYST"]),
+      "work_items"
+    );
+  });
+
+  it("onboarding progress & next-step helpers resolve recommended route, first incomplete step, and 5/5 ready state", () => {
+    const partialStatus: OnboardingStatusResponse = {
+      completed_steps: 2,
+      total_steps: 5,
+      progress_pct: 40,
+      recommended_next_step: "MAPPING_AND_FLOW",
+      has_trial_subgraph: true,
+      steps: [
+        {
+          step_no: 1,
+          step_key: "DATA_INGEST",
+          label_zh: "1. 数据接入",
+          label_en: "1. Data Ingest",
+          completed: true,
+          count_primary: 3,
+          count_secondary: 2,
+          metric_label: "3 数据集 · 2 文档",
+          target_path: "/hub",
+        },
+        {
+          step_no: 2,
+          step_key: "NODE_MODELING",
+          label_zh: "2. 节点建模",
+          label_en: "2. Node Modeling",
+          completed: true,
+          count_primary: 4,
+          count_secondary: 3,
+          metric_label: "",
+          target_path: "/studio",
+        },
+        {
+          step_no: 3,
+          step_key: "MAPPING_AND_FLOW",
+          label_zh: "3. 映射与编排",
+          label_en: "3. Mapping & Flow",
+          completed: false,
+          count_primary: 0,
+          count_secondary: 0,
+          metric_label: "0 业务节点 · 0 流程",
+          target_path: "/flow",
+        },
+        {
+          step_no: 4,
+          step_key: "SIM_VERIFICATION",
+          label_zh: "4. 推演验证",
+          label_en: "4. Simulation",
+          completed: false,
+          count_primary: 0,
+          count_secondary: 0,
+          metric_label: "0 推演方案",
+          target_path: "/sim",
+        },
+        {
+          step_no: 5,
+          step_key: "COCKPIT_AND_AGENT",
+          label_zh: "5. 驾驶舱与智能体",
+          label_en: "5. Apps & Agents",
+          completed: false,
+          count_primary: 0,
+          count_secondary: 0,
+          metric_label: "0 驾驶舱 · 0 智能体",
+          target_path: "/view",
+        },
+      ],
+    };
+
+    assert.equal(isOnboardingComplete(partialStatus), false);
+    assert.equal(findFirstIncompleteStepKey(partialStatus), "MAPPING_AND_FLOW");
+    assert.equal(resolveOnboardingNextTarget(partialStatus), "/flow");
+    assert.equal(
+      formatOnboardingStepMetric(partialStatus.steps[0]!, true),
+      "3 数据集 · 2 文档"
+    );
+    assert.equal(
+      formatOnboardingStepMetric(partialStatus.steps[0]!, false),
+      "3 Datasets · 2 Docs"
+    );
+    assert.equal(
+      formatOnboardingStepMetric(partialStatus.steps[1]!, true),
+      "4 节点类型 · 3 关系"
+    );
+
+    const completeStatus: OnboardingStatusResponse = {
+      ...partialStatus,
+      completed_steps: 5,
+      progress_pct: 100,
+      recommended_next_step: null,
+      steps: partialStatus.steps.map((s) => ({ ...s, completed: true })),
+    };
+    assert.equal(isOnboardingComplete(completeStatus), true);
+    assert.equal(findFirstIncompleteStepKey(completeStatus), null);
+    assert.equal(resolveOnboardingNextTarget(completeStatus), "/view");
+    assert.equal(resolveOnboardingNextTarget(null), "/hub");
   });
 });

@@ -1,5 +1,8 @@
 import type {
   DeepHealthReport,
+  OnboardingStatusResponse,
+  OnboardingStepItem,
+  OnboardingStepKey,
   RetentionPolicyRecord,
   TemplateInstallPlan,
   WorkItem,
@@ -68,6 +71,110 @@ export function resolveDefaultAxOpsTab(
     return "work_items";
   }
   return "work_items";
+}
+
+const VALID_AXOPS_TABS: readonly AxOpsTabKey[] = [
+  "health",
+  "jobs",
+  "retention",
+  "backups",
+  "templates",
+  "work_items",
+];
+
+/**
+ * Resolves the active `AxOps` tab from an optional `?tab=` URL query parameter,
+ * falling back to `resolveDefaultAxOpsTab` when missing, unknown, or unauthorized.
+ */
+export function resolveAxOpsInitialTab(
+  requestedTab: string | null | undefined,
+  permissions: readonly string[],
+  roles: readonly string[]
+): AxOpsTabKey {
+  const normalized = requestedTab?.trim() ?? "";
+  if (
+    (VALID_AXOPS_TABS as readonly string[]).includes(normalized) &&
+    canAccessAxOpsTab(normalized as AxOpsTabKey, permissions, roles)
+  ) {
+    return normalized as AxOpsTabKey;
+  }
+  return resolveDefaultAxOpsTab(permissions, roles);
+}
+
+/**
+ * Returns `true` when all 5 onboarding stages have been completed (`5 / 5`).
+ */
+export function isOnboardingComplete(
+  status: OnboardingStatusResponse | null | undefined
+): boolean {
+  if (!status || typeof status.total_steps !== "number" || status.total_steps <= 0) {
+    return false;
+  }
+  return (status.completed_steps ?? 0) >= status.total_steps;
+}
+
+/**
+ * Returns the `step_key` of the first incomplete onboarding step, or `null` if all complete.
+ */
+export function findFirstIncompleteStepKey(
+  status: OnboardingStatusResponse | null | undefined
+): OnboardingStepKey | null {
+  if (!status || !Array.isArray(status.steps)) {
+    return null;
+  }
+  const found = status.steps.find((step) => !step.completed);
+  return found ? found.step_key : null;
+}
+
+/**
+ * Resolves the target navigation path for the primary `Continue` action in `OnboardingStrip`.
+ */
+export function resolveOnboardingNextTarget(
+  status: OnboardingStatusResponse | null | undefined
+): string {
+  if (!status || !Array.isArray(status.steps) || status.steps.length === 0) {
+    return "/hub";
+  }
+  if (status.recommended_next_step) {
+    const rec = status.steps.find(
+      (s) => s.step_key === status.recommended_next_step
+    );
+    if (rec?.target_path) {
+      return rec.target_path;
+    }
+  }
+  const firstIncomplete = status.steps.find((s) => !s.completed);
+  if (firstIncomplete?.target_path) {
+    return firstIncomplete.target_path;
+  }
+  const lastStep = status.steps[status.steps.length - 1];
+  return lastStep?.target_path || "/view";
+}
+
+/**
+ * Formats the live metric label on an onboarding step pill (`05-STEP19` §19.1.1).
+ */
+export function formatOnboardingStepMetric(
+  step: OnboardingStepItem,
+  isZh: boolean
+): string {
+  const p = Number.isFinite(step.count_primary) ? step.count_primary : 0;
+  const s = Number.isFinite(step.count_secondary) ? step.count_secondary : 0;
+  if (isZh && typeof step.metric_label === "string" && step.metric_label.trim().length > 0) {
+    return step.metric_label.trim();
+  }
+  switch (step.step_key) {
+    case "DATA_INGEST":
+      return isZh ? `${p} 数据集 · ${s} 文档` : `${p} Datasets · ${s} Docs`;
+    case "NODE_MODELING":
+      return isZh ? `${p} 节点类型 · ${s} 关系` : `${p} Types · ${s} Relations`;
+    case "MAPPING_AND_FLOW":
+      return isZh ? `${p} 业务节点 · ${s} 流程` : `${p} Nodes · ${s} Flows`;
+    case "SIM_VERIFICATION":
+      return isZh ? `${p} 推演方案` : `${p} Scenarios`;
+    case "COCKPIT_AND_AGENT":
+      return isZh ? `${p} 驾驶舱 · ${s} 智能体` : `${p} Views · ${s} Agents`;
+  }
 }
 
 /**

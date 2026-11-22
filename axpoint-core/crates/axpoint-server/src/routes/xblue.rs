@@ -5,16 +5,24 @@
 pub(crate) mod xblue_graphql;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Write as _;
 use std::str::FromStr;
 
+use axpoint_agent::publish::{build_metric_schema, build_object_type_schema};
 use axpoint_db::studio_repo::NeighborBatchKey;
 use axpoint_domain::AppError;
+use axpoint_domain::agent::{
+    AgentSpec, CreateAgentRequest, EndpointSpec, KnowledgeScope, SaveEndpointInput, ToolRef,
+    UpdateAgentRequest,
+};
+use axpoint_domain::analytics::MetricDef;
 use axpoint_domain::axhub::{Dataset, PaginatedList};
 use axpoint_domain::builder::{
     DevSubgraphResetResponse, DevSubgraphRunRequest, DevSubgraphRunResponse,
 };
 use axpoint_domain::enums::{
-    AuditAction, CopilotActionMode, DataType, GraphAlgo, JobKind, Permission,
+    AuditAction, CopilotActionMode, DataType, EndpointKind, Environment, GraphAlgo, JobKind,
+    OutputShape, Permission,
 };
 use axpoint_domain::expr::{
     EvalEnv, EvaluateExprRequest, EvaluateExprResponse, ValidateExprRequest, ValidateExprResponse,
@@ -31,8 +39,9 @@ use axpoint_domain::graph::{
 };
 use axpoint_domain::platform::{AuditRecord, NewJob};
 use axpoint_domain::ports::{
-    DatasetRepository as _, GraphQueryPort as _, GraphStorePort as _, JobQueuePort as _,
-    MetricStorePort as _, StudioExecutionPort as _, StudioRepository as _,
+    AgentRepository as _, AnalyticsRepository as _, DatasetRepository as _, GraphQueryPort as _,
+    GraphStorePort as _, JobQueuePort as _, MetricStorePort as _, OnboardingAndPackagingPort as _,
+    StudioExecutionPort as _, StudioRepository as _,
 };
 use axpoint_domain::rollup::{
     AcceptNodeCandidateRequest, AcceptNodeCandidateResponse, GraphAggregateJobPayload,
@@ -45,13 +54,15 @@ use axpoint_domain::studio::{
     DomainObjectListResponse, DomainObjectRecord, DraftSnapshotListResponse, DraftSource,
     DraftStatus, IssueSeverity, MappingPreviewResponse, MappingRecord, MappingRunsResponse,
     MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeLineageGraph, NodeTypeSpec,
-    ObjectCatalogResponse, ObjectFieldSig, ObjectTypeCatalogItem, ProfilingBundle,
+    ObjectCatalogResponse, ObjectFieldSig, ObjectTypeCatalogItem, PackageSubgraphAgentRequest,
+    PackageSubgraphAgentResponse, PackagedEndpointItem, ProfilingBundle, PropertyKind,
     PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest,
     SchemaDiff, SchemaDoc, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary,
     SpecDocCompileInput, SpecMappingSyncMeta, StudioCopilotRequest, StudioCopilotResponse,
-    SubgraphInfo, SubgraphQueryParam, TriggerMappingRunRequest, TriggerMappingRunResponse,
+    SubgraphConsumptionResponse, SubgraphInfo, SubgraphQueryParam, TrialCloneTemplateRequest,
+    TrialCloneTemplateResponse, TriggerMappingRunRequest, TriggerMappingRunResponse,
     UpdateDraftRequest, UpdateSubgraphRequest, ValidateSchemaResponse, build_node_lineage,
-    compile_subgraph_spec_doc, validate_with_metrics,
+    build_packaged_endpoint_slug, compile_subgraph_spec_doc, validate_with_metrics,
 };
 use axpoint_domain::topology::{BlueNode, UpsertBlueNodeRequest};
 use axpoint_llm::{
@@ -81,8 +92,20 @@ pub(crate) fn router() -> Router<AppState> {
             get(list_subgraphs_handler).post(create_subgraph_handler),
         )
         .route(
+            "/xblue/subgraphs/from-template",
+            post(clone_subgraph_from_template_handler),
+        )
+        .route(
             "/xblue/subgraphs/{slug}",
             patch(update_subgraph_handler).delete(delete_subgraph_handler),
+        )
+        .route(
+            "/xblue/subgraphs/{slug}/package-agent",
+            post(package_subgraph_agent_handler),
+        )
+        .route(
+            "/xblue/subgraphs/{slug}/consumption",
+            get(get_subgraph_consumption_handler),
         )
         .route(
             "/xblue/subgraphs/{slug}/merge-preview",
@@ -510,6 +533,479 @@ async fn reset_dev_subgraph_nodes_handler(
     )
     .await;
     Ok(Json(resp))
+}
+
+async fn clone_subgraph_from_template_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<TrialCloneTemplateRequest>,
+) -> Result<(StatusCode, Json<TrialCloneTemplateResponse>), HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let res = state
+        .ops
+        .clone_trial_subgraph(
+            &principal.tenant_id,
+            &principal.dept_id,
+            actor_uuid(&principal),
+            &req,
+        )
+        .await?;
+
+    state.audit.record(AuditRecord {
+        tenant_id: principal.tenant_id.clone(),
+        user_id: actor_uuid(&principal),
+        username: principal.username.clone(),
+        action: AuditAction::TrialTemplateClone,
+        resource_ref: res.subgraph_slug.clone(),
+        status_code: 201,
+        client_ip,
+        trace_id: current_trace_id(),
+        detail_json: serde_json::json!({
+            "pack_id": res.source_template_id,
+            "nodes_materialized": res.nodes_materialized,
+            "links_materialized": res.links_materialized,
+        }),
+        created_at: Utc::now(),
+    });
+    if let Err(err) = state.audit.flush().await {
+        tracing::warn!(error = %err, "xblue trial template clone audit flush failed");
+    }
+
+    Ok((StatusCode::CREATED, Json(res)))
+}
+
+async fn get_subgraph_consumption_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath(slug): ApiPath<String>,
+) -> Result<Json<SubgraphConsumptionResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let clean_slug = slug.trim();
+    authorize_subgraph_read(&state, &headers, &principal, clean_slug).await?;
+    let resp = state
+        .store
+        .get_subgraph_consumption(&principal.tenant_id, clean_slug)
+        .await?;
+    Ok(Json(resp))
+}
+
+async fn package_subgraph_agent_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(slug): ApiPath<String>,
+    ApiJson(req): ApiJson<PackageSubgraphAgentRequest>,
+) -> Result<Json<PackageSubgraphAgentResponse>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    principal.require(Permission::AgentEdit)?;
+    if req.environment == Environment::Prod {
+        principal.enforce_no_prod_mutation()?;
+    }
+
+    let agent_name = req.agent_name.trim();
+    if agent_name.is_empty() {
+        return Err(AppError::bad("INVALID_ARGUMENT", "agent_name cannot be empty").into());
+    }
+
+    let clean_slug = slug.trim();
+    let sg_info =
+        load_packaging_subgraph_info(&state, &principal.tenant_id, clean_slug, req.environment)
+            .await?;
+    let published = state
+        .store
+        .get_published_schema(&principal.tenant_id, clean_slug)
+        .await?;
+    if published.version < 1 {
+        return Err(AppError::bad(
+            "SUBGRAPH_NOT_PUBLISHED",
+            "subgraph has no published schema version",
+        )
+        .into());
+    }
+
+    let selected_nodes = select_packaged_node_types(clean_slug, &published.doc, &req.node_types)?;
+    let actor = actor_uuid(&principal);
+    let (upserted_eps, packaged_metrics) = upsert_packaged_endpoints(
+        &state,
+        &principal.tenant_id,
+        &sg_info,
+        &published,
+        &selected_nodes,
+        &req,
+        actor,
+    )
+    .await?;
+
+    let spec = build_packaged_agent_spec(
+        clean_slug,
+        &sg_info.display_name,
+        &selected_nodes,
+        &published.doc,
+        &packaged_metrics,
+        &upserted_eps,
+    );
+    let resp = upsert_and_publish_packaged_agent(
+        &state,
+        &principal.tenant_id,
+        &req,
+        spec,
+        actor,
+        &upserted_eps,
+    )
+    .await?;
+    Ok(Json(resp))
+}
+
+async fn load_packaging_subgraph_info(
+    state: &AppState,
+    tenant_id: &str,
+    slug: &str,
+    env: Environment,
+) -> Result<SubgraphInfo, AppError> {
+    let subgraphs = state.store.list_subgraphs(tenant_id).await?;
+    let sg_info = subgraphs
+        .into_iter()
+        .find(|s| s.slug == slug)
+        .ok_or(AppError::NotFound("SUBGRAPH_NOT_FOUND"))?;
+    if env == Environment::Prod && sg_info.is_dev_sandbox {
+        return Err(AppError::bad(
+            "SANDBOX_PROD_PACK_FORBIDDEN",
+            "dev sandbox subgraphs can only package TEST endpoints; merge into main before PROD packaging",
+        ));
+    }
+    Ok(sg_info)
+}
+
+fn select_packaged_node_types<'a>(
+    subgraph_slug: &str,
+    doc: &'a SchemaDoc,
+    requested: &[String],
+) -> Result<Vec<&'a NodeTypeSpec>, AppError> {
+    if requested.is_empty() {
+        return Ok(doc.node_types.iter().collect());
+    }
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::with_capacity(requested.len());
+    for raw_name in requested {
+        let trimmed = raw_name.trim();
+        if trimmed.is_empty() || !seen.insert(String::from(trimmed)) {
+            continue;
+        }
+        let found = doc
+            .node_types
+            .iter()
+            .find(|nt| nt.name == trimmed)
+            .ok_or_else(|| {
+                AppError::bad(
+                    "TYPE_NOT_FOUND",
+                    format!("node type '{trimmed}' is not published in subgraph '{subgraph_slug}'"),
+                )
+            })?;
+        out.push(found);
+    }
+    Ok(out)
+}
+
+async fn upsert_packaged_endpoints(
+    state: &AppState,
+    tenant_id: &str,
+    sg_info: &SubgraphInfo,
+    published: &PublishedSchemaResponse,
+    selected_nodes: &[&NodeTypeSpec],
+    req: &PackageSubgraphAgentRequest,
+    published_by: Option<Uuid>,
+) -> Result<(Vec<EndpointSpec>, Vec<MetricDef>), AppError> {
+    let is_prod = req.environment == Environment::Prod;
+    let mut upserted = Vec::new();
+
+    for &nt in selected_nodes {
+        let ep_slug =
+            build_packaged_endpoint_slug(&sg_info.slug, sg_info.is_main, &nt.name, "objects");
+        let snap = if is_prod {
+            Some(
+                serde_json::to_value(nt)
+                    .map_err(|err| AppError::Config(format!("serialize NodeTypeSpec: {err}")))?,
+            )
+        } else {
+            None
+        };
+        let label = if nt.display_name.trim().is_empty() {
+            nt.name.as_str()
+        } else {
+            nt.display_name.trim()
+        };
+        let desc = if nt.description.trim().is_empty() {
+            format!("查询子图 {} 的 {} 领域对象", sg_info.slug, nt.name)
+        } else {
+            nt.description.clone()
+        };
+        let ep = state
+            .store
+            .upsert_endpoint_by_slug(
+                tenant_id,
+                SaveEndpointInput {
+                    slug: ep_slug,
+                    environment: req.environment,
+                    kind: EndpointKind::ObjectType,
+                    target_id: nt.name.clone(),
+                    target_version: is_prod.then_some(published.version),
+                    target_snapshot: snap,
+                    title: format!("{label} 领域对象查询"),
+                    description: desc,
+                    input_schema: build_object_type_schema(nt, &published.doc),
+                    output_shape: OutputShape::Object,
+                    required_scope: Permission::DataRead,
+                    rate_limit_rpm: 120,
+                    cache_ttl_s: 0,
+                    expose_mcp: req.expose_mcp,
+                    show_as_app: true,
+                    enabled: true,
+                    published_by,
+                },
+            )
+            .await?;
+        upserted.push(ep);
+    }
+
+    let metrics = upsert_packaged_metric_endpoints(
+        state,
+        tenant_id,
+        sg_info,
+        req,
+        published_by,
+        &mut upserted,
+    )
+    .await?;
+    Ok((upserted, metrics))
+}
+
+async fn upsert_packaged_metric_endpoints(
+    state: &AppState,
+    tenant_id: &str,
+    sg_info: &SubgraphInfo,
+    req: &PackageSubgraphAgentRequest,
+    published_by: Option<Uuid>,
+    upserted: &mut Vec<EndpointSpec>,
+) -> Result<Vec<MetricDef>, AppError> {
+    let is_prod = req.environment == Environment::Prod;
+    let mut seen = BTreeSet::new();
+    let mut packaged_metrics = Vec::new();
+
+    for raw_metric in &req.metric_names {
+        let name = raw_metric.trim();
+        if name.is_empty() || !seen.insert(String::from(name)) {
+            continue;
+        }
+        let Some(metric) = state.store.get_metric_by_name(tenant_id, name).await? else {
+            continue;
+        };
+        let ep_slug =
+            build_packaged_endpoint_slug(&sg_info.slug, sg_info.is_main, &metric.name, "metric");
+        let snap = if is_prod {
+            Some(
+                serde_json::to_value(&metric)
+                    .map_err(|err| AppError::Config(format!("serialize MetricDef: {err}")))?,
+            )
+        } else {
+            None
+        };
+        let title = if metric.display_name.trim().is_empty() {
+            metric.name.clone()
+        } else {
+            metric.display_name.clone()
+        };
+        let ep = state
+            .store
+            .upsert_endpoint_by_slug(
+                tenant_id,
+                SaveEndpointInput {
+                    slug: ep_slug,
+                    environment: req.environment,
+                    kind: EndpointKind::Metric,
+                    target_id: metric.name.clone(),
+                    target_version: is_prod.then_some(metric.version),
+                    target_snapshot: snap,
+                    title,
+                    description: metric.description.clone(),
+                    input_schema: build_metric_schema(&metric),
+                    output_shape: OutputShape::Rows,
+                    required_scope: Permission::DataRead,
+                    rate_limit_rpm: 120,
+                    cache_ttl_s: 0,
+                    expose_mcp: req.expose_mcp,
+                    show_as_app: true,
+                    enabled: true,
+                    published_by,
+                },
+            )
+            .await?;
+        upserted.push(ep);
+        packaged_metrics.push(metric);
+    }
+    Ok(packaged_metrics)
+}
+
+fn build_packaged_agent_spec(
+    subgraph_slug: &str,
+    subgraph_display_name: &str,
+    selected_nodes: &[&NodeTypeSpec],
+    doc: &SchemaDoc,
+    metrics: &[MetricDef],
+    endpoints: &[EndpointSpec],
+) -> AgentSpec {
+    let mut prompt = String::new();
+    let _w = writeln!(
+        prompt,
+        "你是围绕业务子图「{subgraph_display_name}」（slug: {subgraph_slug}）构建的受控领域智能体。"
+    );
+    let _w = writeln!(
+        prompt,
+        "核心铁律：严禁心算任何业务数值（求和、均值、占比、同环比、排名或因果推演）；一切对象、关系与指标查询必须调用已绑定的发布端点工具或 graph_neighbors 工具获取确定性结果，严禁编造未在工具返回中出现的数字或节点标识。"
+    );
+    let _w = writeln!(prompt, "\n已绑定业务节点类型：");
+    let node_name_set: BTreeSet<&str> = selected_nodes.iter().map(|n| n.name.as_str()).collect();
+    for &nt in selected_nodes {
+        let attrs: Vec<&str> = nt
+            .properties
+            .iter()
+            .filter(|p| p.kind == PropertyKind::Attribute)
+            .map(|p| p.name.as_str())
+            .collect();
+        let node_metrics: Vec<&str> = nt
+            .properties
+            .iter()
+            .filter(|p| p.kind == PropertyKind::Metric)
+            .map(|p| p.name.as_str())
+            .collect();
+        let _w = writeln!(
+            prompt,
+            "- {}（{}，title_template={}）：属性=[{}] 指标=[{}]",
+            nt.name,
+            nt.display_name,
+            nt.title_template,
+            attrs.join(", "),
+            node_metrics.join(", ")
+        );
+    }
+
+    let rel_edges: Vec<_> = doc
+        .edge_types
+        .iter()
+        .filter(|e| {
+            node_name_set.contains(e.src_type_name.as_str())
+                || node_name_set.contains(e.dst_type_name.as_str())
+        })
+        .collect();
+    if !rel_edges.is_empty() {
+        let _w = writeln!(prompt, "\n关联拓扑关系：");
+        for et in rel_edges {
+            let _w = writeln!(
+                prompt,
+                "- {} ({} -> {})",
+                et.name, et.src_type_name, et.dst_type_name
+            );
+        }
+    }
+
+    if !metrics.is_empty() {
+        let _w = writeln!(prompt, "\n认证语义指标：");
+        for m in metrics {
+            let _w = writeln!(prompt, "- {}（{}）", m.name, m.display_name);
+        }
+    }
+
+    let mut tools: Vec<ToolRef> = endpoints
+        .iter()
+        .map(|ep| ToolRef::Endpoint { endpoint_id: ep.id })
+        .collect();
+    tools.push(ToolRef::Builtin {
+        name: String::from("graph_neighbors"),
+    });
+
+    AgentSpec {
+        system_prompt: prompt,
+        tools,
+        knowledge_scope: KnowledgeScope::default(),
+        ..AgentSpec::default()
+    }
+}
+
+async fn upsert_and_publish_packaged_agent(
+    state: &AppState,
+    tenant_id: &str,
+    req: &PackageSubgraphAgentRequest,
+    spec: AgentSpec,
+    actor: Option<Uuid>,
+    upserted_eps: &[EndpointSpec],
+) -> Result<PackageSubgraphAgentResponse, AppError> {
+    let agent_name = req.agent_name.trim();
+    let description = req.description.trim();
+    let saved = if let Some(existing) = state.store.get_agent_by_name(tenant_id, agent_name).await?
+    {
+        state
+            .store
+            .update_agent(
+                tenant_id,
+                existing.id,
+                UpdateAgentRequest {
+                    name: Some(String::from(agent_name)),
+                    description: Some(String::from(description)),
+                    spec,
+                },
+            )
+            .await?
+            .ok_or(AppError::NotFound("NOT_FOUND"))?
+    } else {
+        state
+            .store
+            .create_agent(
+                tenant_id,
+                actor,
+                CreateAgentRequest {
+                    name: String::from(agent_name),
+                    description: String::from(description),
+                    spec,
+                },
+            )
+            .await?
+    };
+
+    let agent_version = if req.publish_agent {
+        state
+            .store
+            .publish_agent_version(tenant_id, saved.id, actor)
+            .await?
+            .version
+    } else {
+        saved.version
+    };
+
+    let mut endpoints_upserted = Vec::with_capacity(upserted_eps.len());
+    let mut mcp_tool_names = Vec::new();
+    for ep in upserted_eps {
+        if ep.expose_mcp {
+            mcp_tool_names.push(ep.slug.replace('-', "_"));
+        }
+        endpoints_upserted.push(PackagedEndpointItem {
+            id: ep.id,
+            slug: ep.slug.clone(),
+            kind: ep.kind,
+            expose_mcp: ep.expose_mcp,
+        });
+    }
+    let mcp_exposed_count = mcp_tool_names.len();
+
+    Ok(PackageSubgraphAgentResponse {
+        agent_id: saved.id,
+        agent_name: saved.name,
+        agent_version,
+        endpoints_upserted,
+        mcp_exposed_count,
+        mcp_tool_names,
+        workbench_url: format!("/agents?tab=workbench&agent={}", saved.id),
+    })
 }
 
 // ============================================================================
@@ -2584,4 +3080,68 @@ async fn accept_knowledge_node_candidate_handler(
     }
 
     Ok(Json(resp))
+}
+
+#[cfg(test)]
+mod tests {
+    use axpoint_domain::studio::EdgeTypeSpec;
+
+    use super::*;
+
+    #[test]
+    fn packaged_agent_spec_binds_endpoints_and_graph_neighbors_tool() {
+        let _router = router();
+        let wh = NodeTypeSpec {
+            name: String::from("Warehouse"),
+            display_name: String::from("仓库"),
+            ..NodeTypeSpec::default()
+        };
+        let doc = SchemaDoc {
+            node_types: vec![wh.clone()],
+            edge_types: vec![EdgeTypeSpec {
+                name: String::from("FULFILLS"),
+                src_type_name: String::from("Warehouse"),
+                dst_type_name: String::from("Order"),
+                ..EdgeTypeSpec::default()
+            }],
+            mappings: Vec::new(),
+        };
+        let ep_id = Uuid::from_u128(0x99);
+        let ep = EndpointSpec {
+            id: ep_id,
+            tenant_id: String::from("default"),
+            slug: String::from("warehouse-objects"),
+            environment: Environment::Prod,
+            kind: EndpointKind::ObjectType,
+            target_id: String::from("Warehouse"),
+            target_version: Some(1),
+            target_snapshot: None,
+            title: String::from("仓库对象"),
+            description: String::new(),
+            input_schema: serde_json::json!({"type": "object"}),
+            output_shape: OutputShape::Object,
+            required_scope: Permission::DataRead,
+            rate_limit_rpm: 120,
+            cache_ttl_s: 0,
+            expose_mcp: true,
+            show_as_app: true,
+            enabled: true,
+            published_by: None,
+            published_at: Utc::now(),
+        };
+        let selected = vec![&wh];
+        let spec = build_packaged_agent_spec("main", "企业主图", &selected, &doc, &[], &[ep]);
+        assert!(spec.system_prompt.contains("严禁心算"));
+        assert!(spec.system_prompt.contains("Warehouse"));
+        assert!(spec.system_prompt.contains("FULFILLS"));
+        assert_eq!(
+            spec.tools,
+            vec![
+                ToolRef::Endpoint { endpoint_id: ep_id },
+                ToolRef::Builtin {
+                    name: String::from("graph_neighbors")
+                }
+            ]
+        );
+    }
 }

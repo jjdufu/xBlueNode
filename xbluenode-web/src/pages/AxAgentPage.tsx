@@ -93,16 +93,47 @@ export function AxAgentPage() {
     return raw.length > 0 ? raw : null;
   }, [searchParams]);
 
+  const tabParam = useMemo(() => {
+    const raw = searchParams.get("tab")?.trim() ?? "";
+    const valid: readonly AxAgentTabKey[] = [
+      "workbench",
+      "agents",
+      "apps",
+      "endpoints",
+      "providers",
+      "mcp",
+      "im",
+    ];
+    return (valid as readonly string[]).includes(raw)
+      ? (raw as AxAgentTabKey)
+      : null;
+  }, [searchParams]);
+
+  const agentParam = useMemo(() => {
+    const raw = searchParams.get("agent")?.trim() ?? "";
+    return raw.length > 0 ? raw : null;
+  }, [searchParams]);
+
   const [activeTab, setActiveTab] = useState<AxAgentTabKey>(() =>
-    imBindParam ? "im" : "workbench"
+    imBindParam ? "im" : (tabParam ?? "workbench")
   );
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(
+    () => agentParam
+  );
 
   useEffect(() => {
     if (imBindParam) {
       setActiveTab("im");
+    } else if (tabParam) {
+      setActiveTab(tabParam);
     }
-  }, [imBindParam]);
+  }, [imBindParam, tabParam]);
+
+  useEffect(() => {
+    if (agentParam) {
+      setSelectedAgentId(agentParam);
+    }
+  }, [agentParam]);
 
   const handleClearBindToken = useCallback(() => {
     setSearchParams(

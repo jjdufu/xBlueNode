@@ -20,9 +20,9 @@ use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::ViewRepository as _;
 use axpoint_domain::rules::SimplePageQuery;
 use axpoint_domain::view::{
-    AiGenerateDashboardRequest, AssetRecord, CreateAssetParams, CreateDashboardRequest,
-    CreateWidgetRecordParams, CreateWidgetRequest, DashboardDetail, DashboardRecord,
-    FloorPlacementRecord, InvokeWidgetActionRequest, InvokeWidgetActionResponse,
+    AiDraftDashboardRequest, AiGenerateDashboardRequest, AssetRecord, CreateAssetParams,
+    CreateDashboardRequest, CreateWidgetRecordParams, CreateWidgetRequest, DashboardDetail,
+    DashboardRecord, FloorPlacementRecord, InvokeWidgetActionRequest, InvokeWidgetActionResponse,
     PutFloorPlacementsRequest, PutScene3dBindingsRequest, Scene3dBindingRecord,
     UpdateDashboardRequest, UpdateLayoutRequest, UpdateWidgetRecordParams, UpdateWidgetRequest,
     ViewEvent, WidgetDataRequest, WidgetDataResponse, WidgetPreviewRequest, WidgetRecord,
@@ -30,7 +30,8 @@ use axpoint_domain::view::{
 use axpoint_security::AuthPrincipal;
 use axpoint_server::view::action::invoke_widget_action;
 use axpoint_server::view::ai_gen::{
-    generate_ai_dashboard, validate_dashboard_slug, validate_widget_position,
+    generate_ai_dashboard, generate_studio_ai_dashboard_draft, validate_dashboard_slug,
+    validate_widget_position,
 };
 use axpoint_server::view::data::{WidgetExecEnv, execute_widget_data, execute_widget_preview};
 use axpoint_server::view::deps::compute_widget_deps;
@@ -84,6 +85,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/xblueview/dashboards/ai-generate",
             post(ai_generate_dashboard_handler),
+        )
+        .route(
+            "/xblueview/dashboards/ai-draft",
+            post(ai_draft_dashboard_handler),
         )
         .route(
             "/xblueview/dashboards/by-slug/{slug}",
@@ -263,6 +268,24 @@ async fn ai_generate_dashboard_handler(
 ) -> Result<(StatusCode, Json<DashboardDetail>), HttpError> {
     principal.require(Permission::ViewEdit)?;
     let detail = generate_ai_dashboard(
+        &state.store,
+        &state.view.llm_router,
+        &principal.tenant_id,
+        Some(principal.user_id),
+        actor_uuid(&principal),
+        req,
+    )
+    .await?;
+    Ok((StatusCode::CREATED, Json(detail)))
+}
+
+async fn ai_draft_dashboard_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<AiDraftDashboardRequest>,
+) -> Result<(StatusCode, Json<DashboardDetail>), HttpError> {
+    principal.require(Permission::ViewEdit)?;
+    let detail = generate_studio_ai_dashboard_draft(
         &state.store,
         &state.view.llm_router,
         &principal.tenant_id,
@@ -3006,5 +3029,10 @@ mod tests {
             res,
             Err(AppError::PayloadTooLarge("UPLOAD_TOO_LARGE"))
         ));
+    }
+
+    #[test]
+    fn xblueview_router_builds_without_param_conflict() {
+        let _router = router();
     }
 }

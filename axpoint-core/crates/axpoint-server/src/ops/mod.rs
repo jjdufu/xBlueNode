@@ -5,6 +5,7 @@ pub mod backup;
 pub mod demo;
 pub mod health;
 pub mod templates;
+pub mod trial;
 pub mod work_items;
 
 use std::path::PathBuf;

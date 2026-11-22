@@ -11,6 +11,12 @@ import { useI18n } from "@/i18n";
 import { MODULE_META } from "@/modules/meta";
 import { api, type HealthInfo, type SystemStats } from "@/lib/api";
 import {
+  axopsApi,
+  type OnboardingStatusResponse,
+} from "@/lib/api/axops";
+import { OnboardingStrip } from "@/components/dashboard/OnboardingStrip";
+import { TemplateHubModal } from "@/components/dashboard/TemplateHubModal";
+import {
   Badge,
   Button,
   Card,
@@ -23,6 +29,9 @@ export function DashboardPage() {
   const { tx, fmtNum, fmtTime } = useI18n();
   const [health, setHealth] = useState<HealthInfo | null>(null);
   const [stats, setStats] = useState<SystemStats | null>(null);
+  const [onboarding, setOnboarding] =
+    useState<OnboardingStatusResponse | null>(null);
+  const [templateHubOpen, setTemplateHubOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -30,9 +39,14 @@ export function DashboardPage() {
     setLoading(true);
     setError(null);
     try {
-      const [h, s] = await Promise.all([api.health(), api.stats()]);
+      const [h, s, ob] = await Promise.all([
+        api.health(),
+        api.stats(),
+        axopsApi.getOnboardingStatus().catch(() => null),
+      ]);
       setHealth(h);
       setStats(s);
+      setOnboarding(ob);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -147,6 +161,16 @@ export function DashboardPage() {
             {tx("刷新", "Refresh")}
           </Button>
         }
+      />
+
+      <OnboardingStrip
+        status={onboarding}
+        onOpenTemplateHub={() => setTemplateHubOpen(true)}
+      />
+
+      <TemplateHubModal
+        open={templateHubOpen}
+        onClose={() => setTemplateHubOpen(false)}
       />
 
       {error && (
