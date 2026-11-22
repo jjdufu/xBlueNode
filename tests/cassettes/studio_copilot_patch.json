@@ -1,0 +1,99 @@
+[
+  {
+    "match_all": ["Warehouse", "safety_stock", "shortage_gap"],
+    "response_schema_name": "axpoint_studio_copilot_patch",
+    "kind": "chat",
+    "response": {
+      "diagnosis": {
+        "summary": "已为 Warehouse 增量生成安全库存指标 safety_stock、缺口指标 shortage_gap 及派生公式提案。",
+        "findings": [
+          {
+            "severity": "INFO",
+            "target_path": "node_types[Warehouse].derived_rules[shortage_gap]",
+            "rationale": "新增派生指标 shortage_gap 计算安全库存与在库量差值上限。",
+            "suggested_fix": "核验公式与单位后确认提案。"
+          }
+        ]
+      },
+      "upsert_node_types": [],
+      "upsert_properties": [
+        {
+          "node_type": "Warehouse",
+          "property": {
+            "name": "safety_stock",
+            "display_name": "安全库存",
+            "description": "区域仓安全库存基准水位",
+            "unit": "件",
+            "data_type": "FLOAT64",
+            "kind": "METRIC",
+            "required": false,
+            "pii_category": "NONE"
+          }
+        },
+        {
+          "node_type": "Warehouse",
+          "property": {
+            "name": "shortage_gap",
+            "display_name": "库存缺口",
+            "description": "安全库存高于当前在库量的缺口数量",
+            "unit": "件",
+            "data_type": "FLOAT64",
+            "kind": "METRIC",
+            "required": false,
+            "pii_category": "NONE"
+          }
+        }
+      ],
+      "upsert_edge_types": [],
+      "upsert_agg_rules": [],
+      "upsert_derived_rules": [
+        {
+          "node_type": "Warehouse",
+          "rule": {
+            "target_metric": "shortage_gap",
+            "expression": "max(0, safety_stock - stock_qty)",
+            "enabled": true
+          }
+        }
+      ]
+    }
+  },
+  {
+    "match_all": ["Warehouse", "safety_stock"],
+    "exclude_any": ["shortage_gap"],
+    "response_schema_name": "axpoint_studio_copilot_patch",
+    "kind": "chat",
+    "response": {
+      "diagnosis": {
+        "summary": "已为 Warehouse 增量生成安全库存指标 safety_stock（单位：件）提案。",
+        "findings": [
+          {
+            "severity": "INFO",
+            "target_path": "node_types[Warehouse].properties[safety_stock]",
+            "rationale": "新增安全库存度量字段并标记为待确认提案。",
+            "suggested_fix": "审阅指标定义后执行提案确认。"
+          }
+        ]
+      },
+      "upsert_node_types": [],
+      "upsert_properties": [
+        {
+          "node_type": "Warehouse",
+          "property": {
+            "name": "safety_stock",
+            "display_name": "安全库存",
+            "description": "区域仓安全库存基准水位",
+            "unit": "件",
+            "data_type": "FLOAT64",
+            "kind": "METRIC",
+            "required": false,
+            "pii_category": "NONE"
+          }
+        }
+      ],
+      "upsert_edge_types": [],
+      "upsert_agg_rules": [],
+      "upsert_derived_rules": []
+    }
+  }
+]

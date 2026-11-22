@@ -1,0 +1,40 @@
+[
+  {
+    "match_all": ["Warehouse"],
+    "response_schema_name": "axpoint_studio_copilot_diagnosis",
+    "kind": "chat",
+    "response": {
+      "summary": "Warehouse 当前已定义在库量与上游平均交期指标，但尚未绑定源数据集映射且缺少安全库存基准指标。",
+      "findings": [
+        {
+          "severity": "WARN",
+          "target_path": "node_types[Warehouse].properties",
+          "rationale": "缺少安全库存基准指标 safety_stock，无法直接评估在库量缺口风险。",
+          "suggested_fix": "新增 safety_stock（单位：件）指标与缺口派生公式 shortage_gap = max(0, safety_stock - stock_qty)。"
+        },
+        {
+          "severity": "INFO",
+          "target_path": "node_types[Warehouse].mappings",
+          "rationale": "Warehouse 为 CUBE_ROLLUP 汇总节点，基础库存字段仍可关联仓库台账入图映射。",
+          "suggested_fix": "为仓库基础台账数据集补充 MappingSpec 映射规则。"
+        }
+      ]
+    }
+  },
+  {
+    "match_all": ["xBlueStudio"],
+    "response_schema_name": "axpoint_studio_copilot_diagnosis",
+    "kind": "chat",
+    "response": {
+      "summary": "当前子图结构整体通过完备性检查，可进一步补充度量单位与数据集入图映射。",
+      "findings": [
+        {
+          "severity": "INFO",
+          "target_path": "mappings",
+          "rationale": "核查各核心实体节点是否均已关联可追溯的数据集映射与业务主键列。",
+          "suggested_fix": "按需绑定源表字段映射并执行预览核验。"
+        }
+      ]
+    }
+  }
+]
