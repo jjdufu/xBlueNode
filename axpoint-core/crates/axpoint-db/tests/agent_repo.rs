@@ -4,7 +4,7 @@ use axpoint_db::PgStore;
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{
     AgentSpec, ConversationListQuery, CreateAgentRequest, CredentialMutation, EndpointListQuery,
-    KnowledgeScope, LlmProviderFlags, LlmUsageDelta, LlmUsageQuery, McpToolInfo,
+    KnowledgeScope, LlmProviderFlags, LlmStructuredCaps, LlmUsageDelta, LlmUsageQuery, McpToolInfo,
     NewAgentEmbedInput, NewApiTokenInput, NewConversationInput, NewMessageInput, SaveEndpointInput,
     SaveLlmProviderInput, SaveMcpClientInput, ToolCallSpec, ToolRef, UpdateAgentRequest,
     UpdateEndpointRequest,
@@ -142,6 +142,8 @@ fn sample_provider_input(
             allow_private_network: false,
             allow_pii: false,
         },
+        structured_caps: LlmStructuredCaps::default(),
+        owner_user_id: None,
         enabled: true,
     }
 }

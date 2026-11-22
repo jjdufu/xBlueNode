@@ -12,7 +12,7 @@ use crate::agent::{
     MessageRecord, NewAgentEmbedInput, NewApiTokenInput, NewConversationInput, NewMessageInput,
     PersonalAccessTokenSummary, ResolvedAgentEmbed, SaveEndpointInput, SaveLlmProviderInput,
     SaveMcpClientInput, SimRunToolInput, SimRunToolOutput, UpdateAgentRequest,
-    UpdateEndpointRequest,
+    UpdateEndpointRequest, UserLlmPreferenceRecord,
 };
 use crate::analytics::{
     AnalyticsPrincipal, AskFeedbackKind, AskTurnRecord, CreateMetricRequest,
@@ -254,6 +254,23 @@ pub trait AiPort: Send + Sync {
         system_prompt: &str,
         user_prompt: &str,
     ) -> impl Future<Output = Result<String, AppError>> + Send;
+
+    /// Executes a structured completion validated against `schema` with deterministic `temperature = 0.0`.
+    ///
+    /// Default implementation delegates to [`AiPort::chat`] and validates the parsed JSON payload
+    /// against `schema.schema` so lightweight test doubles remain compatible.
+    fn chat_structured(
+        &self,
+        _purpose: crate::enums::Purpose,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema: &crate::json_schema::JsonSchemaSpec,
+    ) -> impl Future<Output = Result<serde_json::Value, AppError>> + Send {
+        async move {
+            let raw = self.chat(system_prompt, user_prompt).await?;
+            crate::json_schema::parse_and_validate_json(&raw, &schema.schema)
+        }
+    }
 }
 
 /// Persistent background job queue port backed by `ax_jobs`.
@@ -2234,6 +2251,15 @@ pub trait LlmProviderStore: Send + Sync {
 
     /// Atomically increments daily request/error/token counters in `ax_llm_usage`.
     fn record_usage<'a>(&'a self, tenant_id: &'a str, delta: LlmUsageDelta) -> BoxFuture<'a, ()>;
+
+    /// Loads per-purpose user default LLM provider overrides (`ax_user_llm_preferences`, `01-STEP15` §15.2.4).
+    fn list_user_preferences<'a>(
+        &'a self,
+        _tenant_id: &'a str,
+        _user_id: Uuid,
+    ) -> BoxFuture<'a, BTreeMap<crate::enums::Purpose, Uuid>> {
+        Box::pin(async { Ok(BTreeMap::new()) })
+    }
 }
 
 /// Personal access token management port (`GET/POST /api/auth/tokens`, `DELETE /api/auth/tokens/{id}`, `08-STEP09` §09.8).
@@ -2269,6 +2295,40 @@ pub trait AgentRepository: Send + Sync {
         &self,
         tenant_id: &str,
     ) -> impl Future<Output = Result<Vec<LlmProviderRecord>, AppError>> + Send;
+
+    /// Lists LLM providers visible to `viewer_user_id` (`owner_user_id IS NULL OR owner_user_id == viewer_user_id`).
+    fn list_visible_llm_providers(
+        &self,
+        tenant_id: &str,
+        viewer_user_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<LlmProviderRecord>, AppError>> + Send {
+        async move {
+            let all = self.list_llm_providers(tenant_id).await?;
+            Ok(all
+                .into_iter()
+                .filter(|p| p.owner_user_id.is_none() || p.owner_user_id == Some(viewer_user_id))
+                .collect())
+        }
+    }
+
+    /// Lists per-purpose default LLM provider preferences for `user_id` (`01-STEP15` §15.2.4).
+    fn list_user_llm_preferences(
+        &self,
+        _tenant_id: &str,
+        _user_id: Uuid,
+    ) -> impl Future<Output = Result<Vec<UserLlmPreferenceRecord>, AppError>> + Send {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    /// Atomically replaces all per-purpose default LLM provider preferences for `user_id` (`01-STEP15` §15.2.4).
+    fn replace_user_llm_preferences(
+        &self,
+        _tenant_id: &str,
+        _user_id: Uuid,
+        _items: &[(crate::enums::Purpose, Uuid)],
+    ) -> impl Future<Output = Result<Vec<UserLlmPreferenceRecord>, AppError>> + Send {
+        std::future::ready(Ok(Vec::new()))
+    }
 
     /// Fetches a single LLM provider (and its optional sealed API key credential) in `tenant_id`.
     fn get_llm_provider(

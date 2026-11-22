@@ -705,6 +705,9 @@ impl LlmRouter {
                 latency_ms,
                 model: provider.model.clone(),
                 reply: String::from("OK (cassette)"),
+                structured_mode: provider.structured_caps.structured_mode,
+                structured_verified: false,
+                effective_temperature: provider.temperature,
             };
         }
 
@@ -723,12 +726,18 @@ impl LlmRouter {
                 latency_ms,
                 model: turn.model_echo.unwrap_or_else(|| provider.model.clone()),
                 reply: turn.content,
+                structured_mode: provider.structured_caps.structured_mode,
+                structured_verified: false,
+                effective_temperature: provider.temperature,
             },
             Err(err) => ProviderTestResponse {
                 ok: false,
                 latency_ms,
                 model: provider.model.clone(),
                 reply: err.client_message(),
+                structured_mode: provider.structured_caps.structured_mode,
+                structured_verified: false,
+                effective_temperature: provider.temperature,
             },
         }
     }
@@ -1531,6 +1540,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use axpoint_domain::agent::LlmProviderFlags;
+    use axpoint_domain::agent::LlmStructuredCaps;
     use chrono::TimeZone as _;
     use serde_json::json;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -1685,6 +1695,9 @@ mod tests {
                 allow_private_network: true,
                 allow_pii: false,
             },
+            structured_caps: LlmStructuredCaps::default(),
+            owner_user_id: None,
+            is_readonly: false,
             enabled: true,
             created_at: Utc
                 .with_ymd_and_hms(2026, 1, 1, 0, 0, 0)

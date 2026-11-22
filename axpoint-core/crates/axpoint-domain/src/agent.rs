@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::axhub::SealedCredential;
 use crate::enums::{
     ConversationChannel, ConversationStatus, EndpointKind, Environment, MessageRole, OutputShape,
-    Permission, Purpose,
+    Permission, Purpose, StructuredOutputMode,
 };
 
 const fn default_priority() -> i32 {
@@ -23,6 +23,10 @@ const fn default_temperature() -> f32 {
 
 const fn default_max_tokens() -> i32 {
     4096
+}
+
+const fn default_max_context_tokens() -> i32 {
+    32_768
 }
 
 const fn default_timeout_s() -> i32 {
@@ -156,14 +160,53 @@ impl Default for LlmProviderFlags {
     }
 }
 
-/// Persisted LLM provider registration (`ax_llm_providers`, `08-STEP09` §09.1–§09.2).
+/// Ownership scope when listing or saving an [`LlmProviderRecord`] (`01-STEP15` §15.2.3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum ProviderScope {
+    /// Tenant-wide system provider (`owner_user_id IS NULL`), editable only by `GUARD_ADMIN` / `OPS_ADMIN`.
+    #[default]
+    System,
+    /// Caller-owned personal provider (`owner_user_id == Some(caller.user_id)`).
+    Personal,
+}
+
+/// Constrained decoding, deterministic seed, and context window settings on an [`LlmProviderRecord`] (`01-STEP15` §15.2.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LlmStructuredCaps {
+    /// Structured decoding mode supported by this upstream endpoint (`NONE` / `JSON_OBJECT` / `JSON_SCHEMA`).
+    #[serde(default)]
+    pub structured_mode: StructuredOutputMode,
+    /// Optional fixed integer seed passed on deterministic workloads (`NL2SQL`, `EXTRACT`, `SUMMARIZE`).
+    #[serde(default)]
+    pub deterministic_seed: Option<i64>,
+    /// `true` when backed by a local 7B–32B inference runtime (activates compact schema & tight context budget).
+    #[serde(default)]
+    pub is_local_model: bool,
+    /// Maximum context window size in tokens (default `32768`).
+    #[serde(default = "default_max_context_tokens")]
+    pub max_context_tokens: i32,
+}
+
+impl Default for LlmStructuredCaps {
+    fn default() -> Self {
+        Self {
+            structured_mode: StructuredOutputMode::None,
+            deterministic_seed: None,
+            is_local_model: false,
+            max_context_tokens: default_max_context_tokens(),
+        }
+    }
+}
+
+/// Persisted LLM provider registration (`ax_llm_providers`, `08-STEP09` §09.1–§09.2 & `01-STEP15` §15.2.3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmProviderRecord {
     /// Provider UUID.
     pub id: Uuid,
     /// Owning tenant identifier.
     pub tenant_id: String,
-    /// Unique provider name within the tenant.
+    /// Unique provider name within its scope (`SYSTEM` or `PERSONAL`).
     pub name: String,
     /// `OpenAI`-compatible base URL.
     pub base_url: String,
@@ -188,9 +231,18 @@ pub struct LlmProviderRecord {
     pub rpm_limit: Option<i32>,
     /// Optional explicit embedding vector dimension.
     pub embedding_dim: Option<i32>,
-    /// Tool and network capability flags (`supports_tools`, `allow_private_network`).
+    /// Tool and network capability flags (`supports_tools`, `allow_private_network`, `allow_pii`).
     #[serde(flatten)]
     pub flags: LlmProviderFlags,
+    /// Structured decoding and context window capabilities (`structured_mode`, `deterministic_seed`, `is_local_model`, `max_context_tokens`).
+    #[serde(flatten, default)]
+    pub structured_caps: LlmStructuredCaps,
+    /// Owning user UUID (`None` = system-wide provider, `Some(uid)` = personal provider).
+    #[serde(default)]
+    pub owner_user_id: Option<Uuid>,
+    /// Computed per-caller read-only flag (`true` for system providers when caller lacks `GUARD_ADMIN` / `OPS_ADMIN`).
+    #[serde(default)]
+    pub is_readonly: bool,
     /// Whether this provider is active for routing.
     pub enabled: bool,
     /// Creation timestamp.
@@ -202,6 +254,9 @@ pub struct LlmProviderRecord {
 pub struct SaveLlmProviderRequest {
     /// Unique provider name.
     pub name: String,
+    /// Optional target ownership scope (`SYSTEM` for admins or `PERSONAL` for individual users).
+    #[serde(default)]
+    pub scope: Option<ProviderScope>,
     /// `OpenAI`-compatible API base URL.
     pub base_url: String,
     /// Model name.
@@ -229,9 +284,12 @@ pub struct SaveLlmProviderRequest {
     /// Optional embedding dimension.
     #[serde(default)]
     pub embedding_dim: Option<i32>,
-    /// Tool and network capability flags (`supports_tools`, `allow_private_network`).
+    /// Tool and network capability flags (`supports_tools`, `allow_private_network`, `allow_pii`).
     #[serde(flatten)]
     pub flags: LlmProviderFlags,
+    /// Structured decoding and context window capabilities.
+    #[serde(flatten, default)]
+    pub structured_caps: LlmStructuredCaps,
     /// Enabled flag (default `true`).
     #[serde(default = "default_true")]
     pub enabled: bool,
@@ -273,23 +331,68 @@ pub struct SaveLlmProviderInput {
     pub rpm_limit: Option<i32>,
     /// Optional embedding dimension.
     pub embedding_dim: Option<i32>,
-    /// Tool and network capability flags (`supports_tools`, `allow_private_network`).
+    /// Tool and network capability flags (`supports_tools`, `allow_private_network`, `allow_pii`).
     pub flags: LlmProviderFlags,
+    /// Structured decoding and context window capabilities.
+    pub structured_caps: LlmStructuredCaps,
+    /// Owning user UUID (`None` = system provider, `Some(uid)` = personal provider).
+    pub owner_user_id: Option<Uuid>,
     /// Enabled flag.
     pub enabled: bool,
 }
 
-/// Response payload for `POST /api/axagent/providers/{id}/test` (`08-STEP09` §09.2).
+/// Single `(purpose -> provider_id)` row in `ax_user_llm_preferences` (`01-STEP15` §15.2.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserLlmPreferenceRecord {
+    /// Workload purpose (`CHAT`, `EMBED`, `NL2SQL`, `EXTRACT`, `AGENT`, `SUMMARIZE`).
+    pub purpose: Purpose,
+    /// Preferred `ax_llm_providers.id` (system or caller's own personal provider).
+    pub provider_id: Uuid,
+    /// Resolved provider display name.
+    pub provider_name: String,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Item inside [`PutUserLlmPreferencesRequest`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserLlmPreferenceItem {
+    /// Target workload purpose.
+    pub purpose: Purpose,
+    /// Selected provider UUID.
+    pub provider_id: Uuid,
+}
+
+/// Request payload for `PUT /api/axagent/llm-preferences`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PutUserLlmPreferencesRequest {
+    /// Desired per-purpose default providers for the authenticated user (empty clears all overrides).
+    #[serde(default)]
+    pub preferences: Vec<UserLlmPreferenceItem>,
+}
+
+/// Response payload for `POST /api/axagent/providers/{id}/test` (`08-STEP09` §09.2 & `01-STEP15` §15.2.3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProviderTestResponse {
-    /// Connectivity outcome.
+    /// Connectivity and schema check status.
     pub ok: bool,
     /// Measured round-trip latency in milliseconds.
     pub latency_ms: u64,
-    /// Echoed model identifier.
+    /// Echoed or configured model identifier.
     pub model: String,
-    /// Short model reply snippet.
+    /// Text or serialized JSON probe reply.
     pub reply: String,
+    /// Configured structured decoding mode on the provider.
+    #[serde(default)]
+    pub structured_mode: StructuredOutputMode,
+    /// `true` when `response_format` + `jsonschema` verification succeeded during probe.
+    #[serde(default)]
+    pub structured_verified: bool,
+    /// Actual outbound `temperature` sent in the wire payload (`0.0` for deterministic probe).
+    #[serde(default)]
+    pub effective_temperature: f32,
 }
 
 /// Query filter for `GET /api/axagent/usage` (`08-STEP09` §09.9).

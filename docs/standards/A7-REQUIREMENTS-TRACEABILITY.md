@@ -65,6 +65,7 @@
 | C36 | 可配置智能体与嵌入链接 | 09 | §09.5、§09.7 | step09 “embed-ok”、“embed-revoked” |
 | C37 | 多智能体协作 | 09 | §09.5 | step09 “multi-agent” |
 | C38 | 知识库批量上传解析 | 01 / 02 | §01.2～§01.11、§02.6 | step02 “upload-commit”；step01 全部断言 |
+| C60 | 云端与本地小模型 `json_schema` 受限解码及确定性零温采样 | 15 | [01-STEP15](../../plans/v2-ux-and-grounded-ai/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.2～§15.3 | step15 “schema-guided-ok”、“temp-zero-enforced” |
 
 ### E 推演
 
@@ -99,6 +100,7 @@
 | C53 | 运营中心：实时监控与预警告警 | 08 / 14 | §08.3～§08.4、§14.4.3 | step08 “notified”、“auto-resolve”；step14 “health-deep” |
 | C54 | 行业应用模板复用 | 14 | §14.5 | step14 “template-installed”、“template-dashboard”、“template-uninstalled” |
 | C55 | 样例数据一键装载演示 | 14 | §14.6 | `POST /api/axops/demo/supply_chain/load` 后 `scripts/demo/supply_chain.md` 各步结果；`e2e/full-journey.spec.ts` |
+| C61 | 系统级只读模型与用户个人默认模型分级覆盖 | 15 | [01-STEP15](../../plans/v2-ux-and-grounded-ai/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.3.4、§15.4 | step15 “user-default-provider”、“system-provider-readonly” |
 
 ---
 

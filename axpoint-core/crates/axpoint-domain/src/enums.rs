@@ -927,6 +927,20 @@ define_str_enum! {
     }
 }
 
+define_str_enum! {
+    /// Capability level for structured JSON output decoding on an [`crate::agent::LlmProviderRecord`] (`01-STEP15` §15.2.1).
+    #[derive(Default)]
+    pub enum StructuredOutputMode {
+        /// Upstream endpoint does not accept `response_format`; prompt skeleton + post-parse validation only.
+        #[default]
+        None => "NONE",
+        /// Upstream accepts `response_format: {"type": "json_object"}`.
+        JsonObject => "JSON_OBJECT",
+        /// Upstream accepts grammar-constrained `response_format: {"type": "json_schema", "json_schema": ...}`.
+        JsonSchema => "JSON_SCHEMA",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

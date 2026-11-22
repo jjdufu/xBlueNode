@@ -22,6 +22,7 @@
 | 0012 | `0012_export_and_share.sql` | Step 12 | 出品模板、出品任务、分享链接 | [10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §12.1 |
 | 0013 | `0013_axguard_policies.sql` | Step 13 | 登录安全、会话、部门与属性、资源归属与密级、Cedar 策略、行列策略、跨部门授权、PII 位置、审计链 | [11](../../plans/completed/v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.1 |
 | 0014 | `0014_ops_templates_delivery.sql` | Step 14 | 工作项、模板安装、备份记录、审计链锚点 | [12](../../plans/completed/v1-foundation-step00-14/12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.1 |
+| 0015 | `0015_llm_structured_grounding.sql` | Step 15 | 提供方受限解码能力分级、确定性种子、本地小模型标识、个人归属隔离与用户默认模型偏好 | [01-STEP15](../../plans/v2-ux-and-grounded-ai/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.1 |
 
 Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 中的时序表）。
 
@@ -56,7 +57,8 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `ax_flow_versions`、`ax_flow_deployments`、`ax_flow_runs`、`ax_flow_step_logs`、`ax_action_log`、`ax_flow_hooks` | 0007 | — | 07 | 是 |
 | `ax_approvals` | 0007 | 0013（`GRANT` 来源） | 07 / 13 | 是 |
 | `ax_notify_channels`、`ax_rules`、`ax_alerts`、`ax_alert_events`、`ax_notify_deliveries`、`ax_alert_silences` | 0008 | — | 08 | 是 |
-| `ax_llm_providers` | 0009 | 0013（`allow_pii`） | 09 / 13 | 是 |
+| `ax_llm_providers` | 0009 | 0013（`allow_pii`）、0015（受限解码与个人归属） | 09 / 13 / 15 | 是 |
+| `ax_user_llm_preferences` | 0015 | — | 15 | 是 |
 | `ax_llm_usage`、`ax_published_endpoints`、`ax_mcp_clients`、`ax_agent_versions`、`ax_conversations`、`ax_messages`、`ax_agent_embeds` | 0009 | — | 09 | 是 |
 | `ax_agents` | 0009 | 0013（归属、密级） | 09 / 13 | 是 |
 | `ax_sim_base_nodes`、`ax_sim_base_links`、`ax_sim_overlay_nodes`、`ax_sim_overlay_links`、`ax_sim_scenarios`、`ax_sim_impacts`、`ax_sim_checkpoints`、`ax_sim_decisions` | 0010 | — | 10 | 是 |

@@ -218,6 +218,8 @@ async fn validate_and_build_provider_input(
         rpm_limit: req.rpm_limit,
         embedding_dim: req.embedding_dim,
         flags: req.flags,
+        structured_caps: req.structured_caps,
+        owner_user_id: None,
         enabled: req.enabled,
     })
 }
