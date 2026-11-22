@@ -10,6 +10,7 @@ pub mod entity_link;
 pub mod flow_repo;
 pub mod graph_query;
 pub mod guard_repo;
+pub mod im_repo;
 pub mod jobs;
 pub mod knowledge_sync;
 pub mod mapping_exec;

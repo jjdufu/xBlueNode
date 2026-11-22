@@ -727,6 +727,7 @@ pub(crate) fn spawn_background_workers(
 
     spawn_pg_listeners(state, shutdown_rx);
     spawn_singleton_schedulers(store, store_arc, notify_dispatcher, shutdown_rx);
+    let _im_handle = Arc::clone(&state.axagent.im_supervisor).spawn(shutdown_rx.clone());
 }
 
 fn build_outbox_subscribers(

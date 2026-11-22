@@ -84,9 +84,10 @@ fn decode_im_connector_row(row: &PgRow) -> Result<ImConnectorRecord, AppError> {
     let last_error: String = row
         .try_get("last_error")
         .map_err(|e| AppError::Database(format!("decode ax_im_connectors.last_error: {e}")))?;
-    let last_heartbeat_at: Option<DateTime<Utc>> = row.try_get("last_heartbeat_at").map_err(|e| {
-        AppError::Database(format!("decode ax_im_connectors.last_heartbeat_at: {e}"))
-    })?;
+    let last_heartbeat_at: Option<DateTime<Utc>> =
+        row.try_get("last_heartbeat_at").map_err(|e| {
+            AppError::Database(format!("decode ax_im_connectors.last_heartbeat_at: {e}"))
+        })?;
     let created_by: Option<Uuid> = row
         .try_get("created_by")
         .map_err(|e| AppError::Database(format!("decode ax_im_connectors.created_by: {e}")))?;
@@ -305,7 +306,10 @@ async fn load_user_attributes_tx(
 }
 
 impl ImGatewayRepository for PgStore {
-    async fn list_im_connectors(&self, tenant_id: &str) -> Result<Vec<ImConnectorRecord>, AppError> {
+    async fn list_im_connectors(
+        &self,
+        tenant_id: &str,
+    ) -> Result<Vec<ImConnectorRecord>, AppError> {
         let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         let rows = sqlx::query("SELECT * FROM ax_im_connectors ORDER BY created_at DESC, name ASC")
             .fetch_all(&mut *tx)
@@ -349,8 +353,9 @@ impl ImGatewayRepository for PgStore {
         tenant_id: &str,
         input: NewImConnectorInput,
     ) -> Result<ImConnectorRecord, AppError> {
-        let config_json = serde_json::to_value(&input.config)
-            .map_err(|err| AppError::Config(format!("serialize ImConnectorConfig failed: {err}")))?;
+        let config_json = serde_json::to_value(&input.config).map_err(|err| {
+            AppError::Config(format!("serialize ImConnectorConfig failed: {err}"))
+        })?;
         let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
         insert_im_credential_tx(&mut tx, tenant_id, input.credential_id, &input.credential).await?;
 
@@ -389,8 +394,9 @@ impl ImGatewayRepository for PgStore {
         connector_id: Uuid,
         input: UpdateImConnectorInput,
     ) -> Result<Option<ImConnectorRecord>, AppError> {
-        let config_json = serde_json::to_value(&input.config)
-            .map_err(|err| AppError::Config(format!("serialize ImConnectorConfig failed: {err}")))?;
+        let config_json = serde_json::to_value(&input.config).map_err(|err| {
+            AppError::Config(format!("serialize ImConnectorConfig failed: {err}"))
+        })?;
         let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
 
         let locked_opt =
@@ -913,9 +919,9 @@ impl PrincipalHydrationPort for PgStore {
                 AppError::Database(format!("decode sec_users.tokens_valid_after: {err}"))
             })?;
 
-        tx.commit().await.map_err(|err| {
-            AppError::Database(format!("commit hydrate_im_principal tx: {err}"))
-        })?;
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit hydrate_im_principal tx: {err}")))?;
 
         let mut principal = PrincipalRecord {
             user_id,

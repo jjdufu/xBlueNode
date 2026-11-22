@@ -125,6 +125,8 @@
 | `GET /api/axagent/conversations`、`GET /api/axagent/conversations/{id}/messages`、`DELETE /api/axagent/conversations/{id}` | `AGENT_RUN` | 同上 |
 | `POST /api/axagent/agents/{id}/embeds`、`GET /api/axagent/agents/{id}/embeds`、`DELETE /api/axagent/embeds/{embed_id}` | `VIEW_SHARE` | 同上 |
 | `POST /api/axagent/embed/{token}/chat` | `axe_` 嵌入令牌 | 同上 |
+| `GET /api/axagent/im-connectors`、`POST /api/axagent/im-connectors`、`PATCH /api/axagent/im-connectors/{id}`、`DELETE /api/axagent/im-connectors/{id}`、`POST /api/axagent/im-connectors/{id}/test` | `AGENT_EDIT` | [07-STEP21](../../plans/v2-ux-and-grounded-ai/builder-and-ux/07-STEP21-IM-BIDIRECTIONAL-AGENT-CONNECTORS.md) §21.4.1 |
+| `GET /api/axagent/im-bindings`、`DELETE /api/axagent/im-bindings/{id}`、`GET /api/axagent/im-bind/preview`、`POST /api/axagent/im-bind/confirm` | 已登录用户 / `GUARD_ADMIN` | §21.4.2 |
 
 ## 8. AxSim（`/api/axsim`）
 
