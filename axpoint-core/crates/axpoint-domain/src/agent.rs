@@ -10,7 +10,7 @@ use uuid::Uuid;
 use crate::axhub::SealedCredential;
 use crate::enums::{
     ConversationChannel, ConversationStatus, EndpointKind, Environment, MessageRole, OutputShape,
-    Permission, Purpose, StructuredOutputMode,
+    Permission, Purpose, StructuredOutputMode, TokenProfile,
 };
 
 const fn default_priority() -> i32 {
@@ -65,7 +65,7 @@ const fn default_output_shape() -> OutputShape {
     OutputShape::Rows
 }
 
-/// Summary view of a user's personal access token (`GET /api/auth/tokens`, `08-STEP09` §09.8).
+/// Summary view of a user's personal access token (`GET /api/auth/tokens`, `08-STEP09` §09.8 & `03-STEP17` §17.4).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PersonalAccessTokenSummary {
     /// Token UUID.
@@ -76,6 +76,12 @@ pub struct PersonalAccessTokenSummary {
     pub token_prefix: String,
     /// Explicit permission scopes (empty inherits all user permissions).
     pub scopes: Vec<Permission>,
+    /// Token profile (`GENERAL` or `BUILDER`).
+    #[serde(default)]
+    pub token_profile: TokenProfile,
+    /// Optional frontend base URL for `AxBuilder` deep links.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_base_url: Option<String>,
     /// Optional expiration timestamp.
     pub expires_at: Option<DateTime<Utc>>,
     /// Most recent usage timestamp.
@@ -86,7 +92,7 @@ pub struct PersonalAccessTokenSummary {
     pub created_at: DateTime<Utc>,
 }
 
-/// Request payload for `POST /api/auth/tokens` (`08-STEP09` §09.8).
+/// Request payload for `POST /api/auth/tokens` (`08-STEP09` §09.8 & `03-STEP17` §17.4).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateApiTokenRequest {
@@ -98,6 +104,12 @@ pub struct CreateApiTokenRequest {
     /// Optional validity duration in days (`1..=365`).
     #[serde(default)]
     pub expires_in_days: Option<u32>,
+    /// Token profile (`GENERAL` default, or `BUILDER` for restricted build-plane tokens).
+    #[serde(default)]
+    pub token_profile: TokenProfile,
+    /// Optional frontend base URL recorded on the token for deep-link generation.
+    #[serde(default)]
+    pub web_base_url: Option<String>,
 }
 
 /// Response payload for `POST /api/auth/tokens` returning the plaintext `axp_...` secret once.
@@ -113,6 +125,12 @@ pub struct CreateApiTokenResponse {
     pub token: String,
     /// Granted permission scopes.
     pub scopes: Vec<Permission>,
+    /// Token profile (`GENERAL` or `BUILDER`).
+    #[serde(default)]
+    pub token_profile: TokenProfile,
+    /// Optional frontend base URL for deep links.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_base_url: Option<String>,
     /// Optional expiration timestamp.
     pub expires_at: Option<DateTime<Utc>>,
     /// Creation timestamp.
@@ -132,6 +150,10 @@ pub struct NewApiTokenInput {
     pub token_hash: String,
     /// Granted permission scopes.
     pub scopes: Vec<Permission>,
+    /// Token profile (`GENERAL` or `BUILDER`).
+    pub token_profile: TokenProfile,
+    /// Optional frontend base URL.
+    pub web_base_url: Option<String>,
     /// Optional expiration timestamp.
     pub expires_at: Option<DateTime<Utc>>,
 }

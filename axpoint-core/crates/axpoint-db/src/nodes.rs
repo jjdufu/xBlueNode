@@ -493,7 +493,7 @@ impl GraphStorePort for PgStore {
                  tenant_id, type_name, node_key, title, properties, metrics, geo_lng, geo_lat
              )
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (tenant_id, type_name, node_key) DO UPDATE SET
+             ON CONFLICT (tenant_id, subgraph_slug, type_name, node_key) DO UPDATE SET
                  title = EXCLUDED.title,
                  properties = EXCLUDED.properties,
                  metrics = EXCLUDED.metrics,
@@ -523,7 +523,7 @@ impl GraphStorePort for PgStore {
             sqlx::query(
                 "INSERT INTO xb_links (tenant_id, link_type, src_node_id, dst_node_id, weight)
                  VALUES ($1, $2, $3, $4, $5)
-                 ON CONFLICT (tenant_id, link_type, src_node_id, dst_node_id) DO UPDATE SET
+                 ON CONFLICT (tenant_id, subgraph_slug, link_type, src_node_id, dst_node_id) DO UPDATE SET
                      weight = EXCLUDED.weight,
                      updated_at = NOW()",
             )
@@ -880,7 +880,7 @@ impl GraphStorePort for PgStore {
                  properties, valid_from, valid_to
              )
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-             ON CONFLICT (tenant_id, link_type, src_node_id, dst_node_id) DO UPDATE SET
+             ON CONFLICT (tenant_id, subgraph_slug, link_type, src_node_id, dst_node_id) DO UPDATE SET
                  weight = EXCLUDED.weight,
                  properties = EXCLUDED.properties,
                  valid_from = EXCLUDED.valid_from,
@@ -1406,7 +1406,7 @@ async fn bulk_upsert_nodes_tx(
                type_name, node_key, title, properties, metrics,
                geo_lng, geo_lat, source_dataset_id, source_row_key
            )
-         ON CONFLICT (tenant_id, type_name, node_key) DO UPDATE SET
+         ON CONFLICT (tenant_id, subgraph_slug, type_name, node_key) DO UPDATE SET
              title = EXCLUDED.title, properties = EXCLUDED.properties, metrics = EXCLUDED.metrics,
              geo_lng = COALESCE(EXCLUDED.geo_lng, xb_nodes.geo_lng),
              geo_lat = COALESCE(EXCLUDED.geo_lat, xb_nodes.geo_lat),
@@ -1715,7 +1715,7 @@ async fn bulk_upsert_links_tx(
                $2::text[], $3::uuid[], $4::uuid[], $5::float8[],
                $6::jsonb[], $7::timestamptz[], $8::timestamptz[]
            ) AS u(link_type, src_id, dst_id, weight, properties, valid_from, valid_to)
-         ON CONFLICT (tenant_id, link_type, src_node_id, dst_node_id) DO UPDATE SET
+         ON CONFLICT (tenant_id, subgraph_slug, link_type, src_node_id, dst_node_id) DO UPDATE SET
              weight = EXCLUDED.weight, properties = EXCLUDED.properties,
              valid_from = EXCLUDED.valid_from, valid_to = EXCLUDED.valid_to, updated_at = NOW()",
     )

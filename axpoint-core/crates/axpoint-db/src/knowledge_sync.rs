@@ -858,7 +858,7 @@ pub async fn accept_knowledge_node_candidate_impl(
     let nrow = sqlx::query(
         "INSERT INTO xb_nodes (tenant_id, type_name, node_key, title)
          VALUES ($1, $2, $3, $4)
-         ON CONFLICT (tenant_id, type_name, node_key) DO UPDATE SET
+         ON CONFLICT (tenant_id, subgraph_slug, type_name, node_key) DO UPDATE SET
              title = EXCLUDED.title,
              row_version = xb_nodes.row_version + 1,
              updated_at = NOW()

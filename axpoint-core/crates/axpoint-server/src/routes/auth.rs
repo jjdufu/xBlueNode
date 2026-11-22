@@ -153,6 +153,7 @@ async fn me_handler(principal: AuthPrincipal) -> Result<Json<MeResponse>, HttpEr
         roles: principal.roles,
         permissions: principal.permissions,
         token_kind: principal.token_kind,
+        token_profile: axpoint_domain::enums::TokenProfile::General,
     }))
 }
 

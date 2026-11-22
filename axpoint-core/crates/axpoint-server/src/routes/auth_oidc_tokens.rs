@@ -334,6 +334,8 @@ pub(super) async fn create_token_handler(
                 token_prefix,
                 token_hash,
                 scopes: dedup_scopes,
+                token_profile: req.token_profile,
+                web_base_url: req.web_base_url,
                 expires_at,
             },
         )
@@ -349,6 +351,7 @@ pub(super) async fn create_token_handler(
             "name": summary.name,
             "token_prefix": summary.token_prefix,
             "scopes": summary.scopes,
+            "token_profile": summary.token_profile,
             "expires_at": summary.expires_at,
         }),
     )
@@ -360,6 +363,8 @@ pub(super) async fn create_token_handler(
         token_prefix: summary.token_prefix,
         token: full_token,
         scopes: summary.scopes,
+        token_profile: summary.token_profile,
+        web_base_url: summary.web_base_url,
         expires_at: summary.expires_at,
         created_at: summary.created_at,
     }))

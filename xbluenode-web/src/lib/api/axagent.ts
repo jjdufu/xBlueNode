@@ -6,9 +6,10 @@ import type {
   Environment,
   Permission,
   StructuredOutputMode,
+  TokenProfile,
 } from "./enums";
 
-export type { StructuredOutputMode };
+export type { StructuredOutputMode, TokenProfile };
 
 export type ProviderScope = "SYSTEM" | "PERSONAL";
 
@@ -38,6 +39,8 @@ export interface PersonalAccessTokenSummary {
   name: string;
   token_prefix: string;
   scopes: Permission[];
+  token_profile?: TokenProfile;
+  web_base_url?: string | null;
   expires_at: string | null;
   last_used_at: string | null;
   revoked_at: string | null;
@@ -46,8 +49,10 @@ export interface PersonalAccessTokenSummary {
 
 export interface CreateApiTokenRequest {
   name: string;
-  scopes: Permission[];
+  scopes?: Permission[];
   expires_in_days?: number;
+  token_profile?: TokenProfile;
+  web_base_url?: string | null;
 }
 
 export interface CreateApiTokenResponse {
@@ -56,6 +61,8 @@ export interface CreateApiTokenResponse {
   token_prefix: string;
   token: string;
   scopes: Permission[];
+  token_profile?: TokenProfile;
+  web_base_url?: string | null;
   expires_at: string | null;
   created_at: string;
 }

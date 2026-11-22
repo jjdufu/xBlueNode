@@ -521,6 +521,7 @@ where
             .list_nodes(
                 tenant_id,
                 NodeListQuery {
+                    subgraph: None,
                     type_name: Some(nr.type_name.clone()),
                     q: Some(nr.node_key.clone()),
                     bbox: None,
@@ -542,6 +543,7 @@ where
                 .list_nodes(
                     tenant_id,
                     NodeListQuery {
+                        subgraph: None,
                         type_name: Some(nr.type_name.clone()),
                         q: None,
                         bbox: None,

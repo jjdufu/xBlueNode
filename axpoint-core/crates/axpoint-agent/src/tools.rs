@@ -419,6 +419,7 @@ where
                 .list_nodes(
                     tenant_id,
                     NodeListQuery {
+                        subgraph: None,
                         type_name: Some(String::from(tname)),
                         q: Some(String::from(nkey)),
                         bbox: None,

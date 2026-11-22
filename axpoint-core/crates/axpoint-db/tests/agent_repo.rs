@@ -828,6 +828,8 @@ async fn agent_repo_api_tokens_create_list_resolve_and_revoke_with_rls() -> Test
                 token_prefix: String::from("axp_12345678"),
                 token_hash: pat_hash.clone(),
                 scopes: vec![Permission::DataRead],
+                token_profile: axpoint_domain::enums::TokenProfile::General,
+                web_base_url: None,
                 expires_at: None,
             },
         )
@@ -841,6 +843,8 @@ async fn agent_repo_api_tokens_create_list_resolve_and_revoke_with_rls() -> Test
                 token_prefix: String::from("axp_87654321"),
                 token_hash: pat_exp_hash.clone(),
                 scopes: vec![Permission::DataRead],
+                token_profile: axpoint_domain::enums::TokenProfile::General,
+                web_base_url: None,
                 expires_at: Utc::now().checked_sub_signed(Duration::minutes(5)),
             },
         )

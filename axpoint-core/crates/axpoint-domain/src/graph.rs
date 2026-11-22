@@ -273,6 +273,9 @@ pub struct PatchNodeRequest {
 /// Query filter for `GET /api/xblue/nodes`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct NodeListQuery {
+    /// Optional subgraph namespace (`"main"` when omitted, `03-STEP17`).
+    #[serde(default)]
+    pub subgraph: Option<String>,
     /// Optional node type filter.
     #[serde(default)]
     pub type_name: Option<String>,

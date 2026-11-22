@@ -152,6 +152,9 @@ fn decode_subgraph_info(row: &sqlx::postgres::PgRow) -> SubgraphInfo {
         description: row.get("description"),
         owner_dept: row.get("owner_dept"),
         is_main: row.get("is_main"),
+        is_dev_sandbox: row.try_get("is_dev_sandbox").unwrap_or(false),
+        source_template_id: row.try_get("source_template_id").unwrap_or(None),
+        last_reset_at: row.try_get("last_reset_at").unwrap_or(None),
         current_version: row.get("current_version"),
         created_by: row.get("created_by"),
         created_at: row.get("created_at"),
@@ -1440,7 +1443,8 @@ impl StudioRepository for PgStore {
 
         let rows = sqlx::query(
             "SELECT s.id, s.slug, s.display_name, s.description, s.owner_dept,
-                    s.is_main, s.created_by, s.created_at, s.updated_at,
+                    s.is_main, s.is_dev_sandbox, s.source_template_id, s.last_reset_at,
+                    s.created_by, s.created_at, s.updated_at,
                     COALESCE(h.current_version, 0) AS current_version
                FROM xb_subgraphs s
                LEFT JOIN xb_schema_heads h
@@ -1489,10 +1493,12 @@ impl StudioRepository for PgStore {
 
         let insert_res = sqlx::query(
             "INSERT INTO xb_subgraphs (
-                 tenant_id, slug, display_name, description, owner_dept, is_main, created_by
+                 tenant_id, slug, display_name, description, owner_dept, is_main,
+                 is_dev_sandbox, source_template_id, created_by
              )
-             VALUES ($1, $2, $3, $4, $5, FALSE, $6)
+             VALUES ($1, $2, $3, $4, $5, FALSE, $6, $7, $8)
              RETURNING id, slug, display_name, description, owner_dept, is_main,
+                       is_dev_sandbox, source_template_id, last_reset_at,
                        created_by, created_at, updated_at, 0 AS current_version",
         )
         .bind(tenant_id)
@@ -1500,6 +1506,8 @@ impl StudioRepository for PgStore {
         .bind(display_name)
         .bind(req.description.trim())
         .bind(req.owner_dept.trim())
+        .bind(req.is_dev_sandbox)
+        .bind(&req.source_template_id)
         .bind(actor_user_id)
         .fetch_one(&mut *tx)
         .await;
@@ -1571,7 +1579,8 @@ impl StudioRepository for PgStore {
                     updated_at   = NOW()
               WHERE s.tenant_id = $1 AND s.slug = $2
              RETURNING s.id, s.slug, s.display_name, s.description, s.owner_dept,
-                       s.is_main, s.created_by, s.created_at, s.updated_at,
+                       s.is_main, s.is_dev_sandbox, s.source_template_id, s.last_reset_at,
+                       s.created_by, s.created_at, s.updated_at,
                        COALESCE((SELECT current_version FROM xb_schema_heads h
                                   WHERE h.tenant_id = s.tenant_id AND h.subgraph_slug = s.slug), 0) AS current_version",
         )

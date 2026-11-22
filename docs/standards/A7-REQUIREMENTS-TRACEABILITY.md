@@ -55,6 +55,8 @@
 | C32 | 接入主流大模型（多厂商、按任务路由、回退、计量） | 09 | §09.2 | `axpoint-llm/tests/router.rs`（回退与用量记录） |
 | C33 | 外部 MCP 与插件工具接入 | 09 | §09.4 | `axpoint-agent/tests/mcp_client.rs`（同步外部工具清单并调用） |
 | C57 | 业务对象自动生成领域 REST / 动态 GraphQL 接口与 MCP 暴露 | 05 / 09 | §05.6、[08](../../plans/completed/v1-foundation-step00-14/08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) §09.3～§09.4 | step05 “domain-graphql”、“domain-objects”；step09 “published-object”、“mcp-tools” |
+| C66 | `AxBuilder` 构建态 MCP 工具集（拉取/校验/推送模型、流程与看板草案并回传深链） | 17 | [03-STEP17](../../plans/v2-ux-and-grounded-ai/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2～§17.3 | step17 “mcp-axbuilder-preflight”、“mcp-push-draft”、“mcp-deeplink” |
+| C67 | 细粒度构建令牌预设与隔离开发子图试灌及一键清空 | 17 | [03-STEP17](../../plans/v2-ux-and-grounded-ai/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2.2、§17.4 | step17 “builder-token-no-prod”、“dev-subgraph-reset” |
 
 ### D 智能
 

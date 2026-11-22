@@ -436,6 +436,8 @@ async fn studio_repo_subgraph_isolation_and_merge_into_main() -> TestResult {
                 owner_dept: String::from("logistics"),
                 seed_from_main: false,
                 seed_node_types: None,
+                is_dev_sandbox: false,
+                source_template_id: None,
             },
         )
         .await?;

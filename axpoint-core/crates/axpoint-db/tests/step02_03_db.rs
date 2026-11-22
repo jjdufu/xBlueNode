@@ -509,6 +509,7 @@ async fn verify_bulk_bbox_and_search(store: &PgStore, tenant: &str, w1_id: Uuid)
         .list_nodes(
             tenant,
             NodeListQuery {
+                subgraph: None,
                 type_name: Some(String::from("Factory")),
                 q: None,
                 bbox: Some(String::from("120,30,122,32")),

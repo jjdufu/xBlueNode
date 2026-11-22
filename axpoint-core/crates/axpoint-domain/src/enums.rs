@@ -834,6 +834,10 @@ define_str_enum! {
         BackupRun => "BACKUP_RUN",
         /// Industry template pack installed.
         TemplateInstall => "TEMPLATE_INSTALL",
+        /// `AxBuilder` build-plane MCP draft or sandbox mutation (`03-STEP17`).
+        BuilderMcpMutate => "BUILDER_MCP_MUTATE",
+        /// Isolated sandbox template clone (`03-STEP17` / `05-STEP19`).
+        TrialTemplateClone => "TRIAL_TEMPLATE_CLONE",
     }
 }
 
@@ -938,6 +942,18 @@ define_str_enum! {
         JsonObject => "JSON_OBJECT",
         /// Upstream accepts grammar-constrained `response_format: {"type": "json_schema", "json_schema": ...}`.
         JsonSchema => "JSON_SCHEMA",
+    }
+}
+
+define_str_enum! {
+    /// Security and capability profile on a personal access token (`sec_api_tokens.token_profile`, `03-STEP17` §17.2).
+    #[derive(Default)]
+    pub enum TokenProfile {
+        /// Standard general-purpose personal access token.
+        #[default]
+        General => "GENERAL",
+        /// Restricted build-plane token (`AxBuilder`): draft/sandbox mutations only, zero production promotion.
+        Builder => "BUILDER",
     }
 }
 

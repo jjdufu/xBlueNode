@@ -196,6 +196,8 @@ mod tests {
                     tenant_id: String::from("t_acme"),
                     user_id,
                     scopes: BTreeSet::from([Permission::DataRead, Permission::GuardAdmin]),
+                    token_profile: axpoint_domain::enums::TokenProfile::General,
+                    web_base_url: None,
                 },
             );
         }
