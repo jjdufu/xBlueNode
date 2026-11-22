@@ -8,6 +8,7 @@ import {
   Badge,
   Button,
   Input,
+  NumberInput,
   Select,
   Textarea,
 } from "@/components/ui/primitives";
@@ -44,10 +45,12 @@ export function EdgeTypeEditor({
     JSON.stringify(edgeType.propagation ?? {}, null, 2)
   );
   const [jsonError, setJsonError] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
     setPropagationText(JSON.stringify(edgeType.propagation ?? {}, null, 2));
     setJsonError(null);
+    setConfirmDelete(false);
   }, [edgeType.name, edgeType.src_type_name, edgeType.dst_type_name]);
 
   const handlePropagationChange = (raw: string) => {
@@ -74,12 +77,12 @@ export function EdgeTypeEditor({
 
   return (
     <div className="space-y-3 text-xs" data-testid="edge-type-editor">
-      <div className="flex items-center justify-between rounded border border-border bg-muted/30 px-2.5 py-2 font-mono-tech">
+      <div className="flex items-center justify-between rounded-md bg-muted/40 px-2.5 py-2 font-mono-tech">
         <div className="flex items-center gap-1.5 truncate">
           <span className="font-semibold">{edgeType.src_type_name || "?"}</span>
-          <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+          <ArrowRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           <Badge variant="xblue">{edgeType.name || "UNNAMED"}</Badge>
-          <ArrowRight className="h-3.5 w-3.5 text-muted-foreground" />
+          <ArrowRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
           <span className="font-semibold">{edgeType.dst_type_name || "?"}</span>
         </div>
         <Badge variant="outline">{edgeType.cardinality}</Badge>
@@ -172,38 +175,20 @@ export function EdgeTypeEditor({
           <label className="block font-medium mb-1">
             {tx("因果传导权重", "Impact Weight")}
           </label>
-          <div className="flex items-center gap-2">
-            <input
-              type="range"
-              min="0.05"
-              max="1"
-              step="0.05"
-              disabled={!canEdit}
-              value={edgeType.impact_weight}
-              onChange={(e) =>
-                onChange({
-                  ...edgeType,
-                  impact_weight: Number(e.target.value),
-                })
-              }
-              className="flex-1 accent-xblue cursor-pointer"
-            />
-            <Input
-              type="number"
-              min={0.01}
-              max={1}
-              step={0.05}
-              disabled={!canEdit}
-              value={edgeType.impact_weight}
-              onChange={(e) =>
-                onChange({
-                  ...edgeType,
-                  impact_weight: Number(e.target.value),
-                })
-              }
-              className="h-8 w-20 px-2 text-xs font-mono-tech"
-            />
-          </div>
+          <NumberInput
+            min={0.05}
+            max={1}
+            step={0.05}
+            disabled={!canEdit}
+            value={edgeType.impact_weight}
+            onChange={(val) =>
+              onChange({
+                ...edgeType,
+                impact_weight: Math.min(1, Math.max(0.01, Number(val.toFixed(2)))),
+              })
+            }
+            className="w-full"
+          />
         </div>
       </div>
 
@@ -248,11 +233,41 @@ export function EdgeTypeEditor({
       </div>
 
       {canEdit && (
-        <div className="flex justify-end pt-2 border-t border-border">
-          <Button variant="danger" size="sm" onClick={onDelete}>
-            <Trash2 className="h-3.5 w-3.5" />
-            {tx("删除关系", "Delete")}
-          </Button>
+        <div className="flex items-center justify-end gap-1.5 pt-2 border-t border-border">
+          {confirmDelete ? (
+            <>
+              <span className="text-[11px] text-red-600 dark:text-red-400 mr-auto">
+                {tx("移除该关系类型定义", "Remove this relation type")}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirmDelete(false)}
+              >
+                {tx("取消", "Cancel")}
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => {
+                  setConfirmDelete(false);
+                  onDelete();
+                }}
+              >
+                {tx("删除", "Delete")}
+              </Button>
+            </>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmDelete(true)}
+              className="text-red-600 hover:bg-red-500/10 hover:border-red-500/40 dark:text-red-400"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {tx("删除关系", "Delete")}
+            </Button>
+          )}
         </div>
       )}
     </div>

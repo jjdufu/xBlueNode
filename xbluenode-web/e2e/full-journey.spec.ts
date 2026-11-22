@@ -1274,6 +1274,7 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   }
   await expect(discardDraftBtn).toHaveCount(0, { timeout: 10_000 });
 
+  await page.getByTestId("open-publish-modal-btn").click();
   await page.getByTestId("publish-summary-input").fill("全旅程终验模型发布");
   await page.getByTestId("publish-schema-btn").click();
   await expect(page.getByTestId("studio-status-toast")).toContainText("发布", {

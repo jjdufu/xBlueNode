@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
@@ -25,7 +25,7 @@ import {
   type NodeTypeSpec,
   type ValidationIssue,
 } from "@/lib/api/xblue";
-import { Badge, Button, Input, Select } from "@/components/ui/primitives";
+import { Badge, Button, Input, Select, Switch } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 export interface RuleEditorProps {
@@ -55,108 +55,6 @@ const AGG_OPS: readonly AggFn[] = [
   "MEDIAN",
   "LAST",
 ];
-
-const BUILTIN_FUNCS = new Set([
-  "abs",
-  "sqrt",
-  "exp",
-  "ln",
-  "log10",
-  "floor",
-  "ceil",
-  "round",
-  "pow",
-  "min",
-  "max",
-  "clamp",
-  "if",
-  "coalesce",
-  "is_null",
-  "contains",
-  "starts_with",
-  "lower",
-  "upper",
-  "safe_div",
-]);
-
-const KEYWORDS = new Set(["and", "or", "not", "true", "false", "null", "prop"]);
-
-function highlightExpression(expr: string): React.ReactNode[] {
-  const tokenRegex =
-    /('(?:''|[^'])*'|\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b|\bprop\.[a-zA-Z_][a-zA-Z0-9_]*\b|\b[a-zA-Z_][a-zA-Z0-9_]*\b|==|!=|<=|>=|&&|\|\||[+\-*/%^(),<>!])/g;
-  const parts: React.ReactNode[] = [];
-  let lastIndex = 0;
-  let match: RegExpExecArray | null = tokenRegex.exec(expr);
-  let keyIdx = 0;
-
-  while (match !== null) {
-    if (match.index > lastIndex) {
-      parts.push(
-        <span key={`ws-${keyIdx++}`}>{expr.slice(lastIndex, match.index)}</span>
-      );
-    }
-    const tok = match[0];
-    if (tok.startsWith("'")) {
-      parts.push(
-        <span
-          key={`str-${keyIdx++}`}
-          className="text-emerald-600 dark:text-emerald-400"
-        >
-          {tok}
-        </span>
-      );
-    } else if (/^\d/.test(tok)) {
-      parts.push(
-        <span
-          key={`num-${keyIdx++}`}
-          className="text-amber-600 dark:text-amber-400"
-        >
-          {tok}
-        </span>
-      );
-    } else if (tok.startsWith("prop.")) {
-      parts.push(
-        <span key={`prop-${keyIdx++}`} className="text-xblue font-medium">
-          {tok}
-        </span>
-      );
-    } else if (BUILTIN_FUNCS.has(tok)) {
-      parts.push(
-        <span key={`fn-${keyIdx++}`} className="text-xblue font-semibold">
-          {tok}
-        </span>
-      );
-    } else if (KEYWORDS.has(tok)) {
-      parts.push(
-        <span
-          key={`kw-${keyIdx++}`}
-          className="text-muted-foreground font-semibold"
-        >
-          {tok}
-        </span>
-      );
-    } else if (/^[a-zA-Z_]/.test(tok)) {
-      parts.push(
-        <span key={`id-${keyIdx++}`} className="text-foreground font-medium">
-          {tok}
-        </span>
-      );
-    } else {
-      parts.push(
-        <span key={`op-${keyIdx++}`} className="text-muted-foreground">
-          {tok}
-        </span>
-      );
-    }
-    lastIndex = match.index + tok.length;
-    match = tokenRegex.exec(expr);
-  }
-
-  if (lastIndex < expr.length) {
-    parts.push(<span key={`tail-${keyIdx}`}>{expr.slice(lastIndex)}</span>);
-  }
-  return parts;
-}
 
 function checkLocalExprSyntax(
   expr: string,
@@ -802,25 +700,25 @@ export function RuleEditor({
                     </div>
                   </div>
 
-                  <label className="inline-flex items-center gap-1.5 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={rule.weight_by_link}
-                      disabled={!canEdit}
-                      onChange={(e) =>
-                        updateAggRule(idx, {
-                          weight_by_link: e.target.checked,
-                        })
-                      }
-                    />
-                    <span className="text-[11px]">
+                  <div className="flex items-center justify-between rounded bg-background/60 px-2 py-1.5">
+                    <span className="text-[11px] text-muted-foreground">
                       {tx("按关系权重加权", "Weight by link")}
                     </span>
-                  </label>
+                    <Switch
+                      checked={rule.weight_by_link}
+                      disabled={!canEdit}
+                      onCheckedChange={(checked) =>
+                        updateAggRule(idx, {
+                          weight_by_link: checked,
+                        })
+                      }
+                      aria-label={tx("按关系权重加权", "Weight by link")}
+                    />
+                  </div>
 
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between">
-                      <label className="block text-[11px] text-muted-foreground">
+                  <div className="space-y-1.5 pt-0.5">
+                    <div className="flex items-center justify-between gap-2 leading-normal">
+                      <label className="text-[11px] font-medium text-muted-foreground">
                         {tx("过滤条件", "Filter Expression")}
                       </label>
                       {filterDiag?.valid && filterDiag.inferred_type && (
@@ -840,7 +738,7 @@ export function RuleEditor({
                         updateAggRule(idx, { filter: e.target.value })
                       }
                       placeholder="prop.status != 'CANCELED'"
-                      className="h-7 px-2 text-xs font-mono-tech"
+                      className="h-8 px-2.5 text-xs font-mono-tech"
                     />
                     {localFilterErr && (
                       <div className="text-[11px] text-red-600 dark:text-red-400">
@@ -906,7 +804,7 @@ export function RuleEditor({
             {tx("暂无派生公式规则", "No derived formulas")}
           </div>
         ) : (
-          <div className="space-y-2">
+          <div className="space-y-2.5">
             {nodeType.derived_rules.map((dRule, idx) => {
               const exprTrimmed = dRule.expression.trim();
               const diagKey =
@@ -933,12 +831,13 @@ export function RuleEditor({
               return (
                 <div
                   key={idx}
-                  className="rounded border border-border bg-muted/20 p-2.5 space-y-2"
+                  className="rounded-md border border-border bg-muted/20 p-2.5 space-y-2"
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-2">
+                  {/* Row 1: Target Metric + Active Switch + Delete (Zero horizontal crowding) */}
+                  <div className="flex items-center justify-between gap-2">
                     <div className="flex items-center gap-2 flex-1 min-w-0">
                       <span className="text-[11px] text-muted-foreground shrink-0">
-                        {tx("目标指标:", "Metric:")}
+                        {tx("目标指标", "Metric")}
                       </span>
                       {ownMetrics.length > 0 ? (
                         <Select
@@ -949,7 +848,7 @@ export function RuleEditor({
                               target_metric: e.target.value,
                             })
                           }
-                          className="h-7 px-2 font-mono-tech"
+                          className="h-8 flex-1 min-w-0 font-mono-tech"
                         >
                           <option value="">{tx("未指定", "None")}</option>
                           {ownMetrics.map((m) => (
@@ -968,27 +867,56 @@ export function RuleEditor({
                             })
                           }
                           placeholder="fill_rate"
-                          className="h-7 w-32 px-2 text-xs font-mono-tech"
+                          className="h-8 flex-1 min-w-0 px-2 text-xs font-mono-tech"
                         />
                       )}
-
-                      <label className="flex items-center gap-1 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={dRule.enabled}
-                          disabled={!canEdit}
-                          onChange={(e) =>
-                            updateDerivedRule(idx, {
-                              enabled: e.target.checked,
-                            })
-                          }
-                        />
-                        <span className="text-[11px]">
-                          {tx("启用", "Active")}
-                        </span>
-                      </label>
                     </div>
 
+                    <div className="flex items-center gap-2 shrink-0">
+                      <span className="text-[11px] text-muted-foreground">
+                        {tx("启用", "Active")}
+                      </span>
+                      <Switch
+                        checked={dRule.enabled}
+                        disabled={!canEdit}
+                        onCheckedChange={(checked) =>
+                          updateDerivedRule(idx, {
+                            enabled: checked,
+                          })
+                        }
+                        aria-label={tx("启用", "Active")}
+                      />
+                      {canEdit && (
+                        <button
+                          type="button"
+                          onClick={() => removeDerivedRule(idx)}
+                          className="rounded p-1 text-muted-foreground hover:text-red-600 cursor-pointer"
+                          title={tx("删除公式", "Delete formula")}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Monospace Expression Input */}
+                  <textarea
+                    rows={2}
+                    data-testid={`derived-expr-input-${idx}`}
+                    value={dRule.expression}
+                    disabled={!canEdit}
+                    onChange={(e) =>
+                      updateDerivedRule(idx, { expression: e.target.value })
+                    }
+                    placeholder="if(total_demand > 0, inventory / total_demand, null)"
+                    className={cn(
+                      "w-full rounded-md border bg-background px-2.5 py-1.5 font-mono-tech text-xs leading-relaxed focus:outline-none focus:ring-1 focus:ring-xblue disabled:opacity-50",
+                      hasIssue ? "border-red-500/60" : "border-input"
+                    )}
+                  />
+
+                  {/* Single-line Validation & Dry-Run Transfer Bar (Replaces redundant AST box) */}
+                  <div className="flex items-center justify-between gap-2 text-[11px]">
                     <div className="flex items-center gap-1.5">
                       {backendDiag?.valid && backendDiag.inferred_type && (
                         <Badge
@@ -1009,92 +937,77 @@ export function RuleEditor({
                           {tx("就绪", "Valid")}
                         </Badge>
                       )}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDryRunExpr(dRule.expression);
-                          if (selectedSampleNodeId) {
-                            void executeDryRun(dRule.expression);
-                          }
-                        }}
-                        className="rounded border border-border bg-background px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-xblue cursor-pointer"
-                      >
-                        {tx("试算", "Test")}
-                      </button>
-                      {canEdit && (
-                        <button
-                          type="button"
-                          onClick={() => removeDerivedRule(idx)}
-                          className="rounded p-1 text-muted-foreground hover:text-red-600 cursor-pointer"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      )}
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDryRunExpr(dRule.expression);
+                        if (selectedSampleNodeId) {
+                          void executeDryRun(dRule.expression);
+                        }
+                      }}
+                      className="text-[11px] font-medium text-xblue hover:underline cursor-pointer"
+                    >
+                      {tx("带入样本试算", "Load in Dry-Run")}
+                    </button>
                   </div>
 
-                  {/* Monospace Expression Input */}
-                  <textarea
-                    rows={2}
-                    data-testid={`derived-expr-input-${idx}`}
-                    value={dRule.expression}
-                    disabled={!canEdit}
-                    onChange={(e) =>
-                      updateDerivedRule(idx, { expression: e.target.value })
-                    }
-                    placeholder="if(total_demand > 0, inventory / total_demand, null)"
-                    className={cn(
-                      "w-full rounded border bg-background px-2.5 py-1.5 font-mono-tech text-xs focus:outline-none focus:ring-1 focus:ring-xblue disabled:opacity-50",
-                      hasIssue ? "border-red-500/60" : "border-input"
-                    )}
-                  />
-
-                  {/* Live Syntax Highlighted Preview */}
-                  <div className="rounded border border-border bg-background/80 px-2.5 py-1.5 font-mono-tech text-[11px] overflow-x-auto">
-                    <span className="text-muted-foreground mr-1.5 select-none">
-                      AST:
-                    </span>
-                    {highlightExpression(dRule.expression || "")}
-                  </div>
-
-                  {/* Reference Quick Insert Chips */}
+                  {/* Categorized Quick Insert Chips */}
                   {canEdit && (
-                    <div className="flex flex-wrap items-center gap-1">
-                      <span className="text-[10px] text-muted-foreground">
-                        {tx("变量:", "Vars:")}
-                      </span>
-                      {ownMetrics.map((m) => (
-                        <button
-                          key={`m-${m}`}
-                          type="button"
-                          onClick={() => insertTokenIntoDerived(idx, m)}
-                          className="rounded border border-xblue/30 bg-xblue-soft px-1.5 py-0.5 font-mono-tech text-[10px] text-xblue cursor-pointer"
-                        >
-                          {m}
-                        </button>
-                      ))}
-                      {ownAttrs.map((a) => (
-                        <button
-                          key={`a-${a}`}
-                          type="button"
-                          onClick={() =>
-                            insertTokenIntoDerived(idx, `prop.${a}`)
-                          }
-                          className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono-tech text-[10px] cursor-pointer"
-                        >
-                          prop.{a}
-                        </button>
-                      ))}
-                      {["if(", "safe_div(", "coalesce(", "round("].map((fn) => (
-                        <button
-                          key={fn}
-                          type="button"
-                          onClick={() => insertTokenIntoDerived(idx, fn)}
-                          className="rounded border border-border bg-background px-1.5 py-0.5 font-mono-tech text-[10px] text-muted-foreground hover:text-foreground cursor-pointer"
-                        >
-                          {fn})
-                        </button>
-                      ))}
+                    <div className="space-y-1 pt-0.5">
+                      {ownMetrics.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1">
+                          <span className="text-[10px] text-muted-foreground w-9 shrink-0">
+                            {tx("指标", "Metrics")}
+                          </span>
+                          {ownMetrics.map((m) => (
+                            <button
+                              key={`m-${m}`}
+                              type="button"
+                              onClick={() => insertTokenIntoDerived(idx, m)}
+                              className="rounded border border-xblue/30 bg-xblue-soft px-1.5 py-0.5 font-mono-tech text-[10px] text-xblue cursor-pointer"
+                            >
+                              {m}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      {ownAttrs.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1">
+                          <span className="text-[10px] text-muted-foreground w-9 shrink-0">
+                            {tx("属性", "Attrs")}
+                          </span>
+                          {ownAttrs.map((a) => (
+                            <button
+                              key={`a-${a}`}
+                              type="button"
+                              onClick={() =>
+                                insertTokenIntoDerived(idx, `prop.${a}`)
+                              }
+                              className="rounded border border-border bg-muted px-1.5 py-0.5 font-mono-tech text-[10px] cursor-pointer"
+                            >
+                              prop.{a}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex flex-wrap items-center gap-1">
+                        <span className="text-[10px] text-muted-foreground w-9 shrink-0">
+                          {tx("函数", "Funcs")}
+                        </span>
+                        {["if(", "safe_div(", "coalesce(", "round("].map(
+                          (fn) => (
+                            <button
+                              key={fn}
+                              type="button"
+                              onClick={() => insertTokenIntoDerived(idx, fn)}
+                              className="rounded border border-border bg-background px-1.5 py-0.5 font-mono-tech text-[10px] text-muted-foreground hover:text-foreground cursor-pointer"
+                            >
+                              {fn})
+                            </button>
+                          )
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -1181,35 +1094,36 @@ export function RuleEditor({
               </Select>
             </div>
 
-            <div className="flex items-end gap-2">
-              <div className="flex-1 min-w-0">
-                <label className="block text-[11px] text-muted-foreground mb-0.5">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <label className="text-[11px] text-muted-foreground">
                   {tx("试算表达式", "Expression")}
                 </label>
-                <Input
-                  data-testid="expr-dryrun-input"
-                  value={dryRunExpr}
-                  onChange={(e) => setDryRunExpr(e.target.value)}
-                  placeholder="inventory / total_demand"
-                  className="h-8 px-2.5 text-xs font-mono-tech"
-                />
+                <Button
+                  type="button"
+                  size="sm"
+                  data-testid="expr-dryrun-submit-btn"
+                  disabled={
+                    evaluating ||
+                    !selectedSampleNodeId ||
+                    dryRunExpr.trim().length === 0
+                  }
+                  onClick={() => void executeDryRun()}
+                >
+                  <Play className="h-3 w-3" />
+                  {evaluating
+                    ? tx("计算中…", "Running…")
+                    : tx("试算", "Evaluate")}
+                </Button>
               </div>
-
-              <Button
-                type="button"
-                size="sm"
-                className="h-8 px-3"
-                data-testid="expr-dryrun-submit-btn"
-                disabled={
-                  evaluating ||
-                  !selectedSampleNodeId ||
-                  dryRunExpr.trim().length === 0
-                }
-                onClick={() => void executeDryRun()}
-              >
-                <Play className="h-3 w-3" />
-                {evaluating ? tx("计算中…", "Running…") : tx("试算", "Evaluate")}
-              </Button>
+              <textarea
+                rows={2}
+                data-testid="expr-dryrun-input"
+                value={dryRunExpr}
+                onChange={(e) => setDryRunExpr(e.target.value)}
+                placeholder="inventory / total_demand"
+                className="w-full rounded-md border border-input bg-background px-2.5 py-1.5 text-xs font-mono-tech leading-relaxed focus:outline-none focus:ring-1 focus:ring-xblue"
+              />
             </div>
           </div>
 

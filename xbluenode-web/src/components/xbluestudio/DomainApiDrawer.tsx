@@ -1,12 +1,19 @@
 import { useEffect, useMemo, useState } from "react";
-import { Code2, Globe, Play, RefreshCw } from "lucide-react";
+import { Check, Code2, Copy, Globe, Play, RefreshCw } from "lucide-react";
 import { useI18n } from "@/i18n";
 import {
   xblueApi,
   type ObjectCatalogResponse,
   type SchemaDoc,
 } from "@/lib/api/xblue";
-import { Badge, Button, Drawer, Textarea } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Drawer,
+  StatText,
+  Tabs,
+  Textarea,
+} from "@/components/ui/primitives";
 
 export interface DomainApiDrawerProps {
   open: boolean;
@@ -14,6 +21,8 @@ export interface DomainApiDrawerProps {
   mainVersion: number;
   onClose: () => void;
 }
+
+type DomainDrawerTab = "docs" | "graphql";
 
 const DEFAULT_SAMPLE_QUERY = `{
   warehouse(nodeKey: "W-1") {
@@ -84,6 +93,7 @@ export function DomainApiDrawer({
   onClose,
 }: DomainApiDrawerProps) {
   const { tx } = useI18n();
+  const [activeTab, setActiveTab] = useState<DomainDrawerTab>("docs");
   const [sdlText, setSdlText] = useState("");
   const [sdlVersion, setSdlVersion] = useState(mainVersion);
   const [catalog, setCatalog] = useState<ObjectCatalogResponse>({
@@ -96,6 +106,16 @@ export function DomainApiDrawer({
   const [runningQuery, setRunningQuery] = useState(false);
   const [queryResponse, setQueryResponse] = useState<string>("");
   const [queryError, setQueryError] = useState<string | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+  const [sampleLoadedName, setSampleLoadedName] = useState<string | null>(null);
+
+  const copyText = (key: string, val: string) => {
+    void navigator.clipboard?.writeText(val).catch(() => {});
+    setCopiedKey(key);
+    window.setTimeout(() => {
+      setCopiedKey((prev) => (prev === key ? null : prev));
+    }, 1500);
+  };
 
   const loadDomainMetadata = async () => {
     setLoading(true);
@@ -119,6 +139,8 @@ export function DomainApiDrawer({
 
   useEffect(() => {
     if (!open) return;
+    setActiveTab("docs");
+    setSampleLoadedName(null);
     void loadDomainMetadata();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, mainVersion]);
@@ -158,6 +180,12 @@ export function DomainApiDrawer({
     });
   }, [catalog.items, fallbackMainDoc.node_types]);
 
+  const handleLoadSample = (name: string, sample: string) => {
+    setQueryText(sample);
+    setSampleLoadedName(name);
+    setActiveTab("graphql");
+  };
+
   const handleRunGraphql = async () => {
     setRunningQuery(true);
     setQueryError(null);
@@ -173,7 +201,9 @@ export function DomainApiDrawer({
         ) {
           parsedVars = rawVars as Record<string, unknown>;
         } else {
-          setQueryError(tx("变量需为 JSON 对象", "Variables must be JSON object"));
+          setQueryError(
+            tx("变量需为 JSON 对象", "Variables must be JSON object")
+          );
           setRunningQuery(false);
           return;
         }
@@ -225,146 +255,239 @@ export function DomainApiDrawer({
         </>
       }
     >
-      {/* 1. REST Object Catalog */}
-      <div className="space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="font-semibold flex items-center gap-1.5">
-            <Globe className="h-3.5 w-3.5 text-xblue" />
-            {tx("领域对象 REST 目录", "REST Object Endpoints")}
-          </span>
-          <Badge variant="xblue">
-            {effectiveCatalogItems.length} {tx("个类型", "Types")}
-          </Badge>
-        </div>
+      <Tabs<DomainDrawerTab>
+        value={activeTab}
+        onChange={setActiveTab}
+        items={[
+          {
+            key: "docs",
+            label: tx("REST & Schema 文档", "REST & Schema Docs"),
+            testId: "domain-tab-docs",
+          },
+          {
+            key: "graphql",
+            label: tx("GraphQL 调试台", "GraphQL Console"),
+            testId: "domain-tab-graphql",
+          },
+        ]}
+      />
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {effectiveCatalogItems.map((item) => (
-            <div
-              key={item.name}
-              data-testid={`domain-object-card-${item.name}`}
-              className="rounded border border-border bg-muted/20 p-2.5 space-y-1.5"
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <span className="font-semibold">{item.display_name}</span>
-                  <span className="ml-1.5 font-mono-tech text-muted-foreground">
-                    {item.name}
-                  </span>
-                </div>
-                {item.sample_graphql && (
-                  <button
-                    type="button"
-                    onClick={() => setQueryText(item.sample_graphql)}
-                    className="text-[11px] text-xblue hover:underline cursor-pointer"
+      {activeTab === "docs" ? (
+        <div className="space-y-4 text-xs">
+          {/* 1. REST Object Catalog */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="font-semibold flex items-center gap-1.5">
+                <Globe className="h-3.5 w-3.5 text-xblue" />
+                {tx("领域对象 REST 目录", "REST Object Endpoints")}
+              </span>
+              <StatText
+                label={tx("已发布类型", "Published Types")}
+                value={effectiveCatalogItems.length}
+              />
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {effectiveCatalogItems.map((item) => {
+                const detailUrl = `${item.item_path}?include_neighbors=true`;
+                return (
+                  <div
+                    key={item.name}
+                    data-testid={`domain-object-card-${item.name}`}
+                    className="rounded-md border border-border bg-muted/15 p-2.5 space-y-2"
                   >
-                    {tx("填入示例", "Load Sample")}
-                  </button>
-                )}
-              </div>
-              <div className="space-y-0.5 font-mono-tech text-[11px] text-muted-foreground">
-                <div>GET {item.collection_path}</div>
-                <div>GET {item.item_path}?include_neighbors=true</div>
-              </div>
-              <div className="flex flex-wrap gap-1 pt-0.5">
-                {item.fields.slice(0, 5).map((f) => (
-                  <Badge key={f.name} variant="outline">
-                    {f.name}:{f.data_type}
-                  </Badge>
-                ))}
-                {item.neighbors.map((nb) => (
-                  <Badge key={nb.field_name} variant="xblue">
-                    → {nb.field_name}
-                  </Badge>
-                ))}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0 truncate">
+                        <span className="font-semibold">
+                          {item.display_name}
+                        </span>
+                        <span className="ml-1.5 font-mono-tech text-muted-foreground">
+                          {item.name}
+                        </span>
+                      </div>
+                      {item.sample_graphql && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleLoadSample(item.name, item.sample_graphql)
+                          }
+                          className="shrink-0 text-[11px] font-medium text-xblue hover:underline cursor-pointer"
+                        >
+                          {tx("调试示例", "Debug Sample")}
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="space-y-1 font-mono-tech text-[11px] leading-relaxed text-muted-foreground">
+                      <div className="flex items-center justify-between gap-1.5 rounded bg-background/80 px-2 py-1">
+                        <span className="truncate">
+                          GET {item.collection_path}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            copyText(
+                              `col-${item.name}`,
+                              item.collection_path
+                            )
+                          }
+                          title={tx("复制路径", "Copy path")}
+                          className="shrink-0 text-muted-foreground hover:text-foreground cursor-pointer"
+                        >
+                          {copiedKey === `col-${item.name}` ? (
+                            <Check className="h-3 w-3 text-emerald-600" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </button>
+                      </div>
+                      <div className="flex items-center justify-between gap-1.5 rounded bg-background/80 px-2 py-1">
+                        <span className="truncate">GET {detailUrl}</span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            copyText(`item-${item.name}`, detailUrl)
+                          }
+                          title={tx("复制路径", "Copy path")}
+                          className="shrink-0 text-muted-foreground hover:text-foreground cursor-pointer"
+                        >
+                          {copiedKey === `item-${item.name}` ? (
+                            <Check className="h-3 w-3 text-emerald-600" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1">
+                      {item.fields.slice(0, 5).map((f) => (
+                        <Badge key={f.name} variant="outline">
+                          {f.name}:{f.data_type}
+                        </Badge>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 2. Dynamic GraphQL SDL */}
+          <div className="space-y-2 border-t border-border pt-3">
+            <div className="flex items-center justify-between gap-2">
+              <span className="font-semibold">
+                {tx("动态 GraphQL SDL", "Dynamic GraphQL SDL")}
+              </span>
+              <div className="flex items-center gap-2">
+                <span className="font-mono-tech text-[11px] text-muted-foreground">
+                  POST /api/xblue/graphql
+                </span>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => copyText("sdl", displayedSdl)}
+                >
+                  {copiedKey === "sdl" ? (
+                    <Check className="h-3 w-3 text-emerald-600" />
+                  ) : (
+                    <Copy className="h-3 w-3" />
+                  )}
+                  {copiedKey === "sdl"
+                    ? tx("已复制", "Copied")
+                    : tx("复制 SDL", "Copy SDL")}
+                </Button>
               </div>
             </div>
-          ))}
-        </div>
-      </div>
-
-      {/* 2. Dynamic GraphQL SDL */}
-      <div className="space-y-1.5 border-t border-border pt-3">
-        <div className="flex items-center justify-between">
-          <span className="font-semibold">
-            {tx("动态 GraphQL SDL", "Dynamic GraphQL SDL")}
-          </span>
-          <span className="font-mono-tech text-[11px] text-muted-foreground">
-            POST /api/xblue/graphql
-          </span>
-        </div>
-        <pre
-          data-testid="domain-graphql-sdl"
-          className="max-h-56 overflow-auto rounded border border-border bg-muted/40 p-3 font-mono-tech text-[11px] leading-relaxed whitespace-pre"
-        >
-          {displayedSdl}
-        </pre>
-      </div>
-
-      {/* 3. Interactive GraphQL Trial Runner */}
-      <div className="space-y-2 border-t border-border pt-3">
-        <div className="flex items-center justify-between">
-          <span className="font-semibold">
-            {tx("GraphQL 查询控制台", "GraphQL Runner")}
-          </span>
-          <Button
-            data-testid="graphql-run-btn"
-            size="sm"
-            onClick={() => void handleRunGraphql()}
-            disabled={runningQuery || !queryText.trim()}
-          >
-            <Play className="h-3.5 w-3.5" />
-            {runningQuery
-              ? tx("执行中…", "Running…")
-              : tx("执行查询", "Run Query")}
-          </Button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-          <div className="md:col-span-2">
-            <label className="block text-[11px] text-muted-foreground mb-1">
-              Query
-            </label>
-            <Textarea
-              data-testid="graphql-query-input"
-              rows={6}
-              value={queryText}
-              onChange={(e) => setQueryText(e.target.value)}
-              className="font-mono-tech text-xs"
-            />
-          </div>
-          <div>
-            <label className="block text-[11px] text-muted-foreground mb-1">
-              Variables
-            </label>
-            <Textarea
-              rows={6}
-              value={variablesText}
-              onChange={(e) => setVariablesText(e.target.value)}
-              className="font-mono-tech text-xs"
-            />
+            <pre
+              data-testid="domain-graphql-sdl"
+              className="max-h-64 overflow-auto rounded-md border border-border bg-muted/35 px-3.5 py-3 font-mono-tech text-[11px] leading-relaxed whitespace-pre"
+            >
+              {displayedSdl}
+            </pre>
           </div>
         </div>
-
-        {queryError && (
-          <div className="rounded border border-red-500/30 bg-red-500/10 p-2 text-red-600 dark:text-red-400">
-            {queryError}
+      ) : (
+        /* Tab 2: Co-located Interactive GraphQL Console + Response + Schema Reference */
+        <div className="space-y-3 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <span className="font-semibold">
+                {tx("GraphQL 查询调试台", "GraphQL Console")}
+              </span>
+              {sampleLoadedName && (
+                <Badge variant="xblue">
+                  {tx(
+                    `已载入 ${sampleLoadedName} 示例`,
+                    `Loaded ${sampleLoadedName} sample`
+                  )}
+                </Badge>
+              )}
+            </div>
+            <Button
+              data-testid="graphql-run-btn"
+              size="sm"
+              onClick={() => void handleRunGraphql()}
+              disabled={runningQuery || !queryText.trim()}
+            >
+              <Play className="h-3.5 w-3.5" />
+              {runningQuery
+                ? tx("执行中…", "Running…")
+                : tx("执行查询", "Run Query")}
+            </Button>
           </div>
-        )}
 
-        {queryResponse && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5">
+            <div className="md:col-span-2">
+              <label className="block text-[11px] text-muted-foreground mb-1">
+                Query
+              </label>
+              <Textarea
+                data-testid="graphql-query-input"
+                rows={7}
+                value={queryText}
+                onChange={(e) => setQueryText(e.target.value)}
+                className="font-mono-tech text-xs leading-relaxed"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-muted-foreground mb-1">
+                Variables
+              </label>
+              <Textarea
+                rows={7}
+                value={variablesText}
+                onChange={(e) => setVariablesText(e.target.value)}
+                className="font-mono-tech text-xs leading-relaxed"
+              />
+            </div>
+          </div>
+
+          {queryError && (
+            <div className="rounded-md border border-red-500/30 bg-red-500/10 p-2.5 text-red-600 dark:text-red-400">
+              {queryError}
+            </div>
+          )}
+
           <div>
             <div className="text-[11px] text-muted-foreground mb-1">
               {tx("响应结果", "Response")}
             </div>
-            <pre
-              data-testid="graphql-response-output"
-              className="max-h-56 overflow-auto rounded border border-border bg-muted/40 p-3 font-mono-tech text-[11px] leading-relaxed"
-            >
-              {queryResponse}
-            </pre>
+            {queryResponse ? (
+              <pre
+                data-testid="graphql-response-output"
+                className="max-h-64 overflow-auto rounded-md border border-border bg-muted/35 p-3 font-mono-tech text-[11px] leading-relaxed"
+              >
+                {queryResponse}
+              </pre>
+            ) : (
+              <div className="rounded-md border border-dashed border-border py-8 text-center text-muted-foreground">
+                {tx("尚未执行查询", "No query executed yet")}
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </Drawer>
   );
 }

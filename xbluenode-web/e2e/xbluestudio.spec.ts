@@ -1082,6 +1082,7 @@ test("xBlueStudio /studio renders canvas cards & edges, switches subgraph for me
   await expect(sdlPre).toContainText("type Warehouse");
   await expect(sdlPre).toContainText("fulfillsOrders");
 
+  await page.getByTestId("domain-tab-graphql").click();
   await page.getByTestId("graphql-run-btn").click();
   const gqlOut = page.getByTestId("graphql-response-output");
   await expect(gqlOut).toBeVisible();
