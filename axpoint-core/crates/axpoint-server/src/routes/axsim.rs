@@ -12,15 +12,17 @@ use axpoint_domain::enums::{
 use axpoint_domain::flow::{ApprovalSourceKind, ApprovalStatus, StartRunParams};
 use axpoint_domain::graph::NodeSearchQuery;
 use axpoint_domain::platform::{AuditRecord, BoxFuture, OutboxEvent, OutboxSubscriber};
-use axpoint_domain::ports::{FlowRepository, GraphStorePort, SimExecutionPort, SimRepository};
+use axpoint_domain::ports::{
+    FlowRepository, GraphStorePort, SimExecutionPort, SimPreflightPort, SimRepository,
+};
 use axpoint_domain::sim::{
     CheckpointsResponse, CompareKpiCell, CompareKpiRow, CompareNodeCell, CompareNodeRow,
     CompareScenarioColumn, CompareScenariosQuery, CompareScenariosResponse, CreateDecisionRequest,
     CreateOverlayLinkRequest, CreateOverlayNodeRequest, CreateScenarioRequest, DecisionRecord,
     DecisionStatus, ImpactListQuery, ImpactRow, PatchOverlayLinkRequest, PatchOverlayNodeRequest,
     RefreshBaseResponse, SandboxGraphLink, SandboxGraphNode, SandboxGraphResponse, SandboxScope,
-    ScenarioRecord, ScenarioStatus, SimAskIntent, SimAskRequest, SimAskResponse, SimGraph,
-    SimParams,
+    ScenarioRecord, ScenarioStatus, ScopePreflightReport, ScopePreflightRequest, SimAskIntent,
+    SimAskRequest, SimAskResponse, SimGraph, SimParams, evaluate_scope_preflight,
 };
 use axpoint_domain::topology::{
     AxSandboxRecord, AxSimAction, AxSimResult, CreateAxSandboxRequest, SimulateAxSandboxRequest,
@@ -45,6 +47,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/axsim/sandboxes",
             get(list_sandboxes_handler).post(create_sandbox_handler),
+        )
+        .route(
+            "/axsim/sandboxes/preflight",
+            post(preflight_sandbox_handler),
         )
         .route(
             "/axsim/sandboxes/{id}",
@@ -126,6 +132,41 @@ async fn list_sandboxes_handler(
     principal.require(Permission::DataRead)?;
     let items = state.store.list_sandboxes(&principal.tenant_id).await?;
     Ok(Json(items))
+}
+
+async fn preflight_sandbox_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<ScopePreflightRequest>,
+) -> Result<Json<ScopePreflightReport>, HttpError> {
+    principal.require(Permission::SimRun)?;
+    let slug = {
+        let trimmed = req.subgraph_slug.trim();
+        if trimmed.is_empty() { "main" } else { trimmed }
+    };
+    if slug != "main" {
+        let client_ip = crate::routes::auth::extract_client_ip(&headers);
+        let sub_action = if principal.has(Permission::DataRead) {
+            Permission::DataRead
+        } else {
+            Permission::SimRun
+        };
+        let _ = axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            &principal,
+            sub_action,
+            axpoint_domain::guard::GrantResourceKind::Subgraph,
+            slug,
+            &client_ip,
+        )
+        .await?;
+    }
+    let slice =
+        SimPreflightPort::preview_scope_slice(&state.store, &principal.tenant_id, slug, &req.scope)
+            .await?;
+    Ok(Json(evaluate_scope_preflight(&req.scope, &slice)))
 }
 
 async fn create_sandbox_handler(

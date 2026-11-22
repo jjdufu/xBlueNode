@@ -3314,3 +3314,75 @@ async fn resolve_conflicted_write_replay(
     })?;
     maybe_replay.ok_or(AppError::Conflict("CONFLICT"))
 }
+
+impl PgStore {
+    /// Atomically updates `xv_dashboards.canvas` for `dashboard_id` and optionally replaces its
+    /// widgets with generated preset slots inside a single tenant transaction (`06-STEP20` §20.3.1).
+    ///
+    /// # Errors
+    /// Returns `400 INVALID_ARGUMENT`, `404 DASHBOARD_NOT_FOUND`, or [`AppError::Database`].
+    pub async fn apply_dashboard_zone_preset(
+        &self,
+        tenant_id: &str,
+        dashboard_id: Uuid,
+        canvas: CanvasConfig,
+        replace_widgets: Option<Vec<CreateWidgetRecordParams>>,
+    ) -> Result<DashboardDetail, AppError> {
+        validate_canvas_config(&canvas)?;
+        if let Some(ref slots) = replace_widgets {
+            for slot in slots {
+                validate_widget_position(&slot.position)?;
+                validate_refresh_seconds(slot.refresh_seconds)?;
+            }
+        }
+        let canvas_json = serde_json::to_value(&canvas)
+            .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("serialize canvas: {err}")))?;
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_row = sqlx::query(
+            "UPDATE xv_dashboards
+                SET canvas = $3,
+                    updated_at = NOW()
+              WHERE tenant_id = $1 AND id = $2
+              RETURNING id, tenant_id, name, slug, description, filters, theme, canvas,
+                        status, version, created_by, created_at, updated_at",
+        )
+        .bind(tenant_id)
+        .bind(dashboard_id)
+        .bind(canvas_json)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| {
+            AppError::Database(format!("update xv_dashboards zone preset failed: {err}"))
+        })?;
+
+        let row = maybe_row.ok_or(AppError::NotFound("DASHBOARD_NOT_FOUND"))?;
+        let dashboard = decode_dashboard_row(&row)?;
+
+        let widgets = if let Some(slots) = replace_widgets {
+            sqlx::query("DELETE FROM xv_widgets WHERE tenant_id = $1 AND dashboard_id = $2")
+                .bind(tenant_id)
+                .bind(dashboard_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|err| {
+                    AppError::Database(format!("clear xv_widgets before zone preset failed: {err}"))
+                })?;
+
+            let mut created = Vec::with_capacity(slots.len());
+            for mut slot in slots {
+                slot.dashboard_id = dashboard_id;
+                created.push(insert_widget_tx(&mut tx, tenant_id, None, &slot).await?);
+            }
+            created
+        } else {
+            fetch_dashboard_widgets_tx(&mut tx, tenant_id, dashboard_id).await?
+        };
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit apply_dashboard_zone_preset tx: {err}"))
+        })?;
+
+        Ok(DashboardDetail { dashboard, widgets })
+    }
+}

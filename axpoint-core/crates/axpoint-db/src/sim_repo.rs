@@ -7,16 +7,17 @@ use axpoint_domain::axhub::PaginatedList;
 use axpoint_domain::enums::{AuditAction, InterventionMode, MetricSourceTag, OutboxTopic};
 use axpoint_domain::graph::TraversalDirection;
 use axpoint_domain::platform::NewOutboxEvent;
-use axpoint_domain::ports::SimRepository;
+use axpoint_domain::ports::{SimPreflightPort, SimRepository};
 use axpoint_domain::sim::{
     Checkpoint, CreateDecisionRequest, CreateOverlayLinkRequest, CreateOverlayNodeRequest,
     CreateScenarioRequest, DEFAULT_SANDBOX_MAX_NODES, DecisionChangeInput, DecisionChangeItem,
     DecisionConflictItem, DecisionRecord, DecisionStatus, ImpactListQuery, ImpactRow,
     MAX_SANDBOX_SCOPE_DEPTH, PatchOverlayLinkRequest, PatchOverlayNodeRequest, PropagationSpec,
     RefreshBaseResponse, SandboxGraphLink, SandboxGraphNode, SandboxGraphResponse, SandboxScope,
-    SandboxStatus, ScenarioRecord, ScenarioStatus, ScenarioSummary, SimGraph, SimLink, SimMode,
-    SimNode, SimResult,
+    SandboxStatus, ScenarioRecord, ScenarioStatus, ScenarioSummary, ScopeBoundaryEdgeGroup,
+    ScopeInducedEdgeGroup, ScopePreflightSlice, SimGraph, SimLink, SimMode, SimNode, SimResult,
 };
+use axpoint_domain::studio::{LinkDirection, SchemaDoc};
 use axpoint_domain::topology::{
     AxSandboxRecord, AxSimAction, AxSimImpactRow, AxSimResult, CreateAxSandboxRequest,
     SimulateAxSandboxRequest,
@@ -269,72 +270,116 @@ fn scope_walk_cte_sql(direction: TraversalDirection) -> &'static str {
             "WITH RECURSIVE walk(node_id, hop) AS (
                  SELECT id, 0
                    FROM xb_nodes
-                  WHERE tenant_id = $1 AND subgraph_slug = 'main' AND id = ANY($2)
+                  WHERE tenant_id = $1 AND subgraph_slug = $2 AND id = ANY($3)
                  UNION
                  SELECT l.dst_node_id, g.hop + 1
                    FROM walk g
                    JOIN xb_links l ON l.src_node_id = g.node_id
-                  WHERE g.hop < $3
+                  WHERE g.hop < $4
                     AND l.tenant_id = $1
-                    AND l.subgraph_slug = 'main'
-                    AND ($4::text[] IS NULL OR l.link_type = ANY($4))
+                    AND l.subgraph_slug = $2
+                    AND ($5::text[] IS NULL OR l.link_type = ANY($5))
              )
              SELECT n.id
                FROM (SELECT DISTINCT node_id FROM walk) w
                JOIN xb_nodes n ON n.id = w.node_id
               WHERE n.tenant_id = $1
-                AND n.subgraph_slug = 'main'
-                AND ($5::text[] IS NULL OR n.type_name = ANY($5))
+                AND n.subgraph_slug = $2
+                AND ($6::text[] IS NULL OR n.type_name = ANY($6))
               ORDER BY n.id ASC
-              LIMIT $6"
+              LIMIT $7"
         }
         TraversalDirection::In => {
             "WITH RECURSIVE walk(node_id, hop) AS (
                  SELECT id, 0
                    FROM xb_nodes
-                  WHERE tenant_id = $1 AND subgraph_slug = 'main' AND id = ANY($2)
+                  WHERE tenant_id = $1 AND subgraph_slug = $2 AND id = ANY($3)
                  UNION
                  SELECT l.src_node_id, g.hop + 1
                    FROM walk g
                    JOIN xb_links l ON l.dst_node_id = g.node_id
-                  WHERE g.hop < $3
+                  WHERE g.hop < $4
                     AND l.tenant_id = $1
-                    AND l.subgraph_slug = 'main'
-                    AND ($4::text[] IS NULL OR l.link_type = ANY($4))
+                    AND l.subgraph_slug = $2
+                    AND ($5::text[] IS NULL OR l.link_type = ANY($5))
              )
              SELECT n.id
                FROM (SELECT DISTINCT node_id FROM walk) w
                JOIN xb_nodes n ON n.id = w.node_id
               WHERE n.tenant_id = $1
-                AND n.subgraph_slug = 'main'
-                AND ($5::text[] IS NULL OR n.type_name = ANY($5))
+                AND n.subgraph_slug = $2
+                AND ($6::text[] IS NULL OR n.type_name = ANY($6))
               ORDER BY n.id ASC
-              LIMIT $6"
+              LIMIT $7"
         }
         TraversalDirection::Both => {
             "WITH RECURSIVE walk(node_id, hop) AS (
                  SELECT id, 0
                    FROM xb_nodes
-                  WHERE tenant_id = $1 AND subgraph_slug = 'main' AND id = ANY($2)
+                  WHERE tenant_id = $1 AND subgraph_slug = $2 AND id = ANY($3)
                  UNION
                  SELECT CASE WHEN l.src_node_id = g.node_id THEN l.dst_node_id ELSE l.src_node_id END,
                         g.hop + 1
                    FROM walk g
                    JOIN xb_links l ON (l.src_node_id = g.node_id OR l.dst_node_id = g.node_id)
-                  WHERE g.hop < $3
+                  WHERE g.hop < $4
                     AND l.tenant_id = $1
-                    AND l.subgraph_slug = 'main'
-                    AND ($4::text[] IS NULL OR l.link_type = ANY($4))
+                    AND l.subgraph_slug = $2
+                    AND ($5::text[] IS NULL OR l.link_type = ANY($5))
              )
              SELECT n.id
                FROM (SELECT DISTINCT node_id FROM walk) w
                JOIN xb_nodes n ON n.id = w.node_id
               WHERE n.tenant_id = $1
-                AND n.subgraph_slug = 'main'
-                AND ($5::text[] IS NULL OR n.type_name = ANY($5))
+                AND n.subgraph_slug = $2
+                AND ($6::text[] IS NULL OR n.type_name = ANY($6))
               ORDER BY n.id ASC
-              LIMIT $6"
+              LIMIT $7"
         }
+    }
+}
+
+async fn sample_scoped_node_ids_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    subgraph_slug: &str,
+    scope: &SandboxScope,
+    fetch_limit: i64,
+) -> Result<Vec<Uuid>, AppError> {
+    let type_filter = normalize_filter_list(&scope.type_names);
+    let link_filter = normalize_filter_list(&scope.link_types);
+
+    if scope.root_node_ids.is_empty() {
+        sqlx::query_scalar(
+            "SELECT id
+               FROM xb_nodes
+              WHERE tenant_id = $1
+                AND subgraph_slug = $2
+                AND ($3::text[] IS NULL OR type_name = ANY($3))
+              ORDER BY id ASC
+              LIMIT $4",
+        )
+        .bind(tenant_id)
+        .bind(subgraph_slug)
+        .bind(&type_filter)
+        .bind(fetch_limit)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("collect tenant nodes failed: {err}")))
+    } else {
+        let depth_i32 = i32::try_from(scope.depth).unwrap_or(6);
+        let sql = scope_walk_cte_sql(scope.direction);
+        sqlx::query_scalar(sql)
+            .bind(tenant_id)
+            .bind(subgraph_slug)
+            .bind(&scope.root_node_ids)
+            .bind(depth_i32)
+            .bind(&link_filter)
+            .bind(&type_filter)
+            .bind(fetch_limit)
+            .fetch_all(&mut **tx)
+            .await
+            .map_err(|err| AppError::Database(format!("scope walk CTE failed: {err}")))
     }
 }
 
@@ -344,41 +389,9 @@ async fn collect_scoped_node_ids_tx(
     scope: &SandboxScope,
 ) -> Result<Vec<Uuid>, AppError> {
     validate_scope(scope)?;
-    let type_filter = normalize_filter_list(&scope.type_names);
-    let link_filter = normalize_filter_list(&scope.link_types);
     let max_nodes_i64 = i64::try_from(scope.max_nodes).unwrap_or(50_000);
     let fetch_limit = max_nodes_i64.saturating_add(1);
-
-    let node_ids: Vec<Uuid> = if scope.root_node_ids.is_empty() {
-        sqlx::query_scalar(
-            "SELECT id
-               FROM xb_nodes
-              WHERE tenant_id = $1
-                AND subgraph_slug = 'main'
-                AND ($2::text[] IS NULL OR type_name = ANY($2))
-              ORDER BY id ASC
-              LIMIT $3",
-        )
-        .bind(tenant_id)
-        .bind(&type_filter)
-        .bind(fetch_limit)
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|err| AppError::Database(format!("collect tenant nodes failed: {err}")))?
-    } else {
-        let depth_i32 = i32::try_from(scope.depth).unwrap_or(6);
-        let sql = scope_walk_cte_sql(scope.direction);
-        sqlx::query_scalar(sql)
-            .bind(tenant_id)
-            .bind(&scope.root_node_ids)
-            .bind(depth_i32)
-            .bind(&link_filter)
-            .bind(&type_filter)
-            .bind(fetch_limit)
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(|err| AppError::Database(format!("scope walk CTE failed: {err}")))?
-    };
+    let node_ids = sample_scoped_node_ids_tx(tx, tenant_id, "main", scope, fetch_limit).await?;
 
     if node_ids.len() > scope.max_nodes {
         return Err(AppError::bad(
@@ -3339,5 +3352,304 @@ impl SimRepository for PgStore {
             AppError::Database(format!("commit rebase_decision tx failed: {err}"))
         })?;
         decode_decision_row(&updated_row)
+    }
+}
+
+fn validate_preflight_scope(scope: &SandboxScope) -> Result<(), AppError> {
+    if scope.depth > MAX_SANDBOX_SCOPE_DEPTH {
+        return Err(AppError::bad(
+            "LIMIT_OUT_OF_RANGE",
+            format!(
+                "scope.depth must be <= {MAX_SANDBOX_SCOPE_DEPTH}, got {}",
+                scope.depth
+            ),
+        ));
+    }
+    if scope.max_nodes == 0 {
+        return Err(AppError::bad(
+            "LIMIT_OUT_OF_RANGE",
+            "scope.max_nodes must be >= 1",
+        ));
+    }
+    Ok(())
+}
+
+async fn load_preflight_schema_doc_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    subgraph_slug: &str,
+) -> Result<SchemaDoc, AppError> {
+    let mut doc = crate::studio_repo::load_schema_doc_tx(tx, tenant_id, subgraph_slug).await?;
+    if doc.node_types.is_empty() && doc.edge_types.is_empty() && subgraph_slug != "main" {
+        let draft_val: Option<serde_json::Value> = sqlx::query_scalar(
+            "SELECT schema_doc
+               FROM xb_schema_drafts
+              WHERE tenant_id = $1 AND subgraph_slug = $2 AND status = 'DRAFT'
+              ORDER BY updated_at DESC
+              LIMIT 1",
+        )
+        .bind(tenant_id)
+        .bind(subgraph_slug)
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("query draft schema_doc failed: {err}")))?;
+        if let Some(val) = draft_val
+            && let Ok(parsed) = serde_json::from_value::<SchemaDoc>(val)
+        {
+            doc = parsed;
+        }
+    }
+    Ok(doc)
+}
+
+async fn query_node_counts_and_isolated_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    subgraph_slug: &str,
+    node_ids: &[Uuid],
+    link_filter: Option<&[String]>,
+) -> Result<(BTreeMap<String, usize>, usize), AppError> {
+    let count_rows = sqlx::query(
+        "SELECT type_name, COUNT(*)::bigint AS cnt
+           FROM xb_nodes
+          WHERE tenant_id = $1
+            AND subgraph_slug = $2
+            AND id = ANY($3)
+          GROUP BY type_name",
+    )
+    .bind(tenant_id)
+    .bind(subgraph_slug)
+    .bind(node_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("count scoped node types failed: {err}")))?;
+
+    let mut counts = BTreeMap::new();
+    for row in count_rows {
+        let cnt: i64 = row.get("cnt");
+        counts.insert(
+            row.get("type_name"),
+            usize::try_from(cnt.max(0)).unwrap_or(0),
+        );
+    }
+
+    let isolated_i64: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*)::bigint
+           FROM unnest($3::uuid[]) AS cand(node_id)
+          WHERE NOT EXISTS (
+              SELECT 1
+                FROM xb_links l
+               WHERE l.tenant_id = $1
+                 AND l.subgraph_slug = $2
+                 AND (l.src_node_id = cand.node_id OR l.dst_node_id = cand.node_id)
+                 AND l.src_node_id = ANY($3)
+                 AND l.dst_node_id = ANY($3)
+                 AND ($4::text[] IS NULL OR l.link_type = ANY($4))
+          )",
+    )
+    .bind(tenant_id)
+    .bind(subgraph_slug)
+    .bind(node_ids)
+    .bind(link_filter)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("count isolated scoped nodes failed: {err}")))?;
+
+    Ok((counts, usize::try_from(isolated_i64.max(0)).unwrap_or(0)))
+}
+
+async fn query_induced_edges_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    subgraph_slug: &str,
+    node_ids: &[Uuid],
+    link_filter: Option<&[String]>,
+) -> Result<Vec<ScopeInducedEdgeGroup>, AppError> {
+    let induced_rows = sqlx::query(
+        "SELECT l.link_type,
+                s.type_name AS src_type_name,
+                d.type_name AS dst_type_name,
+                COUNT(*)::bigint AS cnt
+           FROM xb_links l
+           JOIN xb_nodes s ON s.id = l.src_node_id AND s.tenant_id = $1 AND s.subgraph_slug = $2
+           JOIN xb_nodes d ON d.id = l.dst_node_id AND d.tenant_id = $1 AND d.subgraph_slug = $2
+          WHERE l.tenant_id = $1
+            AND l.subgraph_slug = $2
+            AND l.src_node_id = ANY($3)
+            AND l.dst_node_id = ANY($3)
+            AND ($4::text[] IS NULL OR l.link_type = ANY($4))
+          GROUP BY l.link_type, s.type_name, d.type_name
+          ORDER BY l.link_type ASC, s.type_name ASC, d.type_name ASC",
+    )
+    .bind(tenant_id)
+    .bind(subgraph_slug)
+    .bind(node_ids)
+    .bind(link_filter)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("query induced edges failed: {err}")))?;
+
+    let mut induced = Vec::with_capacity(induced_rows.len());
+    for row in induced_rows {
+        let cnt: i64 = row.get("cnt");
+        induced.push(ScopeInducedEdgeGroup {
+            link_type: row.get("link_type"),
+            src_type_name: row.get("src_type_name"),
+            dst_type_name: row.get("dst_type_name"),
+            count: usize::try_from(cnt.max(0)).unwrap_or(0),
+        });
+    }
+    Ok(induced)
+}
+
+async fn query_boundary_edges_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    subgraph_slug: &str,
+    node_ids: &[Uuid],
+) -> Result<Vec<ScopeBoundaryEdgeGroup>, AppError> {
+    let boundary_rows = sqlx::query(
+        "SELECT l.link_type,
+                CASE WHEN l.src_node_id = ANY($3) THEN 'OUT' ELSE 'IN' END AS dir,
+                CASE WHEN l.src_node_id = ANY($3) THEN s.type_name ELSE d.type_name END AS in_scope_type,
+                CASE WHEN l.src_node_id = ANY($3) THEN d.type_name ELSE s.type_name END AS excluded_type,
+                COUNT(*)::bigint AS cnt
+           FROM xb_links l
+           JOIN xb_nodes s ON s.id = l.src_node_id AND s.tenant_id = $1 AND s.subgraph_slug = $2
+           JOIN xb_nodes d ON d.id = l.dst_node_id AND d.tenant_id = $1 AND d.subgraph_slug = $2
+          WHERE l.tenant_id = $1
+            AND l.subgraph_slug = $2
+            AND (
+                (l.src_node_id = ANY($3) AND NOT (l.dst_node_id = ANY($3)))
+                OR (NOT (l.src_node_id = ANY($3)) AND l.dst_node_id = ANY($3))
+            )
+          GROUP BY 1, 2, 3, 4
+          ORDER BY 1 ASC, 2 ASC, 3 ASC, 4 ASC",
+    )
+    .bind(tenant_id)
+    .bind(subgraph_slug)
+    .bind(node_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("query boundary edges failed: {err}")))?;
+
+    let mut boundary = Vec::with_capacity(boundary_rows.len());
+    for row in boundary_rows {
+        let dir_raw: String = row.get("dir");
+        let direction = if dir_raw == "IN" {
+            LinkDirection::In
+        } else {
+            LinkDirection::Out
+        };
+        let cnt: i64 = row.get("cnt");
+        boundary.push(ScopeBoundaryEdgeGroup {
+            link_type: row.get("link_type"),
+            direction,
+            in_scope_type_name: row.get("in_scope_type"),
+            excluded_type_name: row.get("excluded_type"),
+            count: usize::try_from(cnt.max(0)).unwrap_or(0),
+        });
+    }
+    Ok(boundary)
+}
+
+async fn query_observed_metric_keys_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    subgraph_slug: &str,
+) -> Result<BTreeMap<String, BTreeSet<String>>, AppError> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT n.type_name, k.key AS metric_key
+           FROM xb_nodes n
+           CROSS JOIN LATERAL jsonb_object_keys(
+               CASE WHEN jsonb_typeof(n.metrics) = 'object' THEN n.metrics ELSE '{}'::jsonb END
+           ) AS k(key)
+          WHERE n.tenant_id = $1
+            AND n.subgraph_slug = $2",
+    )
+    .bind(tenant_id)
+    .bind(subgraph_slug)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("query observed metric keys failed: {err}")))?;
+
+    let mut map: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for row in rows {
+        let tname: String = row.get("type_name");
+        let mkey: String = row.get("metric_key");
+        if !mkey.trim().is_empty() {
+            map.entry(tname).or_default().insert(mkey);
+        }
+    }
+    Ok(map)
+}
+
+impl SimPreflightPort for PgStore {
+    async fn preview_scope_slice(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        scope: &SandboxScope,
+    ) -> Result<ScopePreflightSlice, AppError> {
+        validate_preflight_scope(scope)?;
+        let clean_slug = {
+            let trimmed = subgraph_slug.trim();
+            if trimmed.is_empty() { "main" } else { trimmed }
+        };
+
+        let cap_usize = scope.max_nodes.saturating_add(1).min(100_000);
+        let fetch_limit = i64::try_from(cap_usize).unwrap_or(100_000);
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let _ver =
+            crate::studio_repo::require_subgraph_exists_tx(&mut tx, tenant_id, clean_slug).await?;
+        let schema_doc = load_preflight_schema_doc_tx(&mut tx, tenant_id, clean_slug).await?;
+        let node_ids =
+            sample_scoped_node_ids_tx(&mut tx, tenant_id, clean_slug, scope, fetch_limit).await?;
+
+        if node_ids.is_empty() {
+            tx.commit().await.map_err(|err| {
+                AppError::Database(format!("commit empty preview_scope_slice tx failed: {err}"))
+            })?;
+            return Ok(ScopePreflightSlice {
+                schema_doc,
+                ..ScopePreflightSlice::default()
+            });
+        }
+
+        let link_filter = normalize_filter_list(&scope.link_types);
+        let (node_counts_by_type, isolated_nodes) = query_node_counts_and_isolated_tx(
+            &mut tx,
+            tenant_id,
+            clean_slug,
+            &node_ids,
+            link_filter.as_deref(),
+        )
+        .await?;
+        let induced_edges = query_induced_edges_tx(
+            &mut tx,
+            tenant_id,
+            clean_slug,
+            &node_ids,
+            link_filter.as_deref(),
+        )
+        .await?;
+        let boundary_edges =
+            query_boundary_edges_tx(&mut tx, tenant_id, clean_slug, &node_ids).await?;
+        let observed_metric_keys =
+            query_observed_metric_keys_tx(&mut tx, tenant_id, clean_slug).await?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit preview_scope_slice tx failed: {err}"))
+        })?;
+
+        Ok(ScopePreflightSlice {
+            node_counts_by_type,
+            isolated_nodes,
+            induced_edges,
+            boundary_edges,
+            observed_metric_keys,
+            schema_doc,
+        })
     }
 }

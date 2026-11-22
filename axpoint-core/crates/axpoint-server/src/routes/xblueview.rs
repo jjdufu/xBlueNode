@@ -9,20 +9,21 @@ use std::time::Duration;
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::PaginatedList;
 use axpoint_domain::enums::{
-    AssetKind, AuditAction, ExportFormat, JobStatus, Permission, TokenKind,
+    AssetKind, AuditAction, CockpitZoneLayout, ExportFormat, JobStatus, Permission, TokenKind,
 };
 use axpoint_domain::export::{
     CreateExportJobParams, CreateExportRequest, CreateExportTemplateParams, CreateShareRequest,
     CreateShareResponse, ExportJobRecord, ExportListQuery, ExportTemplateRecord, ShareLinkRecord,
-    ShareListQuery, SharePublicResponse, ShareUnlockRequest, ShareUnlockResponse,
+    ShareListQuery, SharePublicResponse, ShareTargetKind, ShareUnlockRequest, ShareUnlockResponse,
 };
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::ViewRepository as _;
 use axpoint_domain::rules::SimplePageQuery;
 use axpoint_domain::view::{
-    AiDraftDashboardRequest, AiGenerateDashboardRequest, AssetRecord, CreateAssetParams,
-    CreateDashboardRequest, CreateWidgetRecordParams, CreateWidgetRequest, DashboardDetail,
-    DashboardRecord, FloorPlacementRecord, InvokeWidgetActionRequest, InvokeWidgetActionResponse,
+    AiDraftDashboardRequest, AiGenerateDashboardRequest, ApplyZonePresetRequest, AssetRecord,
+    CanvasConfig, CreateAssetParams, CreateDashboardRequest, CreateWidgetRecordParams,
+    CreateWidgetRequest, DashboardDetail, DashboardPreflightReport, DashboardRecord,
+    FloorPlacementRecord, InvokeWidgetActionRequest, InvokeWidgetActionResponse,
     PutFloorPlacementsRequest, PutScene3dBindingsRequest, Scene3dBindingRecord,
     UpdateDashboardRequest, UpdateLayoutRequest, UpdateWidgetRecordParams, UpdateWidgetRequest,
     ViewEvent, WidgetDataRequest, WidgetDataResponse, WidgetPreviewRequest, WidgetRecord,
@@ -39,6 +40,7 @@ use axpoint_server::view::export::{
     build_content_disposition, cleanup_file_quietly, content_type_for_export,
     extract_ooxml_placeholders, resolve_data_root_path, validate_create_export_request,
 };
+use axpoint_server::view::preflight::{build_five_zone_preset_widgets, preflight_dashboard};
 use axpoint_server::view::share::{
     PublicShareEnv, ShareRequestMeta, create_share, execute_shared_widget_data, get_public_share,
     prepare_shared_download, resolve_shared_dashboard_asset, unlock_public_share,
@@ -103,6 +105,14 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/xblueview/dashboards/{id}/publish",
             post(publish_dashboard_handler),
+        )
+        .route(
+            "/xblueview/dashboards/{id}/apply-zone-preset",
+            post(apply_zone_preset_handler),
+        )
+        .route(
+            "/xblueview/dashboards/{id}/preflight",
+            post(preflight_dashboard_handler),
         )
         .route(
             "/xblueview/dashboards/{id}/duplicate",
@@ -237,6 +247,12 @@ async fn list_dashboards_handler(
     Ok(Json(page))
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OptionalZonePresetBody {
+    zone_layout: Option<CockpitZoneLayout>,
+}
+
 async fn create_dashboard_handler(
     State(state): State<AppState>,
     principal: AuthPrincipal,
@@ -253,6 +269,24 @@ async fn create_dashboard_handler(
     req.name = trimmed_name.to_owned();
     req.slug = req.slug.trim().to_owned();
     validate_dashboard_slug(&req.slug)?;
+
+    let effective_zone_layout = req.zone_layout.unwrap_or(req.canvas.zone_layout);
+    req.zone_layout = Some(effective_zone_layout);
+    if effective_zone_layout == CockpitZoneLayout::StandardFiveZone {
+        req.canvas = CanvasConfig::standard_five_zone();
+        let preset_widgets =
+            build_five_zone_preset_widgets(&state.store, &principal.tenant_id).await?;
+        let created = state
+            .store
+            .create_ai_dashboard(
+                &principal.tenant_id,
+                actor_uuid(&principal),
+                req,
+                preset_widgets,
+            )
+            .await?;
+        return Ok((StatusCode::CREATED, Json(created)));
+    }
 
     let created = state
         .store
@@ -417,16 +451,110 @@ async fn delete_dashboard_handler(
 
 async fn publish_dashboard_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<DashboardRecord>, HttpError> {
     principal.enforce_no_prod_mutation()?;
     principal.require(Permission::ViewEdit)?;
+    let detail = state
+        .store
+        .get_dashboard(&principal.tenant_id, id, false)
+        .await?
+        .ok_or(AppError::NotFound("DASHBOARD_NOT_FOUND"))?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let report =
+        preflight_dashboard(&state.store, &state.cedar, &principal, &detail, &client_ip).await?;
+    report.ensure_publishable()?;
+
     let published = state
         .store
         .publish_dashboard(&principal.tenant_id, id)
         .await?;
     Ok(Json(published))
+}
+
+async fn apply_zone_preset_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(id): ApiPath<Uuid>,
+    body: Bytes,
+) -> Result<Json<DashboardDetail>, HttpError> {
+    principal.require(Permission::ViewEdit)?;
+    let parsed: OptionalZonePresetBody = parse_optional_json(&body)?;
+    let req = ApplyZonePresetRequest {
+        zone_layout: parsed
+            .zone_layout
+            .unwrap_or(CockpitZoneLayout::StandardFiveZone),
+    };
+
+    if let Some(existing) = state
+        .store
+        .get_dashboard(&principal.tenant_id, id, false)
+        .await?
+    {
+        let old_widget_ids: Vec<Uuid> = existing.widgets.iter().map(|w| w.id).collect();
+        state
+            .view
+            .cache
+            .invalidate_widgets(&principal.tenant_id, &old_widget_ids)
+            .await;
+    }
+
+    let (canvas, replace_widgets) = match req.zone_layout {
+        CockpitZoneLayout::StandardFiveZone => {
+            let slots = build_five_zone_preset_widgets(&state.store, &principal.tenant_id).await?;
+            (CanvasConfig::standard_five_zone(), Some(slots))
+        }
+        CockpitZoneLayout::FreeGrid => (CanvasConfig::default(), None),
+    };
+
+    let updated = state
+        .store
+        .apply_dashboard_zone_preset(&principal.tenant_id, id, canvas, replace_widgets)
+        .await?;
+    state
+        .view
+        .cache
+        .invalidate_dashboards(&principal.tenant_id, &[id])
+        .await;
+    Ok(Json(updated))
+}
+
+async fn preflight_dashboard_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath(id): ApiPath<Uuid>,
+) -> Result<Json<DashboardPreflightReport>, HttpError> {
+    if !principal.has(Permission::ViewEdit) && !principal.has(Permission::ViewShare) {
+        return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+    }
+    let detail = state
+        .store
+        .get_dashboard(&principal.tenant_id, id, false)
+        .await?
+        .ok_or(AppError::NotFound("DASHBOARD_NOT_FOUND"))?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let action = if principal.has(Permission::ViewEdit) {
+        Permission::ViewEdit
+    } else {
+        Permission::ViewShare
+    };
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        action,
+        axpoint_domain::guard::GrantResourceKind::Dashboard,
+        &detail.dashboard.id.to_string(),
+        &client_ip,
+    )
+    .await?;
+
+    let report =
+        preflight_dashboard(&state.store, &state.cedar, &principal, &detail, &client_ip).await?;
+    Ok(Json(report))
 }
 
 async fn duplicate_dashboard_handler(
@@ -2779,6 +2907,19 @@ async fn create_share_handler(
     ApiJson(req): ApiJson<CreateShareRequest>,
 ) -> Result<(StatusCode, Json<CreateShareResponse>), HttpError> {
     let client_ip = extract_share_client_ip(&headers);
+    if req.target_kind == ShareTargetKind::Dashboard {
+        principal.require(Permission::ViewShare)?;
+        principal.require(Permission::DataRead)?;
+        let detail = state
+            .store
+            .get_dashboard(&principal.tenant_id, req.target_id, false)
+            .await?
+            .ok_or(AppError::NotFound("DASHBOARD_NOT_FOUND"))?;
+        let report =
+            preflight_dashboard(&state.store, &state.cedar, &principal, &detail, &client_ip)
+                .await?;
+        report.ensure_publishable()?;
+    }
     let trace_id = current_trace_id();
     let created = create_share(
         &state.store,
