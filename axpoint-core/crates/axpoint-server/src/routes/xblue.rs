@@ -13,7 +13,9 @@ use axpoint_domain::axhub::{Dataset, PaginatedList};
 use axpoint_domain::builder::{
     DevSubgraphResetResponse, DevSubgraphRunRequest, DevSubgraphRunResponse,
 };
-use axpoint_domain::enums::{AuditAction, DataType, GraphAlgo, JobKind, Permission};
+use axpoint_domain::enums::{
+    AuditAction, CopilotActionMode, DataType, GraphAlgo, JobKind, Permission,
+};
 use axpoint_domain::expr::{
     EvalEnv, EvaluateExprRequest, EvaluateExprResponse, ValidateExprRequest, ValidateExprResponse,
     eval as eval_expr, parse as parse_expr, validate_for_node_type,
@@ -38,21 +40,29 @@ use axpoint_domain::rollup::{
     RecomputeAggregateRequest, RecomputeAggregateResponse,
 };
 use axpoint_domain::studio::{
-    AiDraftRequest, ColumnProfileStats, ColumnRoleTag, CreateDraftRequest, CreateSubgraphRequest,
-    DatasetProfileSummary, DomainObjectItemQuery, DomainObjectListQuery, DomainObjectListResponse,
-    DomainObjectRecord, DraftSource, DraftStatus, IssueSeverity, MappingPreviewResponse,
-    MappingRecord, MappingRunsResponse, MergePreview, MergePreviewRequest, MergeSubgraphRequest,
-    NodeTypeSpec, ObjectCatalogResponse, ObjectFieldSig, ObjectTypeCatalogItem, ProfilingBundle,
+    AiDraftRequest, ColumnProfileStats, ColumnRoleTag, ConfirmProposalsRequest, CreateDraftRequest,
+    CreateSubgraphRequest, DatasetProfileSummary, DomainObjectItemQuery, DomainObjectListQuery,
+    DomainObjectListResponse, DomainObjectRecord, DraftSnapshotListResponse, DraftSource,
+    DraftStatus, IssueSeverity, MappingPreviewResponse, MappingRecord, MappingRunsResponse,
+    MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeLineageGraph, NodeTypeSpec,
+    ObjectCatalogResponse, ObjectFieldSig, ObjectTypeCatalogItem, ProfilingBundle,
     PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest,
-    SchemaDiff, SchemaDoc, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary, SubgraphInfo,
-    SubgraphQueryParam, TriggerMappingRunRequest, TriggerMappingRunResponse, UpdateDraftRequest,
-    UpdateSubgraphRequest, ValidateSchemaResponse, validate_with_metrics,
+    SchemaDiff, SchemaDoc, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary,
+    SpecDocCompileInput, SpecMappingSyncMeta, StudioCopilotRequest, StudioCopilotResponse,
+    SubgraphInfo, SubgraphQueryParam, TriggerMappingRunRequest, TriggerMappingRunResponse,
+    UpdateDraftRequest, UpdateSubgraphRequest, ValidateSchemaResponse, build_node_lineage,
+    compile_subgraph_spec_doc, validate_with_metrics,
 };
 use axpoint_domain::topology::{BlueNode, UpsertBlueNodeRequest};
-use axpoint_llm::{SchemaDraftInput, generate_schema_draft};
+use axpoint_llm::{
+    CopilotDatasetProfile, CopilotPromptInput, SchemaDraftInput, generate_schema_draft,
+    run_copilot_diagnose, run_copilot_patch,
+};
 use axpoint_security::AuthPrincipal;
 use axum::body::Bytes;
 use axum::extract::State;
+use axum::http::{StatusCode, header::CONTENT_TYPE};
+use axum::response::{IntoResponse as _, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use chrono::Utc;
@@ -91,6 +101,14 @@ pub(crate) fn router() -> Router<AppState> {
             post(reset_dev_subgraph_nodes_handler),
         )
         .route(
+            "/xblue/subgraphs/{slug}/lineage/{node_type}",
+            get(get_node_lineage_handler),
+        )
+        .route(
+            "/xblue/subgraphs/{slug}/spec-doc",
+            get(get_subgraph_spec_doc_handler),
+        )
+        .route(
             "/xblue/schema",
             get(get_schema_handler)
                 .post(save_schema_handler)
@@ -121,6 +139,25 @@ pub(crate) fn router() -> Router<AppState> {
         )
         .route("/xblue/drafts/{id}/discard", post(discard_draft_handler))
         .route("/xblue/drafts/{id}/publish", post(publish_draft_handler))
+        .merge(studio_copilot_and_objects_router())
+        .merge(runtime_graph_router())
+}
+
+fn studio_copilot_and_objects_router() -> Router<AppState> {
+    Router::new()
+        .route("/xblue/drafts/{id}/copilot", post(draft_copilot_handler))
+        .route(
+            "/xblue/drafts/{id}/snapshots",
+            get(list_draft_snapshots_handler),
+        )
+        .route(
+            "/xblue/drafts/{id}/snapshots/{snap_id}/restore",
+            post(restore_draft_snapshot_handler),
+        )
+        .route(
+            "/xblue/drafts/{id}/confirm-proposals",
+            post(confirm_draft_proposals_handler),
+        )
         .route("/xblue/expr/validate", post(validate_expr_handler))
         .route("/xblue/expr/evaluate", post(evaluate_expr_handler))
         .route(
@@ -151,7 +188,6 @@ pub(crate) fn router() -> Router<AppState> {
             "/xblue/graphql/sdl",
             get(xblue_graphql::graphql_sdl_handler),
         )
-        .merge(runtime_graph_router())
 }
 
 fn runtime_graph_router() -> Router<AppState> {
@@ -854,6 +890,436 @@ async fn create_ai_draft_handler(
         )
         .await?;
     Ok(Json(draft))
+}
+
+fn check_draft_edit_owner(principal: &AuthPrincipal, draft: &SchemaDraft) -> Result<(), AppError> {
+    if let Some(creator) = draft.created_by
+        && actor_uuid(principal) != Some(creator)
+        && !principal.has(Permission::StudioPublish)
+    {
+        return Err(AppError::Forbidden("DRAFT_NOT_OWNER"));
+    }
+    Ok(())
+}
+
+async fn load_copilot_dataset_profiles(
+    state: &AppState,
+    tenant_id: &str,
+    req: &StudioCopilotRequest,
+) -> Result<Vec<CopilotDatasetProfile>, AppError> {
+    let Some(refs) = &req.refs else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(refs.dataset_ids.len());
+    for &ds_id in &refs.dataset_ids {
+        let ds = state
+            .store
+            .get_dataset(tenant_id, ds_id)
+            .await?
+            .ok_or(AppError::NotFound("DATASET_NOT_FOUND"))?;
+        out.push(CopilotDatasetProfile::from_dataset(&ds));
+    }
+    Ok(out)
+}
+
+async fn draft_copilot_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(id): ApiPath<Uuid>,
+    ApiJson(req): ApiJson<StudioCopilotRequest>,
+) -> Result<Json<StudioCopilotResponse>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    if req.prompt.trim().is_empty() {
+        return Err(AppError::bad("INVALID_ARGUMENT", "prompt must not be empty").into());
+    }
+    let draft = state
+        .store
+        .get_draft(&principal.tenant_id, id)
+        .await?
+        .ok_or(AppError::NotFound("DRAFT_NOT_FOUND"))?;
+
+    let ds_profiles = load_copilot_dataset_profiles(&state, &principal.tenant_id, &req).await?;
+    let spec_markdown = req
+        .refs
+        .as_ref()
+        .is_some_and(|r| r.include_spec_doc)
+        .then(|| {
+            let sync = BTreeMap::new();
+            compile_subgraph_spec_doc(&SpecDocCompileInput {
+                subgraph_slug: &draft.subgraph_slug,
+                subgraph_display_name: &draft.title,
+                version: draft.base_version,
+                draft_id: Some(draft.id),
+                pass_count: draft.pass_count,
+                doc: &draft.schema_doc,
+                mapping_sync: &sync,
+            })
+            .markdown
+        });
+
+    let studio_ai = state
+        .ai
+        .for_tenant(&principal.tenant_id)
+        .for_user(principal.user_id);
+    let prompt_input = CopilotPromptInput {
+        subgraph_slug: &draft.subgraph_slug,
+        schema_doc: &draft.schema_doc,
+        user_prompt: &req.prompt,
+        focus: req.focus.as_ref(),
+        datasets: &ds_profiles,
+        spec_overview: spec_markdown.as_deref(),
+    };
+
+    match req.mode {
+        CopilotActionMode::DiagnoseOnly => {
+            let diagnosis = run_copilot_diagnose(&studio_ai, &prompt_input).await?;
+            Ok(Json(StudioCopilotResponse {
+                mode: CopilotActionMode::DiagnoseOnly,
+                mutated: false,
+                snapshot_id: None,
+                snapshot_no: None,
+                diagnosis,
+                diff: None,
+                pass_count: draft.pass_count,
+                issues: draft.issues,
+            }))
+        }
+        CopilotActionMode::PatchDraft => {
+            let resp =
+                execute_copilot_patch_turn(&state, &principal, &draft, &studio_ai, &prompt_input)
+                    .await?;
+            Ok(Json(resp))
+        }
+    }
+}
+
+async fn execute_copilot_patch_turn(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    draft: &SchemaDraft,
+    studio_ai: &axpoint_llm::AiGateway,
+    prompt_input: &CopilotPromptInput<'_>,
+) -> Result<StudioCopilotResponse, AppError> {
+    check_draft_edit_owner(principal, draft)?;
+    if draft.status != DraftStatus::Draft {
+        return Err(AppError::Conflict("VERSION_CONFLICT"));
+    }
+    let outcome = run_copilot_patch(studio_ai, prompt_input).await?;
+    if outcome.mutated {
+        let (snap, updated) = state
+            .store
+            .apply_copilot_patch_with_snapshot(
+                &principal.tenant_id,
+                draft.id,
+                actor_uuid(principal),
+                outcome.patched_doc,
+            )
+            .await?;
+        Ok(StudioCopilotResponse {
+            mode: CopilotActionMode::PatchDraft,
+            mutated: true,
+            snapshot_id: Some(snap.id),
+            snapshot_no: Some(snap.snapshot_no),
+            diagnosis: outcome.diagnosis,
+            diff: Some(outcome.diff),
+            pass_count: updated.pass_count,
+            issues: updated.issues,
+        })
+    } else {
+        Ok(StudioCopilotResponse {
+            mode: CopilotActionMode::PatchDraft,
+            mutated: false,
+            snapshot_id: None,
+            snapshot_no: None,
+            diagnosis: outcome.diagnosis,
+            diff: Some(outcome.diff),
+            pass_count: draft.pass_count,
+            issues: draft.issues.clone(),
+        })
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListDraftSnapshotsQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+async fn list_draft_snapshots_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(id): ApiPath<Uuid>,
+    ApiQuery(query): ApiQuery<ListDraftSnapshotsQuery>,
+) -> Result<Json<DraftSnapshotListResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let items = state
+        .store
+        .list_draft_snapshots(&principal.tenant_id, id, query.limit.unwrap_or(20))
+        .await?;
+    Ok(Json(DraftSnapshotListResponse { items }))
+}
+
+async fn restore_draft_snapshot_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath((id, snap_id)): ApiPath<(Uuid, Uuid)>,
+) -> Result<Json<SchemaDraft>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    let existing = state
+        .store
+        .get_draft(&principal.tenant_id, id)
+        .await?
+        .ok_or(AppError::NotFound("DRAFT_NOT_FOUND"))?;
+    check_draft_edit_owner(&principal, &existing)?;
+
+    let restored = state
+        .store
+        .restore_draft_snapshot(&principal.tenant_id, id, snap_id)
+        .await?;
+
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    state.audit.record(AuditRecord {
+        tenant_id: principal.tenant_id.clone(),
+        user_id: actor_uuid(&principal),
+        username: principal.username.clone(),
+        action: AuditAction::StudioSnapshotRestore,
+        resource_ref: format!("xblue:draft:{id}:snapshot:{snap_id}"),
+        status_code: 200,
+        client_ip,
+        trace_id: current_trace_id(),
+        detail_json: serde_json::json!({
+            "draft_id": id,
+            "snapshot_id": snap_id,
+            "subgraph_slug": restored.subgraph_slug,
+            "pass_count": restored.pass_count,
+        }),
+        created_at: Utc::now(),
+    });
+    if let Err(err) = state.audit.flush().await {
+        tracing::warn!(error = %err, "xblue studio snapshot restore audit flush failed");
+    }
+
+    Ok(Json(restored))
+}
+
+async fn confirm_draft_proposals_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(id): ApiPath<Uuid>,
+    body: Bytes,
+) -> Result<Json<SchemaDraft>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    let existing = state
+        .store
+        .get_draft(&principal.tenant_id, id)
+        .await?
+        .ok_or(AppError::NotFound("DRAFT_NOT_FOUND"))?;
+    check_draft_edit_owner(&principal, &existing)?;
+
+    let req: ConfirmProposalsRequest = parse_optional_json(&body)?;
+    let updated = state
+        .store
+        .confirm_draft_proposals(&principal.tenant_id, id, actor_uuid(&principal), req)
+        .await?;
+    Ok(Json(updated))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LineageQuery {
+    #[serde(default)]
+    draft_id: Option<Uuid>,
+}
+
+async fn authorize_subgraph_read(
+    state: &AppState,
+    headers: &axum::http::HeaderMap,
+    principal: &AuthPrincipal,
+    slug: &str,
+) -> Result<(), AppError> {
+    if slug != "main" {
+        let client_ip = crate::routes::auth::extract_client_ip(headers);
+        let _ = axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            principal,
+            Permission::DataRead,
+            axpoint_domain::guard::GrantResourceKind::Subgraph,
+            slug,
+            &client_ip,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn get_node_lineage_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath((slug, node_type)): ApiPath<(String, String)>,
+    ApiQuery(query): ApiQuery<LineageQuery>,
+) -> Result<Json<NodeLineageGraph>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let clean_slug = slug.trim();
+    let clean_node = node_type.trim();
+    authorize_subgraph_read(&state, &headers, &principal, clean_slug).await?;
+
+    let doc = if let Some(did) = query.draft_id {
+        let draft = state
+            .store
+            .get_draft(&principal.tenant_id, did)
+            .await?
+            .ok_or(AppError::NotFound("DRAFT_NOT_FOUND"))?;
+        if draft.subgraph_slug != clean_slug {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                "draft does not belong to target subgraph",
+            )
+            .into());
+        }
+        draft.schema_doc
+    } else {
+        state
+            .store
+            .get_published_schema(&principal.tenant_id, clean_slug)
+            .await?
+            .doc
+    };
+
+    let val_ctx = state
+        .store
+        .load_validation_context(&principal.tenant_id, clean_slug)
+        .await?;
+    let mut dataset_columns: BTreeMap<String, BTreeMap<String, DataType>> = BTreeMap::new();
+    for (key, meta) in val_ctx.datasets {
+        dataset_columns.insert(key, meta.columns);
+    }
+    let downstream = state
+        .store
+        .list_node_downstream_consumers(&principal.tenant_id, clean_node)
+        .await?;
+
+    let graph = build_node_lineage(clean_slug, &doc, clean_node, &dataset_columns, &downstream)?;
+    Ok(Json(graph))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpecDocQuery {
+    #[serde(default)]
+    draft_id: Option<Uuid>,
+    #[serde(default)]
+    format: Option<String>,
+}
+
+async fn load_spec_mapping_sync_map(
+    state: &AppState,
+    tenant_id: &str,
+    slug: &str,
+) -> Result<BTreeMap<String, SpecMappingSyncMeta>, AppError> {
+    let mappings = state.store.list_mappings(tenant_id, slug).await?;
+    let mut sync_map = BTreeMap::new();
+    for m in mappings {
+        let runs = state.store.list_mapping_runs(tenant_id, m.id, 1).await?;
+        if let Some(latest) = runs.first() {
+            sync_map.insert(
+                m.name.clone(),
+                SpecMappingSyncMeta {
+                    mapping_name: m.name,
+                    last_status: String::from(latest.status.as_str()),
+                    nodes_upserted: latest.nodes_upserted,
+                },
+            );
+        }
+    }
+    Ok(sync_map)
+}
+
+async fn get_subgraph_spec_doc_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath(slug): ApiPath<String>,
+    ApiQuery(query): ApiQuery<SpecDocQuery>,
+) -> Result<Response, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let clean_slug = slug.trim();
+    authorize_subgraph_read(&state, &headers, &principal, clean_slug).await?;
+
+    let want_markdown = match query.format.as_deref().map(str::trim) {
+        None | Some("" | "json" | "JSON") => false,
+        Some("markdown" | "MARKDOWN") => true,
+        Some(other) => {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                format!("unsupported spec-doc format '{other}'; expected json or markdown"),
+            )
+            .into());
+        }
+    };
+
+    let subgraphs = state.store.list_subgraphs(&principal.tenant_id).await?;
+    let sub_info = subgraphs
+        .into_iter()
+        .find(|s| s.slug == clean_slug)
+        .ok_or(AppError::NotFound("SUBGRAPH_NOT_FOUND"))?;
+
+    let (doc, version, pass_count, draft_id) = if let Some(did) = query.draft_id {
+        let draft = state
+            .store
+            .get_draft(&principal.tenant_id, did)
+            .await?
+            .ok_or(AppError::NotFound("DRAFT_NOT_FOUND"))?;
+        if draft.subgraph_slug != clean_slug {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                "draft does not belong to target subgraph",
+            )
+            .into());
+        }
+        (
+            draft.schema_doc,
+            draft.base_version,
+            draft.pass_count,
+            Some(did),
+        )
+    } else {
+        let published = state
+            .store
+            .get_published_schema(&principal.tenant_id, clean_slug)
+            .await?;
+        let val_ctx = state
+            .store
+            .load_validation_context(&principal.tenant_id, clean_slug)
+            .await?;
+        let summary = validate_with_metrics(&published.doc, &val_ctx);
+        (published.doc, published.version, summary.pass_count, None)
+    };
+
+    let mapping_sync = load_spec_mapping_sync_map(&state, &principal.tenant_id, clean_slug).await?;
+    let spec_doc = compile_subgraph_spec_doc(&SpecDocCompileInput {
+        subgraph_slug: clean_slug,
+        subgraph_display_name: &sub_info.display_name,
+        version,
+        draft_id,
+        pass_count,
+        doc: &doc,
+        mapping_sync: &mapping_sync,
+    });
+
+    if want_markdown {
+        Ok((
+            StatusCode::OK,
+            [(CONTENT_TYPE, "text/markdown; charset=utf-8")],
+            spec_doc.markdown,
+        )
+            .into_response())
+    } else {
+        Ok(Json(spec_doc).into_response())
+    }
 }
 
 async fn build_profiling_bundle(

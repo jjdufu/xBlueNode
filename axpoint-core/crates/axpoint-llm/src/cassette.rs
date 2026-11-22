@@ -69,8 +69,8 @@ pub struct CassetteEntry {
     /// Entry category (defaults to `"chat"`).
     #[serde(default = "default_entry_kind")]
     pub kind: String,
-    /// Recorded assistant text response.
-    #[serde(default)]
+    /// Recorded assistant text response (accepts string or inline JSON object/array in `.json` cassettes).
+    #[serde(default, deserialize_with = "deserialize_response_text")]
     pub response: String,
     /// Optional recorded assistant tool calls (`08-STEP09`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -79,6 +79,18 @@ pub struct CassetteEntry {
 
 fn default_entry_kind() -> String {
     String::from("chat")
+}
+
+fn deserialize_response_text<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let val = serde_json::Value::deserialize(deserializer)?;
+    match val {
+        serde_json::Value::Null => Ok(String::new()),
+        serde_json::Value::String(s) => Ok(s),
+        other => serde_json::to_string(&other).map_err(serde::de::Error::custom),
+    }
 }
 
 /// Computes the lowercase hex-encoded `SHA-256` digest of `input`.
@@ -603,11 +615,17 @@ fn resolve_record_target(path: &Path) -> PathBuf {
     if path.is_file() {
         return path.to_path_buf();
     }
-    if path.extension().and_then(OsStr::to_str) == Some("jsonl") {
+    if is_cassette_extension(path) {
         path.to_path_buf()
     } else {
         path.join("recorded.jsonl")
     }
+}
+
+fn is_cassette_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl") || ext.eq_ignore_ascii_case("json"))
 }
 
 fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), AppError> {
@@ -634,9 +652,7 @@ fn collect_jsonl_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), AppErro
     for entry_path in entries {
         if entry_path.is_dir() {
             collect_jsonl_files(&entry_path, out)?;
-        } else if entry_path.is_file()
-            && entry_path.extension().and_then(OsStr::to_str) == Some("jsonl")
-        {
+        } else if entry_path.is_file() && is_cassette_extension(&entry_path) {
             out.push(entry_path);
         }
     }
@@ -735,6 +751,28 @@ fn load_jsonl_file(file_path: &Path, state: &mut CassetteState) -> Result<(), Ap
             file_path.display()
         ))
     })?;
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(());
+    }
+
+    if trimmed.starts_with('[') {
+        let list: Vec<CassetteEntry> = serde_json::from_str(trimmed).map_err(|err| {
+            AppError::Llm(format!(
+                "invalid cassette JSON array in {}: {err}",
+                file_path.display()
+            ))
+        })?;
+        for (idx, entry) in list.into_iter().enumerate() {
+            register_cassette_entry(file_path, idx.saturating_add(1), entry, state)?;
+        }
+        return Ok(());
+    }
+
+    if let Ok(single) = serde_json::from_str::<CassetteEntry>(trimmed) {
+        return register_cassette_entry(file_path, 1, single, state);
+    }
 
     for (idx, raw_line) in raw.lines().enumerate() {
         let line = raw_line.trim();
@@ -957,6 +995,78 @@ mod tests {
         assert_eq!(plain, r#"{"sql":"SELECT 1","explanation":"fallback"}"#);
 
         fs::remove_file(&path).map_err(|err| AppError::Llm(err.to_string()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn cassette_loads_json_single_object_array_and_jsonl_in_directory() -> Result<(), AppError> {
+        let dir = env::temp_dir().join(format!(
+            "axpoint_cassette_mixed_dir_{}",
+            Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&dir).map_err(|err| AppError::Llm(err.to_string()))?;
+
+        let single_json = r#"{
+  "match_all": ["完备度体检", "Warehouse"],
+  "response_schema_name": "axpoint_studio_copilot_diagnosis",
+  "kind": "chat",
+  "response": {
+    "summary": "Warehouse 缺少数据集映射",
+    "findings": []
+  }
+}"#;
+        fs::write(dir.join("01_single.json"), single_json)
+            .map_err(|err| AppError::Llm(err.to_string()))?;
+
+        let array_json = r#"[
+  {
+    "match_all": ["safety_stock", "shortage_gap"],
+    "response_schema_name": "axpoint_studio_copilot_patch",
+    "kind": "chat",
+    "response": "{\"patched\":1}"
+  },
+  {
+    "match_all": ["safety_stock"],
+    "exclude_any": ["shortage_gap"],
+    "response_schema_name": "axpoint_studio_copilot_patch",
+    "kind": "chat",
+    "response": "{\"patched\":2}"
+  }
+]"#;
+        fs::write(dir.join("02_array.json"), array_json)
+            .map_err(|err| AppError::Llm(err.to_string()))?;
+
+        let jsonl_lines =
+            "{\"match_substring\":\"legacy-jsonl\",\"kind\":\"chat\",\"response\":\"jsonl-ok\"}\n";
+        fs::write(dir.join("03_lines.jsonl"), jsonl_lines)
+            .map_err(|err| AppError::Llm(err.to_string()))?;
+
+        let cassette = Cassette::open(&dir, CassetteMode::Replay)?;
+        let diag = cassette.lookup_chat_with_schema(
+            "sys",
+            "完备度体检：Warehouse",
+            Some("axpoint_studio_copilot_diagnosis"),
+        )?;
+        assert!(diag.contains("Warehouse 缺少数据集映射"));
+
+        let p1 = cassette.lookup_chat_with_schema(
+            "sys",
+            "add safety_stock and shortage_gap",
+            Some("axpoint_studio_copilot_patch"),
+        )?;
+        assert_eq!(p1, r#"{"patched":1}"#);
+
+        let p2 = cassette.lookup_chat_with_schema(
+            "sys",
+            "add safety_stock only",
+            Some("axpoint_studio_copilot_patch"),
+        )?;
+        assert_eq!(p2, r#"{"patched":2}"#);
+
+        let jl = cassette.lookup_chat("sys", "test legacy-jsonl hit")?;
+        assert_eq!(jl, "jsonl-ok");
+
+        fs::remove_dir_all(&dir).map_err(|err| AppError::Llm(err.to_string()))?;
         Ok(())
     }
 }

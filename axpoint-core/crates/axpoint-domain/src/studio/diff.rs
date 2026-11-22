@@ -121,6 +121,19 @@ fn diff_single_node_type(old_nt: &NodeTypeSpec, new_nt: &NodeTypeSpec) -> Vec<Fi
     );
     push_if_f64_ne(&mut fields, "pos_x", old_nt.pos_x, new_nt.pos_x);
     push_if_f64_ne(&mut fields, "pos_y", old_nt.pos_y, new_nt.pos_y);
+    push_if_eq_ne(&mut fields, "maturity", &old_nt.maturity, &new_nt.maturity);
+    push_if_eq_ne(
+        &mut fields,
+        "semantic_layer_tier",
+        &old_nt.semantic_layer_tier,
+        &new_nt.semantic_layer_tier,
+    );
+    push_if_eq_ne(
+        &mut fields,
+        "domain_group",
+        &old_nt.domain_group,
+        &new_nt.domain_group,
+    );
 
     diff_properties(&old_nt.properties, &new_nt.properties, &mut fields);
     diff_agg_rules(&old_nt.agg_rules, &new_nt.agg_rules, &mut fields);
@@ -215,6 +228,12 @@ fn diff_single_property(
         &format!("properties[{name}].allowed_values"),
         &old_p.allowed_values,
         &new_p.allowed_values,
+    );
+    push_if_eq_ne(
+        fields,
+        &format!("properties[{name}].maturity"),
+        &old_p.maturity,
+        &new_p.maturity,
     );
 }
 
@@ -402,6 +421,7 @@ fn diff_edge_types(before: &[EdgeTypeSpec], after: &[EdgeTypeSpec]) -> SectionDi
                 &old_e.propagation,
                 &new_e.propagation,
             );
+            push_if_eq_ne(&mut fields, "maturity", &old_e.maturity, &new_e.maturity);
             if !fields.is_empty() {
                 changed.push(ChangedItemDiff {
                     name: key.clone(),

@@ -6,6 +6,7 @@ pub mod router;
 pub mod schema_draft;
 pub mod stream;
 pub mod structured;
+pub mod studio_copilot;
 pub mod tools;
 
 use std::fmt::Write as _;
@@ -34,6 +35,16 @@ pub use schema_draft::{
 };
 use serde::{Deserialize, Serialize};
 pub use stream::{consume_sse_byte_stream, consume_sse_response};
+pub use studio_copilot::{
+    COPILOT_DIAGNOSIS_SCHEMA_NAME, COPILOT_PATCH_SCHEMA_NAME, CopilotAggRulePatch,
+    CopilotColumnProfile, CopilotDatasetProfile, CopilotDerivedRulePatch, CopilotEdgeTypePatch,
+    CopilotNodeAggRuleUpsert, CopilotNodeDerivedRuleUpsert, CopilotNodePropertyUpsert,
+    CopilotNodeTypePatch, CopilotPatchEnvelope, CopilotPatchOutcome, CopilotPromptInput,
+    CopilotPropertyPatch, STUDIO_COPILOT_DIAGNOSE_SYSTEM_PROMPT,
+    STUDIO_COPILOT_PATCH_SYSTEM_PROMPT, apply_copilot_patch, build_copilot_user_prompt,
+    copilot_diagnosis_schema, copilot_patch_envelope_schema, run_copilot_diagnose,
+    run_copilot_patch,
+};
 pub use tools::{TokenUsage, ToolChatMessage, ToolChatTurn, ToolDefinition, ToolFunctionDef};
 use tracing::warn;
 use uuid::Uuid;

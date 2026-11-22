@@ -12,15 +12,17 @@ use axpoint_domain::graph::GeoPoint;
 use axpoint_domain::platform::NewJob;
 use axpoint_domain::ports::StudioRepository;
 use axpoint_domain::studio::{
-    AggRuleSpec, CreateDraftRequest, CreateSubgraphRequest, DatasetValidationMeta, DerivedRuleSpec,
-    DocEntityGroup, DomainObjectListQuery, DraftSource, DraftStatus, EdgeTypeSpec, IssueSeverity,
-    LinkDirection, MappingMode, MappingRecord, MappingRejectSample, MappingRunRecord,
-    MappingRunStatus, MappingSpec, MergePreview, MergePreviewRequest, MergeSubgraphRequest,
-    NodeTypeSpec, PropertySpec, PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse,
-    SaveSchemaDirectRequest, SchemaDiff, SchemaDoc, SchemaDraft, SchemaVersionDetail,
-    SchemaVersionSummary, SubgraphInfo, TriggerMappingRunRequest, TriggerMappingRunResponse,
-    UpdateDraftRequest, UpdateSubgraphRequest, ValidationContext, ValidationIssue, apply_merge,
-    diff_schema, preview_merge, validate, validate_with_metrics,
+    AggRuleSpec, ConfirmProposalsRequest, CreateDraftRequest, CreateSubgraphRequest,
+    DatasetValidationMeta, DerivedRuleSpec, DocEntityGroup, DomainObjectListQuery,
+    DownstreamConsumerBinding, DownstreamConsumerKind, DraftSnapshotReason, DraftSnapshotSummary,
+    DraftSource, DraftStatus, EdgeTypeSpec, IssueSeverity, LinkDirection, MappingMode,
+    MappingRecord, MappingRejectSample, MappingRunRecord, MappingRunStatus, MappingSpec,
+    MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeTypeSpec, PropertySpec,
+    PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest,
+    SchemaDiff, SchemaDoc, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary, SubgraphInfo,
+    TriggerMappingRunRequest, TriggerMappingRunResponse, UpdateDraftRequest, UpdateSubgraphRequest,
+    ValidationContext, ValidationIssue, apply_merge, diff_schema, preview_merge,
+    validate_with_metrics,
 };
 use axpoint_domain::topology::BlueNode;
 use chrono::{DateTime, Utc};
@@ -568,6 +570,22 @@ async fn insert_draft_tx(
     decode_draft_row(&row)
 }
 
+fn verify_publish_issues(issues: &[ValidationIssue], force: bool) -> Result<(), AppError> {
+    if issues.iter().any(|i| i.severity == IssueSeverity::Error) {
+        let summary = issues
+            .iter()
+            .filter(|i| i.severity == IssueSeverity::Error)
+            .map(|i| format!("{}: {} ({})", i.code, i.message, i.path))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(AppError::bad("SCHEMA_INVALID", summary));
+    }
+    if !force && issues.iter().any(|i| i.code == "BREAKING_CHANGE") {
+        return Err(AppError::Conflict("SCHEMA_BREAKING_CHANGE"));
+    }
+    Ok(())
+}
+
 async fn publish_draft_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
@@ -575,18 +593,12 @@ async fn publish_draft_tx(
     actor_user_id: Option<Uuid>,
     req: &PublishDraftRequest,
 ) -> Result<PublishDraftResponse, AppError> {
-    let draft_row =
-        sqlx::query("SELECT * FROM xb_schema_drafts WHERE tenant_id = $1 AND id = $2 FOR UPDATE")
-            .bind(tenant_id)
-            .bind(draft_id)
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(|err| AppError::Database(format!("select draft for publish failed: {err}")))?
-            .ok_or(AppError::NotFound("DRAFT_NOT_FOUND"))?;
-
-    let draft = decode_draft_row(&draft_row)?;
-    if draft.status != DraftStatus::Draft {
-        return Err(AppError::Conflict("VERSION_CONFLICT"));
+    let draft = lock_editable_draft_tx(tx, tenant_id, draft_id).await?;
+    if draft.schema_doc.has_unconfirmed_proposals() {
+        return Err(AppError::bad(
+            "UNCONFIRMED_PROPOSALS_REMAIN",
+            "draft contains unconfirmed PROPOSED elements; confirm proposals before publishing",
+        ));
     }
 
     let lock_key = format!("{tenant_id}:xblue_publish:{}", draft.subgraph_slug);
@@ -604,23 +616,11 @@ async fn publish_draft_tx(
     }
 
     let ctx = load_validation_context_tx(tx, tenant_id, &draft.subgraph_slug).await?;
-    let issues = validate(&draft.schema_doc, &ctx);
-    let issues_json = serde_json::to_value(&issues)
+    let val_summary = validate_with_metrics(&draft.schema_doc, &ctx);
+    let pass_count_i32 = i32::try_from(val_summary.pass_count).unwrap_or(i32::MAX);
+    verify_publish_issues(&val_summary.issues, req.force)?;
+    let issues_json = serde_json::to_value(&val_summary.issues)
         .map_err(|err| AppError::Database(format!("serialize publish issues failed: {err}")))?;
-
-    if issues.iter().any(|i| i.severity == IssueSeverity::Error) {
-        let summary = issues
-            .iter()
-            .filter(|i| i.severity == IssueSeverity::Error)
-            .map(|i| format!("{}: {} ({})", i.code, i.message, i.path))
-            .collect::<Vec<_>>()
-            .join("; ");
-        return Err(AppError::bad("SCHEMA_INVALID", summary));
-    }
-
-    if !req.force && issues.iter().any(|i| i.code == "BREAKING_CHANGE") {
-        return Err(AppError::Conflict("SCHEMA_BREAKING_CHANGE"));
-    }
 
     let prev_doc = ctx.current_doc.unwrap_or_default();
     let diff = diff_schema(&prev_doc, &draft.schema_doc);
@@ -648,6 +648,7 @@ async fn publish_draft_tx(
             published_doc: &published_doc,
             diff: &diff,
             issues_json: &issues_json,
+            pass_count: pass_count_i32,
             change_summary: &req.change_summary,
             actor_user_id,
         },
@@ -1007,6 +1008,7 @@ struct PublishVersionRecord<'a> {
     published_doc: &'a SchemaDoc,
     diff: &'a SchemaDiff,
     issues_json: &'a serde_json::Value,
+    pass_count: i32,
     change_summary: &'a str,
     actor_user_id: Option<Uuid>,
 }
@@ -1056,10 +1058,12 @@ async fn persist_published_version_tx(
         "UPDATE xb_schema_drafts
             SET status = 'PUBLISHED',
                 issues = $1,
+                pass_count = $2,
                 updated_at = NOW()
-          WHERE tenant_id = $2 AND id = $3",
+          WHERE tenant_id = $3 AND id = $4",
     )
     .bind(rec.issues_json)
+    .bind(rec.pass_count)
     .bind(tenant_id)
     .bind(rec.draft.id)
     .execute(&mut **tx)
@@ -2507,6 +2511,432 @@ impl StudioRepository for PgStore {
         })?;
         Ok(groups.into_values().collect())
     }
+
+    async fn list_draft_snapshots(
+        &self,
+        tenant_id: &str,
+        draft_id: Uuid,
+        limit: u32,
+    ) -> Result<Vec<DraftSnapshotSummary>, AppError> {
+        let capped = i64::from(limit.clamp(1, 100));
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+
+        let exists = sqlx::query("SELECT 1 FROM xb_schema_drafts WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id)
+            .bind(draft_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(|err| AppError::Database(format!("check draft exists failed: {err}")))?;
+        if exists.is_none() {
+            return Err(AppError::NotFound("DRAFT_NOT_FOUND"));
+        }
+
+        let rows = sqlx::query(
+            "SELECT id, draft_id, snapshot_no, reason, created_by, created_at
+               FROM xb_schema_draft_snapshots
+              WHERE tenant_id = $1 AND draft_id = $2
+              ORDER BY snapshot_no DESC
+              LIMIT $3",
+        )
+        .bind(tenant_id)
+        .bind(draft_id)
+        .bind(capped)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("list_draft_snapshots failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit list_draft_snapshots tx failed: {err}"))
+        })?;
+
+        rows.iter().map(decode_snapshot_summary_row).collect()
+    }
+
+    async fn apply_copilot_patch_with_snapshot(
+        &self,
+        tenant_id: &str,
+        draft_id: Uuid,
+        actor_user_id: Option<Uuid>,
+        patched_doc: SchemaDoc,
+    ) -> Result<(DraftSnapshotSummary, SchemaDraft), AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let existing = lock_editable_draft_tx(&mut tx, tenant_id, draft_id).await?;
+
+        let snap = insert_draft_snapshot_tx(
+            &mut tx,
+            tenant_id,
+            draft_id,
+            DraftSnapshotReason::CopilotPatch,
+            &existing.schema_doc,
+            actor_user_id,
+        )
+        .await?;
+
+        let updated = persist_draft_doc_tx(
+            &mut tx,
+            tenant_id,
+            draft_id,
+            &existing.subgraph_slug,
+            &patched_doc,
+        )
+        .await?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!(
+                "commit apply_copilot_patch_with_snapshot tx failed: {err}"
+            ))
+        })?;
+
+        Ok((snap, updated))
+    }
+
+    async fn restore_draft_snapshot(
+        &self,
+        tenant_id: &str,
+        draft_id: Uuid,
+        snapshot_id: Uuid,
+    ) -> Result<SchemaDraft, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let existing = lock_editable_draft_tx(&mut tx, tenant_id, draft_id).await?;
+
+        let snap_row = sqlx::query(
+            "SELECT schema_doc FROM xb_schema_draft_snapshots
+              WHERE tenant_id = $1 AND draft_id = $2 AND id = $3",
+        )
+        .bind(tenant_id)
+        .bind(draft_id)
+        .bind(snapshot_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("load draft snapshot failed: {err}")))?
+        .ok_or(AppError::NotFound("STUDIO_SNAPSHOT_NOT_FOUND"))?;
+
+        let restored_doc: SchemaDoc = serde_json::from_value(snap_row.get("schema_doc"))
+            .map_err(|err| AppError::Database(format!("decode snapshot schema_doc: {err}")))?;
+
+        let updated = persist_draft_doc_tx(
+            &mut tx,
+            tenant_id,
+            draft_id,
+            &existing.subgraph_slug,
+            &restored_doc,
+        )
+        .await?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit restore_draft_snapshot tx failed: {err}"))
+        })?;
+
+        Ok(updated)
+    }
+
+    async fn confirm_draft_proposals(
+        &self,
+        tenant_id: &str,
+        draft_id: Uuid,
+        actor_user_id: Option<Uuid>,
+        req: ConfirmProposalsRequest,
+    ) -> Result<SchemaDraft, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let existing = lock_editable_draft_tx(&mut tx, tenant_id, draft_id).await?;
+
+        let _ = insert_draft_snapshot_tx(
+            &mut tx,
+            tenant_id,
+            draft_id,
+            DraftSnapshotReason::BatchConfirm,
+            &existing.schema_doc,
+            actor_user_id,
+        )
+        .await?;
+
+        let mut confirmed_doc = existing.schema_doc.clone();
+        confirmed_doc.confirm_proposals(&req);
+
+        let updated = persist_draft_doc_tx(
+            &mut tx,
+            tenant_id,
+            draft_id,
+            &existing.subgraph_slug,
+            &confirmed_doc,
+        )
+        .await?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit confirm_draft_proposals tx failed: {err}"))
+        })?;
+
+        Ok(updated)
+    }
+
+    async fn list_node_downstream_consumers(
+        &self,
+        tenant_id: &str,
+        node_type: &str,
+    ) -> Result<Vec<DownstreamConsumerBinding>, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let mut out = Vec::new();
+        query_rule_consumers_tx(&mut tx, tenant_id, node_type, &mut out).await?;
+        query_endpoint_consumers_tx(&mut tx, tenant_id, node_type, &mut out).await?;
+        query_dashboard_consumers_tx(&mut tx, tenant_id, node_type, &mut out).await?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!(
+                "commit list_node_downstream_consumers tx failed: {err}"
+            ))
+        })?;
+        Ok(out)
+    }
+}
+
+const MAX_DRAFT_SNAPSHOTS_RETAINED: i32 = 20;
+
+fn decode_snapshot_summary_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<DraftSnapshotSummary, AppError> {
+    let reason = DraftSnapshotReason::from_str(&row.get::<String, _>("reason"))?;
+    Ok(DraftSnapshotSummary {
+        id: row.get("id"),
+        draft_id: row.get("draft_id"),
+        snapshot_no: row.get("snapshot_no"),
+        reason,
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+    })
+}
+
+async fn lock_editable_draft_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    draft_id: Uuid,
+) -> Result<SchemaDraft, AppError> {
+    let row =
+        sqlx::query("SELECT * FROM xb_schema_drafts WHERE tenant_id = $1 AND id = $2 FOR UPDATE")
+            .bind(tenant_id)
+            .bind(draft_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(|err| AppError::Database(format!("lock xb_schema_drafts failed: {err}")))?
+            .ok_or(AppError::NotFound("DRAFT_NOT_FOUND"))?;
+
+    let draft = decode_draft_row(&row)?;
+    if draft.status != DraftStatus::Draft {
+        return Err(AppError::Conflict("VERSION_CONFLICT"));
+    }
+    Ok(draft)
+}
+
+async fn insert_draft_snapshot_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    draft_id: Uuid,
+    reason: DraftSnapshotReason,
+    pre_doc: &SchemaDoc,
+    actor_user_id: Option<Uuid>,
+) -> Result<DraftSnapshotSummary, AppError> {
+    let next_row = sqlx::query(
+        "SELECT COALESCE(MAX(snapshot_no), 0) + 1 AS next_no
+           FROM xb_schema_draft_snapshots
+          WHERE tenant_id = $1 AND draft_id = $2",
+    )
+    .bind(tenant_id)
+    .bind(draft_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("compute next snapshot_no failed: {err}")))?;
+    let next_no: i32 = next_row.get("next_no");
+
+    let doc_json = serde_json::to_value(pre_doc)
+        .map_err(|err| AppError::Database(format!("serialize snapshot schema_doc: {err}")))?;
+
+    let snap_row = sqlx::query(
+        "INSERT INTO xb_schema_draft_snapshots (
+             tenant_id, draft_id, snapshot_no, reason, schema_doc, created_by
+         )
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING id, draft_id, snapshot_no, reason, created_by, created_at",
+    )
+    .bind(tenant_id)
+    .bind(draft_id)
+    .bind(next_no)
+    .bind(reason.as_str())
+    .bind(doc_json)
+    .bind(actor_user_id)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("insert xb_schema_draft_snapshots failed: {err}")))?;
+
+    let prune_cutoff = next_no.saturating_sub(MAX_DRAFT_SNAPSHOTS_RETAINED);
+    if prune_cutoff > 0 {
+        sqlx::query(
+            "DELETE FROM xb_schema_draft_snapshots
+              WHERE tenant_id = $1 AND draft_id = $2 AND snapshot_no <= $3",
+        )
+        .bind(tenant_id)
+        .bind(draft_id)
+        .bind(prune_cutoff)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("prune draft snapshots failed: {err}")))?;
+    }
+
+    decode_snapshot_summary_row(&snap_row)
+}
+
+async fn persist_draft_doc_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    draft_id: Uuid,
+    subgraph_slug: &str,
+    next_doc: &SchemaDoc,
+) -> Result<SchemaDraft, AppError> {
+    let ctx = load_validation_context_tx(tx, tenant_id, subgraph_slug).await?;
+    let val_summary = validate_with_metrics(next_doc, &ctx);
+    let pass_count_i32 = i32::try_from(val_summary.pass_count).unwrap_or(i32::MAX);
+    let doc_json = serde_json::to_value(next_doc)
+        .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid schema_doc: {err}")))?;
+    let issues_json = serde_json::to_value(&val_summary.issues)
+        .map_err(|err| AppError::Database(format!("serialize draft issues: {err}")))?;
+
+    let row = sqlx::query(
+        "UPDATE xb_schema_drafts
+            SET schema_doc = $3,
+                issues = $4,
+                pass_count = $5,
+                updated_at = NOW()
+          WHERE tenant_id = $1 AND id = $2
+         RETURNING *",
+    )
+    .bind(tenant_id)
+    .bind(draft_id)
+    .bind(doc_json)
+    .bind(issues_json)
+    .bind(pass_count_i32)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("update xb_schema_drafts failed: {err}")))?;
+
+    decode_draft_row(&row)
+}
+
+async fn query_rule_consumers_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    node_type: &str,
+    out: &mut Vec<DownstreamConsumerBinding>,
+) -> Result<(), AppError> {
+    let rows = sqlx::query(
+        "SELECT name, description, title_template, target->>'metric' AS metric
+           FROM ax_rules
+          WHERE tenant_id = $1
+            AND scope_kind = 'METRIC'
+            AND (target->>'type_name' = $2 OR target->>'type_name' IS NULL)
+          ORDER BY name ASC",
+    )
+    .bind(tenant_id)
+    .bind(node_type)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("query ax_rules consumers failed: {err}")))?;
+
+    for r in rows {
+        let name: String = r.get("name");
+        let desc: String = r.get("description");
+        let title_tpl: String = r.get("title_template");
+        let metric_opt: Option<String> = r.get("metric");
+        let label = if !desc.trim().is_empty() {
+            desc
+        } else if !title_tpl.trim().is_empty() {
+            title_tpl
+        } else {
+            name.clone()
+        };
+        out.push(DownstreamConsumerBinding {
+            id: format!("rule:{name}"),
+            label,
+            consumer_kind: DownstreamConsumerKind::AlertRule,
+            target_metric: metric_opt.filter(|m| !m.trim().is_empty()),
+        });
+    }
+    Ok(())
+}
+
+async fn query_endpoint_consumers_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    node_type: &str,
+    out: &mut Vec<DownstreamConsumerBinding>,
+) -> Result<(), AppError> {
+    let rows = sqlx::query(
+        "SELECT slug, environment
+           FROM ax_published_endpoints
+          WHERE tenant_id = $1
+            AND kind = 'OBJECT_TYPE'
+            AND target_id = $2
+          ORDER BY slug ASC, environment ASC",
+    )
+    .bind(tenant_id)
+    .bind(node_type)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| {
+        AppError::Database(format!(
+            "query ax_published_endpoints consumers failed: {err}"
+        ))
+    })?;
+
+    let mut seen_ids = BTreeSet::new();
+    for r in rows {
+        let slug: String = r.get("slug");
+        let env: String = r.get("environment");
+        let base_id = format!("ep:{slug}");
+        let id = if seen_ids.insert(base_id.clone()) {
+            base_id
+        } else {
+            format!("ep:{slug}:{}", env.to_ascii_lowercase())
+        };
+        out.push(DownstreamConsumerBinding {
+            id,
+            label: format!("{slug} ({env})"),
+            consumer_kind: DownstreamConsumerKind::Endpoint,
+            target_metric: None,
+        });
+    }
+    Ok(())
+}
+
+async fn query_dashboard_consumers_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    node_type: &str,
+    out: &mut Vec<DownstreamConsumerBinding>,
+) -> Result<(), AppError> {
+    let rows = sqlx::query(
+        "SELECT DISTINCT d.slug, d.name
+           FROM xv_dashboards d
+           JOIN xv_widgets w
+             ON w.tenant_id = d.tenant_id AND w.dashboard_id = d.id
+          WHERE d.tenant_id = $1
+            AND jsonb_typeof(w.deps->'type_names') = 'array'
+            AND (w.deps->'type_names') ? $2
+          ORDER BY d.slug ASC",
+    )
+    .bind(tenant_id)
+    .bind(node_type)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("query xv_dashboards consumers failed: {err}")))?;
+
+    for r in rows {
+        let slug: String = r.get("slug");
+        let name: String = r.get("name");
+        out.push(DownstreamConsumerBinding {
+            id: format!("dash:{slug}"),
+            label: name,
+            consumer_kind: DownstreamConsumerKind::Dashboard,
+            target_metric: None,
+        });
+    }
+    Ok(())
 }
 
 async fn fetch_version_doc_tx(
