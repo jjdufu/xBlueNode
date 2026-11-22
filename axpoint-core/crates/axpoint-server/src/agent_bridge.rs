@@ -290,11 +290,8 @@ impl AgentCapabilityPort for ServerAgentCapability {
                     principal,
                     QueryRequest {
                         sql: String::from(sql),
-                        params: BTreeMap::new(),
                         max_rows: Some(u32::try_from(max_rows.clamp(1, 200)).unwrap_or(200)),
-                        timeout_ms: None,
-                        allow_live: false,
-                        reveal_pii: false,
+                        ..QueryRequest::default()
                     },
                 )
                 .await

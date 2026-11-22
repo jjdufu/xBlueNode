@@ -598,6 +598,13 @@ fn decode_ask_turn_row(row: &sqlx::postgres::PgRow) -> Result<AskTurnRecord, App
     let citations: Vec<AskCitation> = serde_json::from_value(citations_val).unwrap_or_default();
     let raw_fb: Option<String> = row.get("feedback");
     let feedback = raw_fb.as_deref().map(parse_ask_feedback_kind).transpose()?;
+    let raw_gm: String = row.get("grounding_mode");
+    let grounding_mode = raw_gm
+        .parse::<axpoint_domain::enums::GroundingMode>()
+        .unwrap_or_default();
+    let verified_numbers = u32::try_from(row.get::<i32, _>("verified_numbers").max(0)).unwrap_or(0);
+    let verified_citations =
+        u32::try_from(row.get::<i32, _>("verified_citations").max(0)).unwrap_or(0);
 
     Ok(AskTurnRecord {
         id: row.get("id"),
@@ -614,6 +621,11 @@ fn decode_ask_turn_row(row: &sqlx::postgres::PgRow) -> Result<AskTurnRecord, App
         corrected_sql: row.get("corrected_sql"),
         model_name: row.get("model_name"),
         created_at: row.get("created_at"),
+        grounding_mode,
+        verified_numbers,
+        verified_citations,
+        abstained: row.get("abstained"),
+        slot_payload: row.get("slot_payload"),
     })
 }
 
@@ -2488,15 +2500,20 @@ impl AnalyticsRepository for PgStore {
             )
         })?;
 
+        let verified_numbers = i32::try_from(turn.verified_numbers).unwrap_or(i32::MAX);
+        let verified_citations = i32::try_from(turn.verified_citations).unwrap_or(i32::MAX);
+
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         let row = sqlx::query(
             "INSERT INTO an_ask_turns (
                  tenant_id, session_id, user_id, question, intent, linked_objects,
-                 sql_text, result_preview, answer, citations, model_name
+                 sql_text, result_preview, answer, citations, model_name,
+                 grounding_mode, verified_numbers, verified_citations, abstained, slot_payload
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
              RETURNING id, session_id, user_id, question, intent, linked_objects, sql_text,
-                       result_preview, answer, citations, feedback, corrected_sql, model_name, created_at",
+                       result_preview, answer, citations, feedback, corrected_sql, model_name, created_at,
+                       grounding_mode, verified_numbers, verified_citations, abstained, slot_payload",
         )
         .bind(tenant_id)
         .bind(turn.session_id)
@@ -2509,6 +2526,11 @@ impl AnalyticsRepository for PgStore {
         .bind(&turn.answer)
         .bind(citations_json)
         .bind(&turn.model_name)
+        .bind(turn.grounding_mode.as_str())
+        .bind(verified_numbers)
+        .bind(verified_citations)
+        .bind(turn.abstained)
+        .bind(turn.slot_payload)
         .fetch_one(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("insert an_ask_turns failed: {err}")))?;
@@ -2527,7 +2549,8 @@ impl AnalyticsRepository for PgStore {
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         let maybe_row = sqlx::query(
             "SELECT id, session_id, user_id, question, intent, linked_objects, sql_text,
-                    result_preview, answer, citations, feedback, corrected_sql, model_name, created_at
+                    result_preview, answer, citations, feedback, corrected_sql, model_name, created_at,
+                    grounding_mode, verified_numbers, verified_citations, abstained, slot_payload
                FROM an_ask_turns
               WHERE id = $1",
         )
@@ -2558,7 +2581,8 @@ impl AnalyticsRepository for PgStore {
                     corrected_sql = COALESCE($3, corrected_sql)
               WHERE id = $1
               RETURNING id, session_id, user_id, question, intent, linked_objects, sql_text,
-                        result_preview, answer, citations, feedback, corrected_sql, model_name, created_at",
+                        result_preview, answer, citations, feedback, corrected_sql, model_name, created_at,
+                        grounding_mode, verified_numbers, verified_citations, abstained, slot_payload",
         )
         .bind(turn_id)
         .bind(feedback.as_str())
@@ -2581,7 +2605,8 @@ impl AnalyticsRepository for PgStore {
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         let rows = sqlx::query(
             "SELECT id, session_id, user_id, question, intent, linked_objects, sql_text,
-                    result_preview, answer, citations, feedback, corrected_sql, model_name, created_at
+                    result_preview, answer, citations, feedback, corrected_sql, model_name, created_at,
+                    grounding_mode, verified_numbers, verified_citations, abstained, slot_payload
                FROM an_ask_turns
               WHERE session_id = $1
               ORDER BY created_at ASC, id ASC",

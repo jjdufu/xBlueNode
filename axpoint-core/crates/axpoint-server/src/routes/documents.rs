@@ -620,6 +620,7 @@ async fn handle_doc_chat_query(
         detail_json: serde_json::json!({ "hit_count": doc.hits.len() }),
         created_at: Utc::now(),
     });
+    let verified_citations = u32::try_from(doc.citations.len()).unwrap_or(0);
     Ok(ChatQueryResponse {
         answer: doc.answer,
         hits: doc.hits,
@@ -634,6 +635,11 @@ async fn handle_doc_chat_query(
         rows: Vec::new(),
         chart: None,
         related_nodes,
+        grounding_mode: axpoint_domain::enums::GroundingMode::GroundedDoc,
+        verified_numbers: 0,
+        verified_citations,
+        abstained: false,
+        slot_payload: None,
     })
 }
 
@@ -667,6 +673,7 @@ async fn handle_hybrid_chat_query(
             "chart": data.chart,
         })
     });
+    let verified_citations = u32::try_from(doc.citations.len()).unwrap_or(0);
     let turn = state
         .store
         .insert_ask_turn(
@@ -682,6 +689,11 @@ async fn handle_hybrid_chat_query(
                 answer: answer.clone(),
                 citations: doc.citations.clone(),
                 model_name: String::from("axpoint-llm"),
+                grounding_mode: data.grounding_mode,
+                verified_numbers: data.verified_numbers,
+                verified_citations,
+                abstained: data.abstained,
+                slot_payload: data.slot_payload.clone(),
             },
         )
         .await?;
@@ -706,6 +718,11 @@ async fn handle_hybrid_chat_query(
         rows: data.rows,
         chart: data.chart,
         related_nodes,
+        grounding_mode: data.grounding_mode,
+        verified_numbers: data.verified_numbers,
+        verified_citations,
+        abstained: data.abstained,
+        slot_payload: data.slot_payload,
     })
 }
 
@@ -767,6 +784,11 @@ async fn chat_query_handler(
                 rows: ask_resp.rows,
                 chart: ask_resp.chart,
                 related_nodes,
+                grounding_mode: ask_resp.grounding_mode,
+                verified_numbers: ask_resp.verified_numbers,
+                verified_citations: ask_resp.verified_citations,
+                abstained: ask_resp.abstained,
+                slot_payload: ask_resp.slot_payload,
             }))
         }
         AskIntent::Hybrid => Ok(Json(

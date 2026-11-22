@@ -23,6 +23,7 @@
 | 0013 | `0013_axguard_policies.sql` | Step 13 | 登录安全、会话、部门与属性、资源归属与密级、Cedar 策略、行列策略、跨部门授权、PII 位置、审计链 | [11](../../plans/completed/v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.1 |
 | 0014 | `0014_ops_templates_delivery.sql` | Step 14 | 工作项、模板安装、备份记录、审计链锚点 | [12](../../plans/completed/v1-foundation-step00-14/12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.1 |
 | 0015 | `0015_llm_structured_grounding.sql` | Step 15 | 提供方受限解码能力分级、确定性种子、本地小模型标识、个人归属隔离与用户默认模型偏好 | [01-STEP15](../../plans/v2-ux-and-grounded-ai/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.1 |
+| 0016 | `0016_grounded_ask_eval.sql` | Step 16 | 问数轮次接地路径审计列（`grounding_mode`、`verified_numbers`、`verified_citations`、`abstained`、`slot_payload`）与双轨反幻觉评测运行表 `an_grounding_eval_runs` | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.1 |
 | 0017 | `0017_axbuilder_scopes.sql` | Step 17 | `AxBuilder` 构建令牌档位与深链基址、开发子图沙盒元数据、运行态节点 `subgraph_slug` 隔离索引与审计动作扩展 | [03-STEP17](../../plans/v2-ux-and-grounded-ai/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.1 |
 
 Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 中的时序表）。
@@ -53,7 +54,9 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `ds_datasets` | 0003 | 0013（归属、密级） | 02 / 13 | 是 |
 | `xb_metric_series`（按月分区，含 `xb_metric_series_default`） | 0004 | — | 03 | 是 |
 | `xb_metric_rollups`、`xb_rollup_watermarks`、`xb_rollup_dirty`、`xb_entity_links`、`xb_graph_algo_results` | 0004 | — | 03 | 是 |
-| `an_metrics`、`an_saved_queries`、`an_query_history`、`an_ask_turns`、`an_transform_drafts` | 0005 | — | 04 | 是 |
+| `an_metrics`、`an_saved_queries`、`an_query_history`、`an_transform_drafts` | 0005 | — | 04 | 是 |
+| `an_ask_turns` | 0005 | 0016（接地路径与核验计数列） | 04 / 16 | 是 |
+| `an_grounding_eval_runs` | 0016 | — | 16 | 是 |
 | `xb_subgraphs` | 0006 | 0013（密级）、0017（开发沙盒元数据） | 05 / 13 / 17 | 是 |
 | `xb_schema_heads`、`xb_schema_versions`、`xb_schema_drafts`、`xb_mappings`、`xb_mapping_runs` | 0006 | — | 05 / 06 | 是 |
 | `ax_flow_versions`、`ax_flow_deployments`、`ax_flow_runs`、`ax_flow_step_logs`、`ax_action_log`、`ax_flow_hooks` | 0007 | — | 07 | 是 |

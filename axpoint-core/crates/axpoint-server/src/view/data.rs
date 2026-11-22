@@ -463,9 +463,8 @@ where
                     sql: probe_sql,
                     params: params.clone(),
                     max_rows: Some(1),
-                    timeout_ms: None,
                     allow_live: has_live,
-                    reveal_pii: false,
+                    ..QueryRequest::default()
                 },
                 has_live,
                 has_pii_raw,
@@ -483,9 +482,8 @@ where
                 sql: final_sql,
                 params,
                 max_rows: Some(WIDGET_MAX_ROWS_U32),
-                timeout_ms: None,
                 allow_live: has_live,
-                reveal_pii: false,
+                ..QueryRequest::default()
             },
             has_live,
             has_pii_raw,

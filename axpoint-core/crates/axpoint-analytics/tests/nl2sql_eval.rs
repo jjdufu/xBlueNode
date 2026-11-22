@@ -579,6 +579,11 @@ fn convert_session_turns(turns: &[EvalSessionTurn], session_id: Uuid) -> Vec<Ask
                 corrected_sql: None,
                 model_name: String::from("eval"),
                 created_at: now,
+                grounding_mode: axpoint_domain::enums::GroundingMode::GuardedSql,
+                verified_numbers: 0,
+                verified_citations: 0,
+                abstained: false,
+                slot_payload: None,
             }
         })
         .collect()

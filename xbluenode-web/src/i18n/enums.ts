@@ -194,4 +194,10 @@ export const ENUM_LABELS: Readonly<Record<string, BilingualLabel>> = {
   TRIAL_TEMPLATE_CLONE: { zh: "模板沙盒克隆", en: "Sandbox Clone" },
   GENERAL: { zh: "通用令牌", en: "General" },
   BUILDER: { zh: "构建令牌", en: "Builder" },
+  SEMANTIC_METRIC: { zh: "认证指标", en: "Metric" },
+  DOMAIN_OBJECT: { zh: "本体对象", en: "Ontology" },
+  GUARDED_SQL: { zh: "受控 SQL", en: "Guarded SQL" },
+  GROUNDED_DOC: { zh: "原文溯源", en: "Grounded Doc" },
+  ABSTAINED: { zh: "无依据拒答", en: "Abstained" },
+  CLARIFICATION: { zh: "待澄清", en: "Clarify" },
 };

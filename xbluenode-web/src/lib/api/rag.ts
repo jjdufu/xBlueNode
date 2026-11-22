@@ -52,6 +52,7 @@ import type {
   QueryColumn,
   RelatedNodeSummary,
 } from "./analytics";
+import type { GroundingMode } from "./enums";
 
 export interface ChatQueryResponse {
   answer: string;
@@ -67,6 +68,11 @@ export interface ChatQueryResponse {
   rows?: Record<string, unknown>[];
   chart?: ChartSuggestion | null;
   related_nodes?: RelatedNodeSummary[];
+  grounding_mode?: GroundingMode;
+  verified_numbers?: number;
+  verified_citations?: number;
+  abstained?: boolean;
+  slot_payload?: Record<string, unknown> | null;
 }
 
 export interface TopologyNode {

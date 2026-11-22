@@ -957,6 +957,26 @@ define_str_enum! {
     }
 }
 
+define_str_enum! {
+    /// Execution and verification path taken to answer an `AxQuery` / `AxAnalytics` turn (`0016_grounded_ask_eval.sql`, `02-STEP16` §16.2.1).
+    #[derive(Default)]
+    pub enum GroundingMode {
+        /// Compiled deterministically from `MetricDef` + structured `MetricQuery` / `MultiMetricQuery` slots (zero LLM SQL).
+        SemanticMetric => "SEMANTIC_METRIC",
+        /// Compiled deterministically from published `NodeTypeSpec` + `MappingSpec` slots (zero LLM SQL).
+        DomainObject => "DOMAIN_OBJECT",
+        /// Generated as SQL, validated by `sql_guard` + `OntologyJoinGraph` + `EXPLAIN`, and verified cell-by-cell.
+        #[default]
+        GuardedSql => "GUARDED_SQL",
+        /// Synthesized from recalled hypergraph paragraphs with verified in-bounds `[文N]` citations.
+        GroundedDoc => "GROUNDED_DOC",
+        /// Deterministically refused due to zero recalled evidence or unresolvable ungrounded join.
+        Abstained => "ABSTAINED",
+        /// Model or slot router requested explicit user disambiguation before execution.
+        Clarification => "CLARIFICATION",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

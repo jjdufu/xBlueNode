@@ -11,6 +11,7 @@ pub mod export;
 pub mod expr;
 pub mod flow;
 pub mod graph;
+pub mod grounding;
 pub mod guard;
 pub mod json_schema;
 pub mod ops;
@@ -349,6 +350,21 @@ pub struct ChatQueryResponse {
     /// Linked `BlueNode` records associated with recalled hypergraph entities (`§04.8`).
     #[serde(default)]
     pub related_nodes: Vec<analytics::RelatedNodeSummary>,
+    /// Execution and verification path taken for this turn (`02-STEP16` §16.2.1).
+    #[serde(default)]
+    pub grounding_mode: enums::GroundingMode,
+    /// Count of verified in-table numeric values in `answer` (`02-STEP16` §16.2.1).
+    #[serde(default)]
+    pub verified_numbers: u32,
+    /// Count of verified in-bounds `[文N]` citations in `answer` (`02-STEP16` §16.2.1).
+    #[serde(default)]
+    pub verified_citations: u32,
+    /// Whether the turn deterministically abstained due to zero recalled evidence (`02-STEP16` §16.2.1).
+    #[serde(default)]
+    pub abstained: bool,
+    /// Structured ontology/metric slot payload when compiled via Stage 0 (`02-STEP16` §16.2.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_payload: Option<serde_json::Value>,
 }
 
 /// System-wide hypergraph statistics for the `xBlueNode` dashboard.

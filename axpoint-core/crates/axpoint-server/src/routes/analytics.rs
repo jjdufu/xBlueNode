@@ -1036,10 +1036,7 @@ async fn execute_saved_query_def(
                 QueryRequest {
                     sql: sql_text,
                     params,
-                    max_rows: None,
-                    timeout_ms: None,
-                    allow_live: false,
-                    reveal_pii: false,
+                    ..QueryRequest::default()
                 },
             )
             .await?;
@@ -1168,11 +1165,9 @@ async fn collect_sample_rows_by_dataset(
                 "SELECT * FROM \"{}\" LIMIT 3",
                 entry.name.replace('"', "\"\"")
             ),
-            params: BTreeMap::new(),
             max_rows: Some(3),
             timeout_ms: Some(2_000),
-            allow_live: false,
-            reveal_pii: false,
+            ..QueryRequest::default()
         };
         if let Ok(res) = session
             .execute_sql_with_policy(&sample_req, false, false, Some(policy))
@@ -1221,6 +1216,11 @@ async fn persist_ask_turn_and_history(
                     answer: resp.answer.clone(),
                     citations: resp.citations.clone(),
                     model_name: String::from("axpoint-llm"),
+                    grounding_mode: resp.grounding_mode,
+                    verified_numbers: resp.verified_numbers,
+                    verified_citations: resp.verified_citations,
+                    abstained: resp.abstained,
+                    slot_payload: resp.slot_payload.clone(),
                 },
             )
             .await?;

@@ -4,6 +4,7 @@ import type {
   AggFn,
   ConnectorType,
   DataType,
+  GroundingMode,
   PiiCategory,
   RollupGrain,
   WidgetKind,
@@ -52,6 +53,7 @@ export interface QueryRequest {
   timeout_ms?: number;
   allow_live?: boolean;
   reveal_pii?: boolean;
+  strict_ontology_join?: boolean;
 }
 
 export interface QueryResult {
@@ -344,6 +346,11 @@ export interface AskResponse {
   explanation: string;
   linked_objects: LinkedObjects;
   citations: AskCitation[];
+  grounding_mode?: GroundingMode;
+  verified_numbers?: number;
+  verified_citations?: number;
+  abstained?: boolean;
+  slot_payload?: Record<string, unknown> | null;
 }
 
 export interface AskTurnRecord {
@@ -361,6 +368,31 @@ export interface AskTurnRecord {
   corrected_sql: string | null;
   model_name: string;
   created_at: string;
+  grounding_mode?: GroundingMode;
+  verified_numbers?: number;
+  verified_citations?: number;
+  abstained?: boolean;
+  slot_payload?: Record<string, unknown> | null;
+}
+
+export type GroundingEvalTrack = "CLOUD" | "LOCAL_7B";
+
+export interface GroundingEvalRunRecord {
+  id: string;
+  suite_name: string;
+  track: GroundingEvalTrack;
+  model_name: string;
+  total_cases: number;
+  intercepted_cases: number;
+  pass_rate: number;
+  category_breakdown: Record<string, unknown>;
+  failures: unknown[];
+  duration_ms: number;
+  created_at: string;
+}
+
+export interface GroundingEvalRunResponse {
+  runs: GroundingEvalRunRecord[];
 }
 
 export interface AskFeedbackRequest {
@@ -485,6 +517,12 @@ export const analyticsApi = {
   getAskSession: (sessionId: string) =>
     requestJson<AskTurnRecord[]>(
       `/api/analytics/ask/sessions/${encodeURIComponent(sessionId)}`
+    ),
+  runGroundingEval: () =>
+    jsonPost<GroundingEvalRunResponse>("/api/analytics/grounding-eval/run", {}),
+  listGroundingEvalRuns: (limit = 20) =>
+    requestJson<{ items: GroundingEvalRunRecord[] }>(
+      `/api/analytics/grounding-eval/runs?limit=${encodeURIComponent(String(limit))}`
     ),
 
   createTransformDraft: (payload: CreateTransformDraftRequest) =>

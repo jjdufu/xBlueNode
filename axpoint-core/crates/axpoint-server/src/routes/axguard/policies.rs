@@ -1,7 +1,7 @@
 //! `Cedar` `ABAC` policy management, simulation, row-level policy CRUD & 20-row live preview,
 //! default-deny toggles, and column-masking policy handlers (`/api/axguard/*`, `11-STEP13` §13.6–§13.7, §13.10).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use axpoint_domain::AppError;
 use axpoint_domain::analytics::QueryRequest;
@@ -457,11 +457,9 @@ pub(super) async fn preview_row_policy_handler(
         .execute_sql_with_policy(
             &QueryRequest {
                 sql,
-                params: BTreeMap::new(),
                 max_rows: Some(20),
                 timeout_ms: Some(15_000),
-                allow_live: false,
-                reveal_pii: false,
+                ..QueryRequest::default()
             },
             false,
             false,
