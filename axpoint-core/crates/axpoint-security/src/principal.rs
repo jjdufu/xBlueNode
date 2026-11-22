@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use axpoint_domain::AppError;
 use axpoint_domain::enums::Permission;
-pub use axpoint_domain::enums::TokenKind;
+pub use axpoint_domain::enums::{TokenKind, TokenProfile};
 use axpoint_domain::platform::MeResponse;
 use serde::Serialize;
 use uuid::Uuid;
@@ -26,6 +26,10 @@ pub struct AuthPrincipal {
     pub permissions: BTreeSet<Permission>,
     /// Credential type used to authenticate.
     pub token_kind: TokenKind,
+    /// Personal access token profile (`GENERAL` or `BUILDER`).
+    pub token_profile: TokenProfile,
+    /// Optional explicit frontend base URL configured on a personal access token (`web_base_url`).
+    pub web_base_url: Option<String>,
 }
 
 impl AuthPrincipal {
@@ -40,6 +44,8 @@ impl AuthPrincipal {
             roles: vec![String::from("ADMIN")],
             permissions: Permission::all_set(),
             token_kind: TokenKind::DevStatic,
+            token_profile: TokenProfile::General,
+            web_base_url: None,
         }
     }
 
@@ -61,6 +67,18 @@ impl AuthPrincipal {
         }
     }
 
+    /// Rejects production asset promotion or direct schema overwrites when authenticated with a `BUILDER` token.
+    ///
+    /// # Errors
+    /// Returns [`AppError::Forbidden`] (`BUILDER_TOKEN_PROD_FORBIDDEN`) when `self.token_profile == TokenProfile::Builder`.
+    pub fn enforce_no_prod_mutation(&self) -> Result<(), AppError> {
+        if self.token_profile == TokenProfile::Builder {
+            Err(AppError::Forbidden("BUILDER_TOKEN_PROD_FORBIDDEN"))
+        } else {
+            Ok(())
+        }
+    }
+
     /// Converts this principal into the `GET /api/auth/me` wire response DTO.
     #[must_use]
     pub fn to_me_response(&self) -> MeResponse {
@@ -72,7 +90,7 @@ impl AuthPrincipal {
             roles: self.roles.clone(),
             permissions: self.permissions.clone(),
             token_kind: self.token_kind,
-            token_profile: axpoint_domain::enums::TokenProfile::General,
+            token_profile: self.token_profile,
         }
     }
 }

@@ -269,19 +269,21 @@ fn scope_walk_cte_sql(direction: TraversalDirection) -> &'static str {
             "WITH RECURSIVE walk(node_id, hop) AS (
                  SELECT id, 0
                    FROM xb_nodes
-                  WHERE tenant_id = $1 AND id = ANY($2)
+                  WHERE tenant_id = $1 AND subgraph_slug = 'main' AND id = ANY($2)
                  UNION
                  SELECT l.dst_node_id, g.hop + 1
                    FROM walk g
                    JOIN xb_links l ON l.src_node_id = g.node_id
                   WHERE g.hop < $3
                     AND l.tenant_id = $1
+                    AND l.subgraph_slug = 'main'
                     AND ($4::text[] IS NULL OR l.link_type = ANY($4))
              )
              SELECT n.id
                FROM (SELECT DISTINCT node_id FROM walk) w
                JOIN xb_nodes n ON n.id = w.node_id
               WHERE n.tenant_id = $1
+                AND n.subgraph_slug = 'main'
                 AND ($5::text[] IS NULL OR n.type_name = ANY($5))
               ORDER BY n.id ASC
               LIMIT $6"
@@ -290,19 +292,21 @@ fn scope_walk_cte_sql(direction: TraversalDirection) -> &'static str {
             "WITH RECURSIVE walk(node_id, hop) AS (
                  SELECT id, 0
                    FROM xb_nodes
-                  WHERE tenant_id = $1 AND id = ANY($2)
+                  WHERE tenant_id = $1 AND subgraph_slug = 'main' AND id = ANY($2)
                  UNION
                  SELECT l.src_node_id, g.hop + 1
                    FROM walk g
                    JOIN xb_links l ON l.dst_node_id = g.node_id
                   WHERE g.hop < $3
                     AND l.tenant_id = $1
+                    AND l.subgraph_slug = 'main'
                     AND ($4::text[] IS NULL OR l.link_type = ANY($4))
              )
              SELECT n.id
                FROM (SELECT DISTINCT node_id FROM walk) w
                JOIN xb_nodes n ON n.id = w.node_id
               WHERE n.tenant_id = $1
+                AND n.subgraph_slug = 'main'
                 AND ($5::text[] IS NULL OR n.type_name = ANY($5))
               ORDER BY n.id ASC
               LIMIT $6"
@@ -311,7 +315,7 @@ fn scope_walk_cte_sql(direction: TraversalDirection) -> &'static str {
             "WITH RECURSIVE walk(node_id, hop) AS (
                  SELECT id, 0
                    FROM xb_nodes
-                  WHERE tenant_id = $1 AND id = ANY($2)
+                  WHERE tenant_id = $1 AND subgraph_slug = 'main' AND id = ANY($2)
                  UNION
                  SELECT CASE WHEN l.src_node_id = g.node_id THEN l.dst_node_id ELSE l.src_node_id END,
                         g.hop + 1
@@ -319,12 +323,14 @@ fn scope_walk_cte_sql(direction: TraversalDirection) -> &'static str {
                    JOIN xb_links l ON (l.src_node_id = g.node_id OR l.dst_node_id = g.node_id)
                   WHERE g.hop < $3
                     AND l.tenant_id = $1
+                    AND l.subgraph_slug = 'main'
                     AND ($4::text[] IS NULL OR l.link_type = ANY($4))
              )
              SELECT n.id
                FROM (SELECT DISTINCT node_id FROM walk) w
                JOIN xb_nodes n ON n.id = w.node_id
               WHERE n.tenant_id = $1
+                AND n.subgraph_slug = 'main'
                 AND ($5::text[] IS NULL OR n.type_name = ANY($5))
               ORDER BY n.id ASC
               LIMIT $6"
@@ -348,6 +354,7 @@ async fn collect_scoped_node_ids_tx(
             "SELECT id
                FROM xb_nodes
               WHERE tenant_id = $1
+                AND subgraph_slug = 'main'
                 AND ($2::text[] IS NULL OR type_name = ANY($2))
               ORDER BY id ASC
               LIMIT $3",
@@ -405,7 +412,7 @@ async fn clone_base_from_prod_tx(
          )
          SELECT $1, $2, id, type_name, node_key, title, metrics, properties, row_version
            FROM xb_nodes
-          WHERE tenant_id = $1 AND id = ANY($3)",
+          WHERE tenant_id = $1 AND subgraph_slug = 'main' AND id = ANY($3)",
     )
     .bind(tenant_id)
     .bind(sandbox_id)
@@ -421,6 +428,7 @@ async fn clone_base_from_prod_tx(
          SELECT $1, $2, id, link_type, src_node_id, dst_node_id, weight
            FROM xb_links
           WHERE tenant_id = $1
+            AND subgraph_slug = 'main'
             AND src_node_id = ANY($3)
             AND dst_node_id = ANY($3)
             AND ($4::text[] IS NULL OR link_type = ANY($4))",

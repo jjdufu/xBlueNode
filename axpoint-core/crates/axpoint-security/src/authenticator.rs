@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use axpoint_domain::AppError;
-use axpoint_domain::enums::TokenKind;
+use axpoint_domain::enums::{TokenKind, TokenProfile};
 use axpoint_domain::platform::PrincipalRecord;
 use axpoint_domain::ports::CredentialStore;
 use moka::future::Cache;
@@ -219,7 +219,7 @@ where
             .load_principal_cached(&tok.tenant_id, tok.user_id)
             .await?;
 
-        let permissions = if tok.scopes.is_empty() {
+        let mut effective_perms = if tok.scopes.is_empty() {
             principal.permissions
         } else {
             principal
@@ -228,10 +228,16 @@ where
                 .copied()
                 .collect()
         };
+        axpoint_domain::builder::strip_forbidden_builder_permissions(
+            tok.token_profile,
+            &mut effective_perms,
+        );
 
         let store = self.store.clone();
         let touch_tenant = tok.tenant_id;
         let token_id = tok.token_id;
+        let token_profile = tok.token_profile;
+        let web_base_url = tok.web_base_url;
         tokio::spawn(async move {
             if let Err(err) = store.touch_api_token(&touch_tenant, token_id).await {
                 tracing::warn!(
@@ -248,8 +254,10 @@ where
             username: principal.username,
             dept_id: principal.dept_id,
             roles: principal.roles,
-            permissions,
+            permissions: effective_perms,
             token_kind: TokenKind::ApiToken,
+            token_profile,
+            web_base_url,
         })
     }
 
@@ -275,6 +283,8 @@ where
             roles: principal.roles,
             permissions: principal.permissions,
             token_kind: TokenKind::Access,
+            token_profile: TokenProfile::General,
+            web_base_url: None,
         })
     }
 
@@ -384,6 +394,112 @@ mod tests {
             refresh_res,
             Err(AppError::Unauthorized("TOKEN_INVALID"))
         ));
+        Ok(())
+    }
+
+    #[derive(Clone)]
+    struct BuilderPatStubStore {
+        token_hash: String,
+        user_id: Uuid,
+    }
+
+    impl CredentialStore for BuilderPatStubStore {
+        fn resolve_api_token(
+            &self,
+            token_hash: &str,
+        ) -> impl Future<Output = Result<Option<ApiTokenRecord>, AppError>> + Send {
+            let matched = if token_hash == self.token_hash {
+                Some(ApiTokenRecord {
+                    token_id: Uuid::from_u128(10),
+                    tenant_id: String::from("default"),
+                    user_id: self.user_id,
+                    scopes: [
+                        axpoint_domain::enums::Permission::DataRead,
+                        axpoint_domain::enums::Permission::StudioEdit,
+                        axpoint_domain::enums::Permission::StudioPublish,
+                        axpoint_domain::enums::Permission::OpsAdmin,
+                        axpoint_domain::enums::Permission::PiiRawRead,
+                    ]
+                    .into_iter()
+                    .collect(),
+                    token_profile: axpoint_domain::enums::TokenProfile::Builder,
+                    web_base_url: Some(String::from("https://studio.xblue.example")),
+                })
+            } else {
+                None
+            };
+            std::future::ready(Ok(matched))
+        }
+
+        fn load_principal(
+            &self,
+            _tenant_id: &str,
+            user_id: Uuid,
+        ) -> impl Future<Output = Result<Option<PrincipalRecord>, AppError>> + Send {
+            let rec = PrincipalRecord {
+                user_id,
+                tenant_id: String::from("default"),
+                username: String::from("builder_user"),
+                display_name: String::from("Builder User"),
+                dept_id: String::from("default"),
+                roles: vec![String::from("ADMIN")],
+                permissions: axpoint_domain::enums::Permission::all_set(),
+                clearance: axpoint_domain::enums::Sensitivity::Secret,
+                tokens_valid_after: chrono::DateTime::UNIX_EPOCH,
+            };
+            std::future::ready(Ok(Some(rec)))
+        }
+
+        fn touch_api_token(
+            &self,
+            _tenant_id: &str,
+            _token_id: Uuid,
+        ) -> impl Future<Output = Result<(), AppError>> + Send {
+            std::future::ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn builder_token_strips_forbidden_permissions_and_rejects_prod_mutation()
+    -> Result<(), AppError> {
+        let raw_token = "axp_bldr1234_0123456789abcdef0123456789abcdef";
+        let store = BuilderPatStubStore {
+            token_hash: super::sha256_hex(raw_token),
+            user_id: Uuid::from_u128(42),
+        };
+        let auth = Authenticator::new(store, "development", None)?;
+        let principal = auth
+            .authenticate(Some(&format!("Bearer {raw_token}")))
+            .await?;
+
+        assert_eq!(
+            principal.token_profile,
+            axpoint_domain::enums::TokenProfile::Builder
+        );
+        assert_eq!(
+            principal.web_base_url.as_deref(),
+            Some("https://studio.xblue.example")
+        );
+        assert!(principal.has(axpoint_domain::enums::Permission::DataRead));
+        assert!(principal.has(axpoint_domain::enums::Permission::StudioEdit));
+        assert!(!principal.has(axpoint_domain::enums::Permission::StudioPublish));
+        assert!(!principal.has(axpoint_domain::enums::Permission::OpsAdmin));
+        assert!(!principal.has(axpoint_domain::enums::Permission::PiiRawRead));
+
+        let prod_check = principal.enforce_no_prod_mutation();
+        assert!(matches!(
+            prod_check,
+            Err(AppError::Forbidden("BUILDER_TOKEN_PROD_FORBIDDEN"))
+        ));
+        assert_eq!(
+            principal.to_me_response().token_profile,
+            axpoint_domain::enums::TokenProfile::Builder
+        );
+        assert!(
+            super::AuthPrincipal::dev_static()
+                .enforce_no_prod_mutation()
+                .is_ok()
+        );
         Ok(())
     }
 }

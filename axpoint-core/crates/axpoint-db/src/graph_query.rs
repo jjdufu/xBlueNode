@@ -148,12 +148,13 @@ impl GraphQueryPort for PgStore {
         let link_types = parse_csv_list(query.link_types.as_deref());
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
-        let seed_exists: bool =
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1)")
-                .bind(query.node_id)
-                .fetch_one(&mut *tx)
-                .await
-                .map_err(|err| AppError::Database(format!("check seed node failed: {err}")))?;
+        let seed_exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM xb_nodes WHERE id = $1 AND subgraph_slug = 'main')",
+        )
+        .bind(query.node_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("check seed node failed: {err}")))?;
         if !seed_exists {
             return Err(AppError::NotFound("NODE_NOT_FOUND"));
         }
@@ -207,7 +208,7 @@ impl GraphQueryPort for PgStore {
                     geo_lng, geo_lat, source_dataset_id, source_row_key,
                     row_version, created_at, updated_at
                FROM xb_nodes
-              WHERE id = ANY($1)",
+              WHERE subgraph_slug = 'main' AND id = ANY($1)",
         )
         .bind(vec![query.from, query.to])
         .fetch_all(&mut *tx)
@@ -271,7 +272,8 @@ impl GraphQueryPort for PgStore {
                     geo_lng, geo_lat, source_dataset_id, source_row_key,
                     row_version, created_at, updated_at
                FROM xb_nodes
-              WHERE ($1::text[] IS NULL OR type_name = ANY($1))
+              WHERE subgraph_slug = 'main'
+                AND ($1::text[] IS NULL OR type_name = ANY($1))
               ORDER BY updated_at DESC, id ASC
               LIMIT $2",
         )
@@ -317,7 +319,8 @@ impl GraphQueryPort for PgStore {
         let node_rows = sqlx::query(
             "SELECT id, title
                FROM xb_nodes
-              WHERE ($1::text[] IS NULL OR type_name = ANY($1))
+              WHERE subgraph_slug = 'main'
+                AND ($1::text[] IS NULL OR type_name = ANY($1))
               ORDER BY id ASC",
         )
         .bind(type_filter)
@@ -340,7 +343,8 @@ impl GraphQueryPort for PgStore {
             sqlx::query(
                 "SELECT src_node_id, dst_node_id, weight
                    FROM xb_links
-                  WHERE src_node_id = ANY($1)
+                  WHERE subgraph_slug = 'main'
+                    AND src_node_id = ANY($1)
                     AND dst_node_id = ANY($1)
                     AND ($2::text[] IS NULL OR link_type = ANY($2))
                   ORDER BY src_node_id ASC, dst_node_id ASC, id ASC
@@ -472,7 +476,7 @@ impl GraphQueryPort for PgStore {
             "SELECT r.params_hash, r.node_id, n.title, r.score, r.community, r.computed_at
                FROM xb_graph_algo_results r
                JOIN xb_nodes n ON n.id = r.node_id
-              WHERE r.algo = $1 AND r.params_hash = $2
+              WHERE n.subgraph_slug = 'main' AND r.algo = $1 AND r.params_hash = $2
               ORDER BY r.score DESC NULLS LAST, r.community ASC NULLS LAST, r.node_id ASC
               LIMIT $3 OFFSET $4",
         )
@@ -558,7 +562,8 @@ async fn load_induced_links_tx(
         "SELECT id, link_type, src_node_id, dst_node_id, weight,
                 properties, source_dataset_id, valid_from, valid_to, created_at, updated_at
            FROM xb_links
-          WHERE src_node_id = ANY($1)
+          WHERE subgraph_slug = 'main'
+            AND src_node_id = ANY($1)
             AND dst_node_id = ANY($1)
             AND ($2::text[] IS NULL OR link_type = ANY($2))
           ORDER BY created_at ASC, id ASC",
@@ -583,13 +588,14 @@ async fn ensure_subgraph_edge_budget_tx(
              UNION ALL
              SELECT l.dst_node_id, r.hop + 1, r.path || l.dst_node_id
                FROM reach r
-               JOIN xb_links l ON l.src_node_id = r.node_id
+               JOIN xb_links l ON l.src_node_id = r.node_id AND l.subgraph_slug = 'main'
               WHERE r.hop < $2 AND NOT (l.dst_node_id = ANY(r.path))
          ),
          distinct_nodes AS (SELECT DISTINCT node_id FROM reach)
          SELECT COUNT(*) FROM (
              SELECT 1 FROM xb_links l
-              WHERE l.src_node_id IN (SELECT node_id FROM distinct_nodes)
+              WHERE l.subgraph_slug = 'main'
+                AND l.src_node_id IN (SELECT node_id FROM distinct_nodes)
               LIMIT 200001
          ) capped",
     )
@@ -626,7 +632,7 @@ async fn compute_unweighted_bidir_path_tx(
              UNION ALL
              SELECT l.dst_node_id, f.hop + 1, f.path || l.dst_node_id
                FROM fwd f
-               JOIN xb_links l ON l.src_node_id = f.node_id
+               JOIN xb_links l ON l.src_node_id = f.node_id AND l.subgraph_slug = 'main'
               WHERE f.hop < $3 AND NOT (l.dst_node_id = ANY(f.path))
          ),
          bwd AS (
@@ -634,7 +640,7 @@ async fn compute_unweighted_bidir_path_tx(
              UNION ALL
              SELECT l.src_node_id, b.hop + 1, b.path || l.src_node_id
                FROM bwd b
-               JOIN xb_links l ON l.dst_node_id = b.node_id
+               JOIN xb_links l ON l.dst_node_id = b.node_id AND l.subgraph_slug = 'main'
               WHERE b.hop < $4 AND NOT (l.src_node_id = ANY(b.path))
          )
          SELECT f.path AS fwd_path, b.path AS bwd_path, (f.hop + b.hop) AS total_hops
@@ -693,14 +699,15 @@ async fn compute_weighted_path_tx(
              UNION ALL
              SELECT l.dst_node_id, r.hop + 1, r.path || l.dst_node_id
                FROM reach r
-               JOIN xb_links l ON l.src_node_id = r.node_id
+               JOIN xb_links l ON l.src_node_id = r.node_id AND l.subgraph_slug = 'main'
               WHERE r.hop < $2 AND NOT (l.dst_node_id = ANY(r.path))
          ),
          distinct_nodes AS (SELECT DISTINCT node_id FROM reach)
          SELECT id, link_type, src_node_id, dst_node_id, weight,
                 properties, source_dataset_id, valid_from, valid_to, created_at, updated_at
            FROM xb_links
-          WHERE src_node_id IN (SELECT node_id FROM distinct_nodes)
+          WHERE subgraph_slug = 'main'
+            AND src_node_id IN (SELECT node_id FROM distinct_nodes)
           LIMIT 200001",
     )
     .bind(from)
@@ -781,7 +788,7 @@ fn neighbor_walk_cte_sql(direction: TraversalDirection) -> &'static str {
                  UNION ALL
                  SELECT l.dst_node_id AS node_id, g.hop + 1 AS hop, g.path || l.dst_node_id AS path
                    FROM walk g
-                   JOIN xb_links l ON l.src_node_id = g.node_id
+                   JOIN xb_links l ON l.src_node_id = g.node_id AND l.subgraph_slug = 'main'
                   WHERE g.hop < $2
                     AND ($3::text[] IS NULL OR l.link_type = ANY($3))
                     AND NOT (l.dst_node_id = ANY(g.path))
@@ -798,7 +805,7 @@ fn neighbor_walk_cte_sql(direction: TraversalDirection) -> &'static str {
                  UNION ALL
                  SELECT l.src_node_id AS node_id, g.hop + 1 AS hop, g.path || l.src_node_id AS path
                    FROM walk g
-                   JOIN xb_links l ON l.dst_node_id = g.node_id
+                   JOIN xb_links l ON l.dst_node_id = g.node_id AND l.subgraph_slug = 'main'
                   WHERE g.hop < $2
                     AND ($3::text[] IS NULL OR l.link_type = ANY($3))
                     AND NOT (l.src_node_id = ANY(g.path))
@@ -817,7 +824,7 @@ fn neighbor_walk_cte_sql(direction: TraversalDirection) -> &'static str {
                         g.hop + 1 AS hop,
                         g.path || (CASE WHEN l.src_node_id = g.node_id THEN l.dst_node_id ELSE l.src_node_id END) AS path
                    FROM walk g
-                   JOIN xb_links l ON (l.src_node_id = g.node_id OR l.dst_node_id = g.node_id)
+                   JOIN xb_links l ON (l.src_node_id = g.node_id OR l.dst_node_id = g.node_id) AND l.subgraph_slug = 'main'
                   WHERE g.hop < $2
                     AND ($3::text[] IS NULL OR l.link_type = ANY($3))
                     AND NOT ((CASE WHEN l.src_node_id = g.node_id THEN l.dst_node_id ELSE l.src_node_id END) = ANY(g.path))
@@ -918,7 +925,7 @@ async fn load_consecutive_links_tx(
                 "SELECT id, link_type, src_node_id, dst_node_id, weight,
                         properties, source_dataset_id, valid_from, valid_to, created_at, updated_at
                    FROM xb_links
-                  WHERE src_node_id = $1 AND dst_node_id = $2
+                  WHERE subgraph_slug = 'main' AND src_node_id = $1 AND dst_node_id = $2
                   ORDER BY weight DESC, created_at ASC
                   LIMIT 1",
             )

@@ -1289,26 +1289,38 @@ fn attach_platform_postgres(
                     properties::VARCHAR AS properties, metrics::VARCHAR AS metrics,
                     geo_lng, geo_lat, updated_at
                FROM ax_pg.public.xb_nodes
-              WHERE tenant_id = '{escaped_tid}';
+              WHERE tenant_id = '{escaped_tid}' AND subgraph_slug = 'main';
          CREATE OR REPLACE VIEW ax.links AS
              SELECT id::VARCHAR AS id, link_type,
                     src_node_id::VARCHAR AS src_node_id, dst_node_id::VARCHAR AS dst_node_id,
                     weight, properties::VARCHAR AS properties
                FROM ax_pg.public.xb_links
-              WHERE tenant_id = '{escaped_tid}';
+              WHERE tenant_id = '{escaped_tid}' AND subgraph_slug = 'main';
          CREATE OR REPLACE VIEW ax.metric_points AS
              SELECT node_id::VARCHAR AS node_id, metric, ts, value, value_text, source_tag
                FROM ax_pg.public.xb_metric_series
-              WHERE tenant_id = '{escaped_tid}';
+              WHERE tenant_id = '{escaped_tid}'
+                AND node_id IN (
+                    SELECT id FROM ax_pg.public.xb_nodes
+                     WHERE tenant_id = '{escaped_tid}' AND subgraph_slug = 'main'
+                );
          CREATE OR REPLACE VIEW ax.metric_series AS
              SELECT node_id::VARCHAR AS node_id, metric, ts, value, value_text, source_tag
                FROM ax_pg.public.xb_metric_series
-              WHERE tenant_id = '{escaped_tid}';
+              WHERE tenant_id = '{escaped_tid}'
+                AND node_id IN (
+                    SELECT id FROM ax_pg.public.xb_nodes
+                     WHERE tenant_id = '{escaped_tid}' AND subgraph_slug = 'main'
+                );
          CREATE OR REPLACE VIEW ax.metric_rollups AS
              SELECT node_id::VARCHAR AS node_id, metric, grain, bucket_start,
                     cnt, sum_v, min_v, max_v, last_v
                FROM ax_pg.public.xb_metric_rollups
-              WHERE tenant_id = '{escaped_tid}';"
+              WHERE tenant_id = '{escaped_tid}'
+                AND node_id IN (
+                    SELECT id FROM ax_pg.public.xb_nodes
+                     WHERE tenant_id = '{escaped_tid}' AND subgraph_slug = 'main'
+                );"
     );
 
     conn.execute_batch(&batch_sql).map_err(|err| {
