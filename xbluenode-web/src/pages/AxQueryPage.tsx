@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import {
   ChevronDown,
   ChevronUp,
@@ -33,6 +33,7 @@ import {
   type RecallChannel,
 } from "@/lib/api";
 import { ChartPanel } from "@/components/analytics/ChartPanel";
+import { GroundingBadge } from "@/components/analytics/GroundingBadge";
 import { ResultGrid } from "@/components/analytics/ResultGrid";
 import {
   Badge,
@@ -50,6 +51,7 @@ interface ConversationTurn {
   requestedMode: ChatQueryMode;
   resp: ChatQueryResponse;
   sqlExpanded: boolean;
+  slotExpanded?: boolean;
   highlightedCitationIdx: number | null;
   feedback: AskFeedbackKind | null;
   correctSqlOpen: boolean;
@@ -132,6 +134,8 @@ function cleanCitationSnippet(raw: string): string {
 
 export function AxQueryPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const initialQueryParam = searchParams.get("q")?.trim() ?? "";
   const { tx, fmtNum, fmtTime } = useI18n();
 
   const [sessions, setSessions] = useState<StoredConversationSession[]>(() =>
@@ -142,7 +146,7 @@ export function AxQueryPage() {
   >(null);
   const [historySidebarOpen, setHistorySidebarOpen] = useState(false);
 
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => initialQueryParam);
   const [mode, setMode] = useState<ChatQueryMode>("AUTO");
   const [sessionId, setSessionId] = useState<string | undefined>(undefined);
   const [turns, setTurns] = useState<ConversationTurn[]>([]);
@@ -151,6 +155,12 @@ export function AxQueryPage() {
   const [error, setError] = useState<string | null>(null);
 
   const streamEndRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (initialQueryParam) {
+      setQuery(initialQueryParam);
+    }
+  }, [initialQueryParam]);
 
   useEffect(() => {
     if (turns.length > 0 || loading) {
@@ -339,6 +349,7 @@ export function AxQueryPage() {
         requestedMode: effectiveMode,
         resp: data,
         sqlExpanded: false,
+        slotExpanded: false,
         highlightedCitationIdx: null,
         feedback: null,
         correctSqlOpen: false,
@@ -802,6 +813,10 @@ export function AxQueryPage() {
                   const seedEntities = Array.isArray(resp.seed_entities)
                     ? resp.seed_entities
                     : [];
+                  const verifiedNumbers = resp.verified_numbers ?? 0;
+                  const verifiedCitations = resp.verified_citations ?? 0;
+                  const hasSlotPayload = resp.slot_payload != null;
+                  const isAbstained = resp.abstained === true;
 
                   return (
                     <div
@@ -818,13 +833,39 @@ export function AxQueryPage() {
                           </span>
                         </div>
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <Badge
                             variant={meta.variant}
                             data-testid="axquery-intent-badge"
                           >
                             {meta.label}
                           </Badge>
+                          {resp.grounding_mode && (
+                            <GroundingBadge mode={resp.grounding_mode} />
+                          )}
+                          {(verifiedNumbers > 0 || verifiedCitations > 0) && (
+                            <div
+                              className="inline-flex items-center gap-1.5"
+                              data-testid="grounding-evidence-counts"
+                            >
+                              {verifiedNumbers > 0 && (
+                                <Badge variant="outline">
+                                  {tx(
+                                    `核验数值 ${verifiedNumbers}`,
+                                    `Verified ${verifiedNumbers}`
+                                  )}
+                                </Badge>
+                              )}
+                              {verifiedCitations > 0 && (
+                                <Badge variant="outline">
+                                  {tx(
+                                    `核验引用 ${verifiedCitations}`,
+                                    `Citations ${verifiedCitations}`
+                                  )}
+                                </Badge>
+                              )}
+                            </div>
+                          )}
                           <span className="text-[11px] font-mono-tech tabular-nums text-muted-foreground">
                             {fmtNum(resp.elapsed_ms, 0)} ms
                           </span>
@@ -834,7 +875,13 @@ export function AxQueryPage() {
                       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
                         {/* Left Column: Markdown Answer + Expandable SQL/Data + Related Nodes + Feedback */}
                         <div className="lg:col-span-7 space-y-3">
-                          <Card className="p-4 space-y-3">
+                          <Card
+                            className={cn(
+                              "p-4 space-y-3",
+                              isAbstained &&
+                                "border-dashed border-muted-foreground/45 bg-muted/20"
+                            )}
+                          >
                             <div className="text-sm leading-relaxed space-y-2 text-foreground">
                               <Markdown
                                 components={{
@@ -1057,29 +1104,55 @@ export function AxQueryPage() {
                                 )}
                               </div>
 
-                              {hasDataPayload && (
-                                <Button
-                                  type="button"
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() =>
-                                    updateTurn(turn.localId, (t) => ({
-                                      ...t,
-                                      sqlExpanded: !t.sqlExpanded,
-                                    }))
-                                  }
-                                  data-testid="axquery-toggle-sql-btn"
-                                >
-                                  <Code2 className="h-3.5 w-3.5 text-xblue" />
-                                  {turn.sqlExpanded
-                                    ? tx("收起数据", "Hide Data")
-                                    : tx("查看数据", "View Data")}
-                                  {turn.sqlExpanded ? (
-                                    <ChevronUp className="h-3.5 w-3.5" />
-                                  ) : (
-                                    <ChevronDown className="h-3.5 w-3.5" />
+                              {(hasSlotPayload || hasDataPayload) && (
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  {hasSlotPayload && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() =>
+                                        updateTurn(turn.localId, (t) => ({
+                                          ...t,
+                                          slotExpanded: !t.slotExpanded,
+                                        }))
+                                      }
+                                      data-testid="grounding-slot-toggle"
+                                    >
+                                      {tx("槽位参数", "Slots")}
+                                      {turn.slotExpanded ? (
+                                        <ChevronUp className="h-3.5 w-3.5" />
+                                      ) : (
+                                        <ChevronDown className="h-3.5 w-3.5" />
+                                      )}
+                                    </Button>
                                   )}
-                                </Button>
+
+                                  {hasDataPayload && (
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() =>
+                                        updateTurn(turn.localId, (t) => ({
+                                          ...t,
+                                          sqlExpanded: !t.sqlExpanded,
+                                        }))
+                                      }
+                                      data-testid="axquery-toggle-sql-btn"
+                                    >
+                                      <Code2 className="h-3.5 w-3.5 text-xblue" />
+                                      {turn.sqlExpanded
+                                        ? tx("收起数据", "Hide Data")
+                                        : tx("查看数据", "View Data")}
+                                      {turn.sqlExpanded ? (
+                                        <ChevronUp className="h-3.5 w-3.5" />
+                                      ) : (
+                                        <ChevronDown className="h-3.5 w-3.5" />
+                                      )}
+                                    </Button>
+                                  )}
+                                </div>
                               )}
                             </div>
 
@@ -1151,6 +1224,20 @@ export function AxQueryPage() {
                               </div>
                             )}
                           </Card>
+
+                          {hasSlotPayload && turn.slotExpanded && (
+                            <Card
+                              className="p-3 bg-muted/20 space-y-1.5"
+                              data-testid="grounding-slot-panel"
+                            >
+                              <div className="text-[11px] font-medium text-muted-foreground">
+                                {tx("槽位参数", "Slots")}
+                              </div>
+                              <pre className="overflow-x-auto font-mono-tech text-xs text-foreground whitespace-pre-wrap">
+                                {JSON.stringify(resp.slot_payload, null, 2)}
+                              </pre>
+                            </Card>
+                          )}
 
                           {hasDataPayload && turn.sqlExpanded && (
                             <div
