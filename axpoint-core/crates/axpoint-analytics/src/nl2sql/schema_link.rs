@@ -4,9 +4,11 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use axpoint_domain::analytics::{
-    LinkedColumnHit, LinkedMetricHit, LinkedObjects, MetricDef, SchemaRecallBundle,
+    AllowedDatasetJoinEdge, LinkedColumnHit, LinkedMetricHit, LinkedObjects, MetricDef,
+    SchemaRecallBundle,
 };
 use axpoint_domain::enums::{DataType, PiiCategory};
+use axpoint_domain::studio::{MappingSpec, SchemaDoc};
 use uuid::Uuid;
 
 use crate::result::mask_pii_str;
@@ -65,8 +67,14 @@ pub struct LinkedSchemaContext {
     pub matched_nodes: Vec<(String, String, String)>,
     /// Summary identifiers persisted in `an_ask_turns.linked_objects`.
     pub linked_objects: LinkedObjects,
-    /// `true` if at least one column or metric had a positive lexical/vector match with the question.
+    /// `true` if at least one column, metric, or ontology node had a positive match with the question.
     pub has_positive_hit: bool,
+    /// Legal cross-dataset join edges compiled from published `SchemaDoc`s (`02-STEP16` §16.3.2).
+    pub allowed_joins: Vec<AllowedDatasetJoinEdge>,
+    /// Published `xBlueStudio` `SchemaDoc` snapshots available to Stage 0 ontology routing (`02-STEP16` §16.2).
+    pub published_schemas: Vec<SchemaDoc>,
+    /// Whether multi-table SQL must join exclusively along `allowed_joins` (`02-STEP16` §16.3.2).
+    pub enforce_ontology_joins: bool,
 }
 
 /// Optional extra inputs for in-memory augmentation and sample-row masking.
@@ -80,6 +88,109 @@ pub struct SchemaLinkExtras {
     pub restrict_dataset_ids: Vec<Uuid>,
     /// Prior SQL text from the active multi-turn session (boosts tables referenced in prior turns).
     pub prior_session_sqls: Vec<String>,
+    /// Published `xBlueStudio` `SchemaDoc` snapshots across tenant subgraphs (`02-STEP16` §16.3.2).
+    pub published_schemas: Vec<SchemaDoc>,
+    /// Enforce ontology join guard on multi-dataset SQL drafts (`02-STEP16` §16.3.2).
+    pub enforce_ontology_joins: bool,
+}
+
+/// Minimum vector cosine similarity required before treating a vector-only recall as a positive hit.
+const MIN_POSITIVE_VEC_SIM: f64 = 0.45;
+
+/// Pure compiler deriving canonical undirected [`AllowedDatasetJoinEdge`] items from published
+/// `xBlueStudio` [`SchemaDoc`]s (`02-STEP16` §16.3.1):
+/// 1. Cross-object `MappingLinkSpec` foreign keys (`(D1, target_key_column) <-> (D2, key_column)`).
+/// 2. Shared `NodeTypeSpec` primary keys across multiple datasets (`SAME_ENTITY:<NodeType>`).
+#[must_use]
+pub fn compile_ontology_join_edges(schemas: &[SchemaDoc]) -> Vec<AllowedDatasetJoinEdge> {
+    let mappings: Vec<&MappingSpec> = schemas
+        .iter()
+        .flat_map(|s| s.mappings.iter())
+        .filter(|m| {
+            !m.dataset.trim().is_empty()
+                && !m.node_type.trim().is_empty()
+                && !m.key_column.trim().is_empty()
+        })
+        .collect();
+
+    let mut edges = BTreeSet::new();
+
+    for src in &mappings {
+        let d1 = src.dataset.trim().to_ascii_lowercase();
+        for link in &src.links {
+            let fk1 = link.target_key_column.trim().to_ascii_lowercase();
+            let target_type = link.target_type.trim();
+            let rel_label = link.link_type.trim();
+            if fk1.is_empty() || target_type.is_empty() || rel_label.is_empty() {
+                continue;
+            }
+            for dst in &mappings {
+                if !dst.node_type.trim().eq_ignore_ascii_case(target_type) {
+                    continue;
+                }
+                let d2 = dst.dataset.trim().to_ascii_lowercase();
+                let k2 = dst.key_column.trim().to_ascii_lowercase();
+                if let Some(edge) = canonical_join_edge(&d1, &fk1, &d2, &k2, rel_label) {
+                    edges.insert(edge);
+                }
+            }
+        }
+    }
+
+    for (idx, ma) in mappings.iter().enumerate() {
+        let tail = mappings.get(idx.saturating_add(1)..).unwrap_or(&[]);
+        for mb in tail {
+            if !ma
+                .node_type
+                .trim()
+                .eq_ignore_ascii_case(mb.node_type.trim())
+            {
+                continue;
+            }
+            let d1 = ma.dataset.trim().to_ascii_lowercase();
+            let k1 = ma.key_column.trim().to_ascii_lowercase();
+            let d2 = mb.dataset.trim().to_ascii_lowercase();
+            let k2 = mb.key_column.trim().to_ascii_lowercase();
+            let label = format!("SAME_ENTITY:{}", ma.node_type.trim());
+            if let Some(edge) = canonical_join_edge(&d1, &k1, &d2, &k2, &label) {
+                edges.insert(edge);
+            }
+        }
+    }
+
+    edges.into_iter().collect()
+}
+
+fn canonical_join_edge(
+    d1: &str,
+    c1: &str,
+    d2: &str,
+    c2: &str,
+    label: &str,
+) -> Option<AllowedDatasetJoinEdge> {
+    if d1.is_empty() || c1.is_empty() || d2.is_empty() || c2.is_empty() {
+        return None;
+    }
+    if d1 == d2 && c1 == c2 {
+        return None;
+    }
+    if (d1, c1) <= (d2, c2) {
+        Some(AllowedDatasetJoinEdge {
+            left_dataset: String::from(d1),
+            left_column: String::from(c1),
+            right_dataset: String::from(d2),
+            right_column: String::from(c2),
+            relationship_label: String::from(label),
+        })
+    } else {
+        Some(AllowedDatasetJoinEdge {
+            left_dataset: String::from(d2),
+            left_column: String::from(c2),
+            right_dataset: String::from(d1),
+            right_column: String::from(c1),
+            relationship_label: String::from(label),
+        })
+    }
 }
 
 /// Computes the canonical `05-STEP04` §04.6.3 hybrid score (`0.5 * fts + 0.5 * vec`, plus `0.1` if `certified`).
@@ -116,8 +227,18 @@ pub fn build_linked_schema(
         &restrict_set,
     );
 
-    let has_positive_hit = merged_cols.iter().any(|(_, s)| *s > 0.05)
+    let published_schemas = if extras.published_schemas.is_empty() {
+        catalog.published_schemas.clone()
+    } else {
+        extras.published_schemas.clone()
+    };
+
+    let has_positive_hit = merged_cols
+        .iter()
+        .any(|(hit, s)| *s > 0.05 && is_substantive_column_hit(question, hit))
         || merged_metrics.iter().any(|(_, s)| *s > 0.12)
+        || !db_recall.matched_nodes.is_empty()
+        || question_matches_mapped_node_type(question, &published_schemas, catalog)
         || (!restrict_set.is_empty() && !merged_cols.is_empty());
 
     let selected_metrics: Vec<MetricDef> = merged_metrics
@@ -139,21 +260,9 @@ pub fn build_linked_schema(
         &extras.sample_rows_by_dataset,
     );
 
-    let mut linked_objects = LinkedObjects::default();
-    for t in &tables {
-        linked_objects.datasets.push(t.dataset_name.clone());
-        for c in &t.columns {
-            linked_objects
-                .columns
-                .push(format!("{}.{}", t.dataset_name, c.name));
-        }
-    }
-    for m in &selected_metrics {
-        linked_objects.metrics.push(m.name.clone());
-    }
-    for (type_name, node_key, _) in &db_recall.matched_nodes {
-        linked_objects.nodes.push(format!("{type_name}:{node_key}"));
-    }
+    let allowed_joins = resolve_context_allowed_joins(&published_schemas, catalog, &tables);
+    let linked_objects =
+        build_linked_objects_summary(&tables, &selected_metrics, &db_recall.matched_nodes);
 
     LinkedSchemaContext {
         tables,
@@ -161,7 +270,94 @@ pub fn build_linked_schema(
         matched_nodes: db_recall.matched_nodes.clone(),
         linked_objects,
         has_positive_hit,
+        allowed_joins,
+        published_schemas,
+        enforce_ontology_joins: extras.enforce_ontology_joins,
     }
+}
+
+fn build_linked_objects_summary(
+    tables: &[LinkedTableContext],
+    selected_metrics: &[MetricDef],
+    matched_nodes: &[(String, String, String)],
+) -> LinkedObjects {
+    let mut linked_objects = LinkedObjects::default();
+    for t in tables {
+        linked_objects.datasets.push(t.dataset_name.clone());
+        for c in &t.columns {
+            linked_objects
+                .columns
+                .push(format!("{}.{}", t.dataset_name, c.name));
+        }
+    }
+    for m in selected_metrics {
+        linked_objects.metrics.push(m.name.clone());
+    }
+    for (type_name, node_key, _) in matched_nodes {
+        linked_objects.nodes.push(format!("{type_name}:{node_key}"));
+    }
+    linked_objects
+}
+
+fn resolve_context_allowed_joins(
+    published_schemas: &[SchemaDoc],
+    catalog: &TenantCatalog,
+    tables: &[LinkedTableContext],
+) -> Vec<AllowedDatasetJoinEdge> {
+    let compiled = if published_schemas.is_empty() {
+        catalog.allowed_joins.clone()
+    } else {
+        compile_ontology_join_edges(published_schemas)
+    };
+    let table_names: BTreeSet<String> = tables
+        .iter()
+        .map(|t| t.dataset_name.to_ascii_lowercase())
+        .collect();
+    compiled
+        .into_iter()
+        .filter(|e| {
+            catalog.dataset(&e.left_dataset).is_some()
+                && catalog.dataset(&e.right_dataset).is_some()
+                && (table_names.is_empty()
+                    || table_names.contains(&e.left_dataset)
+                    || table_names.contains(&e.right_dataset))
+        })
+        .collect()
+}
+
+pub(crate) fn question_matches_mapped_node_type(
+    question: &str,
+    schemas: &[SchemaDoc],
+    catalog: &TenantCatalog,
+) -> bool {
+    let q_lower = question.trim().to_lowercase();
+    if q_lower.is_empty() {
+        return false;
+    }
+    let mapped_types: BTreeSet<String> = schemas
+        .iter()
+        .flat_map(|s| s.mappings.iter())
+        .filter(|m| catalog.dataset(&m.dataset).is_some())
+        .map(|m| m.node_type.trim().to_ascii_lowercase())
+        .collect();
+    if mapped_types.is_empty() {
+        return false;
+    }
+    for schema in schemas {
+        for nt in &schema.node_types {
+            if !mapped_types.contains(&nt.name.trim().to_ascii_lowercase()) {
+                continue;
+            }
+            let n_low = nt.name.trim().to_lowercase();
+            let d_low = nt.display_name.trim().to_lowercase();
+            if (n_low.chars().count() >= 2 && q_lower.contains(&n_low))
+                || (d_low.chars().count() >= 2 && q_lower.contains(&d_low))
+            {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn merge_column_candidates(
@@ -185,7 +381,12 @@ fn merge_column_candidates(
             &hit.business_term,
         );
         let eff_fts = hit.fts_score.max(lexical);
-        let score = hybrid_link_score(eff_fts, hit.vec_score, false);
+        let eff_vec = if hit.vec_score >= MIN_POSITIVE_VEC_SIM {
+            hit.vec_score
+        } else {
+            0.0
+        };
+        let score = hybrid_link_score(eff_fts, eff_vec, false);
         by_key.insert(
             (hit.dataset_id, hit.column_name.to_ascii_lowercase()),
             (hit.clone(), score),
@@ -216,11 +417,13 @@ fn merge_column_candidates(
             );
             let combined_lex = (lex + prior_boost).clamp(0.0, 1.0);
             if let Some((existing_hit, existing_score)) = by_key.get_mut(&key) {
-                let boosted = hybrid_link_score(
-                    existing_hit.fts_score.max(combined_lex),
-                    existing_hit.vec_score,
-                    false,
-                );
+                let eff_vec = if existing_hit.vec_score >= MIN_POSITIVE_VEC_SIM {
+                    existing_hit.vec_score
+                } else {
+                    0.0
+                };
+                let boosted =
+                    hybrid_link_score(existing_hit.fts_score.max(combined_lex), eff_vec, false);
                 if boosted > *existing_score {
                     *existing_score = boosted;
                 }
@@ -271,7 +474,12 @@ fn merge_metric_candidates(
             continue;
         }
         let lex = lexical_metric_score(question, &hit.metric);
-        let score = hybrid_link_score(hit.fts_score.max(lex), hit.vec_score, hit.metric.certified);
+        let eff_vec = if hit.vec_score >= MIN_POSITIVE_VEC_SIM {
+            hit.vec_score
+        } else {
+            0.0
+        };
+        let score = hybrid_link_score(hit.fts_score.max(lex), eff_vec, hit.metric.certified);
         by_name.insert(
             hit.metric.name.to_ascii_lowercase(),
             (hit.metric.clone(), score),
@@ -464,7 +672,19 @@ fn lexical_column_score(
     score.clamp(0.0, 1.0)
 }
 
-fn lexical_metric_score(question: &str, metric: &MetricDef) -> f64 {
+fn is_substantive_column_hit(question: &str, hit: &LinkedColumnHit) -> bool {
+    if !matches!(hit.data_type, DataType::Date | DataType::Timestamp) {
+        return true;
+    }
+    let q_lower = question.to_ascii_lowercase();
+    hit.vec_score >= MIN_POSITIVE_VEC_SIM
+        || text_overlap_score(&q_lower, &hit.column_name) > 0.0
+        || text_overlap_score(&q_lower, &hit.dataset_name) > 0.0
+        || text_overlap_score(&q_lower, &hit.business_term) > 0.0
+        || text_overlap_score(&q_lower, &hit.description) > 0.0
+}
+
+pub(crate) fn lexical_metric_score(question: &str, metric: &MetricDef) -> f64 {
     let q_lower = question.to_ascii_lowercase();
     let mut best = text_overlap_score(&q_lower, &metric.name)
         .max(text_overlap_score(&q_lower, &metric.display_name))
@@ -556,10 +776,17 @@ fn concept_synonym_score(q_lower: &str, ds_name: &str, col_name: &str) -> f64 {
         if cn_terms.iter().any(|cn| q_lower.contains(cn))
             && en_terms
                 .iter()
-                .any(|en| col_l.contains(en) || ds_l.contains(en))
+                .any(|en| matches_en_concept_token(&col_l, &ds_l, en))
         {
             return 0.65;
         }
     }
     0.0
+}
+
+fn matches_en_concept_token(col_l: &str, ds_l: &str, en: &str) -> bool {
+    if en.len() <= 2 {
+        return col_l.split('_').any(|p| p == en) || ds_l.split('_').any(|p| p == en);
+    }
+    col_l.contains(en) || ds_l.contains(en)
 }

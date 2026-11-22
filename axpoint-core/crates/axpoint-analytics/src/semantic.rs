@@ -422,6 +422,7 @@ fn compile_metric_query_with_range(
             allow_live: false,
             params,
             policy: policy.cloned(),
+            ..GuardOptions::default()
         },
     )?;
 
@@ -1466,6 +1467,7 @@ fn try_compile_same_dataset_multi(
             allow_live: false,
             params,
             policy: policy.cloned(),
+            ..GuardOptions::default()
         },
     )?;
     Ok(Some(guarded))

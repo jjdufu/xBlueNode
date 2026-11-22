@@ -3,7 +3,9 @@
 use std::fmt::Write as _;
 
 use axpoint_domain::AppError;
-use axpoint_domain::analytics::{AskContext, AskTurnRecord, FewShotTurn, MetricDef, QueryColumn};
+use axpoint_domain::analytics::{
+    AllowedDatasetJoinEdge, AskContext, AskTurnRecord, FewShotTurn, MetricDef, QueryColumn,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::nl2sql::intent::extract_json_object;
@@ -79,6 +81,12 @@ pub fn build_nl2sql_user_prompt(
         }
     }
 
+    append_allowed_joins_section(
+        &mut out,
+        &linked.allowed_joins,
+        linked.enforce_ontology_joins,
+    );
+
     if !few_shots.is_empty() {
         out.push_str("\n### 参考示例\n");
         for fs in few_shots.iter().take(MAX_FEW_SHOT_TURNS) {
@@ -110,6 +118,39 @@ pub fn build_repair_user_prompt(
         "{original_user_prompt}\n\n### 第 {round} 轮 SQL 修正请求\n\
          上一版 SQL:\n{failed_sql}\n\
          校验/试运行错误:\n{error_first_line}\n\
+         请修正上述错误并重新只输出一个 JSON 对象：{{\"sql\": \"...\", \"explanation\": \"...\", \"used_metrics\": []}}"
+    )
+}
+
+/// Builds the self-repair user prompt enriched with declared ontology join edges when `JOIN_PATH_UNGROUNDED` occurred (`02-STEP16` §16.3.3).
+#[must_use]
+pub fn build_repair_user_prompt_with_joins(
+    original_user_prompt: &str,
+    failed_sql: &str,
+    error_first_line: &str,
+    round: usize,
+    allowed_joins: &[AllowedDatasetJoinEdge],
+) -> String {
+    if !error_first_line.contains("JOIN_PATH_UNGROUNDED") || allowed_joins.is_empty() {
+        return build_repair_user_prompt(original_user_prompt, failed_sql, error_first_line, round);
+    }
+    let mut join_hint = String::new();
+    for edge in allowed_joins {
+        let _fmt_ok = writeln!(
+            join_hint,
+            "- {}.{} = {}.{} ({})",
+            edge.left_dataset,
+            edge.left_column,
+            edge.right_dataset,
+            edge.right_column,
+            edge.relationship_label
+        );
+    }
+    format!(
+        "{original_user_prompt}\n\n### 第 {round} 轮 SQL 修正请求\n\
+         上一版 SQL:\n{failed_sql}\n\
+         校验/试运行错误:\n{error_first_line}\n\
+         仅允许沿以下已发布本体关联边编写 JOIN ON 等值条件：\n{join_hint}\
          请修正上述错误并重新只输出一个 JSON 对象：{{\"sql\": \"...\", \"explanation\": \"...\", \"used_metrics\": []}}"
     )
 }
@@ -248,6 +289,32 @@ fn extract_preview_col_names(preview: Option<&serde_json::Value>) -> String {
         .filter_map(|c| c.get("name").and_then(serde_json::Value::as_str))
         .collect();
     names.join(", ")
+}
+
+fn append_allowed_joins_section(
+    out: &mut String,
+    allowed_joins: &[AllowedDatasetJoinEdge],
+    enforce_ontology_joins: bool,
+) {
+    if allowed_joins.is_empty() && !enforce_ontology_joins {
+        return;
+    }
+    out.push_str("\n### 法定表间关联路径（严禁使用未列出的跨表 JOIN）\n");
+    if allowed_joins.is_empty() {
+        out.push_str("当前候选表之间无已发布本体关联边，严禁编写跨表 JOIN\n");
+        return;
+    }
+    for edge in allowed_joins {
+        let _fmt_ok = writeln!(
+            out,
+            "- {}.{} = {}.{} -- 对应业务关系: {}",
+            edge.left_dataset,
+            edge.left_column,
+            edge.right_dataset,
+            edge.right_column,
+            edge.relationship_label
+        );
+    }
 }
 
 fn append_ask_context(out: &mut String, context: Option<&AskContext>) {

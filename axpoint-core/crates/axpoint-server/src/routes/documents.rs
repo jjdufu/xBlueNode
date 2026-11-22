@@ -3,14 +3,18 @@
 use std::fmt::Write as _;
 use std::time::Instant;
 
-use axpoint_analytics::nl2sql::chart::verify_or_fallback_summary;
 use axpoint_analytics::nl2sql::intent::{classify_intent_by_rules, route_intent};
 use axpoint_analytics::nl2sql::schema_link::{SchemaLinkExtras, build_linked_schema};
+use axpoint_analytics::{
+    GroundedHybridSynthesis, HybridGroundingInput, filter_noise_recall_candidates,
+    sanitize_and_ground_doc_answer, sanitize_and_ground_hybrid_answer,
+};
 use axpoint_db::{DocumentIngestPayload, ParaIngestInput};
 use axpoint_domain::analytics::{
-    AskCitation, AskIntent, AskRequest, ChatQueryMode, NewAskTurnInput,
+    AskCitation, AskIntent, AskRequest, ChatQueryMode, LinkedObjects, NewAskTurnInput,
 };
-use axpoint_domain::enums::{AuditAction, Permission};
+use axpoint_domain::enums::{AuditAction, GroundingMode, Permission};
+use axpoint_domain::grounding::ABSTAIN_NO_DOC_EVIDENCE_ZH;
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::AnalyticsRepository as _;
 use axpoint_domain::{
@@ -307,6 +311,9 @@ struct DocRagOutcome {
     hits: Vec<FusedHit>,
     seeds: Vec<String>,
     citations: Vec<AskCitation>,
+    grounding_mode: GroundingMode,
+    verified_citations: u32,
+    abstained: bool,
 }
 
 /// Masks `hg_paras.pii_spans` character ranges across recalled [`FusedHit`] items when `has_pii_raw` is `false` (`§13.6.3`, `§13.8.2`).
@@ -395,6 +402,7 @@ async fn recall_knowledge_hits_for_user(
     all_candidates.extend(bm25_res?);
     all_candidates.extend(ent_res?);
     all_candidates.extend(hop_res?);
+    let mut all_candidates = filter_noise_recall_candidates(trimmed, all_candidates);
 
     let seed_para_ids: Vec<Uuid> = all_candidates.iter().take(4).map(|c| c.para_id).collect();
     let ctx_res = state
@@ -435,14 +443,26 @@ async fn run_doc_rag_pipeline(
     )
     .await?;
     mask_recalled_hits(state, tenant_id, &mut hits, has_pii_raw).await?;
-    let answer = state
+    if hits.is_empty() {
+        return Ok(DocRagOutcome {
+            answer: String::from(ABSTAIN_NO_DOC_EVIDENCE_ZH),
+            hits: Vec::new(),
+            seeds,
+            citations: Vec::new(),
+            grounding_mode: GroundingMode::Abstained,
+            verified_citations: 0,
+            abstained: true,
+        });
+    }
+
+    let raw_answer = state
         .ai
         .for_tenant(tenant_id)
         .for_user(principal.user_id)
         .with_purpose_override(axpoint_domain::enums::Purpose::Summarize)
         .synthesize_answer(query, &hits)
         .await?;
-    let citations = hits
+    let citations: Vec<AskCitation> = hits
         .iter()
         .map(|h| AskCitation {
             para_id: h.para_id,
@@ -451,12 +471,16 @@ async fn run_doc_rag_pipeline(
             snippet: h.content.chars().take(240).collect(),
         })
         .collect();
+    let grounded = sanitize_and_ground_doc_answer(&raw_answer, &citations);
 
     Ok(DocRagOutcome {
-        answer,
+        answer: grounded.answer,
         hits,
         seeds,
         citations,
+        grounding_mode: grounded.grounding_mode,
+        verified_citations: grounded.verified_citations,
+        abstained: grounded.abstained,
     })
 }
 
@@ -488,12 +512,18 @@ async fn resolve_auto_chat_intent(
         .iter()
         .any(|t| matches!(t.intent, AskIntent::Data | AskIntent::Hybrid));
 
+    let enforce_ontology_joins = catalog
+        .published_schemas
+        .iter()
+        .any(|s| !s.mappings.is_empty());
     let linked = build_linked_schema(
         question.trim(),
         &catalog,
         &db_recall,
         &SchemaLinkExtras {
             all_metrics,
+            published_schemas: catalog.published_schemas.clone(),
+            enforce_ontology_joins,
             ..SchemaLinkExtras::default()
         },
     );
@@ -514,85 +544,57 @@ async fn resolve_auto_chat_intent(
     .unwrap_or(AskIntent::Doc))
 }
 
-fn strip_doc_citation_tags(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let chars: Vec<char> = text.chars().collect();
-    let mut idx = 0_usize;
-    while let Some(&ch) = chars.get(idx) {
-        if ch == '[' && chars.get(idx + 1) == Some(&'文') {
-            let mut end = idx + 2;
-            while let Some(&d) = chars.get(end) {
-                if d.is_ascii_digit() {
-                    end += 1;
-                } else {
-                    break;
-                }
-            }
-            if end > idx + 2 && chars.get(end) == Some(&']') {
-                idx = end + 1;
-                continue;
-            }
-        }
-        out.push(ch);
-        idx += 1;
-    }
-    out
-}
-
 async fn synthesize_hybrid_answer(
     state: &AppState,
     principal: &AuthPrincipal,
     question: &str,
     doc: &DocRagOutcome,
-    data_answer: &str,
-    data_rows: &[serde_json::Map<String, serde_json::Value>],
-) -> String {
-    let fallback = if doc.citations.is_empty() {
-        format!("[表] {data_answer}")
-    } else {
-        format!("[表] {data_answer}\n\n[文1] {}", doc.answer)
-    };
-
-    if data_rows.is_empty() || doc.citations.is_empty() {
-        return fallback;
-    }
-
-    let mut prompt = String::from("### 结构化查询结果 [表]\n");
-    let sample: Vec<_> = data_rows.iter().take(20).collect();
-    let _fmt_ok = writeln!(
-        prompt,
-        "{}",
-        serde_json::to_string(&sample).unwrap_or_default()
-    );
-    prompt.push_str("\n### 文档段落依据\n");
-    for (i, c) in doc.citations.iter().take(6).enumerate() {
-        let _fmt_ok = writeln!(prompt, "[文{}] 《{}》：{}", i + 1, c.doc_title, c.snippet);
-    }
-    let _fmt_ok = write!(prompt, "\n### 用户问题\n{}", question.trim());
-
-    let scoped_ai = state
-        .ai
-        .for_tenant(&principal.tenant_id)
-        .for_user(principal.user_id);
-    let Ok(raw) = scoped_ai.chat(HYBRID_SYSTEM_PROMPT, &prompt).await else {
-        return fallback;
-    };
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return fallback;
-    }
-
-    let stripped = strip_doc_citation_tags(trimmed);
-    let checked = verify_or_fallback_summary(&stripped, data_rows);
-    if checked == stripped.trim() {
-        if trimmed.contains("[表]") {
-            String::from(trimmed)
-        } else {
-            format!("[表] {trimmed}")
+    data: &axpoint_domain::analytics::AskResponse,
+) -> GroundedHybridSynthesis {
+    let raw_hybrid = if !data.abstained
+        && !doc.abstained
+        && !data.rows.is_empty()
+        && !doc.citations.is_empty()
+    {
+        let mut prompt = String::from("### 结构化查询结果 [表]\n");
+        let sample: Vec<_> = data.rows.iter().take(20).collect();
+        let _fmt_ok = writeln!(
+            prompt,
+            "{}",
+            serde_json::to_string(&sample).unwrap_or_default()
+        );
+        prompt.push_str("\n### 文档段落依据\n");
+        for (i, c) in doc.citations.iter().take(6).enumerate() {
+            let _fmt_ok = writeln!(
+                prompt,
+                "[文{}] 《{}》：{}",
+                i.saturating_add(1),
+                c.doc_title,
+                c.snippet
+            );
         }
+        let _fmt_ok = write!(prompt, "\n### 用户问题\n{}", question.trim());
+
+        let scoped_ai = state
+            .ai
+            .for_tenant(&principal.tenant_id)
+            .for_user(principal.user_id)
+            .with_purpose_override(axpoint_domain::enums::Purpose::Summarize);
+        scoped_ai.chat(HYBRID_SYSTEM_PROMPT, &prompt).await.ok()
     } else {
-        fallback
-    }
+        None
+    };
+
+    sanitize_and_ground_hybrid_answer(&HybridGroundingInput {
+        raw_hybrid: raw_hybrid.as_deref(),
+        data_answer: &data.answer,
+        data_rows: &data.rows,
+        data_grounding_mode: data.grounding_mode,
+        data_abstained: data.abstained,
+        doc_answer: &doc.answer,
+        doc_citations: &doc.citations,
+        doc_abstained: doc.abstained,
+    })
 }
 
 async fn handle_doc_chat_query(
@@ -603,6 +605,31 @@ async fn handle_doc_chat_query(
 ) -> Result<ChatQueryResponse, AppError> {
     let tenant_id = &principal.tenant_id;
     let doc = run_doc_rag_pipeline(state, principal, &req.query, req.top_k).await?;
+    let session_id = req.session_id.unwrap_or_else(Uuid::new_v4);
+    let turn = state
+        .store
+        .insert_ask_turn(
+            tenant_id,
+            NewAskTurnInput {
+                session_id,
+                user_id: Some(principal.user_id),
+                question: req.query.trim().to_owned(),
+                intent: AskIntent::Doc,
+                linked_objects: LinkedObjects::default(),
+                sql_text: None,
+                result_preview: None,
+                answer: doc.answer.clone(),
+                citations: doc.citations.clone(),
+                model_name: String::from("axpoint-llm"),
+                grounding_mode: doc.grounding_mode,
+                verified_numbers: 0,
+                verified_citations: doc.verified_citations,
+                abstained: doc.abstained,
+                slot_payload: None,
+            },
+        )
+        .await?;
+
     let hit_para_ids: Vec<Uuid> = doc.hits.iter().map(|h| h.para_id).collect();
     let related_nodes = state
         .store
@@ -617,28 +644,31 @@ async fn handle_doc_chat_query(
         status_code: 200,
         client_ip: String::from("127.0.0.1"),
         trace_id: current_trace_id(),
-        detail_json: serde_json::json!({ "hit_count": doc.hits.len() }),
+        detail_json: serde_json::json!({
+            "hit_count": doc.hits.len(),
+            "abstained": doc.abstained,
+            "grounding_mode": doc.grounding_mode,
+        }),
         created_at: Utc::now(),
     });
-    let verified_citations = u32::try_from(doc.citations.len()).unwrap_or(0);
     Ok(ChatQueryResponse {
         answer: doc.answer,
         hits: doc.hits,
         seed_entities: doc.seeds,
         elapsed_ms: started.elapsed().as_millis(),
         intent: AskIntent::Doc,
-        session_id: req.session_id,
-        turn_id: None,
+        session_id: Some(session_id),
+        turn_id: Some(turn.id),
         citations: doc.citations,
         sql: None,
         columns: Vec::new(),
         rows: Vec::new(),
         chart: None,
         related_nodes,
-        grounding_mode: axpoint_domain::enums::GroundingMode::GroundedDoc,
+        grounding_mode: doc.grounding_mode,
         verified_numbers: 0,
-        verified_citations,
-        abstained: false,
+        verified_citations: doc.verified_citations,
+        abstained: doc.abstained,
         slot_payload: None,
     })
 }
@@ -661,9 +691,7 @@ async fn handle_hybrid_chat_query(
     );
     let doc = doc_res?;
     let data = data_res?;
-    let answer =
-        synthesize_hybrid_answer(state, principal, &req.query, &doc, &data.answer, &data.rows)
-            .await;
+    let hybrid = synthesize_hybrid_answer(state, principal, &req.query, &doc, &data).await;
 
     let preview = (!data.sql.is_empty()).then(|| {
         serde_json::json!({
@@ -673,7 +701,6 @@ async fn handle_hybrid_chat_query(
             "chart": data.chart,
         })
     });
-    let verified_citations = u32::try_from(doc.citations.len()).unwrap_or(0);
     let turn = state
         .store
         .insert_ask_turn(
@@ -686,13 +713,13 @@ async fn handle_hybrid_chat_query(
                 linked_objects: data.linked_objects.clone(),
                 sql_text: (!data.sql.is_empty()).then(|| data.sql.clone()),
                 result_preview: preview,
-                answer: answer.clone(),
+                answer: hybrid.answer.clone(),
                 citations: doc.citations.clone(),
                 model_name: String::from("axpoint-llm"),
-                grounding_mode: data.grounding_mode,
-                verified_numbers: data.verified_numbers,
-                verified_citations,
-                abstained: data.abstained,
+                grounding_mode: hybrid.grounding_mode,
+                verified_numbers: hybrid.verified_numbers,
+                verified_citations: hybrid.verified_citations,
+                abstained: hybrid.abstained,
                 slot_payload: data.slot_payload.clone(),
             },
         )
@@ -705,7 +732,7 @@ async fn handle_hybrid_chat_query(
         .await?;
 
     Ok(ChatQueryResponse {
-        answer,
+        answer: hybrid.answer,
         hits: doc.hits,
         seed_entities: doc.seeds,
         elapsed_ms: started.elapsed().as_millis(),
@@ -718,10 +745,10 @@ async fn handle_hybrid_chat_query(
         rows: data.rows,
         chart: data.chart,
         related_nodes,
-        grounding_mode: data.grounding_mode,
-        verified_numbers: data.verified_numbers,
-        verified_citations,
-        abstained: data.abstained,
+        grounding_mode: hybrid.grounding_mode,
+        verified_numbers: hybrid.verified_numbers,
+        verified_citations: hybrid.verified_citations,
+        abstained: hybrid.abstained,
         slot_payload: data.slot_payload,
     })
 }

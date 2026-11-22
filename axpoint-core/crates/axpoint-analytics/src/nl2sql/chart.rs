@@ -136,6 +136,48 @@ pub fn verify_or_fallback_summary(
     String::from(trimmed)
 }
 
+/// Verifies `candidate_summary` against `rows` and returns `(verified_summary, verified_number_count)` (`02-STEP16` §16.4.2).
+#[must_use]
+pub fn verify_or_fallback_summary_with_count(
+    candidate_summary: &str,
+    rows: &[serde_json::Map<String, serde_json::Value>],
+) -> (String, u32) {
+    let verified = verify_or_fallback_summary(candidate_summary, rows);
+    let count = axpoint_domain::grounding::count_grounded_numbers(&verified);
+    (verified, count)
+}
+
+/// Verifies that all standalone numeric tokens in a citation-sanitized `HYBRID` answer appear in
+/// either `rows` or one of the cited document `snippets` (`02-STEP16` §16.4.2).
+#[must_use]
+pub fn verify_hybrid_numbers_grounded(
+    sanitized_answer: &str,
+    rows: &[serde_json::Map<String, serde_json::Value>],
+    cited_snippets: &[String],
+) -> bool {
+    let stripped = axpoint_domain::grounding::strip_citation_and_table_markers(sanitized_answer);
+    let extracted = extract_number_tokens(stripped.trim());
+    if extracted.is_empty() {
+        return true;
+    }
+
+    let mut cell_pool = collect_grounded_cell_values(rows);
+    for snippet in cited_snippets {
+        cell_pool.strings.push(snippet.clone());
+        for tok in extract_number_tokens(snippet) {
+            cell_pool.numbers.push(tok.value);
+            if tok.is_percent {
+                cell_pool.numbers.push(tok.value / 100.0);
+            }
+            cell_pool.strings.push(tok.raw_digits);
+        }
+    }
+
+    extracted
+        .iter()
+        .all(|tok| is_token_grounded(tok, &cell_pool, rows.len()))
+}
+
 fn is_share_question(question: &str) -> bool {
     let lower = question.to_ascii_lowercase();
     SHARE_KEYWORDS.iter().any(|kw| lower.contains(kw))

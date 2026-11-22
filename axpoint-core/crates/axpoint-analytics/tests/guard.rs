@@ -319,6 +319,7 @@ fn guard_bare_dataset_rewrites_to_tenant_lake_schema_and_wraps_limit() -> Result
         allow_live: false,
         params: BTreeMap::new(),
         policy: None,
+        ..GuardOptions::default()
     };
     let join_res = guard(
         "SELECT o.id, c.region FROM demo_orders o JOIN customers c ON o.customer_id = c.id",
@@ -350,6 +351,7 @@ fn guard_whitelisted_table_functions_are_permitted_and_wrapped() -> Result<(), A
         allow_live: false,
         params: BTreeMap::new(),
         policy: None,
+        ..GuardOptions::default()
     };
 
     for sql in [
@@ -446,6 +448,7 @@ fn guard_live_federated_connection_enforces_allow_live_permission_and_registrati
         allow_live: false,
         params: BTreeMap::new(),
         policy: None,
+        ..GuardOptions::default()
     };
     assert_sql_rejected(
         "SELECT * FROM live_erp.public.orders",
@@ -459,6 +462,7 @@ fn guard_live_federated_connection_enforces_allow_live_permission_and_registrati
         allow_live: true,
         params: BTreeMap::new(),
         policy: None,
+        ..GuardOptions::default()
     };
     let denied = guard(
         "SELECT * FROM live_erp.public.orders",
@@ -508,6 +512,7 @@ fn guard_named_parameters_payload_size_and_output_pii_lineage_work_accurately()
         allow_live: false,
         params,
         policy: None,
+        ..GuardOptions::default()
     };
     let bound = guard(
         "SELECT id FROM demo_orders WHERE status = :status AND amount > :min_amt AND :active AND id IN (:ids)",

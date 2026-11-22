@@ -7,8 +7,9 @@ use std::time::Instant;
 use axpoint_analytics::nl2sql::schema_link::SchemaLinkExtras;
 use axpoint_analytics::{
     AskPipelineInput, CatalogDatasetEntry, LiveConnectionSpec, MetricExecuteOptions,
-    PivotExecuteOptions, TenantCatalog, TenantDb, ensure_no_dependency_cycle, execute_metric_query,
-    execute_multi_metric_query, execute_pivot, generate_transform_sql, preview_transform_sql,
+    PivotExecuteOptions, TenantCatalog, TenantDb, compile_ontology_join_edges,
+    ensure_no_dependency_cycle, execute_metric_query, execute_multi_metric_query, execute_pivot,
+    generate_transform_sql, preview_transform_sql, run_grounding_eval_suite,
     validate_corrected_sql, validate_create_metric_request, validate_metric_def,
     validate_target_dataset_name,
 };
@@ -16,13 +17,13 @@ use axpoint_domain::AppError;
 use axpoint_domain::analytics::{
     AnalyticsCatalogResponse, AnalyticsPrincipal, ApplyTransformResponse, AskFeedbackRequest,
     AskIntent, AskRequest, AskResponse, AskTurnRecord, CatalogDatasetNode, CreateMetricRequest,
-    CreateSavedQueryRequest, CreateTransformDraftRequest, ExplainResult, LiveConnectionNode,
-    MetricDef, MetricQuery, MetricQueryResult, MultiMetricQuery, NewAskTurnInput,
-    NewQueryHistoryEntry, NewTransformDraftInput, PivotResult, PivotSpec, PlatformViewNode,
-    QueryColumn, QueryHistoryEntry, QueryHistoryKind, QueryHistoryListQuery, QueryHistoryStatus,
-    QueryRequest, QueryResult, RunSavedQueryRequest, SavedQuery, SavedQueryKind, TransformDraft,
-    TransformDraftStatus, UpdateMetricRequest, UpdateSavedQueryRequest,
-    UpdateTransformDraftRequest,
+    CreateSavedQueryRequest, CreateTransformDraftRequest, ExplainResult, GroundingEvalRunRecord,
+    GroundingEvalRunResponse, LiveConnectionNode, MetricDef, MetricQuery, MetricQueryResult,
+    MultiMetricQuery, NewAskTurnInput, NewQueryHistoryEntry, NewTransformDraftInput, PivotResult,
+    PivotSpec, PlatformViewNode, QueryColumn, QueryHistoryEntry, QueryHistoryKind,
+    QueryHistoryListQuery, QueryHistoryStatus, QueryRequest, QueryResult, RunSavedQueryRequest,
+    SavedQuery, SavedQueryKind, TransformDraft, TransformDraftStatus, UpdateMetricRequest,
+    UpdateSavedQueryRequest, UpdateTransformDraftRequest,
 };
 use axpoint_domain::axhub::{
     CreateDatasetRequest, Dataset, DatasetListQuery, DatasetStatus, PaginatedList, SchemaPolicy,
@@ -30,8 +31,10 @@ use axpoint_domain::axhub::{
 use axpoint_domain::enums::{AuditAction, DataType, Permission, PiiCategory, SourceKind, SyncMode};
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::{
-    AnalyticsQueryPort, AnalyticsRepository as _, ConnectionRepository as _, DatasetRepository as _,
+    AnalyticsQueryPort, AnalyticsRepository as _, ConnectionRepository as _,
+    DatasetRepository as _, StudioRepository as _,
 };
+use axpoint_domain::studio::SchemaDoc;
 use axpoint_security::AuthPrincipal;
 use axum::extract::State;
 use axum::routing::{get, patch, post};
@@ -107,6 +110,14 @@ pub(crate) fn router() -> Router<AppState> {
             post(discard_transform_draft_handler),
         )
         .route("/analytics/history", get(list_history_handler))
+        .route(
+            "/analytics/grounding-eval/run",
+            post(run_grounding_eval_handler),
+        )
+        .route(
+            "/analytics/grounding-eval/runs",
+            get(list_grounding_eval_runs_handler),
+        )
 }
 
 /// Loads all active datasets, column metadata, and live-query connection specs for `tenant_id`.
@@ -178,7 +189,44 @@ pub(crate) async fn load_tenant_catalog_and_live(
         catalog.insert_live_connection(&spec.name);
     }
 
+    let published_schemas = load_published_tenant_schemas(state, tenant_id, &catalog).await;
+    catalog.allowed_joins = compile_ontology_join_edges(&published_schemas);
+    catalog.published_schemas = published_schemas;
+
     Ok((catalog, all_datasets, nodes, live_specs))
+}
+
+async fn load_published_tenant_schemas(
+    state: &AppState,
+    tenant_id: &str,
+    catalog: &TenantCatalog,
+) -> Vec<SchemaDoc> {
+    let mut slugs = vec![String::from("main")];
+    if let Ok(subs) = state.store.list_subgraphs(tenant_id).await {
+        for sg in subs {
+            if !slugs.iter().any(|s| s == &sg.slug) {
+                slugs.push(sg.slug);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for slug in &slugs {
+        let Ok(resp) = state.store.get_published_schema(tenant_id, slug).await else {
+            continue;
+        };
+        let mut doc = resp.doc;
+        for m in &mut doc.mappings {
+            if let Ok(ds_uuid) = Uuid::parse_str(m.dataset.trim())
+                && let Some(entry) = catalog.dataset_by_id(ds_uuid)
+            {
+                m.dataset.clone_from(&entry.name);
+            }
+        }
+        if !doc.node_types.is_empty() || !doc.mappings.is_empty() {
+            out.push(doc);
+        }
+    }
+    out
 }
 
 /// Acquires or initializes the hardened `TenantDb` session for `tenant_id` with a fresh catalog.
@@ -293,7 +341,9 @@ fn error_http_status_i32(err: &AppError) -> i32 {
 }
 
 fn classify_history_status(err: &AppError) -> QueryHistoryStatus {
-    if err.error_code() == "SQL_REJECTED" || matches!(err, AppError::Forbidden(_)) {
+    if matches!(err.error_code(), "SQL_REJECTED" | "JOIN_PATH_UNGROUNDED")
+        || matches!(err, AppError::Forbidden(_))
+    {
         QueryHistoryStatus::Rejected
     } else if matches!(err, AppError::Timeout(_)) {
         QueryHistoryStatus::Timeout
@@ -1138,6 +1188,29 @@ async fn run_saved_query_handler(
     Ok(Json(val))
 }
 
+async fn build_ask_link_extras(
+    session: &TenantDb,
+    catalog: &TenantCatalog,
+    all_metrics: Vec<MetricDef>,
+    restrict_ids: Vec<Uuid>,
+    policy: &axpoint_domain::guard::PolicyContext,
+) -> SchemaLinkExtras {
+    let sample_rows_by_dataset =
+        collect_sample_rows_by_dataset(session, catalog, &restrict_ids, policy).await;
+    let enforce_ontology_joins = catalog
+        .published_schemas
+        .iter()
+        .any(|s| !s.mappings.is_empty());
+    SchemaLinkExtras {
+        all_metrics,
+        sample_rows_by_dataset,
+        restrict_dataset_ids: restrict_ids,
+        prior_session_sqls: Vec::new(),
+        published_schemas: catalog.published_schemas.clone(),
+        enforce_ontology_joins,
+    }
+}
+
 async fn collect_sample_rows_by_dataset(
     session: &TenantDb,
     catalog: &TenantCatalog,
@@ -1227,7 +1300,11 @@ async fn persist_ask_turn_and_history(
         resp.turn_id = turn_row.id;
     }
 
-    if (!resp.sql.is_empty() || resp.status == QueryHistoryStatus::Failed)
+    if (!resp.sql.is_empty()
+        || matches!(
+            resp.status,
+            QueryHistoryStatus::Failed | QueryHistoryStatus::Rejected
+        ))
         && let Err(err) = state
             .store
             .record_query_history(
@@ -1243,8 +1320,11 @@ async fn persist_ask_turn_and_history(
                     status: resp.status,
                     row_count: i64::try_from(resp.rows.len()).ok(),
                     duration_ms: i64::try_from(duration_ms).ok(),
-                    error_code: (resp.status == QueryHistoryStatus::Failed)
-                        .then(|| String::from("SQL_REPAIR_EXHAUSTED")),
+                    error_code: match resp.status {
+                        QueryHistoryStatus::Rejected => Some(String::from("JOIN_PATH_UNGROUNDED")),
+                        QueryHistoryStatus::Failed => Some(String::from("SQL_REPAIR_EXHAUSTED")),
+                        _ => None,
+                    },
                 },
             )
             .await
@@ -1331,14 +1411,8 @@ pub(crate) async fn execute_ask_for_principal(
         None => Vec::new(),
     };
 
-    let sample_rows_by_dataset =
-        collect_sample_rows_by_dataset(&session, &catalog, &restrict_ids, &policy).await;
-    let link_extras = SchemaLinkExtras {
-        all_metrics,
-        sample_rows_by_dataset,
-        restrict_dataset_ids: restrict_ids,
-        prior_session_sqls: Vec::new(),
-    };
+    let link_extras =
+        build_ask_link_extras(&session, &catalog, all_metrics, restrict_ids, &policy).await;
 
     let nl2sql_ai = state
         .ai
@@ -1662,6 +1736,48 @@ async fn discard_transform_draft_handler(
         .await?
         .ok_or(AppError::NotFound("TRANSFORM_DRAFT_NOT_FOUND"))?;
     Ok(Json(discarded))
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GroundingEvalRunsQuery {
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+async fn run_grounding_eval_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+) -> Result<Json<GroundingEvalRunResponse>, HttpError> {
+    if !principal.has(Permission::GuardAdmin) && !principal.has(Permission::OpsAdmin) {
+        return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+    }
+    let [cloud_inp, local_inp] = run_grounding_eval_suite().await?;
+    let cloud_rec = state
+        .store
+        .insert_grounding_eval_run(&principal.tenant_id, cloud_inp)
+        .await?;
+    let local_rec = state
+        .store
+        .insert_grounding_eval_run(&principal.tenant_id, local_inp)
+        .await?;
+    Ok(Json(GroundingEvalRunResponse {
+        runs: vec![cloud_rec, local_rec],
+    }))
+}
+
+async fn list_grounding_eval_runs_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiQuery(query): ApiQuery<GroundingEvalRunsQuery>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let limit = query.limit.unwrap_or(20).clamp(1, 200);
+    let items: Vec<GroundingEvalRunRecord> = state
+        .store
+        .list_grounding_eval_runs(&principal.tenant_id, limit)
+        .await?;
+    Ok(Json(serde_json::json!({ "items": items })))
 }
 
 async fn list_history_handler(

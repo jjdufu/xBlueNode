@@ -5,9 +5,11 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::ControlFlow;
 
 use axpoint_domain::AppError;
+use axpoint_domain::analytics::AllowedDatasetJoinEdge;
 use axpoint_domain::axhub::{ColumnMeta, Dataset};
 use axpoint_domain::enums::{DataType, MaskRule, PiiCategory};
 use axpoint_domain::guard::{DatasetPolicySpec, PolicyContext};
+use axpoint_domain::studio::SchemaDoc;
 use serde::{Deserialize, Serialize};
 use sqlparser::ast::{
     ExcludeSelectItem, Expr, Function, FunctionArg, FunctionArgExpr, FunctionArguments, Ident,
@@ -189,6 +191,10 @@ pub struct TenantCatalog {
     pub live_connections: HashSet<String>,
     /// Whether the executing principal holds `Permission::DataLiveQuery`.
     pub has_live_permission: bool,
+    /// Canonical undirected dataset column join edges compiled from published `SchemaDoc`s (`02-STEP16` §16.3).
+    pub allowed_joins: Vec<AllowedDatasetJoinEdge>,
+    /// Published `xBlueStudio` `SchemaDoc` snapshots across tenant subgraphs (`02-STEP16` §16.2–§16.3).
+    pub published_schemas: Vec<SchemaDoc>,
 }
 
 impl TenantCatalog {
@@ -200,6 +206,8 @@ impl TenantCatalog {
             datasets: HashMap::new(),
             live_connections: HashSet::new(),
             has_live_permission: false,
+            allowed_joins: Vec::new(),
+            published_schemas: Vec::new(),
         }
     }
 
@@ -251,6 +259,20 @@ impl TenantCatalog {
         self
     }
 
+    /// Builder helper setting `allowed_joins`.
+    #[must_use]
+    pub fn with_allowed_joins(mut self, allowed_joins: Vec<AllowedDatasetJoinEdge>) -> Self {
+        self.allowed_joins = allowed_joins;
+        self
+    }
+
+    /// Builder helper setting `published_schemas`.
+    #[must_use]
+    pub fn with_published_schemas(mut self, schemas: Vec<SchemaDoc>) -> Self {
+        self.published_schemas = schemas;
+        self
+    }
+
     /// Looks up a dataset entry case-insensitively by SQL name.
     #[must_use]
     pub fn dataset(&self, name: &str) -> Option<&CatalogDatasetEntry> {
@@ -292,7 +314,7 @@ impl TenantCatalog {
     }
 }
 
-/// Options controlling [`guard`] execution (`05-STEP04` §04.3, `11-STEP13` §13.6.3).
+/// Options controlling [`guard`] execution (`05-STEP04` §04.3, `11-STEP13` §13.6.3, `02-STEP16` §16.3.3).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GuardOptions {
     /// Maximum rows before truncation (`default = 10_000`, `cap = 100_000`).
@@ -304,6 +326,12 @@ pub struct GuardOptions {
     /// Optional compiled `AxGuard` row/column security context (`11-STEP13` §13.6.3).
     #[serde(default)]
     pub policy: Option<PolicyContext>,
+    /// When `true`, multi-dataset `SELECT` queries must join exclusively along `allowed_joins` edges (`02-STEP16` §16.3.3).
+    #[serde(default)]
+    pub strict_ontology_join: bool,
+    /// Canonical undirected dataset column join edges compiled from `xBlueStudio` mappings (`02-STEP16` §16.3.3).
+    #[serde(default)]
+    pub allowed_joins: Vec<AllowedDatasetJoinEdge>,
 }
 
 impl Default for GuardOptions {
@@ -313,6 +341,8 @@ impl Default for GuardOptions {
             allow_live: false,
             params: BTreeMap::new(),
             policy: None,
+            strict_ontology_join: false,
+            allowed_joins: Vec::new(),
         }
     }
 }
@@ -322,6 +352,18 @@ impl GuardOptions {
     #[must_use]
     pub fn with_policy(mut self, policy: Option<PolicyContext>) -> Self {
         self.policy = policy;
+        self
+    }
+
+    /// Builder helper enabling strict ontology join enforcement against `allowed_joins`.
+    #[must_use]
+    pub fn with_ontology_joins(
+        mut self,
+        strict_ontology_join: bool,
+        allowed_joins: Vec<AllowedDatasetJoinEdge>,
+    ) -> Self {
+        self.strict_ontology_join = strict_ontology_join;
+        self.allowed_joins = allowed_joins;
         self
     }
 }
@@ -452,6 +494,7 @@ pub fn guard_with_ceiling(
         opts.max_rows.min(bounded_ceiling)
     };
     let mut query = parse_single_select_query(sql, &catalog.tenant_id)?;
+    let pre_rewrite_query = opts.strict_ontology_join.then(|| query.clone());
     let output_lineage = analyze_outer_lineage(&query, catalog);
 
     let mut visitor = GuardVisitor::new(
@@ -464,6 +507,15 @@ pub fn guard_with_ceiling(
     );
     if let ControlFlow::Break(err) = VisitMut::visit(&mut query, &mut visitor) {
         return Err(*err);
+    }
+
+    if let Some(ref orig_q) = pre_rewrite_query {
+        let effective_joins = if opts.allowed_joins.is_empty() {
+            &catalog.allowed_joins
+        } else {
+            &opts.allowed_joins
+        };
+        crate::ontology_join::validate_ontology_joins(orig_q, catalog, effective_joins)?;
     }
 
     let fetch_limit = u64::from(effective_max_rows).saturating_add(1);
@@ -3451,4 +3503,123 @@ pub fn inspect_sql_expression(
         return Err(err);
     }
     Ok((expr, inspector.columns, inspector.functions))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn join_test_catalog() -> TenantCatalog {
+        let mut orders =
+            CatalogDatasetEntry::simple(Uuid::from_u128(1), "demo_orders", "demo_orders");
+        for (idx, name) in ["order_id", "warehouse_code", "amount", "qty", "status"]
+            .into_iter()
+            .enumerate()
+        {
+            orders.columns.insert(
+                String::from(name),
+                ColumnMeta {
+                    dataset_id: orders.id,
+                    column_name: String::from(name),
+                    data_type: DataType::String,
+                    pii_category: PiiCategory::None,
+                    pii_confirmed: false,
+                    description: String::new(),
+                    business_term: String::new(),
+                    unit: String::new(),
+                    ordinal: i32::try_from(idx).unwrap_or(0),
+                },
+            );
+        }
+
+        let mut warehouses =
+            CatalogDatasetEntry::simple(Uuid::from_u128(2), "demo_warehouses", "demo_warehouses");
+        for (idx, name) in ["warehouse_code", "region", "title"]
+            .into_iter()
+            .enumerate()
+        {
+            warehouses.columns.insert(
+                String::from(name),
+                ColumnMeta {
+                    dataset_id: warehouses.id,
+                    column_name: String::from(name),
+                    data_type: DataType::String,
+                    pii_category: PiiCategory::None,
+                    pii_confirmed: false,
+                    description: String::new(),
+                    business_term: String::new(),
+                    unit: String::new(),
+                    ordinal: i32::try_from(idx).unwrap_or(0),
+                },
+            );
+        }
+
+        let fulfills_edge = AllowedDatasetJoinEdge {
+            left_dataset: String::from("demo_orders"),
+            left_column: String::from("warehouse_code"),
+            right_dataset: String::from("demo_warehouses"),
+            right_column: String::from("warehouse_code"),
+            relationship_label: String::from("FULFILLS"),
+        };
+
+        TenantCatalog::new("default")
+            .with_dataset(orders)
+            .with_dataset(warehouses)
+            .with_allowed_joins(vec![fulfills_edge])
+    }
+
+    #[test]
+    fn ontology_join_guard_allows_mapped_edge_and_passthrough_cte() -> Result<(), AppError> {
+        let catalog = join_test_catalog();
+        let strict_opts = GuardOptions {
+            strict_ontology_join: true,
+            ..GuardOptions::default()
+        };
+
+        let direct = guard(
+            "SELECT o.order_id, w.warehouse_code FROM demo_orders o JOIN demo_warehouses w ON o.warehouse_code = w.warehouse_code LIMIT 5",
+            &catalog,
+            &strict_opts,
+        )?;
+        assert_eq!(direct.referenced_datasets.len(), 2);
+
+        let cte_sql = "WITH paid AS (SELECT order_id, warehouse_code FROM demo_orders WHERE status = 'PAID') \
+                       SELECT p.order_id, w.region FROM paid p JOIN demo_warehouses w ON w.warehouse_code = p.warehouse_code";
+        let via_cte = guard(cte_sql, &catalog, &strict_opts)?;
+        assert_eq!(via_cte.referenced_datasets.len(), 2);
+
+        let self_join = guard(
+            "SELECT a.order_id FROM demo_orders a JOIN demo_orders b ON a.order_id = b.order_id",
+            &catalog,
+            &strict_opts,
+        )?;
+        assert_eq!(self_join.referenced_datasets.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn ontology_join_guard_rejects_ungrounded_and_implicit_joins() {
+        let catalog = join_test_catalog();
+        let strict_opts = GuardOptions {
+            strict_ontology_join: true,
+            ..GuardOptions::default()
+        };
+
+        for bad_sql in [
+            "SELECT o.order_id, w.warehouse_code FROM demo_orders o JOIN demo_warehouses w ON CAST(o.amount AS VARCHAR) = w.region",
+            "SELECT o.order_id, w.region FROM demo_orders o, demo_warehouses w WHERE o.warehouse_code = w.warehouse_code",
+            "SELECT o.order_id, w.region FROM demo_orders o CROSS JOIN demo_warehouses w",
+            "SELECT * FROM demo_orders NATURAL JOIN demo_warehouses",
+            "SELECT o.order_id, w.region FROM demo_orders o JOIN demo_warehouses w ON o.order_id = w.region",
+            "SELECT o.order_id, w.region FROM demo_orders o JOIN demo_warehouses w ON warehouse_code = w.warehouse_code",
+            "WITH agg AS (SELECT warehouse_code, COUNT(*) AS cnt FROM demo_orders GROUP BY warehouse_code) SELECT a.cnt FROM agg a JOIN demo_warehouses w ON a.warehouse_code = w.warehouse_code",
+            "SELECT a.order_id FROM demo_orders a JOIN demo_orders b ON a.amount = b.qty",
+        ] {
+            let res = guard(bad_sql, &catalog, &strict_opts);
+            assert!(res.is_err(), "expected JOIN_PATH_UNGROUNDED for: {bad_sql}");
+            if let Err(err) = res {
+                assert_eq!(err.error_code(), "JOIN_PATH_UNGROUNDED", "sql: {bad_sql}");
+            }
+        }
+    }
 }
