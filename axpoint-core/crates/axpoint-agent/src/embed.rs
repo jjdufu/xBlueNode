@@ -247,6 +247,8 @@ where
             roles: Vec::new(),
             permissions: effective_perms,
             token_kind: TokenKind::Embed,
+            token_profile: axpoint_domain::enums::TokenProfile::General,
+            web_base_url: None,
         };
         Ok((resolved, principal))
     }

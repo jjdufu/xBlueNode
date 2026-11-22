@@ -253,6 +253,7 @@ where
         principal: &AuthPrincipal,
         agent_id: Uuid,
     ) -> Result<AgentVersionRecord, AppError> {
+        principal.enforce_no_prod_mutation()?;
         principal.require(Permission::AgentEdit)?;
         let agent = self
             .store
@@ -1672,6 +1673,8 @@ where
                 roles: rec.roles,
                 permissions: rec.permissions,
                 token_kind: TokenKind::Access,
+                token_profile: axpoint_domain::enums::TokenProfile::General,
+                web_base_url: None,
             });
         }
 
@@ -1706,6 +1709,8 @@ where
             roles,
             permissions,
             token_kind: TokenKind::Access,
+            token_profile: axpoint_domain::enums::TokenProfile::General,
+            web_base_url: None,
         })
     }
 
@@ -1818,6 +1823,8 @@ where
                 roles: input.roles.clone(),
                 permissions: input.permissions.clone(),
                 token_kind: TokenKind::Access,
+                token_profile: axpoint_domain::enums::TokenProfile::General,
+                web_base_url: None,
             };
 
             let loop_ctx = LoopContext {
