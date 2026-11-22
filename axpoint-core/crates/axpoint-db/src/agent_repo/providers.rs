@@ -2,8 +2,8 @@
 
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{
-    CredentialMutation, LlmProviderFlags, LlmProviderRecord, LlmUsageDelta, LlmUsageQuery,
-    LlmUsageRecord, SaveLlmProviderInput,
+    CredentialMutation, LlmProviderFlags, LlmProviderRecord, LlmStructuredCaps, LlmUsageDelta,
+    LlmUsageQuery, LlmUsageRecord, SaveLlmProviderInput,
 };
 use axpoint_domain::axhub::SealedCredential;
 use axpoint_domain::enums::Purpose;
@@ -174,6 +174,9 @@ fn decode_provider_row(row: &PgRow) -> Result<LlmProviderRecord, AppError> {
             allow_private_network,
             allow_pii,
         },
+        structured_caps: LlmStructuredCaps::default(),
+        owner_user_id: None,
+        is_readonly: false,
         enabled,
         created_at,
     })

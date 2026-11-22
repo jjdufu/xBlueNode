@@ -23,12 +23,13 @@ pub use axpoint_domain::agent::{
     ConversationRecord, CreateAgentEmbedRequest, CreateAgentEmbedResponse, CreateAgentRequest,
     CreateApiTokenRequest, CreateApiTokenResponse, CreateEndpointRequest, CreateMcpClientRequest,
     CredentialMutation, EmbedChatRequest, EndpointListQuery, EndpointSpec, KnowledgeScope,
-    LlmProviderFlags, LlmProviderRecord, LlmUsageDelta, LlmUsageQuery, LlmUsageRecord,
-    McpClientRecord, McpToolInfo, MessageRecord, NewAgentEmbedInput, NewApiTokenInput,
-    NewConversationInput, NewMessageInput, PersonalAccessTokenSummary, ProviderTestResponse,
-    ResolvedAgentEmbed, SaveEndpointInput, SaveLlmProviderInput, SaveLlmProviderRequest,
-    SaveMcpClientInput, SimRunToolInput, SimRunToolOutput, SkillInvokeSpec, SkillManifest,
-    ToolCallSpec, ToolRef, UpdateAgentRequest, UpdateEndpointRequest,
+    LlmProviderFlags, LlmProviderRecord, LlmStructuredCaps, LlmUsageDelta, LlmUsageQuery,
+    LlmUsageRecord, McpClientRecord, McpToolInfo, MessageRecord, NewAgentEmbedInput,
+    NewApiTokenInput, NewConversationInput, NewMessageInput, PersonalAccessTokenSummary,
+    ProviderScope, ProviderTestResponse, PutUserLlmPreferencesRequest, ResolvedAgentEmbed,
+    SaveEndpointInput, SaveLlmProviderInput, SaveLlmProviderRequest, SaveMcpClientInput,
+    SimRunToolInput, SimRunToolOutput, SkillInvokeSpec, SkillManifest, ToolCallSpec, ToolRef,
+    UpdateAgentRequest, UpdateEndpointRequest, UserLlmPreferenceItem, UserLlmPreferenceRecord,
 };
 pub use axpoint_domain::enums::EndpointKind;
 pub use axpoint_domain::ports::{

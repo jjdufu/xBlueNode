@@ -337,3 +337,5 @@ export type TokenKind =
   | "DEV_STATIC"
   | "EMBED"
   | "SHARE";
+
+export type StructuredOutputMode = "NONE" | "JSON_OBJECT" | "JSON_SCHEMA";

@@ -34,7 +34,9 @@ is_allowed_for_role() {
       [[ "$file" =~ ^axpoint-core/crates/(axpoint-analytics|axpoint-security)/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(analytics|guard)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/algo/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(hub_repo|graph_repo|analytics_repo|rules_repo|guard_repo)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(hub_repo|axhub_repo|graph_repo|graph_query|analytics_repo|rules_repo|guard_repo)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(rules_repo|guard_repo)/ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(rules_repo|step02_03_db|step04_analytics_db)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/(axhub|analytics|documents|axguard)\.rs$ ]] && return 0
       [[ "$file" =~ ^tests/cassettes/ ]] && return 0
       return 1
@@ -43,7 +45,9 @@ is_allowed_for_role() {
       [[ "$file" =~ ^axpoint-core/crates/(axpoint-llm|axpoint-flow|axpoint-agent)/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(agent|flow|graph|ops|rules|topology|view)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(expr|rollup|sim|studio)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(studio_repo|flow_repo|agent_repo|sim_repo|view_repo|ops_repo)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(studio_repo|flow_repo|agent_repo|sim_repo|view_repo|ops_repo|tokens|nodes|topology|mapping_exec|aggregate_exec|entity_link|knowledge_sync)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(agent_repo|ops_repo)/ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(studio_repo|agent_repo|sim_repo|view_repo|step06_exec)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/(xblue|xblue_graphql|axflow|axagent|published|mcp|axsim|xblueview|axops)\.rs$ ]] && return 0
       [[ "$file" =~ ^templates/packs/ ]] && return 0
       [[ "$file" =~ ^scripts/ops/ ]] && return 0

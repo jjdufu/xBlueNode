@@ -1,7 +1,16 @@
 import { z } from "zod";
 import { ApiError, ApiErrorBodySchema, requestJson } from "./client";
 import { getAccessToken } from "./auth";
-import type { EndpointKind, Environment, Permission } from "./enums";
+import type {
+  EndpointKind,
+  Environment,
+  Permission,
+  StructuredOutputMode,
+} from "./enums";
+
+export type { StructuredOutputMode };
+
+export type ProviderScope = "SYSTEM" | "PERSONAL";
 
 export type LlmPurpose =
   | "CHAT"
@@ -67,12 +76,20 @@ export interface LlmProviderRecord {
   supports_tools: boolean;
   embedding_dim: number | null;
   allow_private_network: boolean;
+  allow_pii?: boolean;
+  structured_mode?: StructuredOutputMode;
+  deterministic_seed?: number | null;
+  is_local_model?: boolean;
+  max_context_tokens?: number;
+  owner_user_id?: string | null;
+  is_readonly?: boolean;
   enabled: boolean;
   created_at: string;
 }
 
 export interface SaveLlmProviderRequest {
   name: string;
+  scope?: ProviderScope;
   base_url: string;
   model: string;
   purposes: LlmPurpose[];
@@ -80,11 +97,16 @@ export interface SaveLlmProviderRequest {
   priority?: number;
   temperature?: number;
   max_tokens?: number;
+  max_context_tokens?: number;
   timeout_s?: number;
   rpm_limit?: number | null;
   supports_tools?: boolean;
   embedding_dim?: number | null;
   allow_private_network?: boolean;
+  allow_pii?: boolean;
+  structured_mode?: StructuredOutputMode;
+  deterministic_seed?: number | null;
+  is_local_model?: boolean;
   enabled?: boolean;
 }
 
@@ -93,6 +115,25 @@ export interface ProviderTestResponse {
   latency_ms: number;
   model: string;
   reply: string;
+  structured_mode?: StructuredOutputMode;
+  structured_verified?: boolean;
+  effective_temperature?: number;
+}
+
+export interface UserLlmPreferenceRecord {
+  purpose: LlmPurpose;
+  provider_id: string;
+  provider_name: string;
+  updated_at: string;
+}
+
+export interface UserLlmPreferenceItem {
+  purpose: LlmPurpose;
+  provider_id: string;
+}
+
+export interface PutUserLlmPreferencesRequest {
+  preferences: UserLlmPreferenceItem[];
 }
 
 export interface LlmUsageRecord {
@@ -526,6 +567,28 @@ export async function testLlmProvider(
     `/api/axagent/providers/${encodeURIComponent(id)}/test`,
     { method: "POST" }
   );
+}
+
+export async function getUserLlmPreferences(): Promise<
+  UserLlmPreferenceRecord[]
+> {
+  const res = await requestJson<
+    UserLlmPreferenceRecord[] | PaginatedItems<UserLlmPreferenceRecord>
+  >("/api/axagent/llm-preferences");
+  return unwrapItems(res);
+}
+
+export async function putUserLlmPreferences(
+  req: PutUserLlmPreferencesRequest
+): Promise<UserLlmPreferenceRecord[]> {
+  const res = await requestJson<
+    UserLlmPreferenceRecord[] | PaginatedItems<UserLlmPreferenceRecord>
+  >("/api/axagent/llm-preferences", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  });
+  return unwrapItems(res);
 }
 
 export async function fetchLlmUsage(params?: {
