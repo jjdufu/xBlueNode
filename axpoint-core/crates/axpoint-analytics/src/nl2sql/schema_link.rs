@@ -9,6 +9,7 @@ use axpoint_domain::analytics::{
 };
 use axpoint_domain::enums::{DataType, PiiCategory};
 use axpoint_domain::studio::{MappingSpec, SchemaDoc};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::result::mask_pii_str;
@@ -69,6 +70,8 @@ pub struct LinkedSchemaContext {
     pub linked_objects: LinkedObjects,
     /// `true` if at least one column, metric, or ontology node had a positive match with the question.
     pub has_positive_hit: bool,
+    /// `true` when `restrict_dataset_ids` is active and the question explicitly names an excluded dataset without naming any mounted dataset (`06-STEP20` §20.2.2).
+    pub targeted_excluded_dataset: bool,
     /// Legal cross-dataset join edges compiled from published `SchemaDoc`s (`02-STEP16` §16.3.2).
     pub allowed_joins: Vec<AllowedDatasetJoinEdge>,
     /// Published `xBlueStudio` `SchemaDoc` snapshots available to Stage 0 ontology routing (`02-STEP16` §16.2).
@@ -78,7 +81,8 @@ pub struct LinkedSchemaContext {
 }
 
 /// Optional extra inputs for in-memory augmentation and sample-row masking.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SchemaLinkExtras {
     /// Available semantic metrics in the tenant (used to supplement DB recall on CJK substrings).
     pub all_metrics: Vec<MetricDef>,
@@ -86,6 +90,9 @@ pub struct SchemaLinkExtras {
     pub sample_rows_by_dataset: HashMap<Uuid, Vec<serde_json::Map<String, serde_json::Value>>>,
     /// Optional explicit dataset UUID whitelist (`AskContext.dataset_ids`).
     pub restrict_dataset_ids: Vec<Uuid>,
+    /// Identifiers (`name` and `display_name`) of tenant datasets excluded by `restrict_dataset_ids` (`06-STEP20` §20.2.2).
+    #[serde(default)]
+    pub excluded_dataset_names: Vec<String>,
     /// Prior SQL text from the active multi-turn session (boosts tables referenced in prior turns).
     pub prior_session_sqls: Vec<String>,
     /// Published `xBlueStudio` `SchemaDoc` snapshots across tenant subgraphs (`02-STEP16` §16.3.2).
@@ -233,13 +240,32 @@ pub fn build_linked_schema(
         extras.published_schemas.clone()
     };
 
+    if is_targeting_excluded_dataset(
+        question,
+        catalog,
+        &restrict_set,
+        &extras.excluded_dataset_names,
+    ) {
+        return LinkedSchemaContext {
+            tables: Vec::new(),
+            metrics: Vec::new(),
+            matched_nodes: Vec::new(),
+            linked_objects: LinkedObjects::default(),
+            has_positive_hit: false,
+            targeted_excluded_dataset: true,
+            allowed_joins: Vec::new(),
+            published_schemas,
+            enforce_ontology_joins: extras.enforce_ontology_joins,
+        };
+    }
+
     let has_positive_hit = merged_cols
         .iter()
         .any(|(hit, s)| *s > 0.05 && is_substantive_column_hit(question, hit))
         || merged_metrics.iter().any(|(_, s)| *s > 0.12)
         || !db_recall.matched_nodes.is_empty()
         || question_matches_mapped_node_type(question, &published_schemas, catalog)
-        || (!restrict_set.is_empty() && !merged_cols.is_empty());
+        || question_mentions_mounted_dataset(question, catalog, &restrict_set);
 
     let selected_metrics: Vec<MetricDef> = merged_metrics
         .into_iter()
@@ -270,10 +296,85 @@ pub fn build_linked_schema(
         matched_nodes: db_recall.matched_nodes.clone(),
         linked_objects,
         has_positive_hit,
+        targeted_excluded_dataset: false,
         allowed_joins,
         published_schemas,
         enforce_ontology_joins: extras.enforce_ontology_joins,
     }
+}
+
+fn is_targeting_excluded_dataset(
+    question: &str,
+    catalog: &TenantCatalog,
+    restrict_set: &BTreeSet<Uuid>,
+    excluded_dataset_names: &[String],
+) -> bool {
+    if restrict_set.is_empty() || excluded_dataset_names.is_empty() {
+        return false;
+    }
+    let q_lower = question.trim().to_lowercase();
+    if q_lower.is_empty() {
+        return false;
+    }
+    let mentions_excluded = excluded_dataset_names
+        .iter()
+        .any(|ident| mentions_dataset_identifier(&q_lower, ident));
+    if !mentions_excluded {
+        return false;
+    }
+    let mentions_mounted = catalog
+        .datasets
+        .values()
+        .filter(|d| restrict_set.contains(&d.id))
+        .any(|d| {
+            mentions_dataset_identifier(&q_lower, &d.name)
+                || mentions_dataset_identifier(&q_lower, &d.display_name)
+        });
+    !mentions_mounted
+}
+
+fn question_mentions_mounted_dataset(
+    question: &str,
+    catalog: &TenantCatalog,
+    restrict_set: &BTreeSet<Uuid>,
+) -> bool {
+    let q_lower = question.trim().to_lowercase();
+    if q_lower.is_empty() {
+        return false;
+    }
+    catalog
+        .datasets
+        .values()
+        .filter(|d| restrict_set.is_empty() || restrict_set.contains(&d.id))
+        .any(|d| {
+            mentions_dataset_identifier(&q_lower, &d.name)
+                || mentions_dataset_identifier(&q_lower, &d.display_name)
+        })
+}
+
+fn mentions_dataset_identifier(q_lower: &str, ident: &str) -> bool {
+    let trimmed = ident.trim().to_lowercase();
+    if trimmed.len() < 3 || trimmed.chars().count() < 2 {
+        return false;
+    }
+    if !trimmed.is_ascii() {
+        return q_lower.contains(&trimmed);
+    }
+    for (byte_idx, _) in q_lower.match_indices(&trimmed) {
+        let prev_ok = q_lower
+            .get(..byte_idx)
+            .and_then(|s| s.chars().next_back())
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_');
+        let end_idx = byte_idx.saturating_add(trimmed.len());
+        let next_ok = q_lower
+            .get(end_idx..)
+            .and_then(|s| s.chars().next())
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_');
+        if prev_ok && next_ok {
+            return true;
+        }
+    }
+    false
 }
 
 fn build_linked_objects_summary(
@@ -789,4 +890,386 @@ fn matches_en_concept_token(col_l: &str, ds_l: &str, en: &str) -> bool {
         return col_l.split('_').any(|p| p == en) || ds_l.split('_').any(|p| p == en);
     }
     col_l.contains(en) || ds_l.contains(en)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::future::ready;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    use axpoint_domain::AppError;
+    use axpoint_domain::analytics::{AskContext, AskIntent, AskRequest, MetricDimension};
+    use axpoint_domain::axhub::ColumnMeta;
+    use axpoint_domain::enums::{GroundingMode, RollupGrain};
+    use axpoint_domain::ports::AiPort;
+    use axpoint_domain::{ExtractedTriple, FusedHit};
+    use chrono::Utc;
+
+    use super::*;
+    use crate::nl2sql::{AskPipelineInput, run_ask_pipeline_conn};
+
+    struct ZeroCallAi {
+        calls: AtomicUsize,
+    }
+
+    impl AiPort for ZeroCallAi {
+        fn embedding_model_name(&self) -> &'static str {
+            "zero-call"
+        }
+
+        fn current_embedding_dim(&self) -> Option<usize> {
+            Some(8)
+        }
+
+        fn embed_batch(
+            &self,
+            inputs: &[String],
+        ) -> impl Future<Output = Result<(Vec<Vec<f32>>, usize), AppError>> + Send {
+            ready(Ok((vec![vec![0.0_f32; 8]; inputs.len()], 8)))
+        }
+
+        fn embed_one(
+            &self,
+            _text: &str,
+        ) -> impl Future<Output = Result<(Vec<f32>, usize), AppError>> + Send {
+            ready(Ok((vec![0.0_f32; 8], 8)))
+        }
+
+        fn extract_triples(
+            &self,
+            _paragraph: &str,
+        ) -> impl Future<Output = Result<Vec<ExtractedTriple>, AppError>> + Send {
+            ready(Ok(Vec::new()))
+        }
+
+        fn extract_query_entities(
+            &self,
+            _query: &str,
+        ) -> impl Future<Output = Result<Vec<String>, AppError>> + Send {
+            ready(Ok(Vec::new()))
+        }
+
+        fn synthesize_answer(
+            &self,
+            _query: &str,
+            _hits: &[FusedHit],
+        ) -> impl Future<Output = Result<String, AppError>> + Send {
+            ready(Ok(String::new()))
+        }
+
+        fn chat(
+            &self,
+            _system_prompt: &str,
+            _user_prompt: &str,
+        ) -> impl Future<Output = Result<String, AppError>> + Send {
+            self.calls.fetch_add(1, AtomicOrdering::SeqCst);
+            ready(Err(AppError::Llm(String::from(
+                "unexpected LLM call during deterministic abstention",
+            ))))
+        }
+    }
+
+    fn mk_col(ds_id: Uuid, name: &str, dt: DataType, term: &str, ordinal: i32) -> ColumnMeta {
+        ColumnMeta {
+            dataset_id: ds_id,
+            column_name: String::from(name),
+            data_type: dt,
+            pii_category: PiiCategory::None,
+            pii_confirmed: false,
+            description: String::from(term),
+            business_term: String::from(term),
+            unit: String::new(),
+            ordinal,
+        }
+    }
+
+    fn sample_scoped_catalog() -> (TenantCatalog, Uuid, Uuid, Vec<MetricDef>) {
+        let ds_first_id = Uuid::from_u128(0xA001);
+        let ds_second_id = Uuid::from_u128(0xA002);
+
+        let mut ds_first = CatalogDatasetEntry::simple(ds_first_id, "demo_orders", "demo_orders");
+        ds_first.display_name = String::from("演示订单表");
+        ds_first.columns.insert(
+            String::from("order_id"),
+            mk_col(ds_first_id, "order_id", DataType::String, "订单号", 0),
+        );
+        ds_first.columns.insert(
+            String::from("warehouse_code"),
+            mk_col(
+                ds_first_id,
+                "warehouse_code",
+                DataType::String,
+                "仓库编码",
+                1,
+            ),
+        );
+        ds_first.columns.insert(
+            String::from("region"),
+            mk_col(ds_first_id, "region", DataType::String, "区域", 2),
+        );
+        ds_first.columns.insert(
+            String::from("amount"),
+            mk_col(ds_first_id, "amount", DataType::Float64, "订单金额", 3),
+        );
+
+        let mut ds_second =
+            CatalogDatasetEntry::simple(ds_second_id, "demo_warehouses", "demo_warehouses");
+        ds_second.display_name = String::from("隔离对照仓");
+        ds_second.columns.insert(
+            String::from("warehouse_code"),
+            mk_col(
+                ds_second_id,
+                "warehouse_code",
+                DataType::String,
+                "仓库编码",
+                0,
+            ),
+        );
+        ds_second.columns.insert(
+            String::from("isolated_vault_qty"),
+            mk_col(
+                ds_second_id,
+                "isolated_vault_qty",
+                DataType::Int64,
+                "隔离库存",
+                1,
+            ),
+        );
+
+        let catalog = TenantCatalog::new("default")
+            .with_dataset(ds_first)
+            .with_dataset(ds_second);
+        let metrics = sample_scoped_metrics(ds_first_id, ds_second_id);
+        (catalog, ds_first_id, ds_second_id, metrics)
+    }
+
+    fn sample_scoped_metrics(ds_first_id: Uuid, ds_second_id: Uuid) -> Vec<MetricDef> {
+        let now = Utc::now();
+        vec![
+            MetricDef {
+                id: Uuid::from_u128(0xB001),
+                name: String::from("paid_amount"),
+                display_name: String::from("已支付金额"),
+                description: String::from("订单总金额"),
+                dataset_id: ds_first_id,
+                expression: String::from("SUM(amount)"),
+                filter_sql: String::new(),
+                time_column: None,
+                default_grain: RollupGrain::Day,
+                dimensions: vec![MetricDimension {
+                    name: String::from("region"),
+                    column: String::from("region"),
+                    display_name: String::from("区域"),
+                }],
+                unit: String::from("CNY"),
+                format: String::from("0.00"),
+                synonyms: Vec::new(),
+                certified: true,
+                schema_version: 1,
+                broken: false,
+                owner_user_id: None,
+                version: 1,
+                created_at: now,
+                updated_at: now,
+            },
+            MetricDef {
+                id: Uuid::from_u128(0xB002),
+                name: String::from("vault_stock"),
+                display_name: String::from("隔离仓总库存"),
+                description: String::from("隔离对照仓库存合计"),
+                dataset_id: ds_second_id,
+                expression: String::from("SUM(isolated_vault_qty)"),
+                filter_sql: String::new(),
+                time_column: None,
+                default_grain: RollupGrain::Day,
+                dimensions: Vec::new(),
+                unit: String::from("件"),
+                format: String::from("0"),
+                synonyms: Vec::new(),
+                certified: true,
+                schema_version: 1,
+                broken: false,
+                owner_user_id: None,
+                version: 1,
+                created_at: now,
+                updated_at: now,
+            },
+        ]
+    }
+
+    #[test]
+    fn restrict_dataset_ids_isolates_tables_and_metrics() {
+        let (catalog, ds_first_id, _ds_second_id, metrics) = sample_scoped_catalog();
+        let linked = build_linked_schema(
+            "按区域统计已支付金额",
+            &catalog,
+            &SchemaRecallBundle::default(),
+            &SchemaLinkExtras {
+                all_metrics: metrics,
+                restrict_dataset_ids: vec![ds_first_id],
+                excluded_dataset_names: vec![
+                    String::from("demo_warehouses"),
+                    String::from("隔离对照仓"),
+                ],
+                ..SchemaLinkExtras::default()
+            },
+        );
+
+        assert!(linked.has_positive_hit);
+        assert!(!linked.targeted_excluded_dataset);
+        assert_eq!(linked.tables.len(), 1);
+        assert_eq!(
+            linked.tables.first().map(|t| t.dataset_id),
+            Some(ds_first_id)
+        );
+        assert_eq!(linked.metrics.len(), 1);
+        assert_eq!(
+            linked.metrics.first().map(|m| m.name.as_str()),
+            Some("paid_amount")
+        );
+        assert_eq!(linked.linked_objects.datasets, vec!["demo_orders"]);
+    }
+
+    #[test]
+    fn ungrounded_question_under_restricted_scope_does_not_set_positive_hit() {
+        let (catalog, ds_first_id, _, metrics) = sample_scoped_catalog();
+        let linked = build_linked_schema(
+            "火星反物质反应堆堆芯温度是多少",
+            &catalog,
+            &SchemaRecallBundle::default(),
+            &SchemaLinkExtras {
+                all_metrics: metrics,
+                restrict_dataset_ids: vec![ds_first_id],
+                excluded_dataset_names: vec![String::from("demo_warehouses")],
+                ..SchemaLinkExtras::default()
+            },
+        );
+
+        assert!(!linked.has_positive_hit);
+        assert!(!linked.targeted_excluded_dataset);
+    }
+
+    #[test]
+    fn excluded_dataset_names_forces_abstention_even_with_shared_column_substrings() {
+        let (catalog, ds_first_id, _, metrics) = sample_scoped_catalog();
+        for q in [
+            "统计表 demo_warehouses 中的记录总数",
+            "统计表 step20_isolated_vault 中的记录总数",
+            "查询隔离对照仓里的总行数",
+        ] {
+            let linked = build_linked_schema(
+                q,
+                &catalog,
+                &SchemaRecallBundle::default(),
+                &SchemaLinkExtras {
+                    all_metrics: metrics.clone(),
+                    restrict_dataset_ids: vec![ds_first_id],
+                    excluded_dataset_names: vec![
+                        String::from("demo_warehouses"),
+                        String::from("step20_isolated_vault"),
+                        String::from("隔离对照仓"),
+                    ],
+                    ..SchemaLinkExtras::default()
+                },
+            );
+            assert!(
+                !linked.has_positive_hit,
+                "expected has_positive_hit == false for '{q}'"
+            );
+            assert!(
+                linked.targeted_excluded_dataset,
+                "expected targeted_excluded_dataset == true for '{q}'"
+            );
+            assert_eq!(linked.tables.len(), 0);
+            assert_eq!(linked.metrics.len(), 0);
+            assert_eq!(linked.linked_objects.datasets.len(), 0);
+        }
+    }
+
+    #[test]
+    fn mounted_dataset_name_and_display_name_match_normally_when_in_scope() {
+        let (catalog, ds_first_id, _, metrics) = sample_scoped_catalog();
+        for q in [
+            "统计表 demo_orders 中的记录总数",
+            "演示订单表总共有多少条记录",
+        ] {
+            let linked = build_linked_schema(
+                q,
+                &catalog,
+                &SchemaRecallBundle::default(),
+                &SchemaLinkExtras {
+                    all_metrics: metrics.clone(),
+                    restrict_dataset_ids: vec![ds_first_id],
+                    excluded_dataset_names: vec![
+                        String::from("orders"),
+                        String::from("demo_warehouses"),
+                        String::from("隔离对照仓"),
+                    ],
+                    ..SchemaLinkExtras::default()
+                },
+            );
+            assert!(
+                linked.has_positive_hit,
+                "expected positive hit for mounted dataset query '{q}'"
+            );
+            assert!(!linked.targeted_excluded_dataset);
+            assert_eq!(linked.linked_objects.datasets, vec!["demo_orders"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn pipeline_abstains_with_zero_llm_calls_when_excluded_dataset_queried()
+    -> Result<(), AppError> {
+        let (mut catalog, ds_first_id, _, mut metrics) = sample_scoped_catalog();
+        catalog.datasets.retain(|_, d| d.id == ds_first_id);
+        metrics.retain(|m| m.dataset_id == ds_first_id);
+
+        let conn = duckdb::Connection::open_in_memory()
+            .map_err(|e| AppError::Database(format!("open duckdb: {e}")))?;
+        let ai = ZeroCallAi {
+            calls: AtomicUsize::new(0),
+        };
+        let req = AskRequest {
+            question: String::from("统计表 step20_isolated_vault 中的记录总数"),
+            session_id: None,
+            context: Some(AskContext {
+                dataset_ids: vec![ds_first_id],
+                ..AskContext::default()
+            }),
+        };
+        let extras = SchemaLinkExtras {
+            all_metrics: metrics,
+            restrict_dataset_ids: vec![ds_first_id],
+            excluded_dataset_names: vec![
+                String::from("step20_isolated_vault"),
+                String::from("隔离对照仓"),
+            ],
+            ..SchemaLinkExtras::default()
+        };
+
+        let out = run_ask_pipeline_conn(
+            &ai,
+            &conn,
+            &AskPipelineInput {
+                request: &req,
+                catalog: &catalog,
+                db_recall: &SchemaRecallBundle::default(),
+                link_extras: &extras,
+                few_shots: &[],
+                session_turns: &[],
+                timezone: "UTC",
+                now_rfc3339_override: Some("2026-03-01T00:00:00Z"),
+                timeout_ms: None,
+                force_intent: Some(AskIntent::Data),
+            },
+        )
+        .await?;
+
+        assert_eq!(ai.calls.load(AtomicOrdering::SeqCst), 0);
+        assert_eq!(out.response.grounding_mode, GroundingMode::Abstained);
+        assert!(out.response.abstained);
+        assert_eq!(out.response.sql, "");
+        assert_eq!(out.response.rows.len(), 0);
+        Ok(())
+    }
 }

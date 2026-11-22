@@ -161,12 +161,14 @@ pub async fn run_ask_pipeline_with_policy<A: AiPort>(
     if matches!(intent, AskIntent::Chitchat | AskIntent::Doc) {
         return finish_non_sql_intent(ai, intent, session_id, question, linked, started).await;
     }
-    if should_abstain_zero_evidence(
-        linked.has_positive_hit,
-        !input.session_turns.is_empty(),
-        0,
-        false,
-    ) {
+    if linked.targeted_excluded_dataset
+        || should_abstain_zero_evidence(
+            linked.has_positive_hit,
+            !input.session_turns.is_empty(),
+            0,
+            false,
+        )
+    {
         return Ok(build_zero_evidence_output(
             session_id, intent, linked, started,
         ));
@@ -271,12 +273,14 @@ pub async fn run_ask_pipeline_conn<A: AiPort>(
     if matches!(intent, AskIntent::Chitchat | AskIntent::Doc) {
         return finish_non_sql_intent(ai, intent, session_id, question, linked, started).await;
     }
-    if should_abstain_zero_evidence(
-        linked.has_positive_hit,
-        !input.session_turns.is_empty(),
-        0,
-        false,
-    ) {
+    if linked.targeted_excluded_dataset
+        || should_abstain_zero_evidence(
+            linked.has_positive_hit,
+            !input.session_turns.is_empty(),
+            0,
+            false,
+        )
+    {
         return Ok(build_zero_evidence_output(
             session_id, intent, linked, started,
         ));
@@ -553,6 +557,9 @@ async fn determine_intent<A: AiPort>(
 ) -> Result<AskIntent, AppError> {
     if let Some(forced) = input.force_intent {
         return Ok(forced);
+    }
+    if linked.targeted_excluded_dataset {
+        return Ok(AskIntent::Data);
     }
     let has_prior_data = input
         .session_turns

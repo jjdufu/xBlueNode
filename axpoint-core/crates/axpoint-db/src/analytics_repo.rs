@@ -1495,18 +1495,26 @@ async fn load_analytics_vector_scores_tx(
 async fn match_business_nodes_tx(
     tx: &mut Transaction<'_, Postgres>,
     question: &str,
+    subgraph_slug: Option<&str>,
+    restrict_datasets: &[Uuid],
 ) -> Result<Vec<(String, String, String)>, AppError> {
     if question.trim().is_empty() {
         return Ok(Vec::new());
     }
 
+    let clean_slug = subgraph_slug.map(str::trim).filter(|s| !s.is_empty());
+    let ds_filter = (!restrict_datasets.is_empty()).then_some(restrict_datasets);
     let norm_q = normalize_name(question);
     let lower_q = question.to_lowercase();
     let rows = sqlx::query(
         "SELECT type_name, node_key, title
            FROM xb_nodes
+          WHERE ($1::text IS NULL OR subgraph_slug = $1)
+            AND ($2::uuid[] IS NULL OR source_dataset_id IS NULL OR source_dataset_id = ANY($2))
           ORDER BY type_name ASC, node_key ASC",
     )
+    .bind(clean_slug)
+    .bind(ds_filter)
     .fetch_all(&mut **tx)
     .await
     .map_err(|err| AppError::Database(format!("load xb_nodes for schema recall failed: {err}")))?;
@@ -2698,92 +2706,14 @@ impl AnalyticsRepository for PgStore {
         query_embedding: Option<&[f32]>,
         restrict_datasets: &[Uuid],
     ) -> Result<SchemaRecallBundle, AppError> {
-        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
-
-        let glossary_db_rows = sqlx::query("SELECT term, synonyms FROM ds_glossary_terms")
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|err| {
-                AppError::Database(format!("load ds_glossary_terms for recall failed: {err}"))
-            })?;
-        let glossary_pairs: Vec<(String, Vec<String>)> = glossary_db_rows
-            .into_iter()
-            .map(|r| (r.get("term"), r.get("synonyms")))
-            .collect();
-        let ctx = build_expanded_query_context(question, &glossary_pairs);
-
-        let datasets =
-            load_ready_datasets_for_recall_tx(&mut tx, question, restrict_datasets).await?;
-        let ds_scores: HashMap<Uuid, f64> = datasets
-            .iter()
-            .map(|d| {
-                (
-                    d.id,
-                    score_dataset_lexical(
-                        &ctx,
-                        &d.name,
-                        &d.display_name,
-                        &d.description,
-                        &d.tags,
-                        d.pg_fts,
-                    ),
-                )
-            })
-            .collect();
-
-        let mut columns = load_candidate_columns_tx(&mut tx, &datasets).await?;
-        let metric_rows = load_candidate_metrics_tx(&mut tx, question, restrict_datasets).await?;
-
-        let (col_vec_map, metric_vec_map) = match query_embedding {
-            Some(qvec) if !qvec.is_empty() => {
-                load_analytics_vector_scores_tx(&mut tx, tenant_id, qvec).await?
-            }
-            _ => (HashMap::new(), HashMap::new()),
-        };
-
-        let matched_nodes = match_business_nodes_tx(&mut tx, question).await?;
-
-        tx.commit().await.map_err(|err| {
-            AppError::Database(format!("commit recall_schema_candidates tx failed: {err}"))
-        })?;
-
-        for col in &mut columns {
-            let ds_s = ds_scores.get(&col.dataset_id).copied().unwrap_or(0.0);
-            col.fts_score = score_column_lexical(&ctx, ds_s, col);
-            let emb_id = ds_column_embedding_id(col.dataset_id, &col.column_name);
-            col.vec_score = col_vec_map.get(&emb_id).copied().unwrap_or(0.0);
-        }
-        columns.sort_by(|a, b| {
-            (b.fts_score + b.vec_score)
-                .total_cmp(&(a.fts_score + a.vec_score))
-                .then_with(|| a.dataset_name.cmp(&b.dataset_name))
-                .then_with(|| a.column_name.cmp(&b.column_name))
-        });
-
-        let mut metrics: Vec<LinkedMetricHit> = metric_rows
-            .into_iter()
-            .map(|(m, pg_fts)| {
-                let fts_score = score_metric_lexical(&ctx, &m, pg_fts);
-                let vec_score = metric_vec_map.get(&m.id).copied().unwrap_or(0.0);
-                LinkedMetricHit {
-                    metric: m,
-                    fts_score,
-                    vec_score,
-                }
-            })
-            .collect();
-        metrics.sort_by(|a, b| {
-            (b.fts_score + b.vec_score)
-                .total_cmp(&(a.fts_score + a.vec_score))
-                .then_with(|| b.metric.certified.cmp(&a.metric.certified))
-                .then_with(|| a.metric.name.cmp(&b.metric.name))
-        });
-
-        Ok(SchemaRecallBundle {
-            columns,
-            metrics,
-            matched_nodes,
-        })
+        self.recall_schema_candidates_scoped(
+            tenant_id,
+            question,
+            query_embedding,
+            restrict_datasets,
+            None,
+        )
+        .await
     }
 
     async fn list_unembedded_analytics_items(
@@ -3272,6 +3202,261 @@ impl AnalyticsRepository for PgStore {
         })?;
         rows.iter().map(decode_grounding_eval_run_row).collect()
     }
+}
+
+impl PgStore {
+    /// Recalls candidate schema columns, metrics, and `BlueNode`s scoped to `restrict_datasets`
+    /// and optional `subgraph_slug` (`06-STEP20` §20.2.2).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] or [`AppError::BadRequest`] if querying `PostgreSQL` fails.
+    pub async fn recall_schema_candidates_scoped(
+        &self,
+        tenant_id: &str,
+        question: &str,
+        query_embedding: Option<&[f32]>,
+        restrict_datasets: &[Uuid],
+        subgraph_slug: Option<&str>,
+    ) -> Result<SchemaRecallBundle, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+
+        let glossary_db_rows = sqlx::query("SELECT term, synonyms FROM ds_glossary_terms")
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|err| {
+                AppError::Database(format!("load ds_glossary_terms for recall failed: {err}"))
+            })?;
+        let glossary_pairs: Vec<(String, Vec<String>)> = glossary_db_rows
+            .into_iter()
+            .map(|r| (r.get("term"), r.get("synonyms")))
+            .collect();
+        let ctx = build_expanded_query_context(question, &glossary_pairs);
+
+        let datasets =
+            load_ready_datasets_for_recall_tx(&mut tx, question, restrict_datasets).await?;
+        let ds_scores: HashMap<Uuid, f64> = datasets
+            .iter()
+            .map(|d| {
+                (
+                    d.id,
+                    score_dataset_lexical(
+                        &ctx,
+                        &d.name,
+                        &d.display_name,
+                        &d.description,
+                        &d.tags,
+                        d.pg_fts,
+                    ),
+                )
+            })
+            .collect();
+
+        let mut columns = load_candidate_columns_tx(&mut tx, &datasets).await?;
+        let metric_rows = load_candidate_metrics_tx(&mut tx, question, restrict_datasets).await?;
+
+        let (col_vec_map, metric_vec_map) = match query_embedding {
+            Some(qvec) if !qvec.is_empty() => {
+                load_analytics_vector_scores_tx(&mut tx, tenant_id, qvec).await?
+            }
+            _ => (HashMap::new(), HashMap::new()),
+        };
+
+        let matched_nodes =
+            match_business_nodes_tx(&mut tx, question, subgraph_slug, restrict_datasets).await?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit recall_schema_candidates tx failed: {err}"))
+        })?;
+
+        Ok(score_and_sort_schema_bundle(
+            &ctx,
+            &ds_scores,
+            &mut columns,
+            metric_rows,
+            &col_vec_map,
+            &metric_vec_map,
+            matched_nodes,
+        ))
+    }
+
+    /// Resolves distinct confirmed `BlueNode` summaries within `subgraph_slug` linked to recalled
+    /// `hg_paras` or `type_name:node_key` references (`06-STEP20` §20.2.2).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if querying `xb_entity_links` or `xb_nodes` fails.
+    pub async fn list_related_nodes_for_subgraph(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        para_ids: &[Uuid],
+        linked_node_refs: &[String],
+    ) -> Result<Vec<axpoint_domain::analytics::RelatedNodeSummary>, AppError> {
+        let slug = {
+            let s = subgraph_slug.trim();
+            if s.is_empty() { "main" } else { s }
+        };
+        if slug == "main" {
+            return self
+                .list_related_nodes(tenant_id, para_ids, linked_node_refs)
+                .await;
+        }
+        if para_ids.is_empty() && linked_node_refs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let mut seen = BTreeSet::new();
+        let mut out = Vec::new();
+
+        append_para_related_nodes_tx(&mut tx, slug, para_ids, &mut seen, &mut out).await?;
+        append_ref_related_nodes_tx(&mut tx, slug, linked_node_refs, &mut seen, &mut out).await?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!(
+                "commit list_related_nodes_for_subgraph tx failed: {err}"
+            ))
+        })?;
+        Ok(out)
+    }
+}
+
+fn score_and_sort_schema_bundle(
+    ctx: &ExpandedQueryContext,
+    ds_scores: &HashMap<Uuid, f64>,
+    columns: &mut Vec<LinkedColumnHit>,
+    metric_rows: Vec<(MetricDef, f64)>,
+    col_vec_map: &HashMap<Uuid, f64>,
+    metric_vec_map: &HashMap<Uuid, f64>,
+    matched_nodes: Vec<(String, String, String)>,
+) -> SchemaRecallBundle {
+    for col in columns.iter_mut() {
+        let ds_s = ds_scores.get(&col.dataset_id).copied().unwrap_or(0.0);
+        col.fts_score = score_column_lexical(ctx, ds_s, col);
+        let emb_id = ds_column_embedding_id(col.dataset_id, &col.column_name);
+        col.vec_score = col_vec_map.get(&emb_id).copied().unwrap_or(0.0);
+    }
+    columns.sort_by(|a, b| {
+        (b.fts_score + b.vec_score)
+            .total_cmp(&(a.fts_score + a.vec_score))
+            .then_with(|| a.dataset_name.cmp(&b.dataset_name))
+            .then_with(|| a.column_name.cmp(&b.column_name))
+    });
+
+    let mut metrics: Vec<LinkedMetricHit> = metric_rows
+        .into_iter()
+        .map(|(m, pg_fts)| {
+            let fts_score = score_metric_lexical(ctx, &m, pg_fts);
+            let vec_score = metric_vec_map.get(&m.id).copied().unwrap_or(0.0);
+            LinkedMetricHit {
+                metric: m,
+                fts_score,
+                vec_score,
+            }
+        })
+        .collect();
+    metrics.sort_by(|a, b| {
+        (b.fts_score + b.vec_score)
+            .total_cmp(&(a.fts_score + a.vec_score))
+            .then_with(|| b.metric.certified.cmp(&a.metric.certified))
+            .then_with(|| a.metric.name.cmp(&b.metric.name))
+    });
+
+    SchemaRecallBundle {
+        columns: std::mem::take(columns),
+        metrics,
+        matched_nodes,
+    }
+}
+
+async fn append_para_related_nodes_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    subgraph_slug: &str,
+    para_ids: &[Uuid],
+    seen: &mut BTreeSet<Uuid>,
+    out: &mut Vec<axpoint_domain::analytics::RelatedNodeSummary>,
+) -> Result<(), AppError> {
+    if para_ids.is_empty() {
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        "SELECT DISTINCT n.id, n.type_name, n.title, n.metrics
+           FROM hg_edges ed
+           JOIN xb_entity_links el
+             ON el.entity_id = ed.dst_id
+            AND el.confirmed = TRUE
+            AND el.rejected = FALSE
+           JOIN xb_nodes n ON n.id = el.node_id AND n.subgraph_slug = $2
+          WHERE ed.src_type = 'PARA'
+            AND ed.dst_type = 'ENTITY'
+            AND ed.rel_type = 'MENTIONS'
+            AND ed.src_id = ANY($1)
+          ORDER BY n.title ASC",
+    )
+    .bind(para_ids)
+    .bind(subgraph_slug)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("query related_nodes from paras failed: {err}")))?;
+
+    for r in rows {
+        let id: Uuid = r.get("id");
+        if seen.insert(id) {
+            out.push(axpoint_domain::analytics::RelatedNodeSummary {
+                id,
+                type_name: r.get("type_name"),
+                title: r.get("title"),
+                metrics: r.get("metrics"),
+            });
+        }
+    }
+    Ok(())
+}
+
+async fn append_ref_related_nodes_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    subgraph_slug: &str,
+    linked_node_refs: &[String],
+    seen: &mut BTreeSet<Uuid>,
+    out: &mut Vec<axpoint_domain::analytics::RelatedNodeSummary>,
+) -> Result<(), AppError> {
+    for nref in linked_node_refs {
+        let (maybe_type, key) = match nref.split_once(':') {
+            Some((t, k)) => (Some(t.trim()), k.trim()),
+            None => (None, nref.trim()),
+        };
+        if key.is_empty() {
+            continue;
+        }
+        let rows = sqlx::query(
+            "SELECT id, type_name, title, metrics
+               FROM xb_nodes
+              WHERE subgraph_slug = $3
+                AND node_key = $1
+                AND ($2::text IS NULL OR type_name = $2)
+              ORDER BY title ASC",
+        )
+        .bind(key)
+        .bind(maybe_type)
+        .bind(subgraph_slug)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|err| {
+            AppError::Database(format!("query related_nodes by node_key failed: {err}"))
+        })?;
+
+        for r in rows {
+            let id: Uuid = r.get("id");
+            if seen.insert(id) {
+                out.push(axpoint_domain::analytics::RelatedNodeSummary {
+                    id,
+                    type_name: r.get("type_name"),
+                    title: r.get("title"),
+                    metrics: r.get("metrics"),
+                });
+            }
+        }
+    }
+    Ok(())
 }
 
 fn decode_grounding_eval_run_row(
