@@ -66,6 +66,12 @@ pub struct AgentModelRequest {
     pub purpose: Purpose,
     /// Optional explicit `ax_llm_providers.id` pinned by `AgentSpec`.
     pub provider_id: Option<Uuid>,
+    /// Optional authenticated caller `user_id` for personal provider visibility and preference routing.
+    #[serde(default)]
+    pub caller_user_id: Option<Uuid>,
+    /// `true` when the caller holds `Permission::PiiRawRead` (`04-STEP13` §13.7).
+    #[serde(default)]
+    pub caller_can_read_raw_pii: bool,
     /// Sampling temperature (`0.0..=2.0`).
     pub temperature: f32,
     /// Ordered conversation context messages.
@@ -368,11 +374,22 @@ impl AgentModelPort for LlmRouter {
                 .map(|t| ToolDefinition::function(t.name, t.description, t.parameters))
                 .collect();
             let require_tools = !tools.is_empty();
-            let router_req = RouterTurnRequest::new(req.purpose, messages)
+            let mut router_req = RouterTurnRequest::new(req.purpose, messages)
                 .with_pinned_provider(req.provider_id)
+                .with_caller_user(req.caller_user_id)
+                .with_raw_pii(req.caller_can_read_raw_pii)
                 .with_tools(tools)
                 .with_temperature(req.temperature)
                 .with_require_tools(require_tools);
+            if let Some(raw_schema) = req.output_schema {
+                router_req = router_req.with_response_schema(
+                    axpoint_domain::json_schema::JsonSchemaSpec::new_flexible(
+                        "axagent_output",
+                        "Agent output schema",
+                        raw_schema,
+                    ),
+                );
+            }
 
             let outcome = if token_tx.is_some() {
                 self.stream_tool_turn_routed(&req.tenant_id, router_req, token_tx)
@@ -433,6 +450,8 @@ mod tests {
             tenant_id: String::from("default"),
             purpose: Purpose::Agent,
             provider_id: None,
+            caller_user_id: None,
+            caller_can_read_raw_pii: false,
             temperature: 0.2,
             messages: vec![ModelMessage::User {
                 content: String::from("请处理库存告警"),
@@ -452,6 +471,8 @@ mod tests {
             tenant_id: String::from("default"),
             purpose: Purpose::Agent,
             provider_id: None,
+            caller_user_id: None,
+            caller_can_read_raw_pii: false,
             temperature: 0.2,
             messages: vec![
                 ModelMessage::User {

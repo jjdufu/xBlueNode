@@ -204,32 +204,65 @@ pub struct WireRequestMessage {
 }
 
 /// `OpenAI` wire-format `stream_options` object requesting final chunk token usage.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WireStreamOptions {
     /// Whether the final SSE chunk before `[DONE]` includes a `usage` object.
     pub include_usage: bool,
 }
 
-/// Outbound `OpenAI` `POST /chat/completions` JSON request body.
-#[derive(Debug, Clone, Serialize)]
+/// `json_schema` inner descriptor for `OpenAI` / `vLLM` / `SGLang` / `Ollama` constrained decoding (`01-STEP15` §15.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WireJsonSchemaPayload {
+    /// Schema identifier (`^[a-zA-Z0-9_-]{1,64}$`).
+    pub name: String,
+    /// Optional human-readable description.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Enforces exact grammar adherence (`true`).
+    pub strict: bool,
+    /// Draft 2020-12 strict JSON Schema object.
+    pub schema: serde_json::Value,
+}
+
+/// Outbound `response_format` union on `POST /chat/completions` (`01-STEP15` §15.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WireResponseFormat {
+    /// `{"type": "json_object"}`
+    JsonObject,
+    /// `{"type": "json_schema", "json_schema": { "name", "description", "strict": true, "schema" }}`
+    JsonSchema {
+        /// Strict schema descriptor.
+        json_schema: WireJsonSchemaPayload,
+    },
+}
+
+/// Outbound `OpenAI` `POST /chat/completions` JSON request body (`01-STEP15` §15.3.1).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireChatCompletionRequest {
     /// Target model identifier.
     pub model: String,
     /// Conversation message list.
     pub messages: Vec<WireRequestMessage>,
-    /// Sampling temperature.
+    /// Sampling temperature (`0.0` enforced on deterministic purposes).
     pub temperature: f32,
     /// Optional maximum completion tokens.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_tokens: Option<i32>,
     /// Optional function tools exposed to the model.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<ToolDefinition>,
+    /// Optional constrained decoding format (`json_object` or `json_schema`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<WireResponseFormat>,
+    /// Optional deterministic sampling seed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<i64>,
     /// Enable SSE streaming when `Some(true)`.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     /// Optional stream options (`include_usage: true` when streaming).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_options: Option<WireStreamOptions>,
 }
 
@@ -358,7 +391,24 @@ pub fn canonical_request_transcript(
     messages: &[ToolChatMessage],
     tools: &[ToolDefinition],
 ) -> String {
+    canonical_request_transcript_with_schema(purpose, messages, tools, None)
+}
+
+/// Builds a deterministic canonical request transcript from `(purpose, messages, tools, schema_name)`,
+/// inserting `SCHEMA:<name>\n` immediately after `PURPOSE:` when `schema_name` is attached (`01-STEP15` §15.3.1).
+#[must_use]
+pub fn canonical_request_transcript_with_schema(
+    purpose: Purpose,
+    messages: &[ToolChatMessage],
+    tools: &[ToolDefinition],
+    schema_name: Option<&str>,
+) -> String {
     let mut out = format!("PURPOSE:{purpose}\n");
+    if let Some(name) = schema_name.map(str::trim).filter(|s| !s.is_empty()) {
+        out.push_str("SCHEMA:");
+        out.push_str(name);
+        out.push('\n');
+    }
     if !tools.is_empty() {
         let mut names: Vec<&str> = tools.iter().map(|t| t.function.name.as_str()).collect();
         names.sort_unstable();

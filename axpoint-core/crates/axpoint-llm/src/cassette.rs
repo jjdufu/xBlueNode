@@ -63,6 +63,9 @@ pub struct CassetteEntry {
     /// Substrings where NONE may appear in the canonical request transcript for this entry to match.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_any: Vec<String>,
+    /// Optional structured output `JsonSchemaSpec.name` disambiguating schema-guided turns (`01-STEP15` §15.0).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_schema_name: Option<String>,
     /// Entry category (defaults to `"chat"`).
     #[serde(default = "default_entry_kind")]
     pub kind: String,
@@ -142,6 +145,7 @@ pub fn deterministic_embedding(text: &str, dim: usize) -> Vec<f32> {
 
 #[derive(Debug, Clone)]
 struct MatchRule {
+    response_schema_name: Option<String>,
     match_all: Vec<String>,
     exclude_any: Vec<String>,
     turn: CassetteTurn,
@@ -164,9 +168,9 @@ impl MatchRule {
 #[derive(Debug, Default)]
 struct CassetteState {
     by_request_sha256: HashMap<String, CassetteTurn>,
-    by_prompt_sha256: HashMap<String, CassetteTurn>,
-    by_user_sha256: HashMap<String, CassetteTurn>,
-    by_substring: Vec<(String, CassetteTurn)>,
+    by_prompt_sha256: HashMap<(Option<String>, String), CassetteTurn>,
+    by_user_sha256: HashMap<(Option<String>, String), CassetteTurn>,
+    by_substring: Vec<(Option<String>, String, CassetteTurn)>,
     by_match_rules: Vec<MatchRule>,
     load_error: Option<String>,
 }
@@ -261,27 +265,40 @@ impl Cassette {
     /// # Errors
     /// Returns [`AppError::Llm`] (`UPSTREAM_LLM`) on cassette miss.
     pub fn lookup_chat(&self, system_prompt: &str, user_prompt: &str) -> Result<String, AppError> {
+        self.lookup_chat_with_schema(system_prompt, user_prompt, None)
+    }
+
+    /// Looks up a recorded chat response, prioritizing entries whose `response_schema_name`
+    /// equals `schema_name` before falling back to schema-agnostic (`None`) entries (`01-STEP15`).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Llm`] (`UPSTREAM_LLM`) on cassette miss.
+    pub fn lookup_chat_with_schema(
+        &self,
+        system_prompt: &str,
+        user_prompt: &str,
+        schema_name: Option<&str>,
+    ) -> Result<String, AppError> {
         let prompt_sha256 = compute_prompt_sha256(system_prompt, user_prompt);
         let user_sha256 = sha256_hex(user_prompt);
         let combined = format!("{system_prompt}\n---\n{user_prompt}");
+        let norm_schema = normalize_schema_name(schema_name);
 
         let guard = self.state.lock().unwrap_or_else(PoisonError::into_inner);
 
-        if let Some(turn) = guard.by_prompt_sha256.get(&prompt_sha256) {
-            return Ok(turn.content.clone());
+        if let Some(ref target) = norm_schema
+            && let Some(hit) = search_chat_tier(
+                &guard,
+                &prompt_sha256,
+                &user_sha256,
+                &combined,
+                Some(target.as_str()),
+            )
+        {
+            return Ok(hit);
         }
-        if let Some(turn) = guard.by_user_sha256.get(&user_sha256) {
-            return Ok(turn.content.clone());
-        }
-        for (pat, turn) in &guard.by_substring {
-            if combined.contains(pat.as_str()) {
-                return Ok(turn.content.clone());
-            }
-        }
-        for rule in &guard.by_match_rules {
-            if rule.turn.tool_calls.is_empty() && rule.matches(&combined) {
-                return Ok(rule.turn.content.clone());
-            }
+        if let Some(hit) = search_chat_tier(&guard, &prompt_sha256, &user_sha256, &combined, None) {
+            return Ok(hit);
         }
 
         Err(miss_error(
@@ -304,32 +321,47 @@ impl Cassette {
         system_prompt: &str,
         last_user_prompt: &str,
     ) -> Result<CassetteTurn, AppError> {
+        self.lookup_tool_turn_with_schema(request_transcript, system_prompt, last_user_prompt, None)
+    }
+
+    /// Looks up a recorded tool-capable or schema-guided assistant turn, prioritizing entries
+    /// whose `response_schema_name` matches `schema_name` before falling back to `None` entries.
+    ///
+    /// # Errors
+    /// Returns [`AppError::Llm`] (`UPSTREAM_LLM`) on cassette miss.
+    pub fn lookup_tool_turn_with_schema(
+        &self,
+        request_transcript: &str,
+        system_prompt: &str,
+        last_user_prompt: &str,
+        schema_name: Option<&str>,
+    ) -> Result<CassetteTurn, AppError> {
         let req_sha256 = sha256_hex(request_transcript);
+        let norm_schema = normalize_schema_name(schema_name);
         let guard = self.state.lock().unwrap_or_else(PoisonError::into_inner);
 
         if let Some(turn) = guard.by_request_sha256.get(&req_sha256) {
             return Ok(turn.clone());
         }
-        for rule in &guard.by_match_rules {
-            if rule.matches(request_transcript) {
-                return Ok(rule.turn.clone());
-            }
+        if let Some(ref target) = norm_schema
+            && let Some(turn) = search_tool_turn_tier(
+                &guard,
+                request_transcript,
+                system_prompt,
+                last_user_prompt,
+                Some(target.as_str()),
+            )
+        {
+            return Ok(turn);
         }
-        if !transcript_has_tool_result(request_transcript) {
-            let prompt_sha256 = compute_prompt_sha256(system_prompt, last_user_prompt);
-            let user_sha256 = sha256_hex(last_user_prompt);
-            if let Some(turn) = guard.by_prompt_sha256.get(&prompt_sha256) {
-                return Ok(turn.clone());
-            }
-            if let Some(turn) = guard.by_user_sha256.get(&user_sha256) {
-                return Ok(turn.clone());
-            }
-            let combined = format!("{system_prompt}\n---\n{last_user_prompt}");
-            for (pat, turn) in &guard.by_substring {
-                if combined.contains(pat.as_str()) || request_transcript.contains(pat.as_str()) {
-                    return Ok(turn.clone());
-                }
-            }
+        if let Some(turn) = search_tool_turn_tier(
+            &guard,
+            request_transcript,
+            system_prompt,
+            last_user_prompt,
+            None,
+        ) {
+            return Ok(turn);
         }
 
         let user_sha256 = sha256_hex(last_user_prompt);
@@ -360,6 +392,7 @@ impl Cassette {
             match_substring: None,
             match_all: Vec::new(),
             exclude_any: Vec::new(),
+            response_schema_name: None,
             kind: String::from("chat"),
             response: response.to_owned(),
             tool_calls: Vec::new(),
@@ -372,8 +405,10 @@ impl Cassette {
             content: response.to_owned(),
             tool_calls: Vec::new(),
         };
-        guard.by_prompt_sha256.insert(prompt_sha256, turn.clone());
-        guard.by_user_sha256.insert(user_sha256, turn);
+        guard
+            .by_prompt_sha256
+            .insert((None, prompt_sha256), turn.clone());
+        guard.by_user_sha256.insert((None, user_sha256), turn);
         Ok(())
     }
 
@@ -386,6 +421,19 @@ impl Cassette {
         request_transcript: &str,
         turn: &CassetteTurn,
     ) -> Result<(), AppError> {
+        self.record_tool_turn_with_schema(request_transcript, turn, None)
+    }
+
+    /// Appends a live tool-capable or schema-guided turn keyed by `request_sha256` and optional `schema_name`.
+    ///
+    /// # Errors
+    /// Returns [`AppError::Llm`] if serializing or writing to disk fails.
+    pub fn record_tool_turn_with_schema(
+        &self,
+        request_transcript: &str,
+        turn: &CassetteTurn,
+        schema_name: Option<&str>,
+    ) -> Result<(), AppError> {
         let req_sha256 = sha256_hex(request_transcript);
         let entry = CassetteEntry {
             request_sha256: Some(req_sha256.clone()),
@@ -394,6 +442,7 @@ impl Cassette {
             match_substring: None,
             match_all: Vec::new(),
             exclude_any: Vec::new(),
+            response_schema_name: normalize_schema_name(schema_name),
             kind: String::from("chat"),
             response: turn.content.clone(),
             tool_calls: turn.tool_calls.clone(),
@@ -404,6 +453,86 @@ impl Cassette {
         guard.by_request_sha256.insert(req_sha256, turn.clone());
         Ok(())
     }
+}
+
+fn normalize_schema_name(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+}
+
+fn search_chat_tier(
+    guard: &CassetteState,
+    prompt_sha256: &str,
+    user_sha256: &str,
+    combined: &str,
+    target_schema: Option<&str>,
+) -> Option<String> {
+    let schema_key = target_schema.map(str::to_owned);
+    if let Some(turn) = guard
+        .by_prompt_sha256
+        .get(&(schema_key.clone(), String::from(prompt_sha256)))
+    {
+        return Some(turn.content.clone());
+    }
+    if let Some(turn) = guard
+        .by_user_sha256
+        .get(&(schema_key, String::from(user_sha256)))
+    {
+        return Some(turn.content.clone());
+    }
+    for (entry_schema, pat, turn) in &guard.by_substring {
+        if entry_schema.as_deref() == target_schema && combined.contains(pat.as_str()) {
+            return Some(turn.content.clone());
+        }
+    }
+    for rule in &guard.by_match_rules {
+        if rule.response_schema_name.as_deref() == target_schema
+            && rule.turn.tool_calls.is_empty()
+            && rule.matches(combined)
+        {
+            return Some(rule.turn.content.clone());
+        }
+    }
+    None
+}
+
+fn search_tool_turn_tier(
+    guard: &CassetteState,
+    request_transcript: &str,
+    system_prompt: &str,
+    last_user_prompt: &str,
+    target_schema: Option<&str>,
+) -> Option<CassetteTurn> {
+    for rule in &guard.by_match_rules {
+        if rule.response_schema_name.as_deref() == target_schema && rule.matches(request_transcript)
+        {
+            return Some(rule.turn.clone());
+        }
+    }
+    if !transcript_has_tool_result(request_transcript) {
+        let schema_key = target_schema.map(str::to_owned);
+        let prompt_sha256 = compute_prompt_sha256(system_prompt, last_user_prompt);
+        let user_sha256 = sha256_hex(last_user_prompt);
+        if let Some(turn) = guard
+            .by_prompt_sha256
+            .get(&(schema_key.clone(), prompt_sha256))
+        {
+            return Some(turn.clone());
+        }
+        if let Some(turn) = guard.by_user_sha256.get(&(schema_key, user_sha256)) {
+            return Some(turn.clone());
+        }
+        let combined = format!("{system_prompt}\n---\n{last_user_prompt}");
+        for (entry_schema, pat, turn) in &guard.by_substring {
+            if entry_schema.as_deref() == target_schema
+                && (combined.contains(pat.as_str()) || request_transcript.contains(pat.as_str()))
+            {
+                return Some(turn.clone());
+            }
+        }
+    }
+    None
 }
 
 fn transcript_has_tool_result(transcript: &str) -> bool {
@@ -556,6 +685,7 @@ fn register_cassette_entry(
         )));
     }
 
+    let schema_name = normalize_schema_name(entry.response_schema_name.as_deref());
     let turn = CassetteTurn {
         content: entry.response,
         tool_calls: entry.tool_calls,
@@ -576,19 +706,24 @@ fn register_cassette_entry(
             .filter(|s| !s.is_empty())
             .collect();
         state.by_match_rules.push(MatchRule {
+            response_schema_name: schema_name.clone(),
             match_all,
             exclude_any,
             turn: turn.clone(),
         });
     }
     if let Some(pk) = prompt_key {
-        state.by_prompt_sha256.insert(pk, turn.clone());
+        state
+            .by_prompt_sha256
+            .insert((schema_name.clone(), pk), turn.clone());
     }
     if let Some(uk) = user_key {
-        state.by_user_sha256.insert(uk, turn.clone());
+        state
+            .by_user_sha256
+            .insert((schema_name.clone(), uk), turn.clone());
     }
     if let Some(sk) = sub_key {
-        state.by_substring.push((sk, turn));
+        state.by_substring.push((schema_name, sk, turn));
     }
     Ok(())
 }
@@ -669,6 +804,7 @@ mod tests {
                 match_substring: None,
                 match_all: Vec::new(),
                 exclude_any: Vec::new(),
+                response_schema_name: None,
                 kind: String::from("chat"),
                 response: String::from("exact-hit"),
                 tool_calls: Vec::new(),
@@ -710,6 +846,7 @@ mod tests {
                     match_substring: None,
                     match_all: vec![String::from("已支付订单总金额是多少")],
                     exclude_any: vec![String::from("ROLE:tool")],
+                    response_schema_name: None,
                     kind: String::from("chat"),
                     response: String::new(),
                     tool_calls: vec![ToolCallSpec {
@@ -729,6 +866,7 @@ mod tests {
                         String::from("33239.25"),
                     ],
                     exclude_any: Vec::new(),
+                    response_schema_name: None,
                     kind: String::from("chat"),
                     response: String::from("已支付订单总金额为 33239.25 元。"),
                     tool_calls: Vec::new(),
@@ -761,6 +899,62 @@ mod tests {
             cassette.lookup_tool_turn(&turn2_tx, "你是运营主管", "已支付订单总金额是多少？")?;
         assert_eq!(turn2.tool_calls.len(), 0);
         assert_eq!(turn2.content, "已支付订单总金额为 33239.25 元。");
+
+        fs::remove_file(&path).map_err(|err| AppError::Llm(err.to_string()))?;
+        Ok(())
+    }
+
+    #[test]
+    fn cassette_lookup_prioritizes_matching_schema_and_falls_back_to_none() -> Result<(), AppError>
+    {
+        let path = temp_cassette_file("schema_prio");
+        write_entries(
+            &path,
+            &[
+                CassetteEntry {
+                    request_sha256: None,
+                    prompt_sha256: None,
+                    user_sha256: None,
+                    match_substring: Some(String::from("订单总金额")),
+                    match_all: Vec::new(),
+                    exclude_any: Vec::new(),
+                    response_schema_name: None,
+                    kind: String::from("chat"),
+                    response: String::from(r#"{"sql":"SELECT 1","explanation":"fallback"}"#),
+                    tool_calls: Vec::new(),
+                },
+                CassetteEntry {
+                    request_sha256: None,
+                    prompt_sha256: None,
+                    user_sha256: None,
+                    match_substring: Some(String::from("订单总金额")),
+                    match_all: Vec::new(),
+                    exclude_any: Vec::new(),
+                    response_schema_name: Some(String::from("axpoint_ontology_slots")),
+                    kind: String::from("chat"),
+                    response: String::from(r#"{"route":"SINGLE_METRIC"}"#),
+                    tool_calls: Vec::new(),
+                },
+            ],
+        )?;
+
+        let cassette = Cassette::open(&path, CassetteMode::Replay)?;
+        let slots = cassette.lookup_chat_with_schema(
+            "sys",
+            "查询订单总金额",
+            Some("axpoint_ontology_slots"),
+        )?;
+        assert_eq!(slots, r#"{"route":"SINGLE_METRIC"}"#);
+
+        let fallback = cassette.lookup_chat_with_schema(
+            "sys",
+            "查询订单总金额",
+            Some("axpoint_nl2sql_draft"),
+        )?;
+        assert_eq!(fallback, r#"{"sql":"SELECT 1","explanation":"fallback"}"#);
+
+        let plain = cassette.lookup_chat("sys", "查询订单总金额")?;
+        assert_eq!(plain, r#"{"sql":"SELECT 1","explanation":"fallback"}"#);
 
         fs::remove_file(&path).map_err(|err| AppError::Llm(err.to_string()))?;
         Ok(())

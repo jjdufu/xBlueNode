@@ -1,12 +1,14 @@
-//! Persistence helpers for `ax_llm_providers`, `ds_credentials` binding, and `ax_llm_usage`.
+//! Persistence helpers for `ax_llm_providers`, `ax_user_llm_preferences`, `ds_credentials` binding, and `ax_llm_usage`.
+
+use std::collections::BTreeMap;
 
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{
     CredentialMutation, LlmProviderFlags, LlmProviderRecord, LlmStructuredCaps, LlmUsageDelta,
-    LlmUsageQuery, LlmUsageRecord, SaveLlmProviderInput,
+    LlmUsageQuery, LlmUsageRecord, SaveLlmProviderInput, UserLlmPreferenceRecord,
 };
 use axpoint_domain::axhub::SealedCredential;
-use axpoint_domain::enums::Purpose;
+use axpoint_domain::enums::{Purpose, StructuredOutputMode};
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::postgres::PgRow;
 use sqlx::{Postgres, Row, Transaction};
@@ -95,6 +97,38 @@ pub(super) fn extract_joined_credential(
     }
 }
 
+fn decode_structured_caps(row: &PgRow) -> Result<LlmStructuredCaps, AppError> {
+    let raw_mode: String = row
+        .try_get("structured_mode")
+        .map_err(|e| AppError::Database(format!("decode ax_llm_providers.structured_mode: {e}")))?;
+    let structured_mode: StructuredOutputMode = raw_mode.parse()?;
+    let deterministic_seed: Option<i64> = row.try_get("deterministic_seed").map_err(|e| {
+        AppError::Database(format!("decode ax_llm_providers.deterministic_seed: {e}"))
+    })?;
+    let is_local_model: bool = row
+        .try_get("is_local_model")
+        .map_err(|e| AppError::Database(format!("decode ax_llm_providers.is_local_model: {e}")))?;
+    let max_context_tokens: i32 = row.try_get("max_context_tokens").map_err(|e| {
+        AppError::Database(format!("decode ax_llm_providers.max_context_tokens: {e}"))
+    })?;
+    Ok(LlmStructuredCaps {
+        structured_mode,
+        deterministic_seed,
+        is_local_model,
+        max_context_tokens,
+    })
+}
+
+fn validate_max_context_tokens(max_context_tokens: i32) -> Result<(), AppError> {
+    if !(2_048..=2_097_152).contains(&max_context_tokens) {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            "max_context_tokens must be in 2048..=2097152",
+        ));
+    }
+    Ok(())
+}
+
 fn decode_provider_row(row: &PgRow) -> Result<LlmProviderRecord, AppError> {
     let id: Uuid = row
         .try_get("id")
@@ -147,6 +181,10 @@ fn decode_provider_row(row: &PgRow) -> Result<LlmProviderRecord, AppError> {
     let allow_pii: bool = row
         .try_get("allow_pii")
         .map_err(|e| AppError::Database(format!("decode ax_llm_providers.allow_pii: {e}")))?;
+    let structured_caps = decode_structured_caps(row)?;
+    let owner_user_id: Option<Uuid> = row
+        .try_get("owner_user_id")
+        .map_err(|e| AppError::Database(format!("decode ax_llm_providers.owner_user_id: {e}")))?;
     let enabled: bool = row
         .try_get("enabled")
         .map_err(|e| AppError::Database(format!("decode ax_llm_providers.enabled: {e}")))?;
@@ -174,8 +212,8 @@ fn decode_provider_row(row: &PgRow) -> Result<LlmProviderRecord, AppError> {
             allow_private_network,
             allow_pii,
         },
-        structured_caps: LlmStructuredCaps::default(),
-        owner_user_id: None,
+        structured_caps,
+        owner_user_id,
         is_readonly: false,
         enabled,
         created_at,
@@ -241,6 +279,32 @@ pub(super) async fn list_llm_providers_impl(
     Ok(items)
 }
 
+pub(super) async fn list_visible_llm_providers_impl(
+    store: &PgStore,
+    tenant_id: &str,
+    viewer_user_id: Uuid,
+) -> Result<Vec<LlmProviderRecord>, AppError> {
+    let mut tx = begin_tenant_tx(&store.pool, tenant_id).await?;
+    let rows = sqlx::query(
+        "SELECT * FROM ax_llm_providers
+          WHERE owner_user_id IS NULL OR owner_user_id = $1
+          ORDER BY priority ASC, created_at ASC",
+    )
+    .bind(viewer_user_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Database(format!("list visible ax_llm_providers failed: {e}")))?;
+
+    let mut items = Vec::with_capacity(rows.len());
+    for row in &rows {
+        items.push(decode_provider_row(row)?);
+    }
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Database(format!("commit list_visible_llm_providers tx: {e}")))?;
+    Ok(items)
+}
+
 pub(super) async fn get_llm_provider_impl(
     store: &PgStore,
     tenant_id: &str,
@@ -285,6 +349,8 @@ pub(super) async fn create_llm_provider_impl(
             "purposes cannot be empty",
         ));
     }
+    validate_max_context_tokens(input.structured_caps.max_context_tokens)?;
+
     let mut tx = begin_tenant_tx(&store.pool, tenant_id).await?;
     let credential_id = match &input.credential {
         CredentialMutation::Set(cred) => {
@@ -304,9 +370,15 @@ pub(super) async fn create_llm_provider_impl(
         "INSERT INTO ax_llm_providers (
             tenant_id, name, base_url, model, purposes, credential_id, priority,
             temperature, max_tokens, timeout_s, rpm_limit, supports_tools, embedding_dim,
-            allow_private_network, allow_pii, enabled
+            allow_private_network, allow_pii, enabled,
+            structured_mode, deterministic_seed, is_local_model, max_context_tokens, owner_user_id
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+         VALUES (
+            $1, $2, $3, $4, $5, $6, $7,
+            $8, $9, $10, $11, $12, $13,
+            $14, $15, $16,
+            $17, $18, $19, $20, $21
+         )
          RETURNING *",
     )
     .bind(tenant_id)
@@ -325,6 +397,11 @@ pub(super) async fn create_llm_provider_impl(
     .bind(input.flags.allow_private_network)
     .bind(input.flags.allow_pii)
     .bind(input.enabled)
+    .bind(input.structured_caps.structured_mode.as_str())
+    .bind(input.structured_caps.deterministic_seed)
+    .bind(input.structured_caps.is_local_model)
+    .bind(input.structured_caps.max_context_tokens)
+    .bind(input.owner_user_id)
     .fetch_one(&mut *tx)
     .await
     .map_err(|err| {
@@ -342,6 +419,22 @@ pub(super) async fn create_llm_provider_impl(
     Ok(rec)
 }
 
+async fn resolve_updated_credential_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    old_cred_id: Option<Uuid>,
+    mutation: &CredentialMutation,
+) -> Result<Option<Uuid>, AppError> {
+    match mutation {
+        CredentialMutation::Keep => Ok(old_cred_id),
+        CredentialMutation::Clear => Ok(None),
+        CredentialMutation::Set(cred) => {
+            upsert_sealed_credential_tx(tx, tenant_id, cred).await?;
+            Ok(Some(cred.id))
+        }
+    }
+}
+
 pub(super) async fn update_llm_provider_impl(
     store: &PgStore,
     tenant_id: &str,
@@ -354,6 +447,8 @@ pub(super) async fn update_llm_provider_impl(
             "purposes cannot be empty",
         ));
     }
+    validate_max_context_tokens(input.structured_caps.max_context_tokens)?;
+
     let mut tx = begin_tenant_tx(&store.pool, tenant_id).await?;
     let existing_opt =
         sqlx::query("SELECT credential_id FROM ax_llm_providers WHERE id = $1 FOR UPDATE")
@@ -371,16 +466,8 @@ pub(super) async fn update_llm_provider_impl(
     let old_cred_id: Option<Uuid> = existing
         .try_get("credential_id")
         .map_err(|e| AppError::Database(format!("decode credential_id: {e}")))?;
-
-    let new_cred_id = match &input.credential {
-        CredentialMutation::Keep => old_cred_id,
-        CredentialMutation::Clear => None,
-        CredentialMutation::Set(cred) => {
-            upsert_sealed_credential_tx(&mut tx, tenant_id, cred).await?;
-            Some(cred.id)
-        }
-    };
-
+    let new_cred_id =
+        resolve_updated_credential_tx(&mut tx, tenant_id, old_cred_id, &input.credential).await?;
     let purposes_str: Vec<String> = input
         .purposes
         .iter()
@@ -403,7 +490,11 @@ pub(super) async fn update_llm_provider_impl(
                 embedding_dim         = $13,
                 allow_private_network = $14,
                 allow_pii             = $15,
-                enabled               = $16
+                enabled               = $16,
+                structured_mode       = $17,
+                deterministic_seed    = $18,
+                is_local_model        = $19,
+                max_context_tokens    = $20
           WHERE id = $1
          RETURNING *",
     )
@@ -423,6 +514,10 @@ pub(super) async fn update_llm_provider_impl(
     .bind(input.flags.allow_private_network)
     .bind(input.flags.allow_pii)
     .bind(input.enabled)
+    .bind(input.structured_caps.structured_mode.as_str())
+    .bind(input.structured_caps.deterministic_seed)
+    .bind(input.structured_caps.is_local_model)
+    .bind(input.structured_caps.max_context_tokens)
     .fetch_one(&mut *tx)
     .await
     .map_err(|err| {
@@ -536,5 +631,134 @@ pub(super) async fn query_llm_usage_impl(
     tx.commit()
         .await
         .map_err(|e| AppError::Database(format!("commit query_llm_usage tx: {e}")))?;
+    Ok(out)
+}
+
+fn decode_preference_row(row: &PgRow) -> Result<UserLlmPreferenceRecord, AppError> {
+    let raw_purpose: String = row
+        .try_get("purpose")
+        .map_err(|e| AppError::Database(format!("decode ax_user_llm_preferences.purpose: {e}")))?;
+    let purpose: Purpose = raw_purpose.parse()?;
+    let provider_id: Uuid = row.try_get("provider_id").map_err(|e| {
+        AppError::Database(format!("decode ax_user_llm_preferences.provider_id: {e}"))
+    })?;
+    let provider_name: String = row
+        .try_get("provider_name")
+        .map_err(|e| AppError::Database(format!("decode provider_name: {e}")))?;
+    let updated_at: DateTime<Utc> = row.try_get("updated_at").map_err(|e| {
+        AppError::Database(format!("decode ax_user_llm_preferences.updated_at: {e}"))
+    })?;
+    Ok(UserLlmPreferenceRecord {
+        purpose,
+        provider_id,
+        provider_name,
+        updated_at,
+    })
+}
+
+async fn fetch_user_preference_records_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: Uuid,
+) -> Result<Vec<UserLlmPreferenceRecord>, AppError> {
+    let rows = sqlx::query(
+        "SELECT pref.purpose,
+                pref.provider_id,
+                p.name AS provider_name,
+                pref.updated_at
+           FROM ax_user_llm_preferences pref
+           JOIN ax_llm_providers p ON p.id = pref.provider_id AND p.tenant_id = pref.tenant_id
+          WHERE pref.user_id = $1
+          ORDER BY pref.purpose ASC",
+    )
+    .bind(user_id)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|e| AppError::Database(format!("list ax_user_llm_preferences failed: {e}")))?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        out.push(decode_preference_row(row)?);
+    }
+    Ok(out)
+}
+
+pub(super) async fn list_user_preferences_map_impl(
+    store: &PgStore,
+    tenant_id: &str,
+    user_id: Uuid,
+) -> Result<BTreeMap<Purpose, Uuid>, AppError> {
+    let mut tx = begin_tenant_tx(&store.pool, tenant_id).await?;
+    let rows = sqlx::query(
+        "SELECT purpose, provider_id
+           FROM ax_user_llm_preferences
+          WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| AppError::Database(format!("list ax_user_llm_preferences map failed: {e}")))?;
+
+    let mut map = BTreeMap::new();
+    for row in &rows {
+        let raw_purpose: String = row.try_get("purpose").map_err(|e| {
+            AppError::Database(format!("decode ax_user_llm_preferences.purpose: {e}"))
+        })?;
+        let purpose: Purpose = raw_purpose.parse()?;
+        let provider_id: Uuid = row.try_get("provider_id").map_err(|e| {
+            AppError::Database(format!("decode ax_user_llm_preferences.provider_id: {e}"))
+        })?;
+        map.insert(purpose, provider_id);
+    }
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Database(format!("commit list_user_preferences_map tx: {e}")))?;
+    Ok(map)
+}
+
+pub(super) async fn list_user_llm_preferences_impl(
+    store: &PgStore,
+    tenant_id: &str,
+    user_id: Uuid,
+) -> Result<Vec<UserLlmPreferenceRecord>, AppError> {
+    let mut tx = begin_tenant_tx(&store.pool, tenant_id).await?;
+    let out = fetch_user_preference_records_tx(&mut tx, user_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Database(format!("commit list_user_llm_preferences tx: {e}")))?;
+    Ok(out)
+}
+
+pub(super) async fn replace_user_llm_preferences_impl(
+    store: &PgStore,
+    tenant_id: &str,
+    user_id: Uuid,
+    items: &[(Purpose, Uuid)],
+) -> Result<Vec<UserLlmPreferenceRecord>, AppError> {
+    let mut tx = begin_tenant_tx(&store.pool, tenant_id).await?;
+    sqlx::query("DELETE FROM ax_user_llm_preferences WHERE tenant_id = $1 AND user_id = $2")
+        .bind(tenant_id)
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Database(format!("clear ax_user_llm_preferences failed: {e}")))?;
+
+    for &(purpose, provider_id) in items {
+        sqlx::query(
+            "INSERT INTO ax_user_llm_preferences (tenant_id, user_id, purpose, provider_id, updated_at)
+             VALUES ($1, $2, $3, $4, NOW())",
+        )
+        .bind(tenant_id)
+        .bind(user_id)
+        .bind(purpose.as_str())
+        .bind(provider_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| AppError::Database(format!("insert ax_user_llm_preferences failed: {e}")))?;
+    }
+
+    let out = fetch_user_preference_records_tx(&mut tx, user_id).await?;
+    tx.commit()
+        .await
+        .map_err(|e| AppError::Database(format!("commit replace_user_llm_preferences tx: {e}")))?;
     Ok(out)
 }

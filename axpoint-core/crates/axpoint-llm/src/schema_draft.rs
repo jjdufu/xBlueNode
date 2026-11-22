@@ -8,6 +8,8 @@
 use std::fmt::Write as _;
 
 use axpoint_domain::AppError;
+use axpoint_domain::enums::Purpose;
+use axpoint_domain::json_schema::JsonSchemaSpec;
 use axpoint_domain::ports::AiPort;
 use axpoint_domain::studio::{
     DocEntityGroup, IssueSeverity, ProfilingBundle, SchemaDoc, ValidationContext, ValidationIssue,
@@ -97,27 +99,62 @@ pub async fn generate_schema_draft<P: AiPort>(
     input: &SchemaDraftInput<'_>,
 ) -> Result<GeneratedSchemaDraft, AppError> {
     let user_prompt = build_schema_draft_user_prompt(input);
-    let raw_first = llm.chat(SCHEMA_DRAFT_SYSTEM_PROMPT, &user_prompt).await?;
+    let draft_schema = JsonSchemaSpec::schema_doc_draft();
+    let first_attempt = llm
+        .chat_structured(
+            Purpose::Extract,
+            SCHEMA_DRAFT_SYSTEM_PROMPT,
+            &user_prompt,
+            &draft_schema,
+        )
+        .await;
 
-    let repair_feedback = match parse_schema_doc_lenient(&raw_first) {
-        Ok(mut doc) => {
-            assign_grid_layout_if_overlapping(&mut doc);
-            let issues = validate(&doc, input.validation_ctx);
-            if !issues.iter().any(|i| i.severity == IssueSeverity::Error) {
-                return Ok(GeneratedSchemaDraft {
-                    schema_doc: doc,
-                    issues,
-                    attempts: 1,
-                });
+    let (raw_first, repair_feedback) = match first_attempt {
+        Ok(val_first) => {
+            let serialized =
+                serde_json::to_string(&val_first).unwrap_or_else(|_| String::from("{}"));
+            match serde_json::from_value::<SchemaDoc>(val_first) {
+                Ok(mut doc) => {
+                    assign_grid_layout_if_overlapping(&mut doc);
+                    let issues = validate(&doc, input.validation_ctx);
+                    if !issues.iter().any(|i| i.severity == IssueSeverity::Error) {
+                        return Ok(GeneratedSchemaDraft {
+                            schema_doc: doc,
+                            issues,
+                            attempts: 1,
+                        });
+                    }
+                    (serialized, format_validation_errors(&issues))
+                }
+                Err(decode_err) => (serialized, format!("JSON 解析失败：{decode_err}")),
             }
-            format_validation_errors(&issues)
         }
-        Err(parse_err) => format!("JSON 解析失败：{parse_err}"),
+        Err(AppError::Unprocessable {
+            code: "STRUCTURED_OUTPUT_INVALID",
+            message,
+        }) => (String::new(), format!("JSON 结构校验失败：{message}")),
+        Err(err) => return Err(err),
     };
 
     let repair_prompt = build_repair_user_prompt(&user_prompt, &raw_first, &repair_feedback);
-    let raw_second = llm.chat(SCHEMA_DRAFT_SYSTEM_PROMPT, &repair_prompt).await?;
-    let mut repaired_doc = parse_schema_doc_lenient(&raw_second).map_err(|err| {
+    let val_second = llm
+        .chat_structured(
+            Purpose::Extract,
+            SCHEMA_DRAFT_SYSTEM_PROMPT,
+            &repair_prompt,
+            &draft_schema,
+        )
+        .await
+        .map_err(|err| match err {
+            AppError::Unprocessable {
+                code: "STRUCTURED_OUTPUT_INVALID",
+                message,
+            } => AppError::Llm(format!(
+                "AI schema draft failed JSON validation after retry: {message}"
+            )),
+            other => other,
+        })?;
+    let mut repaired_doc = serde_json::from_value::<SchemaDoc>(val_second).map_err(|err| {
         AppError::Llm(format!(
             "AI schema draft failed JSON validation after retry: {err}"
         ))

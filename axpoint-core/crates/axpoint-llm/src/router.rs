@@ -1,15 +1,16 @@
 //! Multi-model [`LlmRouter`] with per-tenant caching, priority selection, `rpm_limit` token buckets,
 //! consecutive-failure circuit breakers, automatic failover, usage accounting, and cassette replay (`08-STEP09` §09.2).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{LlmProviderRecord, LlmUsageDelta, ProviderTestResponse};
-use axpoint_domain::enums::Purpose;
+use axpoint_domain::enums::{Purpose, StructuredOutputMode};
 use axpoint_domain::guard::LlmEgressPreviewResponse;
+use axpoint_domain::json_schema::{JsonSchemaSpec, strip_markdown_json_fence};
 use axpoint_domain::platform::BoxFuture;
 use axpoint_domain::ports::{FlowCredentialUnsealPort, LlmProviderStore, OutboundUrlGuardPort};
 use axpoint_security::masking::MaskKeyRing;
@@ -26,10 +27,17 @@ use crate::cassette::{
     Cassette, CassetteMode, CassetteTurn, DEFAULT_OFFLINE_EMBED_DIM, deterministic_embedding,
 };
 use crate::stream::consume_sse_response;
+use crate::structured::{
+    augment_messages_with_schema_skeleton, build_schema_repair_message, build_wire_response_format,
+    is_upstream_schema_unsupported_400, resolve_default_llm_temperature,
+    resolve_effective_sampling, trim_messages_to_context_budget, unprocessable_structured_error,
+    validate_with_jsonschema,
+};
 use crate::tools::{
     TokenUsage, ToolChatMessage, ToolChatTurn, ToolDefinition, WireChatCompletionRequest,
-    WireChatCompletionResponse, WireStreamOptions, canonical_request_transcript,
-    extract_system_and_last_user, parse_chat_completion_response,
+    WireChatCompletionResponse, WireResponseFormat, WireStreamOptions,
+    canonical_request_transcript_with_schema, extract_system_and_last_user,
+    parse_chat_completion_response,
 };
 use crate::{EMBED_BATCH_CHUNK_SIZE, EmbeddingConfig, LlmConfig};
 
@@ -256,10 +264,14 @@ pub struct RouterTurnRequest {
     pub purpose: Purpose,
     /// Optional pinned `ax_llm_providers.id` (`None` uses priority failover).
     pub pinned_provider_id: Option<Uuid>,
+    /// Optional caller user UUID for personal provider visibility and per-purpose preference routing (`01-STEP15` §15.3.4).
+    pub caller_user_id: Option<Uuid>,
     /// Conversation history and user/tool messages.
     pub messages: Vec<ToolChatMessage>,
     /// Optional function tools exposed to the model.
     pub tools: Vec<ToolDefinition>,
+    /// Optional strict Draft 2020-12 JSON Schema contract for constrained decoding (`01-STEP15` §15.3).
+    pub response_schema: Option<JsonSchemaSpec>,
     /// Optional sampling temperature override (`None` uses provider default).
     pub temperature: Option<f32>,
     /// Optional max completion tokens override (`None` uses provider default).
@@ -277,8 +289,10 @@ impl RouterTurnRequest {
         Self {
             purpose,
             pinned_provider_id: None,
+            caller_user_id: None,
             messages,
             tools: Vec::new(),
+            response_schema: None,
             temperature: None,
             max_tokens: None,
             require_tools: purpose == Purpose::Agent,
@@ -293,6 +307,13 @@ impl RouterTurnRequest {
         self
     }
 
+    /// Sets the authenticated caller user UUID for personal provider visibility and preference routing.
+    #[must_use]
+    pub const fn with_caller_user(mut self, user_id: Option<Uuid>) -> Self {
+        self.caller_user_id = user_id;
+        self
+    }
+
     /// Attaches `OpenAI` function tool definitions.
     #[must_use]
     pub fn with_tools(mut self, tools: Vec<ToolDefinition>) -> Self {
@@ -300,6 +321,13 @@ impl RouterTurnRequest {
             self.require_tools = true;
         }
         self.tools = tools;
+        self
+    }
+
+    /// Attaches a strict [`JsonSchemaSpec`] for constrained decoding and post-generation `jsonschema` verification.
+    #[must_use]
+    pub fn with_response_schema(mut self, schema: JsonSchemaSpec) -> Self {
+        self.response_schema = Some(schema);
         self
     }
 
@@ -366,6 +394,33 @@ impl ProviderHealthState {
 struct ProviderCallFailure {
     error: AppError,
     counts_toward_breaker: bool,
+    schema_unsupported_400: bool,
+}
+
+impl ProviderCallFailure {
+    const fn transient(error: AppError) -> Self {
+        Self {
+            error,
+            counts_toward_breaker: true,
+            schema_unsupported_400: false,
+        }
+    }
+
+    const fn non_breaker(error: AppError) -> Self {
+        Self {
+            error,
+            counts_toward_breaker: false,
+            schema_unsupported_400: false,
+        }
+    }
+}
+
+struct ProviderHttpEndpoint<'a> {
+    url: String,
+    api_key: Option<String>,
+    timeout_dur: Duration,
+    tenant_key: [u8; 32],
+    provider: &'a LlmProviderRecord,
 }
 
 #[derive(Debug, Serialize)]
@@ -397,6 +452,7 @@ pub struct LlmRouter {
     http: Client,
     cassette: Option<Cassette>,
     tenant_cache: Cache<String, Arc<[LlmProviderRecord]>>,
+    user_pref_cache: Cache<(String, Uuid), Arc<BTreeMap<Purpose, Uuid>>>,
     health: Arc<Mutex<HashMap<Uuid, ProviderHealthState>>>,
     clock: Arc<dyn RouterClock>,
     failure_threshold: u32,
@@ -422,6 +478,10 @@ impl LlmRouter {
             .max_capacity(1_024)
             .time_to_live(Duration::from_secs(DEFAULT_PROVIDER_CACHE_TTL_SECS))
             .build();
+        let user_pref_cache = Cache::builder()
+            .max_capacity(4_096)
+            .time_to_live(Duration::from_secs(DEFAULT_PROVIDER_CACHE_TTL_SECS))
+            .build();
         Self {
             store: None,
             secret_resolver: None,
@@ -431,6 +491,7 @@ impl LlmRouter {
             http: Client::new(),
             cassette: Cassette::from_env(),
             tenant_cache,
+            user_pref_cache,
             health: Arc::new(Mutex::new(HashMap::new())),
             clock: Arc::new(SystemRouterClock),
             failure_threshold: DEFAULT_CIRCUIT_FAILURE_THRESHOLD,
@@ -507,7 +568,14 @@ impl LlmRouter {
         self.tenant_cache.invalidate(tenant_id).await;
     }
 
-    /// Executes a two-message `(system, user)` chat completion routed by `purpose`.
+    /// Evicts cached `ax_user_llm_preferences` entries for `(tenant_id, user_id)` (`01-STEP15` §15.3.4).
+    pub async fn invalidate_user_preferences(&self, tenant_id: &str, user_id: Uuid) {
+        self.user_pref_cache
+            .invalidate(&(tenant_id.to_owned(), user_id))
+            .await;
+    }
+
+    /// Executes a two-message `(system, user)` chat completion routed by `purpose` without user preference override.
     ///
     /// # Errors
     /// Returns [`AppError`] if candidate selection, cassette lookup, or all upstream providers fail.
@@ -518,8 +586,24 @@ impl LlmRouter {
         system_prompt: &str,
         user_prompt: &str,
     ) -> Result<String, AppError> {
+        self.complete_chat_for_user(tenant_id, None, purpose, system_prompt, user_prompt)
+            .await
+    }
+
+    /// Executes a two-message `(system, user)` chat completion routed by `purpose` and optional `caller_user_id` (`01-STEP15` §15.3.4).
+    ///
+    /// # Errors
+    /// Returns [`AppError`] if candidate selection, cassette lookup, or all upstream providers fail.
+    pub async fn complete_chat_for_user(
+        &self,
+        tenant_id: &str,
+        caller_user_id: Option<Uuid>,
+        purpose: Purpose,
+        system_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<String, AppError> {
         let candidates = self
-            .select_candidates(tenant_id, purpose, None, false)
+            .select_candidates_for_user(tenant_id, caller_user_id, purpose, None, false)
             .await?;
 
         if let Some(cassette) = &self.cassette
@@ -541,6 +625,7 @@ impl LlmRouter {
                 ToolChatMessage::user(user_prompt),
             ],
         )
+        .with_caller_user(caller_user_id)
         .with_require_tools(false);
 
         let outcome = self
@@ -581,7 +666,13 @@ impl LlmRouter {
         let need_tools =
             !req.tools.is_empty() || (req.purpose == Purpose::Agent && req.require_tools);
         let candidates = self
-            .select_candidates(tenant_id, req.purpose, req.pinned_provider_id, need_tools)
+            .select_candidates_for_user(
+                tenant_id,
+                req.caller_user_id,
+                req.purpose,
+                req.pinned_provider_id,
+                need_tools,
+            )
             .await?;
         self.execute_turn_with_candidates(tenant_id, req, candidates, None)
             .await
@@ -616,7 +707,13 @@ impl LlmRouter {
         let need_tools =
             !req.tools.is_empty() || (req.purpose == Purpose::Agent && req.require_tools);
         let candidates = self
-            .select_candidates(tenant_id, req.purpose, req.pinned_provider_id, need_tools)
+            .select_candidates_for_user(
+                tenant_id,
+                req.caller_user_id,
+                req.purpose,
+                req.pinned_provider_id,
+                need_tools,
+            )
             .await?;
         self.execute_turn_with_candidates(tenant_id, req, candidates, token_tx)
             .await
@@ -631,8 +728,21 @@ impl LlmRouter {
         tenant_id: &str,
         texts: &[String],
     ) -> Result<(Vec<Vec<f32>>, usize), AppError> {
+        self.embed_for_user(tenant_id, None, texts).await
+    }
+
+    /// Generates batch embeddings routed via `Purpose::Embed` providers with optional `caller_user_id` preference.
+    ///
+    /// # Errors
+    /// Returns [`AppError`] if all candidate embedding providers or fallback configuration fail.
+    pub async fn embed_for_user(
+        &self,
+        tenant_id: &str,
+        caller_user_id: Option<Uuid>,
+        texts: &[String],
+    ) -> Result<(Vec<Vec<f32>>, usize), AppError> {
         let candidates = self
-            .select_candidates(tenant_id, Purpose::Embed, None, false)
+            .select_candidates_for_user(tenant_id, caller_user_id, Purpose::Embed, None, false)
             .await?;
 
         if let Some(cassette) = &self.cassette
@@ -682,7 +792,8 @@ impl LlmRouter {
         Err(exhausted_candidates_error(last_err, saw_rpm, saw_open))
     }
 
-    /// Probes connectivity and latency of a single [`LlmProviderRecord`] (`POST /api/axagent/providers/{id}/test`).
+    /// Probes connectivity, constrained decoding capability, and zero-temperature enforcement of
+    /// a single [`LlmProviderRecord`] (`POST /api/axagent/providers/{id}/test`, `01-STEP15` §15.4.2.3).
     pub async fn probe_provider(
         &self,
         tenant_id: &str,
@@ -690,45 +801,59 @@ impl LlmRouter {
         api_key: Option<&str>,
     ) -> ProviderTestResponse {
         let started = self.clock.now();
-        if let Some(cassette) = &self.cassette
-            && cassette.mode() == CassetteMode::Replay
+        let has_structured = provider.structured_caps.structured_mode != StructuredOutputMode::None;
+        let (eff_temp, eff_seed) =
+            resolve_effective_sampling(Purpose::Extract, provider, None, has_structured);
+
+        let url = format!(
+            "{}/chat/completions",
+            provider.base_url.trim_end_matches('/')
+        );
+        if let Some(guard) = &self.url_guard
+            && let Err(err) = guard
+                .check_outbound_url(&url, provider.flags.allow_private_network)
+                .await
         {
-            let latency_ms = u64::try_from(
-                self.clock
-                    .now()
-                    .saturating_duration_since(started)
-                    .as_millis(),
-            )
-            .unwrap_or(u64::MAX);
             return ProviderTestResponse {
-                ok: true,
-                latency_ms,
+                ok: false,
+                latency_ms: self.elapsed_millis(started),
                 model: provider.model.clone(),
-                reply: String::from("OK (cassette)"),
+                reply: err.client_message(),
                 structured_mode: provider.structured_caps.structured_mode,
                 structured_verified: false,
-                effective_temperature: provider.temperature,
+                effective_temperature: eff_temp,
             };
         }
 
-        let outcome = self.probe_provider_live(tenant_id, provider, api_key).await;
-        let latency_ms = u64::try_from(
-            self.clock
-                .now()
-                .saturating_duration_since(started)
-                .as_millis(),
-        )
-        .unwrap_or(u64::MAX);
+        let bypass_replay_for_loopback =
+            provider.flags.allow_private_network && is_loopback_base_url(&provider.base_url);
+
+        if !bypass_replay_for_loopback
+            && let Some(cassette) = &self.cassette
+            && cassette.mode() == CassetteMode::Replay
+        {
+            return build_replay_probe_response(
+                provider,
+                self.elapsed_millis(started),
+                has_structured,
+                eff_temp,
+            );
+        }
+
+        let outcome = self
+            .probe_provider_live(tenant_id, provider, api_key, eff_temp, eff_seed)
+            .await;
+        let latency_ms = self.elapsed_millis(started);
 
         match outcome {
-            Ok(turn) => ProviderTestResponse {
+            Ok((turn, structured_verified)) => ProviderTestResponse {
                 ok: true,
                 latency_ms,
                 model: turn.model_echo.unwrap_or_else(|| provider.model.clone()),
                 reply: turn.content,
                 structured_mode: provider.structured_caps.structured_mode,
-                structured_verified: false,
-                effective_temperature: provider.temperature,
+                structured_verified,
+                effective_temperature: eff_temp,
             },
             Err(err) => ProviderTestResponse {
                 ok: false,
@@ -737,9 +862,19 @@ impl LlmRouter {
                 reply: err.client_message(),
                 structured_mode: provider.structured_caps.structured_mode,
                 structured_verified: false,
-                effective_temperature: provider.temperature,
+                effective_temperature: eff_temp,
             },
         }
+    }
+
+    fn elapsed_millis(&self, started: Instant) -> u64 {
+        u64::try_from(
+            self.clock
+                .now()
+                .saturating_duration_since(started)
+                .as_millis(),
+        )
+        .unwrap_or(u64::MAX)
     }
 
     async fn probe_provider_live(
@@ -747,7 +882,9 @@ impl LlmRouter {
         tenant_id: &str,
         provider: &LlmProviderRecord,
         explicit_key: Option<&str>,
-    ) -> Result<ToolChatTurn, AppError> {
+        eff_temp: f32,
+        eff_seed: Option<i64>,
+    ) -> Result<(ToolChatTurn, bool), AppError> {
         let url = format!(
             "{}/chat/completions",
             provider.base_url.trim_end_matches('/')
@@ -763,12 +900,36 @@ impl LlmRouter {
             _ => self.resolve_provider_key(tenant_id, provider).await?,
         };
 
+        let mode = provider.structured_caps.structured_mode;
+        let probe_spec = JsonSchemaSpec::connectivity_probe();
+        let (wire_msgs, response_format, max_tok) = if mode == StructuredOutputMode::None {
+            (
+                vec![ToolChatMessage::user("Reply with OK.").to_wire()],
+                None,
+                Some(8),
+            )
+        } else {
+            let base = vec![
+                ToolChatMessage::system("Return connectivity probe JSON."),
+                ToolChatMessage::user("Reply with {\"status\":\"OK\"}."),
+            ];
+            let augmented = augment_messages_with_schema_skeleton(&base, mode, &probe_spec.schema);
+            let rf = build_wire_response_format(provider, &probe_spec);
+            (
+                augmented.iter().map(ToolChatMessage::to_wire).collect(),
+                rf,
+                Some(32),
+            )
+        };
+
         let body = WireChatCompletionRequest {
             model: provider.model.clone(),
-            messages: vec![ToolChatMessage::user("Reply with OK.").to_wire()],
-            temperature: 0.0,
-            max_tokens: Some(8),
+            messages: wire_msgs,
+            temperature: eff_temp,
+            max_tokens: max_tok,
             tools: Vec::new(),
+            response_format,
+            seed: eff_seed,
             stream: None,
             stream_options: None,
         };
@@ -795,7 +956,13 @@ impl LlmRouter {
             .json()
             .await
             .map_err(|err| AppError::Llm(format!("invalid probe JSON: {err}")))?;
-        parse_chat_completion_response(wire)
+        let turn = parse_chat_completion_response(wire)?;
+        if mode == StructuredOutputMode::None {
+            return Ok((turn, false));
+        }
+        verify_probe_structured_reply(&turn.content, &probe_spec.schema)
+            .map_err(|errs| unprocessable_structured_error(&errs))?;
+        Ok((turn, true))
     }
 
     async fn load_tenant_providers(
@@ -821,18 +988,44 @@ impl LlmRouter {
             .map_err(|arc_err| AppError::Database(arc_err.to_string()))
     }
 
-    async fn select_candidates(
+    async fn load_user_preferences(
         &self,
         tenant_id: &str,
+        user_id: Uuid,
+    ) -> Result<Arc<BTreeMap<Purpose, Uuid>>, AppError> {
+        let Some(store) = &self.store else {
+            return Ok(Arc::new(BTreeMap::new()));
+        };
+        let store_cloned = Arc::clone(store);
+        let tenant_owned = tenant_id.to_owned();
+        self.user_pref_cache
+            .try_get_with((tenant_id.to_owned(), user_id), async move {
+                let map = store_cloned
+                    .list_user_preferences(&tenant_owned, user_id)
+                    .await?;
+                Ok::<Arc<BTreeMap<Purpose, Uuid>>, AppError>(Arc::new(map))
+            })
+            .await
+            .map_err(|arc_err| AppError::Database(arc_err.to_string()))
+    }
+
+    async fn select_candidates_for_user(
+        &self,
+        tenant_id: &str,
+        user_id: Option<Uuid>,
         purpose: Purpose,
         pinned_id: Option<Uuid>,
         need_tools: bool,
     ) -> Result<Vec<LlmProviderRecord>, AppError> {
         let all = self.load_tenant_providers(tenant_id).await?;
+        let is_visible = |p: &LlmProviderRecord| -> bool {
+            p.owner_user_id.is_none() || (user_id.is_some() && p.owner_user_id == user_id)
+        };
+
         if let Some(pid) = pinned_id {
             let found = all
                 .iter()
-                .find(|p| p.id == pid)
+                .find(|p| p.id == pid && is_visible(p))
                 .ok_or(AppError::NotFound("PROVIDER_NOT_FOUND"))?;
             if !found.enabled {
                 return Err(AppError::bad(
@@ -849,16 +1042,34 @@ impl LlmRouter {
             return Ok(vec![found.clone()]);
         }
 
-        let filtered = all
+        let preferred_id = match user_id {
+            Some(uid) => self
+                .load_user_preferences(tenant_id, uid)
+                .await?
+                .get(&purpose)
+                .copied(),
+            None => None,
+        };
+
+        let mut eligible: Vec<LlmProviderRecord> = all
             .iter()
             .filter(|p| {
-                p.enabled
+                is_visible(p)
+                    && p.enabled
                     && p.purposes.contains(&purpose)
                     && (!need_tools || p.flags.supports_tools)
             })
             .cloned()
             .collect();
-        Ok(filtered)
+
+        if let Some(pref_uuid) = preferred_id
+            && let Some(pos) = eligible.iter().position(|p| p.id == pref_uuid)
+            && pos > 0
+        {
+            let favored = eligible.remove(pos);
+            eligible.insert(0, favored);
+        }
+        Ok(eligible)
     }
 
     fn pick_replay_candidate<'a>(
@@ -892,7 +1103,13 @@ impl LlmRouter {
         candidates: Vec<LlmProviderRecord>,
         token_tx: Option<mpsc::Sender<String>>,
     ) -> Result<RoutedTurnOutcome, AppError> {
-        let transcript = canonical_request_transcript(req.purpose, &req.messages, &req.tools);
+        let schema_name = req.response_schema.as_ref().map(|s| s.name.as_str());
+        let transcript = canonical_request_transcript_with_schema(
+            req.purpose,
+            &req.messages,
+            &req.tools,
+            schema_name,
+        );
 
         if let Some(cassette) = &self.cassette
             && cassette.mode() == CassetteMode::Replay
@@ -904,7 +1121,7 @@ impl LlmRouter {
 
         if candidates.is_empty() {
             let turn = self.call_default_llm(tenant_id, &req, token_tx).await?;
-            self.maybe_record_cassette_turn(&transcript, &turn)?;
+            self.maybe_record_cassette_turn(&transcript, &turn, schema_name)?;
             return Ok(RoutedTurnOutcome {
                 turn,
                 provider_id: None,
@@ -942,7 +1159,7 @@ impl LlmRouter {
                         turn.usage.completion_tokens.max(0),
                     )
                     .await;
-                    self.maybe_record_cassette_turn(&transcript, &turn)?;
+                    self.maybe_record_cassette_turn(&transcript, &turn, schema_name)?;
                     return Ok(RoutedTurnOutcome {
                         turn,
                         provider_id: Some(provider.id),
@@ -976,21 +1193,43 @@ impl LlmRouter {
         };
         let chosen = self.pick_replay_candidate(candidates)?;
         let (sys, last_user) = extract_system_and_last_user(&req.messages);
-        let lookup = cassette.lookup_tool_turn(transcript, &sys, &last_user);
+        let schema_name = req.response_schema.as_ref().map(|s| s.name.as_str());
+        let lookup =
+            cassette.lookup_tool_turn_with_schema(transcript, &sys, &last_user, schema_name);
+
+        let validated_turn = match lookup {
+            Ok(mut ct) => {
+                if let Some(ref schema) = req.response_schema {
+                    let is_local = chosen.is_some_and(|p| p.structured_caps.is_local_model);
+                    let target = schema.effective_schema(is_local);
+                    match validate_with_jsonschema(&ct.content, target) {
+                        Ok(val) => {
+                            ct.content =
+                                serde_json::to_string(&val).unwrap_or_else(|_| ct.content.clone());
+                            Ok(ct)
+                        }
+                        Err(errs) => Err(unprocessable_structured_error(&errs)),
+                    }
+                } else {
+                    Ok(ct)
+                }
+            }
+            Err(err) => Err(err),
+        };
 
         if let Some(p) = chosen {
             self.record_usage_delta(
                 tenant_id,
                 p.id,
                 req.purpose,
-                i64::from(lookup.is_err()),
+                i64::from(validated_turn.is_err()),
                 0,
                 0,
             )
             .await;
         }
 
-        let ct = lookup?;
+        let ct = validated_turn?;
         if let Some(tx) = token_tx
             && !ct.content.is_empty()
             && tx.send(ct.content.clone()).await.is_err()
@@ -1016,6 +1255,7 @@ impl LlmRouter {
         &self,
         transcript: &str,
         turn: &ToolChatTurn,
+        schema_name: Option<&str>,
     ) -> Result<(), AppError> {
         if let Some(cassette) = &self.cassette
             && cassette.mode() == CassetteMode::Record
@@ -1024,7 +1264,7 @@ impl LlmRouter {
                 content: turn.content.clone(),
                 tool_calls: turn.tool_calls.clone(),
             };
-            cassette.record_tool_turn(transcript, &ct)?;
+            cassette.record_tool_turn_with_schema(transcript, &ct, schema_name)?;
         }
         Ok(())
     }
@@ -1059,56 +1299,82 @@ impl LlmRouter {
                 .check_outbound_url(&url, provider.flags.allow_private_network)
                 .await
         {
-            return Err(ProviderCallFailure {
-                error: err,
-                counts_toward_breaker: false,
-            });
+            return Err(ProviderCallFailure::non_breaker(err));
         }
 
         let api_key = self
             .resolve_provider_key(tenant_id, provider)
             .await
-            .map_err(|error| ProviderCallFailure {
-                error,
-                counts_toward_breaker: false,
-            })?;
+            .map_err(ProviderCallFailure::non_breaker)?;
 
-        let (wire_msgs, egress_session) = if provider.flags.allow_pii {
-            (
-                req.messages.iter().map(ToolChatMessage::to_wire).collect(),
-                EgressSession::new(),
+        let endpoint = ProviderHttpEndpoint {
+            url,
+            api_key,
+            timeout_dur: Duration::from_secs(
+                u64::try_from(provider.timeout_s.max(1)).unwrap_or(60),
+            ),
+            tenant_key: resolve_tenant_mask_key(tenant_id),
+            provider,
+        };
+
+        if let Some(ref schema) = req.response_schema {
+            return self
+                .execute_structured_provider_turn(&endpoint, req, schema, token_tx)
+                .await;
+        }
+        self.execute_plain_provider_turn(&endpoint, req, token_tx)
+            .await
+    }
+
+    async fn execute_plain_provider_turn(
+        &self,
+        ep: &ProviderHttpEndpoint<'_>,
+        req: &RouterTurnRequest,
+        token_tx: Option<mpsc::Sender<String>>,
+    ) -> Result<ToolChatTurn, ProviderCallFailure> {
+        let eff_max_tokens = req.max_tokens.unwrap_or(ep.provider.max_tokens);
+        let (eff_temp, eff_seed) =
+            resolve_effective_sampling(req.purpose, ep.provider, req.temperature, false);
+        let base_msgs = if ep.provider.structured_caps.is_local_model {
+            trim_messages_to_context_budget(
+                &req.messages,
+                ep.provider.structured_caps.max_context_tokens,
+                eff_max_tokens,
             )
         } else {
-            let (redacted, sess) = redact_messages_for_egress(&req.messages);
-            (
-                redacted.iter().map(ToolChatMessage::to_wire).collect(),
-                sess,
-            )
+            req.messages.clone()
         };
-        let tenant_key = resolve_tenant_mask_key(tenant_id);
+
+        let (wire_msgs, egress_session) = prepare_egress_wire_messages(ep.provider, &base_msgs);
         let (eff_tx, stream_join) = wrap_egress_stream_tx(
             token_tx,
             &egress_session,
             req.caller_can_read_raw_pii,
-            tenant_key,
+            ep.tenant_key,
         );
         let is_stream = eff_tx.is_some();
         let body = WireChatCompletionRequest {
-            model: provider.model.clone(),
+            model: ep.provider.model.clone(),
             messages: wire_msgs,
-            temperature: req.temperature.unwrap_or(provider.temperature),
-            max_tokens: Some(req.max_tokens.unwrap_or(provider.max_tokens)),
+            temperature: eff_temp,
+            max_tokens: Some(eff_max_tokens),
             tools: req.tools.clone(),
+            response_format: None,
+            seed: eff_seed,
             stream: is_stream.then_some(true),
             stream_options: is_stream.then_some(WireStreamOptions {
                 include_usage: true,
             }),
         };
 
-        let timeout_dur =
-            Duration::from_secs(u64::try_from(provider.timeout_s.max(1)).unwrap_or(60));
         let res = self
-            .send_completion_http(&url, api_key.as_deref(), &body, timeout_dur, eff_tx)
+            .send_completion_http(
+                &ep.url,
+                ep.api_key.as_deref(),
+                &body,
+                ep.timeout_dur,
+                eff_tx,
+            )
             .await;
         if let Some(jh) = stream_join
             && let Err(err) = jh.await
@@ -1116,12 +1382,152 @@ impl LlmRouter {
             warn!(error = %err, "egress stream forwarder join failed");
         }
         let mut turn = res?;
-        if !provider.flags.allow_pii {
+        if !ep.provider.flags.allow_pii {
             restore_turn_from_egress(
                 &mut turn,
                 &egress_session,
                 req.caller_can_read_raw_pii,
-                &tenant_key,
+                &ep.tenant_key,
+            );
+        }
+        Ok(turn)
+    }
+
+    async fn execute_structured_provider_turn(
+        &self,
+        ep: &ProviderHttpEndpoint<'_>,
+        req: &RouterTurnRequest,
+        schema: &JsonSchemaSpec,
+        token_tx: Option<mpsc::Sender<String>>,
+    ) -> Result<ToolChatTurn, ProviderCallFailure> {
+        let eff_max_tokens = req.max_tokens.unwrap_or(ep.provider.max_tokens);
+        let (eff_temp, eff_seed) =
+            resolve_effective_sampling(req.purpose, ep.provider, req.temperature, true);
+        let is_local = ep.provider.structured_caps.is_local_model;
+        let target_schema = schema.effective_schema(is_local);
+        let trimmed = if is_local {
+            trim_messages_to_context_budget(
+                &req.messages,
+                ep.provider.structured_caps.max_context_tokens,
+                eff_max_tokens,
+            )
+        } else {
+            req.messages.clone()
+        };
+
+        let initial_mode = ep.provider.structured_caps.structured_mode;
+        let mut active_msgs =
+            augment_messages_with_schema_skeleton(&trimmed, initial_mode, target_schema);
+        let mut active_rf = build_wire_response_format(ep.provider, schema);
+
+        let first_attempt = self
+            .send_buffered_egress_attempt(
+                ep,
+                req,
+                &active_msgs,
+                active_rf.clone(),
+                (eff_temp, eff_seed, eff_max_tokens),
+            )
+            .await;
+
+        let mut turn = match first_attempt {
+            Ok(t) => t,
+            Err(fail)
+                if initial_mode == StructuredOutputMode::JsonSchema
+                    && fail.schema_unsupported_400 =>
+            {
+                active_msgs = augment_messages_with_schema_skeleton(
+                    &trimmed,
+                    StructuredOutputMode::JsonObject,
+                    target_schema,
+                );
+                active_rf = Some(WireResponseFormat::JsonObject);
+                self.send_buffered_egress_attempt(
+                    ep,
+                    req,
+                    &active_msgs,
+                    active_rf.clone(),
+                    (0.0_f32, eff_seed, eff_max_tokens),
+                )
+                .await?
+            }
+            Err(fail) => return Err(fail),
+        };
+
+        let final_val = match validate_with_jsonschema(&turn.content, target_schema) {
+            Ok(val) => val,
+            Err(first_errs) => {
+                active_msgs.push(ToolChatMessage::assistant(turn.content.clone()));
+                active_msgs.push(build_schema_repair_message(
+                    &schema.name,
+                    &first_errs,
+                    target_schema,
+                ));
+                let repaired = self
+                    .send_buffered_egress_attempt(
+                        ep,
+                        req,
+                        &active_msgs,
+                        active_rf,
+                        (0.0_f32, eff_seed, eff_max_tokens),
+                    )
+                    .await?;
+                turn.usage.prompt_tokens = turn
+                    .usage
+                    .prompt_tokens
+                    .saturating_add(repaired.usage.prompt_tokens);
+                turn.usage.completion_tokens = turn
+                    .usage
+                    .completion_tokens
+                    .saturating_add(repaired.usage.completion_tokens);
+                turn.model_echo = repaired.model_echo.or(turn.model_echo);
+                turn.tool_calls = repaired.tool_calls;
+                turn.content = repaired.content;
+                validate_with_jsonschema(&turn.content, target_schema).map_err(|errs2| {
+                    ProviderCallFailure::non_breaker(unprocessable_structured_error(&errs2))
+                })?
+            }
+        };
+
+        turn.content = serde_json::to_string(&final_val).unwrap_or(turn.content);
+        if let Some(tx) = token_tx
+            && !turn.content.is_empty()
+            && tx.send(turn.content.clone()).await.is_err()
+        {
+            warn!("SSE token receiver dropped after structured validation");
+        }
+        Ok(turn)
+    }
+
+    async fn send_buffered_egress_attempt(
+        &self,
+        ep: &ProviderHttpEndpoint<'_>,
+        req: &RouterTurnRequest,
+        messages: &[ToolChatMessage],
+        response_format: Option<WireResponseFormat>,
+        sampling: (f32, Option<i64>, i32),
+    ) -> Result<ToolChatTurn, ProviderCallFailure> {
+        let (wire_msgs, egress_session) = prepare_egress_wire_messages(ep.provider, messages);
+        let body = WireChatCompletionRequest {
+            model: ep.provider.model.clone(),
+            messages: wire_msgs,
+            temperature: sampling.0,
+            max_tokens: Some(sampling.2),
+            tools: req.tools.clone(),
+            response_format,
+            seed: sampling.1,
+            stream: None,
+            stream_options: None,
+        };
+        let mut turn = self
+            .send_completion_http(&ep.url, ep.api_key.as_deref(), &body, ep.timeout_dur, None)
+            .await?;
+        if !ep.provider.flags.allow_pii {
+            restore_turn_from_egress(
+                &mut turn,
+                &egress_session,
+                req.caller_can_read_raw_pii,
+                &ep.tenant_key,
             );
         }
         Ok(turn)
@@ -1137,10 +1543,21 @@ impl LlmRouter {
             "{}/chat/completions",
             self.default_llm.api_base.trim_end_matches('/')
         );
-        let (redacted, egress_session) = redact_messages_for_egress(&req.messages);
+        let has_schema = req.response_schema.is_some();
+        let eff_temp = resolve_default_llm_temperature(req.purpose, req.temperature, has_schema);
+        let prepared_msgs = match &req.response_schema {
+            Some(spec) => augment_messages_with_schema_skeleton(
+                &req.messages,
+                StructuredOutputMode::None,
+                &spec.schema,
+            ),
+            None => req.messages.clone(),
+        };
+        let (redacted, egress_session) = redact_messages_for_egress(&prepared_msgs);
         let tenant_key = resolve_tenant_mask_key(tenant_id);
+        let stream_tx = if has_schema { None } else { token_tx.clone() };
         let (eff_tx, stream_join) = wrap_egress_stream_tx(
-            token_tx,
+            stream_tx,
             &egress_session,
             req.caller_can_read_raw_pii,
             tenant_key,
@@ -1149,9 +1566,11 @@ impl LlmRouter {
         let body = WireChatCompletionRequest {
             model: self.default_llm.model.clone(),
             messages: redacted.iter().map(ToolChatMessage::to_wire).collect(),
-            temperature: req.temperature.unwrap_or(0.2),
+            temperature: eff_temp,
             max_tokens: req.max_tokens,
             tools: req.tools.clone(),
+            response_format: None,
+            seed: None,
             stream: is_stream.then_some(true),
             stream_options: is_stream.then_some(WireStreamOptions {
                 include_usage: true,
@@ -1174,6 +1593,17 @@ impl LlmRouter {
             req.caller_can_read_raw_pii,
             &tenant_key,
         );
+        if let Some(ref spec) = req.response_schema {
+            let val = validate_with_jsonschema(&turn.content, &spec.schema)
+                .map_err(|errs| unprocessable_structured_error(&errs))?;
+            turn.content = serde_json::to_string(&val).unwrap_or(turn.content);
+            if let Some(tx) = token_tx
+                && !turn.content.is_empty()
+                && tx.send(turn.content.clone()).await.is_err()
+            {
+                warn!("SSE token receiver dropped after default llm structured validation");
+            }
+        }
         Ok(turn)
     }
 
@@ -1195,16 +1625,14 @@ impl LlmRouter {
         let send_res = tokio::time::timeout(timeout_dur, builder.send()).await;
         let resp = match send_res {
             Err(_) => {
-                return Err(ProviderCallFailure {
-                    error: AppError::Timeout("UPSTREAM_TIMEOUT"),
-                    counts_toward_breaker: true,
-                });
+                return Err(ProviderCallFailure::transient(AppError::Timeout(
+                    "UPSTREAM_TIMEOUT",
+                )));
             }
             Ok(Err(err)) => {
-                return Err(ProviderCallFailure {
-                    error: AppError::Llm(format!("chat request failed: {err}")),
-                    counts_toward_breaker: true,
-                });
+                return Err(ProviderCallFailure::transient(AppError::Llm(format!(
+                    "chat request failed: {err}"
+                ))));
             }
             Ok(Ok(r)) => r,
         };
@@ -1213,34 +1641,26 @@ impl LlmRouter {
         if !status.is_success() {
             let counts = status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error();
             let text = resp.text().await.unwrap_or_default();
+            let schema_unsupported_400 =
+                body.response_format.is_some() && is_upstream_schema_unsupported_400(status, &text);
             return Err(ProviderCallFailure {
                 error: AppError::Llm(format!("chat API returned {status}: {text}")),
                 counts_toward_breaker: counts,
+                schema_unsupported_400,
             });
         }
 
         if token_tx.is_some() {
             return tokio::time::timeout(timeout_dur, consume_sse_response(resp, token_tx))
                 .await
-                .map_err(|_| ProviderCallFailure {
-                    error: AppError::Timeout("UPSTREAM_TIMEOUT"),
-                    counts_toward_breaker: true,
-                })?
-                .map_err(|error| ProviderCallFailure {
-                    error,
-                    counts_toward_breaker: true,
-                });
+                .map_err(|_| ProviderCallFailure::transient(AppError::Timeout("UPSTREAM_TIMEOUT")))?
+                .map_err(ProviderCallFailure::transient);
         }
 
-        let wire: WireChatCompletionResponse =
-            resp.json().await.map_err(|err| ProviderCallFailure {
-                error: AppError::Llm(format!("invalid chat JSON: {err}")),
-                counts_toward_breaker: true,
-            })?;
-        parse_chat_completion_response(wire).map_err(|error| ProviderCallFailure {
-            error,
-            counts_toward_breaker: true,
-        })
+        let wire: WireChatCompletionResponse = resp.json().await.map_err(|err| {
+            ProviderCallFailure::transient(AppError::Llm(format!("invalid chat JSON: {err}")))
+        })?;
+        parse_chat_completion_response(wire).map_err(ProviderCallFailure::transient)
     }
 
     async fn embed_offline_replay(
@@ -1308,18 +1728,12 @@ impl LlmRouter {
                 .check_outbound_url(&url, provider.flags.allow_private_network)
                 .await
         {
-            return Err(ProviderCallFailure {
-                error,
-                counts_toward_breaker: false,
-            });
+            return Err(ProviderCallFailure::non_breaker(error));
         }
         let key = self
             .resolve_provider_key(tenant_id, provider)
             .await
-            .map_err(|error| ProviderCallFailure {
-                error,
-                counts_toward_breaker: false,
-            })?;
+            .map_err(ProviderCallFailure::non_breaker)?;
         let timeout_dur =
             Duration::from_secs(u64::try_from(provider.timeout_s.max(1)).unwrap_or(60));
         self.fetch_embeddings_batched(&url, &provider.model, key.as_deref(), timeout_dur, texts)
@@ -1350,13 +1764,11 @@ impl LlmRouter {
             }
             let resp = tokio::time::timeout(timeout_dur, builder.send())
                 .await
-                .map_err(|_| ProviderCallFailure {
-                    error: AppError::Timeout("UPSTREAM_TIMEOUT"),
-                    counts_toward_breaker: true,
-                })?
-                .map_err(|err| ProviderCallFailure {
-                    error: AppError::Llm(format!("embedding request failed: {err}")),
-                    counts_toward_breaker: true,
+                .map_err(|_| ProviderCallFailure::transient(AppError::Timeout("UPSTREAM_TIMEOUT")))?
+                .map_err(|err| {
+                    ProviderCallFailure::transient(AppError::Llm(format!(
+                        "embedding request failed: {err}"
+                    )))
                 })?;
             let status = resp.status();
             if !status.is_success() {
@@ -1365,38 +1777,36 @@ impl LlmRouter {
                 return Err(ProviderCallFailure {
                     error: AppError::Llm(format!("embedding API returned {status}: {raw}")),
                     counts_toward_breaker: counts,
+                    schema_unsupported_400: false,
                 });
             }
-            let mut parsed: EmbedWireResp =
-                resp.json().await.map_err(|err| ProviderCallFailure {
-                    error: AppError::Llm(format!("invalid embedding JSON: {err}")),
-                    counts_toward_breaker: true,
-                })?;
+            let mut parsed: EmbedWireResp = resp.json().await.map_err(|err| {
+                ProviderCallFailure::transient(AppError::Llm(format!(
+                    "invalid embedding JSON: {err}"
+                )))
+            })?;
             if parsed.data.iter().all(|i| i.index.is_some()) {
                 parsed.data.sort_by_key(|i| i.index.unwrap_or(0));
             }
             if parsed.data.len() != chunk.len() {
-                return Err(ProviderCallFailure {
-                    error: AppError::Llm(String::from("embedding vector count mismatch")),
-                    counts_toward_breaker: true,
-                });
+                return Err(ProviderCallFailure::transient(AppError::Llm(String::from(
+                    "embedding vector count mismatch",
+                ))));
             }
             for item in parsed.data {
                 let vlen = item.embedding.len();
                 if vlen == 0 || detected_dim.is_some_and(|d| d != vlen) {
-                    return Err(ProviderCallFailure {
-                        error: AppError::Llm(String::from("invalid or inconsistent embedding dim")),
-                        counts_toward_breaker: true,
-                    });
+                    return Err(ProviderCallFailure::transient(AppError::Llm(String::from(
+                        "invalid or inconsistent embedding dim",
+                    ))));
                 }
                 detected_dim = Some(vlen);
                 all_vectors.push(item.embedding);
             }
         }
 
-        let dim = detected_dim.ok_or_else(|| ProviderCallFailure {
-            error: AppError::Llm(String::from("empty embedding result")),
-            counts_toward_breaker: true,
+        let dim = detected_dim.ok_or_else(|| {
+            ProviderCallFailure::transient(AppError::Llm(String::from("empty embedding result")))
         })?;
         Ok((all_vectors, dim))
     }
@@ -1516,6 +1926,89 @@ impl LlmRouter {
     }
 }
 
+fn prepare_egress_wire_messages(
+    provider: &LlmProviderRecord,
+    messages: &[ToolChatMessage],
+) -> (Vec<crate::tools::WireRequestMessage>, EgressSession) {
+    if provider.flags.allow_pii {
+        (
+            messages.iter().map(ToolChatMessage::to_wire).collect(),
+            EgressSession::new(),
+        )
+    } else {
+        let (redacted, sess) = redact_messages_for_egress(messages);
+        (
+            redacted.iter().map(ToolChatMessage::to_wire).collect(),
+            sess,
+        )
+    }
+}
+
+fn is_loopback_base_url(base_url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(base_url.trim()) else {
+        return false;
+    };
+    let Some(host_str) = parsed.host_str() else {
+        return false;
+    };
+    if host_str.eq_ignore_ascii_case("localhost")
+        || host_str == "127.0.0.1"
+        || host_str == "[::1]"
+        || host_str == "::1"
+    {
+        return true;
+    }
+    let trimmed = host_str.trim_start_matches('[').trim_end_matches(']');
+    trimmed
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
+}
+
+fn build_replay_probe_response(
+    provider: &LlmProviderRecord,
+    latency_ms: u64,
+    has_structured: bool,
+    eff_temp: f32,
+) -> ProviderTestResponse {
+    if has_structured {
+        let probe_spec = JsonSchemaSpec::connectivity_probe();
+        let reply = String::from(r#"{"status":"OK"}"#);
+        let verified = validate_with_jsonschema(&reply, &probe_spec.schema).is_ok();
+        return ProviderTestResponse {
+            ok: verified,
+            latency_ms,
+            model: provider.model.clone(),
+            reply,
+            structured_mode: provider.structured_caps.structured_mode,
+            structured_verified: verified,
+            effective_temperature: eff_temp,
+        };
+    }
+    ProviderTestResponse {
+        ok: true,
+        latency_ms,
+        model: provider.model.clone(),
+        reply: String::from("OK (cassette)"),
+        structured_mode: StructuredOutputMode::None,
+        structured_verified: false,
+        effective_temperature: eff_temp,
+    }
+}
+
+fn verify_probe_structured_reply(
+    raw: &str,
+    probe_schema: &serde_json::Value,
+) -> Result<(), Vec<String>> {
+    let cleaned = strip_markdown_json_fence(raw);
+    let mut parsed: serde_json::Value = serde_json::from_str(cleaned)
+        .map_err(|err| vec![format!("/: invalid probe JSON: {err}")])?;
+    if let Some(obj) = parsed.as_object_mut() {
+        obj.remove("provider_echo");
+    }
+    let normalized = serde_json::to_string(&parsed).unwrap_or_else(|_| String::from("{}"));
+    validate_with_jsonschema(&normalized, probe_schema).map(|_| ())
+}
+
 fn exhausted_candidates_error(
     last_err: Option<AppError>,
     saw_rpm: bool,
@@ -1577,6 +2070,7 @@ mod tests {
     #[derive(Default)]
     struct MockProviderStore {
         providers: Mutex<HashMap<String, Vec<LlmProviderRecord>>>,
+        preferences: Mutex<HashMap<(String, Uuid), BTreeMap<Purpose, Uuid>>>,
         usages: Mutex<Vec<(String, LlmUsageDelta)>>,
     }
 
@@ -1587,6 +2081,14 @@ mod tests {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             guard.insert(tenant_id.to_owned(), list);
+        }
+
+        fn set_preferences(&self, tenant_id: &str, user_id: Uuid, prefs: BTreeMap<Purpose, Uuid>) {
+            let mut guard = self
+                .preferences
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            guard.insert((tenant_id.to_owned(), user_id), prefs);
         }
 
         fn take_usages(&self) -> Vec<(String, LlmUsageDelta)> {
@@ -1618,6 +2120,23 @@ mod tests {
                 let mut guard = self.usages.lock().unwrap_or_else(PoisonError::into_inner);
                 guard.push((tenant_id.to_owned(), delta));
                 Ok(())
+            })
+        }
+
+        fn list_user_preferences<'a>(
+            &'a self,
+            tenant_id: &'a str,
+            user_id: Uuid,
+        ) -> BoxFuture<'a, BTreeMap<Purpose, Uuid>> {
+            Box::pin(async move {
+                let guard = self
+                    .preferences
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                Ok(guard
+                    .get(&(tenant_id.to_owned(), user_id))
+                    .cloned()
+                    .unwrap_or_default())
             })
         }
     }
@@ -2056,6 +2575,186 @@ mod tests {
         assert!(preview.outbound.contains("⟨ID_CARD_1⟩"));
         assert!(preview.masked.contains("138****5678"));
         assert!(preview.restored.contains("13812345678"));
+        Ok(())
+    }
+
+    async fn spawn_once_ok_then_503_server(
+        hits: Arc<AtomicUsize>,
+        first_reply: &'static str,
+    ) -> Result<String, AppError> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|e| AppError::Llm(e.to_string()))?;
+        let addr = listener
+            .local_addr()
+            .map_err(|e| AppError::Llm(e.to_string()))?;
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let seq = hits.fetch_add(1, Ordering::SeqCst);
+                let mut buf = [0_u8; 4_096];
+                let _read = sock.read(&mut buf).await.is_ok();
+                let (status_line, body) = if seq == 0 {
+                    (
+                        "HTTP/1.1 200 OK",
+                        json!({
+                            "model": "personal-coder",
+                            "choices": [{ "message": { "role": "assistant", "content": first_reply } }],
+                            "usage": { "prompt_tokens": 8, "completion_tokens": 4 }
+                        })
+                        .to_string(),
+                    )
+                } else {
+                    (
+                        "HTTP/1.1 503 Service Unavailable",
+                        String::from(r#"{"error":"personal model overloaded"}"#),
+                    )
+                };
+                let raw = format!(
+                    "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _wrote = sock.write_all(raw.as_bytes()).await.is_ok();
+            }
+        });
+        Ok(format!("http://{addr}"))
+    }
+
+    #[tokio::test]
+    async fn personal_preference_overrides_system_priority_with_failover() -> Result<(), AppError> {
+        let sys_hits = Arc::new(AtomicUsize::new(0));
+        let sys_url = spawn_mock_llm_server(200, "from_sys_p10", Arc::clone(&sys_hits)).await?;
+
+        let personal_hits = Arc::new(AtomicUsize::new(0));
+        let personal_url =
+            spawn_once_ok_then_503_server(Arc::clone(&personal_hits), "from_alice_personal")
+                .await?;
+
+        let alice = Uuid::new_v4();
+        let bob = Uuid::new_v4();
+        let sys_prov = make_provider(
+            "sys_p10",
+            sys_url,
+            vec![Purpose::Nl2Sql, Purpose::Chat],
+            10,
+            true,
+            None,
+        );
+        let mut alice_prov = make_provider(
+            "alice_p200",
+            personal_url,
+            vec![Purpose::Nl2Sql],
+            200,
+            false,
+            None,
+        );
+        alice_prov.owner_user_id = Some(alice);
+        let alice_prov_id = alice_prov.id;
+
+        let store = Arc::new(MockProviderStore::default());
+        store.set_providers("t_router", vec![sys_prov, alice_prov]);
+        store.set_preferences(
+            "t_router",
+            alice,
+            BTreeMap::from([(Purpose::Nl2Sql, alice_prov_id)]),
+        );
+        let store_dyn: Arc<dyn LlmProviderStore> = store.clone();
+
+        let router = LlmRouter::new(dead_default_llm())
+            .with_store(store_dyn)
+            .with_cassette(None);
+
+        // 1. Alice's NL2SQL preference promotes priority=200 personal provider ahead of system priority=10
+        let first_reply = router
+            .complete_chat_for_user("t_router", Some(alice), Purpose::Nl2Sql, "sys", "q1")
+            .await?;
+        assert_eq!(first_reply, "from_alice_personal");
+        assert_eq!(personal_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(sys_hits.load(Ordering::SeqCst), 0);
+
+        // 2. When Alice's personal provider returns 503, router fails over to system priority=10
+        let second_reply = router
+            .complete_chat_for_user("t_router", Some(alice), Purpose::Nl2Sql, "sys", "q2")
+            .await?;
+        assert_eq!(second_reply, "from_sys_p10");
+        assert_eq!(personal_hits.load(Ordering::SeqCst), 2);
+        assert_eq!(sys_hits.load(Ordering::SeqCst), 1);
+
+        // 3. Bob cannot see or route to Alice's personal provider (even when pinned)
+        let bob_reply = router
+            .complete_chat_for_user("t_router", Some(bob), Purpose::Nl2Sql, "sys", "q3")
+            .await?;
+        assert_eq!(bob_reply, "from_sys_p10");
+        assert_eq!(personal_hits.load(Ordering::SeqCst), 2);
+
+        let bob_pin = router
+            .complete_tool_turn(
+                "t_router",
+                RouterTurnRequest::new(Purpose::Nl2Sql, vec![ToolChatMessage::user("pin")])
+                    .with_caller_user(Some(bob))
+                    .with_pinned_provider(Some(alice_prov_id))
+                    .with_require_tools(false),
+            )
+            .await;
+        assert!(matches!(
+            bob_pin,
+            Err(AppError::NotFound("PROVIDER_NOT_FOUND"))
+        ));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn probe_provider_hits_live_loopback_mock_even_in_cassette_replay_mode()
+    -> Result<(), AppError> {
+        let hits = Arc::new(AtomicUsize::new(0));
+        let loopback_url = spawn_mock_llm_server(
+            200,
+            r#"{"status":"OK","provider_echo":"mock-7b"}"#,
+            Arc::clone(&hits),
+        )
+        .await?;
+
+        let tmp = std::env::temp_dir().join(format!("step15_probe_{}.jsonl", Uuid::new_v4()));
+        std::fs::write(&tmp, "")
+            .map_err(|e| AppError::Config(format!("write temp cassette failed: {e}")))?;
+        let cassette = Cassette::open(&tmp, CassetteMode::Replay)?;
+        if let Err(err) = std::fs::remove_file(&tmp) {
+            tracing::debug!(error = %err, "temp cassette cleanup skipped");
+        }
+
+        let router = LlmRouter::new(dead_default_llm()).with_cassette(Some(cassette));
+
+        let mut loopback_prov = make_provider(
+            "loopback_mock",
+            loopback_url,
+            vec![Purpose::Extract],
+            10,
+            false,
+            None,
+        );
+        loopback_prov.flags.allow_private_network = true;
+        loopback_prov.structured_caps = LlmStructuredCaps {
+            structured_mode: StructuredOutputMode::JsonSchema,
+            deterministic_seed: Some(42),
+            is_local_model: false,
+            max_context_tokens: 32_768,
+        };
+
+        let live_probe = router
+            .probe_provider("t_router", &loopback_prov, Some("sk-loopback"))
+            .await;
+        assert!(live_probe.ok);
+        assert!(live_probe.structured_verified);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        let mut remote_prov = loopback_prov.clone();
+        remote_prov.base_url = String::from("https://api.example.com/v1");
+        remote_prov.flags.allow_private_network = false;
+        let replay_probe = router
+            .probe_provider("t_router", &remote_prov, Some("sk-remote"))
+            .await;
+        assert!(replay_probe.ok);
+        assert!(replay_probe.structured_verified);
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
         Ok(())
     }
 }
