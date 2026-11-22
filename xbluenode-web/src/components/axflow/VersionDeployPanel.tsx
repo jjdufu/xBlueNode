@@ -8,6 +8,8 @@ import {
   ShieldCheck,
   Tag,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import type {
   FlowDeploymentRecord,
   FlowIssue,
@@ -48,15 +50,19 @@ export function VersionDeployPanel({
   onDeployVersion,
   onFocusNode,
 }: VersionDeployPanelProps) {
+  const { tx } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("FLOW_EDIT");
+  const canPublish = can("FLOW_PUBLISH");
+
   const [releaseNote, setReleaseNote] = useState("");
 
-  const testDep =
-    deployments.find((d) => d.environment === "TEST") ?? null;
-  const prodDep =
-    deployments.find((d) => d.environment === "PROD") ?? null;
+  const testDep = deployments.find((d) => d.environment === "TEST") ?? null;
+  const prodDep = deployments.find((d) => d.environment === "PROD") ?? null;
   const errorCount = issues.filter((i) => i.severity === "ERROR").length;
 
   const handlePublish = async () => {
+    if (!canPublish) return;
     await onPublishVersion(releaseNote.trim());
     setReleaseNote("");
   };
@@ -69,8 +75,12 @@ export function VersionDeployPanel({
       {/* Draft Actions */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
-          <span className="font-semibold">草稿校验与保存</span>
-          {isDirty && <Badge variant="xblue">未保存修改</Badge>}
+          <span className="font-semibold">
+            {tx("草稿校验与保存", "Draft Validation")}
+          </span>
+          {isDirty && (
+            <Badge variant="xblue">{tx("未保存", "Unsaved")}</Badge>
+          )}
         </div>
         <div className="grid grid-cols-2 gap-2">
           <Button
@@ -82,18 +92,23 @@ export function VersionDeployPanel({
             onClick={onValidateDraft}
           >
             <ShieldCheck className="h-3.5 w-3.5 text-xblue" />
-            {validating ? "校验中..." : "静态校验"}
+            {validating
+              ? tx("校验中…", "Validating…")
+              : tx("静态校验", "Validate")}
           </Button>
-          <Button
-            type="button"
-            className="h-8 text-xs"
-            data-testid="save-flow-btn"
-            disabled={saving}
-            onClick={onSaveDraft}
-          >
-            <Save className="h-3.5 w-3.5" />
-            {saving ? "保存中..." : "保存草稿"}
-          </Button>
+          {canEdit && (
+            <Button
+              type="button"
+              variant="outline"
+              className="h-8 text-xs"
+              data-testid="save-flow-btn"
+              disabled={saving}
+              onClick={onSaveDraft}
+            >
+              <Save className="h-3.5 w-3.5" />
+              {saving ? tx("保存中…", "Saving…") : tx("保存草稿", "Save Draft")}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -105,16 +120,20 @@ export function VersionDeployPanel({
         {issues.length === 0 ? (
           <div className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-400">
             <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-            <span>DAG 拓扑、参数模板与触发器静态校验通过</span>
+            <span>
+              {tx("拓扑与参数静态校验通过", "Static DAG validation passed")}
+            </span>
           </div>
         ) : (
           <div className="space-y-1.5">
             <div className="flex items-center justify-between font-medium">
               <span className="inline-flex items-center gap-1 text-red-600 dark:text-red-400">
                 <AlertTriangle className="h-3.5 w-3.5" />
-                发现 {issues.length} 项校验诊断
+                {tx(`${issues.length} 项校验诊断`, `${issues.length} Issues`)}
               </span>
-              <Badge variant="outline">错误 {errorCount}</Badge>
+              <Badge variant="danger">
+                {tx(`错误 ${errorCount}`, `${errorCount} Errors`)}
+              </Badge>
             </div>
             <div className="max-h-32 overflow-y-auto space-y-1">
               {issues.map((iss, idx) => (
@@ -135,7 +154,11 @@ export function VersionDeployPanel({
                 >
                   <div className="flex items-center justify-between gap-1 font-mono-tech text-[10px]">
                     <span>{iss.code}</span>
-                    {iss.node_id && <span>节点: {iss.node_id}</span>}
+                    {iss.node_id && (
+                      <span>
+                        {tx("节点:", "Node:")} {iss.node_id}
+                      </span>
+                    )}
                   </div>
                   <div className="mt-0.5">{iss.message}</div>
                 </div>
@@ -146,28 +169,34 @@ export function VersionDeployPanel({
       </div>
 
       {/* Publish New Version */}
-      <div className="space-y-2 pt-1 border-t border-border">
-        <div className="font-semibold">发布不可变版本</div>
-        <div className="flex gap-1.5">
-          <Input
-            data-testid="publish-note-input"
-            value={releaseNote}
-            onChange={(e) => setReleaseNote(e.target.value)}
-            placeholder="版本说明（如：增加补货人工审批门禁）"
-            className="h-8 text-xs"
-          />
-          <Button
-            type="button"
-            className="h-8 px-3 shrink-0 text-xs"
-            data-testid="publish-version-btn"
-            disabled={publishing || errorCount > 0}
-            onClick={() => void handlePublish()}
-          >
-            <Tag className="h-3.5 w-3.5" />
-            {publishing ? "发布中..." : "发布新版本"}
-          </Button>
+      {canPublish && (
+        <div className="space-y-2 pt-1 border-t border-border">
+          <div className="font-semibold">
+            {tx("发布不可变版本", "Publish Version")}
+          </div>
+          <div className="flex gap-1.5">
+            <Input
+              data-testid="publish-note-input"
+              value={releaseNote}
+              onChange={(e) => setReleaseNote(e.target.value)}
+              placeholder={tx("新增外部回调节点", "Release notes")}
+              className="h-8 text-xs"
+            />
+            <Button
+              type="button"
+              className="h-8 px-3 shrink-0 text-xs"
+              data-testid="publish-version-btn"
+              disabled={publishing || errorCount > 0}
+              onClick={() => void handlePublish()}
+            >
+              <Tag className="h-3.5 w-3.5" />
+              {publishing
+                ? tx("发布中…", "Publishing…")
+                : tx("发布版本", "Publish")}
+            </Button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* Active Environment Deployments */}
       <div className="grid grid-cols-2 gap-2 pt-1 border-t border-border">
@@ -176,10 +205,10 @@ export function VersionDeployPanel({
           data-testid="deployment-card-test"
         >
           <div className="text-[10px] font-mono-tech text-muted-foreground">
-            TEST 测试环境
+            {tx("TEST 测试环境", "TEST Staging")}
           </div>
           <div className="font-mono-tech text-sm font-semibold">
-            {testDep ? `v${testDep.version}` : "未部署"}
+            {testDep ? `v${testDep.version}` : tx("未部署", "None")}
           </div>
         </div>
         <div
@@ -187,10 +216,10 @@ export function VersionDeployPanel({
           data-testid="deployment-card-prod"
         >
           <div className="text-[10px] font-mono-tech text-xblue">
-            PROD 正式环境
+            {tx("PROD 生产环境", "PROD Live")}
           </div>
           <div className="font-mono-tech text-sm font-semibold text-xblue">
-            {prodDep ? `v${prodDep.version}` : "未部署"}
+            {prodDep ? `v${prodDep.version}` : tx("未部署", "None")}
           </div>
         </div>
       </div>
@@ -198,13 +227,15 @@ export function VersionDeployPanel({
       {/* Version History & Deploy / Rollback */}
       <div className="space-y-2 pt-1 border-t border-border">
         <div className="flex items-center justify-between">
-          <span className="font-semibold">已发布版本历史</span>
+          <span className="font-semibold">
+            {tx("版本历史", "Version History")}
+          </span>
           <Badge variant="neutral">{versions.length}</Badge>
         </div>
 
         {versions.length === 0 ? (
           <div className="py-4 text-center text-[11px] text-muted-foreground">
-            暂无已发布版本，保存并校验无误后可发布 v1
+            {tx("暂无已发布版本", "No published versions")}
           </div>
         ) : (
           <div className="max-h-56 overflow-y-auto space-y-2">
@@ -229,7 +260,8 @@ export function VersionDeployPanel({
                       {isProd && <Badge variant="xblue">PROD</Badge>}
                     </div>
                     <span className="font-mono-tech text-[10px] text-muted-foreground">
-                      {ver.nodes.length} 节点 · {ver.edges.length} 边
+                      {ver.nodes.length} {tx("节点", "nodes")} ·{" "}
+                      {ver.edges.length} {tx("边", "edges")}
                     </span>
                   </div>
 
@@ -239,39 +271,47 @@ export function VersionDeployPanel({
                     </div>
                   )}
 
-                  <div className="flex items-center gap-1.5">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-6 px-2 py-0 text-[11px] flex-1"
-                      data-testid={`deploy-test-v${ver.version}`}
-                      disabled={isTest || deployingEnv !== null}
-                      onClick={() => void onDeployVersion("TEST", ver.version)}
-                    >
-                      <Rocket className="h-3 w-3" />
-                      {isTest ? "TEST 运行中" : "部署 TEST"}
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="h-6 px-2 py-0 text-[11px] flex-1"
-                      data-testid={`deploy-prod-v${ver.version}`}
-                      disabled={isProd || deployingEnv !== null}
-                      onClick={() => void onDeployVersion("PROD", ver.version)}
-                    >
-                      {isRollbackForProd ? (
-                        <>
-                          <RotateCcw className="h-3 w-3 text-xblue" />
-                          回退 PROD
-                        </>
-                      ) : (
-                        <>
-                          <Rocket className="h-3 w-3 text-xblue" />
-                          {isProd ? "PROD 运行中" : "部署 PROD"}
-                        </>
-                      )}
-                    </Button>
-                  </div>
+                  {canPublish && (
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-6 px-2 text-[11px] flex-1"
+                        data-testid={`deploy-test-v${ver.version}`}
+                        disabled={isTest || deployingEnv !== null}
+                        onClick={() => void onDeployVersion("TEST", ver.version)}
+                      >
+                        <Rocket className="h-3 w-3" />
+                        {isTest
+                          ? tx("TEST 生效", "TEST Active")
+                          : tx("部署 TEST", "Deploy TEST")}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-6 px-2 text-[11px] flex-1"
+                        data-testid={`deploy-prod-v${ver.version}`}
+                        disabled={isProd || deployingEnv !== null}
+                        onClick={() => void onDeployVersion("PROD", ver.version)}
+                      >
+                        {isRollbackForProd ? (
+                          <>
+                            <RotateCcw className="h-3 w-3 text-xblue" />
+                            {tx("回滚 PROD", "Rollback PROD")}
+                          </>
+                        ) : (
+                          <>
+                            <Rocket className="h-3 w-3 text-xblue" />
+                            {isProd
+                              ? tx("PROD 生效", "PROD Active")
+                              : tx("部署 PROD", "Deploy PROD")}
+                          </>
+                        )}
+                      </Button>
+                    </div>
+                  )}
                 </div>
               );
             })}

@@ -11,6 +11,7 @@ import {
   ShieldAlert,
   TableProperties,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import type { AnalyticsCatalogResponse } from "@/lib/api/analytics";
 import { Badge, Input } from "@/components/ui/primitives";
 
@@ -23,6 +24,17 @@ export interface SchemaTreeProps {
   onSelectForPivot?: (datasetOrViewName: string) => void;
 }
 
+/**
+ * Keeps both the leading prefix and trailing disambiguating suffix visible
+ * (e.g., `supply_chain_warehouse_sheet_1` vs `supply_chain_warehouse_sheet_2`).
+ */
+function formatSmartTableName(name: string, maxChars = 26): string {
+  if (name.length <= maxChars) return name;
+  const tailLen = 10;
+  const headLen = Math.max(8, maxChars - tailLen - 1);
+  return `${name.slice(0, headLen)}…${name.slice(-tailLen)}`;
+}
+
 export function SchemaTree({
   catalog,
   loading = false,
@@ -31,8 +43,11 @@ export function SchemaTree({
   onInsertIdentifier,
   onSelectForPivot,
 }: SchemaTreeProps) {
+  const { tx, tEnum, fmtNum } = useI18n();
   const [search, setSearch] = useState("");
-  const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>({});
+  const [expandedItems, setExpandedItems] = useState<Record<string, boolean>>(
+    {}
+  );
 
   const normalizedSearch = search.trim().toLowerCase();
 
@@ -108,14 +123,15 @@ export function SchemaTree({
       <div className="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-2">
         <div className="flex items-center gap-1.5 text-xs font-semibold">
           <Database className="h-3.5 w-3.5 text-xblue" />
-          <span>资产对象目录</span>
+          <span>{tx("对象目录", "Schema Explorer")}</span>
         </div>
         {onRefresh && (
           <button
             type="button"
             onClick={onRefresh}
             disabled={loading}
-            title="刷新目录"
+            title={tx("刷新", "Refresh")}
+            aria-label={tx("刷新", "Refresh")}
             className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer disabled:opacity-40"
             data-testid="schema-tree-refresh-btn"
           >
@@ -131,7 +147,7 @@ export function SchemaTree({
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="过滤表名、列名、业务术语..."
+            placeholder="demo_orders / amount"
             className="h-7 pl-8 text-xs"
             data-testid="schema-tree-search"
           />
@@ -143,13 +159,15 @@ export function SchemaTree({
         {/* 1. Datasets */}
         <div>
           <div className="mb-1 flex items-center justify-between px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-            <span>DuckLake 数据集</span>
-            <span className="font-mono-tech">{filteredDatasets.length}</span>
+            <span>{tx("数据集", "Datasets")}</span>
+            <span className="font-mono-tech">
+              {fmtNum(filteredDatasets.length, 0)}
+            </span>
           </div>
 
           {filteredDatasets.length === 0 ? (
             <div className="px-2 py-2 text-[11px] text-muted-foreground">
-              暂无匹配的数据集
+              {tx("暂无数据集", "No datasets")}
             </div>
           ) : (
             <div className="space-y-1">
@@ -160,41 +178,53 @@ export function SchemaTree({
                 return (
                   <div
                     key={ds.id}
+                    title={ds.name}
                     className={`rounded border ${
-                      isSelectedPivot ? "border-xblue/40 bg-xblue-soft/20" : "border-border/70"
+                      isSelectedPivot
+                        ? "border-xblue/40 bg-xblue-soft/20"
+                        : "border-border/70"
                     }`}
                     data-testid={`schema-dataset-${ds.name}`}
                   >
-                    <div className="flex items-center justify-between gap-1 px-2 py-1.5 hover:bg-muted/50">
+                    <div className="flex items-start justify-between gap-1.5 px-2 py-1.5 hover:bg-muted/50">
                       <button
                         type="button"
+                        title={ds.name}
                         onClick={() => toggleExpand(key, idx === 0)}
-                        className="flex min-w-0 flex-1 items-center gap-1 text-left cursor-pointer"
+                        className="flex min-w-0 flex-1 items-start gap-1 text-left cursor-pointer"
                       >
                         {open ? (
-                          <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" />
+                          <ChevronDown className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
                         ) : (
-                          <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" />
+                          <ChevronRight className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
                         )}
-                        <span className="truncate font-mono-tech font-medium text-foreground">
-                          {ds.name}
-                        </span>
-                        {ds.display_name && ds.display_name !== ds.name && (
-                          <span className="truncate text-[10px] text-muted-foreground">
-                            {ds.display_name}
-                          </span>
-                        )}
+                        <div className="min-w-0 flex-1">
+                          <div
+                            className="font-mono-tech text-[11px] font-medium text-foreground break-all leading-snug"
+                            title={ds.name}
+                          >
+                            {formatSmartTableName(ds.name)}
+                          </div>
+                          {ds.display_name && ds.display_name !== ds.name && (
+                            <div
+                              className="truncate text-[10px] text-muted-foreground"
+                              title={ds.display_name}
+                            >
+                              {ds.display_name}
+                            </div>
+                          )}
+                        </div>
                       </button>
 
-                      <div className="flex shrink-0 items-center gap-1">
+                      <div className="flex shrink-0 items-center gap-0.5 pt-0.5">
                         <span className="font-mono-tech text-[10px] text-muted-foreground">
-                          {ds.row_count}
+                          {fmtNum(ds.row_count, 0)}
                         </span>
                         {onInsertIdentifier && (
                           <button
                             type="button"
                             onClick={() => onInsertIdentifier(ds.name)}
-                            title={`插入 ${ds.name} 到 SQL`}
+                            title={tx(`插入 ${ds.name}`, `Insert ${ds.name}`)}
                             data-testid={`schema-insert-${ds.name}`}
                             className="rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer"
                           >
@@ -205,7 +235,7 @@ export function SchemaTree({
                           <button
                             type="button"
                             onClick={() => onSelectForPivot(ds.name)}
-                            title={`对 ${ds.name} 进行透视`}
+                            title={tx(`透视 ${ds.name}`, `Pivot ${ds.name}`)}
                             data-testid={`schema-pivot-${ds.name}`}
                             className="rounded px-1 py-0.5 text-[10px] text-xblue hover:bg-xblue-soft cursor-pointer"
                           >
@@ -221,6 +251,7 @@ export function SchemaTree({
                           <button
                             key={col.column_name}
                             type="button"
+                            title={`${ds.name}.${col.column_name}`}
                             onClick={() =>
                               onInsertIdentifier?.(col.column_name)
                             }
@@ -246,7 +277,7 @@ export function SchemaTree({
                                   data-testid={`schema-pii-${ds.name}-${col.column_name}`}
                                 >
                                   <ShieldAlert className="mr-0.5 h-2.5 w-2.5" />
-                                  {col.pii_category}
+                                  {tEnum(col.pii_category)}
                                 </Badge>
                               )}
                             </div>
@@ -269,14 +300,16 @@ export function SchemaTree({
           <div className="mb-1 flex items-center justify-between px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             <span className="inline-flex items-center gap-1">
               <Layers className="h-3 w-3 text-xblue" />
-              平台联邦视图 (ax.*)
+              {tx("联邦视图", "Platform Views")}
             </span>
-            <span className="font-mono-tech">{filteredViews.length}</span>
+            <span className="font-mono-tech">
+              {fmtNum(filteredViews.length, 0)}
+            </span>
           </div>
 
           {filteredViews.length === 0 ? (
             <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
-              暂无联邦视图
+              {tx("暂无联邦视图", "No platform views")}
             </div>
           ) : (
             <div className="space-y-1">
@@ -286,12 +319,14 @@ export function SchemaTree({
                 return (
                   <div
                     key={view.name}
+                    title={view.name}
                     className="rounded border border-border/70"
                     data-testid={`schema-view-${view.name}`}
                   >
                     <div className="flex items-center justify-between gap-1 px-2 py-1.5 hover:bg-muted/50">
                       <button
                         type="button"
+                        title={view.name}
                         onClick={() => toggleExpand(key, false)}
                         className="flex min-w-0 flex-1 items-center gap-1 text-left cursor-pointer"
                       >
@@ -305,12 +340,12 @@ export function SchemaTree({
                         </span>
                       </button>
 
-                      <div className="flex shrink-0 items-center gap-1">
+                      <div className="flex shrink-0 items-center gap-0.5">
                         {onInsertIdentifier && (
                           <button
                             type="button"
                             onClick={() => onInsertIdentifier(view.name)}
-                            title={`插入 ${view.name}`}
+                            title={tx(`插入 ${view.name}`, `Insert ${view.name}`)}
                             className="rounded px-1 py-0.5 text-[10px] text-muted-foreground hover:bg-muted hover:text-foreground cursor-pointer"
                           >
                             <Plus className="h-3 w-3" />
@@ -320,7 +355,7 @@ export function SchemaTree({
                           <button
                             type="button"
                             onClick={() => onSelectForPivot(view.name)}
-                            title={`对 ${view.name} 进行透视`}
+                            title={tx(`透视 ${view.name}`, `Pivot ${view.name}`)}
                             className="rounded px-1 py-0.5 text-[10px] text-xblue hover:bg-xblue-soft cursor-pointer"
                           >
                             <TableProperties className="h-3 w-3" />
@@ -340,6 +375,7 @@ export function SchemaTree({
                           <button
                             key={col.name}
                             type="button"
+                            title={`${view.name}.${col.name}`}
                             onClick={() => onInsertIdentifier?.(col.name)}
                             className="flex w-full items-center justify-between gap-1 rounded px-1.5 py-1 text-left hover:bg-muted/60 cursor-pointer"
                           >
@@ -365,14 +401,16 @@ export function SchemaTree({
           <div className="mb-1 flex items-center justify-between px-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
             <span className="inline-flex items-center gap-1">
               <Cable className="h-3 w-3 text-xblue" />
-              直连关系库 (live_*)
+              {tx("外部直连", "Live Sources")}
             </span>
-            <span className="font-mono-tech">{filteredLive.length}</span>
+            <span className="font-mono-tech">
+              {fmtNum(filteredLive.length, 0)}
+            </span>
           </div>
 
           {filteredLive.length === 0 ? (
             <div className="px-2 py-1.5 text-[11px] text-muted-foreground">
-              暂无启用直连的外部库
+              {tx("暂无外部直连库", "No live connections")}
             </div>
           ) : (
             <div className="space-y-1">
@@ -380,6 +418,7 @@ export function SchemaTree({
                 <button
                   key={live.id}
                   type="button"
+                  title={live.alias}
                   onClick={() => onInsertIdentifier?.(live.alias)}
                   data-testid={`schema-live-${live.alias}`}
                   className="flex w-full items-center justify-between gap-1 rounded border border-border/70 px-2 py-1.5 text-left hover:bg-muted/50 cursor-pointer"

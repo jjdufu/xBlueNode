@@ -1,4 +1,5 @@
 import Markdown from "react-markdown";
+import { useI18n } from "@/i18n";
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
 import { readString } from "../utils";
 
@@ -7,11 +8,8 @@ export interface MarkdownWidgetProps {
   data: WidgetDataResponse | null;
 }
 
-/**
- * Renders MARKDOWN_NOTE safely using `react-markdown` with raw HTML disabled
- * (no `rehype-raw`, safe URL transform).
- */
 export function MarkdownWidget({ widget, data }: MarkdownWidgetProps) {
+  const { tx } = useI18n();
   const fromOptions =
     readString(widget.options, "content") ??
     readString(widget.options, "markdown") ??
@@ -22,7 +20,8 @@ export function MarkdownWidget({ widget, data }: MarkdownWidgetProps) {
       ? String(data.rows[0][0])
       : undefined;
 
-  const content = fromOptions ?? fromStaticRow ?? "_暂无说明内容_";
+  const content =
+    fromOptions ?? fromStaticRow ?? tx("_暂无说明内容_", "_No note content_");
 
   return (
     <div

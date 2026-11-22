@@ -1,6 +1,7 @@
 import { Pause, Play, Search, Share2 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import type { BlueNode, NodeSearchHit } from "@/lib/api/xblue";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { Badge, Button, Card, Input, Select } from "@/components/ui/primitives";
 import type { GraphColorMode } from "./SigmaCanvas";
 
 export interface GraphToolbarProps {
@@ -56,6 +57,8 @@ export function GraphToolbar({
   onSelectNode,
   onExpandNode,
 }: GraphToolbarProps) {
+  const { tx } = useI18n();
+
   return (
     <Card className="p-3 space-y-2.5">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -66,55 +69,58 @@ export function GraphToolbar({
           <Input
             value={searchQuery}
             onChange={(e) => onSearchQueryChange(e.target.value)}
-            placeholder="全文 + 向量混合检索业务节点（如 华东仓 / W-1）..."
+            placeholder={tx("华东仓 / W-1", "East Hub / W-1")}
             className="h-8 text-xs"
             data-testid="graph-search-input"
           />
-          <select
+          <Select
             value={typeFilter}
             onChange={(e) => onTypeFilterChange(e.target.value)}
-            className="h-8 rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
+            className="h-8 font-mono-tech"
             data-testid="graph-type-filter"
           >
-            <option value="">全部节点类型</option>
+            <option value="">{tx("全部节点类型", "All Types")}</option>
             {distinctTypes.map((t) => (
               <option key={t} value={t}>
                 {t}
               </option>
             ))}
-          </select>
+          </Select>
           <Button
             type="submit"
             variant="outline"
-            className="px-3 py-1.5 text-xs"
+            size="sm"
+            className="h-8 px-3"
             disabled={searching}
             data-testid="graph-search-btn"
           >
             <Search className="h-3.5 w-3.5" />
-            检索
+            {tx("检索", "Search")}
           </Button>
         </form>
 
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <select
+          <Select
             value={colorMode}
-            onChange={(e) => onColorModeChange(e.target.value as GraphColorMode)}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+            onChange={(e) =>
+              onColorModeChange(e.target.value as GraphColorMode)
+            }
+            className="h-8"
             data-testid="graph-color-mode"
           >
-            <option value="TYPE">按类型着色</option>
-            <option value="METRIC">按指标着色</option>
-            <option value="ALGO">按图算法结果</option>
-          </select>
+            <option value="TYPE">{tx("按类型着色", "By Type")}</option>
+            <option value="METRIC">{tx("按指标着色", "By Metric")}</option>
+            <option value="ALGO">{tx("按算法结果", "By Algorithm")}</option>
+          </Select>
 
           {colorMode === "METRIC" && (
-            <select
+            <Select
               value={colorMetricKey}
               onChange={(e) => onColorMetricKeyChange(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+              className="h-8 font-mono-tech"
             >
               {availableMetrics.length === 0 ? (
-                <option value="">无可用指标</option>
+                <option value="">{tx("无可用指标", "No Metrics")}</option>
               ) : (
                 availableMetrics.map((m) => (
                   <option key={m} value={m}>
@@ -122,13 +128,14 @@ export function GraphToolbar({
                   </option>
                 ))
               )}
-            </select>
+            </Select>
           )}
 
           <Button
             type="button"
             variant="outline"
-            className="px-2.5 py-1 text-xs"
+            size="sm"
+            className="h-8 px-2.5"
             onClick={onToggleFa2}
             data-testid="graph-fa2-toggle"
           >
@@ -137,23 +144,27 @@ export function GraphToolbar({
             ) : (
               <Play className="h-3.5 w-3.5" />
             )}
-            {fa2Running ? "暂停力布局" : "力导布局"}
+            {fa2Running
+              ? tx("暂停布局", "Pause Layout")
+              : tx("力导布局", "Force Layout")}
           </Button>
 
           <span className="rounded border border-border bg-muted px-2.5 py-1 font-mono-tech">
-            节点{" "}
+            {tx("节点", "Nodes")}{" "}
             <strong className="text-xblue" data-testid="canvas-node-count">
               {visibleNodes.length}
             </strong>
           </span>
           <span className="rounded border border-border bg-muted px-2.5 py-1 font-mono-tech">
-            关系 <strong data-testid="canvas-edge-count">{visibleEdgeCount}</strong>
+            {tx("关系", "Edges")}{" "}
+            <strong data-testid="canvas-edge-count">{visibleEdgeCount}</strong>
           </span>
 
           <Button
             type="button"
             variant="outline"
-            className="px-2.5 py-1 text-xs"
+            size="sm"
+            className="h-8 px-2.5"
             disabled={!selectedNodeId || expanding}
             onClick={() => {
               if (selectedNodeId) onExpandNode(selectedNodeId);
@@ -161,7 +172,9 @@ export function GraphToolbar({
             data-testid="expand-node-btn"
           >
             <Share2 className="h-3.5 w-3.5 text-xblue" />
-            {expanding ? "展开中..." : "展开选中 1 跳"}
+            {expanding
+              ? tx("展开中…", "Expanding…")
+              : tx("展开 1 跳", "Expand 1-Hop")}
           </Button>
         </div>
       </div>
@@ -173,18 +186,20 @@ export function GraphToolbar({
           data-testid="graph-search-results"
         >
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-            <span>混合检索命中 ({searchHits.length})</span>
+            <span>
+              {tx("混合检索结果", "Hybrid Search Hits")} ({searchHits.length})
+            </span>
             <button
               type="button"
               onClick={onCloseSearch}
               className="hover:text-foreground cursor-pointer"
             >
-              收起
+              {tx("收起", "Hide")}
             </button>
           </div>
           {searchHits.length === 0 ? (
             <div className="text-xs text-muted-foreground py-1">
-              未命中匹配的业务节点。
+              {tx("未命中匹配节点", "No matching nodes")}
             </div>
           ) : (
             <div className="flex flex-wrap gap-1.5">
@@ -217,7 +232,7 @@ export function GraphToolbar({
           data-testid="canvas-node-list"
         >
           <span className="text-[11px] text-muted-foreground shrink-0">
-            画布节点（单击查看详情 / 双击展开 1 跳）:
+            {tx("画布节点:", "Canvas Nodes:")}
           </span>
           {visibleNodes.slice(0, 30).map((node) => {
             const active = node.id === selectedNodeId;

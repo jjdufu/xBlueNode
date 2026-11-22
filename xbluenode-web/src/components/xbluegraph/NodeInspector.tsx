@@ -8,13 +8,15 @@ import {
   TrendingUp,
   X,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import {
   xblueApi,
   type BlueNode,
   type EntityLink,
   type NodeDocumentHit,
 } from "@/lib/api/xblue";
-import { Badge, Button } from "@/components/ui/primitives";
+import { Badge, Button, EmptyState } from "@/components/ui/primitives";
 import { MetricChart } from "@/components/xbluegraph/MetricChart";
 import { MetricExplainChain } from "@/components/xbluegraph/MetricExplainChain";
 
@@ -24,6 +26,10 @@ export interface NodeInspectorProps {
 }
 
 export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
+  const { tx, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("STUDIO_EDIT");
+
   const [selectedMetric, setSelectedMetric] = useState<string | null>(null);
   const [documents, setDocuments] = useState<NodeDocumentHit[]>([]);
   const [candidates, setCandidates] = useState<EntityLink[]>([]);
@@ -64,13 +70,16 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
   }, [node, loadSideData]);
 
   const handleResolveEntities = async () => {
-    if (!node) return;
+    if (!node || !canEdit) return;
     setResolving(true);
     setActionMsg(null);
     try {
       const res = await xblueApi.resolveEntities({ node_id: node.id });
       setActionMsg(
-        `对齐完成：解析 ${res.resolved} 项，自动确认 ${res.auto_confirmed} 项，待确认 ${res.pending_candidates} 项`
+        tx(
+          `对齐完成：解析 ${res.resolved} · 自动确认 ${res.auto_confirmed} · 待确认 ${res.pending_candidates}`,
+          `Resolved ${res.resolved} · Auto-confirmed ${res.auto_confirmed} · Pending ${res.pending_candidates}`
+        )
       );
       await loadSideData(node.id);
     } catch (err) {
@@ -81,7 +90,7 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
   };
 
   const handleConfirm = async (cand: EntityLink) => {
-    if (!node) return;
+    if (!node || !canEdit) return;
     try {
       await xblueApi.confirmEntityLink(cand.entity_id, cand.node_id);
       await loadSideData(node.id);
@@ -91,7 +100,7 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
   };
 
   const handleReject = async (cand: EntityLink) => {
-    if (!node) return;
+    if (!node || !canEdit) return;
     try {
       await xblueApi.rejectEntityLink(cand.entity_id, cand.node_id);
       await loadSideData(node.id);
@@ -102,11 +111,8 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
 
   if (!node) {
     return (
-      <div
-        className="py-8 text-center text-xs text-muted-foreground"
-        data-testid="node-inspector-empty"
-      >
-        点击左侧拓扑画布或节点列表中的任意节点，查看属性、最新指标趋势、关联知识文档与实体链接。
+      <div data-testid="node-inspector-empty">
+        <EmptyState title={tx("未选中业务节点", "No node selected")} />
       </div>
     );
   }
@@ -121,13 +127,13 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
       {/* Node Header */}
       <div className="space-y-2 border-b border-border pb-3">
         <div className="flex items-start justify-between gap-2">
-          <div>
-            <div className="text-sm font-semibold flex items-center gap-2">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold flex flex-wrap items-center gap-2">
               <span data-testid="inspector-node-title">{node.title}</span>
               <Badge variant="xblue">{node.type_name}</Badge>
             </div>
             <div className="font-mono-tech text-[11px] text-muted-foreground mt-0.5">
-              node_key:{" "}
+              {tx("业务主键", "Key")}:{" "}
               <span
                 className="text-foreground font-medium"
                 data-testid="inspector-node-key"
@@ -144,12 +150,12 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
             <Button
               type="button"
               variant="outline"
-              className="px-2.5 py-1 text-[11px]"
+              size="sm"
               onClick={() => void onExpandOneHop(node.id)}
               data-testid="inspector-expand-btn"
             >
               <Share2 className="h-3 w-3" />
-              展开 1 跳
+              {tx("展开 1 跳", "Expand 1-Hop")}
             </Button>
           )}
         </div>
@@ -160,7 +166,8 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
             data-testid="inspector-node-geo"
           >
             <MapPin className="h-3 w-3 text-xblue" />
-            经纬度: {node.geo.lng.toFixed(4)}, {node.geo.lat.toFixed(4)}
+            {tx("坐标", "Geo")}: {node.geo.lng.toFixed(4)},{" "}
+            {node.geo.lat.toFixed(4)}
           </div>
         )}
       </div>
@@ -168,7 +175,9 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
       {/* Static Properties */}
       {propEntries.length > 0 && (
         <div className="space-y-1.5">
-          <div className="font-semibold text-muted-foreground">静态属性</div>
+          <div className="font-semibold text-muted-foreground">
+            {tx("静态属性", "Properties")}
+          </div>
           <div className="grid grid-cols-1 gap-1 rounded border border-border p-2 bg-muted/20">
             {propEntries.map(([k, v]) => (
               <div key={k} className="flex items-center justify-between gap-2">
@@ -184,24 +193,25 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
         </div>
       )}
 
-      {/* Latest Metrics & Click-to-Plot Trend */}
+      {/* Latest Metrics & Trend */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
           <span className="font-semibold flex items-center gap-1.5">
             <TrendingUp className="h-3.5 w-3.5 text-xblue" />
-            最新时序指标快照
+            {tx("时序指标快照", "Metric Snapshot")}
           </span>
-          <span className="text-[11px] text-muted-foreground">
-            点击指标查看趋势
-          </span>
+          <Badge variant="outline">{metricEntries.length}</Badge>
         </div>
 
         {metricEntries.length === 0 ? (
           <div className="rounded border border-dashed border-border py-3 text-center text-muted-foreground">
-            暂无实时指标数值
+            {tx("暂无实时指标", "No active metrics")}
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-1.5" data-testid="inspector-metrics-list">
+          <div
+            className="grid grid-cols-2 gap-1.5"
+            data-testid="inspector-metrics-list"
+          >
             {metricEntries.map(([mKey, mVal]) => {
               const isSelected = selectedMetric === mKey;
               return (
@@ -216,15 +226,11 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
                       : "border-border bg-background hover:bg-muted"
                   }`}
                 >
-                  <div className="font-mono-tech text-[11px] opacity-80">
+                  <div className="font-mono-tech text-[11px] opacity-80 truncate">
                     {mKey}
                   </div>
                   <div className="font-mono-tech text-sm font-semibold mt-0.5">
-                    {typeof mVal === "number"
-                      ? Number.isInteger(mVal)
-                        ? mVal
-                        : mVal.toFixed(2)
-                      : String(mVal)}
+                    {typeof mVal === "number" ? fmtNum(mVal, 2) : String(mVal)}
                   </div>
                 </button>
               );
@@ -248,12 +254,12 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
       <div className="space-y-1.5 border-t border-border pt-3">
         <div className="font-semibold flex items-center gap-1.5">
           <FileText className="h-3.5 w-3.5 text-xblue" />
-          关联超图知识文档 ({documents.length})
+          {tx("关联知识文档", "Linked Documents")} ({documents.length})
         </div>
 
         {documents.length === 0 ? (
           <div className="text-[11px] text-muted-foreground">
-            暂无关联提及文档。
+            {tx("暂无关联文档", "No linked documents")}
           </div>
         ) : (
           <div className="space-y-1.5" data-testid="inspector-documents-list">
@@ -263,7 +269,7 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
                 className="rounded border border-border p-2 space-y-1 bg-background"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="font-medium">{doc.title}</span>
+                  <span className="font-medium truncate">{doc.title}</span>
                   <Badge variant="neutral">{doc.entity_name}</Badge>
                 </div>
                 {doc.snippets.slice(0, 2).map((snip, idx) => (
@@ -285,18 +291,22 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
         <div className="flex items-center justify-between">
           <span className="font-semibold flex items-center gap-1.5">
             <Link2 className="h-3.5 w-3.5 text-xblue" />
-            实体链接候选 ({candidates.length})
+            {tx("实体链接候选", "Entity Candidates")} ({candidates.length})
           </span>
-          <Button
-            type="button"
-            variant="outline"
-            className="px-2 py-1 text-[11px]"
-            disabled={resolving}
-            onClick={() => void handleResolveEntities()}
-            data-testid="resolve-entities-btn"
-          >
-            {resolving ? "对齐中..." : "触发实体对齐"}
-          </Button>
+          {canEdit && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={resolving}
+              onClick={() => void handleResolveEntities()}
+              data-testid="resolve-entities-btn"
+            >
+              {resolving
+                ? tx("对齐中…", "Resolving…")
+                : tx("实体对齐", "Align Entities")}
+            </Button>
+          )}
         </div>
 
         {actionMsg && (
@@ -307,7 +317,7 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
 
         {candidates.length === 0 ? (
           <div className="text-[11px] text-muted-foreground">
-            暂无待人工确认的实体链接候选。
+            {tx("暂无待确认候选", "No pending candidates")}
           </div>
         ) : (
           <div className="space-y-1.5" data-testid="entity-candidates-list">
@@ -316,37 +326,40 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
                 key={`${cand.entity_id}-${cand.node_id}`}
                 className="rounded border border-border p-2 flex items-center justify-between gap-2 bg-background"
               >
-                <div>
+                <div className="min-w-0">
                   <div className="font-medium flex items-center gap-1.5">
-                    <span>{cand.entity_name}</span>
+                    <span className="truncate">{cand.entity_name}</span>
                     <Badge variant="outline">{cand.match_method}</Badge>
                   </div>
                   <div className="font-mono-tech text-[11px] text-muted-foreground">
-                    置信度 {(cand.confidence * 100).toFixed(1)}%
-                    {cand.confirmed ? " · 已确认" : ""}
+                    {tx("置信度", "Confidence")}{" "}
+                    {(cand.confidence * 100).toFixed(1)}%
+                    {cand.confirmed
+                      ? tx(" · 已确认", " · Confirmed")
+                      : ""}
                   </div>
                 </div>
-                {!cand.confirmed && (
-                  <div className="flex items-center gap-1">
+                {!cand.confirmed && canEdit && (
+                  <div className="flex items-center gap-1 shrink-0">
                     <Button
                       type="button"
                       variant="outline"
-                      className="px-2 py-1 text-[11px]"
+                      size="sm"
                       onClick={() => void handleConfirm(cand)}
                       data-testid={`confirm-entity-${cand.entity_id}`}
                     >
                       <Check className="h-3 w-3 text-xblue" />
-                      确认
+                      {tx("确认", "Confirm")}
                     </Button>
                     <Button
                       type="button"
                       variant="ghost"
-                      className="px-2 py-1 text-[11px]"
+                      size="sm"
                       onClick={() => void handleReject(cand)}
                       data-testid={`reject-entity-${cand.entity_id}`}
                     >
                       <X className="h-3 w-3" />
-                      拒绝
+                      {tx("拒绝", "Reject")}
                     </Button>
                   </div>
                 )}

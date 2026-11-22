@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link } from "react-router";
 import {
   ExternalLink,
@@ -18,6 +18,7 @@ import {
   type AxSimAction,
   type AxSimQuickResult,
   type Checkpoint,
+  type DecisionRecord,
   type ImpactRow,
   type SandboxGraphLink,
   type SandboxGraphNode,
@@ -33,8 +34,18 @@ import { ReplayTimeline } from "@/components/axsim/ReplayTimeline";
 import { SandboxWizard } from "@/components/axsim/SandboxWizard";
 import { ScenarioCompare } from "@/components/axsim/ScenarioCompare";
 import { SimAsk } from "@/components/axsim/SimAsk";
-import { Badge, Button, Card } from "@/components/ui/primitives";
-import { cn } from "@/lib/utils";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  PageHeader,
+  StatusBadge,
+  Tabs,
+  type TabOption,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 
 type WorkbenchTab = "topology" | "simulate" | "compare" | "decisions";
 
@@ -43,17 +54,6 @@ interface TrackedSimDecision {
   readonly title: string;
   readonly scenarioId: string;
 }
-
-const WORKBENCH_TABS: ReadonlyArray<{
-  key: WorkbenchTab;
-  label: string;
-  icon: typeof Layers;
-}> = [
-  { key: "topology", label: "拓扑与覆盖层", icon: Layers },
-  { key: "simulate", label: "干预推演与回放", icon: Play },
-  { key: "compare", label: "方案对比与问数", icon: GitCompare },
-  { key: "decisions", label: "决策下发与影响", icon: ShieldCheck },
-];
 
 function normalizeSandbox(raw: AxSandboxRecord): AxSandboxRecord {
   return {
@@ -67,25 +67,12 @@ function normalizeSandbox(raw: AxSandboxRecord): AxSandboxRecord {
   };
 }
 
-function formatScopeLabel(sb: AxSandboxRecord | null): string {
-  if (!sb?.scope) return "全量图谱";
-  const parts: string[] = [];
-  if (Array.isArray(sb.scope.root_node_ids) && sb.scope.root_node_ids.length > 0) {
-    parts.push(`${sb.scope.root_node_ids.length} 种子`);
-  }
-  if (sb.scope.depth != null) {
-    parts.push(`深度 ${sb.scope.depth}`);
-  }
-  if (sb.scope.direction) {
-    parts.push(sb.scope.direction);
-  }
-  if (Array.isArray(sb.scope.type_names) && sb.scope.type_names.length > 0) {
-    parts.push(sb.scope.type_names.join(","));
-  }
-  return parts.length > 0 ? parts.join(" · ") : "全量图谱";
-}
-
 export function AxSimPage() {
+  const { tx, tEnum, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canSimRun = can("SIM_RUN");
+  const canSimApply = can("SIM_APPLY");
+
   const [sandboxes, setSandboxes] = useState<AxSandboxRecord[]>([]);
   const [selectedSandboxId, setSelectedSandboxId] = useState<string>("");
   const [wizardOpen, setWizardOpen] = useState(false);
@@ -112,7 +99,6 @@ export function AxSimPage() {
   );
 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const decisionContainerRef = useRef<HTMLDivElement | null>(null);
   const [trackedDecisions, setTrackedDecisions] = useState<
     TrackedSimDecision[]
   >([]);
@@ -121,55 +107,74 @@ export function AxSimPage() {
     null
   );
 
-  // Sync created decision cards rendered inside DecisionPanel without extra network calls
-  useEffect(() => {
-    const root = decisionContainerRef.current;
-    if (!root || activeTab !== "decisions") return;
+  const formatScopeLabel = useCallback(
+    (sb: AxSandboxRecord | null): string => {
+      if (!sb?.scope) return tx("全量图谱", "Full Graph");
+      const parts: string[] = [];
+      if (
+        Array.isArray(sb.scope.root_node_ids) &&
+        sb.scope.root_node_ids.length > 0
+      ) {
+        parts.push(
+          tx(
+            `${sb.scope.root_node_ids.length} 种子`,
+            `${sb.scope.root_node_ids.length} seeds`
+          )
+        );
+      }
+      if (sb.scope.depth != null) {
+        parts.push(tx(`深度 ${sb.scope.depth}`, `Depth ${sb.scope.depth}`));
+      }
+      if (sb.scope.direction) {
+        parts.push(sb.scope.direction);
+      }
+      if (
+        Array.isArray(sb.scope.type_names) &&
+        sb.scope.type_names.length > 0
+      ) {
+        parts.push(sb.scope.type_names.join(","));
+      }
+      return parts.length > 0
+        ? parts.join(" · ")
+        : tx("全量图谱", "Full Graph");
+    },
+    [tx]
+  );
 
-    const syncFromDom = () => {
-      const detailCard = root.querySelector(
-        "[data-testid='decision-detail-card']"
-      );
-      if (!detailCard) return;
-      const text = detailCard.textContent ?? "";
-      const idMatch = /决策 ID:\s*([0-9a-fA-F-]{8,})/.exec(text);
-      const decisionId = idMatch?.[1]?.trim();
-      if (!decisionId) return;
-      const titleSpan = detailCard.querySelector(".text-sm.font-medium");
-      const decisionTitle =
-        titleSpan?.textContent?.trim() || "推演决策下发提案";
+  const handleDecisionTracked = useCallback(
+    (dec: DecisionRecord) => {
       setTrackedDecisions((prev) => {
-        if (prev.some((d) => d.id === decisionId)) {
+        if (prev.some((d) => d.id === dec.id)) {
           return prev;
         }
         return [
           {
-            id: decisionId,
-            title: decisionTitle,
-            scenarioId: selectedScenarioId,
+            id: dec.id,
+            title: dec.title,
+            scenarioId: dec.scenario_id || selectedScenarioId,
           },
           ...prev,
         ];
       });
-    };
-
-    syncFromDom();
-    const observer = new MutationObserver(syncFromDom);
-    observer.observe(root, { childList: true, subtree: true });
-    return () => observer.disconnect();
-  }, [activeTab, selectedScenarioId]);
+    },
+    [selectedScenarioId]
+  );
 
   const handleConvertSimToWorkItem = async (params: {
     sourceRef: string;
     title: string;
     nodeIds: string[];
   }) => {
+    if (!canSimApply) return;
     setErrorMsg(null);
     setConvertingRef(params.sourceRef);
     try {
       const wi = await axopsApi.createWorkItem({
-        title: `[推演决策] ${params.title}`,
-        description: `由因果推演方案/决策提案 (${params.sourceRef}) 转入交付追踪执行`,
+        title: `${tx("[推演决策]", "[Sim Decision]")} ${params.title}`,
+        description: tx(
+          `来自因果推演方案/决策提案 (${params.sourceRef})`,
+          `Dispatched from simulation scenario/decision (${params.sourceRef})`
+        ),
         item_kind: "CHANGE",
         priority: "P1",
         source_kind: "SIM_DECISION",
@@ -178,7 +183,11 @@ export function AxSimPage() {
       });
       setCreatedWorkItemCode(wi.code?.trim() || `WI-${wi.item_no}`);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "转工作项失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("创建工作项失败", "Failed to create work item")
+      );
     } finally {
       setConvertingRef(null);
     }
@@ -392,6 +401,7 @@ export function AxSimPage() {
   };
 
   const handleRerunScenario = async (scenarioId: string) => {
+    if (!canSimRun) return;
     setErrorMsg(null);
     try {
       const updated = await axsimApi.rerunScenario(scenarioId);
@@ -405,6 +415,7 @@ export function AxSimPage() {
   };
 
   const handleDeleteScenario = async (scenarioId: string) => {
+    if (!canSimRun) return;
     setErrorMsg(null);
     try {
       await axsimApi.deleteScenario(scenarioId);
@@ -426,48 +437,74 @@ export function AxSimPage() {
     setActiveTab("simulate");
   };
 
-  return (
-    <div className="space-y-5" data-testid="axsim-workbench">
-      {/* Header */}
-      <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border pb-4">
-        <div>
-          <h1 className="text-lg font-semibold tracking-tight">
-            AxSim · 因果推演沙盘
-          </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            基于写时复制（CoW）范围克隆生产业务图，求解干预传导（稳态 / 分步 / 蒙特卡洛置信带），支持多方案对比、自然语言追问与审批下发
-          </p>
-        </div>
+  const tabItems: readonly TabOption<WorkbenchTab>[] = [
+    {
+      key: "topology",
+      label: tx("拓扑与覆盖层", "Topology & Overlay"),
+      icon: <Layers className="h-3.5 w-3.5" />,
+      testId: "axsim-tab-topology",
+    },
+    {
+      key: "simulate",
+      label: tx("干预推演", "Simulate & Replay"),
+      icon: <Play className="h-3.5 w-3.5" />,
+      count: scenarios.length,
+      testId: "axsim-tab-simulate",
+    },
+    {
+      key: "compare",
+      label: tx("对比与追问", "Compare & Copilot"),
+      icon: <GitCompare className="h-3.5 w-3.5" />,
+      testId: "axsim-tab-compare",
+    },
+    {
+      key: "decisions",
+      label: tx("决策下发", "Decisions"),
+      icon: <ShieldCheck className="h-3.5 w-3.5" />,
+      testId: "axsim-tab-decisions",
+    },
+  ];
 
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => void loadSandboxDetails(selectedSandboxId)}
-            disabled={!selectedSandboxId || graphLoading}
-          >
-            <RefreshCw
-              className={`h-3.5 w-3.5 ${graphLoading ? "animate-spin" : ""}`}
-            />
-            刷新
-          </Button>
-          <Button
-            type="button"
-            onClick={() => setWizardOpen((v) => !v)}
-            data-testid="open-sandbox-wizard-btn"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            新建沙盘
-          </Button>
-        </div>
-      </div>
+  return (
+    <div className="space-y-4" data-testid="axsim-workbench">
+      <PageHeader
+        title={tx("AxSim · 因果推演沙盘", "AxSim · Causal Sandbox")}
+        badges={
+          <Badge variant="xblue">{tx("隔离沙盘", "Isolated Sandbox")}</Badge>
+        }
+        actions={
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void loadSandboxDetails(selectedSandboxId)}
+              disabled={!selectedSandboxId || graphLoading}
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${graphLoading ? "animate-spin" : ""}`}
+              />
+              {tx("刷新", "Refresh")}
+            </Button>
+            {canSimRun && (
+              <Button
+                type="button"
+                onClick={() => setWizardOpen((v) => !v)}
+                data-testid="open-sandbox-wizard-btn"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {tx("新建沙盘", "New Sandbox")}
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {/* Sandbox Selector & Badges */}
       <Card className="p-3.5 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2.5">
           <div className="flex items-center gap-1.5 text-xs font-medium">
             <GitBranch className="h-4 w-4 text-xblue" />
-            <span>当前沙盘:</span>
+            <span>{tx("当前沙盘:", "Sandbox:")}</span>
           </div>
           <select
             value={selectedSandboxId}
@@ -475,43 +512,48 @@ export function AxSimPage() {
             className="h-8 min-w-[220px] rounded-md border border-input bg-background px-2.5 text-xs font-medium"
             data-testid="sandbox-selector"
           >
-            {sandboxes.length === 0 && <option value="">暂无沙盘</option>}
+            {sandboxes.length === 0 && (
+              <option value="">{tx("暂无沙盘", "No sandboxes")}</option>
+            )}
             {sandboxes.map((sb) => (
               <option key={sb.id} value={sb.id}>
-                {sb.name} ({sb.node_count} 节点 / {sb.link_count} 关系)
+                {sb.name} (
+                {tx(
+                  `${sb.node_count} 节点 / ${sb.link_count} 关系`,
+                  `${sb.node_count} nodes / ${sb.link_count} links`
+                )}
+                )
               </option>
             ))}
           </select>
 
           {activeSandbox && (
             <div className="flex flex-wrap items-center gap-1.5">
-              <Badge
-                variant={activeSandbox.status === "CLONING" ? "xblue" : "neutral"}
+              <StatusBadge
+                status={activeSandbox.status ?? "READY"}
                 data-testid="sandbox-status-badge"
-              >
-                {activeSandbox.status ?? "READY"}
-              </Badge>
+              />
               <Badge variant="outline" data-testid="sandbox-scope-badge">
-                范围: {formatScopeLabel(activeSandbox)}
+                {tx("范围: ", "Scope: ")}
+                {formatScopeLabel(activeSandbox)}
               </Badge>
               <Badge variant="outline">
-                {graphNodes.length || activeSandbox.node_count} 节点 /{" "}
-                {graphLinks.length || activeSandbox.link_count} 关系
+                {tx(
+                  `${fmtNum(graphNodes.length || activeSandbox.node_count, 0)} 节点 / ${fmtNum(graphLinks.length || activeSandbox.link_count, 0)} 关系`,
+                  `${fmtNum(graphNodes.length || activeSandbox.node_count, 0)} nodes / ${fmtNum(graphLinks.length || activeSandbox.link_count, 0)} links`
+                )}
               </Badge>
               {staleCount > 0 && (
-                <Badge
-                  variant="outline"
-                  className="border-amber-500/60 text-amber-600 dark:text-amber-400"
-                  data-testid="sandbox-stale-badge"
-                >
-                  {staleCount} 个场景结果已过期
+                <Badge variant="warning" data-testid="sandbox-stale-badge">
+                  {tx(
+                    `${staleCount} 个场景已过期`,
+                    `${staleCount} stale scenarios`
+                  )}
                 </Badge>
               )}
             </div>
           )}
         </div>
-
-        <Badge variant="xblue">ISOLATED SANDBOX</Badge>
       </Card>
 
       {/* Wizard & Sandbox Lifecycle Controls */}
@@ -527,7 +569,6 @@ export function AxSimPage() {
 
       {errorMsg && (
         <Card className="p-3 border-red-500/40 bg-red-500/10 text-xs text-red-700 dark:text-red-300">
-          <span className="font-mono-tech font-semibold">推演提示：</span>
           {errorMsg}
         </Card>
       )}
@@ -540,14 +581,17 @@ export function AxSimPage() {
           <div className="flex flex-wrap items-center gap-2">
             <Kanban className="h-3.5 w-3.5" />
             <span className="font-medium">
-              已创建工作项 {createdWorkItemCode}
+              {tx(
+                `已创建工作项 ${createdWorkItemCode}`,
+                `Work item ${createdWorkItemCode} created`
+              )}
             </span>
             <Link
               to="/ops"
               data-testid="axsim-workitem-ops-link"
               className="inline-flex items-center gap-1 underline font-semibold"
             >
-              前往 AxOps 查看交付进度 (/ops)
+              {tx("查看交付看板", "Open AxOps Board")}
               <ExternalLink className="h-3 w-3" />
             </Link>
           </div>
@@ -556,56 +600,27 @@ export function AxSimPage() {
             onClick={() => setCreatedWorkItemCode(null)}
             className="text-[11px] underline cursor-pointer shrink-0"
           >
-            关闭
+            {tx("关闭", "Dismiss")}
           </button>
         </div>
       )}
 
       {/* 4-Tab Workbench Navigation */}
-      <div
-        className="flex flex-wrap gap-1.5 border-b border-border pb-2"
-        role="tablist"
-        aria-label="AxSim 推演工作台"
-      >
-        {WORKBENCH_TABS.map((tab) => {
-          const Icon = tab.icon;
-          const active = activeTab === tab.key;
-          return (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={active}
-              onClick={() => setActiveTab(tab.key)}
-              data-testid={`axsim-tab-${tab.key}`}
-              className={cn(
-                "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer",
-                active
-                  ? "bg-primary text-primary-foreground"
-                  : "border border-border bg-background text-muted-foreground hover:text-foreground hover:bg-muted/50"
-              )}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
+      <Tabs items={tabItems} value={activeTab} onChange={setActiveTab} />
 
       {/* Tab Content */}
       {!selectedSandboxId ? (
-        <Card className="p-8 text-center space-y-3">
-          <div className="text-sm font-medium">尚未选择或创建推演沙盘</div>
-          <p className="text-xs text-muted-foreground">
-            点击右上角「新建沙盘」克隆生产业务图快照，即可开始隔离推演。
-          </p>
-          <div>
-            <Button type="button" onClick={() => setWizardOpen(true)}>
-              <Plus className="h-3.5 w-3.5" />
-              创建第一个沙盘
-            </Button>
-          </div>
-        </Card>
+        <EmptyState
+          title={tx("暂无推演沙盘", "No simulation sandboxes")}
+          action={
+            canSimRun ? (
+              <Button type="button" onClick={() => setWizardOpen(true)}>
+                <Plus className="h-3.5 w-3.5" />
+                {tx("新建沙盘", "New Sandbox")}
+              </Button>
+            ) : undefined
+          }
+        />
       ) : (
         <>
           {activeTab === "topology" && (
@@ -633,25 +648,35 @@ export function AxSimPage() {
               />
 
               {/* Saved Scenarios Strip */}
-              <Card className="p-3.5 space-y-2.5" data-testid="scenarios-list-card">
+              <Card
+                className="p-3.5 space-y-2.5"
+                data-testid="scenarios-list-card"
+              >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="text-xs font-semibold">
-                    已保存推演场景 ({scenarios.length})
+                    {tx(
+                      `已保存推演场景 (${scenarios.length})`,
+                      `Saved Scenarios (${scenarios.length})`
+                    )}
                   </span>
                   {activeScenario?.result && (
                     <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono-tech text-muted-foreground">
                       <span>
-                        受影响: {activeScenario.result.affected_count}
+                        {tx("受影响: ", "Affected: ")}
+                        {activeScenario.result.affected_count}
                       </span>
                       <span>
-                        迭代: {activeScenario.result.iterations} 轮
+                        {tx("迭代: ", "Iterations: ")}
+                        {activeScenario.result.iterations}
                       </span>
                       <Badge
                         variant={
-                          activeScenario.result.converged ? "xblue" : "outline"
+                          activeScenario.result.converged ? "success" : "warning"
                         }
                       >
-                        {activeScenario.result.converged ? "已收敛" : "未收敛"}
+                        {activeScenario.result.converged
+                          ? tx("已收敛", "Converged")
+                          : tx("未收敛", "Unconverged")}
                       </Badge>
                     </div>
                   )}
@@ -659,7 +684,7 @@ export function AxSimPage() {
 
                 {scenarios.length === 0 ? (
                   <div className="text-xs text-muted-foreground">
-                    暂无已保存场景，请在上方配置干预动作并点击「创建并运行场景」。
+                    {tx("暂无已保存场景", "No saved scenarios")}
                   </div>
                 ) : (
                   <div className="flex flex-wrap gap-2">
@@ -697,45 +722,55 @@ export function AxSimPage() {
                             {sc.name}
                           </button>
                           <Badge variant="outline">
-                            {sc.params?.mode ?? "STEADY"} · {sc.status}
+                            {tEnum(sc.params?.mode ?? "STEADY")} ·{" "}
+                            {tEnum(sc.status)}
                           </Badge>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="h-6 px-2 text-[10px] border-xblue/40 text-xblue hover:bg-xblue-soft"
-                            data-testid={`scenario-to-workitem-btn-${sc.id}`}
-                            disabled={convertingRef === refId}
-                            onClick={() =>
-                              void handleConvertSimToWorkItem({
-                                sourceRef: refId,
-                                title: linkedDecision?.title ?? sc.name,
-                                nodeIds,
-                              })
-                            }
-                          >
-                            <Kanban className="h-2.5 w-2.5" />
-                            转工作项
-                          </Button>
-                          {sc.is_stale && (
+                          {canSimApply && (
                             <Button
                               type="button"
                               variant="outline"
-                              className="h-6 px-1.5 text-[10px] border-amber-500/60 text-amber-600 dark:text-amber-400"
-                              onClick={() => void handleRerunScenario(sc.id)}
-                              title="覆盖层已变更，点击重算"
+                              size="sm"
+                              className="h-6 px-2 text-[10px] border-xblue/40 text-xblue hover:bg-xblue-soft"
+                              data-testid={`scenario-to-workitem-btn-${sc.id}`}
+                              disabled={convertingRef === refId}
+                              onClick={() =>
+                                void handleConvertSimToWorkItem({
+                                  sourceRef: refId,
+                                  title: linkedDecision?.title ?? sc.name,
+                                  nodeIds,
+                                })
+                              }
                             >
-                              <RefreshCw className="h-2.5 w-2.5" />
-                              重算
+                              <Kanban className="h-2.5 w-2.5" />
+                              {tx("转工作项", "To Work Item")}
                             </Button>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => void handleDeleteScenario(sc.id)}
-                            className="text-muted-foreground hover:text-red-600 cursor-pointer"
-                            aria-label={`删除场景 ${sc.name}`}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </button>
+                          {sc.is_stale && canSimRun && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-6 px-1.5 text-[10px] border-amber-500/60 text-amber-600 dark:text-amber-400"
+                              onClick={() => void handleRerunScenario(sc.id)}
+                              title={tx("重算场景", "Rerun scenario")}
+                            >
+                              <RefreshCw className="h-2.5 w-2.5" />
+                              {tx("重算", "Rerun")}
+                            </Button>
+                          )}
+                          {canSimRun && (
+                            <button
+                              type="button"
+                              onClick={() => void handleDeleteScenario(sc.id)}
+                              className="text-muted-foreground hover:text-red-600 cursor-pointer"
+                              aria-label={tx(
+                                `删除场景 ${sc.name}`,
+                                `Delete scenario ${sc.name}`
+                              )}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </button>
+                          )}
                         </div>
                       );
                     })}
@@ -794,14 +829,13 @@ export function AxSimPage() {
 
           {activeTab === "decisions" && (
             <div className="space-y-4">
-              <div ref={decisionContainerRef}>
-                <DecisionPanel
-                  scenario={activeScenario}
-                  nodes={graphNodes}
-                />
-              </div>
+              <DecisionPanel
+                scenario={activeScenario}
+                nodes={graphNodes}
+                onDecisionTracked={handleDecisionTracked}
+              />
 
-              {(trackedDecisions.length > 0 || activeScenario) && (
+              {canSimApply && (trackedDecisions.length > 0 || activeScenario) && (
                 <Card
                   className="p-3.5 space-y-2.5"
                   data-testid="axsim-workitem-dispatch-card"
@@ -810,7 +844,7 @@ export function AxSimPage() {
                     <div className="flex items-center gap-2 font-medium">
                       <Kanban className="h-3.5 w-3.5 text-xblue" />
                       <span>
-                        决策提案转交付工作项（写入 AxOps 看板 · CHANGE / SIM_DECISION）
+                        {tx("交付工作项派发", "Work Item Dispatch")}
                       </span>
                     </div>
                   </div>
@@ -832,7 +866,9 @@ export function AxSimPage() {
                           className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs"
                         >
                           <div className="flex items-center gap-2">
-                            <Badge variant="xblue">SIM_DECISION</Badge>
+                            <Badge variant="xblue">
+                              {tx("决策提案", "Decision")}
+                            </Badge>
                             <span className="font-medium">{dec.title}</span>
                             <span className="font-mono-tech text-[11px] text-muted-foreground">
                               {dec.id}
@@ -841,6 +877,7 @@ export function AxSimPage() {
                           <Button
                             type="button"
                             variant="outline"
+                            size="sm"
                             className="h-7 px-2.5 text-[11px] border-xblue/40 text-xblue hover:bg-xblue-soft"
                             data-testid={`convert-decision-workitem-btn-${dec.id}`}
                             disabled={convertingRef === dec.id}
@@ -853,7 +890,9 @@ export function AxSimPage() {
                             }
                           >
                             <Kanban className="h-3 w-3" />
-                            {convertingRef === dec.id ? "创建中..." : "转工作项"}
+                            {convertingRef === dec.id
+                              ? tx("创建中…", "Creating…")
+                              : tx("转工作项", "To Work Item")}
                           </Button>
                         </div>
                       );
@@ -862,7 +901,9 @@ export function AxSimPage() {
                     {trackedDecisions.length === 0 && activeScenario && (
                       <div className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs">
                         <div className="flex items-center gap-2">
-                          <Badge variant="outline">SCENARIO</Badge>
+                          <Badge variant="outline">
+                            {tx("推演场景", "Scenario")}
+                          </Badge>
                           <span className="font-medium">
                             {activeScenario.name}
                           </span>
@@ -870,6 +911,7 @@ export function AxSimPage() {
                         <Button
                           type="button"
                           variant="outline"
+                          size="sm"
                           className="h-7 px-2.5 text-[11px] border-xblue/40 text-xblue hover:bg-xblue-soft"
                           data-testid="convert-active-scenario-workitem-btn"
                           disabled={convertingRef === activeScenario.id}
@@ -888,7 +930,7 @@ export function AxSimPage() {
                           }
                         >
                           <Kanban className="h-3 w-3" />
-                          转工作项
+                          {tx("转工作项", "To Work Item")}
                         </Button>
                       </div>
                     )}

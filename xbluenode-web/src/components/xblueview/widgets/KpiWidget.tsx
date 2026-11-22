@@ -1,4 +1,5 @@
 import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
+import { useI18n } from "@/i18n";
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
 import {
   buildColumnIndexMap,
@@ -18,6 +19,7 @@ export interface KpiWidgetProps {
 }
 
 export function KpiWidget({ widget, data, onItemClick }: KpiWidgetProps) {
+  const { tx } = useI18n();
   const row = data?.rows[0];
   const colMap = buildColumnIndexMap(data);
 
@@ -27,7 +29,12 @@ export function KpiWidget({ widget, data, onItemClick }: KpiWidgetProps) {
 
   const rawValue = row ? getCell(row, colMap, valueField, 0) : undefined;
   const rawCompare = row
-    ? getCell(row, colMap, compareField, data && data.columns.length > 1 ? 1 : -1)
+    ? getCell(
+        row,
+        colMap,
+        compareField,
+        data && data.columns.length > 1 ? 1 : -1
+      )
     : undefined;
 
   const numVal = toNumericValue(rawValue);
@@ -104,11 +111,12 @@ export function KpiWidget({ widget, data, onItemClick }: KpiWidgetProps) {
         )}
         {numCompare !== null && (
           <span className="font-mono-tech text-[11px]">
-            对比 {formatDisplayValue(numCompare, { unit, prefix, suffix, decimals })}
+            {tx("对比 ", "vs. ")}
+            {formatDisplayValue(numCompare, { unit, prefix, suffix, decimals })}
           </span>
         )}
         {subtitle && <span className="truncate">{subtitle}</span>}
-        {!row && <span>暂无指标数据</span>}
+        {!row && <span>{tx("暂无指标数据", "No metric data")}</span>}
       </div>
     </div>
   );

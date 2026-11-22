@@ -1225,12 +1225,12 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
 
   await expect(
     page.getByTestId("upload-record-supply_chain.xlsx")
-  ).toContainText("COMMITTED", { timeout: 45_000 });
+  ).toContainText(/COMMITTED|已提交/, { timeout: 45_000 });
 
   await page.getByTestId("axhub-nav-workspace").click();
   const readyDatasetRows = page.locator("[data-testid^='dataset-row-']");
   await expect(readyDatasetRows.first()).toBeVisible({ timeout: 20_000 });
-  await expect(readyDatasetRows.first()).toContainText("READY");
+  await expect(readyDatasetRows.first()).toContainText(/READY|就绪/);
 
   // -------------------------------------------------------------------------
   // 3. Navigate to /studio, publish model draft (SchemaDoc)
@@ -1393,7 +1393,7 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   await expect(page.getByTestId("axops-health-panel")).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.getByTestId("axops-health-panel")).toContainText("HEALTHY");
+  await expect(page.getByTestId("axops-health-panel")).toContainText(/HEALTHY|正常|健康/);
 
   await page.getByTestId("axops-tab-work_items").click();
   await expect(page.getByTestId("axops-workitems-panel")).toBeVisible();

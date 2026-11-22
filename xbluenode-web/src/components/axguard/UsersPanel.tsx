@@ -23,9 +23,21 @@ import {
   type SessionSummaryRecord,
   type UserAccountStatus,
 } from "@/lib/api/axguard";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Drawer,
+  Input,
+  Modal,
+  PasswordInput,
+  Select,
+  StatusBadge,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
-import { SENSITIVITY_OPTIONS, SENSITIVITY_SHORT_LABELS } from "./constants";
+import { SENSITIVITY_OPTIONS } from "./constants";
 import { isAccountLocked, validateLocalPassword } from "./logic";
 
 interface UsersPanelProps {
@@ -38,6 +50,7 @@ interface UsersPanelProps {
 const ATTR_KEY_PATTERN = /^[a-z][a-z0-9_]{0,62}$/;
 
 function ClearanceBadge({ clearance }: { clearance: Sensitivity }) {
+  const { tEnum } = useI18n();
   return (
     <Badge
       variant={
@@ -48,7 +61,7 @@ function ClearanceBadge({ clearance }: { clearance: Sensitivity }) {
             : "outline"
       }
     >
-      {SENSITIVITY_SHORT_LABELS[clearance]}
+      {tEnum(clearance)}
     </Badge>
   );
 }
@@ -59,6 +72,10 @@ export function UsersPanel({
   departments,
   onReload,
 }: UsersPanelProps) {
+  const { isZh, tx, tEnum, fmtTime } = useI18n();
+  const { can } = usePrincipal();
+  const canWrite = can("GUARD_ADMIN");
+
   const [search, setSearch] = useState("");
   const [deptFilter, setDeptFilter] = useState("");
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
@@ -166,21 +183,37 @@ export function UsersPanel({
 
   const deptOptions = useMemo(() => {
     if (departments.length === 0) {
-      return [{ tenant_id: "default", dept_id: "default", name: "默认部门", parent_id: null }];
+      return [
+        {
+          tenant_id: "default",
+          dept_id: "default",
+          name: tx("默认部门", "Default"),
+          parent_id: null,
+        },
+      ];
     }
     return departments;
-  }, [departments]);
+  }, [departments, tx]);
 
   const handleQuickUnlock = async (user: GuardUserRecord) => {
     setBanner(null);
     try {
       await axguardApi.patchUser(user.id, { unlock: true });
-      setBanner({ kind: "ok", text: `已解除账号 ${user.username} 的登录锁定` });
+      setBanner({
+        kind: "ok",
+        text: tx(
+          `已解除账号 ${user.username} 的登录锁定`,
+          `Unlocked account ${user.username}`
+        ),
+      });
       await onReload();
     } catch (err) {
       setBanner({
         kind: "err",
-        text: err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err),
+        text:
+          err instanceof ApiError
+            ? `[${err.errorCode}] ${err.message}`
+            : String(err),
       });
     }
   };
@@ -210,13 +243,22 @@ export function UsersPanel({
       setNewEmail("");
       setNewPassword("");
       setNewRoles(["VIEWER"]);
-      setBanner({ kind: "ok", text: `本地账号 ${created.username} 创建成功` });
+      setBanner({
+        kind: "ok",
+        text: tx(
+          `本地账号 ${created.username} 已创建`,
+          `Local account ${created.username} created`
+        ),
+      });
       await onReload();
       setSelectedUserId(created.id);
     } catch (err) {
       setBanner({
         kind: "err",
-        text: err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err),
+        text:
+          err instanceof ApiError
+            ? `[${err.errorCode}] ${err.message}`
+            : String(err),
       });
     } finally {
       setCreating(false);
@@ -236,12 +278,21 @@ export function UsersPanel({
         status: editStatus,
         roles: editRoles,
       });
-      setBanner({ kind: "ok", text: `已保存账号 ${selectedUser.username} 的治理配置` });
+      setBanner({
+        kind: "ok",
+        text: tx(
+          `账号 ${selectedUser.username} 配置已保存`,
+          `Account ${selectedUser.username} saved`
+        ),
+      });
       await onReload();
     } catch (err) {
       setBanner({
         kind: "err",
-        text: err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err),
+        text:
+          err instanceof ApiError
+            ? `[${err.errorCode}] ${err.message}`
+            : String(err),
       });
     } finally {
       setSavingUser(false);
@@ -262,13 +313,19 @@ export function UsersPanel({
       setResetPasswordVal("");
       setBanner({
         kind: "ok",
-        text: `已重置 ${selectedUser.username} 的口令并吊销历史会话`,
+        text: tx(
+          `已重置 ${selectedUser.username} 口令并吊销历史会话`,
+          `Password reset and sessions revoked for ${selectedUser.username}`
+        ),
       });
       await loadUserSessions(selectedUser.id);
     } catch (err) {
       setBanner({
         kind: "err",
-        text: err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err),
+        text:
+          err instanceof ApiError
+            ? `[${err.errorCode}] ${err.message}`
+            : String(err),
       });
     } finally {
       setResettingPassword(false);
@@ -280,7 +337,10 @@ export function UsersPanel({
     if (!ATTR_KEY_PATTERN.test(key)) {
       setBanner({
         kind: "err",
-        text: "属性键必须以小写字母开头，仅含小写字母、数字或下划线（如 warehouses）",
+        text: tx(
+          "属性键须以小写字母开头，仅含小写字母、数字或下划线",
+          "Attribute key must start with a lowercase letter and contain only a-z, 0-9, or _"
+        ),
       });
       return;
     }
@@ -304,13 +364,19 @@ export function UsersPanel({
       await axguardApi.putUserAttributes(selectedUser.id, attrDraft);
       setBanner({
         kind: "ok",
-        text: `已更新 ${selectedUser.username} 的主体扩展属性 (sec_user_attributes)`,
+        text: tx(
+          `已保存 ${selectedUser.username} 扩展属性`,
+          `Updated attributes for ${selectedUser.username}`
+        ),
       });
       await onReload();
     } catch (err) {
       setBanner({
         kind: "err",
-        text: err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err),
+        text:
+          err instanceof ApiError
+            ? `[${err.errorCode}] ${err.message}`
+            : String(err),
       });
     } finally {
       setSavingAttrs(false);
@@ -322,12 +388,21 @@ export function UsersPanel({
     setBanner(null);
     try {
       await axguardApi.revokeSessionFamily(familyId);
-      setBanner({ kind: "ok", text: `已吊销会话族 ${familyId.slice(0, 8)}...` });
+      setBanner({
+        kind: "ok",
+        text: tx(
+          `已吊销会话族 ${familyId.slice(0, 8)}`,
+          `Revoked session family ${familyId.slice(0, 8)}`
+        ),
+      });
       await loadUserSessions(selectedUser.id);
     } catch (err) {
       setBanner({
         kind: "err",
-        text: err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err),
+        text:
+          err instanceof ApiError
+            ? `[${err.errorCode}] ${err.message}`
+            : String(err),
       });
     }
   };
@@ -364,270 +439,293 @@ export function UsersPanel({
           <div className="relative flex-1 max-w-xs">
             <Search className="h-3.5 w-3.5 text-muted-foreground absolute left-2.5 top-2.5" />
             <Input
-              placeholder="搜索用户名、姓名、邮箱、角色..."
+              placeholder={tx(
+                "用户名 / 姓名 / 邮箱 / 角色",
+                "Username / name / email / role"
+              )}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               data-testid="users-search-input"
               className="pl-8 h-8 text-xs"
             />
           </div>
-          <select
+          <Select
             value={deptFilter}
             onChange={(e) => setDeptFilter(e.target.value)}
-            className="h-8 rounded-md border border-input bg-background px-2.5 text-xs"
-            aria-label="按部门筛选"
+            className="h-8 text-xs"
+            aria-label={tx("部门筛选", "Department filter")}
           >
-            <option value="">全部部门</option>
+            <option value="">{tx("全部部门", "All Departments")}</option>
             {deptOptions.map((d) => (
               <option key={d.dept_id} value={d.dept_id}>
                 {d.name} ({d.dept_id})
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div className="flex items-center gap-2">
           <Button variant="outline" type="button" onClick={() => void onReload()}>
             <RefreshCw className="h-3.5 w-3.5" />
-            刷新
+            {tx("刷新", "Refresh")}
           </Button>
-          <Button
-            type="button"
-            data-testid="open-create-user-btn"
-            onClick={() => setCreateOpen(true)}
-          >
-            <UserPlus className="h-3.5 w-3.5" />
-            新建本地用户
-          </Button>
+          {canWrite && (
+            <Button
+              type="button"
+              data-testid="open-create-user-btn"
+              onClick={() => setCreateOpen(true)}
+            >
+              <UserPlus className="h-3.5 w-3.5" />
+              {tx("新建用户", "New User")}
+            </Button>
+          )}
         </div>
       </div>
 
-      <div
-        className={cn(
-          "grid gap-4",
-          selectedUser ? "grid-cols-1 xl:grid-cols-12" : "grid-cols-1"
-        )}
-      >
-        <Card
-          className={cn(
-            "overflow-hidden",
-            selectedUser ? "xl:col-span-7" : "col-span-1"
-          )}
-        >
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
-                  <th className="px-3 py-2.5 font-medium">账号 / 姓名</th>
-                  <th className="px-3 py-2.5 font-medium">归属部门</th>
-                  <th className="px-3 py-2.5 font-medium">安全密级</th>
-                  <th className="px-3 py-2.5 font-medium">角色</th>
-                  <th className="px-3 py-2.5 font-medium">来源 / 状态</th>
-                  <th className="px-3 py-2.5 font-medium text-right">治理操作</th>
+      <Card className="overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse">
+            <thead>
+              <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("账号 / 姓名", "User / Name")}
+                </th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("部门", "Department")}
+                </th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("密级", "Clearance")}
+                </th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("角色", "Roles")}
+                </th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("来源 / 状态", "Source / Status")}
+                </th>
+                <th className="px-3 py-2.5 font-medium text-right whitespace-nowrap">
+                  {tx("操作", "Actions")}
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {filteredUsers.length === 0 ? (
+                <tr>
+                  <td
+                    colSpan={6}
+                    className="px-4 py-8 text-center text-muted-foreground"
+                  >
+                    {tx("无匹配用户记录", "No matching users")}
+                  </td>
                 </tr>
-              </thead>
-              <tbody className="divide-y divide-border">
-                {filteredUsers.length === 0 ? (
-                  <tr>
-                    <td
-                      colSpan={6}
-                      className="px-4 py-8 text-center text-muted-foreground"
+              ) : (
+                filteredUsers.map((u) => {
+                  const locked = isAccountLocked(u.locked_until);
+                  const isSelected = u.id === selectedUserId;
+                  return (
+                    <tr
+                      key={u.id}
+                      onClick={() => setSelectedUserId(u.id)}
+                      className={cn(
+                        "hover:bg-muted/40 transition-colors cursor-pointer",
+                        isSelected && "bg-xblue-soft/50"
+                      )}
                     >
-                      未找到匹配的用户账号记录
-                    </td>
-                  </tr>
-                ) : (
-                  filteredUsers.map((u) => {
-                    const locked = isAccountLocked(u.locked_until);
-                    const isSelected = u.id === selectedUserId;
-                    return (
-                      <tr
-                        key={u.id}
-                        onClick={() => setSelectedUserId(u.id)}
-                        className={cn(
-                          "hover:bg-muted/40 transition-colors cursor-pointer",
-                          isSelected && "bg-xblue-soft/50"
-                        )}
-                      >
-                        <td className="px-3 py-2.5">
-                          <div className="font-mono-tech font-medium text-foreground">
-                            {u.username}
-                          </div>
-                          <div className="text-[11px] text-muted-foreground">
-                            {u.display_name || "—"}
-                            {Object.keys(u.attributes ?? {}).length > 0 && (
-                              <span className="ml-1.5 font-mono-tech text-xblue">
-                                · {Object.keys(u.attributes).length} 项属性
-                              </span>
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2.5 font-mono-tech">{u.dept_id}</td>
-                        <td className="px-3 py-2.5">
-                          <ClearanceBadge clearance={u.clearance} />
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <div className="flex flex-wrap gap-1">
-                            {u.roles.length === 0 ? (
-                              <span className="text-muted-foreground">—</span>
-                            ) : (
-                              u.roles.map((r) => (
-                                <Badge key={r} variant="outline">
-                                  {r}
-                                </Badge>
-                              ))
-                            )}
-                          </div>
-                        </td>
-                        <td className="px-3 py-2.5">
-                          <div className="flex flex-wrap items-center gap-1">
-                            <Badge variant="outline">{u.auth_source}</Badge>
-                            <Badge
-                              variant={u.status === "ACTIVE" ? "neutral" : "outline"}
-                            >
-                              {u.status === "ACTIVE" ? "正常" : "已停用"}
-                            </Badge>
-                            {locked && (
-                              <Badge
-                                variant="xblue"
-                                className="gap-1"
-                                title={`锁定至 ${u.locked_until ?? ""}`}
-                              >
-                                <Lock className="h-2.5 w-2.5" />
-                                已锁定
+                      <td className="px-3 py-2.5">
+                        <div className="font-mono-tech font-medium text-foreground">
+                          {u.username}
+                        </div>
+                        <div className="text-[11px] text-muted-foreground">
+                          {u.display_name || "—"}
+                          {Object.keys(u.attributes ?? {}).length > 0 && (
+                            <span className="ml-1.5 font-mono-tech text-xblue">
+                              ·{" "}
+                              {tx(
+                                `${Object.keys(u.attributes).length} 项属性`,
+                                `${Object.keys(u.attributes).length} attrs`
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5 font-mono-tech">{u.dept_id}</td>
+                      <td className="px-3 py-2.5">
+                        <ClearanceBadge clearance={u.clearance} />
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex flex-wrap gap-1">
+                          {u.roles.length === 0 ? (
+                            <span className="text-muted-foreground">—</span>
+                          ) : (
+                            u.roles.map((r) => (
+                              <Badge key={r} variant="outline" title={r}>
+                                {tEnum(r)}
                               </Badge>
-                            )}
-                          </div>
-                        </td>
-                        <td
-                          className="px-3 py-2.5 text-right"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <div className="inline-flex items-center gap-1.5">
-                            {(locked || u.failed_logins > 0) && (
-                              <Button
-                                variant="outline"
-                                type="button"
-                                onClick={() => void handleQuickUnlock(u)}
-                                className="px-2 py-1 text-[11px]"
-                                data-testid={`unlock-user-${u.username}`}
-                              >
-                                <Unlock className="h-3 w-3 text-xblue" />
-                                解锁
-                              </Button>
-                            )}
-                            <Button
-                              variant="ghost"
-                              type="button"
-                              onClick={() => setSelectedUserId(u.id)}
-                              className="px-2 py-1 text-[11px]"
+                            ))
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2.5">
+                        <div className="flex flex-wrap items-center gap-1">
+                          <Badge variant="outline">{tEnum(u.auth_source)}</Badge>
+                          <StatusBadge status={u.status} />
+                          {locked && (
+                            <Badge
+                              variant="danger"
+                              className="gap-1"
+                              title={fmtTime(u.locked_until)}
                             >
-                              <SlidersHorizontal className="h-3 w-3" />
-                              详情
+                              <Lock className="h-2.5 w-2.5" />
+                              {tx("已锁定", "Locked")}
+                            </Badge>
+                          )}
+                        </div>
+                      </td>
+                      <td
+                        className="px-3 py-2.5 text-right"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="inline-flex items-center gap-1.5">
+                          {canWrite && (locked || u.failed_logins > 0) && (
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              type="button"
+                              onClick={() => void handleQuickUnlock(u)}
+                              data-testid={`unlock-user-${u.username}`}
+                            >
+                              <Unlock className="h-3 w-3 text-xblue" />
+                              {tx("解锁", "Unlock")}
                             </Button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </Card>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            type="button"
+                            onClick={() => setSelectedUserId(u.id)}
+                          >
+                            <SlidersHorizontal className="h-3 w-3" />
+                            {tx("详情", "Details")}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
 
+      {/* Edit User Drawer */}
+      <Drawer
+        open={Boolean(selectedUser)}
+        onClose={() => setSelectedUserId(null)}
+        testId="edit-user-drawer"
+        widthClass="max-w-xl"
+        title={
+          selectedUser ? (
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="font-mono-tech truncate">
+                {selectedUser.username}
+              </span>
+              <Badge variant="outline">{tEnum(selectedUser.auth_source)}</Badge>
+            </div>
+          ) : (
+            tx("用户详情", "User Details")
+          )
+        }
+      >
         {selectedUser && (
-          <Card
-            className="xl:col-span-5 p-4 space-y-4"
-            data-testid="edit-user-drawer"
-          >
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <div>
-                <div className="text-sm font-semibold flex items-center gap-2">
-                  <span className="font-mono-tech">{selectedUser.username}</span>
-                  <Badge variant="outline">{selectedUser.auth_source}</Badge>
-                </div>
-                <div className="text-[11px] font-mono-tech text-muted-foreground">
-                  UUID: {selectedUser.id}
-                </div>
-              </div>
-              <Button
-                variant="ghost"
-                type="button"
-                onClick={() => setSelectedUserId(null)}
-                className="p-1.5"
-              >
-                <X className="h-4 w-4" />
-              </Button>
+          <div className="space-y-4">
+            <div className="text-[11px] font-mono-tech text-muted-foreground">
+              ID: {selectedUser.id}
             </div>
 
             {/* Section 1: Basic Profile, Clearance, Roles & Status */}
             <div className="space-y-3">
-              <div className="text-xs font-semibold">基础身份与密级授权</div>
+              <div className="text-xs font-semibold">
+                {tx("身份与密级", "Profile & Clearance")}
+              </div>
               <div className="grid grid-cols-2 gap-2.5">
                 <div className="space-y-1">
-                  <label className="text-[11px] text-muted-foreground">显示姓名</label>
+                  <label className="text-[11px] text-muted-foreground">
+                    {tx("姓名", "Display Name")}
+                  </label>
                   <Input
                     value={editDisplayName}
+                    disabled={!canWrite}
                     onChange={(e) => setEditDisplayName(e.target.value)}
                     className="h-8 text-xs"
                   />
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[11px] text-muted-foreground">归属部门</label>
-                  <select
+                  <label className="text-[11px] text-muted-foreground">
+                    {tx("部门", "Department")}
+                  </label>
+                  <Select
                     value={editDeptId}
+                    disabled={!canWrite}
                     onChange={(e) => setEditDeptId(e.target.value)}
-                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                    className="h-8 w-full text-xs"
                   >
                     {deptOptions.map((d) => (
                       <option key={d.dept_id} value={d.dept_id}>
                         {d.name} ({d.dept_id})
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
                 <div className="space-y-1">
                   <label className="text-[11px] text-muted-foreground">
-                    主体密级 (Clearance)
+                    {tx("密级", "Clearance")}
                   </label>
-                  <select
+                  <Select
                     value={editClearance}
-                    onChange={(e) => setEditClearance(e.target.value as Sensitivity)}
-                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+                    disabled={!canWrite}
+                    onChange={(e) =>
+                      setEditClearance(e.target.value as Sensitivity)
+                    }
+                    className="h-8 w-full text-xs"
                   >
                     {SENSITIVITY_OPTIONS.map((opt) => (
                       <option key={opt.value} value={opt.value}>
-                        {opt.label}
+                        {isZh ? opt.label : opt.enLabel}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[11px] text-muted-foreground">账号状态</label>
-                  <select
+                  <label className="text-[11px] text-muted-foreground">
+                    {tx("状态", "Status")}
+                  </label>
+                  <Select
                     value={editStatus}
+                    disabled={!canWrite}
                     onChange={(e) =>
                       setEditStatus(e.target.value as UserAccountStatus)
                     }
-                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                    className="h-8 w-full text-xs"
                   >
-                    <option value="ACTIVE">ACTIVE · 启用</option>
-                    <option value="DISABLED">DISABLED · 停用</option>
-                  </select>
+                    <option value="ACTIVE">{tEnum("ACTIVE")}</option>
+                    <option value="DISABLED">{tEnum("DISABLED")}</option>
+                  </Select>
                 </div>
               </div>
 
               <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">绑定角色集合</label>
+                <label className="text-[11px] text-muted-foreground">
+                  {tx("绑定角色", "Assigned Roles")}
+                </label>
                 <div className="flex flex-wrap gap-1.5 rounded-md border border-border p-2">
                   {roleNameOptions.map((roleName) => {
                     const checked = editRoles.includes(roleName);
                     return (
                       <label
                         key={roleName}
+                        title={roleName}
                         className={cn(
-                          "inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono-tech border cursor-pointer",
+                          "inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11px] border cursor-pointer",
                           checked
                             ? "border-xblue bg-xblue-soft text-xblue"
                             : "border-border text-muted-foreground"
@@ -636,6 +734,7 @@ export function UsersPanel({
                         <input
                           type="checkbox"
                           checked={checked}
+                          disabled={!canWrite}
                           onChange={(e) => {
                             if (e.target.checked) {
                               setEditRoles((prev) => [...prev, roleName]);
@@ -647,60 +746,76 @@ export function UsersPanel({
                           }}
                           className="accent-[#2563eb]"
                         />
-                        {roleName}
+                        <span>{tEnum(roleName)}</span>
                       </label>
                     );
                   })}
                 </div>
               </div>
 
-              <div className="flex items-center justify-between gap-2">
-                {isAccountLocked(selectedUser.locked_until) ? (
+              {canWrite && (
+                <div className="flex items-center justify-between gap-2">
+                  {isAccountLocked(selectedUser.locked_until) ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      type="button"
+                      onClick={() => void handleQuickUnlock(selectedUser)}
+                    >
+                      <Unlock className="h-3.5 w-3.5 text-xblue" />
+                      {tx("解除锁定", "Unlock")}
+                    </Button>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">
+                      {tx(
+                        `连续失败: ${selectedUser.failed_logins}`,
+                        `Failed logins: ${selectedUser.failed_logins}`
+                      )}
+                    </span>
+                  )}
                   <Button
-                    variant="outline"
+                    size="sm"
                     type="button"
-                    onClick={() => void handleQuickUnlock(selectedUser)}
+                    disabled={savingUser}
+                    onClick={() => void handleSaveUser()}
                   >
-                    <Unlock className="h-3.5 w-3.5 text-xblue" />
-                    解除登录锁定
+                    {savingUser
+                      ? tx("保存中…", "Saving…")
+                      : tx("保存配置", "Save Profile")}
                   </Button>
-                ) : (
-                  <span className="text-[11px] text-muted-foreground">
-                    连续失败次数: {selectedUser.failed_logins}
-                  </span>
-                )}
-                <Button
-                  type="button"
-                  disabled={savingUser}
-                  onClick={() => void handleSaveUser()}
-                >
-                  {savingUser ? "保存中..." : "保存身份配置"}
-                </Button>
-              </div>
+                </div>
+              )}
             </div>
 
             {/* Section 2: User Attributes (`sec_user_attributes`) */}
             <div className="border-t border-border pt-3 space-y-2.5">
               <div className="flex items-center justify-between">
                 <div className="text-xs font-semibold">
-                  主体扩展属性（行策略占位符 user.attr.*）
+                  {tx("扩展属性", "Subject Attributes")}
                 </div>
-                <Button
-                  variant="outline"
-                  type="button"
-                  disabled={savingAttrs}
-                  onClick={() => void handleSaveAttributes()}
-                  data-testid="save-user-attrs-btn"
-                  className="px-2.5 py-1 text-[11px]"
-                >
-                  {savingAttrs ? "同步中..." : "保存属性"}
-                </Button>
+                {canWrite && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    disabled={savingAttrs}
+                    onClick={() => void handleSaveAttributes()}
+                    data-testid="save-user-attrs-btn"
+                  >
+                    {savingAttrs
+                      ? tx("同步中…", "Saving…")
+                      : tx("保存属性", "Save Attributes")}
+                  </Button>
+                )}
               </div>
 
               <div className="space-y-1.5">
                 {Object.entries(attrDraft).length === 0 ? (
-                  <div className="text-[11px] text-muted-foreground rounded border border-dashed border-border px-2.5 py-2">
-                    暂无扩展属性（示例: warehouses = [&quot;W-1&quot;, &quot;W-2&quot;]）
+                  <div className="text-[11px] text-muted-foreground rounded border border-dashed border-border px-2.5 py-2 font-mono-tech">
+                    {tx(
+                      '暂无扩展属性 · warehouses = ["W-1", "W-2"]',
+                      'No attributes · warehouses = ["W-1", "W-2"]'
+                    )}
                   </div>
                 ) : (
                   Object.entries(attrDraft).map(([key, vals]) => (
@@ -720,80 +835,89 @@ export function UsersPanel({
                               className="gap-1 pr-1"
                             >
                               {val}
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setAttrDraft((prev) => ({
-                                    ...prev,
-                                    [key]: (prev[key] ?? []).filter((x) => x !== val),
-                                  }))
-                                }
-                                className="hover:text-foreground cursor-pointer"
-                              >
-                                <X className="h-2.5 w-2.5" />
-                              </button>
+                              {canWrite && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setAttrDraft((prev) => ({
+                                      ...prev,
+                                      [key]: (prev[key] ?? []).filter(
+                                        (x) => x !== val
+                                      ),
+                                    }))
+                                  }
+                                  className="hover:text-foreground cursor-pointer"
+                                >
+                                  <X className="h-2.5 w-2.5" />
+                                </button>
+                              )}
                             </Badge>
                           ))}
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setAttrDraft((prev) => {
-                            const next = { ...prev };
-                            delete next[key];
-                            return next;
-                          })
-                        }
-                        className="text-muted-foreground hover:text-foreground p-1 cursor-pointer"
-                        title="删除该属性键"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      {canWrite && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setAttrDraft((prev) => {
+                              const next = { ...prev };
+                              delete next[key];
+                              return next;
+                            })
+                          }
+                          className="text-muted-foreground hover:text-foreground p-1 cursor-pointer"
+                          title={tx("删除属性", "Remove attribute")}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   ))
                 )}
               </div>
 
-              <div className="grid grid-cols-12 gap-1.5">
-                <Input
-                  placeholder="属性键 (如 warehouses)"
-                  value={newAttrKey}
-                  onChange={(e) => setNewAttrKey(e.target.value)}
-                  className="col-span-5 h-8 text-xs font-mono-tech"
-                />
-                <Input
-                  placeholder="逗号分隔值 (如 W-1, W-2)"
-                  value={newAttrValuesCsv}
-                  onChange={(e) => setNewAttrValuesCsv(e.target.value)}
-                  className="col-span-5 h-8 text-xs font-mono-tech"
-                />
-                <Button
-                  variant="outline"
-                  type="button"
-                  onClick={handleAddAttribute}
-                  className="col-span-2 h-8 px-2"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                </Button>
-              </div>
+              {canWrite && (
+                <div className="grid grid-cols-12 gap-1.5">
+                  <Input
+                    placeholder="warehouses"
+                    value={newAttrKey}
+                    onChange={(e) => setNewAttrKey(e.target.value)}
+                    className="col-span-5 h-8 text-xs font-mono-tech"
+                  />
+                  <Input
+                    placeholder="W-1, W-2"
+                    value={newAttrValuesCsv}
+                    onChange={(e) => setNewAttrValuesCsv(e.target.value)}
+                    className="col-span-5 h-8 text-xs font-mono-tech"
+                  />
+                  <Button
+                    variant="outline"
+                    type="button"
+                    onClick={handleAddAttribute}
+                    className="col-span-2 h-8 px-2"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              )}
             </div>
 
             {/* Section 3: Reset Local Password */}
-            {selectedUser.auth_source === "LOCAL" && (
+            {canWrite && selectedUser.auth_source === "LOCAL" && (
               <div className="border-t border-border pt-3 space-y-2">
                 <div className="text-xs font-semibold flex items-center gap-1.5">
                   <KeyRound className="h-3.5 w-3.5 text-xblue" />
-                  重置本地口令
+                  {tx("重置本地口令", "Reset Local Password")}
                 </div>
                 <div className="flex gap-2">
-                  <Input
-                    type="password"
-                    placeholder="新口令（≥ 12 位且不含用户名）"
-                    value={resetPasswordVal}
-                    onChange={(e) => setResetPasswordVal(e.target.value)}
-                    className="h-8 text-xs"
-                  />
+                  <div className="flex-1">
+                    <PasswordInput
+                      placeholder={tx("≥ 12 位新口令", "Min 12 characters")}
+                      value={resetPasswordVal}
+                      onChange={(e) => setResetPasswordVal(e.target.value)}
+                      className="h-8 text-xs"
+                    />
+                  </div>
                   <Button
                     variant="outline"
                     type="button"
@@ -801,7 +925,7 @@ export function UsersPanel({
                     onClick={() => void handleResetPassword()}
                     className="shrink-0 h-8"
                   >
-                    重置
+                    {tx("重置", "Reset")}
                   </Button>
                 </div>
               </div>
@@ -812,20 +936,24 @@ export function UsersPanel({
               <div className="flex items-center justify-between">
                 <div className="text-xs font-semibold flex items-center gap-1.5">
                   <MonitorSmartphone className="h-3.5 w-3.5 text-xblue" />
-                  刷新会话族（sec_sessions）
+                  {tx("活跃会话", "Refresh Sessions")}
                 </div>
                 <button
                   type="button"
                   onClick={() => void loadUserSessions(selectedUser.id)}
                   className="text-[11px] text-muted-foreground hover:text-foreground cursor-pointer"
                 >
-                  刷新列表
+                  {tx("刷新", "Refresh")}
                 </button>
               </div>
               {loadingSessions ? (
-                <div className="text-[11px] text-muted-foreground">正在加载会话...</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {tx("加载中…", "Loading…")}
+                </div>
               ) : sessions.length === 0 ? (
-                <div className="text-[11px] text-muted-foreground">当前无活跃刷新会话</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {tx("无活跃会话", "No active sessions")}
+                </div>
               ) : (
                 <div className="space-y-1.5 max-h-44 overflow-y-auto">
                   {sessions.map((s) => {
@@ -837,25 +965,27 @@ export function UsersPanel({
                       >
                         <div className="min-w-0">
                           <div className="font-mono-tech truncate">
-                            Family {s.family_id.slice(0, 8)} · {s.client_ip || "local"} ·{" "}
-                            {s.auth_source}
+                            {s.family_id.slice(0, 8)} · {s.client_ip || "local"}{" "}
+                            · {tEnum(s.auth_source)}
                           </div>
                           <div className="text-muted-foreground truncate">
                             {s.revoked_at
-                              ? "已吊销"
+                              ? tx("已吊销", "Revoked")
                               : s.rotated_at
-                                ? "已轮换"
-                                : `活跃 · 到期 ${s.expires_at.slice(0, 10)}`}
+                                ? tx("已轮换", "Rotated")
+                                : `${tx("有效至", "Expires")} ${fmtTime(s.expires_at, true)}`}
                           </div>
                         </div>
-                        {active && (
+                        {canWrite && active && (
                           <Button
                             variant="outline"
+                            size="sm"
                             type="button"
-                            onClick={() => void handleRevokeSession(s.family_id)}
-                            className="px-2 py-1 text-[11px] shrink-0"
+                            onClick={() =>
+                              void handleRevokeSession(s.family_id)
+                            }
                           >
-                            吊销
+                            {tx("吊销", "Revoke")}
                           </Button>
                         )}
                       </div>
@@ -864,173 +994,182 @@ export function UsersPanel({
                 </div>
               )}
             </div>
-          </Card>
+          </div>
         )}
-      </div>
+      </Drawer>
 
       {/* Create Local User Modal */}
-      {createOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <Card className="w-full max-w-lg p-5 space-y-4">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <div className="text-sm font-semibold flex items-center gap-2">
-                <UserPlus className="h-4 w-4 text-xblue" />
-                新建本地用户（Argon2id）
-              </div>
-              <button
-                type="button"
-                onClick={() => setCreateOpen(false)}
-                className="text-muted-foreground hover:text-foreground cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
+      <Modal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        testId="create-user-modal"
+        title={
+          <>
+            <UserPlus className="h-4 w-4 text-xblue shrink-0" />
+            <span>{tx("新建本地用户", "New Local User")}</span>
+          </>
+        }
+      >
+        <form onSubmit={(e) => void handleCreateUser(e)} className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-medium">
+                {tx("用户名", "Username")} *
+              </label>
+              <Input
+                required
+                placeholder="analyst_east"
+                value={newUsername}
+                onChange={(e) => setNewUsername(e.target.value)}
+                className="h-8 text-xs font-mono-tech"
+              />
             </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">
+                {tx("姓名", "Display Name")}
+              </label>
+              <Input
+                placeholder={tx("华东分析师", "East Analyst")}
+                value={newDisplayName}
+                onChange={(e) => setNewDisplayName(e.target.value)}
+                className="h-8 text-xs"
+              />
+            </div>
+          </div>
 
-            <form onSubmit={(e) => void handleCreateUser(e)} className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium">用户名 *</label>
-                  <Input
-                    required
-                    placeholder="如 analyst_east"
-                    value={newUsername}
-                    onChange={(e) => setNewUsername(e.target.value)}
-                    className="h-8 text-xs font-mono-tech"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium">显示姓名</label>
-                  <Input
-                    placeholder="如 华东分析师"
-                    value={newDisplayName}
-                    onChange={(e) => setNewDisplayName(e.target.value)}
-                    className="h-8 text-xs"
-                  />
-                </div>
-              </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs font-medium">
+                {tx("部门", "Department")}
+              </label>
+              <Select
+                value={newDeptId}
+                onChange={(e) => setNewDeptId(e.target.value)}
+                className="h-8 w-full text-xs"
+              >
+                {deptOptions.map((d) => (
+                  <option key={d.dept_id} value={d.dept_id}>
+                    {d.name} ({d.dept_id})
+                  </option>
+                ))}
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium">
+                {tx("密级", "Clearance")}
+              </label>
+              <Select
+                value={newClearance}
+                onChange={(e) => setNewClearance(e.target.value as Sensitivity)}
+                className="h-8 w-full text-xs"
+              >
+                {SENSITIVITY_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {isZh ? opt.label : opt.enLabel}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium">归属部门</label>
-                  <select
-                    value={newDeptId}
-                    onChange={(e) => setNewDeptId(e.target.value)}
-                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                  >
-                    {deptOptions.map((d) => (
-                      <option key={d.dept_id} value={d.dept_id}>
-                        {d.name} ({d.dept_id})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium">安全密级</label>
-                  <select
-                    value={newClearance}
-                    onChange={(e) => setNewClearance(e.target.value as Sensitivity)}
-                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
-                  >
-                    {SENSITIVITY_OPTIONS.map((opt) => (
-                      <option key={opt.value} value={opt.value}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">
+              {tx("邮箱", "Email")}
+            </label>
+            <Input
+              type="email"
+              placeholder="user@enterprise.internal"
+              value={newEmail}
+              onChange={(e) => setNewEmail(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
 
-              <div className="space-y-1">
-                <label className="text-xs font-medium">电子邮箱</label>
-                <Input
-                  type="email"
-                  placeholder="user@enterprise.internal"
-                  value={newEmail}
-                  onChange={(e) => setNewEmail(e.target.value)}
-                  className="h-8 text-xs"
-                />
-              </div>
-
-              <div className="space-y-1">
-                <label className="text-xs font-medium">初始登录口令 *</label>
-                <Input
-                  required
-                  type="password"
-                  placeholder="长度不少于 12 位，且不得包含用户名"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="h-8 text-xs"
-                />
-                <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-                  <ShieldAlert className="h-3 w-3 text-xblue shrink-0" />
-                  <span>
-                    口令策略：长度 ≥ 12 位且禁止包含用户名；以 Argon2id 哈希存储。
-                  </span>
-                </div>
-                {createPwdHint && (
-                  <div className="text-[11px] font-medium text-foreground">
-                    提示：{createPwdHint}
-                  </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">
+              {tx("初始口令", "Initial Password")} *
+            </label>
+            <PasswordInput
+              required
+              placeholder="Ops#Admin2026!Safe"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              className="h-8 text-xs"
+            />
+            <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <ShieldAlert className="h-3 w-3 text-xblue shrink-0" />
+              <span>
+                {tx(
+                  "长度 ≥ 12 位且不含用户名，Argon2id 哈希存储。",
+                  "Minimum 12 characters without username; stored via Argon2id."
                 )}
+              </span>
+            </div>
+            {createPwdHint && (
+              <div className="text-[11px] font-medium text-amber-600 dark:text-amber-400">
+                {createPwdHint}
               </div>
+            )}
+          </div>
 
-              <div className="space-y-1">
-                <label className="text-xs font-medium">初始角色</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {roleNameOptions.map((r) => {
-                    const checked = newRoles.includes(r);
-                    return (
-                      <label
-                        key={r}
-                        className={cn(
-                          "inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11px] font-mono-tech border cursor-pointer",
-                          checked
-                            ? "border-xblue bg-xblue-soft text-xblue"
-                            : "border-border text-muted-foreground"
-                        )}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setNewRoles((prev) => [...prev, r]);
-                            } else {
-                              setNewRoles((prev) => prev.filter((x) => x !== r));
-                            }
-                          }}
-                          className="accent-[#2563eb]"
-                        />
-                        {r}
-                      </label>
-                    );
-                  })}
-                </div>
-              </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">
+              {tx("初始角色", "Initial Roles")}
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {roleNameOptions.map((r) => {
+                const checked = newRoles.includes(r);
+                return (
+                  <label
+                    key={r}
+                    title={r}
+                    className={cn(
+                      "inline-flex items-center gap-1.5 rounded px-2 py-1 text-[11px] border cursor-pointer",
+                      checked
+                        ? "border-xblue bg-xblue-soft text-xblue"
+                        : "border-border text-muted-foreground"
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => {
+                        if (e.target.checked) {
+                          setNewRoles((prev) => [...prev, r]);
+                        } else {
+                          setNewRoles((prev) => prev.filter((x) => x !== r));
+                        }
+                      }}
+                      className="accent-[#2563eb]"
+                    />
+                    <span>{tEnum(r)}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
 
-              <div className="flex justify-end gap-2 pt-2 border-t border-border">
-                <Button
-                  variant="outline"
-                  type="button"
-                  onClick={() => setCreateOpen(false)}
-                >
-                  取消
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={
-                    creating ||
-                    !newUsername.trim() ||
-                    Boolean(validateLocalPassword(newPassword, newUsername))
-                  }
-                >
-                  {creating ? "创建中..." : "确认创建用户"}
-                </Button>
-              </div>
-            </form>
-          </Card>
-        </div>
-      )}
+          <div className="flex justify-end gap-2 pt-2 border-t border-border">
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => setCreateOpen(false)}
+            >
+              {tx("取消", "Cancel")}
+            </Button>
+            <Button
+              type="submit"
+              disabled={
+                creating ||
+                !newUsername.trim() ||
+                Boolean(validateLocalPassword(newPassword, newUsername))
+              }
+            >
+              {creating ? tx("创建中…", "Creating…") : tx("创建", "Create")}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import Editor, { loader } from "@monaco-editor/react";
 import {
   Bookmark,
+  Eye,
   FileSearch,
   History,
   Play,
@@ -9,6 +10,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import type {
   AnalyticsCatalogResponse,
   ExplainResult,
@@ -16,9 +18,20 @@ import type {
   QueryParamSpec,
   SavedQuery,
 } from "@/lib/api/analytics";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { usePrincipal } from "@/lib/permissions";
+import { useTheme } from "@/lib/theme";
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Select,
+  StatusBadge,
+} from "@/components/ui/primitives";
 
-type PreloadedMonaco = NonNullable<Parameters<typeof loader.config>[0]["monaco"]>;
+type PreloadedMonaco = NonNullable<
+  Parameters<typeof loader.config>[0]["monaco"]
+>;
 
 interface WindowWithMonaco extends Window {
   monaco?: PreloadedMonaco;
@@ -32,6 +45,15 @@ function getLocalInjectedMonaco(): PreloadedMonaco | null {
     return candidate;
   }
   return null;
+}
+
+function detectMacPlatform(): boolean {
+  if (typeof navigator === "undefined") return false;
+  const platform = navigator.platform || "";
+  const ua = navigator.userAgent || "";
+  return (
+    /Mac|iPhone|iPod|iPad/i.test(platform) || /Mac OS X|Macintosh/i.test(ua)
+  );
 }
 
 const DUCKDB_KEYWORDS: ReadonlySet<string> = new Set([
@@ -120,7 +142,6 @@ function tokenizeDuckDbSql(sql: string): SqlToken[] {
     const ch = sql[i] ?? "";
     const next = sql[i + 1] ?? "";
 
-    // Line comment --
     if (ch === "-" && next === "-") {
       let end = i + 2;
       while (end < len && sql[end] !== "\n") end += 1;
@@ -129,7 +150,6 @@ function tokenizeDuckDbSql(sql: string): SqlToken[] {
       continue;
     }
 
-    // Block comment /* ... */
     if (ch === "/" && next === "*") {
       let end = i + 2;
       while (end < len && !(sql[end] === "*" && sql[end + 1] === "/")) {
@@ -141,7 +161,6 @@ function tokenizeDuckDbSql(sql: string): SqlToken[] {
       continue;
     }
 
-    // Single-quoted string '...'
     if (ch === "'") {
       let end = i + 1;
       while (end < len) {
@@ -160,7 +179,6 @@ function tokenizeDuckDbSql(sql: string): SqlToken[] {
       continue;
     }
 
-    // Named :param (avoid :: cast)
     if (
       ch === ":" &&
       next !== ":" &&
@@ -174,7 +192,6 @@ function tokenizeDuckDbSql(sql: string): SqlToken[] {
       continue;
     }
 
-    // Identifier / keyword
     if (/[a-zA-Z_]/.test(ch)) {
       let end = i + 1;
       while (end < len && /[a-zA-Z0-9_.]/.test(sql[end] ?? "")) end += 1;
@@ -188,7 +205,6 @@ function tokenizeDuckDbSql(sql: string): SqlToken[] {
       continue;
     }
 
-    // Numeric literal
     if (/[0-9]/.test(ch)) {
       let end = i + 1;
       while (end < len && /[0-9.]/.test(sql[end] ?? "")) end += 1;
@@ -244,12 +260,14 @@ export interface SqlEditorProps {
     params: Record<string, unknown>;
     maxRows: number;
     allowLive: boolean;
+    revealPii: boolean;
   }) => void;
   onExplainSql: (opts: {
     sql: string;
     params: Record<string, unknown>;
     maxRows: number;
     allowLive: boolean;
+    revealPii: boolean;
   }) => void;
   onSaveQuery: (opts: {
     name: string;
@@ -279,12 +297,21 @@ export function SqlEditor({
   onLoadSavedQuery,
   onDeleteSavedQuery,
 }: SqlEditorProps) {
+  const { tx, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const { isDark } = useTheme();
+  const canRevealPii = can("PII_RAW_READ");
+  const isMac = useMemo(() => detectMacPlatform(), []);
+  const shortcutLabel = isMac ? "⌘+Enter" : "Ctrl+Enter";
+
   const localMonaco = useMemo(() => getLocalInjectedMonaco(), []);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const highlightRef = useRef<HTMLPreElement | null>(null);
   const gutterRef = useRef<HTMLDivElement | null>(null);
+  const latestTriggerRunRef = useRef<() => void>(() => {});
 
   const [allowLive, setAllowLive] = useState(false);
+  const [revealPii, setRevealPii] = useState(false);
   const [maxRows, setMaxRows] = useState<number>(1000);
   const [paramValues, setParamValues] = useState<Record<string, string>>({});
   const [cursorWord, setCursorWord] = useState<{
@@ -303,24 +330,6 @@ export function SqlEditor({
   const [sideDrawer, setSideDrawer] = useState<"none" | "saved" | "history">(
     "none"
   );
-
-  const [isDark, setIsDark] = useState(
-    () =>
-      typeof document !== "undefined" &&
-      document.documentElement.classList.contains("dark")
-  );
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const obs = new MutationObserver(() => {
-      setIsDark(document.documentElement.classList.contains("dark"));
-    });
-    obs.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => obs.disconnect();
-  }, []);
 
   const paramNames = useMemo(() => extractNamedSqlParams(sql), [sql]);
 
@@ -342,7 +351,7 @@ export function SqlEditor({
         items.push({
           label: ds.name,
           kind: "DATASET",
-          detail: ds.display_name || "数据集",
+          detail: ds.display_name || tx("数据集", "Dataset"),
         });
       }
       for (const col of ds.columns ?? []) {
@@ -363,7 +372,7 @@ export function SqlEditor({
         items.push({
           label: view.name,
           kind: "VIEW",
-          detail: "平台联邦视图",
+          detail: tx("联邦视图", "Platform View"),
         });
       }
       for (const col of view.columns ?? []) {
@@ -384,17 +393,17 @@ export function SqlEditor({
         items.push({
           label: live.alias,
           kind: "LIVE",
-          detail: `直连 ${live.connector_type}`,
+          detail: live.connector_type,
         });
       }
     }
 
     for (const kw of DUCKDB_KEYWORDS) {
-      items.push({ label: kw, kind: "KEYWORD", detail: "DuckDB SQL" });
+      items.push({ label: kw, kind: "KEYWORD", detail: "SQL" });
     }
 
     return items;
-  }, [catalog]);
+  }, [catalog, tx]);
 
   const activeSuggestions = useMemo(() => {
     if (!focused || !cursorWord || cursorWord.prefix.length < 2) return [];
@@ -444,8 +453,13 @@ export function SqlEditor({
       params: resolvedParams,
       maxRows,
       allowLive,
+      revealPii: canRevealPii && revealPii,
     });
   };
+
+  useEffect(() => {
+    latestTriggerRunRef.current = triggerRun;
+  });
 
   const triggerExplain = () => {
     if (!sql.trim() || explaining) return;
@@ -454,6 +468,7 @@ export function SqlEditor({
       params: resolvedParams,
       maxRows,
       allowLive,
+      revealPii: canRevealPii && revealPii,
     });
   };
 
@@ -510,8 +525,8 @@ export function SqlEditor({
               ? "INT64"
               : "FLOAT64"
             : typeof val === "boolean"
-            ? "BOOLEAN"
-            : "STRING";
+              ? "BOOLEAN"
+              : "STRING";
         return {
           name,
           data_type: dataType,
@@ -551,9 +566,9 @@ export function SqlEditor({
             data-testid="sql-run-btn"
           >
             <Play className="h-3.5 w-3.5" />
-            {running ? "执行中..." : "运行"}
+            {running ? tx("运行中…", "Running…") : tx("运行", "Run")}
             <span className="font-mono-tech text-[10px] opacity-75">
-              Ctrl+Enter
+              {shortcutLabel}
             </span>
           </Button>
 
@@ -565,7 +580,7 @@ export function SqlEditor({
             data-testid="sql-explain-btn"
           >
             <FileSearch className="h-3.5 w-3.5 text-xblue" />
-            {explaining ? "分析中..." : "执行计划 EXPLAIN"}
+            {explaining ? tx("解析中…", "Explaining…") : tx("执行计划", "Explain")}
           </Button>
 
           <label className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-2.5 py-1.5 text-xs cursor-pointer">
@@ -576,21 +591,43 @@ export function SqlEditor({
               className="rounded border-input accent-xblue"
               data-testid="sql-allow-live-toggle"
             />
-            <span>允许直连 (live_*)</span>
+            <span>{tx("允许外部直连", "Allow Live")}</span>
           </label>
 
+          {canRevealPii && (
+            <label className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-2.5 py-1.5 text-xs cursor-pointer">
+              <input
+                type="checkbox"
+                checked={revealPii}
+                onChange={(e) => setRevealPii(e.target.checked)}
+                className="rounded border-input accent-xblue"
+                data-testid="sql-reveal-pii-toggle"
+              />
+              <Eye className="h-3.5 w-3.5 text-xblue" />
+              <span>{tx("显示敏感原文", "Reveal PII")}</span>
+            </label>
+          )}
+
+          {canRevealPii && revealPii && (
+            <Badge variant="warning" data-testid="sql-reveal-pii-audit-badge">
+              {tx("原文调阅已记审计", "PII Audited")}
+            </Badge>
+          )}
+
           <div className="flex items-center gap-1 text-xs">
-            <span className="text-muted-foreground">行数上限</span>
-            <select
+            <span className="text-muted-foreground">
+              {tx("行数上限", "Max Rows")}
+            </span>
+            <Select
               value={maxRows}
               onChange={(e) => setMaxRows(Number(e.target.value))}
-              className="h-7 rounded border border-input bg-background px-2 font-mono-tech text-xs"
+              className="h-7 font-mono-tech"
               data-testid="sql-max-rows-select"
             >
-              <option value={100}>100</option>
-              <option value={1000}>1,000</option>
-              <option value={10000}>10,000</option>
-            </select>
+              <option value={100}>{fmtNum(100, 0)}</option>
+              <option value={1000}>{fmtNum(1000, 0)}</option>
+              <option value={10000}>{fmtNum(10000, 0)}</option>
+            </Select>
           </div>
         </div>
 
@@ -604,7 +641,7 @@ export function SqlEditor({
             data-testid="sql-saved-drawer-btn"
           >
             <Bookmark className="h-3.5 w-3.5 text-xblue" />
-            已保存 ({sqlSavedQueries.length})
+            {tx("已保存", "Saved")} ({fmtNum(sqlSavedQueries.length, 0)})
           </Button>
 
           <Button
@@ -616,7 +653,7 @@ export function SqlEditor({
             data-testid="sql-history-drawer-btn"
           >
             <History className="h-3.5 w-3.5 text-xblue" />
-            历史 ({historyEntries.length})
+            {tx("历史", "History")} ({fmtNum(historyEntries.length, 0)})
           </Button>
 
           <Button
@@ -629,12 +666,12 @@ export function SqlEditor({
             data-testid="sql-save-open-btn"
           >
             <Save className="h-3.5 w-3.5 text-xblue" />
-            保存为查询
+            {tx("保存查询", "Save Query")}
           </Button>
         </div>
       </div>
 
-      {/* Save Query Inline Modal Card */}
+      {/* Save Query Inline Card */}
       {saveDialogOpen && (
         <Card
           className="flex flex-wrap items-center gap-2 bg-muted/20 p-3"
@@ -643,7 +680,7 @@ export function SqlEditor({
           <Input
             value={saveName}
             onChange={(e) => setSaveName(e.target.value)}
-            placeholder="输入查询唯一名称，例如：orders_by_status"
+            placeholder="orders_by_status"
             className="h-8 max-w-xs text-xs font-mono-tech"
             data-testid="sql-save-name-input"
           />
@@ -654,28 +691,28 @@ export function SqlEditor({
               onChange={(e) => setSaveShared(e.target.checked)}
               className="rounded border-input accent-xblue"
             />
-            <span>租户内共享</span>
+            <span>{tx("租户共享", "Shared")}</span>
           </label>
           <Button
             type="button"
             variant="primary"
-            className="py-1.5"
+            size="sm"
             disabled={saving || !saveName.trim()}
             onClick={() => void handleConfirmSave()}
             data-testid="sql-save-confirm-btn"
           >
-            {saving ? "保存中..." : "确认保存"}
+            {saving ? tx("保存中…", "Saving…") : tx("保存", "Save")}
           </Button>
           <Button
             type="button"
             variant="ghost"
-            className="py-1.5"
+            size="sm"
             onClick={() => setSaveDialogOpen(false)}
           >
-            取消
+            {tx("取消", "Cancel")}
           </Button>
           {saveError && (
-            <span className="text-xs text-foreground font-mono-tech">
+            <span className="text-xs text-red-600 dark:text-red-400 font-mono-tech">
               {saveError}
             </span>
           )}
@@ -699,6 +736,15 @@ export function SqlEditor({
                   theme={isDark ? "vs-dark" : "light"}
                   value={sql}
                   onChange={(val) => onChangeSql(val ?? "")}
+                  onMount={(editorInstance, monacoInstance) => {
+                    editorInstance.addCommand(
+                      monacoInstance.KeyMod.CtrlCmd |
+                        monacoInstance.KeyCode.Enter,
+                      () => {
+                        latestTriggerRunRef.current();
+                      }
+                    );
+                  }}
                   options={{
                     minimap: { enabled: false },
                     fontSize: 12,
@@ -779,7 +825,7 @@ export function SqlEditor({
                     autoCapitalize="off"
                     autoComplete="off"
                     autoCorrect="off"
-                    aria-label="SQL 编辑器"
+                    aria-label={tx("SQL 编辑器", "SQL Editor")}
                     data-testid="sql-editor-textarea"
                     onFocus={() => setFocused(true)}
                     onBlur={() => {
@@ -820,8 +866,8 @@ export function SqlEditor({
                     data-testid="sql-autocomplete-popup"
                   >
                     <div className="px-2 py-0.5 text-[10px] text-muted-foreground flex items-center justify-between">
-                      <span>自动补全 (Tab 采纳)</span>
-                      <span>Esc 关闭</span>
+                      <span>{tx("代码补全 · Tab", "Autocomplete · Tab")}</span>
+                      <span>Esc</span>
                     </div>
                     {activeSuggestions.map((item) => (
                       <button
@@ -853,11 +899,14 @@ export function SqlEditor({
           <Card className="lg:col-span-4 flex h-44 flex-col overflow-hidden">
             <div className="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-1.5 text-xs font-medium">
               <span>
-                {sideDrawer === "saved" ? "已保存 SQL 查询" : "最近执行历史"}
+                {sideDrawer === "saved"
+                  ? tx("已保存查询", "Saved Queries")
+                  : tx("最近执行记录", "Execution History")}
               </span>
               <button
                 type="button"
                 onClick={() => setSideDrawer("none")}
+                aria-label={tx("关闭", "Close")}
                 className="text-muted-foreground hover:text-foreground cursor-pointer"
               >
                 <X className="h-3.5 w-3.5" />
@@ -868,7 +917,7 @@ export function SqlEditor({
               {sideDrawer === "saved" ? (
                 sqlSavedQueries.length === 0 ? (
                   <div className="py-6 text-center text-[11px] text-muted-foreground">
-                    暂无已保存查询
+                    {tx("暂无保存记录", "No saved queries")}
                   </div>
                 ) : (
                   sqlSavedQueries.map((sq) => (
@@ -885,13 +934,16 @@ export function SqlEditor({
                           {sq.name}
                         </div>
                         <div className="truncate font-mono-tech text-[10px] text-muted-foreground">
-                          {typeof sq.spec.sql === "string" ? sq.spec.sql : sq.kind}
+                          {typeof sq.spec.sql === "string"
+                            ? sq.spec.sql
+                            : sq.kind}
                         </div>
                       </button>
                       <button
                         type="button"
                         onClick={() => onDeleteSavedQuery(sq.id)}
-                        title="删除保存查询"
+                        title={tx("删除", "Delete")}
+                        aria-label={tx("删除", "Delete")}
                         className="text-muted-foreground hover:text-foreground cursor-pointer"
                       >
                         <Trash2 className="h-3 w-3" />
@@ -901,7 +953,7 @@ export function SqlEditor({
                 )
               ) : historyEntries.length === 0 ? (
                 <div className="py-6 text-center text-[11px] text-muted-foreground">
-                  暂无执行历史记录
+                  {tx("暂无历史记录", "No execution history")}
                 </div>
               ) : (
                 historyEntries.map((entry) => (
@@ -912,17 +964,16 @@ export function SqlEditor({
                     className="w-full rounded border border-border/70 px-2.5 py-1.5 text-left hover:bg-muted/40 cursor-pointer space-y-0.5"
                   >
                     <div className="flex items-center justify-between gap-1">
-                      <Badge
-                        variant={
-                          entry.status === "SUCCEEDED" ? "xblue" : "neutral"
-                        }
-                        className="px-1 py-0 text-[9px]"
-                      >
-                        {entry.status}
-                      </Badge>
+                      {entry.status === "TIMEOUT" ? (
+                        <Badge variant="warning">
+                          {tx("超时", "Timeout")}
+                        </Badge>
+                      ) : (
+                        <StatusBadge status={entry.status} />
+                      )}
                       <span className="font-mono-tech text-[10px] text-muted-foreground">
                         {entry.duration_ms !== null
-                          ? `${entry.duration_ms} ms`
+                          ? `${fmtNum(entry.duration_ms, 0)} ms`
                           : "-"}
                       </span>
                     </div>
@@ -943,7 +994,9 @@ export function SqlEditor({
           className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/20 px-3 py-2 text-xs"
           data-testid="sql-params-bar"
         >
-          <span className="font-medium text-muted-foreground">命名参数:</span>
+          <span className="font-medium text-muted-foreground">
+            {tx("命名参数", "Parameters")}:
+          </span>
           {paramNames.map((pName) => (
             <div key={pName} className="flex items-center gap-1">
               <Badge variant="xblue">:{pName}</Badge>
@@ -955,7 +1008,7 @@ export function SqlEditor({
                     [pName]: e.target.value,
                   }))
                 }
-                placeholder="参数值"
+                placeholder="value"
                 className="h-7 w-28 text-xs font-mono-tech"
                 data-testid={`sql-param-input-${pName}`}
               />
@@ -966,27 +1019,36 @@ export function SqlEditor({
 
       {/* EXPLAIN Plan Output Card */}
       {explainResult && (
-        <Card className="p-3 space-y-2 bg-muted/20" data-testid="sql-explain-card">
+        <Card
+          className="p-3 space-y-2 bg-muted/20"
+          data-testid="sql-explain-card"
+        >
           <div className="flex items-center justify-between border-b border-border pb-1.5 text-xs">
             <div className="flex items-center gap-2">
-              <span className="font-semibold">DuckDB EXPLAIN 执行计划</span>
+              <span className="font-semibold">
+                {tx("查询执行计划", "Query Execution Plan")}
+              </span>
               {explainResult.uses_platform_views && (
-                <Badge variant="xblue">联邦视图 ax.*</Badge>
+                <Badge variant="xblue">
+                  {tx("联邦视图", "Platform Views")}
+                </Badge>
               )}
               <Badge variant="outline">
-                关联数据集 {explainResult.referenced_datasets.length}
+                {tx("关联数据集", "Datasets")}{" "}
+                {fmtNum(explainResult.referenced_datasets.length, 0)}
               </Badge>
             </div>
             <button
               type="button"
               onClick={onCloseExplain}
+              aria-label={tx("关闭", "Close")}
               className="text-muted-foreground hover:text-foreground cursor-pointer"
             >
               <X className="h-3.5 w-3.5" />
             </button>
           </div>
-          <div className="text-[11px] font-mono-tech text-muted-foreground">
-            改写 SQL: {explainResult.sql}
+          <div className="text-[11px] font-mono-tech text-muted-foreground break-all">
+            {explainResult.sql}
           </div>
           <pre className="max-h-40 overflow-auto rounded border border-border bg-background p-2.5 font-mono-tech text-[11px] leading-relaxed whitespace-pre-wrap">
             {explainResult.plan}

@@ -26,7 +26,16 @@ import {
   type UpdateRuleRequest,
 } from "@/lib/api";
 import type { Dataset } from "@/lib/api/axhub";
-import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Select,
+  StatusBadge,
+  Textarea,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { getSeverityBadgeClass } from "./AlertTable";
 
@@ -37,6 +46,7 @@ export interface RuleEditorProps {
   datasets: readonly Dataset[];
   knownTypeNames: readonly string[];
   saving: boolean;
+  canEdit: boolean;
   dryRunningId: string | null;
   dryRunResult: RuleDryRunResponse | null;
   onCreateRule: (req: CreateRuleRequest) => Promise<void>;
@@ -67,15 +77,6 @@ const OUTBOX_TOPICS: readonly OutboxTopic[] = [
   "alert.opened",
   "alert.resolved",
   "export.finished",
-];
-
-const COMPARISON_OPS: readonly { value: ComparisonOp; label: string }[] = [
-  { value: "LT", label: "LT (< 小于)" },
-  { value: "LTE", label: "LTE (<= 小于等于)" },
-  { value: "GT", label: "GT (> 大于)" },
-  { value: "GTE", label: "GTE (>= 大于等于)" },
-  { value: "EQ", label: "EQ (== 等于)" },
-  { value: "NE", label: "NE (!= 不等于)" },
 ];
 
 function buildDefaultCondition(kind: ConditionKind): Condition {
@@ -122,6 +123,7 @@ export function RuleEditor({
   datasets,
   knownTypeNames,
   saving,
+  canEdit,
   dryRunningId,
   dryRunResult,
   onCreateRule,
@@ -130,9 +132,10 @@ export function RuleEditor({
   onDryRunSaved,
   onDryRunAdhoc,
 }: RuleEditorProps) {
+  const { tx, tEnum, fmtNum } = useI18n();
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
-  const [name, setName] = useState("low_inventory_guard");
-  const [description, setDescription] = useState("核心仓储库存跌破安全水位告警");
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const [scopeKind, setScopeKind] = useState<RuleScopeKind>("METRIC");
 
   // Scope target fields
@@ -151,10 +154,10 @@ export function RuleEditor({
 
   // Templates & active template target
   const [titleTemplate, setTitleTemplate] = useState(
-    "[{{severity}}] {{node.title}} 指标 {{metric}}={{value}} (阈值 {{threshold}})"
+    "[{{severity}}] {{node.title}} {{metric}}={{value}} ({{threshold}})"
   );
   const [bodyTemplate, setBodyTemplate] = useState(
-    "规则 {{rule.name}} 命中：对象 {{node.title}} 当前值 {{value}} 触发告警。"
+    "{{rule.name}}: {{node.title}} = {{value}}"
   );
   const [activeTemplateField, setActiveTemplateField] = useState<
     "title" | "body"
@@ -173,6 +176,15 @@ export function RuleEditor({
   const [formValidationError, setFormValidationError] = useState<string | null>(
     null
   );
+
+  const comparisonOps: readonly { value: ComparisonOp; label: string }[] = [
+    { value: "LT", label: tx("< 小于", "< Less Than") },
+    { value: "LTE", label: tx("<= 小于等于", "<= Less or Equal") },
+    { value: "GT", label: tx("> 大于", "> Greater Than") },
+    { value: "GTE", label: tx(">= 大于等于", ">= Greater or Equal") },
+    { value: "EQ", label: tx("== 等于", "== Equal") },
+    { value: "NE", label: tx("!= 不等于", "!= Not Equal") },
+  ];
 
   const flowNameMap = useMemo(() => {
     const map = new Map<string, string>();
@@ -198,7 +210,7 @@ export function RuleEditor({
     setTitleTemplate(
       "[{{severity}}] {{rule.name}} · {{node.title}} ({{value}})"
     );
-    setBodyTemplate("规则 {{rule.name}} 触发告警，当前值 {{value}}。");
+    setBodyTemplate("{{rule.name}}: {{node.title}} = {{value}}");
     setCooldownMinutes(30);
     setResolveAfterMinutes(10);
     setEscalateAfterInput("");
@@ -272,20 +284,23 @@ export function RuleEditor({
     }
   };
 
-  const buildRulePayload = (): CreateRuleRequest | null => {
-    if (!name.trim()) {
-      setFormValidationError("请填写规则唯一名称");
+  const buildRulePayload = (allowDefaultName = false): CreateRuleRequest | null => {
+    const effectiveName = name.trim() || (allowDefaultName ? "warehouse_low_stock" : "");
+    if (!effectiveName) {
+      setFormValidationError(tx("规则名称不能为空", "Rule name is required"));
       return null;
     }
     if (!titleTemplate.trim()) {
-      setFormValidationError("请填写告警标题模板");
+      setFormValidationError(tx("告警标题模板不能为空", "Title template is required"));
       return null;
     }
 
     let target: Record<string, unknown> = {};
     if (scopeKind === "METRIC") {
       if (!targetTypeName.trim() || !targetMetric.trim()) {
-        setFormValidationError("METRIC 作用域必须指定节点类型 (type_name) 与指标名 (metric)");
+        setFormValidationError(
+          tx("需填写节点类型与目标指标", "Node type and metric are required")
+        );
         return null;
       }
       target = {
@@ -301,7 +316,9 @@ export function RuleEditor({
         : {};
     } else {
       if (!targetTopic.trim()) {
-        setFormValidationError("EVENT 作用域必须指定事件主题 (topic)");
+        setFormValidationError(
+          tx("需填写事件主题", "Event topic is required")
+        );
         return null;
       }
       target = {
@@ -318,7 +335,7 @@ export function RuleEditor({
 
     setFormValidationError(null);
     return {
-      name: name.trim(),
+      name: effectiveName,
       description: description.trim(),
       scope_kind: scopeKind,
       target,
@@ -343,7 +360,8 @@ export function RuleEditor({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    const payload = buildRulePayload();
+    if (!canEdit) return;
+    const payload = buildRulePayload(false);
     if (!payload) return;
 
     if (editingRuleId) {
@@ -355,12 +373,13 @@ export function RuleEditor({
   };
 
   const handleFormDryRun = async () => {
-    const payload = buildRulePayload();
+    const payload = buildRulePayload(true);
     if (!payload) return;
     await onDryRunAdhoc(payload, editingRuleId);
   };
 
   const insertTemplateChip = (token: string) => {
+    if (!canEdit) return;
     if (activeTemplateField === "title") {
       setTitleTemplate((prev) => `${prev}${prev ? " " : ""}${token}`);
     } else {
@@ -373,6 +392,7 @@ export function RuleEditor({
     id: string,
     setter: (next: string[]) => void
   ) => {
+    if (!canEdit) return;
     setter(
       list.includes(id) ? list.filter((item) => item !== id) : [...list, id]
     );
@@ -385,25 +405,27 @@ export function RuleEditor({
         <Card className="lg:col-span-5 overflow-hidden" data-testid="rules-list-card">
           <div className="flex items-center justify-between border-b border-border bg-muted/30 px-3.5 py-3">
             <div className="flex items-center gap-2 text-xs font-medium">
-              <span>已注册规则定义</span>
+              <span>{tx("已注册规则", "Registered Rules")}</span>
               <Badge variant="outline">{rules.length}</Badge>
             </div>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-7 px-2.5 text-xs"
-              data-testid="new-rule-btn"
-              onClick={resetForm}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              新建规则
-            </Button>
+            {canEdit && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                data-testid="new-rule-btn"
+                onClick={resetForm}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {tx("新建规则", "New Rule")}
+              </Button>
+            )}
           </div>
 
           <div className="divide-y divide-border max-h-[680px] overflow-y-auto">
             {rules.length === 0 ? (
               <div className="p-8 text-center text-xs text-muted-foreground">
-                暂无规则定义，可在右侧编辑器新建并试跑验证
+                {tx("暂无规则记录", "No rules")}
               </div>
             ) : (
               rules.map((rule) => {
@@ -436,11 +458,11 @@ export function RuleEditor({
                               getSeverityBadgeClass(rule.severity)
                             )}
                           >
-                            {rule.severity}
+                            {tEnum(rule.severity)}
                           </span>
-                          <Badge variant={rule.enabled ? "xblue" : "neutral"}>
-                            {rule.enabled ? "ENABLED" : "DISABLED"}
-                          </Badge>
+                          <StatusBadge
+                            status={rule.enabled ? "ENABLED" : "DISABLED"}
+                          />
                         </div>
                         {rule.description && (
                           <div className="text-[11px] text-muted-foreground mt-0.5">
@@ -451,7 +473,7 @@ export function RuleEditor({
                     </div>
 
                     <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                      <Badge variant="neutral">{rule.scope_kind}</Badge>
+                      <Badge variant="neutral">{tEnum(rule.scope_kind)}</Badge>
                       <span className="font-mono-tech text-muted-foreground">
                         {formatConditionSummary(rule.condition)}
                       </span>
@@ -459,11 +481,13 @@ export function RuleEditor({
 
                     <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
                       <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-                        <span>渠道 ×{rule.channel_ids.length}</span>
+                        <span>
+                          {tx("渠道", "Channels")} ×{rule.channel_ids.length}
+                        </span>
                         {flowName && (
                           <Badge variant="outline" className="gap-1">
                             <GitBranch className="h-2.5 w-2.5 text-xblue" />
-                            流程: {flowName}
+                            {flowName}
                           </Badge>
                         )}
                       </div>
@@ -472,7 +496,8 @@ export function RuleEditor({
                         <Button
                           type="button"
                           variant="outline"
-                          className="h-7 px-2 text-[11px] border-xblue/40 text-xblue hover:bg-xblue-soft"
+                          size="sm"
+                          className="border-xblue/40 text-xblue hover:bg-xblue-soft"
                           data-testid={`dry-run-rule-btn-${rule.id}`}
                           disabled={isDryRunning}
                           onClick={() => {
@@ -480,46 +505,55 @@ export function RuleEditor({
                           }}
                         >
                           <FlaskConical className="h-3 w-3" />
-                          {isDryRunning ? "试跑中..." : "试跑 (Dry Run)"}
+                          {isDryRunning
+                            ? tx("试跑中…", "Running…")
+                            : tx("试跑", "Dry Run")}
                         </Button>
 
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="h-7 px-2 text-[11px]"
-                          data-testid={`toggle-rule-btn-${rule.id}`}
-                          onClick={() => {
-                            void onUpdateRule(rule.id, {
-                              enabled: !rule.enabled,
-                            });
-                          }}
-                        >
-                          <Power className="h-3 w-3" />
-                          {rule.enabled ? "停用" : "启用"}
-                        </Button>
+                        {canEdit && (
+                          <>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              data-testid={`toggle-rule-btn-${rule.id}`}
+                              onClick={() => {
+                                void onUpdateRule(rule.id, {
+                                  enabled: !rule.enabled,
+                                });
+                              }}
+                            >
+                              <Power className="h-3 w-3" />
+                              {rule.enabled
+                                ? tx("停用", "Disable")
+                                : tx("启用", "Enable")}
+                            </Button>
 
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="h-7 px-2 text-[11px]"
-                          data-testid={`edit-rule-btn-${rule.id}`}
-                          onClick={() => loadRuleIntoEditor(rule)}
-                        >
-                          <Edit3 className="h-3 w-3" />
-                          编辑
-                        </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              data-testid={`edit-rule-btn-${rule.id}`}
+                              onClick={() => loadRuleIntoEditor(rule)}
+                            >
+                              <Edit3 className="h-3 w-3" />
+                              {tx("编辑", "Edit")}
+                            </Button>
 
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          className="h-7 px-2 text-[11px] text-red-600 dark:text-red-400"
-                          data-testid={`delete-rule-btn-${rule.id}`}
-                          onClick={() => {
-                            void onDeleteRule(rule.id);
-                          }}
-                        >
-                          <Trash2 className="h-3 w-3" />
-                        </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="text-red-600 dark:text-red-400"
+                              data-testid={`delete-rule-btn-${rule.id}`}
+                              onClick={() => {
+                                void onDeleteRule(rule.id);
+                              }}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -541,17 +575,19 @@ export function RuleEditor({
             >
               <div className="flex items-center justify-between border-b border-border pb-2.5">
                 <div className="text-xs font-semibold">
-                  {editingRuleId ? `编辑规则 (${name})` : "创建判定规则"}
+                  {editingRuleId
+                    ? tx(`编辑规则 · ${name}`, `Edit Rule · ${name}`)
+                    : tx("新建规则", "New Rule")}
                 </div>
                 {editingRuleId && (
                   <Button
                     type="button"
                     variant="ghost"
-                    className="h-7 px-2 text-xs"
+                    size="sm"
                     onClick={resetForm}
                   >
                     <RotateCcw className="h-3 w-3" />
-                    退出编辑
+                    {tx("重置", "Reset")}
                   </Button>
                 )}
               </div>
@@ -566,63 +602,71 @@ export function RuleEditor({
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <div>
                   <label className="block text-[11px] text-muted-foreground mb-1">
-                    规则标识名 (name)
+                    {tx("规则名称", "Rule Name")}
                   </label>
                   <Input
                     data-testid="rule-name-input"
                     value={name}
+                    disabled={!canEdit}
                     onChange={(e) => setName(e.target.value)}
-                    placeholder="例如 low_inventory"
+                    placeholder="warehouse_low_stock"
                     className="h-8 text-xs font-mono-tech"
                   />
                 </div>
 
                 <div>
                   <label className="block text-[11px] text-muted-foreground mb-1">
-                    作用域类别 (scope_kind)
+                    {tx("监控范围", "Scope")}
                   </label>
-                  <select
+                  <Select
                     data-testid="rule-scope-select"
                     value={scopeKind}
+                    disabled={!canEdit}
                     onChange={(e) =>
                       handleScopeChange(e.target.value as RuleScopeKind)
                     }
-                    className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs"
+                    className="h-8 w-full"
                   >
-                    <option value="METRIC">METRIC · 业务节点指标</option>
-                    <option value="DATASET_QUALITY">
-                      DATASET_QUALITY · 数据集质量门禁
+                    <option value="METRIC">
+                      {tx("业务节点指标", "Node Metric")}
                     </option>
-                    <option value="EVENT">EVENT · 事务外发事件</option>
-                  </select>
+                    <option value="DATASET_QUALITY">
+                      {tx("数据质量门禁", "Dataset Quality")}
+                    </option>
+                    <option value="EVENT">
+                      {tx("事务外发事件", "Outbox Event")}
+                    </option>
+                  </Select>
                 </div>
 
                 <div>
                   <label className="block text-[11px] text-muted-foreground mb-1">
-                    告警严重度 (severity)
+                    {tx("告警级别", "Severity")}
                   </label>
-                  <select
+                  <Select
                     data-testid="rule-severity-select"
                     value={severity}
+                    disabled={!canEdit}
                     onChange={(e) => setSeverity(e.target.value as Severity)}
-                    className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs"
+                    className="h-8 w-full"
                   >
-                    <option value="CRITICAL">CRITICAL · 紧急</option>
-                    <option value="WARN">WARN · 警告</option>
-                    <option value="INFO">INFO · 提示</option>
-                  </select>
+                    <option value="CRITICAL">{tEnum("CRITICAL")}</option>
+                    <option value="WARN">{tEnum("WARN")}</option>
+                    <option value="INFO">{tEnum("INFO")}</option>
+                  </Select>
                 </div>
               </div>
 
               <div>
                 <label className="block text-[11px] text-muted-foreground mb-1">
-                  规则说明 (description)
+                  {tx("规则说明", "Description")}
                 </label>
                 <Input
                   data-testid="rule-desc-input"
                   value={description}
+                  disabled={!canEdit}
                   onChange={(e) => setDescription(e.target.value)}
-                  placeholder="描述该规则监控的业务风险与处置动作..."
+                  placeholder={tx("核心仓储安全库存预警", "Core warehouse low-stock alert")}
                   className="h-8 text-xs"
                 />
               </div>
@@ -630,19 +674,20 @@ export function RuleEditor({
               {/* Scope-specific Target */}
               <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2.5">
                 <div className="text-[11px] font-semibold text-foreground">
-                  监控目标配置 (target · {scopeKind})
+                  {tx("监控目标", "Target")}
                 </div>
 
                 {scopeKind === "METRIC" && (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        节点类型 (type_name)
+                        {tx("节点类型", "Node Type")}
                       </label>
                       <Input
                         list="axalerts-rule-type-names"
                         data-testid="rule-target-type-input"
                         value={targetTypeName}
+                        disabled={!canEdit}
                         onChange={(e) => setTargetTypeName(e.target.value)}
                         placeholder="Warehouse"
                         className="h-8 text-xs font-mono-tech"
@@ -656,11 +701,12 @@ export function RuleEditor({
 
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        目标指标名 (metric)
+                        {tx("目标指标", "Metric")}
                       </label>
                       <Input
                         data-testid="rule-target-metric-input"
                         value={targetMetric}
+                        disabled={!canEdit}
                         onChange={(e) => setTargetMetric(e.target.value)}
                         placeholder="inventory"
                         className="h-8 text-xs font-mono-tech"
@@ -669,13 +715,14 @@ export function RuleEditor({
 
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        节点过滤表达式 (node_filter 可选)
+                        {tx("节点过滤条件", "Node Filter")}
                       </label>
                       <Input
                         data-testid="rule-target-filter-input"
                         value={targetNodeFilter}
+                        disabled={!canEdit}
                         onChange={(e) => setTargetNodeFilter(e.target.value)}
-                        placeholder="prop.region == '华东'"
+                        placeholder="prop.region == 'east'"
                         className="h-8 text-xs font-mono-tech"
                       />
                     </div>
@@ -685,21 +732,24 @@ export function RuleEditor({
                 {scopeKind === "DATASET_QUALITY" && (
                   <div>
                     <label className="block text-[11px] text-muted-foreground mb-1">
-                      限定数据集 (dataset_id，留空则匹配租户内全部数据集)
+                      {tx("目标数据集", "Target Dataset")}
                     </label>
-                    <select
+                    <Select
                       data-testid="rule-target-dataset-select"
                       value={targetDatasetId}
+                      disabled={!canEdit}
                       onChange={(e) => setTargetDatasetId(e.target.value)}
-                      className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs"
+                      className="h-8 w-full"
                     >
-                      <option value="">全部数据集 (All Datasets)</option>
+                      <option value="">
+                        {tx("全部数据集", "All Datasets")}
+                      </option>
                       {datasets.map((ds) => (
                         <option key={ds.id} value={ds.id}>
-                          {ds.display_name || ds.name} ({ds.id.slice(0, 8)})
+                          {ds.display_name || ds.name}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </div>
                 )}
 
@@ -707,28 +757,30 @@ export function RuleEditor({
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        事件主题 (topic)
+                        {tx("事件主题", "Event Topic")}
                       </label>
-                      <select
+                      <Select
                         data-testid="rule-target-topic-select"
                         value={targetTopic}
+                        disabled={!canEdit}
                         onChange={(e) => setTargetTopic(e.target.value)}
-                        className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
+                        className="h-8 w-full font-mono-tech"
                       >
                         {OUTBOX_TOPICS.map((t) => (
                           <option key={t} value={t}>
                             {t}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        载荷过滤表达式 (filter 可选)
+                        {tx("载荷过滤表达式", "Payload Filter")}
                       </label>
                       <Input
                         data-testid="rule-target-event-filter-input"
                         value={targetEventFilter}
+                        disabled={!canEdit}
                         onChange={(e) => setTargetEventFilter(e.target.value)}
                         placeholder="rows_written == 0"
                         className="h-8 text-xs font-mono-tech"
@@ -742,73 +794,78 @@ export function RuleEditor({
               <div className="rounded-md border border-border bg-muted/20 p-3 space-y-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="text-[11px] font-semibold text-foreground">
-                    判定条件算子 (7 类 Condition)
+                    {tx("判定条件", "Condition")}
                   </label>
-                  <select
+                  <Select
                     data-testid="rule-condition-kind-select"
                     value={condition.kind}
+                    disabled={!canEdit}
                     onChange={(e) =>
                       setCondition(
                         buildDefaultCondition(e.target.value as ConditionKind)
                       )
                     }
-                    className="h-8 rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
+                    className="h-8"
                   >
                     <option value="THRESHOLD">
-                      THRESHOLD · 静态阈值 / 持续窗口判定
+                      {tx("静态阈值", "Threshold")}
                     </option>
                     <option value="CHANGE_RATE">
-                      CHANGE_RATE · 窗口变化率判定
+                      {tx("窗口变化率", "Change Rate")}
                     </option>
-                    <option value="ABSENCE">ABSENCE · 时序点缺失判定</option>
+                    <option value="ABSENCE">
+                      {tx("时序点缺失", "Absence")}
+                    </option>
                     <option value="ANOMALY_ZSCORE">
-                      ANOMALY_ZSCORE · Z-Score 统计异常
+                      {tx("Z-Score 统计异常", "Z-Score Anomaly")}
                     </option>
                     <option value="EXPR">
-                      EXPR · 节点多指标/属性布尔表达式
+                      {tx("布尔表达式", "Boolean Expression")}
                     </option>
                     <option value="QUALITY_FAILED">
-                      QUALITY_FAILED · 数据质量检查失败
+                      {tx("质量门禁失败", "Quality Check Failed")}
                     </option>
                     <option value="EVENT_MATCH">
-                      EVENT_MATCH · 事件主题与过滤匹配
+                      {tx("事件匹配", "Event Match")}
                     </option>
-                  </select>
+                  </Select>
                 </div>
 
                 {condition.kind === "THRESHOLD" && (
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        比较符 (op)
+                        {tx("比较符", "Operator")}
                       </label>
-                      <select
+                      <Select
                         data-testid="cond-threshold-op"
                         value={condition.op}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           setCondition({
                             ...condition,
                             op: e.target.value as ComparisonOp,
                           })
                         }
-                        className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
+                        className="h-8 w-full font-mono-tech"
                       >
-                        {COMPARISON_OPS.map((item) => (
+                        {comparisonOps.map((item) => (
                           <option key={item.value} value={item.value}>
                             {item.label}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        阈值 (value)
+                        {tx("阈值", "Threshold")}
                       </label>
                       <Input
                         type="number"
                         step="any"
                         data-testid="cond-threshold-value"
                         value={condition.value}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           setCondition({
                             ...condition,
@@ -820,13 +877,14 @@ export function RuleEditor({
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        持续分钟数 (for_minutes，0=最新点)
+                        {tx("持续分钟数", "Duration (min)")}
                       </label>
                       <Input
                         type="number"
                         min={0}
                         data-testid="cond-threshold-for-minutes"
                         value={condition.for_minutes}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           setCondition({
                             ...condition,
@@ -843,12 +901,13 @@ export function RuleEditor({
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        回看窗口分钟 (window_minutes)
+                        {tx("窗口分钟数", "Window (min)")}
                       </label>
                       <Input
                         type="number"
                         min={1}
                         value={condition.window_minutes}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           setCondition({
                             ...condition,
@@ -860,33 +919,35 @@ export function RuleEditor({
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        比较符 (op)
+                        {tx("比较符", "Operator")}
                       </label>
-                      <select
+                      <Select
                         value={condition.op}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           setCondition({
                             ...condition,
                             op: e.target.value as ComparisonOp,
                           })
                         }
-                        className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
+                        className="h-8 w-full font-mono-tech"
                       >
-                        {COMPARISON_OPS.map((item) => (
+                        {comparisonOps.map((item) => (
                           <option key={item.value} value={item.value}>
                             {item.label}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        变化率比例 (pct，0.2 = 20%)
+                        {tx("变化比例", "Ratio")}
                       </label>
                       <Input
                         type="number"
                         step="0.01"
                         value={condition.pct}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           setCondition({
                             ...condition,
@@ -902,12 +963,13 @@ export function RuleEditor({
                 {condition.kind === "ABSENCE" && (
                   <div>
                     <label className="block text-[11px] text-muted-foreground mb-1">
-                      无数据点判定窗口分钟数 (minutes)
+                      {tx("缺失分钟数", "Absence Window (min)")}
                     </label>
                     <Input
                       type="number"
                       min={1}
                       value={condition.minutes}
+                      disabled={!canEdit}
                       onChange={(e) =>
                         setCondition({
                           ...condition,
@@ -923,12 +985,13 @@ export function RuleEditor({
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        历史点数 (lookback_points)
+                        {tx("回看点数", "Lookback Points")}
                       </label>
                       <Input
                         type="number"
                         min={2}
                         value={condition.lookback_points}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           setCondition({
                             ...condition,
@@ -940,12 +1003,13 @@ export function RuleEditor({
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        Z-Score 阈值 (z)
+                        {tx("Z-Score 阈值", "Z-Score Threshold")}
                       </label>
                       <Input
                         type="number"
                         step="0.1"
                         value={condition.z}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           setCondition({
                             ...condition,
@@ -957,12 +1021,13 @@ export function RuleEditor({
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-1">
-                        最少样本点数 (min_points)
+                        {tx("最少样本点数", "Min Points")}
                       </label>
                       <Input
                         type="number"
                         min={2}
                         value={condition.min_points}
+                        disabled={!canEdit}
                         onChange={(e) =>
                           setCondition({
                             ...condition,
@@ -978,18 +1043,19 @@ export function RuleEditor({
                 {condition.kind === "EXPR" && (
                   <div>
                     <label className="block text-[11px] text-muted-foreground mb-1">
-                      布尔判定表达式 (expression，支持节点指标与 prop.*)
+                      {tx("布尔表达式", "Boolean Expression")}
                     </label>
                     <Input
                       data-testid="cond-expr-input"
                       value={condition.expression}
+                      disabled={!canEdit}
                       onChange={(e) =>
                         setCondition({
                           ...condition,
                           expression: e.target.value,
                         })
                       }
-                      placeholder="inventory < total_demand && prop.region == '华东'"
+                      placeholder="inventory < total_demand"
                       className="h-8 text-xs font-mono-tech"
                     />
                   </div>
@@ -998,28 +1064,31 @@ export function RuleEditor({
                 {condition.kind === "QUALITY_FAILED" && (
                   <div>
                     <label className="block text-[11px] text-muted-foreground mb-1">
-                      最低触发质量失败级别 (min_severity)
+                      {tx("最低失败级别", "Minimum Failure Severity")}
                     </label>
-                    <select
+                    <Select
                       value={condition.min_severity}
+                      disabled={!canEdit}
                       onChange={(e) =>
                         setCondition({
                           ...condition,
                           min_severity: e.target.value as RuleQualityMinSeverity,
                         })
                       }
-                      className="h-8 max-w-xs w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
+                      className="h-8 max-w-xs w-full"
                     >
-                      <option value="WARN">WARN · 警告或阻断均触发</option>
-                      <option value="BLOCK">BLOCK · 仅阻断级失败触发</option>
-                    </select>
+                      <option value="WARN">{tx("警告及以上", "Warning or Block")}</option>
+                      <option value="BLOCK">{tx("仅阻断级", "Block Only")}</option>
+                    </Select>
                   </div>
                 )}
 
                 {condition.kind === "EVENT_MATCH" && (
                   <div className="text-[11px] text-muted-foreground">
-                    当外发事件匹配上方 <code className="font-mono-tech">target.topic</code>{" "}
-                    且满足可选 <code className="font-mono-tech">target.filter</code> 时立即触发。
+                    {tx(
+                      "匹配目标事件主题与过滤表达式时触发。",
+                      "Triggers when outbox events match the target topic and filter."
+                    )}
                   </div>
                 )}
               </div>
@@ -1028,7 +1097,7 @@ export function RuleEditor({
               <div className="space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-1.5">
                   <span className="text-[11px] font-semibold text-foreground">
-                    通知渲染模板（点击占位符插入当前焦点字段）
+                    {tx("通知模板变量", "Template Variables")}
                   </span>
                   <div
                     className="flex flex-wrap items-center gap-1"
@@ -1038,9 +1107,10 @@ export function RuleEditor({
                       <button
                         key={chip.token}
                         type="button"
+                        disabled={!canEdit}
                         data-testid={`template-chip-${chip.token}`}
                         onClick={() => insertTemplateChip(chip.token)}
-                        className="rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[10px] font-mono-tech text-foreground hover:border-xblue hover:text-xblue cursor-pointer"
+                        className="rounded border border-border bg-muted/60 px-1.5 py-0.5 text-[10px] font-mono-tech text-foreground hover:border-xblue hover:text-xblue disabled:opacity-40 cursor-pointer"
                       >
                         {chip.label}
                       </button>
@@ -1050,11 +1120,12 @@ export function RuleEditor({
 
                 <div>
                   <label className="block text-[11px] text-muted-foreground mb-1">
-                    告警标题模板 (title_template)
+                    {tx("标题模板", "Title Template")}
                   </label>
                   <Input
                     data-testid="rule-title-template-input"
                     value={titleTemplate}
+                    disabled={!canEdit}
                     onFocus={() => setActiveTemplateField("title")}
                     onChange={(e) => setTitleTemplate(e.target.value)}
                     className="h-8 text-xs"
@@ -1063,12 +1134,13 @@ export function RuleEditor({
 
                 <div>
                   <label className="block text-[11px] text-muted-foreground mb-1">
-                    告警正文模板 (body_template)
+                    {tx("正文模板", "Body Template")}
                   </label>
                   <Textarea
                     rows={2}
                     data-testid="rule-body-template-input"
                     value={bodyTemplate}
+                    disabled={!canEdit}
                     onFocus={() => setActiveTemplateField("body")}
                     onChange={(e) => setBodyTemplate(e.target.value)}
                     className="text-xs"
@@ -1080,12 +1152,13 @@ export function RuleEditor({
               <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5">
                 <div>
                   <label className="block text-[11px] text-muted-foreground mb-1">
-                    冷却窗口 (分钟)
+                    {tx("冷却窗口（分）", "Cooldown (min)")}
                   </label>
                   <Input
                     type="number"
                     min={0}
                     value={cooldownMinutes}
+                    disabled={!canEdit}
                     onChange={(e) =>
                       setCooldownMinutes(Math.max(0, Number(e.target.value)))
                     }
@@ -1094,12 +1167,13 @@ export function RuleEditor({
                 </div>
                 <div>
                   <label className="block text-[11px] text-muted-foreground mb-1">
-                    自动恢复持续 (分钟)
+                    {tx("自动恢复（分）", "Auto-Resolve (min)")}
                   </label>
                   <Input
                     type="number"
                     min={0}
                     value={resolveAfterMinutes}
+                    disabled={!canEdit}
                     onChange={(e) =>
                       setResolveAfterMinutes(
                         Math.max(0, Number(e.target.value))
@@ -1110,34 +1184,36 @@ export function RuleEditor({
                 </div>
                 <div>
                   <label className="block text-[11px] text-muted-foreground mb-1">
-                    未确认升级 (分钟, 可空)
+                    {tx("超时升级（分）", "Escalate After (min)")}
                   </label>
                   <Input
                     type="number"
                     min={1}
-                    placeholder="不升级"
+                    placeholder="15"
                     value={escalateAfterInput}
+                    disabled={!canEdit}
                     onChange={(e) => setEscalateAfterInput(e.target.value)}
                     className="h-8 text-xs font-mono-tech"
                   />
                 </div>
                 <div>
                   <label className="block text-[11px] text-muted-foreground mb-1">
-                    联动触发流程 (run_flow_id)
+                    {tx("联动编排流程", "Linked Flow")}
                   </label>
-                  <select
+                  <Select
                     data-testid="rule-run-flow-select"
                     value={runFlowId}
+                    disabled={!canEdit}
                     onChange={(e) => setRunFlowId(e.target.value)}
-                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                    className="h-8 w-full"
                   >
-                    <option value="">不触发联动流程</option>
+                    <option value="">{tx("无", "None")}</option>
                     {flows.map((f) => (
                       <option key={f.id} value={f.id}>
                         {f.name}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
               </div>
 
@@ -1145,11 +1221,11 @@ export function RuleEditor({
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div className="rounded-md border border-border p-2.5 space-y-1.5">
                   <div className="text-[11px] font-medium text-foreground">
-                    首发/恢复通知渠道 (channel_ids)
+                    {tx("首发 / 恢复通知渠道", "Primary Channels")}
                   </div>
                   {channels.length === 0 ? (
                     <div className="text-[11px] text-muted-foreground">
-                      暂无可用通知渠道
+                      {tx("暂无渠道", "No channels")}
                     </div>
                   ) : (
                     <div className="flex flex-wrap gap-1.5">
@@ -1159,6 +1235,7 @@ export function RuleEditor({
                           <button
                             key={ch.id}
                             type="button"
+                            disabled={!canEdit}
                             data-testid={`rule-channel-toggle-${ch.id}`}
                             onClick={() =>
                               toggleIdInList(
@@ -1168,7 +1245,7 @@ export function RuleEditor({
                               )
                             }
                             className={cn(
-                              "rounded px-2 py-1 text-[11px] border transition-colors cursor-pointer",
+                              "rounded px-2 py-1 text-[11px] border transition-colors cursor-pointer disabled:opacity-50",
                               active
                                 ? "border-xblue bg-xblue-soft text-xblue font-medium"
                                 : "border-border bg-background text-muted-foreground hover:text-foreground"
@@ -1184,11 +1261,11 @@ export function RuleEditor({
 
                 <div className="rounded-md border border-border p-2.5 space-y-1.5">
                   <div className="text-[11px] font-medium text-foreground">
-                    超时升级渠道 (escalation_channel_ids)
+                    {tx("超时升级渠道", "Escalation Channels")}
                   </div>
                   {channels.length === 0 ? (
                     <div className="text-[11px] text-muted-foreground">
-                      暂无可用升级渠道
+                      {tx("暂无渠道", "No channels")}
                     </div>
                   ) : (
                     <div className="flex flex-wrap gap-1.5">
@@ -1198,6 +1275,7 @@ export function RuleEditor({
                           <button
                             key={ch.id}
                             type="button"
+                            disabled={!canEdit}
                             data-testid={`rule-escalation-channel-toggle-${ch.id}`}
                             onClick={() =>
                               toggleIdInList(
@@ -1207,7 +1285,7 @@ export function RuleEditor({
                               )
                             }
                             className={cn(
-                              "rounded px-2 py-1 text-[11px] border transition-colors cursor-pointer",
+                              "rounded px-2 py-1 text-[11px] border transition-colors cursor-pointer disabled:opacity-50",
                               active
                                 ? "border-xblue bg-xblue-soft text-xblue font-medium"
                                 : "border-border bg-background text-muted-foreground hover:text-foreground"
@@ -1228,10 +1306,11 @@ export function RuleEditor({
                   <input
                     type="checkbox"
                     checked={enabled}
+                    disabled={!canEdit}
                     onChange={(e) => setEnabled(e.target.checked)}
                     className="h-3.5 w-3.5 rounded border-border accent-xblue"
                   />
-                  <span>保存后立即启用规则判定</span>
+                  <span>{tx("启用规则", "Enable Rule")}</span>
                 </label>
 
                 <div className="flex items-center gap-2">
@@ -1245,22 +1324,26 @@ export function RuleEditor({
                     }}
                   >
                     <FlaskConical className="h-3.5 w-3.5 text-xblue" />
-                    {dryRunningId === "adhoc" ? "试跑中..." : "试判定预览 (Dry Run)"}
+                    {dryRunningId === "adhoc"
+                      ? tx("试跑中…", "Running…")
+                      : tx("试判定预览", "Dry Run")}
                   </Button>
 
-                  <Button
-                    type="submit"
-                    variant="primary"
-                    data-testid="save-rule-btn"
-                    disabled={saving}
-                  >
-                    <Save className="h-3.5 w-3.5" />
-                    {saving
-                      ? "保存中..."
-                      : editingRuleId
-                        ? "更新规则"
-                        : "创建规则"}
-                  </Button>
+                  {canEdit && (
+                    <Button
+                      type="submit"
+                      variant="primary"
+                      data-testid="save-rule-btn"
+                      disabled={saving}
+                    >
+                      <Save className="h-3.5 w-3.5" />
+                      {saving
+                        ? tx("保存中…", "Saving…")
+                        : editingRuleId
+                          ? tx("保存规则", "Save Rule")
+                          : tx("创建规则", "Create Rule")}
+                    </Button>
+                  )}
                 </div>
               </div>
             </form>
@@ -1275,21 +1358,27 @@ export function RuleEditor({
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2 text-xs font-semibold">
                   <FlaskConical className="h-4 w-4 text-xblue" />
-                  <span>只读试判定结果预览（不落库、不发通知）</span>
+                  <span>{tx("试判定结果预览", "Dry Run Results")}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <Badge variant="outline">
-                    扫描对象: {dryRunResult.evaluated_objects}
+                    {tx(
+                      `扫描对象: ${fmtNum(dryRunResult.evaluated_objects, 0)}`,
+                      `Evaluated: ${fmtNum(dryRunResult.evaluated_objects, 0)}`
+                    )}
                   </Badge>
                   <Badge variant="xblue" data-testid="dry-run-matched-count">
-                    命中触发: {dryRunResult.matched_count}
+                    {tx(
+                      `命中触发: ${fmtNum(dryRunResult.matched_count, 0)}`,
+                      `Matched: ${fmtNum(dryRunResult.matched_count, 0)}`
+                    )}
                   </Badge>
                 </div>
               </div>
 
               {dryRunResult.would_trigger.length === 0 ? (
                 <div className="rounded-md border border-dashed border-border p-3 text-center text-xs text-muted-foreground">
-                  当前数据快照下无命中对象（0 条告警将会触发）
+                  {tx("无命中对象", "No matching objects")}
                 </div>
               ) : (
                 <div className="divide-y divide-border rounded-md border border-border">
@@ -1307,14 +1396,16 @@ export function RuleEditor({
                               getSeverityBadgeClass(hit.severity)
                             )}
                           >
-                            {hit.severity}
+                            {tEnum(hit.severity)}
                           </span>
                           <span className="font-medium text-foreground">
                             {hit.title}
                           </span>
                         </div>
                         <span className="font-mono-tech text-[11px] text-muted-foreground">
-                          {hit.value !== null ? `观测值=${hit.value}` : hit.dedup_key}
+                          {hit.value !== null
+                            ? `${tx("观测值", "Value")}=${fmtNum(hit.value, 4)}`
+                            : hit.dedup_key}
                         </span>
                       </div>
                       {hit.body && (

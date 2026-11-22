@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { ArrowRight, Route } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   xblueApi,
   type BlueNode,
   type PathResponse,
 } from "@/lib/api/xblue";
-import { Badge, Button } from "@/components/ui/primitives";
+import { Badge, Button, Select } from "@/components/ui/primitives";
 
 export interface PathFinderProps {
   nodes: BlueNode[];
@@ -18,6 +19,7 @@ export function PathFinder({
   onPathFound,
   onClearHighlight,
 }: PathFinderProps) {
+  const { tx, fmtNum } = useI18n();
   const [fromId, setFromId] = useState<string>("");
   const [toId, setToId] = useState<string>("");
   const [maxDepth, setMaxDepth] = useState<number>(6);
@@ -38,11 +40,11 @@ export function PathFinder({
   const handleFindPath = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!fromId || !toId) {
-      setErrorMsg("请选择起点与终点节点");
+      setErrorMsg(tx("需指定起点与终点节点", "Start and target nodes required"));
       return;
     }
     if (fromId === toId) {
-      setErrorMsg("起点与终点不能相同");
+      setErrorMsg(tx("起点与终点不可相同", "Start and target must differ"));
       return;
     }
 
@@ -87,62 +89,65 @@ export function PathFinder({
       <div className="border-b border-border pb-2">
         <h3 className="font-semibold flex items-center gap-1.5">
           <Route className="h-3.5 w-3.5 text-xblue" />
-          最短路径查找
+          {tx("最短路径查找", "Shortest Path")}
         </h3>
-        <p className="text-[11px] text-muted-foreground mt-0.5">
-          双向 BFS 或按边传导权重倒数（1 / weight）执行 Dijkstra 最短路径搜索并在画布高亮
-        </p>
       </div>
 
       <div className="space-y-1">
-        <label className="text-muted-foreground block">起点节点 (from)</label>
-        <select
+        <label className="text-muted-foreground block">
+          {tx("起点节点", "Start Node")}
+        </label>
+        <Select
           value={fromId}
           onChange={(e) => setFromId(e.target.value)}
-          className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-xs"
+          className="w-full"
           data-testid="path-from-select"
         >
-          <option value="">选择起点</option>
+          <option value="">{tx("未指定", "None")}</option>
           {nodes.map((n) => (
             <option key={n.id} value={n.id}>
               {n.title} ({n.node_key} · {n.type_name})
             </option>
           ))}
-        </select>
+        </Select>
       </div>
 
       <div className="space-y-1">
-        <label className="text-muted-foreground block">终点节点 (to)</label>
-        <select
+        <label className="text-muted-foreground block">
+          {tx("终点节点", "Target Node")}
+        </label>
+        <Select
           value={toId}
           onChange={(e) => setToId(e.target.value)}
-          className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-xs"
+          className="w-full"
           data-testid="path-to-select"
         >
-          <option value="">选择终点</option>
+          <option value="">{tx("未指定", "None")}</option>
           {nodes.map((n) => (
             <option key={n.id} value={n.id}>
               {n.title} ({n.node_key} · {n.type_name})
             </option>
           ))}
-        </select>
+        </Select>
       </div>
 
       <div className="grid grid-cols-2 gap-2 items-end">
         <div className="space-y-1">
-          <label className="text-muted-foreground block">最大跳数</label>
-          <select
+          <label className="text-muted-foreground block">
+            {tx("最大跳数", "Max Hops")}
+          </label>
+          <Select
             value={maxDepth}
             onChange={(e) => setMaxDepth(Number(e.target.value))}
-            className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
+            className="w-full font-mono-tech"
             data-testid="path-max-depth-select"
           >
             {[2, 3, 4, 5, 6, 7, 8].map((d) => (
               <option key={d} value={d}>
-                {d} 跳
+                {tx(`${d} 跳`, `${d} Hops`)}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <label className="inline-flex items-center gap-2 py-2 cursor-pointer">
@@ -152,7 +157,7 @@ export function PathFinder({
             onChange={(e) => setWeighted(e.target.checked)}
             data-testid="path-weighted-checkbox"
           />
-          按权重 (1 / weight)
+          {tx("按边权重加权", "Weighted Cost")}
         </label>
       </div>
 
@@ -170,7 +175,7 @@ export function PathFinder({
           data-testid="path-find-submit"
         >
           <Route className="h-3.5 w-3.5" />
-          {loading ? "寻路计算中..." : "查找最短路径"}
+          {loading ? tx("计算中…", "Searching…") : tx("查找路径", "Find Path")}
         </Button>
 
         {pathResult && (
@@ -183,7 +188,7 @@ export function PathFinder({
             }}
             data-testid="path-clear-btn"
           >
-            清除高亮
+            {tx("清除高亮", "Clear")}
           </Button>
         )}
       </div>
@@ -195,17 +200,20 @@ export function PathFinder({
         >
           {pathResult.path.length === 0 ? (
             <div className="text-muted-foreground">
-              在最大跳数范围内未找到连通路径。
+              {tx("未找到连通路径", "No connected path")}
             </div>
           ) : (
             <>
               <div className="flex items-center justify-between">
                 <span className="font-semibold">
-                  命中路径（{Math.max(0, pathResult.path.length - 1)} 跳）
+                  {tx(
+                    `命中路径（${Math.max(0, pathResult.path.length - 1)} 跳）`,
+                    `Path Found (${Math.max(0, pathResult.path.length - 1)} hops)`
+                  )}
                 </span>
                 {pathResult.total_cost !== null && (
                   <Badge variant="xblue">
-                    总代价: {pathResult.total_cost.toFixed(3)}
+                    {tx("总代价", "Cost")}: {fmtNum(pathResult.total_cost, 3)}
                   </Badge>
                 )}
               </div>

@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import { axflowApi } from "@/lib/api/axflow";
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
-import { Badge, Button } from "@/components/ui/primitives";
+import { usePrincipal } from "@/lib/permissions";
+import { Button, StatusBadge } from "@/components/ui/primitives";
 import { buildColumnIndexMap, getCell } from "../utils";
 
 export interface AlertListWidgetProps {
@@ -13,22 +15,6 @@ export interface AlertListWidgetProps {
   onSelectNode?: (nodeId: string, title?: string) => void;
 }
 
-function formatAlertTime(raw: unknown): string {
-  if (raw === undefined || raw === null) return "";
-  const str = String(raw).trim();
-  if (!str) return "";
-  const parsed = new Date(str);
-  if (Number.isNaN(parsed.getTime())) {
-    return str;
-  }
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${parsed.getFullYear()}-${pad(parsed.getMonth() + 1)}-${pad(
-    parsed.getDate()
-  )} ${pad(parsed.getHours())}:${pad(parsed.getMinutes())}:${pad(
-    parsed.getSeconds()
-  )}`;
-}
-
 export function AlertListWidget({
   widget,
   data,
@@ -36,6 +22,10 @@ export function AlertListWidget({
   onAckSuccess,
   onSelectNode,
 }: AlertListWidgetProps) {
+  const { tx, fmtTime } = useI18n();
+  const { can } = usePrincipal();
+  const canAck = can("ALERT_ACK");
+
   const [ackingId, setAckingId] = useState<string | null>(null);
   const [ackedIds, setAckedIds] = useState<Set<string>>(new Set());
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -46,7 +36,7 @@ export function AlertListWidget({
         className="h-full flex items-center justify-center text-xs text-muted-foreground"
         data-testid={`widget-alerts-${widget.id}`}
       >
-        暂无活动告警
+        {tx("暂无活动告警", "No active alerts")}
       </div>
     );
   }
@@ -54,10 +44,13 @@ export function AlertListWidget({
   const colMap = buildColumnIndexMap(data);
 
   const handleAck = async (alertId: string) => {
+    if (!canAck) return;
     setAckingId(alertId);
     setErrorMsg(null);
     try {
-      await axflowApi.ackAlert(alertId, { comment: "驾驶舱内确认" });
+      await axflowApi.ackAlert(alertId, {
+        comment: tx("驾驶舱确认", "Acknowledged in cockpit"),
+      });
       setAckedIds((prev) => new Set(prev).add(alertId));
       onAckSuccess?.();
     } catch (err) {
@@ -84,19 +77,23 @@ export function AlertListWidget({
             getCell(row, colMap, "message", -1) ??
             row[4] ??
             row[1] ??
-            "未命名告警"
+            tx("告警事件", "Alert")
         );
         const severity = String(getCell(row, colMap, "severity", 2) ?? "WARN");
         const rawStatus = String(getCell(row, colMap, "status", 3) ?? "OPEN");
         const status = ackedIds.has(id) ? "ACK" : rawStatus;
         const nodeIdRaw = getCell(row, colMap, "node_id", -1);
-        const nodeId = typeof nodeIdRaw === "string" && nodeIdRaw ? nodeIdRaw : null;
+        const nodeId =
+          typeof nodeIdRaw === "string" && nodeIdRaw ? nodeIdRaw : null;
         const seenAtRaw =
           getCell(row, colMap, "last_seen_at", -1) ??
           getCell(row, colMap, "first_seen_at", -1) ??
           getCell(row, colMap, "created_at", -1) ??
           "";
-        const formattedTime = formatAlertTime(seenAtRaw);
+        const seenStr =
+          typeof seenAtRaw === "string" && seenAtRaw.trim()
+            ? fmtTime(seenAtRaw)
+            : "";
 
         return (
           <div
@@ -104,7 +101,9 @@ export function AlertListWidget({
             className="rounded border border-border p-2 flex items-center justify-between gap-2 bg-background hover:bg-muted/30"
           >
             <div
-              className={`min-w-0 flex-1 ${nodeId && onSelectNode ? "cursor-pointer" : ""}`}
+              className={`min-w-0 flex-1 ${
+                nodeId && onSelectNode ? "cursor-pointer" : ""
+              }`}
               onClick={() => {
                 if (nodeId && onSelectNode) {
                   onSelectNode(nodeId, title);
@@ -114,32 +113,35 @@ export function AlertListWidget({
               <div className="flex items-center gap-1.5">
                 <AlertTriangle
                   className={`h-3.5 w-3.5 shrink-0 ${
-                    severity === "CRITICAL" ? "text-foreground" : "text-xblue"
+                    severity === "CRITICAL"
+                      ? "text-red-500"
+                      : "text-amber-500"
                   }`}
                 />
                 <span className="font-medium truncate">{title}</span>
-                <Badge variant={severity === "CRITICAL" ? "neutral" : "xblue"}>
-                  {severity}
-                </Badge>
-                <Badge variant="outline">{status}</Badge>
+                <StatusBadge status={severity} />
+                <StatusBadge status={status} />
               </div>
-              {formattedTime.length > 0 && (
+              {seenStr && seenStr !== "-" && (
                 <div className="text-[10px] font-mono-tech text-muted-foreground mt-0.5 truncate">
-                  {formattedTime}
+                  {seenStr}
                 </div>
               )}
             </div>
 
-            {!readOnly && status === "OPEN" && (
+            {!readOnly && canAck && status === "OPEN" && (
               <Button
                 type="button"
                 variant="outline"
-                className="px-2 py-1 text-[11px] shrink-0"
+                size="sm"
+                className="h-6 px-2 text-[11px] shrink-0"
                 disabled={ackingId === id}
                 onClick={() => void handleAck(id)}
               >
                 <CheckCircle2 className="h-3 w-3 text-xblue" />
-                {ackingId === id ? "处理中" : "确认"}
+                {ackingId === id
+                  ? tx("处理中…", "Saving…")
+                  : tx("确认", "Ack")}
               </Button>
             )}
           </div>

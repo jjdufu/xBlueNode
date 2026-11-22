@@ -19,12 +19,22 @@ import type {
   TestChannelResponse,
   UpdateNotifyChannelRequest,
 } from "@/lib/api";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  PasswordInput,
+  Select,
+  StatusBadge,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 export interface ChannelFormProps {
   channels: readonly NotifyChannelRecord[];
   saving: boolean;
+  canEdit: boolean;
   testingChannelId: string | null;
   testResults: Readonly<Record<string, TestChannelResponse>>;
   onCreateChannel: (req: CreateNotifyChannelRequest) => Promise<void>;
@@ -33,42 +43,10 @@ export interface ChannelFormProps {
   onTestChannel: (id: string) => Promise<void>;
 }
 
-const CHANNEL_KINDS: readonly { value: NotifyKind; label: string }[] = [
-  { value: "WEBHOOK", label: "WEBHOOK · HMAC-SHA256 签名回调" },
-  { value: "EMAIL", label: "EMAIL · SMTP 邮件投递" },
-  { value: "WECOM", label: "WECOM · 企业微信群机器人" },
-  { value: "DINGTALK", label: "DINGTALK · 钉钉加签机器人" },
-  { value: "FEISHU", label: "FEISHU · 飞书交互卡片机器人" },
-];
-
-function summarizeChannelConfig(ch: NotifyChannelRecord): string {
-  switch (ch.kind) {
-    case "WEBHOOK":
-      return typeof ch.config.url === "string" && ch.config.url
-        ? ch.config.url
-        : "未配置 URL";
-    case "EMAIL": {
-      const host =
-        typeof ch.config.smtp_host === "string" ? ch.config.smtp_host : "smtp";
-      const toList = Array.isArray(ch.config.to) ? ch.config.to.length : 0;
-      return `${host} · 收件人 ×${toList}`;
-    }
-    case "WECOM":
-      return "企业微信群机器人 Markdown 通道";
-    case "DINGTALK": {
-      const mobiles = Array.isArray(ch.config.at_mobiles)
-        ? ch.config.at_mobiles.length
-        : 0;
-      return `钉钉自定义机器人 · @手机号 ×${mobiles}`;
-    }
-    case "FEISHU":
-      return "飞书自定义机器人 Interactive 卡片";
-  }
-}
-
 export function ChannelForm({
   channels,
   saving,
+  canEdit,
   testingChannelId,
   testResults,
   onCreateChannel,
@@ -76,6 +54,7 @@ export function ChannelForm({
   onDeleteChannel,
   onTestChannel,
 }: ChannelFormProps) {
+  const { tx } = useI18n();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [kind, setKind] = useState<NotifyKind>("WEBHOOK");
@@ -103,6 +82,39 @@ export function ChannelForm({
   const [feishuWebhookUrl, setFeishuWebhookUrl] = useState("");
   const [feishuSecret, setFeishuSecret] = useState("");
   const [formError, setFormError] = useState<string | null>(null);
+
+  const channelKinds: readonly { value: NotifyKind; label: string }[] = [
+    { value: "WEBHOOK", label: tx("Webhook 签名回调", "Webhook (HMAC-SHA256)") },
+    { value: "EMAIL", label: tx("SMTP 邮件", "SMTP Email") },
+    { value: "WECOM", label: tx("企业微信机器人", "WeCom Bot") },
+    { value: "DINGTALK", label: tx("钉钉机器人", "DingTalk Bot") },
+    { value: "FEISHU", label: tx("飞书机器人", "Feishu Bot") },
+  ];
+
+  const summarizeChannelConfig = (ch: NotifyChannelRecord): string => {
+    switch (ch.kind) {
+      case "WEBHOOK":
+        return typeof ch.config.url === "string" && ch.config.url
+          ? ch.config.url
+          : tx("未配置地址", "No URL");
+      case "EMAIL": {
+        const host =
+          typeof ch.config.smtp_host === "string" ? ch.config.smtp_host : "smtp";
+        const toList = Array.isArray(ch.config.to) ? ch.config.to.length : 0;
+        return `${host} · ×${toList}`;
+      }
+      case "WECOM":
+        return tx("企业微信 Markdown 通道", "WeCom Markdown");
+      case "DINGTALK": {
+        const mobiles = Array.isArray(ch.config.at_mobiles)
+          ? ch.config.at_mobiles.length
+          : 0;
+        return `${tx("钉钉机器人", "DingTalk")} · @×${mobiles}`;
+      }
+      case "FEISHU":
+        return tx("飞书交互卡片通道", "Feishu Interactive Card");
+    }
+  };
 
   const clearSecretInputs = () => {
     setSigningSecret("");
@@ -189,7 +201,7 @@ export function ChannelForm({
 
     if (kind === "WEBHOOK") {
       if (!webhookUrl.trim()) {
-        setFormError("WEBHOOK 渠道必须填写回调 URL");
+        setFormError(tx("Webhook 回调地址不能为空", "Webhook URL is required"));
         return null;
       }
       const headers: Record<string, string> = {};
@@ -207,7 +219,9 @@ export function ChannelForm({
 
     if (kind === "EMAIL") {
       if (!smtpHost.trim() || !emailFrom.trim()) {
-        setFormError("EMAIL 渠道必须填写 SMTP 主机与发件人地址");
+        setFormError(
+          tx("SMTP 主机与发件人不能为空", "SMTP host and sender are required")
+        );
         return null;
       }
       const to = emailToCsv
@@ -230,7 +244,7 @@ export function ChannelForm({
 
     if (kind === "WECOM") {
       if (!editingId && !wecomKey.trim()) {
-        setFormError("新建企业微信渠道必须填写 webhook_key 密钥");
+        setFormError(tx("企业微信机器人密钥不能为空", "WeCom key is required"));
         return null;
       }
       if (wecomKey.trim()) secrets.webhook_key = wecomKey.trim();
@@ -239,7 +253,7 @@ export function ChannelForm({
 
     if (kind === "DINGTALK") {
       if (!editingId && !dingtalkToken.trim()) {
-        setFormError("新建钉钉渠道必须填写 access_token 密钥");
+        setFormError(tx("钉钉机器人令牌不能为空", "DingTalk token is required"));
         return null;
       }
       const at_mobiles = dingtalkMobilesCsv
@@ -251,9 +265,8 @@ export function ChannelForm({
       return { config: { at_mobiles }, secrets };
     }
 
-    // FEISHU
     if (!editingId && !feishuWebhookUrl.trim()) {
-      setFormError("新建飞书渠道必须填写完整机器人 webhook_url 秘密地址");
+      setFormError(tx("飞书机器人地址不能为空", "Feishu webhook URL is required"));
       return null;
     }
     if (feishuWebhookUrl.trim()) secrets.webhook_url = feishuWebhookUrl.trim();
@@ -263,8 +276,9 @@ export function ChannelForm({
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canEdit) return;
     if (!name.trim()) {
-      setFormError("请填写通知渠道名称");
+      setFormError(tx("渠道名称不能为空", "Channel name is required"));
       return;
     }
     const built = buildConfigAndSecrets();
@@ -279,7 +293,6 @@ export function ChannelForm({
         allow_private_network: allowPrivateNetwork,
         enabled,
       };
-      // Only send `secrets` when new write-only values were entered so existing `ds_credentials` stay intact
       if (Object.keys(built.secrets).length > 0) {
         updatePayload.secrets = built.secrets;
       }
@@ -305,28 +318,36 @@ export function ChannelForm({
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
       {/* Left: Channels List */}
-      <Card className="lg:col-span-6 overflow-hidden" data-testid="channels-list-card">
+      <Card
+        className={cn(
+          "overflow-hidden",
+          canEdit ? "lg:col-span-6" : "lg:col-span-12"
+        )}
+        data-testid="channels-list-card"
+      >
         <div className="flex items-center justify-between border-b border-border bg-muted/30 px-3.5 py-3">
           <div className="flex items-center gap-2 text-xs font-medium">
-            <span>通知投递渠道</span>
+            <span>{tx("通知渠道", "Notification Channels")}</span>
             <Badge variant="outline">{channels.length}</Badge>
           </div>
-          <Button
-            type="button"
-            variant="outline"
-            className="h-7 px-2.5 text-xs"
-            data-testid="new-channel-btn"
-            onClick={resetForm}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            新建渠道
-          </Button>
+          {canEdit && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              data-testid="new-channel-btn"
+              onClick={resetForm}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {tx("新建渠道", "New Channel")}
+            </Button>
+          )}
         </div>
 
         <div className="divide-y divide-border">
           {channels.length === 0 ? (
             <div className="p-8 text-center text-xs text-muted-foreground">
-              尚未配置通知渠道，支持 Webhook / 邮件 / 企业微信 / 钉钉 / 飞书
+              {tx("暂无通知渠道", "No notification channels")}
             </div>
           ) : (
             channels.map((ch) => {
@@ -348,9 +369,9 @@ export function ChannelForm({
                           {ch.name}
                         </span>
                         <Badge variant="neutral">{ch.kind}</Badge>
-                        <Badge variant={ch.enabled ? "xblue" : "outline"}>
-                          {ch.enabled ? "ENABLED" : "DISABLED"}
-                        </Badge>
+                        <StatusBadge
+                          status={ch.enabled ? "ENABLED" : "DISABLED"}
+                        />
                       </div>
                       <div className="text-[11px] font-mono-tech text-muted-foreground truncate">
                         {summarizeChannelConfig(ch)}
@@ -361,7 +382,8 @@ export function ChannelForm({
                       <Button
                         type="button"
                         variant="outline"
-                        className="h-7 px-2.5 text-[11px] border-xblue/40 text-xblue hover:bg-xblue-soft"
+                        size="sm"
+                        className="border-xblue/40 text-xblue hover:bg-xblue-soft"
                         data-testid={`test-channel-btn-${ch.id}`}
                         disabled={isTesting}
                         onClick={() => {
@@ -369,41 +391,53 @@ export function ChannelForm({
                         }}
                       >
                         <Send className="h-3 w-3" />
-                        {isTesting ? "投递中..." : "测试投递"}
+                        {isTesting
+                          ? tx("投递中…", "Sending…")
+                          : tx("测试投递", "Test")}
                       </Button>
 
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className="h-7 px-2 text-[11px]"
-                        onClick={() => {
-                          void onUpdateChannel(ch.id, { enabled: !ch.enabled });
-                        }}
-                      >
-                        <Power className="h-3 w-3" />
-                      </Button>
+                      {canEdit && (
+                        <>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              void onUpdateChannel(ch.id, { enabled: !ch.enabled });
+                            }}
+                            title={
+                              ch.enabled
+                                ? tx("停用", "Disable")
+                                : tx("启用", "Enable")
+                            }
+                          >
+                            <Power className="h-3 w-3" />
+                          </Button>
 
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className="h-7 px-2 text-[11px]"
-                        data-testid={`edit-channel-btn-${ch.id}`}
-                        onClick={() => loadForEdit(ch)}
-                      >
-                        <Edit3 className="h-3 w-3" />
-                      </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            data-testid={`edit-channel-btn-${ch.id}`}
+                            onClick={() => loadForEdit(ch)}
+                          >
+                            <Edit3 className="h-3 w-3" />
+                          </Button>
 
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        className="h-7 px-2 text-[11px] text-red-600 dark:text-red-400"
-                        data-testid={`delete-channel-btn-${ch.id}`}
-                        onClick={() => {
-                          void onDeleteChannel(ch.id);
-                        }}
-                      >
-                        <Trash2 className="h-3 w-3" />
-                      </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="text-red-600 dark:text-red-400"
+                            data-testid={`delete-channel-btn-${ch.id}`}
+                            onClick={() => {
+                              void onDeleteChannel(ch.id);
+                            }}
+                          >
+                            <Trash2 className="h-3 w-3" />
+                          </Button>
+                        </>
+                      )}
                     </div>
                   </div>
 
@@ -421,12 +455,12 @@ export function ChannelForm({
                       {ch.allow_private_network ? (
                         <>
                           <ShieldAlert className="h-2.5 w-2.5" />
-                          允许内网地址 (allow_private_network)
+                          {tx("允许内网地址", "Private Network Allowed")}
                         </>
                       ) : (
                         <>
                           <Globe className="h-2.5 w-2.5" />
-                          仅公网出站 (NetGuard SSRF 保护)
+                          {tx("仅公网出站", "Public Network Only")}
                         </>
                       )}
                     </span>
@@ -436,7 +470,9 @@ export function ChannelForm({
                       data-testid={`channel-secrets-badges-${ch.id}`}
                     >
                       {ch.secret_fields_set.length === 0 ? (
-                        <Badge variant="outline">无加密密钥字段</Badge>
+                        <Badge variant="outline">
+                          {tx("无加密密钥", "No Sealed Secrets")}
+                        </Badge>
                       ) : (
                         ch.secret_fields_set.map((field) => (
                           <span
@@ -444,7 +480,7 @@ export function ChannelForm({
                             className="inline-flex items-center gap-1 rounded border border-xblue/30 bg-xblue-soft px-1.5 py-0.5 text-[10px] font-mono-tech text-xblue"
                           >
                             <Lock className="h-2.5 w-2.5" />
-                            {field} · 已封存
+                            {field} · {tx("已封存", "Sealed")}
                           </span>
                         ))
                       )}
@@ -463,7 +499,7 @@ export function ChannelForm({
                       )}
                     >
                       <span>
-                        测试状态: {testRes.delivery.status} (event=
+                        {tx("状态", "Status")}: {testRes.delivery.status} (
                         {testRes.delivery.event})
                       </span>
                       <span>
@@ -482,361 +518,353 @@ export function ChannelForm({
       </Card>
 
       {/* Right: Separated `config` + Write-Only `secrets` Form */}
-      <Card className="lg:col-span-6 p-4">
-        <form
-          onSubmit={(e) => {
-            void handleSubmit(e);
-          }}
-          className="space-y-4"
-          data-testid="channel-form"
-        >
-          <div className="flex items-center justify-between border-b border-border pb-2.5">
-            <div className="text-xs font-semibold">
-              {editingId ? `编辑通知渠道 (${name})` : "注册通知渠道"}
-            </div>
-            {editingId && (
-              <Button
-                type="button"
-                variant="ghost"
-                className="h-7 px-2 text-xs"
-                onClick={resetForm}
-              >
-                <RotateCcw className="h-3 w-3" />
-                取消编辑
-              </Button>
-            )}
-          </div>
-
-          {formError && (
-            <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
-              {formError}
-            </div>
-          )}
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div>
-              <label className="block text-[11px] text-muted-foreground mb-1">
-                渠道唯一名称 (name)
-              </label>
-              <Input
-                data-testid="channel-name-input"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="ops_webhook"
-                className="h-8 text-xs font-mono-tech"
-              />
-            </div>
-
-            <div>
-              <label className="block text-[11px] text-muted-foreground mb-1">
-                渠道类型 (kind)
-              </label>
-              <select
-                data-testid="channel-kind-select"
-                value={kind}
-                onChange={(e) => setKind(e.target.value as NotifyKind)}
-                className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs"
-              >
-                {CHANNEL_KINDS.map((item) => (
-                  <option key={item.value} value={item.value}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Non-Secret Config Section */}
-          <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2.5">
-            <div className="text-[11px] font-semibold text-foreground">
-              1. 非秘密连接参数 (config JSON)
-            </div>
-
-            {kind === "WEBHOOK" && (
-              <div className="space-y-2.5">
-                <div>
-                  <label className="block text-[11px] text-muted-foreground mb-1">
-                    回调地址 (config.url)
-                  </label>
-                  <Input
-                    data-testid="channel-webhook-url-input"
-                    value={webhookUrl}
-                    onChange={(e) => setWebhookUrl(e.target.value)}
-                    placeholder="https://hooks.example.com/axalerts"
-                    className="h-8 text-xs font-mono-tech"
-                  />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <Input
-                    value={webhookHeaderKey}
-                    onChange={(e) => setWebhookHeaderKey(e.target.value)}
-                    placeholder="自定义 Header 名 (可选)"
-                    className="h-8 text-xs font-mono-tech"
-                  />
-                  <Input
-                    value={webhookHeaderVal}
-                    onChange={(e) => setWebhookHeaderVal(e.target.value)}
-                    placeholder="Header 值 (可选)"
-                    className="h-8 text-xs font-mono-tech"
-                  />
-                </div>
+      {canEdit && (
+        <Card className="lg:col-span-6 p-4">
+          <form
+            onSubmit={(e) => {
+              void handleSubmit(e);
+            }}
+            className="space-y-4"
+            data-testid="channel-form"
+          >
+            <div className="flex items-center justify-between border-b border-border pb-2.5">
+              <div className="text-xs font-semibold">
+                {editingId
+                  ? tx(`编辑渠道 · ${name}`, `Edit Channel · ${name}`)
+                  : tx("新建渠道", "New Channel")}
               </div>
-            )}
-
-            {kind === "EMAIL" && (
-              <div className="space-y-2.5">
-                <div className="grid grid-cols-3 gap-2">
-                  <div className="col-span-2">
-                    <label className="block text-[11px] text-muted-foreground mb-1">
-                      SMTP 主机 (smtp_host)
-                    </label>
-                    <Input
-                      value={smtpHost}
-                      onChange={(e) => setSmtpHost(e.target.value)}
-                      placeholder="smtp.example.com"
-                      className="h-8 text-xs font-mono-tech"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-muted-foreground mb-1">
-                      端口 (smtp_port)
-                    </label>
-                    <Input
-                      type="number"
-                      value={smtpPort}
-                      onChange={(e) => setSmtpPort(Number(e.target.value))}
-                      className="h-8 text-xs font-mono-tech"
-                    />
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[11px] text-muted-foreground mb-1">
-                      发件人 (from)
-                    </label>
-                    <Input
-                      value={emailFrom}
-                      onChange={(e) => setEmailFrom(e.target.value)}
-                      placeholder="alerts@example.com"
-                      className="h-8 text-xs font-mono-tech"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-[11px] text-muted-foreground mb-1">
-                      收件人列表 (逗号分隔)
-                    </label>
-                    <Input
-                      value={emailToCsv}
-                      onChange={(e) => setEmailToCsv(e.target.value)}
-                      placeholder="oncall@example.com"
-                      className="h-8 text-xs font-mono-tech"
-                    />
-                  </div>
-                </div>
-                <label className="inline-flex items-center gap-2 text-xs cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={smtpStarttls}
-                    onChange={(e) => setSmtpStarttls(e.target.checked)}
-                    className="h-3.5 w-3.5 rounded border-border accent-xblue"
-                  />
-                  <span>启用 STARTTLS 传输加密</span>
-                </label>
-              </div>
-            )}
-
-            {kind === "DINGTALK" && (
-              <div>
-                <label className="block text-[11px] text-muted-foreground mb-1">
-                  @提醒手机号列表 (at_mobiles，逗号分隔，可选)
-                </label>
-                <Input
-                  value={dingtalkMobilesCsv}
-                  onChange={(e) => setDingtalkMobilesCsv(e.target.value)}
-                  placeholder="13800000000"
-                  className="h-8 text-xs font-mono-tech"
-                />
-              </div>
-            )}
-
-            {(kind === "WECOM" || kind === "FEISHU") && (
-              <div className="text-[11px] text-muted-foreground">
-                {kind} 机器人地址/令牌包含敏感凭证，全部通过下方只写密钥区加密存储（
-                <code className="font-mono-tech">config = {"{}"}</code>）。
-              </div>
-            )}
-          </div>
-
-          {/* Write-Only Secrets Section */}
-          <div className="rounded-md border border-xblue/30 bg-xblue-soft/30 p-3 space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
-                <KeyRound className="h-3.5 w-3.5 text-xblue" />
-                2. 只写加密密钥 (secrets → ds_credentials 密钥环封存)
-              </span>
-              {editingChannel && editingChannel.secret_fields_set.length > 0 && (
-                <span className="text-[10px] font-mono-tech text-xblue">
-                  留空则保持已存密钥不变
-                </span>
+              {editingId && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={resetForm}
+                >
+                  <RotateCcw className="h-3 w-3" />
+                  {tx("重置", "Reset")}
+                </Button>
               )}
             </div>
 
-            {kind === "WEBHOOK" && (
+            {formError && (
+              <div className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400">
+                {formError}
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-[11px] text-muted-foreground mb-1">
-                  HMAC-SHA256 签名密钥 (signing_secret)
+                  {tx("渠道名称", "Channel Name")}
                 </label>
                 <Input
-                  type="password"
-                  autoComplete="new-password"
-                  data-testid="channel-signing-secret-input"
-                  value={signingSecret}
-                  onChange={(e) => setSigningSecret(e.target.value)}
-                  placeholder={
-                    editingChannel?.secret_fields_set.includes("signing_secret")
-                      ? "•••••••• (已封存，留空不修改)"
-                      : "输入签名密钥（永不明文回显）"
-                  }
+                  data-testid="channel-name-input"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="ops_webhook"
                   className="h-8 text-xs font-mono-tech"
                 />
               </div>
-            )}
 
-            {kind === "EMAIL" && (
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] text-muted-foreground mb-1">
-                    SMTP 用户名 (smtp_username)
-                  </label>
-                  <Input
-                    value={smtpUsername}
-                    onChange={(e) => setSmtpUsername(e.target.value)}
-                    placeholder="留空不修改"
-                    className="h-8 text-xs font-mono-tech"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-muted-foreground mb-1">
-                    SMTP 密码 (smtp_password)
-                  </label>
-                  <Input
-                    type="password"
-                    autoComplete="new-password"
-                    value={smtpPassword}
-                    onChange={(e) => setSmtpPassword(e.target.value)}
-                    placeholder="••••••••"
-                    className="h-8 text-xs font-mono-tech"
-                  />
-                </div>
-              </div>
-            )}
-
-            {kind === "WECOM" && (
               <div>
                 <label className="block text-[11px] text-muted-foreground mb-1">
-                  企业微信机器人 Key (webhook_key)
+                  {tx("渠道类型", "Channel Kind")}
                 </label>
-                <Input
-                  type="password"
-                  autoComplete="new-password"
-                  value={wecomKey}
-                  onChange={(e) => setWecomKey(e.target.value)}
-                  placeholder="输入 key 参数值（永不回显）"
-                  className="h-8 text-xs font-mono-tech"
-                />
+                <Select
+                  data-testid="channel-kind-select"
+                  value={kind}
+                  onChange={(e) => setKind(e.target.value as NotifyKind)}
+                  className="h-8 w-full"
+                >
+                  {channelKinds.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </Select>
               </div>
-            )}
+            </div>
 
-            {kind === "DINGTALK" && (
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[11px] text-muted-foreground mb-1">
-                    机器人令牌 (access_token)
-                  </label>
-                  <Input
-                    type="password"
-                    autoComplete="new-password"
-                    value={dingtalkToken}
-                    onChange={(e) => setDingtalkToken(e.target.value)}
-                    placeholder="access_token"
-                    className="h-8 text-xs font-mono-tech"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] text-muted-foreground mb-1">
-                    加签密钥 (sign_secret)
-                  </label>
-                  <Input
-                    type="password"
-                    autoComplete="new-password"
-                    value={dingtalkSecret}
-                    onChange={(e) => setDingtalkSecret(e.target.value)}
-                    placeholder="SEC..."
-                    className="h-8 text-xs font-mono-tech"
-                  />
-                </div>
+            {/* Non-Secret Config Section */}
+            <div className="rounded-md border border-border bg-muted/20 p-3 space-y-2.5">
+              <div className="text-[11px] font-semibold text-foreground">
+                {tx("连接参数", "Connection Config")}
               </div>
-            )}
 
-            {kind === "FEISHU" && (
-              <div className="grid grid-cols-2 gap-2">
+              {kind === "WEBHOOK" && (
+                <div className="space-y-2.5">
+                  <div>
+                    <label className="block text-[11px] text-muted-foreground mb-1">
+                      {tx("回调地址", "Webhook URL")}
+                    </label>
+                    <Input
+                      data-testid="channel-webhook-url-input"
+                      value={webhookUrl}
+                      onChange={(e) => setWebhookUrl(e.target.value)}
+                      placeholder="https://hooks.example.com/axalerts"
+                      className="h-8 text-xs font-mono-tech"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      value={webhookHeaderKey}
+                      onChange={(e) => setWebhookHeaderKey(e.target.value)}
+                      placeholder="X-Env"
+                      className="h-8 text-xs font-mono-tech"
+                    />
+                    <Input
+                      value={webhookHeaderVal}
+                      onChange={(e) => setWebhookHeaderVal(e.target.value)}
+                      placeholder="production"
+                      className="h-8 text-xs font-mono-tech"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {kind === "EMAIL" && (
+                <div className="space-y-2.5">
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="col-span-2">
+                      <label className="block text-[11px] text-muted-foreground mb-1">
+                        {tx("SMTP 主机", "SMTP Host")}
+                      </label>
+                      <Input
+                        value={smtpHost}
+                        onChange={(e) => setSmtpHost(e.target.value)}
+                        placeholder="smtp.example.com"
+                        className="h-8 text-xs font-mono-tech"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-muted-foreground mb-1">
+                        {tx("端口", "Port")}
+                      </label>
+                      <Input
+                        type="number"
+                        value={smtpPort}
+                        onChange={(e) => setSmtpPort(Number(e.target.value))}
+                        className="h-8 text-xs font-mono-tech"
+                      />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[11px] text-muted-foreground mb-1">
+                        {tx("发件人", "Sender")}
+                      </label>
+                      <Input
+                        value={emailFrom}
+                        onChange={(e) => setEmailFrom(e.target.value)}
+                        placeholder="alerts@example.com"
+                        className="h-8 text-xs font-mono-tech"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] text-muted-foreground mb-1">
+                        {tx("收件人列表", "Recipients")}
+                      </label>
+                      <Input
+                        value={emailToCsv}
+                        onChange={(e) => setEmailToCsv(e.target.value)}
+                        placeholder="oncall@example.com"
+                        className="h-8 text-xs font-mono-tech"
+                      />
+                    </div>
+                  </div>
+                  <label className="inline-flex items-center gap-2 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={smtpStarttls}
+                      onChange={(e) => setSmtpStarttls(e.target.checked)}
+                      className="h-3.5 w-3.5 rounded border-border accent-xblue"
+                    />
+                    <span>STARTTLS</span>
+                  </label>
+                </div>
+              )}
+
+              {kind === "DINGTALK" && (
                 <div>
                   <label className="block text-[11px] text-muted-foreground mb-1">
-                    完整机器人地址 (webhook_url)
+                    {tx("提醒手机号", "Mentioned Mobiles")}
                   </label>
                   <Input
-                    type="password"
-                    autoComplete="new-password"
-                    value={feishuWebhookUrl}
-                    onChange={(e) => setFeishuWebhookUrl(e.target.value)}
-                    placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..."
+                    value={dingtalkMobilesCsv}
+                    onChange={(e) => setDingtalkMobilesCsv(e.target.value)}
+                    placeholder="13800000000"
                     className="h-8 text-xs font-mono-tech"
                   />
                 </div>
-                <div>
-                  <label className="block text-[11px] text-muted-foreground mb-1">
-                    签名校验密钥 (sign_secret 可选)
-                  </label>
-                  <Input
-                    type="password"
-                    autoComplete="new-password"
-                    value={feishuSecret}
-                    onChange={(e) => setFeishuSecret(e.target.value)}
-                    placeholder="留空不开启签名"
-                    className="h-8 text-xs font-mono-tech"
-                  />
+              )}
+
+              {(kind === "WECOM" || kind === "FEISHU") && (
+                <div className="text-[11px] text-muted-foreground">
+                  {tx(
+                    "机器人敏感凭证仅在下方只写密钥区存储。",
+                    "Bot credentials are sealed exclusively in the write-only secrets section."
+                  )}
                 </div>
+              )}
+            </div>
+
+            {/* Write-Only Secrets Section */}
+            <div className="rounded-md border border-xblue/30 bg-xblue-soft/30 p-3 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-foreground">
+                  <KeyRound className="h-3.5 w-3.5 text-xblue" />
+                  {tx("只写加密密钥", "Write-Only Sealed Secrets")}
+                </span>
+                {editingChannel && editingChannel.secret_fields_set.length > 0 && (
+                  <span className="text-[10px] font-mono-tech text-xblue">
+                    {tx("留空保持原密钥", "Leave blank to keep existing")}
+                  </span>
+                )}
               </div>
-            )}
-          </div>
 
-          {/* Flags & Submit */}
-          <div className="space-y-2 pt-1">
-            <label className="flex items-center gap-2 text-xs cursor-pointer">
-              <input
-                type="checkbox"
-                data-testid="channel-allow-private-checkbox"
-                checked={allowPrivateNetwork}
-                onChange={(e) => setAllowPrivateNetwork(e.target.checked)}
-                className="h-3.5 w-3.5 rounded border-border accent-xblue"
-              />
-              <span>
-                允许访问内网 / Loopback 地址 (
-                <code className="font-mono-tech">allow_private_network</code>，需{" "}
-                <code className="font-mono-tech">GUARD_ADMIN</code> 权限)
-              </span>
-            </label>
+              {kind === "WEBHOOK" && (
+                <div>
+                  <label className="block text-[11px] text-muted-foreground mb-1">
+                    {tx("签名密钥", "Signing Secret")}
+                  </label>
+                  <PasswordInput
+                    autoComplete="new-password"
+                    data-testid="channel-signing-secret-input"
+                    value={signingSecret}
+                    onChange={(e) => setSigningSecret(e.target.value)}
+                    placeholder="whsec_..."
+                    className="h-8 text-xs font-mono-tech"
+                  />
+                </div>
+              )}
 
-            <div className="flex items-center justify-between pt-2 border-t border-border">
-              <label className="inline-flex items-center gap-2 text-xs cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  onChange={(e) => setEnabled(e.target.checked)}
-                  className="h-3.5 w-3.5 rounded border-border accent-xblue"
-                />
-                <span>启用该通知渠道</span>
-              </label>
+              {kind === "EMAIL" && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] text-muted-foreground mb-1">
+                      {tx("SMTP 用户名", "SMTP Username")}
+                    </label>
+                    <Input
+                      value={smtpUsername}
+                      onChange={(e) => setSmtpUsername(e.target.value)}
+                      placeholder="mailer"
+                      className="h-8 text-xs font-mono-tech"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-muted-foreground mb-1">
+                      {tx("SMTP 口令", "SMTP Password")}
+                    </label>
+                    <PasswordInput
+                      autoComplete="new-password"
+                      value={smtpPassword}
+                      onChange={(e) => setSmtpPassword(e.target.value)}
+                      placeholder="••••••••"
+                      className="h-8 text-xs font-mono-tech"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {kind === "WECOM" && (
+                <div>
+                  <label className="block text-[11px] text-muted-foreground mb-1">
+                    {tx("机器人 Key", "Bot Key")}
+                  </label>
+                  <PasswordInput
+                    autoComplete="new-password"
+                    value={wecomKey}
+                    onChange={(e) => setWecomKey(e.target.value)}
+                    placeholder="webhook_key"
+                    className="h-8 text-xs font-mono-tech"
+                  />
+                </div>
+              )}
+
+              {kind === "DINGTALK" && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] text-muted-foreground mb-1">
+                      {tx("访问令牌", "Access Token")}
+                    </label>
+                    <PasswordInput
+                      autoComplete="new-password"
+                      value={dingtalkToken}
+                      onChange={(e) => setDingtalkToken(e.target.value)}
+                      placeholder="access_token"
+                      className="h-8 text-xs font-mono-tech"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-muted-foreground mb-1">
+                      {tx("加签密钥", "Signing Secret")}
+                    </label>
+                    <PasswordInput
+                      autoComplete="new-password"
+                      value={dingtalkSecret}
+                      onChange={(e) => setDingtalkSecret(e.target.value)}
+                      placeholder="SEC..."
+                      className="h-8 text-xs font-mono-tech"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {kind === "FEISHU" && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] text-muted-foreground mb-1">
+                      {tx("机器人地址", "Webhook URL")}
+                    </label>
+                    <PasswordInput
+                      autoComplete="new-password"
+                      value={feishuWebhookUrl}
+                      onChange={(e) => setFeishuWebhookUrl(e.target.value)}
+                      placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..."
+                      className="h-8 text-xs font-mono-tech"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-muted-foreground mb-1">
+                      {tx("签名密钥", "Signing Secret")}
+                    </label>
+                    <PasswordInput
+                      autoComplete="new-password"
+                      value={feishuSecret}
+                      onChange={(e) => setFeishuSecret(e.target.value)}
+                      placeholder="sign_secret"
+                      className="h-8 text-xs font-mono-tech"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Security Switches & Submit */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-border">
+              <div className="flex flex-wrap items-center gap-4 text-xs">
+                <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    data-testid="channel-private-net-checkbox"
+                    checked={allowPrivateNetwork}
+                    onChange={(e) => setAllowPrivateNetwork(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-border accent-xblue"
+                  />
+                  <span>{tx("允许内网目标", "Allow Private Network")}</span>
+                </label>
+
+                <label className="inline-flex items-center gap-1.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    data-testid="channel-enabled-checkbox"
+                    checked={enabled}
+                    onChange={(e) => setEnabled(e.target.checked)}
+                    className="h-3.5 w-3.5 rounded border-border accent-xblue"
+                  />
+                  <span>{tx("启用渠道", "Enable Channel")}</span>
+                </label>
+              </div>
 
               <Button
                 type="submit"
@@ -846,15 +874,15 @@ export function ChannelForm({
               >
                 <Save className="h-3.5 w-3.5" />
                 {saving
-                  ? "保存中..."
+                  ? tx("保存中…", "Saving…")
                   : editingId
-                    ? "更新渠道"
-                    : "创建渠道"}
+                    ? tx("保存渠道", "Save Channel")
+                    : tx("创建渠道", "Create Channel")}
               </Button>
             </div>
-          </div>
-        </form>
-      </Card>
+          </form>
+        </Card>
+      )}
     </div>
   );
 }

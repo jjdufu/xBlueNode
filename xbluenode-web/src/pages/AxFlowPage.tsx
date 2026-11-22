@@ -9,6 +9,8 @@ import {
   Trash2,
   Webhook,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import {
   DEFAULT_RETRY_POLICY,
   DEFAULT_TRIGGER_CFG,
@@ -40,12 +42,21 @@ import {
   type NodeStepRuntimeBadge,
 } from "@/components/axflow/FlowCanvas";
 import { NodeConfigForm } from "@/components/axflow/NodeConfigForm";
-import { OperatorPalette } from "@/components/axflow/OperatorPalette";
+import {
+  OperatorPalette,
+  resolveOperatorTitle,
+} from "@/components/axflow/OperatorPalette";
 import { RunHistory } from "@/components/axflow/RunHistory";
 import { RunTimeline } from "@/components/axflow/RunTimeline";
 import { TriggerEditor } from "@/components/axflow/TriggerEditor";
 import { VersionDeployPanel } from "@/components/axflow/VersionDeployPanel";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Select,
+} from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 type InspectorTab = "node" | "trigger" | "version";
@@ -85,14 +96,19 @@ function generateUniqueNodeId(
 }
 
 export function AxFlowPage() {
+  const { isZh, tx, tEnum } = useI18n();
+  const { me, can } = usePrincipal();
+  const canEdit = can("FLOW_EDIT");
+  const canRun = can("FLOW_RUN");
+
   const [operators, setOperators] = useState<OperatorSpecDto[]>([
     ...FALLBACK_OPERATOR_SPECS,
   ]);
-  const [tenantId, setTenantId] = useState("default");
+  const [tenantId, setTenantId] = useState(me?.tenant_id || "default");
   const [flows, setFlows] = useState<FlowRecord[]>([]);
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
 
-  // Create flow drawer state
+  // Create flow inline bar state
   const [createOpen, setCreateOpen] = useState(false);
   const [newFlowName, setNewFlowName] = useState("");
   const [newFlowDesc, setNewFlowDesc] = useState("");
@@ -189,7 +205,7 @@ export function AxFlowPage() {
         const nextRunId =
           preferredRunId !== undefined
             ? preferredRunId
-            : runsRes.items[0]?.id ?? null;
+            : (runsRes.items[0]?.id ?? null);
         setSelectedRunId(nextRunId);
         if (!nextRunId) {
           setActiveRunDetail(null);
@@ -259,9 +275,9 @@ export function AxFlowPage() {
 
       if (getAccessToken()) {
         try {
-          const me = await fetchMe();
-          if (!cancelled && me.tenant_id) {
-            setTenantId(me.tenant_id);
+          const profile = await fetchMe();
+          if (!cancelled && profile.tenant_id) {
+            setTenantId(profile.tenant_id);
           }
         } catch {
           // ignore
@@ -330,6 +346,7 @@ export function AxFlowPage() {
       setActiveRunDetail(listMatch);
     }
     void refreshRunTelemetry(selectedRunId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRunId, refreshRunTelemetry]);
 
   // Auto-poll while selected run is non-terminal
@@ -393,6 +410,7 @@ export function AxFlowPage() {
   };
 
   const handleCreateFlow = async () => {
+    if (!canEdit) return;
     const trimmed = newFlowName.trim();
     if (!trimmed) return;
     setCreating(true);
@@ -403,24 +421,24 @@ export function AxFlowPage() {
         {
           id: "ingest_source",
           kind: "SOURCE_INGEST",
-          label: "数据源同步入湖",
+          label: tx("数据源同步入湖", "Sync Source Dataset"),
           config: { dataset_id: "", wait: true, timeout_s: 300 },
           retry: { ...DEFAULT_RETRY_POLICY },
           timeout_s: 600,
           on_failure: "FAIL_RUN",
           join: "ALL_SUCCESS",
-          pos: { x: 80, y: 150 },
+          pos: { x: 80, y: 144 },
         },
         {
           id: "transform_check",
           kind: "SQL_TRANSFORM",
-          label: "SQL 变换与质量核验",
+          label: tx("SQL 变换与核验", "SQL Transform & Check"),
           config: { sql: "SELECT 1 AS n", max_rows: 100 },
           retry: { ...DEFAULT_RETRY_POLICY },
           timeout_s: 600,
           on_failure: "FAIL_RUN",
           join: "ALL_SUCCESS",
-          pos: { x: 360, y: 150 },
+          pos: { x: 368, y: 144 },
         },
       ];
       const starterEdges: FlowEdgeDef[] = [
@@ -430,7 +448,8 @@ export function AxFlowPage() {
       const created = await axflowApi.createFlow({
         name: trimmed,
         description:
-          newFlowDesc.trim() || "持久化有向无环图编排与自动回写流水线",
+          newFlowDesc.trim() ||
+          tx("有向无环图编排流水线", "Directed acyclic pipeline"),
         slug: newFlowSlug.trim() || undefined,
         nodes: starterNodes,
         edges: starterEdges,
@@ -448,7 +467,12 @@ export function AxFlowPage() {
       setNewFlowDesc("");
       setNewFlowSlug("");
       setCreateOpen(false);
-      setNotice(`已创建流水线草稿「${target.name}」`);
+      setNotice(
+        tx(
+          `已创建流水线草稿「${target.name}」`,
+          `Created pipeline draft "${target.name}"`
+        )
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -457,7 +481,7 @@ export function AxFlowPage() {
   };
 
   const handleDeleteCurrentFlow = async () => {
-    if (!selectedFlowId) return;
+    if (!selectedFlowId || !canEdit) return;
     setError(null);
     setNotice(null);
     try {
@@ -474,7 +498,7 @@ export function AxFlowPage() {
         setDraftName("");
         setDraftDesc("");
       }
-      setNotice("已删除流水线");
+      setNotice(tx("已删除流水线", "Pipeline deleted"));
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -483,15 +507,16 @@ export function AxFlowPage() {
   // Handlers: Canvas & Node Editing
   const addOperatorNode = useCallback(
     (spec: OperatorSpecDto, explicitPos?: { x: number; y: number }) => {
+      if (!canEdit) return;
       const newId = generateUniqueNodeId(spec.kind, draftNodes);
       const pos = explicitPos ?? {
-        x: 80 + (draftNodes.length % 4) * 260,
-        y: 120 + Math.floor(draftNodes.length / 4) * 160,
+        x: 80 + (draftNodes.length % 4) * 272,
+        y: 128 + Math.floor(draftNodes.length / 4) * 160,
       };
       const newNode: FlowNodeDef = {
         id: newId,
         kind: spec.kind,
-        label: spec.display_name.replace(/\s*\([A-Z_]+\)\s*$/, ""),
+        label: resolveOperatorTitle(spec, isZh),
         config: buildDefaultConfigFromSpec(spec),
         retry: { ...DEFAULT_RETRY_POLICY },
         timeout_s: 600,
@@ -505,7 +530,7 @@ export function AxFlowPage() {
       setInspectorTab("node");
       setIsDirty(true);
     },
-    [draftNodes]
+    [canEdit, draftNodes, isZh]
   );
 
   const handleDropOperator = useCallback(
@@ -587,7 +612,7 @@ export function AxFlowPage() {
 
   // Handlers: Save / Validate / Publish / Deploy
   const handleSaveDraft = async (): Promise<boolean> => {
-    if (!selectedFlowId) return false;
+    if (!selectedFlowId || !canEdit) return false;
     setSaving(true);
     setError(null);
     setNotice(null);
@@ -607,7 +632,7 @@ export function AxFlowPage() {
         setDraftIssues(updated.issues);
       }
       setIsDirty(false);
-      setNotice("流程草稿已保存");
+      setNotice(tx("草稿已保存", "Draft saved"));
       return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -622,7 +647,7 @@ export function AxFlowPage() {
     setValidating(true);
     setError(null);
     try {
-      if (isDirty) {
+      if (isDirty && canEdit) {
         const ok = await handleSaveDraft();
         if (!ok) return;
       }
@@ -630,8 +655,11 @@ export function AxFlowPage() {
       setDraftIssues(res.issues);
       setNotice(
         res.valid
-          ? "静态校验通过，可发布新版本"
-          : `静态校验发现 ${res.issues.length} 项问题`
+          ? tx("静态校验通过", "Static validation passed")
+          : tx(
+              `静态校验发现 ${res.issues.length} 项问题`,
+              `Validation found ${res.issues.length} issues`
+            )
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -646,13 +674,15 @@ export function AxFlowPage() {
     setError(null);
     setNotice(null);
     try {
-      if (isDirty) {
+      if (isDirty && canEdit) {
         const saved = await handleSaveDraft();
         if (!saved) return;
       }
       const ver = await axflowApi.publishVersion(selectedFlowId, { note });
       await loadFlowVersionsAndRuns(selectedFlowId, selectedRunId);
-      setNotice(`已发布不可变版本 v${ver.version}`);
+      setNotice(
+        tx(`已发布版本 v${ver.version}`, `Published version v${ver.version}`)
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -673,7 +703,12 @@ export function AxFlowPage() {
       const verRes = await axflowApi.listVersions(selectedFlowId);
       setVersions(verRes.items);
       setDeployments(verRes.deployments);
-      setNotice(`已将 v${version} 部署至 ${environment} 环境`);
+      setNotice(
+        tx(
+          `已将 v${version} 部署至 ${environment} 环境`,
+          `Deployed v${version} to ${environment}`
+        )
+      );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -683,7 +718,7 @@ export function AxFlowPage() {
 
   // Handlers: Runs & Approvals
   const handleStartRun = async (req?: StartFlowRunRequest) => {
-    if (!selectedFlowId) return;
+    if (!selectedFlowId || !canRun) return;
     setStartingRun(true);
     setError(null);
     setNotice(null);
@@ -706,8 +741,14 @@ export function AxFlowPage() {
       await loadApprovals();
       setNotice(
         started.existing
-          ? `命中幂等键，已复用运行 #${started.run_id.slice(0, 8)}`
-          : `已启动 ${effectiveReq.environment} 运行 #${started.run_id.slice(0, 8)}`
+          ? tx(
+              `命中幂等键，复用运行 #${started.run_id.slice(0, 8)}`,
+              `Reused idempotent run #${started.run_id.slice(0, 8)}`
+            )
+          : tx(
+              `已启动 ${effectiveReq.environment} 运行 #${started.run_id.slice(0, 8)}`,
+              `Started ${effectiveReq.environment} run #${started.run_id.slice(0, 8)}`
+            )
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -717,6 +758,7 @@ export function AxFlowPage() {
   };
 
   const handleCancelRun = async (runId: string) => {
+    if (!canRun) return;
     setError(null);
     try {
       const canceled = await axflowApi.cancelRun(runId);
@@ -732,6 +774,7 @@ export function AxFlowPage() {
   };
 
   const handleRetryRun = async (runId: string) => {
+    if (!canRun) return;
     setError(null);
     try {
       const retried = await axflowApi.retryRun(runId);
@@ -766,8 +809,8 @@ export function AxFlowPage() {
       }
       setNotice(
         decision === "APPROVE"
-          ? "审批已通过，下游分支正在继续推进"
-          : "已拒绝该审批门禁"
+          ? tx("审批已通过，下游步骤继续推进", "Approval granted")
+          : tx("已驳回该审批门禁", "Approval rejected")
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -777,29 +820,32 @@ export function AxFlowPage() {
   };
 
   return (
-    <div className="space-y-4">
-      {/* Page Header & Global Flow Bar */}
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 border-b border-border pb-4">
-        <div>
+    <div className="space-y-3.5">
+      {/* Page Header & Global Flow Bar — h1 preserves smoke.spec.ts & axflow.spec.ts zh-CN assertion */}
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 border-b border-border pb-3.5">
+        <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-lg font-semibold tracking-tight">
-            AxFlow · 智能编排流水线
+            {tx(
+              "AxFlow · 智能编排流水线",
+              "AxFlow · Pipeline Orchestrator"
+            )}
           </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            有向无环图（DAG）持久化编排 · TEST/PROD 双环境版本治理 · 人工审批门禁与业务动作回写
-          </p>
+          <Badge variant="outline">
+            {flows.length} {tx("流水线", "Flows")}
+          </Badge>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           {/* Flow Selector */}
-          <select
+          <Select
             data-testid="axflow-flow-select"
             value={selectedFlowId ?? ""}
             onChange={(e) => handleSelectFlowId(e.target.value)}
             disabled={flows.length === 0}
-            className="h-8 min-w-48 rounded-md border border-input bg-background px-2.5 text-xs font-medium"
+            className="h-8 min-w-48 font-medium"
           >
             {flows.length === 0 ? (
-              <option value="">暂无流水线</option>
+              <option value="">{tx("暂无流水线", "No pipelines")}</option>
             ) : (
               flows.map((f) => (
                 <option key={f.id} value={f.id}>
@@ -807,7 +853,7 @@ export function AxFlowPage() {
                 </option>
               ))
             )}
-          </select>
+          </Select>
 
           {/* Active Deployment Badges */}
           {testDeployment && (
@@ -821,54 +867,65 @@ export function AxFlowPage() {
             </Badge>
           )}
 
-          <Button
-            type="button"
-            variant="outline"
-            className="h-8 px-2.5 text-xs"
-            data-testid="axflow-new-flow-toggle"
-            onClick={() => setCreateOpen((v) => !v)}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            新建流水线
-          </Button>
+          {canEdit && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 px-2.5"
+              data-testid="axflow-new-flow-toggle"
+              onClick={() => setCreateOpen((v) => !v)}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {tx("新建流水线", "New Flow")}
+            </Button>
+          )}
 
           {selectedFlowId && (
             <>
-              <Button
-                type="button"
-                variant="outline"
-                className="h-8 px-2.5 text-xs"
-                data-testid="header-save-flow-btn"
-                disabled={saving}
-                onClick={() => void handleSaveDraft()}
-              >
-                <Save className="h-3.5 w-3.5" />
-                保存草稿
-              </Button>
-
-              <div className="flex items-center gap-1 rounded-md border border-border bg-muted/30 p-0.5">
-                <select
-                  data-testid="axflow-run-env-select"
-                  value={runEnvironment}
-                  onChange={(e) =>
-                    setRunEnvironment(e.target.value as Environment)
-                  }
-                  className="h-7 rounded bg-background px-2 font-mono-tech text-[11px] border border-input"
-                >
-                  <option value="TEST">TEST</option>
-                  <option value="PROD">PROD</option>
-                </select>
+              {canEdit && (
                 <Button
                   type="button"
-                  className="h-7 px-3 text-xs"
-                  data-testid="axflow-run-btn"
-                  disabled={startingRun}
-                  onClick={() => void handleStartRun()}
+                  variant="outline"
+                  size="sm"
+                  className="h-8 px-2.5"
+                  data-testid="header-save-flow-btn"
+                  disabled={saving}
+                  onClick={() => void handleSaveDraft()}
                 >
-                  <Play className="h-3.5 w-3.5" />
-                  {startingRun ? "启动中..." : "运行流水线"}
+                  <Save className="h-3.5 w-3.5" />
+                  {tx("保存草稿", "Save Draft")}
                 </Button>
-              </div>
+              )}
+
+              {canRun && (
+                <div className="flex items-center gap-1 rounded-md border border-border bg-muted/30 p-0.5">
+                  <Select
+                    data-testid="axflow-run-env-select"
+                    value={runEnvironment}
+                    onChange={(e) =>
+                      setRunEnvironment(e.target.value as Environment)
+                    }
+                    className="h-7 px-2 font-mono-tech text-[11px]"
+                  >
+                    <option value="TEST">TEST</option>
+                    <option value="PROD">PROD</option>
+                  </Select>
+                  <Button
+                    type="button"
+                    size="sm"
+                    className="h-7 px-3"
+                    data-testid="axflow-run-btn"
+                    disabled={startingRun}
+                    onClick={() => void handleStartRun()}
+                  >
+                    <Play className="h-3.5 w-3.5" />
+                    {startingRun
+                      ? tx("启动中…", "Starting…")
+                      : tx("运行流水线", "Run Flow")}
+                  </Button>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -880,7 +937,9 @@ export function AxFlowPage() {
           data-testid="axflow-error-banner"
           className="p-3 border-red-500/40 bg-red-500/5 text-xs text-red-700 dark:text-red-300"
         >
-          <span className="font-mono-tech font-semibold">操作异常：</span>
+          <span className="font-mono-tech font-semibold">
+            {tx("错误：", "Error: ")}
+          </span>
           {error}
         </Card>
       )}
@@ -895,28 +954,28 @@ export function AxFlowPage() {
       )}
 
       {/* Inline Create Flow Form */}
-      {createOpen && (
+      {createOpen && canEdit && (
         <Card
           data-testid="axflow-create-card"
           className="p-3.5 flex flex-col md:flex-row items-stretch md:items-center gap-2"
         >
           <Input
             data-testid="new-flow-name-input"
-            placeholder="流水线名称（如：daily_supply_refresh）"
+            placeholder="daily_supply_refresh"
             value={newFlowName}
             onChange={(e) => setNewFlowName(e.target.value)}
             className="h-8 text-xs"
           />
           <Input
             data-testid="new-flow-desc-input"
-            placeholder="业务用途说明（可选）"
+            placeholder={tx("业务流程说明", "Pipeline description")}
             value={newFlowDesc}
             onChange={(e) => setNewFlowDesc(e.target.value)}
             className="h-8 text-xs"
           />
           <Input
             data-testid="new-flow-slug-input"
-            placeholder="Webhook Slug（可选）"
+            placeholder="daily-supply-hook"
             value={newFlowSlug}
             onChange={(e) => setNewFlowSlug(e.target.value)}
             className="h-8 text-xs font-mono-tech md:w-48"
@@ -924,21 +983,23 @@ export function AxFlowPage() {
           <div className="flex items-center gap-1.5 shrink-0">
             <Button
               type="button"
-              className="h-8 text-xs"
+              size="sm"
+              className="h-8 px-3"
               data-testid="confirm-create-flow-btn"
               disabled={!newFlowName.trim() || creating}
               onClick={() => void handleCreateFlow()}
             >
               <Plus className="h-3.5 w-3.5" />
-              {creating ? "创建中..." : "确认创建"}
+              {creating ? tx("创建中…", "Creating…") : tx("创建", "Create")}
             </Button>
             <Button
               type="button"
               variant="ghost"
-              className="h-8 text-xs"
+              size="sm"
+              className="h-8 px-2.5"
               onClick={() => setCreateOpen(false)}
             >
-              取消
+              {tx("取消", "Cancel")}
             </Button>
           </div>
         </Card>
@@ -946,12 +1007,13 @@ export function AxFlowPage() {
 
       {/* Flow Metadata Strip */}
       {selectedFlowId && (
-        <Card className="px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <Card className="px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
           <div className="flex flex-wrap items-center gap-2 flex-1 min-w-60">
             <GitBranch className="h-3.5 w-3.5 text-xblue shrink-0" />
             <Input
               data-testid="flow-draft-name-input"
               value={draftName}
+              disabled={!canEdit}
               onChange={(e) => {
                 setDraftName(e.target.value);
                 setIsDirty(true);
@@ -961,35 +1023,43 @@ export function AxFlowPage() {
             <Input
               data-testid="flow-draft-desc-input"
               value={draftDesc}
+              disabled={!canEdit}
               onChange={(e) => {
                 setDraftDesc(e.target.value);
                 setIsDirty(true);
               }}
-              placeholder="流程说明..."
+              placeholder={tx("流程说明", "Description")}
               className="h-7 flex-1 min-w-44 text-xs text-muted-foreground"
             />
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="outline">触发: {draftTrigger.type}</Badge>
-            {isDirty && <Badge variant="xblue">草稿已变更</Badge>}
-            <Button
-              type="button"
-              variant="ghost"
-              className="h-7 px-2 text-xs"
-              data-testid="delete-flow-btn"
-              onClick={() => void handleDeleteCurrentFlow()}
-              title="删除当前流水线"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-            </Button>
+            <Badge variant="outline">
+              {tx("触发:", "Trigger:")} {tEnum(draftTrigger.type)}
+            </Badge>
+            {isDirty && (
+              <Badge variant="xblue">{tx("草稿已修改", "Modified")}</Badge>
+            )}
+            {canEdit && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2"
+                data-testid="delete-flow-btn"
+                onClick={() => void handleDeleteCurrentFlow()}
+                title={tx("删除流水线", "Delete pipeline")}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            )}
           </div>
         </Card>
       )}
 
-      {/* Main 3-Column DAG Workbench */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+      {/* Main 3-Column IDE Workbench — Wide Right Inspector (372px) */}
+      <div className="flex flex-col xl:flex-row gap-4 items-stretch">
         {/* Left: Operator Palette */}
-        <div className="xl:col-span-3">
+        <div className="w-full xl:w-[264px] shrink-0">
           <OperatorPalette
             operators={operators}
             onAddOperator={(spec) => addOperatorNode(spec)}
@@ -997,7 +1067,7 @@ export function AxFlowPage() {
         </div>
 
         {/* Center: ReactFlow DAG Canvas */}
-        <div className="xl:col-span-6">
+        <div className="flex-1 min-w-0">
           <FlowCanvas
             nodes={draftNodes}
             edges={draftEdges}
@@ -1023,8 +1093,8 @@ export function AxFlowPage() {
         </div>
 
         {/* Right: Tabbed Inspector (Node / Trigger / Version & Deploy) */}
-        <div className="xl:col-span-3 flex flex-col h-[540px] rounded-md border border-border bg-card text-card-foreground overflow-hidden">
-          <div className="grid grid-cols-3 border-b border-border bg-muted/30 p-1 gap-1 text-xs">
+        <div className="w-full xl:w-[372px] shrink-0 flex flex-col h-[540px] rounded-md border border-border bg-card text-card-foreground overflow-hidden">
+          <div className="grid grid-cols-3 border-b border-border bg-muted/30 p-1 gap-1 text-xs shrink-0">
             <button
               type="button"
               data-testid="inspector-tab-node"
@@ -1037,7 +1107,7 @@ export function AxFlowPage() {
               )}
             >
               <Settings2 className="h-3.5 w-3.5" />
-              节点配置
+              {tx("节点配置", "Step")}
             </button>
             <button
               type="button"
@@ -1051,7 +1121,7 @@ export function AxFlowPage() {
               )}
             >
               <Webhook className="h-3.5 w-3.5" />
-              触发器
+              {tx("触发器", "Trigger")}
             </button>
             <button
               type="button"
@@ -1065,11 +1135,11 @@ export function AxFlowPage() {
               )}
             >
               <Rocket className="h-3.5 w-3.5" />
-              版本部署
+              {tx("版本部署", "Release")}
             </button>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-3">
+          <div className="flex-1 min-h-0 overflow-y-auto p-3.5">
             {inspectorTab === "node" && (
               <NodeConfigForm
                 node={selectedNode}
@@ -1126,8 +1196,8 @@ export function AxFlowPage() {
         </div>
       </div>
 
-      {/* Bottom Operations & Governance Console: RunHistory + RunTimeline + ApprovalInbox */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+      {/* Bottom Aligned Equal-Height Operations Dock: RunHistory + RunTimeline + ApprovalInbox */}
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-stretch">
         <div className="xl:col-span-4">
           <RunHistory
             runs={runs}

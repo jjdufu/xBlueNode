@@ -10,17 +10,117 @@ import {
   Search,
 } from "lucide-react";
 import { ApiError } from "@/lib/api";
+import { axhubApi, type Dataset } from "@/lib/api/axhub";
 import {
   axguardApi,
   type AuditLogEntry,
   type AuditStatsResponse,
   type AuditVerifyResponse,
+  type GuardUserRecord,
 } from "@/lib/api/axguard";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { Badge, Button, Card, Input, Select } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { AUDIT_ACTIONS } from "./constants";
 
-export function AuditExplorer() {
+export interface AuditExplorerProps {
+  datasets?: Dataset[];
+  users?: GuardUserRecord[];
+}
+
+export function AuditExplorer({
+  datasets = [],
+  users = [],
+}: AuditExplorerProps) {
+  const { tx, tEnum, fmtNum, fmtTime } = useI18n();
+  const { can } = usePrincipal();
+  const canReadDatasets = can("DATA_READ");
+  const canListUsers = can("GUARD_ADMIN");
+
+  const [fallbackDatasets, setFallbackDatasets] = useState<Dataset[]>([]);
+  const [fallbackUsers, setFallbackUsers] = useState<GuardUserRecord[]>([]);
+
+  useEffect(() => {
+    if (datasets.length > 0 || !canReadDatasets) return;
+    let cancelled = false;
+    void axhubApi
+      .listDatasets({ limit: 100 })
+      .then((res) => {
+        if (!cancelled && Array.isArray(res?.items)) {
+          setFallbackDatasets(res.items);
+        }
+      })
+      .catch(() => null);
+    return () => {
+      cancelled = true;
+    };
+  }, [canReadDatasets, datasets.length]);
+
+  useEffect(() => {
+    if (users.length > 0 || !canListUsers) return;
+    let cancelled = false;
+    void axguardApi
+      .listUsers()
+      .then((list) => {
+        if (!cancelled) setFallbackUsers(list);
+      })
+      .catch(() => null);
+    return () => {
+      cancelled = true;
+    };
+  }, [canListUsers, users.length]);
+
+  const datasetLabelById = useMemo(() => {
+    const list = datasets.length > 0 ? datasets : fallbackDatasets;
+    const map = new Map<string, string>();
+    for (const d of list) {
+      map.set(
+        d.id,
+        d.display_name && d.display_name !== d.name
+          ? `${d.name} (${d.display_name})`
+          : d.name
+      );
+    }
+    return map;
+  }, [datasets, fallbackDatasets]);
+
+  const userLabelById = useMemo(() => {
+    const list = users.length > 0 ? users : fallbackUsers;
+    const map = new Map<string, string>();
+    for (const u of list) {
+      map.set(
+        u.id,
+        u.display_name && u.display_name !== u.username
+          ? `${u.username} (${u.display_name})`
+          : u.username
+      );
+    }
+    return map;
+  }, [fallbackUsers, users]);
+
+  const formatResourceTarget = useCallback(
+    (rawRef: string): string => {
+      if (!rawRef) return "—";
+      if (rawRef.startsWith("dataset:")) {
+        const idPart = rawRef.slice("dataset:".length);
+        const resolved = datasetLabelById.get(idPart);
+        if (resolved) {
+          return `dataset:${resolved}`;
+        }
+      }
+      if (rawRef.startsWith("user:")) {
+        const idPart = rawRef.slice("user:".length);
+        const resolved = userLabelById.get(idPart);
+        if (resolved) {
+          return `user:${resolved}`;
+        }
+      }
+      return rawRef;
+    },
+    [datasetLabelById, userLabelById]
+  );
+
   const [actionFilter, setActionFilter] = useState("");
   const [usernameFilter, setUsernameFilter] = useState("");
   const [resourceFilter, setResourceFilter] = useState("");
@@ -146,7 +246,7 @@ export function AuditExplorer() {
       anchor.click();
       anchor.remove();
       URL.revokeObjectURL(objUrl);
-      setBanner("已导出审计日志 CSV 文件");
+      setBanner(tx("已导出审计日志 CSV", "Exported audit logs CSV"));
     } catch (err) {
       setBanner(
         err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
@@ -202,27 +302,33 @@ export function AuditExplorer() {
           <div className="space-y-1">
             <div className="text-xs font-semibold flex items-center gap-1.5">
               <Link2 className="h-3.5 w-3.5 text-xblue" />
-              SHA-256 防篡改审计哈希链完整性验真（sec_audit_logs）
+              {tx(
+                "SHA-256 防篡改审计哈希链验真",
+                "SHA-256 Tamper-Evident Hash Chain Verification"
+              )}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              逐行重算 canonical_json 载荷与 prev_hash 链式摘要，精准定位任何越权篡改或断链记录。
+              {tx(
+                "逐行重算载荷与链式摘要，定位篡改或断链记录。",
+                "Recomputes canonical payloads and prev_hash links across audit records."
+              )}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             <Input
               type="number"
-              placeholder="起始 ID (可选)"
+              placeholder={tx("起始 ID", "Start ID")}
               value={verifyFromId}
               onChange={(e) => setVerifyFromId(e.target.value)}
-              className="h-8 w-28 text-xs font-mono-tech"
+              className="h-8 w-32 text-xs font-mono-tech"
             />
             <Input
               type="number"
-              placeholder="结束 ID (可选)"
+              placeholder={tx("结束 ID", "End ID")}
               value={verifyToId}
               onChange={(e) => setVerifyToId(e.target.value)}
-              className="h-8 w-28 text-xs font-mono-tech"
+              className="h-8 w-32 text-xs font-mono-tech"
             />
             <Button
               type="button"
@@ -230,7 +336,9 @@ export function AuditExplorer() {
               onClick={() => void handleVerifyChain()}
               data-testid="audit-verify-btn"
             >
-              {verifying ? "正在逐行验真..." : "哈希链完整性验真"}
+              {verifying
+                ? tx("验真中…", "Verifying…")
+                : tx("哈希链验真", "Verify Chain")}
             </Button>
           </div>
         </div>
@@ -242,9 +350,15 @@ export function AuditExplorer() {
               className="flex items-center gap-2 rounded-md border border-xblue/40 bg-xblue-soft/60 px-3 py-2 text-xs"
             >
               <CheckCircle2 className="h-4 w-4 text-xblue shrink-0" />
-              <span className="font-semibold">哈希链完整无篡改</span>
+              <span className="font-semibold">
+                {tx("哈希链完整无篡改", "Hash chain verified intact")}
+              </span>
               <span className="font-mono-tech text-muted-foreground">
-                · 已连续校验 {verifyResult.checked_count} 条审计记录
+                ·{" "}
+                {tx(
+                  `已校验 ${fmtNum(verifyResult.checked_count, 0)} 条`,
+                  `${fmtNum(verifyResult.checked_count, 0)} records checked`
+                )}
               </span>
             </div>
           ) : (
@@ -256,14 +370,16 @@ export function AuditExplorer() {
               <div className="flex items-center gap-2">
                 <AlertTriangle className="h-4 w-4 text-xblue shrink-0" />
                 <span className="font-semibold">
-                  篡改告警：检测到审计哈希链断裂！
+                  {tx("审计哈希链断裂", "Hash chain integrity broken")}
                 </span>
                 <span className="font-mono-tech">
-                  首个异常记录 ID: #{verifyResult.first_broken_id ?? "未知"}（已扫描{" "}
-                  {verifyResult.checked_count} 条）
+                  {tx(
+                    `首个异常记录 ID: #${verifyResult.first_broken_id ?? "—"}（已扫描 ${verifyResult.checked_count} 条）`,
+                    `First broken ID: #${verifyResult.first_broken_id ?? "—"} (${verifyResult.checked_count} scanned)`
+                  )}
                 </span>
               </div>
-              <Badge variant="neutral">CHAIN BROKEN</Badge>
+              <Badge variant="danger">CHAIN BROKEN</Badge>
             </div>
           ))}
       </Card>
@@ -271,26 +387,36 @@ export function AuditExplorer() {
       {/* Top KPI & Visual Trend / Action Distribution */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <Card className="lg:col-span-4 p-4 space-y-3">
-          <div className="text-xs font-semibold">审计概览指标</div>
+          <div className="text-xs font-semibold">
+            {tx("审计概览", "Audit Summary")}
+          </div>
           <div className="grid grid-cols-2 gap-2.5">
             <div className="rounded border border-border bg-muted/20 p-2.5">
-              <div className="text-[11px] text-muted-foreground">统计总事件数</div>
+              <div className="text-[11px] text-muted-foreground">
+                {tx("总事件数", "Total Events")}
+              </div>
               <div className="text-lg font-mono-tech font-semibold mt-0.5">
-                {totalActionCount || logs.length}
+                {fmtNum(totalActionCount || logs.length, 0)}
               </div>
             </div>
             <div className="rounded border border-border bg-muted/20 p-2.5">
-              <div className="text-[11px] text-muted-foreground">活跃主体数</div>
+              <div className="text-[11px] text-muted-foreground">
+                {tx("活跃主体", "Active Actors")}
+              </div>
               <div className="text-lg font-mono-tech font-semibold mt-0.5">
-                {stats.by_user.length}
+                {fmtNum(stats.by_user.length, 0)}
               </div>
             </div>
           </div>
 
           <div className="space-y-1.5 pt-1">
-            <div className="text-[11px] text-muted-foreground">活跃用户 Top 排行</div>
+            <div className="text-[11px] text-muted-foreground">
+              {tx("活跃用户排行", "Top Active Users")}
+            </div>
             {stats.by_user.length === 0 ? (
-              <div className="text-[11px] text-muted-foreground">暂无聚合样本</div>
+              <div className="text-[11px] text-muted-foreground">
+                {tx("暂无统计", "No data")}
+              </div>
             ) : (
               stats.by_user.slice(0, 4).map(([uname, cnt]) => (
                 <div
@@ -298,7 +424,7 @@ export function AuditExplorer() {
                   className="flex items-center justify-between text-xs font-mono-tech"
                 >
                   <span className="truncate">{uname}</span>
-                  <Badge variant="outline">{cnt}</Badge>
+                  <Badge variant="outline">{fmtNum(cnt, 0)}</Badge>
                 </div>
               ))
             )}
@@ -306,10 +432,12 @@ export function AuditExplorer() {
         </Card>
 
         <Card className="lg:col-span-4 p-4 space-y-2.5">
-          <div className="text-xs font-semibold">按动作分布 (by_action)</div>
+          <div className="text-xs font-semibold">
+            {tx("动作分布", "Events by Action")}
+          </div>
           {actionSeries.length === 0 ? (
             <div className="py-6 text-center text-[11px] text-muted-foreground">
-              暂无动作分布数据
+              {tx("暂无数据", "No data")}
             </div>
           ) : (
             <div className="space-y-2">
@@ -321,8 +449,8 @@ export function AuditExplorer() {
                 return (
                   <div key={act} className="space-y-0.5">
                     <div className="flex justify-between text-[11px] font-mono-tech">
-                      <span>{act}</span>
-                      <span>{count}</span>
+                      <span title={act}>{tEnum(act)}</span>
+                      <span>{fmtNum(count, 0)}</span>
                     </div>
                     <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
                       <div
@@ -338,17 +466,19 @@ export function AuditExplorer() {
         </Card>
 
         <Card className="lg:col-span-4 p-4 space-y-2.5">
-          <div className="text-xs font-semibold">按日审计趋势 (by_day)</div>
+          <div className="text-xs font-semibold">
+            {tx("日度审计趋势", "Daily Audit Trend")}
+          </div>
           {stats.by_day.length === 0 ? (
             <div className="py-6 text-center text-[11px] text-muted-foreground">
-              暂无日度趋势数据
+              {tx("暂无趋势数据", "No trend data")}
             </div>
           ) : (
             <svg
               viewBox="0 0 260 110"
               className="w-full h-28 overflow-visible"
               role="img"
-              aria-label="每日审计事件趋势图"
+              aria-label={tx("日度审计事件趋势", "Daily audit event trend")}
             >
               {stats.by_day.slice(-10).map(([day, count], idx, arr) => {
                 const slotW = 240 / Math.max(1, arr.length);
@@ -386,25 +516,29 @@ export function AuditExplorer() {
       {/* Multi-Dimensional Filter Bar + Export CSV */}
       <Card className="p-3.5 flex flex-wrap items-end gap-2.5">
         <div className="space-y-1">
-          <label className="text-[11px] text-muted-foreground">审计动作</label>
-          <select
+          <label className="text-[11px] text-muted-foreground">
+            {tx("动作类型", "Action")}
+          </label>
+          <Select
             value={actionFilter}
             onChange={(e) => setActionFilter(e.target.value)}
-            className="h-8 rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+            className="h-8"
           >
-            <option value="">全部动作</option>
+            <option value="">{tx("全部动作", "All Actions")}</option>
             {AUDIT_ACTIONS.map((act) => (
               <option key={act} value={act}>
-                {act}
+                {tEnum(act)} ({act})
               </option>
             ))}
-          </select>
+          </Select>
         </div>
 
         <div className="space-y-1">
-          <label className="text-[11px] text-muted-foreground">操作账号</label>
+          <label className="text-[11px] text-muted-foreground">
+            {tx("操作账号", "Username")}
+          </label>
           <Input
-            placeholder="username"
+            placeholder="ops_admin"
             value={usernameFilter}
             onChange={(e) => setUsernameFilter(e.target.value)}
             className="h-8 w-32 text-xs font-mono-tech"
@@ -412,9 +546,11 @@ export function AuditExplorer() {
         </div>
 
         <div className="space-y-1">
-          <label className="text-[11px] text-muted-foreground">资源标识</label>
+          <label className="text-[11px] text-muted-foreground">
+            {tx("目标资源", "Resource")}
+          </label>
           <Input
-            placeholder="如 dataset:..."
+            placeholder="dataset:..."
             value={resourceFilter}
             onChange={(e) => setResourceFilter(e.target.value)}
             className="h-8 w-40 text-xs font-mono-tech"
@@ -422,10 +558,12 @@ export function AuditExplorer() {
         </div>
 
         <div className="space-y-1">
-          <label className="text-[11px] text-muted-foreground">HTTP 状态码</label>
+          <label className="text-[11px] text-muted-foreground">
+            {tx("状态码", "Status Code")}
+          </label>
           <Input
             type="number"
-            placeholder="200 / 403"
+            placeholder="200"
             value={statusCodeFilter}
             onChange={(e) => setStatusCodeFilter(e.target.value)}
             className="h-8 w-24 text-xs font-mono-tech"
@@ -433,7 +571,9 @@ export function AuditExplorer() {
         </div>
 
         <div className="space-y-1">
-          <label className="text-[11px] text-muted-foreground">起始时间</label>
+          <label className="text-[11px] text-muted-foreground">
+            {tx("起始时间", "From")}
+          </label>
           <Input
             type="datetime-local"
             value={fromTime}
@@ -443,7 +583,9 @@ export function AuditExplorer() {
         </div>
 
         <div className="space-y-1">
-          <label className="text-[11px] text-muted-foreground">截止时间</label>
+          <label className="text-[11px] text-muted-foreground">
+            {tx("截止时间", "To")}
+          </label>
           <Input
             type="datetime-local"
             value={toTime}
@@ -460,7 +602,7 @@ export function AuditExplorer() {
             onClick={() => void loadAuditData()}
           >
             <Search className="h-3.5 w-3.5" />
-            查询
+            {tx("查询", "Query")}
           </Button>
           <Button
             variant="outline"
@@ -470,7 +612,9 @@ export function AuditExplorer() {
             data-testid="audit-export-csv-btn"
           >
             <Download className="h-3.5 w-3.5 text-xblue" />
-            {exporting ? "导出中..." : "导出 CSV"}
+            {exporting
+              ? tx("导出中…", "Exporting…")
+              : tx("导出 CSV", "Export CSV")}
           </Button>
         </div>
       </Card>
@@ -482,13 +626,25 @@ export function AuditExplorer() {
             <thead>
               <tr className="border-b border-border bg-muted/40 text-left text-muted-foreground">
                 <th className="px-3 py-2.5 w-8" />
-                <th className="px-3 py-2.5 font-medium">序号 ID</th>
-                <th className="px-3 py-2.5 font-medium">时间</th>
-                <th className="px-3 py-2.5 font-medium">主体账号</th>
-                <th className="px-3 py-2.5 font-medium">动作</th>
-                <th className="px-3 py-2.5 font-medium">目标资源</th>
-                <th className="px-3 py-2.5 font-medium">状态码</th>
-                <th className="px-3 py-2.5 font-medium">行哈希摘要 (row_hash)</th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">ID</th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("时间", "Timestamp")}
+                </th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("账号", "Actor")}
+                </th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("动作", "Action")}
+                </th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("目标资源", "Target")}
+                </th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("状态码", "HTTP")}
+                </th>
+                <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                  {tx("行哈希摘要", "Row Hash")}
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -498,7 +654,9 @@ export function AuditExplorer() {
                     colSpan={8}
                     className="px-4 py-8 text-center text-muted-foreground"
                   >
-                    {loadingLogs ? "正在加载审计日志..." : "未检索到匹配的审计事件"}
+                    {loadingLogs
+                      ? tx("加载中…", "Loading…")
+                      : tx("暂无审计记录", "No audit records")}
                   </td>
                 </tr>
               ) : (
@@ -508,6 +666,7 @@ export function AuditExplorer() {
                     verifyResult &&
                     !verifyResult.ok &&
                     verifyResult.first_broken_id === entry.id;
+                  const displayTarget = formatResourceTarget(entry.resource_ref);
 
                   return (
                     <Fragment key={entry.id}>
@@ -529,38 +688,43 @@ export function AuditExplorer() {
                             <ChevronRight className="h-3.5 w-3.5" />
                           )}
                         </td>
-                        <td className="px-3 py-2 font-mono-tech">
+                        <td className="px-3 py-2 font-mono-tech whitespace-nowrap">
                           #{entry.id}
                           {isBroken && (
-                            <Badge variant="xblue" className="ml-1.5">
-                              断点
+                            <Badge variant="danger" className="ml-1.5">
+                              {tx("断点", "Broken")}
                             </Badge>
                           )}
                         </td>
                         <td className="px-3 py-2 font-mono-tech text-muted-foreground whitespace-nowrap">
-                          {entry.created_at.replace("T", " ").slice(0, 19)}
+                          {fmtTime(entry.created_at)}
                         </td>
-                        <td className="px-3 py-2 font-mono-tech">
+                        <td className="px-3 py-2 font-mono-tech whitespace-nowrap">
                           {entry.username}
                         </td>
-                        <td className="px-3 py-2">
-                          <Badge variant="outline">{entry.action}</Badge>
+                        <td className="px-3 py-2 whitespace-nowrap">
+                          <Badge variant="outline" title={entry.action}>
+                            {tEnum(entry.action)}
+                          </Badge>
                         </td>
-                        <td className="px-3 py-2 font-mono-tech max-w-[220px] truncate">
-                          {entry.resource_ref || "—"}
+                        <td
+                          className="px-3 py-2 font-mono-tech max-w-[260px] truncate"
+                          title={entry.resource_ref || undefined}
+                        >
+                          {displayTarget}
                         </td>
-                        <td className="px-3 py-2 font-mono-tech">
+                        <td className="px-3 py-2 font-mono-tech whitespace-nowrap">
                           <Badge
                             variant={
-                              entry.status_code >= 400 ? "neutral" : "outline"
+                              entry.status_code >= 400 ? "danger" : "outline"
                             }
                           >
                             {entry.status_code}
                           </Badge>
                         </td>
-                        <td className="px-3 py-2 font-mono-tech text-[11px] text-muted-foreground">
+                        <td className="px-3 py-2 font-mono-tech text-[11px] text-muted-foreground whitespace-nowrap">
                           {entry.row_hash
-                            ? `${entry.row_hash.slice(0, 16)}...`
+                            ? `${entry.row_hash.slice(0, 16)}…`
                             : "—"}
                         </td>
                       </tr>
@@ -617,7 +781,7 @@ export function AuditExplorer() {
               onClick={() => void loadAuditData(nextCursor)}
             >
               <RefreshCw className="h-3.5 w-3.5" />
-              加载下一页审计记录
+              {tx("加载更多", "Load More")}
             </Button>
           </div>
         )}

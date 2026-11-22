@@ -5,6 +5,7 @@ import {
   ChevronRight,
   Globe,
   KeyRound,
+  Languages,
   Lock,
   Moon,
   ShieldCheck,
@@ -22,32 +23,53 @@ import {
   setPatAccessToken,
   type AuthConfigResponse,
 } from "@/lib/api";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Button,
+  Card,
+  IconButton,
+  Input,
+  PasswordInput,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { useTheme } from "@/lib/theme";
 
-function formatLoginError(err: unknown): { code: string; detail: string } {
+function formatLoginError(
+  err: unknown,
+  tx: (zh: string, en: string) => string
+): { code: string; detail: string } {
   if (err instanceof ApiError) {
     switch (err.errorCode) {
       case "INVALID_CREDENTIALS":
         return {
           code: "INVALID_CREDENTIALS",
-          detail:
-            "租户、用户名或口令不正确，请核对后重试（连续 5 次失败将自动锁定账号 15 分钟）。",
+          detail: tx(
+            "租户、用户名或口令不正确，连续 5 次失败将锁定 15 分钟。",
+            "Invalid tenant, username, or password. 5 failed attempts lock the account for 15 minutes."
+          ),
         };
       case "ACCOUNT_LOCKED":
         return {
           code: "ACCOUNT_LOCKED",
-          detail:
-            "连续登录失败已达阈值，账号已被安全锁定 15 分钟；请稍后再试或联系安全管理员解锁。",
+          detail: tx(
+            "账号已锁定 15 分钟，请稍后重试或联系管理员解锁。",
+            "Account locked for 15 minutes. Try again later or contact an administrator."
+          ),
         };
       case "ACCOUNT_DISABLED":
         return {
           code: "ACCOUNT_DISABLED",
-          detail: "当前账号已被停用，请联系租户安全管理员启用账号。",
+          detail: tx(
+            "账号已停用，请联系管理员。",
+            "Account is disabled. Contact your administrator."
+          ),
         };
       case "RATE_LIMITED":
         return {
           code: "RATE_LIMITED",
-          detail: "登录请求过于频繁（已触发 IP 速率保护），请稍候再试。",
+          detail: tx(
+            "请求过于频繁，请稍后重试。",
+            "Too many sign-in attempts. Please wait and try again."
+          ),
         };
       default:
         return {
@@ -57,20 +79,26 @@ function formatLoginError(err: unknown): { code: string; detail: string } {
     }
   }
   return {
-    code: "AUTH_ERROR",
+    code: "NETWORK_ERROR",
     detail: err instanceof Error ? err.message : String(err),
   };
 }
 
+function resolveReturnPath(search: string): string {
+  const params = new URLSearchParams(search);
+  const raw = params.get("return_to")?.trim() ?? "";
+  if (raw.startsWith("/") && !raw.startsWith("//") && !raw.startsWith("/login")) {
+    return raw;
+  }
+  return "/";
+}
+
 export function LoginPage() {
-  const navigate = useNavigate();
   const location = useLocation();
-  const searchParams = new URLSearchParams(location.search);
-  const rawReturnTo = searchParams.get("return_to") ?? "/";
-  const returnTo =
-    rawReturnTo.startsWith("/") && !rawReturnTo.startsWith("//")
-      ? rawReturnTo
-      : "/";
+  const navigate = useNavigate();
+  const returnTo = resolveReturnPath(location.search);
+  const { isDark, toggleTheme } = useTheme();
+  const { isZh, toggleLocale, tx } = useI18n();
 
   const [authConfig, setAuthConfig] =
     useState<AuthConfigResponse>(DEFAULT_AUTH_CONFIG);
@@ -89,12 +117,6 @@ export function LoginPage() {
   const [patSubmitting, setPatSubmitting] = useState(false);
   const [patError, setPatError] = useState<string | null>(null);
 
-  const [dark, setDark] = useState(
-    () =>
-      typeof document !== "undefined" &&
-      document.documentElement.classList.contains("dark")
-  );
-
   useEffect(() => {
     let cancelled = false;
     void fetchAuthConfig().then((cfg) => {
@@ -111,12 +133,6 @@ export function LoginPage() {
     };
   }, [tenantEdited]);
 
-  const toggleTheme = () => {
-    const next = !dark;
-    setDark(next);
-    document.documentElement.classList.toggle("dark", next);
-  };
-
   const handlePasswordLogin = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     const cleanTenant = tenant.trim() || "default";
@@ -124,7 +140,7 @@ export function LoginPage() {
     if (!cleanUsername || !password) {
       setLoginError({
         code: "INVALID_ARGUMENT",
-        detail: "请输入用户名与口令",
+        detail: tx("请填写用户名与口令", "Username and password are required"),
       });
       return;
     }
@@ -140,7 +156,7 @@ export function LoginPage() {
       await fetchMe();
       void navigate(returnTo, { replace: true });
     } catch (err) {
-      setLoginError(formatLoginError(err));
+      setLoginError(formatLoginError(err, tx));
     } finally {
       setSubmitting(false);
     }
@@ -155,7 +171,7 @@ export function LoginPage() {
     e.preventDefault();
     const candidate = tokenInput.trim();
     if (!candidate) {
-      setPatError("请粘贴有效的访问令牌");
+      setPatError(tx("请填写访问令牌", "Access token is required"));
       return;
     }
 
@@ -176,39 +192,65 @@ export function LoginPage() {
     }
   };
 
-  const isProduction = authConfig.env === "production";
-
   return (
-    <div className="min-h-screen flex flex-col justify-between bg-background text-foreground p-6">
-      <header className="flex items-center justify-between max-w-5xl w-full mx-auto">
-        <div>
-          <div className="text-sm font-semibold tracking-tight flex items-center gap-1.5">
+    <div className="min-h-screen flex flex-col bg-background text-foreground">
+      {/* Unified Sticky Top Header: Top-Left Brand + Locale, Top-Right Borderless Theme Icon */}
+      <header className="sticky top-0 z-30 h-12 border-b border-border bg-card/95 backdrop-blur-xs px-4 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-1.5 select-none">
             <span className="inline-block h-2 w-2 rounded-full bg-xblue" />
-            xBlueNode
+            <span className="text-sm font-semibold tracking-tight">
+              xBlueNode
+            </span>
+            <span className="text-[11px] font-mono-tech text-muted-foreground">
+              v{__APP_VERSION__}
+            </span>
           </div>
-          <div className="text-[11px] font-mono-tech text-muted-foreground">
-            AxPoint Core v{__APP_VERSION__}
-          </div>
+
+          <button
+            type="button"
+            data-testid="locale-toggle-btn"
+            onClick={toggleLocale}
+            aria-label={tx("切换语言", "Switch language")}
+            title={tx("切换为 English", "Switch to 简体中文")}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+          >
+            <Languages className="h-3.5 w-3.5 text-xblue" />
+            <span className="font-mono-tech">{isZh ? "中文" : "EN"}</span>
+          </button>
         </div>
-        <Button variant="outline" type="button" onClick={toggleTheme}>
-          {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-          {dark ? "浅色极简模式" : "深色极简模式"}
-        </Button>
+
+        <div className="flex items-center gap-1.5">
+          <IconButton
+            data-testid="theme-toggle-btn"
+            onClick={toggleTheme}
+            aria-label={
+              isDark
+                ? tx("切换亮色模式", "Switch to light mode")
+                : tx("切换暗色模式", "Switch to dark mode")
+            }
+            title={
+              isDark
+                ? tx("亮色模式", "Light mode")
+                : tx("暗色模式", "Dark mode")
+            }
+          >
+            {isDark ? (
+              <Sun className="h-4 w-4" />
+            ) : (
+              <Moon className="h-4 w-4" />
+            )}
+          </IconButton>
+        </div>
       </header>
 
-      <main className="w-full max-w-md mx-auto my-auto py-8">
-        <Card className="p-6 space-y-5">
-          <div className="space-y-1.5 border-b border-border pb-4">
-            <div className="flex items-center justify-between">
-              <h1 className="text-lg font-semibold tracking-tight flex items-center gap-2">
-                <ShieldCheck className="h-4 w-4 text-xblue" />
-                AxGuard · 统一身份认证
-              </h1>
-              <Badge variant="xblue">EdDSA / RLS</Badge>
-            </div>
-            <p className="text-xs text-muted-foreground leading-relaxed">
-              使用租户账号口令或企业单点登录进入工作台；访问令牌仅驻留于浏览器内存并自动静默轮换。
-            </p>
+      <main className="w-full max-w-md mx-auto my-auto px-4 py-10">
+        <Card className="p-6 space-y-5 shadow-xs">
+          <div className="flex items-center justify-between border-b border-border pb-3.5">
+            <h1 className="text-base font-semibold tracking-tight flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-xblue shrink-0" />
+              {tx("AxGuard · 统一身份认证", "AxGuard · Sign In")}
+            </h1>
           </div>
 
           <form
@@ -222,7 +264,7 @@ export function LoginPage() {
                 className="flex items-center gap-1.5 text-xs font-medium"
               >
                 <Building2 className="h-3.5 w-3.5 text-muted-foreground" />
-                租户标识（Tenant）
+                {tx("租户", "Tenant")}
               </label>
               <Input
                 id="login-tenant-input"
@@ -235,7 +277,7 @@ export function LoginPage() {
                   setTenantEdited(true);
                   setTenant(e.target.value);
                 }}
-                className="font-mono-tech text-xs h-8"
+                className="font-mono-tech h-9"
               />
             </div>
 
@@ -245,17 +287,17 @@ export function LoginPage() {
                 className="flex items-center gap-1.5 text-xs font-medium"
               >
                 <User className="h-3.5 w-3.5 text-muted-foreground" />
-                用户名
+                {tx("用户名", "Username")}
               </label>
               <Input
                 id="login-username-input"
                 data-testid="login-username-input"
                 type="text"
                 autoComplete="username"
-                placeholder="请输入账号名（如 ops_admin）"
+                placeholder="ops_admin"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                className="text-xs h-9"
+                className="h-9"
               />
             </div>
 
@@ -265,17 +307,16 @@ export function LoginPage() {
                 className="flex items-center gap-1.5 text-xs font-medium"
               >
                 <Lock className="h-3.5 w-3.5 text-muted-foreground" />
-                口令
+                {tx("口令", "Password")}
               </label>
-              <Input
+              <PasswordInput
                 id="login-password-input"
                 data-testid="login-password-input"
-                type="password"
                 autoComplete="current-password"
-                placeholder="请输入登录口令"
+                placeholder="••••••••••••"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="text-xs h-9"
+                className="h-9"
               />
             </div>
 
@@ -283,10 +324,10 @@ export function LoginPage() {
               <div
                 role="alert"
                 data-testid="login-error-banner"
-                className="rounded-md border border-foreground/30 bg-muted/70 px-3 py-2.5 text-xs space-y-1"
+                className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2.5 text-xs space-y-1"
               >
-                <div className="font-mono-tech font-semibold text-foreground">
-                  认证失败 [{loginError.code}]
+                <div className="font-mono-tech font-semibold text-red-600 dark:text-red-400">
+                  {tx("认证失败", "Authentication Failed")} [{loginError.code}]
                 </div>
                 <div className="text-muted-foreground leading-relaxed">
                   {loginError.detail}
@@ -296,11 +337,12 @@ export function LoginPage() {
 
             <Button
               type="submit"
+              size="lg"
               data-testid="login-submit-btn"
               className="w-full"
               disabled={submitting || !username.trim() || !password}
             >
-              {submitting ? "正在核验身份..." : "登录进入工作台"}
+              {submitting ? tx("登录中…", "Signing in…") : tx("登录", "Sign In")}
             </Button>
           </form>
 
@@ -309,7 +351,7 @@ export function LoginPage() {
               <div className="relative flex items-center justify-center">
                 <div className="border-t border-border w-full" />
                 <span className="bg-card px-2 text-[11px] text-muted-foreground shrink-0">
-                  或联邦身份认证
+                  {tx("单点登录", "Single Sign-On")}
                 </span>
                 <div className="border-t border-border w-full" />
               </div>
@@ -317,12 +359,13 @@ export function LoginPage() {
               <Button
                 type="button"
                 variant="outline"
+                size="lg"
                 data-testid="oidc-login-btn"
                 onClick={handleOidcLogin}
                 className="w-full border-xblue/40 hover:border-xblue text-foreground"
               >
                 <Globe className="h-3.5 w-3.5 text-xblue" />
-                {authConfig.oidc_display_name || "企业单点登录 (OIDC)"}
+                {authConfig.oidc_display_name || tx("企业单点登录", "Enterprise SSO")}
               </Button>
             </div>
           )}
@@ -337,7 +380,7 @@ export function LoginPage() {
             >
               <span className="flex items-center gap-1.5">
                 <KeyRound className="h-3.5 w-3.5 text-xblue" />
-                访问令牌 (PAT) 登录
+                {tx("访问令牌登录", "Personal Access Token")}
               </span>
               {patOpen ? (
                 <ChevronDown className="h-3.5 w-3.5" />
@@ -355,57 +398,46 @@ export function LoginPage() {
                 <div className="space-y-1.5">
                   <label
                     htmlFor="access-token-input"
-                    className="block text-[11px] font-medium text-muted-foreground"
+                    className="block text-xs font-medium"
                   >
-                    {isProduction
-                      ? "个人访问令牌（axp_...）"
-                      : "个人访问令牌（axp_...）或调试静态令牌"}
+                    {tx("访问令牌", "Access Token")}
                   </label>
-                  <Input
+                  <PasswordInput
                     id="access-token-input"
-                    type="password"
                     autoComplete="off"
-                    placeholder={
-                      isProduction
-                        ? "粘贴 axp_ 个人访问令牌..."
-                        : "粘贴 AXPOINT_DEV_TOKEN 或 axp_ 个人访问令牌..."
-                    }
+                    placeholder="axp_••••••••••••••••"
                     value={tokenInput}
                     onChange={(e) => setTokenInput(e.target.value)}
-                    className="font-mono-tech text-xs h-8"
+                    className="font-mono-tech h-9"
                   />
                 </div>
 
                 {patError && (
                   <div
                     role="alert"
-                    className="rounded-md border border-foreground/30 bg-muted/60 px-2.5 py-2 text-xs"
+                    className="rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-2 text-xs text-red-600 dark:text-red-400"
                   >
-                    <span className="font-mono-tech font-semibold">令牌校验失败：</span>
-                    <span>{patError}</span>
+                    {patError}
                   </div>
                 )}
 
                 <Button
                   type="submit"
                   variant="outline"
+                  size="lg"
                   data-testid="pat-submit-btn"
                   className="w-full"
                   disabled={patSubmitting || !tokenInput.trim()}
                 >
                   {patSubmitting
-                    ? "正在校验令牌 (/api/auth/me)..."
-                    : "验证并进入工作台"}
+                    ? tx("校验中…", "Verifying…")
+                    : tx("验证令牌", "Verify Token")}
                 </Button>
               </form>
             )}
           </div>
         </Card>
       </main>
-
-      <footer className="text-center text-[11px] font-mono-tech text-muted-foreground">
-        xBlueNode / AxPoint · Tenant Isolation Enforced via AuthPrincipal, Cedar ABAC &amp; PostgreSQL RLS
-      </footer>
     </div>
   );
 }

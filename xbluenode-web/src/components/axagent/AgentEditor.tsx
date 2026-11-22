@@ -8,7 +8,6 @@ import {
   Rocket,
   Save,
   Trash2,
-  X,
 } from "lucide-react";
 import type { Permission } from "@/lib/api/enums";
 import {
@@ -26,23 +25,20 @@ import {
   type McpClientRecord,
   type ToolRef,
 } from "@/lib/api/axagent";
-import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Drawer,
+  Input,
+  Select,
+  Textarea,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { EmbedDialog } from "./EmbedDialog";
 import { ToolPicker } from "./ToolPicker";
-
-const AgentFormSchema = z.object({
-  name: z
-    .string()
-    .trim()
-    .min(1, "智能体名称不能为空")
-    .max(64, "智能体名称不超过 64 字符"),
-  description: z.string().max(500),
-  system_prompt: z.string().min(1, "系统提示词不能为空"),
-  temperature: z.number().min(0).max(2),
-  max_steps: z.number().int().min(1).max(20),
-  memory_turns: z.number().int().min(1).max(50),
-});
 
 const PURPOSES: readonly LlmPurpose[] = [
   "AGENT",
@@ -96,6 +92,10 @@ export function AgentEditor({
   onSelectAgentId,
   onRefresh,
 }: AgentEditorProps) {
+  const { tx, tEnum, fmtTime } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("AGENT_EDIT");
+
   const [isCreatingNew, setIsCreatingNew] = useState(false);
 
   const currentAgent = useMemo(() => {
@@ -204,6 +204,7 @@ export function AgentEditor({
   );
 
   const toggleApprovalTool = (toolName: string) => {
+    if (!canEdit) return;
     const next = parsedApprovalTools.includes(toolName)
       ? parsedApprovalTools.filter((t) => t !== toolName)
       : [...parsedApprovalTools, toolName];
@@ -215,7 +216,22 @@ export function AgentEditor({
     description: string;
     spec: AgentSpec;
   } | null => {
-    const check = AgentFormSchema.safeParse({
+    const formSchema = z.object({
+      name: z
+        .string()
+        .trim()
+        .min(1, tx("智能体名称不能为空", "Agent name is required"))
+        .max(64),
+      description: z.string().max(500),
+      system_prompt: z
+        .string()
+        .min(1, tx("系统提示词不能为空", "System prompt is required")),
+      temperature: z.number().min(0).max(2),
+      max_steps: z.number().int().min(1).max(20),
+      memory_turns: z.number().int().min(1).max(50),
+    });
+
+    const check = formSchema.safeParse({
       name,
       description,
       system_prompt: systemPrompt,
@@ -224,7 +240,10 @@ export function AgentEditor({
       memory_turns: Number(memoryTurns),
     });
     if (!check.success) {
-      setErrorMsg(check.error.issues[0]?.message ?? "表单字段格式有误");
+      setErrorMsg(
+        check.error.issues[0]?.message ??
+          tx("字段格式有误", "Invalid form input")
+      );
       return null;
     }
 
@@ -237,12 +256,16 @@ export function AgentEditor({
           rawJson === null ||
           Array.isArray(rawJson)
         ) {
-          setErrorMsg("输出 Schema 必须是合法的 JSON 对象");
+          setErrorMsg(
+            tx("输出 Schema 须为 JSON 对象", "Output schema must be a JSON object")
+          );
           return null;
         }
         parsedOutputSchema = rawJson as Record<string, unknown>;
       } catch {
-        setErrorMsg("输出 Schema JSON 解析失败");
+        setErrorMsg(
+          tx("输出 Schema JSON 解析失败", "Invalid output schema JSON")
+        );
         return null;
       }
     }
@@ -275,6 +298,7 @@ export function AgentEditor({
   };
 
   const handleSaveDraft = async () => {
+    if (!canEdit) return;
     setErrorMsg(null);
     setFeedback(null);
     const built = buildValidatedSpec();
@@ -288,7 +312,9 @@ export function AgentEditor({
           description: built.description,
           spec: built.spec,
         });
-        setFeedback(`草稿已保存 (${built.name})`);
+        setFeedback(
+          tx(`草稿已保存 (${built.name})`, `Draft saved (${built.name})`)
+        );
       } else {
         const created = await createAgent({
           name: built.name,
@@ -297,18 +323,24 @@ export function AgentEditor({
         });
         setIsCreatingNew(false);
         onSelectAgentId(created.id);
-        setFeedback(`已新建智能体草稿 (${created.name})`);
+        setFeedback(
+          tx(`已创建智能体 (${created.name})`, `Agent created (${created.name})`)
+        );
       }
       await onRefresh();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "保存智能体草稿失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("保存失败", "Failed to save draft")
+      );
     } finally {
       setSaving(false);
     }
   };
 
   const handlePublishVersion = async () => {
-    if (!currentAgent) return;
+    if (!currentAgent || !canEdit) return;
     setErrorMsg(null);
     setFeedback(null);
     const built = buildValidatedSpec();
@@ -323,23 +355,33 @@ export function AgentEditor({
       });
       const ver = await publishAgent(currentAgent.id);
       await onRefresh();
-      setFeedback(`已发布不可变版本 v${ver.version}`);
+      setFeedback(
+        tx(`已发布版本 v${ver.version}`, `Published version v${ver.version}`)
+      );
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "发布智能体版本失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("发布失败", "Failed to publish version")
+      );
     } finally {
       setPublishing(false);
     }
   };
 
   const handleDelete = async () => {
-    if (!currentAgent) return;
+    if (!currentAgent || !canEdit) return;
     setErrorMsg(null);
     try {
       await deleteAgent(currentAgent.id);
       onSelectAgentId(null);
       await onRefresh();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "删除智能体失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("删除失败", "Failed to delete agent")
+      );
     }
   };
 
@@ -377,25 +419,29 @@ export function AgentEditor({
       {/* Left Agent List */}
       <Card className="lg:col-span-3 p-3.5 space-y-3">
         <div className="flex items-center justify-between">
-          <span className="text-xs font-semibold">智能体列表</span>
-          <Button
-            type="button"
-            variant="outline"
-            data-testid="new-agent-btn"
-            onClick={() => {
-              setIsCreatingNew(true);
-              onSelectAgentId(null);
-            }}
-            className="h-7 px-2.5"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            新建
-          </Button>
+          <span className="text-xs font-semibold">
+            {tx("智能体列表", "Agents")}
+          </span>
+          {canEdit && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              data-testid="new-agent-btn"
+              onClick={() => {
+                setIsCreatingNew(true);
+                onSelectAgentId(null);
+              }}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {tx("新建", "New")}
+            </Button>
+          )}
         </div>
 
         {agents.length === 0 ? (
           <p className="text-xs text-muted-foreground py-4 text-center">
-            暂无智能体，请点击新建
+            {tx("暂无智能体记录", "No agents")}
           </p>
         ) : (
           <div className="space-y-1.5">
@@ -427,7 +473,7 @@ export function AgentEditor({
                     </Badge>
                   </div>
                   <p className="text-[11px] text-muted-foreground truncate">
-                    {ag.description || "未填写描述"}
+                    {ag.description || tx("暂无说明", "No description")}
                   </p>
                 </button>
               );
@@ -442,11 +488,16 @@ export function AgentEditor({
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold">
               {currentAgent
-                ? `编辑智能体 · ${currentAgent.name}`
-                : "新建智能体草稿"}
+                ? tx(
+                    `编辑智能体 · ${currentAgent.name}`,
+                    `Edit Agent · ${currentAgent.name}`
+                  )
+                : tx("新建智能体", "New Agent")}
             </h2>
             <Badge variant={currentAgent?.version ? "xblue" : "outline"}>
-              {currentAgent ? `v${currentAgent.version}` : "未保存"}
+              {currentAgent
+                ? `v${currentAgent.version}`
+                : tx("草稿", "Draft")}
             </Badge>
           </div>
 
@@ -456,54 +507,69 @@ export function AgentEditor({
                 <Button
                   type="button"
                   variant="outline"
+                  size="sm"
                   data-testid="open-agent-versions-btn"
                   onClick={() => void handleOpenVersions()}
                 >
                   <History className="h-3.5 w-3.5" />
-                  版本历史
+                  {tx("版本历史", "Versions")}
                 </Button>
+                {canEdit && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    data-testid="open-embed-dialog-btn"
+                    onClick={() => setEmbedOpen(true)}
+                  >
+                    <Link2 className="h-3.5 w-3.5" />
+                    {tx("嵌入分享", "Embed")}
+                  </Button>
+                )}
+              </>
+            ) : null}
+            {canEdit && (
+              <>
                 <Button
                   type="button"
                   variant="outline"
-                  data-testid="open-embed-dialog-btn"
-                  onClick={() => setEmbedOpen(true)}
+                  size="sm"
+                  data-testid="save-agent-btn"
+                  disabled={saving}
+                  onClick={() => void handleSaveDraft()}
                 >
-                  <Link2 className="h-3.5 w-3.5" />
-                  嵌入分享
+                  <Save className="h-3.5 w-3.5" />
+                  {saving
+                    ? tx("保存中…", "Saving…")
+                    : tx("保存草稿", "Save Draft")}
                 </Button>
+                {currentAgent ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    data-testid="publish-agent-btn"
+                    disabled={publishing}
+                    onClick={() => void handlePublishVersion()}
+                  >
+                    <Rocket className="h-3.5 w-3.5" />
+                    {publishing
+                      ? tx("发布中…", "Publishing…")
+                      : tx("发布版本", "Publish")}
+                  </Button>
+                ) : null}
+                {currentAgent ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    data-testid="delete-agent-btn"
+                    onClick={() => void handleDelete()}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                ) : null}
               </>
-            ) : null}
-            <Button
-              type="button"
-              variant="outline"
-              data-testid="save-agent-btn"
-              disabled={saving}
-              onClick={() => void handleSaveDraft()}
-            >
-              <Save className="h-3.5 w-3.5" />
-              {saving ? "保存中…" : "保存草稿"}
-            </Button>
-            {currentAgent ? (
-              <Button
-                type="button"
-                data-testid="publish-agent-btn"
-                disabled={publishing}
-                onClick={() => void handlePublishVersion()}
-              >
-                <Rocket className="h-3.5 w-3.5" />
-                {publishing ? "发布中…" : "发布新版本"}
-              </Button>
-            ) : null}
-            {currentAgent ? (
-              <Button
-                type="button"
-                variant="ghost"
-                data-testid="delete-agent-btn"
-                onClick={() => void handleDelete()}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            ) : null}
+            )}
           </div>
         </div>
 
@@ -525,11 +591,12 @@ export function AgentEditor({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
           <div className="space-y-1">
             <label className="text-[11px] font-medium text-muted-foreground">
-              唯一标识名称 (name)
+              {tx("唯一名称", "Agent Name")}
             </label>
             <Input
               data-testid="agent-name-input"
               value={name}
+              disabled={!canEdit}
               onChange={(e) => setName(e.target.value)}
               placeholder="ops_supervisor"
               className="font-mono-tech text-xs"
@@ -537,13 +604,17 @@ export function AgentEditor({
           </div>
           <div className="space-y-1">
             <label className="text-[11px] font-medium text-muted-foreground">
-              职能说明 (description)
+              {tx("职能说明", "Description")}
             </label>
             <Input
               data-testid="agent-desc-input"
               value={description}
+              disabled={!canEdit}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="运营主管智能体，协调问数专家与制度专家"
+              placeholder={tx(
+                "供应链运营主管智能体",
+                "Supply chain supervisor agent"
+              )}
               className="text-xs"
             />
           </div>
@@ -552,11 +623,12 @@ export function AgentEditor({
         {/* System Prompt */}
         <div className="space-y-1 text-xs">
           <label className="text-[11px] font-medium text-muted-foreground">
-            系统提示词 (system_prompt)
+            {tx("系统提示词", "System Prompt")}
           </label>
           <Textarea
             data-testid="agent-system-prompt-input"
             value={systemPrompt}
+            disabled={!canEdit}
             onChange={(e) => setSystemPrompt(e.target.value)}
             rows={4}
             className="text-xs font-mono-tech"
@@ -564,43 +636,47 @@ export function AgentEditor({
         </div>
 
         {/* Model Routing & Loop Parameters */}
-        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 text-xs">
           <div className="space-y-1">
             <label className="text-[11px] text-muted-foreground">
-              路由用途 (purpose)
+              {tx("路由用途", "Purpose")}
             </label>
-            <select
+            <Select
               value={purpose}
+              disabled={!canEdit}
               onChange={(e) => setPurpose(e.target.value as LlmPurpose)}
-              className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
+              className="w-full font-mono-tech"
             >
               {PURPOSES.map((p) => (
                 <option key={p} value={p}>
                   {p}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
-          <div className="space-y-1">
+          <div className="space-y-1 sm:col-span-2 lg:col-span-2">
             <label className="text-[11px] text-muted-foreground">
-              指定提供方 (可选)
+              {tx("指定提供方", "Provider")}
             </label>
-            <select
+            <Select
               value={providerId}
+              disabled={!canEdit}
               onChange={(e) => setProviderId(e.target.value)}
-              className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-xs"
+              className="w-full"
             >
-              <option value="">自动优先级故障切换</option>
+              <option value="">
+                {tx("自动故障切换", "Auto Failover")}
+              </option>
               {providers.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name} ({p.model})
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
           <div className="space-y-1">
             <label className="text-[11px] text-muted-foreground">
-              温度 (temperature)
+              {tx("温度", "Temperature")}
             </label>
             <Input
               type="number"
@@ -608,32 +684,35 @@ export function AgentEditor({
               min={0}
               max={2}
               value={temperature}
+              disabled={!canEdit}
               onChange={(e) => setTemperature(e.target.value)}
               className="font-mono-tech text-xs"
             />
           </div>
           <div className="space-y-1">
             <label className="text-[11px] text-muted-foreground">
-              最大步数 (max_steps)
+              {tx("最大步数", "Max Steps")}
             </label>
             <Input
               type="number"
               min={1}
               max={20}
               value={maxSteps}
+              disabled={!canEdit}
               onChange={(e) => setMaxSteps(e.target.value)}
               className="font-mono-tech text-xs"
             />
           </div>
           <div className="space-y-1">
             <label className="text-[11px] text-muted-foreground">
-              记忆轮数 (memory_turns)
+              {tx("记忆轮数", "Memory Turns")}
             </label>
             <Input
               type="number"
               min={1}
               max={50}
               value={memoryTurns}
+              disabled={!canEdit}
               onChange={(e) => setMemoryTurns(e.target.value)}
               className="font-mono-tech text-xs"
             />
@@ -649,6 +728,7 @@ export function AgentEditor({
             mcpClients={mcpClients}
             agents={agents}
             currentAgentId={currentAgent?.id ?? null}
+            disabled={!canEdit}
           />
         </div>
 
@@ -656,7 +736,7 @@ export function AgentEditor({
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 border-t border-border pt-4 text-xs">
           <div className="space-y-2">
             <label className="text-[11px] font-medium text-muted-foreground block">
-              需人工审批工具门禁 (approval_required_tools)
+              {tx("需审批工具门禁", "Approval-Gated Tools")}
             </label>
             {mountedToolNames.length > 0 ? (
               <div className="flex flex-wrap gap-1.5">
@@ -666,9 +746,10 @@ export function AgentEditor({
                     <button
                       key={tName}
                       type="button"
+                      disabled={!canEdit}
                       onClick={() => toggleApprovalTool(tName)}
                       className={cn(
-                        "rounded border px-2 py-0.5 text-[11px] font-mono-tech cursor-pointer",
+                        "rounded border px-2 py-0.5 text-[11px] font-mono-tech cursor-pointer disabled:opacity-50",
                         checked
                           ? "border-xblue bg-xblue-soft text-xblue"
                           : "border-border bg-background text-muted-foreground"
@@ -683,6 +764,7 @@ export function AgentEditor({
             ) : null}
             <Input
               value={approvalToolsText}
+              disabled={!canEdit}
               onChange={(e) => setApprovalToolsText(e.target.value)}
               placeholder="start_flow, run_simulation"
               className="font-mono-tech text-xs"
@@ -691,30 +773,49 @@ export function AgentEditor({
 
           <div className="space-y-2">
             <label className="text-[11px] font-medium text-muted-foreground block">
-              知识与问数范围约束 (knowledge_scope)
+              {tx("知识与问数范围", "Knowledge Scope")}
             </label>
             <Input
               value={docTitlePrefix}
+              disabled={!canEdit}
               onChange={(e) => setDocTitlePrefix(e.target.value)}
-              placeholder="文档标题前缀过滤 (doc_title_prefix，留空不限)"
+              placeholder={tx("文档标题前缀（可空）", "Document title prefix")}
               className="text-xs"
             />
             <Input
               value={datasetNamesText}
+              disabled={!canEdit}
               onChange={(e) => setDatasetNamesText(e.target.value)}
-              placeholder="限定问数数据集 (逗号分隔，如 demo_orders)"
+              placeholder="demo_orders"
               className="font-mono-tech text-xs"
             />
           </div>
         </div>
 
+        {/* Caller Permissions Context */}
+        {userPermissions.length > 0 && (
+          <div className="space-y-1.5 border-t border-border pt-4 text-xs">
+            <div className="text-[11px] font-medium text-muted-foreground">
+              {tx("当前调用主体权限边界", "Caller Permission Ceiling")}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {userPermissions.map((perm) => (
+                <Badge key={perm} variant="outline" title={perm}>
+                  {tEnum(perm)}
+                </Badge>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Optional Output Schema */}
         <div className="space-y-1 border-t border-border pt-4 text-xs">
           <label className="text-[11px] font-medium text-muted-foreground">
-            结构化输出 JSON Schema (output_schema，可选)
+            {tx("结构化输出 JSON Schema", "Output JSON Schema")}
           </label>
           <Textarea
             value={outputSchemaText}
+            disabled={!canEdit}
             onChange={(e) => setOutputSchemaText(e.target.value)}
             rows={3}
             placeholder='{"type": "object", "properties": {"summary": {"type": "string"}}, "required": ["summary"]}'
@@ -730,63 +831,54 @@ export function AgentEditor({
         onClose={() => setEmbedOpen(false)}
       />
 
-      {versionsOpen && currentAgent ? (
-        <div
-          data-testid="agent-versions-drawer"
-          className="fixed inset-0 z-50 flex justify-end bg-black/50"
-        >
-          <div className="w-full max-w-md bg-background border-l border-border p-5 overflow-y-auto space-y-4">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <div>
-                <h3 className="text-sm font-semibold">
-                  版本历史 · {currentAgent.name}
-                </h3>
-                <p className="text-[11px] text-muted-foreground">
-                  不可变快照记录 (ax_agent_versions)
-                </p>
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setVersionsOpen(false)}
-                className="h-7 w-7 p-0"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-
-            {versionsLoading ? (
-              <p className="text-xs text-muted-foreground py-6 text-center">
-                正在加载版本快照…
-              </p>
-            ) : versions.length === 0 ? (
-              <p className="text-xs text-muted-foreground py-6 text-center">
-                该智能体尚未发布正式版本
-              </p>
-            ) : (
-              <div className="space-y-3">
-                {versions.map((ver) => (
-                  <Card key={ver.version} className="p-3 space-y-2 text-xs">
-                    <div className="flex items-center justify-between">
-                      <Badge variant="xblue">v{ver.version}</Badge>
-                      <span className="text-[11px] text-muted-foreground font-mono-tech">
-                        {new Date(ver.published_at).toLocaleString()}
-                      </span>
-                    </div>
-                    <div className="text-[11px] text-muted-foreground">
-                      用途: {ver.spec.provider_purpose} · 工具数:{" "}
-                      {ver.spec.tools.length} · 步数上限: {ver.spec.max_steps}
-                    </div>
-                    <pre className="rounded border border-border bg-muted/40 p-2 text-[11px] font-mono-tech max-h-32 overflow-y-auto whitespace-pre-wrap">
-                      {ver.spec.system_prompt}
-                    </pre>
-                  </Card>
-                ))}
-              </div>
-            )}
+      <Drawer
+        open={versionsOpen && Boolean(currentAgent)}
+        onClose={() => setVersionsOpen(false)}
+        widthClass="max-w-md"
+        testId="agent-versions-drawer"
+        title={
+          <>
+            <History className="h-4 w-4 text-xblue shrink-0" />
+            <span>
+              {tx(
+                `版本历史 · ${currentAgent?.name ?? ""}`,
+                `Version History · ${currentAgent?.name ?? ""}`
+              )}
+            </span>
+          </>
+        }
+      >
+        {versionsLoading ? (
+          <p className="text-xs text-muted-foreground py-6 text-center">
+            {tx("加载中…", "Loading…")}
+          </p>
+        ) : versions.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-6 text-center">
+            {tx("尚未发布正式版本", "No published versions")}
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {versions.map((ver) => (
+              <Card key={ver.version} className="p-3 space-y-2 text-xs">
+                <div className="flex items-center justify-between">
+                  <Badge variant="xblue">v{ver.version}</Badge>
+                  <span className="text-[11px] text-muted-foreground font-mono-tech">
+                    {fmtTime(ver.published_at)}
+                  </span>
+                </div>
+                <div className="text-[11px] text-muted-foreground">
+                  {ver.spec.provider_purpose} ·{" "}
+                  {tx("工具", "Tools")} ×{ver.spec.tools.length} ·{" "}
+                  {tx("步数", "Max steps")} {ver.spec.max_steps}
+                </div>
+                <pre className="rounded border border-border bg-muted/40 p-2 text-[11px] font-mono-tech max-h-32 overflow-y-auto whitespace-pre-wrap">
+                  {ver.spec.system_prompt}
+                </pre>
+              </Card>
+            ))}
           </div>
-        </div>
-      ) : null}
+        )}
+      </Drawer>
     </div>
   );
 }

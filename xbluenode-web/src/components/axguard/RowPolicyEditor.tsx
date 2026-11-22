@@ -20,7 +20,17 @@ import {
   type RowPolicyPreviewResponse,
   type RowPolicyRecord,
 } from "@/lib/api/axguard";
-import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Input,
+  Select,
+  Textarea,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { ROW_POLICY_PLACEHOLDER_CHIPS } from "./constants";
 import { formatSubjectSelector } from "./logic";
@@ -46,6 +56,10 @@ export function RowPolicyEditor({
   departments,
   onReload,
 }: RowPolicyEditorProps) {
+  const { tx, tEnum, fmtNum } = useI18n();
+  const { canAny } = usePrincipal();
+  const canWrite = canAny(["GUARD_ADMIN", "DATA_ADMIN"]);
+
   const [targetKind, setTargetKind] = useState<PolicyTargetKind>("DATASET");
   const [targetRef, setTargetRef] = useState("");
 
@@ -142,7 +156,7 @@ export function RowPolicyEditor({
 
   const handleToggleDefaultDeny = async (nextVal: boolean) => {
     if (!targetRef.trim()) {
-      setBanner("请先选择或输入目标数据集 / 节点类型标识");
+      setBanner(tx("目标对象标识不能为空", "Target identifier is required"));
       return;
     }
     setTogglingDefault(true);
@@ -156,12 +170,20 @@ export function RowPolicyEditor({
       await onReload();
       setBanner(
         nextVal
-          ? `已对 ${targetRef} 开启无策略命中默认拒绝 (default_deny = true)`
-          : `已对 ${targetRef} 关闭默认拒绝 (default_deny = false)`
+          ? tx(
+              `已开启无匹配策略默认拒绝 (${targetRef})`,
+              `Enabled default deny for ${targetRef}`
+            )
+          : tx(
+              `已关闭无匹配策略默认拒绝 (${targetRef})`,
+              `Disabled default deny for ${targetRef}`
+            )
       );
     } catch (err) {
       setBanner(
-        err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
       );
     } finally {
       setTogglingDefault(false);
@@ -173,7 +195,12 @@ export function RowPolicyEditor({
     const cleanTarget = targetRef.trim();
     const cleanPred = predicate.trim();
     if (!cleanName || !cleanTarget || !cleanPred) {
-      setBanner("请完整填写策略名称、目标对象与行过滤表达式");
+      setBanner(
+        tx(
+          "策略名称、目标对象与过滤表达式不能为空",
+          "Policy name, target, and predicate are required"
+        )
+      );
       return;
     }
 
@@ -195,15 +222,21 @@ export function RowPolicyEditor({
     try {
       if (editingId) {
         await axguardApi.updateRowPolicy(editingId, payload);
-        setBanner(`已更新行级安全策略 ${cleanName}`);
+        setBanner(
+          tx(`已保存行策略 ${cleanName}`, `Updated row policy ${cleanName}`)
+        );
       } else {
         await axguardApi.createRowPolicy(payload);
-        setBanner(`已创建行级安全策略 ${cleanName}`);
+        setBanner(
+          tx(`已创建行策略 ${cleanName}`, `Created row policy ${cleanName}`)
+        );
       }
       await onReload();
     } catch (err) {
       setBanner(
-        err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
       );
     } finally {
       setSaving(false);
@@ -218,10 +251,12 @@ export function RowPolicyEditor({
         startNewPolicy();
       }
       await onReload();
-      setBanner(`已删除行级安全策略 ${name}`);
+      setBanner(tx(`已删除行策略 ${name}`, `Deleted row policy ${name}`));
     } catch (err) {
       setBanner(
-        err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
       );
     }
   };
@@ -230,7 +265,12 @@ export function RowPolicyEditor({
     const uid = previewUserId.trim();
     const dsId = previewDatasetId.trim();
     if (!uid || !dsId) {
-      setBanner("请选择预览视角用户与目标数据集 UUID");
+      setBanner(
+        tx(
+          "预览用户与数据集不能为空",
+          "Preview user and dataset are required"
+        )
+      );
       return;
     }
     setPreviewing(true);
@@ -240,7 +280,9 @@ export function RowPolicyEditor({
       setPreviewResult(res);
     } catch (err) {
       setBanner(
-        err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
       );
     } finally {
       setPreviewing(false);
@@ -279,7 +321,7 @@ export function RowPolicyEditor({
                   : "text-muted-foreground"
               )}
             >
-              数据集 (DATASET)
+              {tx("数据集", "Dataset")}
             </button>
             <button
               type="button"
@@ -294,41 +336,41 @@ export function RowPolicyEditor({
                   : "text-muted-foreground"
               )}
             >
-              节点类型 (NODE_TYPE)
+              {tx("节点类型", "Node Type")}
             </button>
           </div>
 
           {targetKind === "DATASET" && datasets.length > 0 ? (
-            <select
+            <Select
               value={targetRef}
               onChange={(e) => setTargetRef(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2.5 text-xs"
+              className="h-8 text-xs"
             >
               {datasets.map((ds) => (
                 <option key={ds.id} value={ds.id}>
                   {ds.display_name || ds.name} ({ds.name})
                 </option>
               ))}
-            </select>
+            </Select>
           ) : targetKind === "NODE_TYPE" && nodeTypes.length > 0 ? (
-            <select
+            <Select
               value={targetRef}
               onChange={(e) => setTargetRef(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2.5 text-xs"
+              className="h-8 text-xs"
             >
               {nodeTypes.map((nt) => (
                 <option key={nt.name} value={nt.name}>
                   {nt.display_name || nt.name} ({nt.name})
                 </option>
               ))}
-            </select>
+            </Select>
           ) : null}
 
           <Input
             placeholder={
               targetKind === "DATASET"
-                ? "数据集 UUID（如 0000...）"
-                : "节点类型名（如 Warehouse）"
+                ? "00000000-0000-0000-0000-000000001310"
+                : "Warehouse"
             }
             value={targetRef}
             onChange={(e) => setTargetRef(e.target.value)}
@@ -341,13 +383,13 @@ export function RowPolicyEditor({
           <input
             type="checkbox"
             checked={currentDefaultDeny}
-            disabled={togglingDefault || !targetRef.trim()}
+            disabled={!canWrite || togglingDefault || !targetRef.trim()}
             onChange={(e) => void handleToggleDefaultDeny(e.target.checked)}
             data-testid="row-default-deny-toggle"
             className="accent-[#2563eb]"
           />
           <ShieldAlert className="h-3.5 w-3.5 text-xblue" />
-          <span>无匹配策略默认拒绝（default_deny = 0 行）</span>
+          <span>{tx("无匹配策略默认拒绝", "Default Deny When Unmatched")}</span>
         </label>
       </Card>
 
@@ -358,22 +400,32 @@ export function RowPolicyEditor({
             <div>
               <div className="text-xs font-semibold flex items-center gap-1.5">
                 <Filter className="h-3.5 w-3.5 text-xblue" />
-                行级安全策略列表（同目标多策略按 OR 合并）
+                {tx("行级策略列表", "Row Security Policies")}
               </div>
               <p className="text-[11px] text-muted-foreground">
-                DATA_ADMIN 与 GUARD_ADMIN 默认豁免行级过滤。
+                {tx(
+                  "同目标多条策略以逻辑或合并；管理员默认豁免。",
+                  "Multiple policies on one target combine via OR; admins are exempt."
+                )}
               </p>
             </div>
-            <Button variant="outline" type="button" onClick={startNewPolicy}>
-              <Plus className="h-3.5 w-3.5" />
-              新建
-            </Button>
+            {canWrite && (
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                onClick={startNewPolicy}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {tx("新建", "New")}
+              </Button>
+            )}
           </div>
 
           {matchingPolicies.length === 0 ? (
-            <div className="py-8 text-center text-xs text-muted-foreground">
-              当前目标对象暂无行级过滤策略
-            </div>
+            <EmptyState
+              title={tx("当前目标暂无行级策略", "No row policies for this target")}
+            />
           ) : (
             <div className="space-y-2">
               {matchingPolicies.map((p) => (
@@ -393,23 +445,32 @@ export function RowPolicyEditor({
                       className="flex items-center gap-1.5"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <Badge variant={p.enabled ? "xblue" : "outline"}>
-                        {p.enabled ? "启用" : "停用"}
+                      <Badge variant={p.enabled ? "success" : "outline"}>
+                        {p.enabled
+                          ? tx("启用", "Enabled")
+                          : tx("停用", "Disabled")}
                       </Badge>
-                      <button
-                        type="button"
-                        onClick={() => void handleDeletePolicy(p.id, p.name)}
-                        className="text-muted-foreground hover:text-foreground p-1 cursor-pointer"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      {canWrite && (
+                        <button
+                          type="button"
+                          onClick={() => void handleDeletePolicy(p.id, p.name)}
+                          className="text-muted-foreground hover:text-foreground p-1 cursor-pointer"
+                          title={tx("删除", "Delete")}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
                   <div className="rounded bg-muted/60 px-2 py-1 font-mono-tech text-[11px] break-all">
                     {p.predicate}
                   </div>
                   <div className="text-[11px] text-muted-foreground">
-                    适用主体：{formatSubjectSelector(p.applies_to, "全部非豁免主体")}
+                    {tx("适用主体：", "Subjects: ")}
+                    {formatSubjectSelector(
+                      p.applies_to,
+                      tx("全部非豁免主体", "All non-exempt principals")
+                    )}
                   </div>
                 </div>
               ))}
@@ -421,24 +482,30 @@ export function RowPolicyEditor({
         <Card className="xl:col-span-7 p-4 space-y-3">
           <div className="border-b border-border pb-2.5 flex items-center justify-between">
             <div className="text-xs font-semibold">
-              {editingId ? `编辑行策略 (${policyName})` : "新建行策略与主体选择器"}
+              {editingId
+                ? `${tx("编辑行策略", "Edit Row Policy")} (${policyName})`
+                : tx("新建行策略", "New Row Policy")}
             </div>
             <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
               <input
                 type="checkbox"
                 checked={enabled}
+                disabled={!canWrite}
                 onChange={(e) => setEnabled(e.target.checked)}
                 className="accent-[#2563eb]"
               />
-              策略启用
+              {tx("启用", "Enabled")}
             </label>
           </div>
 
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">策略名称 *</label>
+            <label className="text-[11px] text-muted-foreground">
+              {tx("策略名称", "Policy Name")} *
+            </label>
             <Input
-              placeholder="如 east_warehouses"
+              placeholder="east_warehouses"
               value={policyName}
+              disabled={!canWrite}
               onChange={(e) => setPolicyName(e.target.value)}
               data-testid="row-policy-name-input"
               className="h-8 text-xs font-mono-tech"
@@ -447,19 +514,25 @@ export function RowPolicyEditor({
 
           <div className="space-y-1.5">
             <label className="text-[11px] text-muted-foreground">
-              适用主体 (applies_to · 全不选表示匹配全部主体)
+              {tx(
+                "适用主体（全不选表示全部非豁免主体）",
+                "Target Subjects (leave empty for all non-exempt subjects)"
+              )}
             </label>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
               <div className="rounded border border-border p-2 space-y-1">
-                <div className="text-[11px] font-medium">按角色</div>
+                <div className="text-[11px] font-medium">
+                  {tx("角色", "Roles")}
+                </div>
                 <div className="flex flex-wrap gap-1">
                   {roleNames.map((r) => {
                     const checked = selectedRoles.includes(r);
                     return (
                       <label
                         key={r}
+                        title={r}
                         className={cn(
-                          "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-mono-tech border cursor-pointer",
+                          "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] border cursor-pointer",
                           checked
                             ? "border-xblue bg-xblue-soft text-xblue"
                             : "border-border text-muted-foreground"
@@ -468,6 +541,7 @@ export function RowPolicyEditor({
                         <input
                           type="checkbox"
                           checked={checked}
+                          disabled={!canWrite}
                           onChange={(e) =>
                             setSelectedRoles((prev) =>
                               e.target.checked
@@ -477,7 +551,7 @@ export function RowPolicyEditor({
                           }
                           className="accent-[#2563eb]"
                         />
-                        {r}
+                        {tEnum(r)}
                       </label>
                     );
                   })}
@@ -485,7 +559,9 @@ export function RowPolicyEditor({
               </div>
 
               <div className="rounded border border-border p-2 space-y-1">
-                <div className="text-[11px] font-medium">按部门</div>
+                <div className="text-[11px] font-medium">
+                  {tx("部门", "Departments")}
+                </div>
                 <div className="flex flex-wrap gap-1">
                   {departments.map((d) => {
                     const checked = selectedDepts.includes(d.dept_id);
@@ -502,6 +578,7 @@ export function RowPolicyEditor({
                         <input
                           type="checkbox"
                           checked={checked}
+                          disabled={!canWrite}
                           onChange={(e) =>
                             setSelectedDepts((prev) =>
                               e.target.checked
@@ -523,26 +600,29 @@ export function RowPolicyEditor({
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center justify-between gap-1">
               <label className="text-[11px] text-muted-foreground">
-                行过滤布尔表达式（白名单 AST 解析，禁止函数与子查询）
+                {tx("行过滤表达式", "Row Filter Predicate")}
               </label>
-              <div className="flex flex-wrap gap-1">
-                {ROW_POLICY_PLACEHOLDER_CHIPS.map((chip) => (
-                  <button
-                    key={chip.token}
-                    type="button"
-                    title={chip.hint}
-                    onClick={() => appendChip(chip.token)}
-                    className="rounded border border-border bg-muted/50 hover:bg-muted px-1.5 py-0.5 text-[11px] font-mono-tech text-xblue cursor-pointer"
-                  >
-                    {chip.token}
-                  </button>
-                ))}
-              </div>
+              {canWrite && (
+                <div className="flex flex-wrap gap-1">
+                  {ROW_POLICY_PLACEHOLDER_CHIPS.map((chip) => (
+                    <button
+                      key={chip.token}
+                      type="button"
+                      title={chip.hint}
+                      onClick={() => appendChip(chip.token)}
+                      className="rounded border border-border bg-muted/50 hover:bg-muted px-1.5 py-0.5 text-[11px] font-mono-tech text-xblue cursor-pointer"
+                    >
+                      {chip.token}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <Textarea
               rows={3}
-              placeholder="如 warehouse_code IN {{user.attr.warehouses}} AND status <> 'DRAFT'"
+              disabled={!canWrite}
+              placeholder="warehouse_code IN {{user.attr.warehouses}} AND status <> 'DRAFT'"
               value={predicate}
               onChange={(e) => setPredicate(e.target.value)}
               data-testid="row-policy-predicate-input"
@@ -550,22 +630,28 @@ export function RowPolicyEditor({
             />
           </div>
 
-          <div className="flex justify-end">
-            <Button
-              type="button"
-              disabled={
-                saving ||
-                !policyName.trim() ||
-                !targetRef.trim() ||
-                !predicate.trim()
-              }
-              onClick={() => void handleSavePolicy()}
-              data-testid="save-row-policy-btn"
-            >
-              <Save className="h-3.5 w-3.5" />
-              {saving ? "保存中..." : editingId ? "更新行策略" : "创建行策略"}
-            </Button>
-          </div>
+          {canWrite && (
+            <div className="flex justify-end">
+              <Button
+                type="button"
+                disabled={
+                  saving ||
+                  !policyName.trim() ||
+                  !targetRef.trim() ||
+                  !predicate.trim()
+                }
+                onClick={() => void handleSavePolicy()}
+                data-testid="save-row-policy-btn"
+              >
+                <Save className="h-3.5 w-3.5" />
+                {saving
+                  ? tx("保存中…", "Saving…")
+                  : editingId
+                    ? tx("保存", "Save")
+                    : tx("创建", "Create")}
+              </Button>
+            </div>
+          )}
         </Card>
       </div>
 
@@ -575,30 +661,36 @@ export function RowPolicyEditor({
           <div>
             <div className="text-xs font-semibold flex items-center gap-1.5">
               <Eye className="h-3.5 w-3.5 text-xblue" />
-              以指定用户视角预览前 20 行（含实时行过滤与列脱敏效果）
+              {tx(
+                "用户视角样本预览（前 20 行）",
+                "User Perspective Sample Preview (First 20 Rows)"
+              )}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              调用 POST /api/axguard/row-policies/preview 在 sql_guard 安全子查询改写下检视目标用户的真实可见样本。
+              {tx(
+                "同时生效行过滤与列脱敏规则。",
+                "Evaluates active row filters and column masking rules simultaneously."
+              )}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             {users.length > 0 ? (
-              <select
+              <Select
                 value={previewUserId}
                 onChange={(e) => setPreviewUserId(e.target.value)}
                 data-testid="row-preview-user-select"
-                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                className="h-8 text-xs"
               >
                 {users.map((u) => (
                   <option key={u.id} value={u.id}>
-                    视角: {u.username} ({u.dept_id})
+                    {u.username} ({u.dept_id})
                   </option>
                 ))}
-              </select>
+              </Select>
             ) : (
               <Input
-                placeholder="用户 UUID"
+                placeholder="00000000-0000-0000-0000-000000001302"
                 value={previewUserId}
                 onChange={(e) => setPreviewUserId(e.target.value)}
                 data-testid="row-preview-user-select"
@@ -607,21 +699,21 @@ export function RowPolicyEditor({
             )}
 
             {datasets.length > 0 ? (
-              <select
+              <Select
                 value={previewDatasetId}
                 onChange={(e) => setPreviewDatasetId(e.target.value)}
                 data-testid="row-preview-dataset-select"
-                className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+                className="h-8 text-xs"
               >
                 {datasets.map((ds) => (
                   <option key={ds.id} value={ds.id}>
-                    数据集: {ds.display_name || ds.name}
+                    {ds.display_name || ds.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             ) : (
               <Input
-                placeholder="数据集 UUID"
+                placeholder="00000000-0000-0000-0000-000000001310"
                 value={previewDatasetId}
                 onChange={(e) => setPreviewDatasetId(e.target.value)}
                 data-testid="row-preview-dataset-select"
@@ -636,7 +728,9 @@ export function RowPolicyEditor({
               data-testid="row-policy-preview-btn"
             >
               <Eye className="h-3.5 w-3.5" />
-              {previewing ? "查询预览中..." : "预览前 20 行"}
+              {previewing
+                ? tx("预览中…", "Loading…")
+                : tx("预览前 20 行", "Preview 20 Rows")}
             </Button>
           </div>
         </div>
@@ -644,7 +738,10 @@ export function RowPolicyEditor({
         {previewResult && (
           <div className="space-y-2" data-testid="row-policy-preview-table">
             <div className="text-[11px] font-mono-tech text-muted-foreground">
-              共返回 {previewResult.row_count} 行可见记录
+              {tx(
+                `可见记录 ${fmtNum(previewResult.row_count, 0)} 行`,
+                `${fmtNum(previewResult.row_count, 0)} visible rows`
+              )}
             </div>
             <div className="overflow-x-auto rounded border border-border">
               <table className="w-full text-xs border-collapse">
@@ -653,7 +750,7 @@ export function RowPolicyEditor({
                     {previewResult.columns.map((col) => (
                       <th
                         key={col.name}
-                        className="px-3 py-2 font-mono-tech font-medium"
+                        className="px-3 py-2 font-mono-tech font-medium whitespace-nowrap"
                       >
                         {col.name}
                         <span className="ml-1 text-[10px] text-muted-foreground">
@@ -670,7 +767,7 @@ export function RowPolicyEditor({
                         colSpan={Math.max(1, previewResult.columns.length)}
                         className="px-4 py-6 text-center text-muted-foreground"
                       >
-                        该用户视角下可见行数为 0
+                        {tx("可见行数为 0", "0 visible rows")}
                       </td>
                     </tr>
                   ) : (

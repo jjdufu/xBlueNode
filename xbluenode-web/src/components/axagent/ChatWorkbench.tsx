@@ -26,7 +26,17 @@ import {
   type ConversationStatus,
   type MessageRecord,
 } from "@/lib/api/axagent";
-import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Select,
+  StatusBadge,
+  Textarea,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { MessageView, type StreamingToolItem } from "./MessageView";
 
@@ -49,6 +59,11 @@ export function ChatWorkbench({
   onSelectAgentId,
 }: ChatWorkbenchProps) {
   const queryClient = useQueryClient();
+  const { tx, fmtNum } = useI18n();
+  const { can, canAny } = usePrincipal();
+
+  const canRun = canAny(["AGENT_RUN", "AGENT_EDIT"]);
+  const canDecideApproval = can("APPROVAL_DECIDE");
 
   const effectiveAgent = useMemo(() => {
     if (agents.length === 0) return null;
@@ -166,15 +181,18 @@ export function ChatWorkbench({
         }
       } catch (err) {
         setErrorBanner(
-          err instanceof Error ? err.message : "加载历史会话消息失败"
+          err instanceof Error
+            ? err.message
+            : tx("加载会话消息失败", "Failed to load conversation messages")
         );
       }
     },
-    []
+    [tx]
   );
 
   const handleDeleteConversation = useCallback(
     async (convId: string) => {
+      if (!canRun) return;
       try {
         await deleteConversation(convId);
         if (activeConversationId === convId) {
@@ -184,15 +202,19 @@ export function ChatWorkbench({
           queryKey: ["axagent", "conversations"],
         });
       } catch (err) {
-        setErrorBanner(err instanceof Error ? err.message : "删除会话失败");
+        setErrorBanner(
+          err instanceof Error
+            ? err.message
+            : tx("删除会话失败", "Failed to delete conversation")
+        );
       }
     },
-    [activeConversationId, handleNewConversation, queryClient]
+    [activeConversationId, canRun, handleNewConversation, queryClient, tx]
   );
 
   const handleSendMessage = useCallback(async () => {
     const trimmed = inputText.trim();
-    if (!trimmed || !effectiveAgent || isStreaming) {
+    if (!canRun || !trimmed || !effectiveAgent || isStreaming) {
       return;
     }
 
@@ -444,7 +466,9 @@ export function ChatWorkbench({
     } catch (err) {
       if (!controller.signal.aborted) {
         setErrorBanner(
-          err instanceof Error ? err.message : "智能体对话请求失败"
+          err instanceof Error
+            ? err.message
+            : tx("对话请求失败", "Chat request failed")
         );
       }
     } finally {
@@ -455,16 +479,18 @@ export function ChatWorkbench({
     }
   }, [
     activeConversationId,
+    canRun,
     effectiveAgent,
     inputText,
     isStreaming,
     queryClient,
+    tx,
     useDraft,
   ]);
 
   const handleApprovalDecision = useCallback(
     async (decision: "APPROVE" | "REJECT") => {
-      if (!pendingApproval) return;
+      if (!pendingApproval || !canDecideApproval) return;
       setDecidingApproval(true);
       setErrorBanner(null);
       try {
@@ -472,7 +498,9 @@ export function ChatWorkbench({
           decision,
           comment:
             approvalComment.trim() ||
-            (decision === "APPROVE" ? "工作台确认放行" : "工作台拒绝执行"),
+            (decision === "APPROVE"
+              ? tx("批准放行", "Approved")
+              : tx("驳回执行", "Rejected")),
         });
         const convId = pendingApproval.conversationId;
         setPendingApproval(null);
@@ -487,13 +515,15 @@ export function ChatWorkbench({
         }
       } catch (err) {
         setErrorBanner(
-          err instanceof Error ? err.message : "提交工具审批决定失败"
+          err instanceof Error
+            ? err.message
+            : tx("审批提交失败", "Failed to submit approval decision")
         );
       } finally {
         setDecidingApproval(false);
       }
     },
-    [approvalComment, pendingApproval, queryClient]
+    [approvalComment, canDecideApproval, pendingApproval, queryClient, tx]
   );
 
   return (
@@ -506,9 +536,9 @@ export function ChatWorkbench({
               htmlFor="workbench-agent-select"
               className="text-[11px] font-medium text-muted-foreground"
             >
-              当前对话智能体
+              {tx("当前智能体", "Active Agent")}
             </label>
-            <select
+            <Select
               id="workbench-agent-select"
               data-testid="workbench-agent-select"
               value={effectiveAgent?.id ?? ""}
@@ -516,10 +546,10 @@ export function ChatWorkbench({
                 onSelectAgentId(e.target.value);
                 handleNewConversation();
               }}
-              className="h-9 w-full rounded-md border border-input bg-background px-2.5 text-xs font-medium text-foreground focus:outline-none focus:ring-1 focus:ring-foreground"
+              className="w-full font-medium"
             >
               {agents.length === 0 ? (
-                <option value="">暂无可用智能体</option>
+                <option value="">{tx("暂无智能体", "No agents")}</option>
               ) : (
                 agents.map((ag) => (
                   <option key={ag.id} value={ag.id}>
@@ -527,11 +557,13 @@ export function ChatWorkbench({
                   </option>
                 ))
               )}
-            </select>
+            </Select>
           </div>
 
           <label className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-2 text-xs cursor-pointer">
-            <span className="font-medium text-foreground">草稿调试模式</span>
+            <span className="font-medium text-foreground">
+              {tx("草稿调试模式", "Draft Mode")}
+            </span>
             <input
               type="checkbox"
               data-testid="workbench-draft-toggle"
@@ -549,18 +581,18 @@ export function ChatWorkbench({
             className="w-full justify-center"
           >
             <MessageSquarePlus className="h-3.5 w-3.5" />
-            新建会话
+            {tx("新建会话", "New Chat")}
           </Button>
 
           <div className="pt-2 border-t border-border space-y-1.5">
             <div className="text-[11px] font-medium text-muted-foreground flex items-center justify-between">
-              <span>历史会话</span>
-              <span className="font-mono-tech">{conversations.length}</span>
+              <span>{tx("历史会话", "History")}</span>
+              <span className="font-mono-tech">{fmtNum(conversations.length, 0)}</span>
             </div>
 
             {conversations.length === 0 ? (
               <p className="text-[11px] text-muted-foreground py-3 text-center">
-                暂无会话记录
+                {tx("暂无会话记录", "No conversations")}
               </p>
             ) : (
               <div className="space-y-1 max-h-[340px] overflow-y-auto pr-0.5">
@@ -583,32 +615,26 @@ export function ChatWorkbench({
                         className="flex-1 min-w-0 text-left space-y-0.5 cursor-pointer"
                       >
                         <div className="font-medium truncate text-foreground">
-                          {conv.title || `会话 ${conv.id.slice(0, 8)}`}
+                          {conv.title || conv.id.slice(0, 8)}
                         </div>
                         <div className="flex items-center gap-1.5 text-[10px]">
-                          <Badge
-                            variant={
-                              conv.status === "WAITING_APPROVAL"
-                                ? "xblue"
-                                : "outline"
-                            }
-                          >
-                            {conv.status}
-                          </Badge>
+                          <StatusBadge status={conv.status} />
                           <span className="font-mono-tech text-muted-foreground">
                             v{conv.agent_version}
                           </span>
                         </div>
                       </button>
-                      <button
-                        type="button"
-                        title="删除会话"
-                        data-testid={`delete-conv-btn-${conv.id}`}
-                        onClick={() => void handleDeleteConversation(conv.id)}
-                        className="opacity-60 hover:opacity-100 p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      {canRun && (
+                        <button
+                          type="button"
+                          title={tx("删除会话", "Delete")}
+                          data-testid={`delete-conv-btn-${conv.id}`}
+                          onClick={() => void handleDeleteConversation(conv.id)}
+                          className="opacity-60 hover:opacity-100 p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground cursor-pointer"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                     </div>
                   );
                 })}
@@ -620,13 +646,13 @@ export function ChatWorkbench({
         {effectiveAgent ? (
           <div className="text-[11px] text-muted-foreground border-t border-border pt-2.5 space-y-1">
             <div className="flex items-center justify-between">
-              <span>最大推理步数</span>
+              <span>{tx("最大推理步数", "Max Steps")}</span>
               <span className="font-mono-tech">
                 {effectiveAgent.spec.max_steps}
               </span>
             </div>
             <div className="flex items-center justify-between">
-              <span>记忆轮数</span>
+              <span>{tx("记忆轮数", "Memory Turns")}</span>
               <span className="font-mono-tech">
                 {effectiveAgent.spec.memory_turns}
               </span>
@@ -641,11 +667,13 @@ export function ChatWorkbench({
           <div className="flex items-center gap-2 min-w-0">
             <Bot className="h-4 w-4 text-xblue shrink-0" />
             <span className="text-sm font-semibold truncate">
-              {effectiveAgent?.name ?? "未选择智能体"}
+              {effectiveAgent?.name ?? tx("未配置智能体", "No Agent")}
             </span>
             {effectiveAgent ? (
               <Badge variant={useDraft ? "outline" : "xblue"}>
-                {useDraft ? "草稿调试" : `发布版 v${effectiveAgent.version}`}
+                {useDraft
+                  ? tx("草稿", "Draft")
+                  : `v${effectiveAgent.version}`}
               </Badge>
             ) : null}
           </div>
@@ -657,16 +685,10 @@ export function ChatWorkbench({
                 className="inline-flex items-center gap-1.5 rounded-full border border-xblue/30 bg-xblue-soft px-2.5 py-0.5 text-[11px] font-mono-tech text-xblue"
               >
                 <Cpu className="h-3 w-3" />
-                专家协作: {activeSpecialist}
+                {tx("专家", "Specialist")}: {activeSpecialist}
               </div>
             ) : null}
-            <Badge
-              variant={
-                conversationStatus === "WAITING_APPROVAL" ? "xblue" : "neutral"
-              }
-            >
-              {conversationStatus}
-            </Badge>
+            <StatusBadge status={conversationStatus} />
           </div>
         </div>
 
@@ -684,12 +706,12 @@ export function ChatWorkbench({
               onClick={() => setErrorBanner(null)}
               className="text-muted-foreground hover:text-foreground text-[11px] cursor-pointer"
             >
-              关闭
+              {tx("关闭", "Close")}
             </button>
           </div>
         ) : null}
 
-        {(conversationStatus === "WAITING_APPROVAL" || pendingApproval) ? (
+        {conversationStatus === "WAITING_APPROVAL" || pendingApproval ? (
           <div
             data-testid="workbench-approval-banner"
             className="mx-4 mt-3 rounded-md border border-xblue/40 bg-xblue-soft/40 p-3 space-y-2.5 text-xs"
@@ -698,48 +720,48 @@ export function ChatWorkbench({
               <div className="flex items-center gap-2 font-semibold text-foreground">
                 <ShieldAlert className="h-4 w-4 text-xblue shrink-0" />
                 <span>
-                  高危工具人工审批门禁：
+                  {tx("工具调用待审批", "Tool Approval Required")}:
                   <span className="font-mono-tech ml-1">
-                    {pendingApproval?.toolName ?? "受控工具调用"}
+                    {pendingApproval?.toolName ?? tx("受控工具", "Controlled Tool")}
                   </span>
                 </span>
               </div>
-              <Badge variant="xblue">WAITING_APPROVAL</Badge>
+              <StatusBadge status="WAITING_APPROVAL" />
             </div>
             {pendingApproval ? (
               <pre className="rounded border border-border bg-background/80 p-2 text-[11px] font-mono-tech overflow-x-auto max-h-28">
                 {JSON.stringify(pendingApproval.arguments, null, 2)}
               </pre>
             ) : null}
-            {pendingApproval ? (
+            {pendingApproval && canDecideApproval ? (
               <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
                 <Input
                   value={approvalComment}
                   onChange={(e) => setApprovalComment(e.target.value)}
-                  placeholder="审批备注（选填）"
+                  placeholder={tx("审批备注", "Approval note")}
                   className="h-8 text-xs flex-1"
                 />
                 <div className="flex items-center gap-2 shrink-0">
                   <Button
                     type="button"
+                    size="sm"
                     data-testid="approve-tool-btn"
                     disabled={decidingApproval}
                     onClick={() => void handleApprovalDecision("APPROVE")}
-                    className="h-8 px-3"
                   >
                     <CheckCircle2 className="h-3.5 w-3.5" />
-                    批准执行
+                    {tx("批准", "Approve")}
                   </Button>
                   <Button
                     type="button"
                     variant="outline"
+                    size="sm"
                     data-testid="reject-tool-btn"
                     disabled={decidingApproval}
                     onClick={() => void handleApprovalDecision("REJECT")}
-                    className="h-8 px-3"
                   >
                     <XCircle className="h-3.5 w-3.5" />
-                    拒绝执行
+                    {tx("驳回", "Reject")}
                   </Button>
                 </div>
               </div>
@@ -775,10 +797,13 @@ export function ChatWorkbench({
               rows={2}
               placeholder={
                 effectiveAgent
-                  ? `向 ${effectiveAgent.name} 提问（Enter 发送，Shift+Enter 换行）…`
-                  : "请先创建或选择一个智能体"
+                  ? tx(
+                      `向 ${effectiveAgent.name} 提问…`,
+                      `Ask ${effectiveAgent.name}…`
+                    )
+                  : tx("暂无可用智能体", "No active agent")
               }
-              disabled={!effectiveAgent || isStreaming}
+              disabled={!canRun || !effectiveAgent || isStreaming}
               className="resize-none text-xs sm:text-sm min-h-[56px]"
             />
             {isStreaming ? (
@@ -789,18 +814,20 @@ export function ChatWorkbench({
                 className="h-[56px] px-3.5 shrink-0"
               >
                 <Square className="h-3.5 w-3.5" />
-                停止
+                {tx("停止", "Stop")}
               </Button>
             ) : (
               <Button
                 type="button"
                 data-testid="workbench-send-btn"
-                disabled={!effectiveAgent || inputText.trim().length === 0}
+                disabled={
+                  !canRun || !effectiveAgent || inputText.trim().length === 0
+                }
                 onClick={() => void handleSendMessage()}
                 className="h-[56px] px-4 shrink-0"
               >
                 <Send className="h-3.5 w-3.5" />
-                发送
+                {tx("发送", "Send")}
               </Button>
             )}
           </div>
@@ -811,11 +838,14 @@ export function ChatWorkbench({
       <Card className="lg:col-span-3 p-3.5 space-y-4 text-xs">
         <div>
           <div className="font-semibold text-foreground mb-1">
-            智能体能力契约
+            {tx("智能体能力契约", "Agent Contract")}
           </div>
           <p className="text-[11px] text-muted-foreground leading-relaxed">
             {effectiveAgent?.description ||
-              "基于多模型路由、工具并发调用与专家子智能体协作执行闭环推理。"}
+              tx(
+                "多模型路由、工具并发调用与专家协作闭环推理。",
+                "Multi-model routing, tool invocation, and specialist delegation."
+              )}
           </p>
         </div>
 
@@ -823,10 +853,13 @@ export function ChatWorkbench({
           <>
             <div className="space-y-1.5 border-t border-border pt-3">
               <div className="text-[11px] font-medium text-muted-foreground">
-                已挂载工具 ({effectiveAgent.spec.tools.length})
+                {tx("已挂载工具", "Mounted Tools")} (
+                {effectiveAgent.spec.tools.length})
               </div>
               {effectiveAgent.spec.tools.length === 0 ? (
-                <p className="text-[11px] text-muted-foreground">未配置工具</p>
+                <p className="text-[11px] text-muted-foreground">
+                  {tx("未挂载工具", "No tools")}
+                </p>
               ) : (
                 <div className="flex flex-wrap gap-1.5">
                   {effectiveAgent.spec.tools.map((tool, i) => {
@@ -853,18 +886,22 @@ export function ChatWorkbench({
 
             <div className="space-y-1.5 border-t border-border pt-3">
               <div className="text-[11px] font-medium text-muted-foreground">
-                知识与问数范围 (Knowledge Scope)
+                {tx("知识与问数范围", "Knowledge Scope")}
               </div>
               <div className="space-y-1 text-[11px]">
                 <div className="flex items-center justify-between gap-2">
-                  <span className="text-muted-foreground">文档前缀:</span>
+                  <span className="text-muted-foreground">
+                    {tx("文档前缀", "Doc Prefix")}:
+                  </span>
                   <span className="font-mono-tech">
                     {effectiveAgent.spec.knowledge_scope.doc_title_prefix ||
-                      "全量可见文档"}
+                      tx("全部可见文档", "All visible docs")}
                   </span>
                 </div>
                 <div className="space-y-1">
-                  <span className="text-muted-foreground">限定数据集:</span>
+                  <span className="text-muted-foreground">
+                    {tx("限定数据集", "Datasets")}:
+                  </span>
                   {effectiveAgent.spec.knowledge_scope.dataset_names.length >
                   0 ? (
                     <div className="flex flex-wrap gap-1 pt-0.5">
@@ -877,7 +914,9 @@ export function ChatWorkbench({
                       )}
                     </div>
                   ) : (
-                    <span className="font-mono-tech ml-1">全量授权数据集</span>
+                    <span className="font-mono-tech ml-1">
+                      {tx("全部授权数据集", "All permitted datasets")}
+                    </span>
                   )}
                 </div>
               </div>
@@ -886,7 +925,7 @@ export function ChatWorkbench({
             {effectiveAgent.spec.approval_required_tools.length > 0 ? (
               <div className="space-y-1.5 border-t border-border pt-3">
                 <div className="text-[11px] font-medium text-muted-foreground">
-                  需人工审批工具
+                  {tx("需审批工具", "Approval Required")}
                 </div>
                 <div className="flex flex-wrap gap-1">
                   {effectiveAgent.spec.approval_required_tools.map((t) => (
@@ -903,7 +942,7 @@ export function ChatWorkbench({
         {structuredOutput ? (
           <div className="space-y-1.5 border-t border-border pt-3">
             <div className="text-[11px] font-medium text-muted-foreground">
-              结构化输出 (Output Schema)
+              {tx("结构化输出", "Structured Output")}
             </div>
             <pre className="rounded border border-border bg-muted/50 p-2 text-[11px] font-mono-tech overflow-x-auto max-h-48">
               {JSON.stringify(structuredOutput, null, 2)}

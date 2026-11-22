@@ -2,7 +2,16 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import { Box, Crosshair, Layers, Plus, Save, Trash2, Upload } from "lucide-react";
+import {
+  Box,
+  Crosshair,
+  Layers,
+  Plus,
+  Save,
+  Trash2,
+  Upload,
+} from "lucide-react";
+import { useI18n } from "@/i18n";
 import type { AssetKind } from "@/lib/api/enums";
 import { xblueApi, type BlueNode } from "@/lib/api/xblue";
 import {
@@ -11,7 +20,16 @@ import {
   type FloorPlacementRecord,
   type Scene3dBindingRecord,
 } from "@/lib/api/xblueview";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { usePrincipal } from "@/lib/permissions";
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  IconButton,
+  Input,
+  Select,
+} from "@/components/ui/primitives";
 
 const ASSET_KINDS: readonly AssetKind[] = [
   "FLOOR_PLAN_IMAGE",
@@ -44,9 +62,16 @@ function disposeThreeTree(root: THREE.Object3D): void {
 }
 
 export function AssetManagerPanel() {
+  const { tx, tEnum, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("VIEW_EDIT");
+
   const [assets, setAssets] = useState<AssetRecord[]>([]);
   const [nodes, setNodes] = useState<BlueNode[]>([]);
   const [selectedAsset, setSelectedAsset] = useState<AssetRecord | null>(null);
+  const [pendingDeleteAsset, setPendingDeleteAsset] =
+    useState<AssetRecord | null>(null);
+  const [deletingAsset, setDeletingAsset] = useState(false);
   const [loading, setLoading] = useState(false);
 
   // Upload form state
@@ -236,7 +261,7 @@ export function AssetManagerPanel() {
     const hitVec = new THREE.Vector3();
 
     const onCanvasClick = (ev: MouseEvent) => {
-      if (!renderer) return;
+      if (!renderer || !canEdit) return;
       const rect = renderer.domElement.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) return;
       pointer.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
@@ -293,9 +318,12 @@ export function AssetManagerPanel() {
         );
       });
       setStatusMsg(
-        `已拾取三维坐标 (${px}, ${py}, ${pz})${
-          hitMeshName ? ` · 命中对象 ${hitMeshName}` : ""
-        }`
+        tx(
+          `已拾取坐标 (${px}, ${py}, ${pz})${
+            hitMeshName ? ` · ${hitMeshName}` : ""
+          }`,
+          `Picked (${px}, ${py}, ${pz})${hitMeshName ? ` · ${hitMeshName}` : ""}`
+        )
       );
     };
 
@@ -394,12 +422,13 @@ export function AssetManagerPanel() {
         container.removeChild(renderer.domElement);
       }
     };
-  }, [selectedAsset]);
+  }, [canEdit, selectedAsset, tx]);
 
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canEdit) return;
     if (!uploadFile) {
-      setStatusMsg("请选择要上传的资产文件");
+      setStatusMsg(tx("未附加资产文件", "Asset file is required"));
       return;
     }
     const name = uploadName.trim() || uploadFile.name;
@@ -413,7 +442,9 @@ export function AssetManagerPanel() {
       );
       setUploadName("");
       setUploadFile(null);
-      setStatusMsg(`资产「${created.name}」上传成功`);
+      setStatusMsg(
+        tx(`已上传「${created.name}」`, `Uploaded "${created.name}"`)
+      );
       await loadAssetsAndNodes();
       setSelectedAsset(created);
     } catch (err) {
@@ -423,13 +454,20 @@ export function AssetManagerPanel() {
     }
   };
 
-  const handleDeleteAsset = async (assetId: string) => {
+  const confirmDeleteAsset = async () => {
+    if (!pendingDeleteAsset || !canEdit) return;
+    setDeletingAsset(true);
     try {
-      await xblueviewApi.deleteAsset(assetId);
-      if (selectedAsset?.id === assetId) setSelectedAsset(null);
+      await xblueviewApi.deleteAsset(pendingDeleteAsset.id);
+      if (selectedAsset?.id === pendingDeleteAsset.id) {
+        setSelectedAsset(null);
+      }
+      setPendingDeleteAsset(null);
       await loadAssetsAndNodes();
     } catch (err) {
       setStatusMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingAsset(false);
     }
   };
 
@@ -455,6 +493,7 @@ export function AssetManagerPanel() {
   };
 
   const handleFloorCanvasClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!canEdit) return;
     if (didDragPlacementRef.current) {
       didDragPlacementRef.current = false;
       return;
@@ -472,7 +511,7 @@ export function AssetManagerPanel() {
   };
 
   const handleFloorPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (!draggingPlacementNodeId) return;
+    if (!canEdit || !draggingPlacementNodeId) return;
     const pos = computeFloorRatio(e.clientX, e.clientY);
     if (!pos) return;
     didDragPlacementRef.current = true;
@@ -486,12 +525,12 @@ export function AssetManagerPanel() {
   };
 
   const handleSavePlacements = async () => {
-    if (!selectedAsset) return;
+    if (!selectedAsset || !canEdit) return;
     setSavingBindings(true);
     setStatusMsg(null);
     try {
       await xblueviewApi.putFloorPlacements(selectedAsset.id, placements);
-      setStatusMsg("平面图节点坐标已保存");
+      setStatusMsg(tx("平面坐标已保存", "2D placements saved"));
     } catch (err) {
       setStatusMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -500,12 +539,12 @@ export function AssetManagerPanel() {
   };
 
   const handleSaveBindings3d = async () => {
-    if (!selectedAsset) return;
+    if (!selectedAsset || !canEdit) return;
     setSavingBindings(true);
     setStatusMsg(null);
     try {
       await xblueviewApi.putScene3dBindings(selectedAsset.id, bindings3d);
-      setStatusMsg("3D 空间网格绑定已保存");
+      setStatusMsg(tx("三维绑定已保存", "3D bindings saved"));
     } catch (err) {
       setStatusMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -514,7 +553,7 @@ export function AssetManagerPanel() {
   };
 
   const addBinding3dRow = () => {
-    if (!activeNodeId) return;
+    if (!activeNodeId || !canEdit) return;
     if (bindings3d.some((b) => b.node_id === activeNodeId)) return;
     setBindings3d((prev) => {
       const next = [
@@ -547,68 +586,91 @@ export function AssetManagerPanel() {
     >
       {/* Left: Upload + Asset List */}
       <div className="lg:col-span-5 space-y-4">
-        <Card className="p-4 space-y-3">
-          <h3 className="text-xs font-semibold flex items-center gap-1.5">
-            <Upload className="h-3.5 w-3.5 text-xblue" />
-            上传空间与模型资产
-          </h3>
-          <form onSubmit={(e) => void handleUpload(e)} className="space-y-2.5 text-xs">
-            <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1">
-                <label className="text-muted-foreground block">资产类型</label>
-                <select
-                  value={uploadKind}
-                  onChange={(e) => setUploadKind(e.target.value as AssetKind)}
-                  className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
-                  data-testid="asset-upload-kind"
-                >
-                  {ASSET_KINDS.map((k) => (
-                    <option key={k} value={k}>
-                      {k}
-                    </option>
-                  ))}
-                </select>
+        {canEdit && (
+          <Card className="p-4 space-y-3">
+            <h3 className="text-xs font-semibold flex items-center gap-1.5">
+              <Upload className="h-3.5 w-3.5 text-xblue" />
+              {tx("上传空间资产", "Upload Spatial Asset")}
+            </h3>
+            <form
+              onSubmit={(e) => void handleUpload(e)}
+              className="space-y-2.5 text-xs"
+            >
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <label className="text-muted-foreground block">
+                    {tx("资产类型", "Asset Type")}
+                  </label>
+                  <Select
+                    value={uploadKind}
+                    onChange={(e) => setUploadKind(e.target.value as AssetKind)}
+                    className="h-8 w-full text-xs"
+                    data-testid="asset-upload-kind"
+                  >
+                    {ASSET_KINDS.map((k) => (
+                      <option key={k} value={k}>
+                        {tEnum(k)} ({k})
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-muted-foreground block">
+                    {tx("资产名称", "Asset Name")}
+                  </label>
+                  <Input
+                    value={uploadName}
+                    onChange={(e) => setUploadName(e.target.value)}
+                    placeholder="warehouse_twin"
+                    className="h-8 text-xs"
+                    data-testid="asset-upload-name"
+                  />
+                </div>
               </div>
+
               <div className="space-y-1">
-                <label className="text-muted-foreground block">资产名称</label>
-                <Input
-                  value={uploadName}
-                  onChange={(e) => setUploadName(e.target.value)}
-                  placeholder="例如 warehouse_twin"
-                  className="h-8 text-xs"
-                  data-testid="asset-upload-name"
+                <label className="text-muted-foreground block">
+                  {tx(
+                    "资产文件 (2D/GeoJSON/Icon ≤ 20MB, .glb ≤ 50MB)",
+                    "File (2D/GeoJSON/Icon ≤ 20MB, .glb ≤ 50MB)"
+                  )}
+                </label>
+                <input
+                  type="file"
+                  onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+                  className="block w-full text-xs file:mr-2 file:rounded file:border file:border-border file:bg-muted file:px-2.5 file:py-1 file:text-xs"
+                  data-testid="asset-upload-file"
                 />
               </div>
-            </div>
 
-            <div className="space-y-1">
-              <label className="text-muted-foreground block">
-                文件（平面图/GeoJSON/Icon ≤ 20MB，glTF .glb ≤ 50MB）
-              </label>
-              <input
-                type="file"
-                onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
-                className="block w-full text-xs file:mr-2 file:rounded file:border file:border-border file:bg-muted file:px-2.5 file:py-1 file:text-xs"
-                data-testid="asset-upload-file"
-              />
-            </div>
-
-            <Button type="submit" disabled={uploading} className="w-full">
-              <Upload className="h-3.5 w-3.5" />
-              {uploading ? "上传校验中..." : "上传资产"}
-            </Button>
-          </form>
-        </Card>
+              <Button type="submit" disabled={uploading} className="w-full">
+                <Upload className="h-3.5 w-3.5" />
+                {uploading
+                  ? tx("上传中…", "Uploading…")
+                  : tx("上传资产", "Upload")}
+              </Button>
+            </form>
+          </Card>
+        )}
 
         <Card className="p-4 space-y-2.5">
           <div className="flex items-center justify-between text-xs">
-            <span className="font-semibold">已注册资产 ({assets.length})</span>
-            {loading && <span className="text-muted-foreground">加载中...</span>}
+            <span className="font-semibold">
+              {tx(
+                `已注册资产 (${fmtNum(assets.length, 0)})`,
+                `Registered Assets (${fmtNum(assets.length, 0)})`
+              )}
+            </span>
+            {loading && (
+              <span className="text-muted-foreground">
+                {tx("加载中…", "Loading…")}
+              </span>
+            )}
           </div>
 
           {assets.length === 0 ? (
             <div className="py-6 text-center text-xs text-muted-foreground">
-              暂无资产，请先上传平面图、GeoJSON 或 .glb 三维模型。
+              {tx("暂无空间资产", "No spatial assets")}
             </div>
           ) : (
             <div className="space-y-1.5 max-h-80 overflow-y-auto">
@@ -634,23 +696,27 @@ export function AssetManagerPanel() {
                         <span className="truncate">{asset.name}</span>
                       </div>
                       <div className="flex items-center gap-1.5 mt-0.5">
-                        <Badge variant="outline">{asset.asset_kind}</Badge>
+                        <Badge variant="outline">
+                          {tEnum(asset.asset_kind)}
+                        </Badge>
                         <span className="font-mono-tech text-[10px] text-muted-foreground">
                           {asset.id.slice(0, 8)}
                         </span>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        void handleDeleteAsset(asset.id);
-                      }}
-                      className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
-                      title="删除资产"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    {canEdit && (
+                      <IconButton
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setPendingDeleteAsset(asset);
+                        }}
+                        aria-label={tx("删除资产", "Delete asset")}
+                        title={tx("删除资产", "Delete asset")}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </IconButton>
+                    )}
                   </div>
                 );
               })}
@@ -669,43 +735,57 @@ export function AssetManagerPanel() {
 
         {!selectedAsset ? (
           <div className="py-16 text-center text-muted-foreground">
-            选择左侧「FLOOR_PLAN_IMAGE」或「MODEL_3D」资产，即可配置 2D 平面摆放坐标或 3D 网格节点绑定。
+            {tx(
+              "从左侧资产列表选定平面图或三维模型以配置节点绑定",
+              "Select a 2D floor plan or 3D model on the left to configure node bindings"
+            )}
           </div>
         ) : selectedAsset.asset_kind === "FLOOR_PLAN_IMAGE" ? (
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="font-semibold">
-                  2D 平面图摆放编辑器 · {selectedAsset.name}
+                  {tx("平面图节点定位", "2D Floor Placement")} ·{" "}
+                  {selectedAsset.name}
                 </h3>
                 <p className="text-[11px] text-muted-foreground">
-                  点击画布放置新节点，或按住拖拽已有节点桩点调整比例坐标
+                  {tx(
+                    "在画布定位节点，拖拽已有标记微调比例坐标",
+                    "Place nodes on the canvas and drag markers to fine-tune coordinates"
+                  )}
                 </p>
               </div>
-              <Button
-                type="button"
-                disabled={savingBindings}
-                onClick={() => void handleSavePlacements()}
-              >
-                <Save className="h-3.5 w-3.5" />
-                保存 2D 摆放
-              </Button>
+              {canEdit && (
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={savingBindings}
+                  onClick={() => void handleSavePlacements()}
+                >
+                  <Save className="h-3.5 w-3.5" />
+                  {tx("保存坐标", "Save")}
+                </Button>
+              )}
             </div>
 
-            <div className="flex items-center gap-2">
-              <span className="text-muted-foreground shrink-0">待摆放节点:</span>
-              <select
-                value={activeNodeId}
-                onChange={(e) => setActiveNodeId(e.target.value)}
-                className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs"
-              >
-                {nodes.map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.title} ({n.node_key} · {n.type_name})
-                  </option>
-                ))}
-              </select>
-            </div>
+            {canEdit && (
+              <div className="flex items-center gap-2">
+                <span className="text-muted-foreground shrink-0">
+                  {tx("目标节点", "Target Node")}:
+                </span>
+                <Select
+                  value={activeNodeId}
+                  onChange={(e) => setActiveNodeId(e.target.value)}
+                  className="h-8 flex-1 text-xs"
+                >
+                  {nodes.map((n) => (
+                    <option key={n.id} value={n.id}>
+                      {n.title} ({n.node_key} · {n.type_name})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )}
 
             <div
               ref={floorCanvasRef}
@@ -727,6 +807,7 @@ export function AssetManagerPanel() {
                 <div
                   key={p.node_id}
                   onPointerDown={(e) => {
+                    if (!canEdit) return;
                     e.stopPropagation();
                     didDragPlacementRef.current = false;
                     setDraggingPlacementNodeId(p.node_id);
@@ -748,20 +829,27 @@ export function AssetManagerPanel() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <h3 className="font-semibold">
-                  3D 孪生场景绑定编辑器 · {selectedAsset.name}
+                  {tx("三维场景网格绑定", "3D Scene Mesh Binding")} ·{" "}
+                  {selectedAsset.name}
                 </h3>
                 <p className="text-[11px] text-muted-foreground">
-                  自动解析 glTF 命名网格下拉选择，支持点击三维预览画布通过 Raycaster 拾取坐标填入选中行
+                  {tx(
+                    "解析 glTF 命名对象并在三维视口拾取表面坐标",
+                    "Extracts glTF named meshes with 3D viewport coordinate picking"
+                  )}
                 </p>
               </div>
-              <Button
-                type="button"
-                disabled={savingBindings}
-                onClick={() => void handleSaveBindings3d()}
-              >
-                <Save className="h-3.5 w-3.5" />
-                保存 3D 绑定
-              </Button>
+              {canEdit && (
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={savingBindings}
+                  onClick={() => void handleSaveBindings3d()}
+                >
+                  <Save className="h-3.5 w-3.5" />
+                  {tx("保存绑定", "Save")}
+                </Button>
+              )}
             </div>
 
             {/* 3D Raycaster Surface Picker Preview */}
@@ -777,15 +865,26 @@ export function AssetManagerPanel() {
                   className="h-24 w-full flex items-center justify-center text-[11px] text-zinc-400 px-3 text-center"
                   data-testid="asset-3d-raycast-fallback"
                 >
-                  当前环境不支持 WebGL 三维拾取预览，已从 .glb 提取 {meshNames.length} 个命名对象供下拉绑定
+                  {tx(
+                    `当前环境未启用 WebGL 预览，已提取 ${meshNames.length} 个命名对象`,
+                    `WebGL preview unavailable; extracted ${meshNames.length} named meshes`
+                  )}
                 </div>
               )}
               <div className="px-2.5 py-1 bg-zinc-900/90 border-t border-zinc-800 flex items-center justify-between text-[10px] font-mono-tech text-zinc-300">
                 <span className="inline-flex items-center gap-1">
                   <Crosshair className="h-3 w-3 text-xblue" />
-                  点击模型表面拾取 (pos_x, pos_y, pos_z) → 第 {activeBindingIdx + 1} 行
+                  {tx(
+                    `视口拾取 (pos_x, pos_y, pos_z) → 第 ${activeBindingIdx + 1} 行`,
+                    `Viewport pick (pos_x, pos_y, pos_z) → Row ${activeBindingIdx + 1}`
+                  )}
                 </span>
-                <span>命名网格: {meshNames.length} 个</span>
+                <span>
+                  {tx(
+                    `命名网格: ${meshNames.length}`,
+                    `Meshes: ${meshNames.length}`
+                  )}
+                </span>
               </div>
             </div>
 
@@ -795,23 +894,30 @@ export function AssetManagerPanel() {
               ))}
             </datalist>
 
-            <div className="flex items-center gap-2">
-              <select
-                value={activeNodeId}
-                onChange={(e) => setActiveNodeId(e.target.value)}
-                className="h-8 flex-1 rounded-md border border-input bg-background px-2 text-xs"
-              >
-                {nodes.map((n) => (
-                  <option key={n.id} value={n.id}>
-                    {n.title} ({n.node_key} · {n.type_name})
-                  </option>
-                ))}
-              </select>
-              <Button type="button" variant="outline" onClick={addBinding3dRow}>
-                <Plus className="h-3.5 w-3.5" />
-                添加绑定
-              </Button>
-            </div>
+            {canEdit && (
+              <div className="flex items-center gap-2">
+                <Select
+                  value={activeNodeId}
+                  onChange={(e) => setActiveNodeId(e.target.value)}
+                  className="h-8 flex-1 text-xs"
+                >
+                  {nodes.map((n) => (
+                    <option key={n.id} value={n.id}>
+                      {n.title} ({n.node_key} · {n.type_name})
+                    </option>
+                  ))}
+                </Select>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={addBinding3dRow}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {tx("添加绑定", "Add Row")}
+                </Button>
+              </div>
+            )}
 
             <div className="space-y-2 max-h-72 overflow-y-auto">
               {bindings3d.map((b, idx) => {
@@ -831,8 +937,11 @@ export function AssetManagerPanel() {
                     </div>
                     <div className="col-span-4 flex items-center gap-1">
                       {meshNames.length > 0 && (
-                        <select
-                          value={meshNames.includes(b.mesh_name) ? b.mesh_name : ""}
+                        <Select
+                          disabled={!canEdit}
+                          value={
+                            meshNames.includes(b.mesh_name) ? b.mesh_name : ""
+                          }
                           onChange={(e) => {
                             const picked = e.target.value;
                             setBindings3d((prev) =>
@@ -841,20 +950,21 @@ export function AssetManagerPanel() {
                               )
                             );
                           }}
-                          className="h-7 w-24 shrink-0 rounded border border-input bg-background px-1 text-[11px] font-mono-tech"
-                          title="从 glTF 命名对象中选择"
+                          className="h-7 w-24 shrink-0 px-1 text-[11px] font-mono-tech"
+                          title={tx("glTF 命名网格", "glTF mesh")}
                           data-testid={`binding-mesh-select-${idx}`}
                         >
-                          <option value="">选择网格</option>
+                          <option value="">{tx("未绑定", "Unbound")}</option>
                           {meshNames.map((mName) => (
                             <option key={mName} value={mName}>
                               {mName}
                             </option>
                           ))}
-                        </select>
+                        </Select>
                       )}
                       <Input
                         list={datalistId}
+                        disabled={!canEdit}
                         value={b.mesh_name}
                         onChange={(e) =>
                           setBindings3d((prev) =>
@@ -865,7 +975,7 @@ export function AssetManagerPanel() {
                             )
                           )
                         }
-                        placeholder="mesh_name (如 Rack_A)"
+                        placeholder="Rack_A"
                         className="h-7 text-[11px] font-mono-tech flex-1"
                       />
                     </div>
@@ -873,6 +983,7 @@ export function AssetManagerPanel() {
                       <Input
                         type="number"
                         step="0.5"
+                        disabled={!canEdit}
                         value={b.pos_x}
                         onChange={(e) =>
                           setBindings3d((prev) =>
@@ -891,6 +1002,7 @@ export function AssetManagerPanel() {
                       <Input
                         type="number"
                         step="0.5"
+                        disabled={!canEdit}
                         value={b.pos_y}
                         onChange={(e) =>
                           setBindings3d((prev) =>
@@ -909,6 +1021,7 @@ export function AssetManagerPanel() {
                       <Input
                         type="number"
                         step="0.5"
+                        disabled={!canEdit}
                         value={b.pos_z}
                         onChange={(e) =>
                           setBindings3d((prev) =>
@@ -928,6 +1041,7 @@ export function AssetManagerPanel() {
                         type="number"
                         step="0.1"
                         min="0.1"
+                        disabled={!canEdit}
                         value={b.scale}
                         onChange={(e) =>
                           setBindings3d((prev) =>
@@ -948,19 +1062,22 @@ export function AssetManagerPanel() {
                         className="h-7 text-[11px] font-mono-tech px-1.5"
                       />
                     </div>
-                    <div className="col-span-1 text-right">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setBindings3d((prev) =>
-                            prev.filter((_, i) => i !== idx)
-                          );
-                        }}
-                        className="rounded p-1 text-muted-foreground hover:text-foreground cursor-pointer"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                    <div className="col-span-1 flex justify-end">
+                      {canEdit && (
+                        <IconButton
+                          size="sm"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setBindings3d((prev) =>
+                              prev.filter((_, i) => i !== idx)
+                            );
+                          }}
+                          aria-label={tx("移除绑定", "Remove binding")}
+                          title={tx("移除绑定", "Remove binding")}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </IconButton>
+                      )}
                     </div>
                   </div>
                 );
@@ -969,10 +1086,29 @@ export function AssetManagerPanel() {
           </div>
         ) : (
           <div className="py-12 text-center text-muted-foreground">
-            {selectedAsset.asset_kind} 资产（{selectedAsset.name}）可在组件编辑器中直接引用。
+            {tx(
+              `${tEnum(selectedAsset.asset_kind)}「${selectedAsset.name}」可在组件编辑器中绑定`,
+              `${selectedAsset.asset_kind} "${selectedAsset.name}" can be bound in Widget Editor`
+            )}
           </div>
         )}
       </Card>
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteAsset)}
+        onClose={() => setPendingDeleteAsset(null)}
+        onConfirm={() => void confirmDeleteAsset()}
+        loading={deletingAsset}
+        title={tx("删除空间资产", "Delete Spatial Asset")}
+        description={
+          pendingDeleteAsset
+            ? tx(
+                `删除资产「${pendingDeleteAsset.name}」后，引用该资产的平面图或三维组件将回退至列表模式。`,
+                `Deleting "${pendingDeleteAsset.name}" reverts any bound 2D/3D widgets to list fallback.`
+              )
+            : ""
+        }
+      />
     </div>
   );
 }

@@ -8,8 +8,8 @@ import {
   Play,
   Share2,
   TrendingUp,
-  X,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import { axflowApi, type AlertRecord } from "@/lib/api/axflow";
 import { axsimApi } from "@/lib/api/axsim";
 import {
@@ -18,7 +18,8 @@ import {
   type NodeDocumentHit,
 } from "@/lib/api/xblue";
 import { xblueviewApi, type WidgetRecord } from "@/lib/api/xblueview";
-import { Badge, Button } from "@/components/ui/primitives";
+import { usePrincipal } from "@/lib/permissions";
+import { Badge, Button, Drawer, StatusBadge } from "@/components/ui/primitives";
 import { MetricChart } from "@/components/xbluegraph/MetricChart";
 import type { SelectedNodeContext } from "./utils";
 
@@ -38,6 +39,11 @@ export function NodeDrawer({
   onActionExecuted,
 }: NodeDrawerProps) {
   const navigate = useNavigate();
+  const { tx, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canSimRun = can("SIM_RUN");
+  const canAlertAck = can("ALERT_ACK");
+
   const [node, setNode] = useState<BlueNode | null>(null);
   const [selectedMetric, setSelectedMetric] = useState<string | null>(null);
   const [docs, setDocs] = useState<NodeDocumentHit[]>([]);
@@ -93,7 +99,9 @@ export function NodeDrawer({
           title: ctx.title ?? ctx.nodeKey ?? ctx.nodeId,
           properties: {},
           metrics:
-            ctx.metricName && ctx.metricValue !== null && ctx.metricValue !== undefined
+            ctx.metricName &&
+            ctx.metricValue !== null &&
+            ctx.metricValue !== undefined
               ? { [ctx.metricName]: ctx.metricValue }
               : {},
         };
@@ -132,11 +140,12 @@ export function NodeDrawer({
     void loadNodeDetails(selected);
   }, [loadNodeDetails, selected]);
 
-  if (!selected) return null;
-
   const handleAckAlert = async (alertId: string) => {
+    if (!canAlertAck) return;
     try {
-      await axflowApi.ackAlert(alertId, { comment: "节点详情抽屉确认" });
+      await axflowApi.ackAlert(alertId, {
+        comment: tx("节点详情确认", "Acknowledged in node drawer"),
+      });
       setAlerts((prev) =>
         prev.map((a) => (a.id === alertId ? { ...a, status: "ACK" } : a))
       );
@@ -147,11 +156,11 @@ export function NodeDrawer({
   };
 
   const handleCreateSandboxFromNode = async () => {
-    if (!node) return;
-    setBusyMsg("正在基于当前节点克隆推演沙盘...");
+    if (!node || !canSimRun) return;
+    setBusyMsg(tx("正在克隆推演沙盘…", "Cloning simulation sandbox…"));
     try {
       const sb = await axsimApi.createSandbox({
-        name: `${node.title} 推演沙盘`,
+        name: tx(`${node.title} 推演沙盘`, `${node.title} Sandbox`),
         scope: {
           root_node_ids: [node.id],
           depth: 2,
@@ -167,14 +176,18 @@ export function NodeDrawer({
 
   const handleInvokeBoundAction = async (w: WidgetRecord) => {
     if (!node || readOnly) return;
-    setBusyMsg(`正在执行动作「${w.title}」...`);
+    setBusyMsg(
+      tx(`正在执行「${w.title}」…`, `Running "${w.title}"…`)
+    );
     try {
       await xblueviewApi.invokeWidgetAction(w.id, {
         inputs: {},
         target_node_id: node.id,
         idempotency_key: `drawer-${w.id}-${node.id}-${Date.now()}`,
       });
-      setBusyMsg(`动作「${w.title}」已执行`);
+      setBusyMsg(
+        tx(`已执行「${w.title}」`, `Completed "${w.title}"`)
+      );
       onActionExecuted?.();
     } catch (err) {
       setBusyMsg(err instanceof Error ? err.message : String(err));
@@ -187,72 +200,68 @@ export function NodeDrawer({
   const metricEntries = Object.entries(node?.metrics ?? {});
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex justify-end bg-black/40"
-      data-testid="node-drawer-backdrop"
-      onClick={onClose}
+    <Drawer
+      open={Boolean(selected)}
+      onClose={onClose}
+      testId="node-drawer"
+      closeAriaLabel={tx("关闭节点抽屉", "Close Node Drawer")}
+      widthClass="max-w-md"
+      title={
+        selected ? (
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="truncate">
+              {node?.title ??
+                selected.title ??
+                selected.nodeKey ??
+                tx("节点详情", "Node Detail")}
+            </span>
+            <Badge variant="xblue">
+              {node?.type_name ?? selected.typeName ?? "Node"}
+            </Badge>
+          </div>
+        ) : (
+          tx("节点详情", "Node Detail")
+        )
+      }
     >
-      <div
-        className="w-full max-w-md h-full bg-background border-l border-border shadow-xl flex flex-col overflow-hidden"
-        data-testid="node-drawer"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="px-4 py-3 border-b border-border flex items-start justify-between gap-2">
-          <div>
-            <div className="flex items-center gap-2">
-              <h3 className="text-sm font-semibold">
-                {node?.title ?? selected.title ?? selected.nodeKey ?? "节点详情"}
-              </h3>
-              <Badge variant="xblue">
-                {node?.type_name ?? selected.typeName ?? "Node"}
-              </Badge>
-            </div>
-            <div className="text-[11px] font-mono-tech text-muted-foreground mt-0.5">
-              key: {node?.node_key ?? selected.nodeKey ?? selected.nodeId}
-            </div>
+      {selected && (
+        <div className="space-y-4">
+          <div className="text-[11px] font-mono-tech text-muted-foreground">
+            key: {node?.node_key ?? selected.nodeKey ?? selected.nodeId}
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
-            aria-label="关闭节点抽屉"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
 
-        {/* Navigation / Twin Actions */}
-        {!readOnly && node && (
-          <div className="px-4 py-2 border-b border-border flex flex-wrap gap-2 bg-muted/30">
-            <Button
-              type="button"
-              variant="outline"
-              className="px-2.5 py-1 text-xs"
-              onClick={() => {
-                onClose();
-                void navigate(`/graph?node_id=${encodeURIComponent(node.id)}`);
-              }}
-            >
-              <Share2 className="h-3.5 w-3.5 text-xblue" />
-              在图浏览器中打开
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="px-2.5 py-1 text-xs"
-              onClick={() => void handleCreateSandboxFromNode()}
-            >
-              <GitBranch className="h-3.5 w-3.5 text-xblue" />
-              以此节点建沙盘
-            </Button>
-          </div>
-        )}
+          {!readOnly && node && (
+            <div className="flex flex-wrap gap-2 pb-2 border-b border-border">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  onClose();
+                  void navigate(`/graph?node_id=${encodeURIComponent(node.id)}`);
+                }}
+              >
+                <Share2 className="h-3.5 w-3.5 text-xblue" />
+                {tx("查看图谱", "Open Graph")}
+              </Button>
+              {canSimRun && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleCreateSandboxFromNode()}
+                >
+                  <GitBranch className="h-3.5 w-3.5 text-xblue" />
+                  {tx("新建沙盘", "New Sandbox")}
+                </Button>
+              )}
+            </div>
+          )}
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
           {loading && (
-            <div className="text-muted-foreground">正在加载节点孪生上下文...</div>
+            <div className="text-muted-foreground">
+              {tx("加载中…", "Loading…")}
+            </div>
           )}
 
           {busyMsg && (
@@ -261,18 +270,26 @@ export function NodeDrawer({
             </div>
           )}
 
-          {/* Properties */}
           {propEntries.length > 0 && (
             <div className="space-y-1.5">
-              <div className="font-semibold text-muted-foreground">节点属性</div>
+              <div className="font-semibold text-muted-foreground">
+                {tx("节点属性", "Properties")}
+              </div>
               <div className="rounded border border-border p-2 space-y-1 bg-muted/20">
                 {propEntries.map(([k, v]) => (
-                  <div key={k} className="flex items-center justify-between gap-2">
-                    <span className="font-mono-tech text-muted-foreground">{k}</span>
+                  <div
+                    key={k}
+                    className="flex items-center justify-between gap-2"
+                  >
+                    <span className="font-mono-tech text-muted-foreground">
+                      {k}
+                    </span>
                     <span className="font-mono-tech font-medium truncate">
-                      {typeof v === "object" && v !== null
-                        ? JSON.stringify(v)
-                        : String(v ?? "")}
+                      {typeof v === "number"
+                        ? fmtNum(v, 4)
+                        : typeof v === "object" && v !== null
+                          ? JSON.stringify(v)
+                          : String(v ?? "")}
                     </span>
                   </div>
                 ))}
@@ -280,14 +297,15 @@ export function NodeDrawer({
             </div>
           )}
 
-          {/* Metrics & Trend */}
           <div className="space-y-2">
             <div className="font-semibold flex items-center gap-1.5">
               <TrendingUp className="h-3.5 w-3.5 text-xblue" />
-              实时指标与曲线
+              {tx("实时指标与曲线", "Metrics & Trend")}
             </div>
             {metricEntries.length === 0 ? (
-              <div className="text-muted-foreground">暂无时序指标</div>
+              <div className="text-muted-foreground">
+                {tx("暂无时序指标", "No metrics")}
+              </div>
             ) : (
               <div className="grid grid-cols-2 gap-1.5">
                 {metricEntries.map(([k, v]) => (
@@ -301,8 +319,12 @@ export function NodeDrawer({
                         : "border-border hover:bg-muted"
                     }`}
                   >
-                    <div className="font-mono-tech text-[10px] opacity-80">{k}</div>
-                    <div className="font-mono-tech text-sm font-semibold">{v}</div>
+                    <div className="font-mono-tech text-[10px] opacity-80 truncate">
+                      {k}
+                    </div>
+                    <div className="font-mono-tech text-sm font-semibold tabular-nums">
+                      {typeof v === "number" ? fmtNum(v, 4) : String(v ?? "-")}
+                    </div>
                   </button>
                 ))}
               </div>
@@ -316,14 +338,15 @@ export function NodeDrawer({
             )}
           </div>
 
-          {/* Alerts */}
           <div className="space-y-1.5 border-t border-border pt-3">
             <div className="font-semibold flex items-center gap-1.5">
               <AlertTriangle className="h-3.5 w-3.5 text-xblue" />
-              相关告警 ({alerts.length})
+              {tx("关联告警", "Alerts")} ({alerts.length})
             </div>
             {alerts.length === 0 ? (
-              <div className="text-muted-foreground">暂无关联告警</div>
+              <div className="text-muted-foreground">
+                {tx("暂无关联告警", "No alerts")}
+              </div>
             ) : (
               <div className="space-y-1.5">
                 {alerts.map((a) => (
@@ -331,21 +354,22 @@ export function NodeDrawer({
                     key={a.id}
                     className="rounded border border-border p-2 flex items-center justify-between gap-2"
                   >
-                    <div className="min-w-0">
+                    <div className="min-w-0 space-y-0.5">
                       <div className="font-medium truncate">{a.title}</div>
-                      <div className="text-[10px] font-mono-tech text-muted-foreground">
-                        {a.severity} · {a.status}
+                      <div className="flex items-center gap-1.5">
+                        <StatusBadge status={a.severity} />
+                        <StatusBadge status={a.status} />
                       </div>
                     </div>
-                    {!readOnly && a.status === "OPEN" && (
+                    {!readOnly && canAlertAck && a.status === "OPEN" && (
                       <Button
                         type="button"
                         variant="outline"
-                        className="px-2 py-1 text-[11px]"
+                        size="sm"
                         onClick={() => void handleAckAlert(a.id)}
                       >
                         <CheckCircle2 className="h-3 w-3 text-xblue" />
-                        确认
+                        {tx("确认", "Ack")}
                       </Button>
                     )}
                   </div>
@@ -354,35 +378,37 @@ export function NodeDrawer({
             )}
           </div>
 
-          {/* Bound Action Buttons */}
           {!readOnly && actionWidgets.length > 0 && (
             <div className="space-y-1.5 border-t border-border pt-3">
-              <div className="font-semibold">绑定业务动作</div>
+              <div className="font-semibold">
+                {tx("绑定动作", "Bound Actions")}
+              </div>
               <div className="flex flex-wrap gap-1.5">
                 {actionWidgets.map((aw) => (
                   <Button
                     key={aw.id}
                     type="button"
                     variant="outline"
-                    className="px-2.5 py-1 text-xs"
+                    size="sm"
                     onClick={() => void handleInvokeBoundAction(aw)}
                   >
                     <Play className="h-3 w-3 text-xblue" />
-                    {aw.title || "执行动作"}
+                    {aw.title || tx("执行", "Run")}
                   </Button>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Documents */}
           <div className="space-y-1.5 border-t border-border pt-3">
             <div className="font-semibold flex items-center gap-1.5">
               <FileText className="h-3.5 w-3.5 text-xblue" />
-              关联超图文档 ({docs.length})
+              {tx("关联文档", "Documents")} ({docs.length})
             </div>
             {docs.length === 0 ? (
-              <div className="text-muted-foreground">暂无关联文档</div>
+              <div className="text-muted-foreground">
+                {tx("暂无关联文档", "No documents")}
+              </div>
             ) : (
               <div className="space-y-1.5">
                 {docs.map((doc) => (
@@ -402,7 +428,7 @@ export function NodeDrawer({
             )}
           </div>
         </div>
-      </div>
-    </div>
+      )}
+    </Drawer>
   );
 }

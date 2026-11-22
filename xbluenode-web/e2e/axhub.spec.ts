@@ -468,7 +468,7 @@ test("AxHub /hub renders demo_pg & demo_orders, tests connectivity, previews tab
   // 1. Verify seed connection demo_pg with status OK & non-echoing secret on edit
   const demoConnCard = page.getByTestId("connection-card-demo_pg");
   await expect(demoConnCard).toBeVisible();
-  await expect(page.getByTestId("connection-status-demo_pg")).toContainText("OK");
+  await expect(page.getByTestId("connection-status-demo_pg")).toContainText(/OK|正常/);
 
   await page.getByTestId("test-connection-btn-demo_pg").click();
   await expect(page.getByTestId("conn-test-result-demo_pg")).toContainText("ms");
@@ -496,7 +496,7 @@ test("AxHub /hub renders demo_pg & demo_orders, tests connectivity, previews tab
   await page.getByTestId("dataset-tab-history").click();
   const syncHistory = page.getByTestId("sync-history-panel");
   await expect(syncHistory).toBeVisible();
-  await expect(syncHistory).toContainText("SUCCEEDED");
+  await expect(syncHistory).toContainText(/SUCCEEDED|成功/);
   await expect(syncHistory).toContainText("100");
 
   // 4. Switch to Lineage Graph & verify ECharts canvas renders

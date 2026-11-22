@@ -14,14 +14,16 @@ use axpoint_domain::enums::{AuditAction, Permission};
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::AnalyticsRepository as _;
 use axpoint_domain::{
-    AppError, ChatQueryRequest, ChatQueryResponse, FusedHit, IngestResponse, IngestTextRequest,
-    rrf_fuse, split_paragraphs,
+    AppError, ChatQueryRequest, ChatQueryResponse, DocumentListResponse, FusedHit, IngestResponse,
+    IngestTextRequest, rrf_fuse, split_paragraphs,
 };
 use axpoint_security::AuthPrincipal;
-use axum::extract::{Multipart, State};
-use axum::routing::post;
+use axum::extract::{Multipart, Path, Query, State};
+use axum::http::StatusCode;
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
 use chrono::Utc;
+use serde::Deserialize;
 use tracing::warn;
 use uuid::Uuid;
 
@@ -31,11 +33,56 @@ use crate::telemetry::{current_trace_id, outbound_traceparent};
 
 const HYBRID_SYSTEM_PROMPT: &str = "你是企业知识与数据分析混合问答助手。请综合给定的【结构化查询结果表】与【召回文档段落】回答用户问题。数据结论标注 [表]，文档依据标注 [文1]、[文2] 等编号；严禁编造结果表中不存在的数值。";
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ListDocumentsQuery {
+    q: Option<String>,
+    limit: Option<i64>,
+    cursor: Option<String>,
+}
+
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
+        .route("/documents", get(list_documents_handler))
+        .route("/documents/{id}", delete(delete_document_handler))
         .route("/documents/ingest", post(ingest_text_handler))
         .route("/documents/upload", post(upload_document_handler))
         .route("/chat/query", post(chat_query_handler))
+}
+
+async fn list_documents_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    Query(params): Query<ListDocumentsQuery>,
+) -> Result<Json<DocumentListResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let limit = params.limit.unwrap_or(50).clamp(1, 500);
+    let offset = match params.cursor.as_deref() {
+        Some(raw) if !raw.trim().is_empty() => raw
+            .trim()
+            .parse::<i64>()
+            .map_err(|_| HttpError(AppError::bad("INVALID_ARGUMENT", "invalid cursor")))?
+            .max(0),
+        _ => 0,
+    };
+    let resp = state
+        .store
+        .list_documents(&principal.tenant_id, params.q.as_deref(), limit, offset)
+        .await?;
+    Ok(Json(resp))
+}
+
+async fn delete_document_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    Path(id): Path<Uuid>,
+) -> Result<StatusCode, HttpError> {
+    principal.require(Permission::DataSync)?;
+    state
+        .store
+        .delete_document(&principal.tenant_id, id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn ingest_text_handler(

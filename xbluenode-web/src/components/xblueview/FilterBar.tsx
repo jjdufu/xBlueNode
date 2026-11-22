@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Filter, Lock, RotateCcw } from "lucide-react";
+import { useI18n } from "@/i18n";
 import { xblueviewApi, type FilterDef } from "@/lib/api/xblueview";
 import { Button, Input } from "@/components/ui/primitives";
 
@@ -20,6 +21,7 @@ export function FilterBar({
   lockedKeys,
   shareMode = false,
 }: FilterBarProps) {
+  const { tx } = useI18n();
   const [dynamicOptions, setDynamicOptions] = useState<
     Record<string, string[]>
   >({});
@@ -72,10 +74,10 @@ export function FilterBar({
       {isLocked && (
         <span
           className="inline-flex items-center gap-0.5 text-[10px] font-mono-tech text-xblue"
-          title="分享创建者已锁定该筛选条件"
+          title={tx("筛选条件已锁定", "Locked filter")}
         >
           <Lock className="h-2.5 w-2.5" />
-          已锁定
+          {tx("已锁定", "Locked")}
         </span>
       )}
     </label>
@@ -88,7 +90,7 @@ export function FilterBar({
     >
       <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground pb-1.5">
         <Filter className="h-3.5 w-3.5 text-xblue" />
-        全局筛选
+        {tx("全局筛选", "Filters")}
       </div>
 
       {filters.map((f) => {
@@ -113,7 +115,7 @@ export function FilterBar({
                   className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                   data-testid={`filter-${f.key}`}
                 >
-                  <option value="">全部</option>
+                  <option value="">{tx("全部", "All")}</option>
                   {opts.map((opt) => (
                     <option key={opt} value={opt}>
                       {opt}
@@ -125,7 +127,7 @@ export function FilterBar({
                   disabled={isLocked}
                   value={typeof currentVal === "string" ? currentVal : ""}
                   onChange={(e) => safeChange(e.target.value || undefined)}
-                  placeholder={`筛选 ${f.label}`}
+                  placeholder={f.label}
                   className="h-8 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                   data-testid={`filter-${f.key}`}
                 />
@@ -185,7 +187,7 @@ export function FilterBar({
                       .filter(Boolean);
                     safeChange(parts.length > 0 ? parts : undefined);
                   }}
-                  placeholder="逗号分隔多值"
+                  placeholder="A,B,C"
                   className="h-8 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
                   data-testid={`filter-${f.key}`}
                 />
@@ -246,9 +248,13 @@ export function FilterBar({
             ? currentVal
             : [undefined, undefined];
           const minStr =
-            range[0] !== undefined && range[0] !== null ? String(range[0]) : "";
+            range[0] !== undefined && range[0] !== null
+              ? String(range[0])
+              : "";
           const maxStr =
-            range[1] !== undefined && range[1] !== null ? String(range[1]) : "";
+            range[1] !== undefined && range[1] !== null
+              ? String(range[1])
+              : "";
           return (
             <div key={f.key} className="space-y-1">
               {renderLabel(f, isLocked)}
@@ -260,10 +266,12 @@ export function FilterBar({
                   type="number"
                   disabled={isLocked}
                   value={minStr}
-                  placeholder="最小"
+                  placeholder={tx("最小", "Min")}
                   onChange={(e) => {
                     const minN =
-                      e.target.value === "" ? undefined : Number(e.target.value);
+                      e.target.value === ""
+                        ? undefined
+                        : Number(e.target.value);
                     const maxN = maxStr === "" ? undefined : Number(maxStr);
                     if (minN === undefined && maxN === undefined) {
                       safeChange(undefined);
@@ -278,11 +286,13 @@ export function FilterBar({
                   type="number"
                   disabled={isLocked}
                   value={maxStr}
-                  placeholder="最大"
+                  placeholder={tx("最大", "Max")}
                   onChange={(e) => {
                     const minN = minStr === "" ? undefined : Number(minStr);
                     const maxN =
-                      e.target.value === "" ? undefined : Number(e.target.value);
+                      e.target.value === ""
+                        ? undefined
+                        : Number(e.target.value);
                     if (minN === undefined && maxN === undefined) {
                       safeChange(undefined);
                     } else {
@@ -296,7 +306,6 @@ export function FilterBar({
           );
         }
 
-        // TEXT
         return (
           <div key={f.key} className="space-y-1 min-w-[150px]">
             {renderLabel(f, isLocked)}
@@ -304,7 +313,7 @@ export function FilterBar({
               disabled={isLocked}
               value={typeof currentVal === "string" ? currentVal : ""}
               onChange={(e) => safeChange(e.target.value || undefined)}
-              placeholder={`搜索 ${f.label}...`}
+              placeholder={f.label}
               className="h-8 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
               data-testid={`filter-${f.key}`}
             />
@@ -316,12 +325,12 @@ export function FilterBar({
         <Button
           type="button"
           variant="ghost"
+          size="sm"
           onClick={onReset}
-          className="px-2.5 py-1.5 text-xs"
           data-testid="filter-reset-btn"
         >
           <RotateCcw className="h-3.5 w-3.5" />
-          重置
+          {tx("重置", "Reset")}
         </Button>
       )}
     </div>

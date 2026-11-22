@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { Eye, Save, X } from "lucide-react";
+import { Eye, Save } from "lucide-react";
+import { useI18n } from "@/i18n";
 import type { WidgetKind } from "@/lib/api/enums";
 import {
   xblueviewApi,
@@ -11,16 +12,24 @@ import {
   type WidgetDataSource,
   type WidgetRecord,
 } from "@/lib/api/xblueview";
-import { Button, Input, Textarea } from "@/components/ui/primitives";
+import { useTheme } from "@/lib/theme";
+import {
+  Button,
+  Drawer,
+  Input,
+  Select,
+  Textarea,
+} from "@/components/ui/primitives";
 import {
   ALL_WIDGET_KINDS,
-  WIDGET_KIND_LABELS,
   defaultDataSourceForKind,
   defaultPositionForKind,
+  getWidgetKindLabel,
 } from "./utils";
 import { WidgetRenderer } from "./widgets/WidgetRenderer";
 
 export interface WidgetEditorProps {
+  open?: boolean;
   dashboardId: string;
   editingWidget: WidgetRecord | null;
   existingWidgets: WidgetRecord[];
@@ -30,16 +39,22 @@ export interface WidgetEditorProps {
 }
 
 export function WidgetEditor({
+  open = true,
   dashboardId,
   editingWidget,
   existingWidgets,
-  isDark = false,
+  isDark: isDarkProp,
   onClose,
   onSaved,
 }: WidgetEditorProps) {
+  const { tx, isZh } = useI18n();
+  const { isDark: themeDark } = useTheme();
+  const effectiveDark = isDarkProp ?? themeDark;
   const isNew = !editingWidget;
 
-  const [title, setTitle] = useState(editingWidget?.title ?? "新建组件");
+  const [title, setTitle] = useState(
+    editingWidget?.title ?? tx("新建组件", "New Widget")
+  );
   const [widgetKind, setWidgetKind] = useState<WidgetKind>(
     editingWidget?.widget_kind ?? "BAR_CHART"
   );
@@ -75,11 +90,12 @@ export function WidgetEditor({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!open) return;
     xblueviewApi
       .listAssets({ limit: 100 })
       .then((res) => setAssets(Array.isArray(res?.items) ? res.items : []))
       .catch(() => setAssets([]));
-  }, []);
+  }, [open]);
 
   const handleKindChange = (nextKind: WidgetKind) => {
     setWidgetKind(nextKind);
@@ -90,7 +106,12 @@ export function WidgetEditor({
       if (nextKind === "MARKDOWN_NOTE") {
         setOptionsJson(
           JSON.stringify(
-            { content: "### 业务说明\n\n在此编写 Markdown 说明文档。" },
+            {
+              content: tx(
+                "### 业务说明\n\n在此编写 Markdown 说明文档。",
+                "### Notes\n\nWrite Markdown documentation here."
+              ),
+            },
             null,
             2
           )
@@ -110,7 +131,12 @@ export function WidgetEditor({
     const opt = JSON.parse(optionsJson) as Record<string, unknown>;
     const drl = JSON.parse(drillJson) as DrillLevel[];
     if (!ds || typeof ds !== "object" || !("kind" in ds)) {
-      throw new Error("data_source 必须包含 kind 字段");
+      throw new Error(
+        tx(
+          "data_source 必须包含 kind 字段",
+          'data_source must contain a "kind" field'
+        )
+      );
     }
     if (ds.kind === "ACTION") {
       ds.flow_id =
@@ -123,7 +149,7 @@ export function WidgetEditor({
           : undefined;
     }
     if (!Array.isArray(drl)) {
-      throw new Error("drill 必须是 JSON 数组");
+      throw new Error(tx("drill 必须是 JSON 数组", "drill must be a JSON array"));
     }
     return { dataSource: ds, encoding: enc, options: opt, drill: drl };
   };
@@ -154,10 +180,11 @@ export function WidgetEditor({
     setErrorMsg(null);
     try {
       const cfg = parseConfigFields();
+      const fallbackTitle = getWidgetKindLabel(widgetKind, isZh);
       if (editingWidget) {
         const updated = await xblueviewApi.updateWidget(editingWidget.id, {
           widget_kind: widgetKind,
-          title: title.trim() || WIDGET_KIND_LABELS[widgetKind],
+          title: title.trim() || fallbackTitle,
           data_source: cfg.dataSource,
           encoding: cfg.encoding,
           options: cfg.options,
@@ -169,7 +196,7 @@ export function WidgetEditor({
       } else {
         const req: CreateWidgetRequest = {
           widget_kind: widgetKind,
-          title: title.trim() || WIDGET_KIND_LABELS[widgetKind],
+          title: title.trim() || fallbackTitle,
           position: defaultPositionForKind(widgetKind, existingWidgets),
           data_source: cfg.dataSource,
           encoding: cfg.encoding,
@@ -231,231 +258,233 @@ export function WidgetEditor({
   };
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex justify-end bg-black/40"
-      data-testid="widget-editor-backdrop"
-      onClick={onClose}
-    >
-      <div
-        className="w-full max-w-xl h-full bg-background border-l border-border shadow-xl flex flex-col overflow-hidden"
-        data-testid="widget-editor"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="px-4 py-3 border-b border-border flex items-center justify-between">
-          <h3 className="text-sm font-semibold">
-            {isNew ? "添加驾驶舱组件" : `编辑组件 · ${editingWidget.title}`}
-          </h3>
-          <button
+    <Drawer
+      open={open}
+      onClose={onClose}
+      testId="widget-editor"
+      widthClass="max-w-xl"
+      title={
+        isNew
+          ? tx("添加组件", "Add Widget")
+          : `${tx("编辑组件", "Edit Widget")} · ${editingWidget.title}`
+      }
+      footer={
+        <>
+          <Button
             type="button"
+            variant="outline"
             onClick={onClose}
-            className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
+            disabled={saving}
           >
-            <X className="h-4 w-4" />
-          </button>
+            {tx("取消", "Cancel")}
+          </Button>
+          <Button
+            type="submit"
+            form="widget-editor-form"
+            disabled={saving}
+            data-testid="widget-editor-save-btn"
+          >
+            <Save className="h-3.5 w-3.5" />
+            {saving ? tx("保存中…", "Saving…") : tx("保存组件", "Save")}
+          </Button>
+        </>
+      }
+    >
+      <form
+        id="widget-editor-form"
+        onSubmit={(e) => void handleSave(e)}
+        className="space-y-3 text-xs"
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-muted-foreground block">
+              {tx("组件标题", "Title")}
+            </label>
+            <Input
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              className="h-8 text-xs"
+              data-testid="widget-editor-title"
+            />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-muted-foreground block">
+              {tx("组件类型", "Widget Type")}
+            </label>
+            <Select
+              value={widgetKind}
+              onChange={(e) => handleKindChange(e.target.value as WidgetKind)}
+              className="h-8 w-full text-xs font-mono-tech"
+              data-testid="widget-editor-kind"
+            >
+              {ALL_WIDGET_KINDS.map((k) => (
+                <option key={k} value={k}>
+                  {getWidgetKindLabel(k, isZh)} ({k})
+                </option>
+              ))}
+            </Select>
+          </div>
         </div>
 
-        <form
-          onSubmit={(e) => void handleSave(e)}
-          className="flex-1 overflow-y-auto p-4 space-y-3 text-xs"
-        >
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label className="text-muted-foreground block">组件标题</label>
-              <Input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                className="h-8 text-xs"
-                data-testid="widget-editor-title"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-muted-foreground block">组件类型 (20 种)</label>
-              <select
-                value={widgetKind}
-                onChange={(e) => handleKindChange(e.target.value as WidgetKind)}
-                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
-                data-testid="widget-editor-kind"
-              >
-                {ALL_WIDGET_KINDS.map((k) => (
-                  <option key={k} value={k}>
-                    {k} · {WIDGET_KIND_LABELS[k]}
-                  </option>
-                ))}
-              </select>
-            </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-muted-foreground block">
+              {tx("刷新策略", "Refresh Mode")}
+            </label>
+            <Select
+              value={refreshMode}
+              onChange={(e) => setRefreshMode(e.target.value as RefreshMode)}
+              className="h-8 w-full text-xs"
+            >
+              <option value="LIVE">{tx("实时推送", "Live SSE")}</option>
+              <option value="INTERVAL">{tx("定时轮询", "Interval")}</option>
+              <option value="MANUAL">{tx("手动刷新", "Manual")}</option>
+            </Select>
           </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label className="text-muted-foreground block">刷新策略</label>
-              <select
-                value={refreshMode}
-                onChange={(e) => setRefreshMode(e.target.value as RefreshMode)}
-                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
-              >
-                <option value="LIVE">LIVE（SSE 事件实时失效）</option>
-                <option value="INTERVAL">INTERVAL（定时轮询）</option>
-                <option value="MANUAL">MANUAL（手动刷新）</option>
-              </select>
-            </div>
-            <div className="space-y-1">
-              <label className="text-muted-foreground block">轮询间隔 (秒)</label>
-              <Input
-                type="number"
-                min={5}
-                max={86400}
-                value={refreshSeconds}
-                disabled={refreshMode !== "INTERVAL"}
-                onChange={(e) => setRefreshSeconds(Number(e.target.value) || 60)}
-                className="h-8 text-xs font-mono-tech"
-              />
-            </div>
+          <div className="space-y-1">
+            <label className="text-muted-foreground block">
+              {tx("轮询间隔 (秒)", "Interval (sec)")}
+            </label>
+            <Input
+              type="number"
+              min={5}
+              max={86400}
+              value={refreshSeconds}
+              disabled={refreshMode !== "INTERVAL"}
+              onChange={(e) => setRefreshSeconds(Number(e.target.value) || 60)}
+              className="h-8 text-xs font-mono-tech"
+            />
           </div>
+        </div>
 
-          {(widgetKind === "FLOOR_PLAN" ||
-            widgetKind === "SCENE_3D" ||
-            widgetKind === "MAP") &&
-            assets.length > 0 && (
-              <div className="space-y-1">
-                <label className="text-muted-foreground block">
-                  快速绑定空间资产
-                </label>
-                <select
-                  onChange={(e) => {
-                    const aid = e.target.value;
-                    if (!aid) return;
-                    try {
-                      const ds = JSON.parse(dataSourceJson) as Record<
+        {(widgetKind === "FLOOR_PLAN" ||
+          widgetKind === "SCENE_3D" ||
+          widgetKind === "MAP") &&
+          assets.length > 0 && (
+            <div className="space-y-1">
+              <label className="text-muted-foreground block">
+                {tx("绑定空间资产", "Spatial Asset")}
+              </label>
+              <Select
+                onChange={(e) => {
+                  const aid = e.target.value;
+                  if (!aid) return;
+                  try {
+                    const ds = JSON.parse(dataSourceJson) as Record<
+                      string,
+                      unknown
+                    >;
+                    if (widgetKind === "MAP") {
+                      const opt = JSON.parse(optionsJson) as Record<
                         string,
                         unknown
                       >;
-                      if (widgetKind === "MAP") {
-                        const opt = JSON.parse(optionsJson) as Record<
-                          string,
-                          unknown
-                        >;
-                        opt.geojson_asset_id = aid;
-                        setOptionsJson(JSON.stringify(opt, null, 2));
-                      } else {
-                        ds.asset_id = aid;
-                        setDataSourceJson(JSON.stringify(ds, null, 2));
-                      }
-                    } catch {
-                      // Ignore invalid JSON while editing
+                      opt.geojson_asset_id = aid;
+                      setOptionsJson(JSON.stringify(opt, null, 2));
+                    } else {
+                      ds.asset_id = aid;
+                      setDataSourceJson(JSON.stringify(ds, null, 2));
                     }
-                  }}
-                  className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
-                >
-                  <option value="">选择已上传的空间资产...</option>
-                  {assets.map((a) => (
-                    <option key={a.id} value={a.id}>
-                      [{a.asset_kind}] {a.name} ({a.id.slice(0, 8)})
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-          <div className="space-y-1">
-            <label className="text-muted-foreground block">
-              数据源配置 (data_source JSON)
-            </label>
-            <Textarea
-              rows={5}
-              value={dataSourceJson}
-              onChange={(e) => setDataSourceJson(e.target.value)}
-              className="font-mono-tech text-[11px]"
-              data-testid="widget-editor-datasource"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <label className="text-muted-foreground block">
-                视觉映射 (encoding JSON)
-              </label>
-              <Textarea
-                rows={4}
-                value={encodingJson}
-                onChange={(e) => setEncodingJson(e.target.value)}
-                className="font-mono-tech text-[11px]"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-muted-foreground block">
-                选项与阈值 (options JSON)
-              </label>
-              <Textarea
-                rows={4}
-                value={optionsJson}
-                onChange={(e) => setOptionsJson(e.target.value)}
-                className="font-mono-tech text-[11px]"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-muted-foreground block">
-              下钻层级 (drill JSON)
-            </label>
-            <Textarea
-              rows={2}
-              value={drillJson}
-              onChange={(e) => setDrillJson(e.target.value)}
-              className="font-mono-tech text-[11px]"
-            />
-          </div>
-
-          {errorMsg && (
-            <div className="rounded border border-foreground/30 bg-muted px-2.5 py-1.5 text-xs">
-              {errorMsg}
+                  } catch {
+                    // Ignore invalid JSON while editing
+                  }
+                }}
+                className="h-8 w-full text-xs"
+              >
+                <option value="">{tx("未绑定", "Unbound")}</option>
+                {assets.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    [{a.asset_kind}] {a.name} ({a.id.slice(0, 8)})
+                  </option>
+                ))}
+              </Select>
             </div>
           )}
 
-          {/* Live Preview Box */}
-          <div className="rounded-md border border-border p-3 space-y-2 bg-muted/20">
-            <div className="flex items-center justify-between">
-              <span className="font-semibold text-muted-foreground">
-                实时数据预览
-              </span>
-              <Button
-                type="button"
-                variant="outline"
-                disabled={previewing}
-                onClick={() => void handlePreview()}
-                className="px-2.5 py-1 text-xs"
-                data-testid="widget-editor-preview-btn"
-              >
-                <Eye className="h-3.5 w-3.5 text-xblue" />
-                {previewing ? "预览中..." : "预览组件"}
-              </Button>
-            </div>
-            <div className="h-48 border border-border rounded bg-background p-2 overflow-hidden">
-              <WidgetRenderer
-                widget={previewWidgetRecord}
-                data={previewData}
-                isDark={isDark}
-              />
-            </div>
+        <div className="space-y-1">
+          <label className="text-muted-foreground block">
+            {tx("数据源配置 (JSON)", "Data Source (JSON)")}
+          </label>
+          <Textarea
+            rows={5}
+            value={dataSourceJson}
+            onChange={(e) => setDataSourceJson(e.target.value)}
+            className="font-mono-tech text-[11px]"
+            data-testid="widget-editor-datasource"
+          />
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-muted-foreground block">
+              {tx("字段映射 (JSON)", "Encoding (JSON)")}
+            </label>
+            <Textarea
+              rows={4}
+              value={encodingJson}
+              onChange={(e) => setEncodingJson(e.target.value)}
+              className="font-mono-tech text-[11px]"
+            />
           </div>
 
-          <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
-            <Button type="button" variant="outline" onClick={onClose}>
-              取消
-            </Button>
+          <div className="space-y-1">
+            <label className="text-muted-foreground block">
+              {tx("展示选项 (JSON)", "Options (JSON)")}
+            </label>
+            <Textarea
+              rows={4}
+              value={optionsJson}
+              onChange={(e) => setOptionsJson(e.target.value)}
+              className="font-mono-tech text-[11px]"
+            />
+          </div>
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-muted-foreground block">
+            {tx("下钻层级 (JSON)", "Drill Path (JSON)")}
+          </label>
+          <Textarea
+            rows={2}
+            value={drillJson}
+            onChange={(e) => setDrillJson(e.target.value)}
+            className="font-mono-tech text-[11px]"
+          />
+        </div>
+
+        {errorMsg && (
+          <div className="rounded border border-red-500/40 bg-red-500/10 px-2.5 py-1.5 text-red-700 dark:text-red-300">
+            {errorMsg}
+          </div>
+        )}
+
+        <div className="rounded-md border border-border p-3 space-y-2 bg-muted/20">
+          <div className="flex items-center justify-between gap-2">
+            <span className="font-semibold text-muted-foreground">
+              {tx("实时预览", "Live Preview")}
+            </span>
             <Button
-              type="submit"
-              disabled={saving}
-              data-testid="widget-editor-save-btn"
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={previewing}
+              onClick={() => void handlePreview()}
+              data-testid="widget-editor-preview-btn"
             >
-              <Save className="h-3.5 w-3.5" />
-              {saving ? "保存中..." : "保存组件"}
+              <Eye className="h-3.5 w-3.5 text-xblue" />
+              {previewing ? tx("加载中…", "Loading…") : tx("预览", "Preview")}
             </Button>
           </div>
-        </form>
-      </div>
-    </div>
+          <div className="h-48 border border-border rounded bg-background p-2 overflow-hidden">
+            <WidgetRenderer
+              widget={previewWidgetRecord}
+              data={previewData}
+              isDark={effectiveDark}
+            />
+          </div>
+        </div>
+      </form>
+    </Drawer>
   );
 }

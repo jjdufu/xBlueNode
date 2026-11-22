@@ -7,8 +7,16 @@ import {
   ShieldCheck,
   XCircle,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import { axhubApi, type Dataset, type SyncJob } from "@/lib/api/axhub";
-import { Badge, Button, Card } from "@/components/ui/primitives";
+import { usePrincipal } from "@/lib/permissions";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  StatusBadge,
+} from "@/components/ui/primitives";
 
 export interface SyncHistoryProps {
   dataset: Dataset;
@@ -16,10 +24,35 @@ export interface SyncHistoryProps {
 }
 
 export function SyncHistory({ dataset, onDatasetUpdated }: SyncHistoryProps) {
+  const { tx, tEnum, fmtNum, fmtTime } = useI18n();
+  const { can } = usePrincipal();
+  const canSync = can("DATA_SYNC");
+
   const [jobs, setJobs] = useState<SyncJob[]>([]);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [actionBanner, setActionBanner] = useState<string | null>(null);
+
+  const formatRuleKind = (kind: string): string => {
+    switch (kind) {
+      case "NOT_NULL":
+        return tx("非空校验", "Not Null");
+      case "UNIQUE":
+        return tx("唯一性校验", "Unique");
+      case "RANGE":
+        return tx("数值区间", "Range");
+      case "REGEX":
+        return tx("正则匹配", "Regex");
+      case "ALLOWED_VALUES":
+        return tx("枚举集合", "Allowed Values");
+      case "FRESHNESS":
+        return tx("时效性", "Freshness");
+      case "ROW_COUNT_MIN":
+        return tx("最小行数", "Min Rows");
+      default:
+        return kind;
+    }
+  };
 
   const loadJobs = useCallback(async () => {
     setLoading(true);
@@ -39,12 +72,16 @@ export function SyncHistory({ dataset, onDatasetUpdated }: SyncHistoryProps) {
   }, [loadJobs]);
 
   const handleSwitchEvolveAndRetry = async () => {
+    if (!canSync) return;
     setErrorMsg(null);
     try {
       await axhubApi.updateDataset(dataset.id, { schema_policy: "EVOLVE" });
       const syncRes = await axhubApi.syncDataset(dataset.id);
       setActionBanner(
-        `已切换为 EVOLVE 策略并重新入队同步任务 (${syncRes.job_id})`
+        tx(
+          `演进同步任务已入队 (${syncRes.job_id.slice(0, 8)})`,
+          `Schema evolution sync queued (${syncRes.job_id.slice(0, 8)})`
+        )
       );
       if (onDatasetUpdated) {
         await onDatasetUpdated();
@@ -60,30 +97,25 @@ export function SyncHistory({ dataset, onDatasetUpdated }: SyncHistoryProps) {
       <div className="flex items-center justify-between border-b border-border pb-2.5">
         <div className="flex items-center gap-2">
           <History className="h-4 w-4 text-xblue" />
-          <div>
-            <h3 className="text-xs font-semibold">
-              同步任务历史 · {dataset.name}
-            </h3>
-            <p className="text-[11px] text-muted-foreground">
-              展示 DuckLake 快照提交记录、增删读行数、Schema 演进差异与数据质量校验结果
-            </p>
-          </div>
+          <h3 className="text-xs font-semibold">
+            {tx("同步记录", "Sync History")} · {dataset.name}
+          </h3>
         </div>
         <Button
           type="button"
           variant="outline"
-          className="px-2.5 py-1 text-xs"
+          size="sm"
           onClick={() => void loadJobs()}
           disabled={loading}
           data-testid="refresh-sync-history-btn"
         >
           <RefreshCw className={`h-3 w-3 ${loading ? "animate-spin" : ""}`} />
-          刷新历史
+          {tx("刷新", "Refresh")}
         </Button>
       </div>
 
       {errorMsg && (
-        <div className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs">
+        <div className="rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-600 dark:text-red-400">
           {errorMsg}
         </div>
       )}
@@ -95,9 +127,13 @@ export function SyncHistory({ dataset, onDatasetUpdated }: SyncHistoryProps) {
       )}
 
       {jobs.length === 0 ? (
-        <div className="py-6 text-center text-xs text-muted-foreground">
-          {loading ? "正在加载同步记录..." : "当前数据集暂无同步任务历史。"}
-        </div>
+        <EmptyState
+          title={
+            loading
+              ? tx("加载中…", "Loading…")
+              : tx("暂无同步记录", "No sync jobs recorded")
+          }
+        />
       ) : (
         <div className="space-y-2.5" data-testid="sync-job-list">
           {jobs.map((job) => {
@@ -120,59 +156,59 @@ export function SyncHistory({ dataset, onDatasetUpdated }: SyncHistoryProps) {
                 data-testid={`sync-job-item-${job.id}`}
               >
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
-                    <Badge
-                      variant={
-                        job.status === "SUCCEEDED"
-                          ? "xblue"
-                          : job.status === "FAILED"
-                            ? "outline"
-                            : "neutral"
-                      }
-                    >
-                      {job.status}
-                    </Badge>
-                    <Badge variant="neutral">{job.sync_mode}</Badge>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <StatusBadge status={job.status} />
+                    <Badge variant="neutral">{tEnum(job.sync_mode)}</Badge>
                     {job.snapshot_id !== null && (
                       <span className="font-mono-tech text-muted-foreground">
-                        Snapshot #{job.snapshot_id}
+                        #{fmtNum(job.snapshot_id, 0)}
                       </span>
                     )}
                     <span className="font-mono-tech text-[11px] text-muted-foreground">
-                      Batch: {job.batch_id.slice(0, 8)}
+                      {job.batch_id.slice(0, 8)}
                     </span>
                   </div>
                   <span className="font-mono-tech text-[11px] text-muted-foreground">
-                    {job.finished_at ?? job.started_at ?? job.created_at}
+                    {fmtTime(job.finished_at ?? job.started_at ?? job.created_at)}
                   </span>
                 </div>
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 rounded bg-muted/50 px-2.5 py-1.5 font-mono-tech text-[11px]">
-                  <div>读取行: {job.rows_read}</div>
-                  <div>写入行: {job.rows_written}</div>
-                  <div>删除行: {job.rows_deleted}</div>
                   <div>
-                    游标: {job.cursor_from ?? "∅"} → {job.cursor_to ?? "∅"}
+                    {tx("读取", "Read")}: {fmtNum(job.rows_read, 0)}
+                  </div>
+                  <div>
+                    {tx("写入", "Written")}: {fmtNum(job.rows_written, 0)}
+                  </div>
+                  <div>
+                    {tx("删除", "Deleted")}: {fmtNum(job.rows_deleted, 0)}
+                  </div>
+                  <div className="truncate" title={`${job.cursor_from ?? "-"} -> ${job.cursor_to ?? "-"}`}>
+                    {tx("游标", "Cursor")}: {job.cursor_from ? fmtTime(job.cursor_from, true) : "∅"} →{" "}
+                    {job.cursor_to ? fmtTime(job.cursor_to, true) : "∅"}
                   </div>
                 </div>
 
                 {job.error_code && (
-                  <div className="rounded border border-foreground/30 bg-muted p-2 flex flex-wrap items-center justify-between gap-2">
+                  <div className="rounded border border-red-500/30 bg-red-500/5 p-2 flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5">
-                      <AlertTriangle className="h-3.5 w-3.5 text-foreground" />
+                      <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
                       <span className="font-mono-tech font-medium">
                         {job.error_code}:
                       </span>
-                      <span>{job.error_message ?? "执行异常"}</span>
+                      <span>
+                        {job.error_message ?? tx("执行异常", "Execution failed")}
+                      </span>
                     </div>
                     {job.error_code === "SCHEMA_BREAKING_CHANGE" && (
                       <Button
                         type="button"
                         variant="outline"
-                        className="px-2.5 py-1 text-[11px]"
+                        size="sm"
+                        disabled={!canSync}
                         onClick={() => void handleSwitchEvolveAndRetry()}
                       >
-                        改用 EVOLVE 策略后重试
+                        {tx("演进重试", "Retry Evolve")}
                       </Button>
                     )}
                   </div>
@@ -181,42 +217,46 @@ export function SyncHistory({ dataset, onDatasetUpdated }: SyncHistoryProps) {
                 {/* Schema Change Summary */}
                 <div className="flex flex-wrap items-center gap-2 text-[11px]">
                   <span className="text-muted-foreground font-medium">
-                    Schema 变更:
+                    {tx("结构变更", "Schema Diff")}:
                   </span>
                   {!hasSchemaDiff ? (
-                    <span className="text-muted-foreground">无结构变更</span>
+                    <span className="text-muted-foreground">
+                      {tx("无变更", "None")}
+                    </span>
                   ) : (
                     <>
                       {addedCount > 0 && (
                         <Badge variant="xblue">
-                          +{addedCount} 列 (
+                          +{fmtNum(addedCount, 0)} (
                           {job.schema_change.added.map((c) => c.name).join(", ")})
                         </Badge>
                       )}
                       {removedCount > 0 && (
                         <Badge variant="outline">
-                          -{removedCount} 列 (
+                          -{fmtNum(removedCount, 0)} (
                           {job.schema_change.removed.join(", ")})
                         </Badge>
                       )}
                       {widenedCount > 0 && (
                         <Badge variant="neutral">
-                          拓宽:{" "}
+                          {tx("类型拓宽", "Widened")}:{" "}
                           {job.schema_change.widened
                             .map(([col, fromT, toT]) => `${col}(${fromT}→${toT})`)
                             .join(", ")}
                         </Badge>
                       )}
                       {narrowedCount > 0 && (
-                        <Badge variant="outline">
-                          收窄:{" "}
+                        <Badge variant="warning">
+                          {tx("类型收窄", "Narrowed")}:{" "}
                           {job.schema_change.narrowed
                             .map(([col, fromT, toT]) => `${col}(${fromT}→${toT})`)
                             .join(", ")}
                         </Badge>
                       )}
                       {job.schema_change.breaking && (
-                        <Badge variant="outline">BREAKING</Badge>
+                        <Badge variant="danger">
+                          {tx("不兼容变更", "Breaking")}
+                        </Badge>
                       )}
                     </>
                   )}
@@ -227,15 +267,23 @@ export function SyncHistory({ dataset, onDatasetUpdated }: SyncHistoryProps) {
                   <div className="space-y-1 pt-1 border-t border-border">
                     <div className="flex items-center gap-2 text-[11px]">
                       <ShieldCheck className="h-3.5 w-3.5 text-xblue" />
-                      <span className="font-medium">质量校验报告:</span>
+                      <span className="font-medium">
+                        {tx("质量校验", "Quality Check")}:
+                      </span>
                       <Badge
-                        variant={job.quality_result.passed ? "xblue" : "outline"}
+                        variant={
+                          job.quality_result.passed
+                            ? "success"
+                            : job.quality_result.blocked
+                              ? "danger"
+                              : "warning"
+                        }
                       >
                         {job.quality_result.passed
-                          ? "PASSED"
+                          ? tx("通过", "Passed")
                           : job.quality_result.blocked
-                            ? "BLOCKED"
-                            : "WARN"}
+                            ? tEnum("BLOCKED")
+                            : tEnum("WARN")}
                       </Badge>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5">
@@ -246,15 +294,18 @@ export function SyncHistory({ dataset, onDatasetUpdated }: SyncHistoryProps) {
                         >
                           <span className="flex items-center gap-1 font-mono-tech">
                             {qr.passed ? (
-                              <CheckCircle2 className="h-3 w-3 text-xblue" />
+                              <CheckCircle2 className="h-3 w-3 text-emerald-600 dark:text-emerald-400" />
                             ) : (
-                              <XCircle className="h-3 w-3 text-muted-foreground" />
+                              <XCircle className="h-3 w-3 text-red-500" />
                             )}
-                            {qr.rule_kind}
+                            <span>{formatRuleKind(qr.rule_kind)}</span>
                             {qr.column_name ? `(${qr.column_name})` : ""}
                           </span>
                           <span className="text-muted-foreground truncate ml-2">
-                            {qr.detail || qr.on_fail}
+                            {qr.detail ||
+                              (qr.on_fail === "BLOCK"
+                                ? tx("阻断", "Block")
+                                : tEnum("WARN"))}
                           </span>
                         </div>
                       ))}

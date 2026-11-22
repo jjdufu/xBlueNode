@@ -1,6 +1,17 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
-import { Cpu, Info, RefreshCw, Route, Share2 } from "lucide-react";
+import {
+  Cpu,
+  FileText,
+  Info,
+  Pause,
+  Play,
+  RefreshCw,
+  Route,
+  Share2,
+} from "lucide-react";
+import { useI18n } from "@/i18n";
+import { useTheme } from "@/lib/theme";
 import { api, type TopologyGraph } from "@/lib/api/rag";
 import {
   xblueApi,
@@ -12,7 +23,13 @@ import {
   type PathResponse,
   type SubgraphResponse,
 } from "@/lib/api/xblue";
-import { Badge, Button, Card } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Select,
+} from "@/components/ui/primitives";
 import { AlgoLegend } from "@/components/graph/AlgoLegend";
 import { GraphToolbar } from "@/components/graph/GraphToolbar";
 import { PathPanel } from "@/components/graph/PathPanel";
@@ -74,11 +91,16 @@ function mergeEdgesDeduplicated(
 }
 
 export function XBlueGraphPage() {
+  const { tx, tEnum, fmtNum } = useI18n();
+  const { isDark } = useTheme();
   const [searchParams] = useSearchParams();
   const initialNodeIdParam = searchParams.get("node_id");
 
   const [graphLayer, setGraphLayer] = useState<GraphLayer>("business");
   const [hypergraph, setHypergraph] = useState<TopologyGraph | null>(null);
+  const [hyperSelectedId, setHyperSelectedId] = useState<string | null>(null);
+  const [hyperTypeFilter, setHyperTypeFilter] = useState<string>("");
+  const [hyperFa2Running, setHyperFa2Running] = useState<boolean>(false);
 
   const [nodes, setNodes] = useState<BlueNode[]>([]);
   const [edges, setEdges] = useState<CanvasEdge[]>([]);
@@ -107,28 +129,21 @@ export function XBlueGraphPage() {
   const [loading, setLoading] = useState(false);
   const [expanding, setExpanding] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [isDark, setIsDark] = useState(
-    () =>
-      typeof document !== "undefined" &&
-      document.documentElement.classList.contains("dark")
-  );
 
   const loadInitialGraph = useCallback(async () => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      let sub = await xblueApi
-        .querySubgraph({ type_names: "Factory,Warehouse", limit: 1000 })
+      const sub = await xblueApi
+        .querySubgraph({ limit: 300 })
         .catch(() => ({ nodes: [], links: [], truncated: false }));
-      if (!Array.isArray(sub?.nodes) || sub.nodes.length === 0) {
-        sub = await xblueApi
-          .querySubgraph({ limit: 1000 })
-          .catch(() => ({ nodes: [], links: [], truncated: false }));
-      }
       let subNodes = Array.isArray(sub?.nodes) ? sub.nodes : [];
       const subLinks = Array.isArray(sub?.links) ? sub.links : [];
 
-      if (initialNodeIdParam && !subNodes.some((n) => n.id === initialNodeIdParam)) {
+      if (
+        initialNodeIdParam &&
+        !subNodes.some((n) => n.id === initialNodeIdParam)
+      ) {
         const focused = await xblueApi
           .getNode(initialNodeIdParam)
           .catch(() => null);
@@ -147,8 +162,13 @@ export function XBlueGraphPage() {
         );
       } else {
         const fallback = await xblueApi
-          .listNodes({ limit: 500 })
-          .catch(() => ({ items: [], nodes: [], links: [], next_cursor: null }));
+          .listNodes({ limit: 300 })
+          .catch(() => ({
+            items: [],
+            nodes: [],
+            links: [],
+            next_cursor: null,
+          }));
         const fbNodes =
           Array.isArray(fallback?.items) && fallback.items.length > 0
             ? fallback.items
@@ -172,14 +192,24 @@ export function XBlueGraphPage() {
   }, [initialNodeIdParam]);
 
   const loadHypergraph = useCallback(async () => {
+    setLoading(true);
     try {
       const data = await api.topology();
+      const safeNodes = Array.isArray(data?.nodes) ? data.nodes : [];
+      const safeEdges = Array.isArray(data?.edges) ? data.edges : [];
       setHypergraph({
-        nodes: Array.isArray(data?.nodes) ? data.nodes : [],
-        edges: Array.isArray(data?.edges) ? data.edges : [],
+        nodes: safeNodes,
+        edges: safeEdges,
       });
+      setHyperSelectedId((prev) =>
+        prev && safeNodes.some((n) => n.id === prev)
+          ? prev
+          : (safeNodes[0]?.id ?? null)
+      );
     } catch {
       setHypergraph({ nodes: [], edges: [] });
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -192,18 +222,6 @@ export function XBlueGraphPage() {
       void loadHypergraph();
     }
   }, [graphLayer, hypergraph, loadHypergraph]);
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const observer = new MutationObserver(() => {
-      setIsDark(document.documentElement.classList.contains("dark"));
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
-  }, []);
 
   const mergeSubgraphIntoCanvas = useCallback((res: SubgraphResponse) => {
     const incomingNodes = Array.isArray(res?.nodes) ? res.nodes : [];
@@ -273,7 +291,8 @@ export function XBlueGraphPage() {
   }, [edges]);
 
   const visibleNodes = useMemo(
-    () => (typeFilter ? nodes.filter((n) => n.type_name === typeFilter) : nodes),
+    () =>
+      typeFilter ? nodes.filter((n) => n.type_name === typeFilter) : nodes,
     [nodes, typeFilter]
   );
 
@@ -296,6 +315,72 @@ export function XBlueGraphPage() {
     () => nodes.find((n) => n.id === selectedNodeId) ?? null,
     [nodes, selectedNodeId]
   );
+
+  // Convert hypergraph TopologyGraph into interactive SigmaCanvas nodes & edges
+  const hyperCanvasNodes: BlueNode[] = useMemo(() => {
+    const list = hypergraph?.nodes ?? [];
+    return list
+      .filter((hn) => !hyperTypeFilter || hn.node_type === hyperTypeFilter)
+      .map((hn, idx) => ({
+        id: hn.id,
+        type_name: hn.node_type || "ENTITY",
+        node_key: `${hn.node_type || "H"}-${idx + 1}`,
+        title: hn.label,
+        properties: { node_type: hn.node_type },
+        metrics: { weight: hn.weight },
+      }));
+  }, [hypergraph?.nodes, hyperTypeFilter]);
+
+  const hyperCanvasNodeIds = useMemo(
+    () => new Set(hyperCanvasNodes.map((n) => n.id)),
+    [hyperCanvasNodes]
+  );
+
+  const hyperCanvasEdges: CanvasEdge[] = useMemo(() => {
+    const list = hypergraph?.edges ?? [];
+    return list
+      .filter(
+        (he) =>
+          hyperCanvasNodeIds.has(he.source) && hyperCanvasNodeIds.has(he.target)
+      )
+      .map((he, idx) => ({
+        id: he.id || `hg-edge-${idx}`,
+        link_type: he.rel_type || "RELATES",
+        src_node_id: he.source,
+        dst_node_id: he.target,
+        weight: 1,
+      }));
+  }, [hypergraph?.edges, hyperCanvasNodeIds]);
+
+  const hyperDistinctTypes = useMemo(() => {
+    const s = new Set<string>();
+    for (const hn of hypergraph?.nodes ?? []) {
+      if (hn.node_type) s.add(hn.node_type);
+    }
+    return Array.from(s).sort();
+  }, [hypergraph?.nodes]);
+
+  const selectedHyperNode = useMemo(
+    () =>
+      (hypergraph?.nodes ?? []).find((n) => n.id === hyperSelectedId) ?? null,
+    [hypergraph?.nodes, hyperSelectedId]
+  );
+
+  const selectedHyperEdges = useMemo(() => {
+    if (!selectedHyperNode) return [];
+    return (hypergraph?.edges ?? []).filter(
+      (e) =>
+        e.source === selectedHyperNode.id || e.target === selectedHyperNode.id
+    );
+  }, [hypergraph?.edges, selectedHyperNode]);
+
+  const hyperNodeLabelById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const hn of hypergraph?.nodes ?? []) {
+      m.set(hn.id, hn.label);
+    }
+    return m;
+  }, [hypergraph?.nodes]);
 
   const handleHybridSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -364,14 +449,16 @@ export function XBlueGraphPage() {
   return (
     <div className="space-y-4" data-testid="xbluegraph-page">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-4">
-        <div>
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3.5">
+        <div className="flex flex-wrap items-center gap-2.5">
           <h1 className="text-lg font-semibold tracking-tight">
-            xBlueGraph · 拓扑浏览器
+            {tx("xBlueGraph · 拓扑浏览器", "xBlueGraph · Topology Explorer")}
           </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            Sigma.js WebGL 万级节点力导向关系网络、时序指标钻取、多跳遍历、最短路径与图算法工作台
-          </p>
+          <Badge variant="outline">
+            {graphLayer === "business"
+              ? `${fmtNum(visibleNodes.length, 0)} ${tx("节点", "Nodes")}`
+              : `${fmtNum(hyperCanvasNodes.length, 0)} ${tx("实体", "Entities")}`}
+          </Badge>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
@@ -385,7 +472,7 @@ export function XBlueGraphPage() {
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              业务对象层 (xb_nodes)
+              {tx("业务对象图谱", "Business Graph")}
             </button>
             <button
               type="button"
@@ -396,7 +483,7 @@ export function XBlueGraphPage() {
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
-              知识超图层 (hg_docs)
+              {tx("知识超图网络", "Knowledge Hypergraph")}
             </button>
           </div>
 
@@ -410,8 +497,10 @@ export function XBlueGraphPage() {
             disabled={loading}
             data-testid="refresh-graph-btn"
           >
-            <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-            刷新拓扑
+            <RefreshCw
+              className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
+            />
+            {tx("刷新拓扑", "Refresh")}
           </Button>
         </div>
       </div>
@@ -427,7 +516,7 @@ export function XBlueGraphPage() {
             className="text-muted-foreground hover:text-foreground cursor-pointer"
             onClick={() => setErrorMsg(null)}
           >
-            关闭
+            {tx("关闭", "Close")}
           </button>
         </div>
       )}
@@ -461,8 +550,8 @@ export function XBlueGraphPage() {
             onExpandNode={(id) => void handleExpandOneHop(id)}
           />
 
-          {/* Main Sigma Canvas + Right Tool Drawer */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+          {/* Main Sigma Canvas + Right Tool Inspector */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
             <Card className="lg:col-span-8 p-0 overflow-hidden relative flex flex-col">
               <SigmaCanvas
                 nodes={visibleNodes}
@@ -485,7 +574,7 @@ export function XBlueGraphPage() {
               />
               {visibleNodes.length === 0 && !loading && (
                 <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs text-muted-foreground">
-                  当前画布暂无业务节点，请通过 xBlueStudio 或数据映射写入业务对象。
+                  {tx("暂无业务节点", "No business nodes")}
                 </div>
               )}
               <AlgoLegend
@@ -498,15 +587,27 @@ export function XBlueGraphPage() {
               />
             </Card>
 
-            <Card className="lg:col-span-4 p-3 space-y-3 max-h-[580px] overflow-y-auto">
+            <Card className="lg:col-span-4 p-3 space-y-3 max-h-[620px] overflow-y-auto">
               {/* Side Drawer Tool Tabs */}
               <div className="grid grid-cols-4 gap-1 rounded-md border border-border bg-muted/40 p-0.5">
                 {(
                   [
-                    { key: "inspector", label: "详情", icon: Info },
-                    { key: "neighbors", label: "扩展", icon: Share2 },
-                    { key: "path", label: "路径", icon: Route },
-                    { key: "algo", label: "算法", icon: Cpu },
+                    {
+                      key: "inspector",
+                      label: tx("详情", "Details"),
+                      icon: Info,
+                    },
+                    {
+                      key: "neighbors",
+                      label: tx("扩展", "Expand"),
+                      icon: Share2,
+                    },
+                    { key: "path", label: tx("路径", "Path"), icon: Route },
+                    {
+                      key: "algo",
+                      label: tx("算法", "Algorithms"),
+                      icon: Cpu,
+                    },
                   ] as const
                 ).map((item) => {
                   const Icon = item.icon;
@@ -523,7 +624,9 @@ export function XBlueGraphPage() {
                           : "text-muted-foreground hover:text-foreground"
                       }`}
                     >
-                      <Icon className={`h-3 w-3 ${isActive ? "text-xblue" : ""}`} />
+                      <Icon
+                        className={`h-3 w-3 ${isActive ? "text-xblue" : ""}`}
+                      />
                       {item.label}
                     </button>
                   );
@@ -570,35 +673,193 @@ export function XBlueGraphPage() {
           </div>
         </>
       ) : (
-        /* Secondary Hypergraph Knowledge Layer Compatibility View */
-        <Card className="p-4 space-y-3" data-testid="hypergraph-layer-panel">
-          <div className="text-xs font-semibold">
-            超图文档与高频实体网络 ({hypergraph?.nodes.length ?? 0} 节点 ·{" "}
-            {hypergraph?.edges.length ?? 0} 边)
-          </div>
-          {!hypergraph || hypergraph.nodes.length === 0 ? (
-            <div className="py-12 text-center text-xs text-muted-foreground">
-              暂无超图节点，请先在「AxIngest · 知识入库」页面写入文档。
+        /* Interactive Knowledge Hypergraph View */
+        <div className="space-y-3" data-testid="hypergraph-layer-panel">
+          <Card className="p-3 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-semibold">
+                {tx("知识超图网络", "Knowledge Hypergraph")}
+              </span>
+              <Badge variant="xblue">
+                {fmtNum(hyperCanvasNodes.length, 0)} {tx("节点", "Nodes")}
+              </Badge>
+              <Badge variant="neutral">
+                {fmtNum(hyperCanvasEdges.length, 0)} {tx("关系", "Edges")}
+              </Badge>
             </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-2 text-xs">
-              {hypergraph.nodes.map((hn) => (
-                <div
-                  key={hn.id}
-                  className="rounded border border-border p-2.5 flex items-center justify-between"
-                >
-                  <span className="font-medium truncate">{hn.label}</span>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <Badge variant="xblue">{hn.node_type}</Badge>
-                    <span className="font-mono-tech text-muted-foreground">
-                      w={hn.weight}
-                    </span>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={hyperTypeFilter}
+                onChange={(e) => setHyperTypeFilter(e.target.value)}
+                className="h-8 font-mono-tech"
+              >
+                <option value="">{tx("全部超图类型", "All Types")}</option>
+                {hyperDistinctTypes.map((ht) => (
+                  <option key={ht} value={ht}>
+                    {ht} ({tEnum(ht)})
+                  </option>
+                ))}
+              </Select>
+
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-8 px-2.5"
+                onClick={() => setHyperFa2Running((v) => !v)}
+              >
+                {hyperFa2Running ? (
+                  <Pause className="h-3.5 w-3.5 text-xblue" />
+                ) : (
+                  <Play className="h-3.5 w-3.5" />
+                )}
+                {hyperFa2Running
+                  ? tx("暂停布局", "Pause Layout")
+                  : tx("力导布局", "Force Layout")}
+              </Button>
+            </div>
+          </Card>
+
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            <Card className="lg:col-span-8 p-0 overflow-hidden relative flex flex-col">
+              <SigmaCanvas
+                nodes={hyperCanvasNodes}
+                edges={hyperCanvasEdges}
+                selectedNodeId={hyperSelectedId}
+                highlightedPathIds={[]}
+                colorMode="TYPE"
+                colorMetricKey="weight"
+                algoMode="NONE"
+                algoEntries={[]}
+                fa2Running={hyperFa2Running}
+                isDark={isDark}
+                testId="hypergraph-sigma-canvas"
+                onSelectNode={(id) => setHyperSelectedId(id)}
+              />
+              {hyperCanvasNodes.length === 0 && !loading && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs text-muted-foreground">
+                  {tx("暂无超图节点", "No hypergraph nodes")}
+                </div>
+              )}
+              <AlgoLegend
+                colorMode="TYPE"
+                colorMetricKey="weight"
+                distinctTypes={hyperDistinctTypes}
+                algoMode="NONE"
+                algoEntries={[]}
+                isDark={isDark}
+              />
+            </Card>
+
+            <Card className="lg:col-span-4 p-3.5 space-y-3 max-h-[620px] overflow-y-auto text-xs">
+              <div className="flex items-center justify-between border-b border-border pb-2">
+                <span className="font-semibold flex items-center gap-1.5">
+                  <FileText className="h-3.5 w-3.5 text-xblue" />
+                  {tx("超图节点详情", "Hypergraph Node")}
+                </span>
+                {selectedHyperNode && (
+                  <Badge variant="xblue">
+                    {tEnum(selectedHyperNode.node_type)}
+                  </Badge>
+                )}
+              </div>
+
+              {!selectedHyperNode ? (
+                <EmptyState
+                  title={tx("暂无选中超图节点", "No hypergraph node selected")}
+                />
+              ) : (
+                <div className="space-y-3">
+                  <div className="rounded border border-border bg-muted/20 p-2.5 space-y-1">
+                    <div className="text-sm font-semibold">
+                      {selectedHyperNode.label}
+                    </div>
+                    <div className="flex items-center gap-2 font-mono-tech text-[11px] text-muted-foreground">
+                      <span>{selectedHyperNode.node_type}</span>
+                      <span>·</span>
+                      <span>
+                        {tx("权重", "Weight")} ={" "}
+                        {fmtNum(selectedHyperNode.weight, 2)}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <div className="font-semibold text-muted-foreground">
+                      {tx("关联超边与事实", "Connected Hyperedges")} (
+                      {selectedHyperEdges.length})
+                    </div>
+                    {selectedHyperEdges.length === 0 ? (
+                      <div className="text-muted-foreground">
+                        {tx("暂无关联超边", "No connected edges")}
+                      </div>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {selectedHyperEdges.slice(0, 20).map((he, idx) => {
+                          const peerId =
+                            he.source === selectedHyperNode.id
+                              ? he.target
+                              : he.source;
+                          const peerLabel =
+                            hyperNodeLabelById.get(peerId) ?? peerId.slice(0, 8);
+                          return (
+                            <button
+                              key={`${he.id}-${idx}`}
+                              type="button"
+                              onClick={() => setHyperSelectedId(peerId)}
+                              className="w-full text-left rounded border border-border bg-background p-2 space-y-1 hover:border-xblue transition-colors cursor-pointer"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-medium truncate">
+                                  {peerLabel}
+                                </span>
+                                <Badge variant="outline">{he.rel_type}</Badge>
+                              </div>
+                              {he.fact && (
+                                <div className="text-[11px] text-muted-foreground line-clamp-2">
+                                  {he.fact}
+                                </div>
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </Card>
+              )}
+
+              {(hypergraph?.nodes.length ?? 0) > 0 && (
+                <div className="space-y-1.5 border-t border-border pt-3">
+                  <div className="font-semibold text-muted-foreground">
+                    {tx("节点索引", "Node Index")} (
+                    {hypergraph?.nodes.length ?? 0})
+                  </div>
+                  <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto">
+                    {(hypergraph?.nodes ?? []).slice(0, 40).map((hn) => {
+                      const active = hn.id === hyperSelectedId;
+                      return (
+                        <button
+                          key={hn.id}
+                          type="button"
+                          onClick={() => setHyperSelectedId(hn.id)}
+                          className={`rounded border px-2 py-0.5 text-[11px] transition-colors cursor-pointer ${
+                            active
+                              ? "border-xblue bg-xblue-soft text-xblue font-medium"
+                              : "border-border bg-background hover:bg-muted"
+                          }`}
+                        >
+                          {hn.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </Card>
+          </div>
+        </div>
       )}
     </div>
   );

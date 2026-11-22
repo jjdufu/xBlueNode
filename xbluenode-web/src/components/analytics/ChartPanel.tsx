@@ -8,8 +8,10 @@ import {
   Sparkles,
   Table2,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import type { ChartSuggestion, QueryColumn } from "@/lib/api/analytics";
 import type { DataType } from "@/lib/api/enums";
+import { useTheme } from "@/lib/theme";
 import { Badge } from "@/components/ui/primitives";
 
 export type SupportedChartKind =
@@ -37,17 +39,24 @@ const TEMPORAL_DATA_TYPES: ReadonlySet<DataType> = new Set([
   "TIMESTAMP",
 ]);
 
-const CHART_KIND_OPTIONS: ReadonlyArray<{
-  kind: SupportedChartKind;
-  label: string;
-  icon: typeof BarChart3;
-}> = [
-  { kind: "BAR_CHART", label: "柱状图", icon: BarChart3 },
-  { kind: "LINE_CHART", label: "折线图", icon: LineChart },
-  { kind: "PIE_CHART", label: "饼图", icon: PieChart },
-  { kind: "KPI_CARD", label: "指标卡", icon: Hash },
-  { kind: "TABLE", label: "紧凑表", icon: Table2 },
-];
+const PREFERRED_MEASURE_RE =
+  /amount|total|revenue|value|qty|quantity|price|cost|profit|sales|paid|balance|inventory|demand|output|count|cnt|sum|avg|score|metric|ratio|rate/i;
+
+function isIdentifierLikeColumn(colName: string): boolean {
+  const lower = colName.toLowerCase().trim();
+  return (
+    lower === "id" ||
+    lower === "pk" ||
+    lower.endsWith("_id") ||
+    lower.startsWith("id_") ||
+    lower.endsWith("_key") ||
+    lower.endsWith("_code") ||
+    lower.endsWith("_no") ||
+    lower === "ordinal" ||
+    lower === "version" ||
+    lower.endsWith("_version")
+  );
+}
 
 function parseNumericCell(val: unknown): number | null {
   if (typeof val === "number") {
@@ -62,7 +71,9 @@ function parseNumericCell(val: unknown): number | null {
   return null;
 }
 
-function isSupportedChartKind(kind: string | undefined): kind is SupportedChartKind {
+function isSupportedChartKind(
+  kind: string | undefined
+): kind is SupportedChartKind {
   return (
     kind === "BAR_CHART" ||
     kind === "LINE_CHART" ||
@@ -78,19 +89,27 @@ export function ChartPanel({
   suggestion = null,
   testId = "analytics-chart-panel",
 }: ChartPanelProps) {
+  const { tx, tEnum, fmtNum } = useI18n();
+  const { isDark } = useTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
 
   const [manualKind, setManualKind] = useState<SupportedChartKind | null>(null);
   const [manualXField, setManualXField] = useState<string>("");
   const [manualYField, setManualYField] = useState<string>("");
-  const [isDark, setIsDark] = useState(
-    () =>
-      typeof document !== "undefined" &&
-      document.documentElement.classList.contains("dark")
-  );
 
-  // Reset manual overrides when result schema or suggestion changes
+  const chartKindOptions: ReadonlyArray<{
+    kind: SupportedChartKind;
+    label: string;
+    icon: typeof BarChart3;
+  }> = [
+    { kind: "BAR_CHART", label: tx("柱状", "Bar"), icon: BarChart3 },
+    { kind: "LINE_CHART", label: tx("折线", "Line"), icon: LineChart },
+    { kind: "PIE_CHART", label: tx("饼图", "Pie"), icon: PieChart },
+    { kind: "KPI_CARD", label: tx("指标", "KPI"), icon: Hash },
+    { kind: "TABLE", label: tx("表格", "Table"), icon: Table2 },
+  ];
+
   const schemaSignature = useMemo(
     () =>
       `${columns.map((c) => `${c.name}:${c.data_type}`).join("|")}::${
@@ -105,18 +124,6 @@ export function ChartPanel({
     setManualYField("");
   }, [schemaSignature]);
 
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const observer = new MutationObserver(() => {
-      setIsDark(document.documentElement.classList.contains("dark"));
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
-  }, []);
-
   const numericColumns = useMemo(() => {
     return columns.filter((col) => {
       if (NUMERIC_DATA_TYPES.has(col.data_type)) return true;
@@ -129,6 +136,11 @@ export function ChartPanel({
       return false;
     });
   }, [columns, rows]);
+
+  const measureColumns = useMemo(
+    () => numericColumns.filter((col) => !isIdentifierLikeColumn(col.name)),
+    [numericColumns]
+  );
 
   const temporalColumns = useMemo(() => {
     return columns.filter(
@@ -143,19 +155,32 @@ export function ChartPanel({
       return suggestion.kind;
     }
     if (columns.length === 0 || rows.length === 0) {
+      return "BAR_CHART";
+    }
+    const effectiveMeasureCount =
+      measureColumns.length > 0 ? measureColumns.length : numericColumns.length;
+    if (
+      rows.length === 1 &&
+      effectiveMeasureCount >= 1 &&
+      columns.length <= 2
+    ) {
       return "KPI_CARD";
     }
-    if (rows.length === 1 && numericColumns.length >= 1 && columns.length <= 2) {
-      return "KPI_CARD";
-    }
-    if (temporalColumns.length >= 1 && numericColumns.length >= 1) {
+    if (temporalColumns.length >= 1 && measureColumns.length >= 1) {
       return "LINE_CHART";
     }
-    if (numericColumns.length >= 1) {
+    if (measureColumns.length >= 1) {
       return "BAR_CHART";
     }
     return "TABLE";
-  }, [columns.length, numericColumns.length, rows.length, suggestion, temporalColumns.length]);
+  }, [
+    columns.length,
+    measureColumns.length,
+    numericColumns.length,
+    rows.length,
+    suggestion,
+    temporalColumns.length,
+  ]);
 
   const activeKind: SupportedChartKind = manualKind ?? recommendedKind;
 
@@ -167,6 +192,12 @@ export function ChartPanel({
       return suggestion.x_field;
     }
     if (temporalColumns[0]) return temporalColumns[0].name;
+    const categoricalNonId = columns.find(
+      (c) =>
+        !numericColumns.some((n) => n.name === c.name) &&
+        !isIdentifierLikeColumn(c.name)
+    );
+    if (categoricalNonId) return categoricalNonId.name;
     const nonNumeric = columns.find(
       (c) => !numericColumns.some((n) => n.name === c.name)
     );
@@ -178,14 +209,24 @@ export function ChartPanel({
     if (suggestedY && columns.some((c) => c.name === suggestedY)) {
       return suggestedY;
     }
-    const preferredNumeric = numericColumns.find((c) => c.name !== defaultXField);
+    const nonXMeasures = measureColumns.filter((c) => c.name !== defaultXField);
+    const preferredMeasure = nonXMeasures.find((c) =>
+      PREFERRED_MEASURE_RE.test(c.name)
+    );
+    if (preferredMeasure) return preferredMeasure.name;
+    if (nonXMeasures[0]) return nonXMeasures[0].name;
+    if (measureColumns[0]) return measureColumns[0].name;
+
+    const fallbackNumeric = numericColumns.find(
+      (c) => c.name !== defaultXField
+    );
     return (
-      preferredNumeric?.name ??
+      fallbackNumeric?.name ??
       numericColumns[0]?.name ??
       columns[columns.length - 1]?.name ??
       ""
     );
-  }, [columns, defaultXField, numericColumns, suggestion]);
+  }, [columns, defaultXField, measureColumns, numericColumns, suggestion]);
 
   const xField =
     manualXField && columns.some((c) => c.name === manualXField)
@@ -196,14 +237,14 @@ export function ChartPanel({
       ? manualYField
       : defaultYField;
 
+  const hasData = columns.length > 0 && rows.length > 0;
+
   const isCanvasChart =
     (activeKind === "BAR_CHART" ||
       activeKind === "LINE_CHART" ||
       activeKind === "PIE_CHART") &&
-    rows.length > 0 &&
-    columns.length > 0;
+    hasData;
 
-  // Initialize and dispose ECharts cleanly when canvas container is active
   useEffect(() => {
     if (!isCanvasChart) {
       if (chartRef.current) {
@@ -239,7 +280,6 @@ export function ChartPanel({
     };
   }, [isCanvasChart]);
 
-  // Update ECharts options whenever data, fields, chart kind, or theme changes
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || chart.isDisposed() || !isCanvasChart) return;
@@ -281,7 +321,7 @@ export function ChartPanel({
         },
         series: [
           {
-            name: yField || "数值",
+            name: yField || tx("指标", "Value"),
             type: "pie",
             radius: ["36%", "66%"],
             center: ["50%", "44%"],
@@ -327,7 +367,7 @@ export function ChartPanel({
         series: [
           activeKind === "LINE_CHART"
             ? {
-                name: yField || "数值",
+                name: yField || tx("指标", "Value"),
                 type: "line",
                 smooth: false,
                 symbolSize: 5,
@@ -337,7 +377,7 @@ export function ChartPanel({
                 areaStyle: { color: accentBlue, opacity: 0.08 },
               }
             : {
-                name: yField || "数值",
+                name: yField || tx("指标", "Value"),
                 type: "bar",
                 barMaxWidth: 32,
                 data: values,
@@ -352,21 +392,31 @@ export function ChartPanel({
 
     chart.setOption(option, true);
     chart.resize();
-  }, [activeKind, isCanvasChart, isDark, rows, xField, yField]);
+  }, [activeKind, isCanvasChart, isDark, rows, tx, xField, yField]);
 
   const kpiSummary = useMemo(() => {
-    if (rows.length === 0 || columns.length === 0) return null;
+    if (!hasData) return null;
     const targetCol = yField || columns[0]?.name || "";
     const firstVal = rows[0]?.[targetCol];
+    const parsedNum = parseNumericCell(firstVal);
     const displayValue =
-      firstVal === null || firstVal === undefined ? "NULL" : String(firstVal);
+      firstVal === null || firstVal === undefined
+        ? "NULL"
+        : parsedNum !== null && !isIdentifierLikeColumn(targetCol)
+          ? fmtNum(parsedNum, 2)
+          : String(firstVal);
     return {
-      label: suggestion?.title || targetCol || "指标值",
+      label: suggestion?.title || targetCol || tx("指标值", "Value"),
       value: displayValue,
       subLabel:
-        rows.length > 1 ? `首行数值（共 ${rows.length} 行）` : "单值聚合结果",
+        rows.length > 1
+          ? tx(
+              `首行数值 · 共 ${fmtNum(rows.length, 0)} 行`,
+              `First row · ${fmtNum(rows.length, 0)} rows`
+            )
+          : tx("单值聚合结果", "Single aggregated value"),
     };
-  }, [columns, rows, suggestion, yField]);
+  }, [columns, fmtNum, hasData, rows, suggestion, tx, yField]);
 
   return (
     <div
@@ -375,27 +425,30 @@ export function ChartPanel({
     >
       {/* Chart Header & Switcher */}
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs">
-        <div className="flex items-center gap-2">
-          <Sparkles className="h-3.5 w-3.5 text-xblue" />
-          <span className="font-medium">
-            {suggestion?.title || "可视化图表"}
+        <div className="flex items-center gap-2 min-w-0">
+          <Sparkles className="h-3.5 w-3.5 text-xblue shrink-0" />
+          <span className="font-medium truncate">
+            {suggestion?.title || tx("图表分析", "Chart View")}
           </span>
-          <Badge variant="xblue" data-testid="chart-recommended-badge">
-            推荐 {recommendedKind}
-          </Badge>
+          {hasData && (
+            <Badge variant="xblue" data-testid="chart-recommended-badge">
+              {tx("推荐", "Suggested")} {tEnum(recommendedKind)}
+            </Badge>
+          )}
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          {columns.length > 1 &&
+          {hasData &&
+            columns.length > 1 &&
             (activeKind === "BAR_CHART" ||
               activeKind === "LINE_CHART" ||
               activeKind === "PIE_CHART") && (
-              <div className="flex items-center gap-1 text-[11px]">
+              <div className="flex items-center gap-1 text-[11px] shrink-0">
                 <span className="text-muted-foreground">X:</span>
                 <select
                   value={xField}
                   onChange={(e) => setManualXField(e.target.value)}
-                  className="h-6 rounded border border-input bg-background px-1.5 font-mono-tech text-[11px]"
+                  className="h-6 max-w-[110px] rounded border border-input bg-background px-1.5 font-mono-tech text-[11px]"
                   data-testid="chart-x-select"
                 >
                   {columns.map((c) => (
@@ -408,7 +461,7 @@ export function ChartPanel({
                 <select
                   value={yField}
                   onChange={(e) => setManualYField(e.target.value)}
-                  className="h-6 rounded border border-input bg-background px-1.5 font-mono-tech text-[11px]"
+                  className="h-6 max-w-[110px] rounded border border-input bg-background px-1.5 font-mono-tech text-[11px]"
                   data-testid="chart-y-select"
                 >
                   {columns.map((c) => (
@@ -420,8 +473,8 @@ export function ChartPanel({
               </div>
             )}
 
-          <div className="flex items-center rounded border border-border bg-background p-0.5">
-            {CHART_KIND_OPTIONS.map((opt) => {
+          <div className="inline-flex items-center rounded border border-border bg-background p-0.5 overflow-x-auto max-w-full">
+            {chartKindOptions.map((opt) => {
               const Icon = opt.icon;
               const selected = activeKind === opt.kind;
               return (
@@ -430,14 +483,14 @@ export function ChartPanel({
                   type="button"
                   onClick={() => setManualKind(opt.kind)}
                   data-testid={`chart-kind-${opt.kind}`}
-                  className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium transition-colors cursor-pointer ${
+                  className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
                     selected
                       ? "bg-xblue-soft text-xblue"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
-                  <Icon className="h-3 w-3" />
-                  {opt.label}
+                  <Icon className="h-3 w-3 shrink-0" />
+                  <span>{opt.label}</span>
                 </button>
               );
             })}
@@ -446,12 +499,12 @@ export function ChartPanel({
       </div>
 
       {/* Chart Content */}
-      {columns.length === 0 || rows.length === 0 ? (
+      {!hasData ? (
         <div
           key="chart-empty"
           className="flex h-52 items-center justify-center px-4 text-xs text-muted-foreground"
         >
-          暂无可绘制的数据集结果
+          {tx("暂无可绘制数据", "No data to visualize")}
         </div>
       ) : activeKind === "KPI_CARD" && kpiSummary ? (
         <div
@@ -481,7 +534,7 @@ export function ChartPanel({
                 {columns.map((c) => (
                   <th
                     key={c.name}
-                    className="px-2.5 py-1.5 font-mono-tech text-[11px] font-medium"
+                    className="px-2.5 py-1.5 font-mono-tech text-[11px] font-medium whitespace-nowrap"
                   >
                     {c.name}
                   </th>
@@ -490,7 +543,10 @@ export function ChartPanel({
             </thead>
             <tbody>
               {rows.slice(0, 15).map((r, rIdx) => (
-                <tr key={rIdx} className="border-b border-border last:border-b-0">
+                <tr
+                  key={rIdx}
+                  className="border-b border-border last:border-b-0"
+                >
                   {columns.map((c) => (
                     <td
                       key={c.name}

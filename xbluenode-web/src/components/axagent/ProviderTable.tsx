@@ -7,7 +7,6 @@ import {
   KeyRound,
   Plus,
   Trash2,
-  X,
   Zap,
 } from "lucide-react";
 import {
@@ -21,19 +20,18 @@ import {
   type ProviderTestResponse,
   type SaveLlmProviderRequest,
 } from "@/lib/api/axagent";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  Modal,
+  PasswordInput,
+  StatusBadge,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
-
-const ProviderFormSchema = z.object({
-  name: z.string().trim().min(1, "提供方名称不能为空").max(64),
-  base_url: z.string().trim().url("API 根地址必须是合法 URL"),
-  model: z.string().trim().min(1, "默认模型名称不能为空"),
-  purposes: z.array(z.string()).min(1, "至少勾选一项模型用途"),
-  priority: z.number().int().min(1).max(10000),
-  temperature: z.number().min(0).max(2),
-  max_tokens: z.number().int().min(64).max(131072),
-  timeout_s: z.number().int().min(1).max(600),
-});
 
 const ALL_PURPOSES: readonly LlmPurpose[] = [
   "AGENT",
@@ -61,6 +59,10 @@ export function ProviderTable({
   onChangeUsageRange,
   onRefresh,
 }: ProviderTableProps) {
+  const { tx, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("AGENT_EDIT");
+
   const sortedProviders = useMemo(
     () => [...providers].sort((a, b) => a.priority - b.priority),
     [providers]
@@ -157,8 +159,32 @@ export function ProviderTable({
   };
 
   const handleSave = async () => {
+    if (!canEdit) return;
     setErrorMsg(null);
-    const check = ProviderFormSchema.safeParse({
+    const providerFormSchema = z.object({
+      name: z
+        .string()
+        .trim()
+        .min(1, tx("提供方名称不能为空", "Provider name is required"))
+        .max(64),
+      base_url: z
+        .string()
+        .trim()
+        .url(tx("接口地址须为合法 URL", "Base URL must be valid")),
+      model: z
+        .string()
+        .trim()
+        .min(1, tx("模型名称不能为空", "Model name is required")),
+      purposes: z
+        .array(z.string())
+        .min(1, tx("至少勾选一项用途", "At least one purpose is required")),
+      priority: z.number().int().min(1).max(10000),
+      temperature: z.number().min(0).max(2),
+      max_tokens: z.number().int().min(64).max(131072),
+      timeout_s: z.number().int().min(1).max(600),
+    });
+
+    const check = providerFormSchema.safeParse({
       name,
       base_url: baseUrl,
       model,
@@ -169,7 +195,10 @@ export function ProviderTable({
       timeout_s: Number(timeoutS),
     });
     if (!check.success) {
-      setErrorMsg(check.error.issues[0]?.message ?? "参数格式校验失败");
+      setErrorMsg(
+        check.error.issues[0]?.message ??
+          tx("字段格式有误", "Invalid form input")
+      );
       return;
     }
 
@@ -199,7 +228,11 @@ export function ProviderTable({
       setModalOpen(false);
       await onRefresh();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "保存模型提供方失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("保存失败", "Failed to save provider")
+      );
     } finally {
       setSaving(false);
     }
@@ -213,7 +246,9 @@ export function ProviderTable({
       setTestResults((prev) => ({ ...prev, [p.id]: res }));
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : `测试提供方 ${p.name} 失败`
+        err instanceof Error
+          ? err.message
+          : tx(`测试 ${p.name} 失败`, `Failed to test ${p.name}`)
       );
     } finally {
       setTestingId(null);
@@ -221,12 +256,17 @@ export function ProviderTable({
   };
 
   const handleDelete = async (p: LlmProviderRecord) => {
+    if (!canEdit) return;
     setErrorMsg(null);
     try {
       await deleteLlmProvider(p.id);
       await onRefresh();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "删除提供方失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("删除失败", "Failed to delete provider")
+      );
     }
   };
 
@@ -249,20 +289,25 @@ export function ProviderTable({
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-sm font-semibold">
-            多模型路由注册表 (LlmRouter)
+            {tx("模型路由注册表", "LLM Provider Router")}
           </h2>
           <p className="text-xs text-muted-foreground">
-            同一用途按 priority 升序路由，连续失败自动熔断 60 秒并故障切换至下一提供方
+            {tx(
+              "按优先级升序调度，连续异常自动熔断并切换备用提供方。",
+              "Routes by ascending priority with automatic circuit-breaking failover."
+            )}
           </p>
         </div>
-        <Button
-          type="button"
-          data-testid="new-provider-btn"
-          onClick={openCreateModal}
-        >
-          <Plus className="h-3.5 w-3.5" />
-          注册模型提供方
-        </Button>
+        {canEdit && (
+          <Button
+            type="button"
+            data-testid="new-provider-btn"
+            onClick={openCreateModal}
+          >
+            <Plus className="h-3.5 w-3.5" />
+            {tx("注册提供方", "New Provider")}
+          </Button>
+        )}
       </div>
 
       {errorMsg ? (
@@ -275,19 +320,31 @@ export function ProviderTable({
       <Card className="overflow-hidden">
         {sortedProviders.length === 0 ? (
           <div className="p-8 text-center text-xs text-muted-foreground">
-            当前租户未单独注册模型提供方，默认回退至平台环境变量网关 (LLM_*)
+            {tx("未单独配置提供方，回退至系统环境变量网关", "No custom providers registered; using default gateway")}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-muted/50 text-muted-foreground border-b border-border">
                 <tr>
-                  <th className="px-4 py-2.5 font-medium">优先级</th>
-                  <th className="px-3 py-2.5 font-medium">提供方 / 模型</th>
-                  <th className="px-3 py-2.5 font-medium">支持用途</th>
-                  <th className="px-3 py-2.5 font-medium">密钥与能力</th>
-                  <th className="px-3 py-2.5 font-medium">连通性测试</th>
-                  <th className="px-4 py-2.5 font-medium text-right">操作</th>
+                  <th className="px-4 py-2.5 font-medium whitespace-nowrap">
+                    {tx("优先级", "Priority")}
+                  </th>
+                  <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                    {tx("提供方 / 模型", "Provider / Model")}
+                  </th>
+                  <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                    {tx("路由用途", "Purposes")}
+                  </th>
+                  <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                    {tx("密钥与能力", "Capabilities")}
+                  </th>
+                  <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                    {tx("连通性", "Connectivity")}
+                  </th>
+                  <th className="px-4 py-2.5 font-medium text-right whitespace-nowrap">
+                    {tx("操作", "Actions")}
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -299,7 +356,7 @@ export function ProviderTable({
                       data-testid={`provider-row-${p.name}`}
                       className="hover:bg-muted/20"
                     >
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 whitespace-nowrap">
                         <Badge variant={p.enabled ? "xblue" : "outline"}>
                           P{p.priority}
                         </Badge>
@@ -308,7 +365,7 @@ export function ProviderTable({
                         <div className="font-semibold flex items-center gap-1.5">
                           <span>{p.name}</span>
                           {!p.enabled ? (
-                            <Badge variant="outline">已停用</Badge>
+                            <StatusBadge status="DISABLED" />
                           ) : null}
                         </div>
                         <div className="font-mono-tech text-[11px] text-muted-foreground">
@@ -324,22 +381,26 @@ export function ProviderTable({
                           ))}
                         </div>
                       </td>
-                      <td className="px-3 py-3 space-y-1">
+                      <td className="px-3 py-3 space-y-1 whitespace-nowrap">
                         <div className="flex items-center gap-1.5">
                           <Badge variant="outline">
                             <KeyRound className="h-2.5 w-2.5 mr-1" />
-                            {p.has_api_key ? "密钥环已封存" : "免密钥"}
+                            {p.has_api_key
+                              ? tx("已封存", "Sealed")
+                              : tx("免密钥", "Keyless")}
                           </Badge>
                           {p.supports_tools ? (
                             <Badge variant="outline">Tools</Badge>
                           ) : null}
                         </div>
                         <div className="font-mono-tech text-[11px] text-muted-foreground">
-                          {p.rpm_limit ? `${p.rpm_limit} RPM` : "不限 RPM"} ·{" "}
-                          {p.timeout_s}s
+                          {p.rpm_limit
+                            ? `${p.rpm_limit} RPM`
+                            : tx("不限 RPM", "Unlimited RPM")}{" "}
+                          · {p.timeout_s}s
                         </div>
                       </td>
-                      <td className="px-3 py-3">
+                      <td className="px-3 py-3 whitespace-nowrap">
                         {testRes ? (
                           <div
                             data-testid={`provider-test-result-${p.name}`}
@@ -355,39 +416,45 @@ export function ProviderTable({
                           </div>
                         ) : (
                           <span className="text-[11px] text-muted-foreground">
-                            未测试
+                            {tx("未测试", "Untested")}
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1.5">
                           <Button
                             type="button"
                             variant="outline"
+                            size="sm"
                             data-testid={`test-provider-btn-${p.name}`}
                             disabled={testingId === p.id}
                             onClick={() => void handleTest(p)}
-                            className="h-7 px-2.5"
                           >
                             <Zap className="h-3.5 w-3.5 text-xblue" />
-                            {testingId === p.id ? "测试中…" : "测试连接"}
+                            {testingId === p.id
+                              ? tx("测试中…", "Testing…")
+                              : tx("测试连接", "Test")}
                           </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            onClick={() => openEditModal(p)}
-                            className="h-7 px-2"
-                          >
-                            <Edit3 className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            onClick={() => void handleDelete(p)}
-                            className="h-7 px-2"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                          {canEdit && (
+                            <>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => openEditModal(p)}
+                              >
+                                <Edit3 className="h-3.5 w-3.5" />
+                              </Button>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => void handleDelete(p)}
+                              >
+                                <Trash2 className="h-3.5 w-3.5" />
+                              </Button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -399,19 +466,14 @@ export function ProviderTable({
         )}
       </Card>
 
-      {/* Daily LLM Token Usage Summary (`ax_llm_usage`) */}
+      {/* Daily LLM Token Usage Summary */}
       <Card className="p-4 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Activity className="h-4 w-4 text-xblue" />
-            <div>
-              <h3 className="text-sm font-semibold">
-                每日模型调用与 Token 用量统计 (ax_llm_usage)
-              </h3>
-              <p className="text-[11px] text-muted-foreground">
-                按提供方、日期与路由用途聚合请求次数、错误数及输入/输出 Token
-              </p>
-            </div>
+            <h3 className="text-sm font-semibold">
+              {tx("每日模型用量统计", "Daily LLM Token Usage")}
+            </h3>
           </div>
 
           <div className="flex items-center gap-2 text-xs">
@@ -421,7 +483,7 @@ export function ProviderTable({
               onChange={(e) => onChangeUsageRange(e.target.value, usageTo)}
               className="h-8 w-36 text-xs font-mono-tech"
             />
-            <span className="text-muted-foreground">至</span>
+            <span className="text-muted-foreground">→</span>
             <Input
               type="date"
               value={usageTo}
@@ -433,49 +495,63 @@ export function ProviderTable({
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
           <div className="rounded-md border border-border bg-muted/30 p-3">
-            <div className="text-[11px] text-muted-foreground">总请求数</div>
-            <div className="text-base font-semibold font-mono-tech mt-0.5">
-              {usageTotals.requests.toLocaleString()}
+            <div className="text-[11px] text-muted-foreground">
+              {tx("总请求数", "Total Requests")}
             </div>
-          </div>
-          <div className="rounded-md border border-border bg-muted/30 p-3">
-            <div className="text-[11px] text-muted-foreground">错误次数</div>
             <div className="text-base font-semibold font-mono-tech mt-0.5">
-              {usageTotals.errors.toLocaleString()}
+              {fmtNum(usageTotals.requests, 0)}
             </div>
           </div>
           <div className="rounded-md border border-border bg-muted/30 p-3">
             <div className="text-[11px] text-muted-foreground">
-              输入 Prompt Tokens
+              {tx("错误次数", "Errors")}
             </div>
             <div className="text-base font-semibold font-mono-tech mt-0.5">
-              {usageTotals.promptTokens.toLocaleString()}
+              {fmtNum(usageTotals.errors, 0)}
             </div>
           </div>
           <div className="rounded-md border border-border bg-muted/30 p-3">
             <div className="text-[11px] text-muted-foreground">
-              输出 Completion Tokens
+              Prompt Tokens
             </div>
             <div className="text-base font-semibold font-mono-tech mt-0.5">
-              {usageTotals.completionTokens.toLocaleString()}
+              {fmtNum(usageTotals.promptTokens, 0)}
+            </div>
+          </div>
+          <div className="rounded-md border border-border bg-muted/30 p-3">
+            <div className="text-[11px] text-muted-foreground">
+              Completion Tokens
+            </div>
+            <div className="text-base font-semibold font-mono-tech mt-0.5">
+              {fmtNum(usageTotals.completionTokens, 0)}
             </div>
           </div>
         </div>
 
         {usage.length === 0 ? (
           <p className="text-xs text-muted-foreground py-4 text-center border border-dashed border-border rounded-md">
-            当前时间范围内暂无模型调用计量记录
+            {tx("暂无用量记录", "No usage records")}
           </p>
         ) : (
           <div className="overflow-x-auto rounded-md border border-border">
             <table className="w-full text-left text-xs">
               <thead className="bg-muted/50 text-muted-foreground border-b border-border">
                 <tr>
-                  <th className="px-3 py-2 font-medium">日期</th>
-                  <th className="px-3 py-2 font-medium">提供方</th>
-                  <th className="px-3 py-2 font-medium">用途</th>
-                  <th className="px-3 py-2 font-medium text-right">请求 / 错误</th>
-                  <th className="px-3 py-2 font-medium text-right">Prompt Tokens</th>
+                  <th className="px-3 py-2 font-medium">
+                    {tx("日期", "Date")}
+                  </th>
+                  <th className="px-3 py-2 font-medium">
+                    {tx("提供方", "Provider")}
+                  </th>
+                  <th className="px-3 py-2 font-medium">
+                    {tx("用途", "Purpose")}
+                  </th>
+                  <th className="px-3 py-2 font-medium text-right">
+                    {tx("请求 / 错误", "Requests / Errors")}
+                  </th>
+                  <th className="px-3 py-2 font-medium text-right">
+                    Prompt Tokens
+                  </th>
                   <th className="px-3 py-2 font-medium text-right">
                     Completion Tokens
                   </th>
@@ -492,13 +568,13 @@ export function ProviderTable({
                       <Badge variant="outline">{u.purpose}</Badge>
                     </td>
                     <td className="px-3 py-2 text-right font-mono-tech">
-                      {u.requests} / {u.errors}
+                      {fmtNum(u.requests, 0)} / {fmtNum(u.errors, 0)}
                     </td>
                     <td className="px-3 py-2 text-right font-mono-tech">
-                      {u.prompt_tokens.toLocaleString()}
+                      {fmtNum(u.prompt_tokens, 0)}
                     </td>
                     <td className="px-3 py-2 text-right font-mono-tech">
-                      {u.completion_tokens.toLocaleString()}
+                      {fmtNum(u.completion_tokens, 0)}
                     </td>
                   </tr>
                 ))}
@@ -509,235 +585,227 @@ export function ProviderTable({
       </Card>
 
       {/* Create / Edit Provider Modal */}
-      {modalOpen ? (
-        <div
-          data-testid="provider-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-        >
-          <Card className="w-full max-w-xl max-h-[90vh] overflow-y-auto p-5 space-y-4 shadow-lg text-xs">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <h3 className="text-sm font-semibold">
-                {editingProvider
-                  ? `编辑模型提供方 · ${editingProvider.name}`
-                  : "注册新模型提供方"}
-              </h3>
-              <Button
+      <Modal
+        open={modalOpen}
+        onClose={() => setModalOpen(false)}
+        maxWidthClass="max-w-xl"
+        testId="provider-modal"
+        title={
+          editingProvider
+            ? tx(
+                `编辑提供方 · ${editingProvider.name}`,
+                `Edit Provider · ${editingProvider.name}`
+              )
+            : tx("注册模型提供方", "New LLM Provider")
+        }
+        footer={
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setModalOpen(false)}
+            >
+              {tx("取消", "Cancel")}
+            </Button>
+            <Button
+              type="button"
+              data-testid="save-provider-btn"
+              disabled={saving}
+              onClick={() => void handleSave()}
+            >
+              {saving
+                ? tx("保存中…", "Saving…")
+                : tx("保存", "Save")}
+            </Button>
+          </>
+        }
+      >
+        {!editingProvider ? (
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-[11px] text-muted-foreground">
+              {tx("协议预设", "Preset")}:
+            </span>
+            {(
+              [
+                ["OPENAI_COMPAT", tx("OpenAI 兼容", "OpenAI Compatible")],
+                ["VLLM", "vLLM"],
+                ["OLLAMA", "Ollama"],
+              ] as const
+            ).map(([k, label]) => (
+              <button
+                key={k}
                 type="button"
-                variant="ghost"
-                onClick={() => setModalOpen(false)}
-                className="h-7 w-7 p-0"
+                onClick={() => applyPreset(k)}
+                className={cn(
+                  "rounded border px-2.5 py-1 text-[11px] cursor-pointer",
+                  presetKind === k
+                    ? "border-xblue bg-xblue-soft text-xblue"
+                    : "border-border text-muted-foreground"
+                )}
               >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
+                {label}
+              </button>
+            ))}
+          </div>
+        ) : null}
 
-            {!editingProvider ? (
-              <div className="flex items-center gap-2">
-                <span className="text-[11px] text-muted-foreground">
-                  接口协议预设:
-                </span>
-                {(
-                  [
-                    ["OPENAI_COMPAT", "OpenAI 兼容网关"],
-                    ["VLLM", "本地 vLLM"],
-                    ["OLLAMA", "Ollama /v1"],
-                  ] as const
-                ).map(([k, label]) => (
-                  <button
-                    key={k}
-                    type="button"
-                    onClick={() => applyPreset(k)}
-                    className={cn(
-                      "rounded border px-2.5 py-1 text-[11px] cursor-pointer",
-                      presetKind === k
-                        ? "border-xblue bg-xblue-soft text-xblue"
-                        : "border-border text-muted-foreground"
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">
-                  唯一名称 (name)
-                </label>
-                <Input
-                  data-testid="provider-name-input"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="primary-openai"
-                  className="font-mono-tech text-xs"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">
-                  默认模型名 (model)
-                </label>
-                <Input
-                  data-testid="provider-model-input"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="gpt-4o-mini"
-                  className="font-mono-tech text-xs"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">
-                  OpenAI 兼容地址 (base_url)
-                </label>
-                <Input
-                  data-testid="provider-baseurl-input"
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  className="font-mono-tech text-xs"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">
-                  API 密钥（加密存入 ds_credentials，不回显）
-                </label>
-                <Input
-                  type="password"
-                  data-testid="provider-apikey-input"
-                  value={apiKey}
-                  onChange={(e) => setApiKey(e.target.value)}
-                  placeholder={
-                    editingProvider?.has_api_key
-                      ? "留空保持原封存密钥不变"
-                      : "sk-..."
-                  }
-                  className="font-mono-tech text-xs"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <label className="text-[11px] text-muted-foreground">
-                路由用途 (purposes)
-              </label>
-              <div className="flex flex-wrap gap-2">
-                {ALL_PURPOSES.map((p) => (
-                  <label
-                    key={p}
-                    className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 font-mono-tech text-[11px] cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={purposes.includes(p)}
-                      onChange={() => togglePurpose(p)}
-                      className="accent-[#2563eb]"
-                    />
-                    {p}
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">
-                  优先级 (小者优先)
-                </label>
-                <Input
-                  type="number"
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value)}
-                  className="font-mono-tech text-xs"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">
-                  限流 RPM (可选)
-                </label>
-                <Input
-                  type="number"
-                  value={rpmLimit}
-                  onChange={(e) => setRpmLimit(e.target.value)}
-                  placeholder="不限"
-                  className="font-mono-tech text-xs"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">
-                  超时秒数 (timeout_s)
-                </label>
-                <Input
-                  type="number"
-                  value={timeoutS}
-                  onChange={(e) => setTimeoutS(e.target.value)}
-                  className="font-mono-tech text-xs"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">
-                  最大输出 Token
-                </label>
-                <Input
-                  type="number"
-                  value={maxTokens}
-                  onChange={(e) => setMaxTokens(e.target.value)}
-                  className="font-mono-tech text-xs"
-                />
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-4 pt-1">
-              <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={supportsTools}
-                  onChange={(e) => setSupportsTools(e.target.checked)}
-                  className="accent-[#2563eb]"
-                />
-                <span>支持 Tool / Function Calling</span>
-              </label>
-              <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={allowPrivateNetwork}
-                  onChange={(e) => setAllowPrivateNetwork(e.target.checked)}
-                  className="accent-[#2563eb]"
-                />
-                <span>允许私网地址 (需 GUARD_ADMIN)</span>
-              </label>
-              <label className="inline-flex items-center gap-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={enabled}
-                  onChange={(e) => setEnabled(e.target.checked)}
-                  className="accent-[#2563eb]"
-                />
-                <span>启用该提供方</span>
-              </label>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-border">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setModalOpen(false)}
-              >
-                取消
-              </Button>
-              <Button
-                type="button"
-                data-testid="save-provider-btn"
-                disabled={saving}
-                onClick={() => void handleSave()}
-              >
-                {saving ? "保存中…" : "保存提供方"}
-              </Button>
-            </div>
-          </Card>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground">
+              {tx("提供方名称", "Provider Name")}
+            </label>
+            <Input
+              data-testid="provider-name-input"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="primary-openai"
+              className="font-mono-tech text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground">
+              {tx("默认模型", "Model")}
+            </label>
+            <Input
+              data-testid="provider-model-input"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder="gpt-4o-mini"
+              className="font-mono-tech text-xs"
+            />
+          </div>
         </div>
-      ) : null}
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground">
+              {tx("接口根地址", "Base URL")}
+            </label>
+            <Input
+              data-testid="provider-baseurl-input"
+              value={baseUrl}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              className="font-mono-tech text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground">
+              {tx("API 密钥", "API Key")}
+            </label>
+            <PasswordInput
+              data-testid="provider-apikey-input"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={
+                editingProvider?.has_api_key
+                  ? "••••••••"
+                  : "sk-..."
+              }
+              className="font-mono-tech text-xs"
+            />
+          </div>
+        </div>
+
+        <div className="space-y-1.5">
+          <label className="text-[11px] text-muted-foreground">
+            {tx("路由用途", "Purposes")}
+          </label>
+          <div className="flex flex-wrap gap-2">
+            {ALL_PURPOSES.map((p) => (
+              <label
+                key={p}
+                className="inline-flex items-center gap-1.5 rounded border border-border px-2.5 py-1 font-mono-tech text-[11px] cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={purposes.includes(p)}
+                  onChange={() => togglePurpose(p)}
+                  className="accent-[#2563eb]"
+                />
+                {p}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground">
+              {tx("优先级", "Priority")}
+            </label>
+            <Input
+              type="number"
+              value={priority}
+              onChange={(e) => setPriority(e.target.value)}
+              className="font-mono-tech text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground">
+              {tx("限流 (RPM)", "RPM Limit")}
+            </label>
+            <Input
+              type="number"
+              value={rpmLimit}
+              onChange={(e) => setRpmLimit(e.target.value)}
+              placeholder="120"
+              className="font-mono-tech text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground">
+              {tx("超时（秒）", "Timeout (s)")}
+            </label>
+            <Input
+              type="number"
+              value={timeoutS}
+              onChange={(e) => setTimeoutS(e.target.value)}
+              className="font-mono-tech text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground">
+              {tx("最大 Token", "Max Tokens")}
+            </label>
+            <Input
+              type="number"
+              value={maxTokens}
+              onChange={(e) => setMaxTokens(e.target.value)}
+              className="font-mono-tech text-xs"
+            />
+          </div>
+        </div>
+
+        <div className="flex flex-wrap gap-4 pt-1">
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={supportsTools}
+              onChange={(e) => setSupportsTools(e.target.checked)}
+              className="accent-[#2563eb]"
+            />
+            <span>{tx("支持工具调用", "Supports Tools")}</span>
+          </label>
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={allowPrivateNetwork}
+              onChange={(e) => setAllowPrivateNetwork(e.target.checked)}
+              className="accent-[#2563eb]"
+            />
+            <span>{tx("允许私网地址", "Allow Private Network")}</span>
+          </label>
+          <label className="inline-flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+              className="accent-[#2563eb]"
+            />
+            <span>{tx("启用提供方", "Enable Provider")}</span>
+          </label>
+        </div>
+      </Modal>
     </div>
   );
 }

@@ -89,6 +89,23 @@ export interface TopologyGraph {
   edges: TopologyEdge[];
 }
 
+export interface DocumentSummary {
+  id: string;
+  title: string;
+  source_name: string;
+  summary: string;
+  para_count: number;
+  entity_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentListResponse {
+  items: DocumentSummary[];
+  total: number;
+  next_cursor: string | null;
+}
+
 /** Uploads a document via `POST /api/documents/upload` with Bearer authorization. */
 export async function uploadDocument(file: File): Promise<IngestResponse> {
   const form = new FormData();
@@ -100,6 +117,20 @@ export const api = {
   health: () => requestJson<HealthInfo>("/api/health"),
   stats: () => requestJson<SystemStats>("/api/stats"),
   topology: () => requestJson<TopologyGraph>("/api/graph/topology"),
+  listDocuments: (params?: { q?: string; limit?: number; cursor?: string }) => {
+    const qs = new URLSearchParams();
+    if (params?.q && params.q.trim().length > 0) qs.set("q", params.q.trim());
+    if (typeof params?.limit === "number") qs.set("limit", String(params.limit));
+    if (params?.cursor) qs.set("cursor", params.cursor);
+    const suffix = qs.toString();
+    return requestJson<DocumentListResponse>(
+      suffix ? `/api/documents?${suffix}` : "/api/documents"
+    );
+  },
+  deleteDocument: (id: string) =>
+    requestJson<void>(`/api/documents/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
   ingestText: (payload: {
     title: string;
     source_name: string;

@@ -1,5 +1,15 @@
 import { type FormEvent, useEffect, useState, useSyncExternalStore } from "react";
-import { KeyRound, LogOut, Moon, ShieldOff, Sun, X } from "lucide-react";
+import {
+  KeyRound,
+  Languages,
+  LogOut,
+  Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  ShieldOff,
+  Sun,
+  UserCheck,
+} from "lucide-react";
 import {
   createBrowserRouter,
   Navigate,
@@ -13,6 +23,7 @@ import {
   ApiError,
   changePassword,
   clearAccessToken,
+  fetchMe,
   getAccessToken,
   getCachedMe,
   logout,
@@ -22,7 +33,15 @@ import {
   subscribeAuthChange,
 } from "@/lib/api";
 import { validateLocalPassword } from "@/components/axguard/logic";
-import { Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  IconButton,
+  Modal,
+  PasswordInput,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { MODULE_REGISTRY, type ModuleRouteSpec } from "@/modules/registry";
 import { LoginPage } from "@/pages/LoginPage";
@@ -37,6 +56,9 @@ function matchesModulePath(spec: ModuleRouteSpec, pathname: string): boolean {
 function ShellLayout() {
   const location = useLocation();
   const navigate = useNavigate();
+  const { isDark, toggleTheme } = useTheme();
+  const { isZh, toggleLocale, tx, tEnum } = useI18n();
+
   const token = useSyncExternalStore(
     subscribeAuthChange,
     getAccessToken,
@@ -51,42 +73,48 @@ function ShellLayout() {
   const [bootRefreshDone, setBootRefreshDone] = useState(
     () => getAccessToken() !== null
   );
-  const [dark, setDark] = useState(
-    () =>
-      typeof document !== "undefined" &&
-      document.documentElement.classList.contains("dark")
-  );
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   // Password change modal state
   const [pwdModalOpen, setPwdModalOpen] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [pwdSaving, setPwdSaving] = useState(false);
   const [pwdError, setPwdError] = useState<string | null>(null);
 
   useEffect(() => {
     if (token !== null) {
       setBootRefreshDone(true);
+      if (!cachedMe) {
+        void fetchMe().catch(() => null);
+      }
       return;
     }
     if (bootRefreshDone) {
       return;
     }
     let cancelled = false;
-    void refreshAccessToken().finally(() => {
-      if (!cancelled) {
-        setBootRefreshDone(true);
-      }
-    });
+    void refreshAccessToken()
+      .then(async (refreshed) => {
+        if (refreshed && !cancelled) {
+          await fetchMe().catch(() => null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setBootRefreshDone(true);
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, [token, bootRefreshDone]);
+  }, [token, bootRefreshDone, cachedMe]);
 
   if (!token && !bootRefreshDone) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background text-muted-foreground text-xs font-mono-tech">
-        正在恢复安全会话...
+        {tx("会话恢复中…", "Restoring session…")}
       </div>
     );
   }
@@ -127,12 +155,6 @@ function ShellLayout() {
     return <Outlet />;
   }
 
-  const toggleTheme = () => {
-    const next = !dark;
-    setDark(next);
-    document.documentElement.classList.toggle("dark", next);
-  };
-
   const handleLogout = async () => {
     await logout();
     void navigate("/login", { replace: true });
@@ -149,6 +171,12 @@ function ShellLayout() {
 
   const handlePasswordSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    if (newPassword !== confirmPassword) {
+      setPwdError(
+        tx("两次输入的新口令不一致", "New passwords do not match")
+      );
+      return;
+    }
     const issue = validateLocalPassword(newPassword, cachedMe?.username);
     if (issue) {
       setPwdError(issue);
@@ -161,6 +189,7 @@ function ShellLayout() {
       setPwdModalOpen(false);
       setOldPassword("");
       setNewPassword("");
+      setConfirmPassword("");
       clearAccessToken();
       void navigate("/login", { replace: true });
     } catch (err) {
@@ -172,177 +201,263 @@ function ShellLayout() {
     }
   };
 
+  const primaryRole = cachedMe?.roles?.[0] ?? "";
+
   return (
-    <div className="min-h-screen flex bg-background text-foreground">
-      <aside className="w-56 border-r border-border flex flex-col justify-between p-4 shrink-0">
-        <div className="space-y-6">
-          <div className="flex items-center justify-between px-2">
-            <div>
-              <div className="text-sm font-semibold tracking-tight flex items-center gap-1.5">
-                <span className="inline-block h-2 w-2 rounded-full bg-xblue" />
-                xBlueNode
-              </div>
-              <div className="text-[11px] font-mono-tech text-muted-foreground">
-                AxPoint Core v{__APP_VERSION__}
-              </div>
-            </div>
+    <div className="min-h-screen flex flex-col bg-background text-foreground">
+      {/* Global Sticky Top Header */}
+      <header
+        data-testid="app-top-header"
+        className="sticky top-0 z-30 h-12 border-b border-border bg-card/95 backdrop-blur-xs px-3 md:px-4 flex items-center justify-between gap-3 shrink-0"
+      >
+        {/* Top-Left: Sidebar Toggle + Brand + Language Switcher */}
+        <div className="flex items-center gap-2 min-w-0">
+          <IconButton
+            size="sm"
+            onClick={() => setSidebarCollapsed((v) => !v)}
+            aria-label={
+              sidebarCollapsed
+                ? tx("展开导航栏", "Expand sidebar")
+                : tx("收起导航栏", "Collapse sidebar")
+            }
+            title={
+              sidebarCollapsed
+                ? tx("展开导航栏", "Expand sidebar")
+                : tx("收起导航栏", "Collapse sidebar")
+            }
+          >
+            {sidebarCollapsed ? (
+              <PanelLeftOpen className="h-4 w-4" />
+            ) : (
+              <PanelLeftClose className="h-4 w-4" />
+            )}
+          </IconButton>
+
+          <div className="flex items-center gap-1.5 pr-1 select-none">
+            <span className="inline-block h-2 w-2 rounded-full bg-xblue" />
+            <span className="text-sm font-semibold tracking-tight">
+              xBlueNode
+            </span>
+            <span className="hidden sm:inline text-[11px] font-mono-tech text-muted-foreground">
+              v{__APP_VERSION__}
+            </span>
           </div>
 
-          <nav className="space-y-1">
+          <button
+            type="button"
+            data-testid="locale-toggle-btn"
+            onClick={toggleLocale}
+            aria-label={tx("切换语言", "Switch language")}
+            title={tx("切换为 English", "Switch to 简体中文")}
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0 cursor-pointer"
+          >
+            <Languages className="h-3.5 w-3.5 text-xblue" />
+            <span className="font-mono-tech">{isZh ? "中文" : "EN"}</span>
+          </button>
+        </div>
+
+        {/* Top-Right: User Identity + Password + Logout + Borderless Icon-Only Theme Toggle */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          {cachedMe && (
+            <div
+              data-testid="shell-user-badge"
+              className="hidden md:inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-2.5 py-1 text-xs"
+            >
+              <UserCheck className="h-3.5 w-3.5 text-xblue shrink-0" />
+              <span className="font-medium">{cachedMe.username}</span>
+              <span className="text-muted-foreground">·</span>
+              <span className="text-muted-foreground font-mono-tech">
+                {cachedMe.dept_id}
+              </span>
+              {primaryRole && (
+                <Badge variant="xblue" className="ml-0.5 text-[10px]">
+                  {tEnum(primaryRole)}
+                </Badge>
+              )}
+            </div>
+          )}
+
+          <IconButton
+            data-testid="theme-toggle-btn"
+            onClick={toggleTheme}
+            aria-label={
+              isDark
+                ? tx("切换亮色模式", "Switch to light mode")
+                : tx("切换暗色模式", "Switch to dark mode")
+            }
+            title={
+              isDark
+                ? tx("亮色模式", "Light mode")
+                : tx("暗色模式", "Dark mode")
+            }
+          >
+            {isDark ? (
+              <Sun className="h-4 w-4" />
+            ) : (
+              <Moon className="h-4 w-4" />
+            )}
+          </IconButton>
+
+          <div className="h-4 w-px bg-border mx-0.5" />
+
+          <IconButton
+            data-testid="shell-change-password-btn"
+            onClick={() => {
+              setPwdError(null);
+              setPwdModalOpen(true);
+            }}
+            aria-label={tx("修改口令", "Change password")}
+            title={tx("修改口令", "Change password")}
+          >
+            <KeyRound className="h-4 w-4" />
+          </IconButton>
+
+          <IconButton
+            data-testid="shell-logout-all-btn"
+            onClick={() => void handleLogoutAll()}
+            aria-label={tx("退出全部设备", "Sign out all devices")}
+            title={tx("退出全部设备", "Sign out all devices")}
+          >
+            <ShieldOff className="h-4 w-4" />
+          </IconButton>
+
+          <Button
+            variant="ghost"
+            size="sm"
+            type="button"
+            data-testid="shell-logout-btn"
+            onClick={() => void handleLogout()}
+            title={tx("退出登录", "Sign out")}
+            className="px-2 text-muted-foreground hover:text-foreground"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">{tx("退出", "Sign out")}</span>
+          </Button>
+        </div>
+      </header>
+
+      {/* Main Workspace Body */}
+      <div className="flex flex-1 min-h-0">
+        <aside
+          className={cn(
+            "sticky top-12 h-[calc(100vh-3rem)] border-r border-border bg-card/40 flex flex-col shrink-0 transition-all overflow-y-auto",
+            sidebarCollapsed ? "w-14 p-2" : "w-54 p-3"
+          )}
+        >
+          <nav className="space-y-0.5">
             {navItems.map((item) => {
               const Icon = item.icon;
               const active = matchesModulePath(item, location.pathname);
+              const navLabel = isZh ? item.label : item.enLabel;
               return (
                 <NavLink
                   key={item.key}
                   to={item.path}
                   end={item.path === "/"}
+                  title={navLabel}
                   className={cn(
                     "w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-xs font-medium transition-colors cursor-pointer",
+                    sidebarCollapsed && "justify-center px-0",
                     active
-                      ? "bg-muted text-foreground border border-border"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                      ? "bg-xblue-soft/70 text-xblue border border-xblue/25"
+                      : "text-muted-foreground hover:text-foreground hover:bg-muted/60 border border-transparent"
                   )}
                 >
-                  <Icon className={cn("h-3.5 w-3.5", active && "text-xblue")} />
-                  {item.label}
+                  <Icon
+                    className={cn("h-4 w-4 shrink-0", active && "text-xblue")}
+                  />
+                  {!sidebarCollapsed && (
+                    <span className="truncate">{navLabel}</span>
+                  )}
                 </NavLink>
               );
             })}
           </nav>
-        </div>
+        </aside>
 
-        <div className="space-y-2 pt-4 border-t border-border">
-          <div className="grid grid-cols-3 gap-1">
-            <button
-              type="button"
-              onClick={() => {
-                setPwdError(null);
-                setPwdModalOpen(true);
-              }}
-              data-testid="shell-change-password-btn"
-              title="修改登录口令"
-              className="flex items-center justify-center gap-1 rounded border border-border px-1.5 py-1.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
-            >
-              <KeyRound className="h-3 w-3" />
-              口令
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleLogout()}
-              data-testid="shell-logout-btn"
-              title="退出当前会话"
-              className="flex items-center justify-center gap-1 rounded border border-border px-1.5 py-1.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
-            >
-              <LogOut className="h-3 w-3" />
-              退出
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleLogoutAll()}
-              data-testid="shell-logout-all-btn"
-              title="吊销该账号全部活跃会话"
-              className="flex items-center justify-center gap-1 rounded border border-border px-1.5 py-1.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
-            >
-              <ShieldOff className="h-3 w-3" />
-              全退
-            </button>
+        <main className="flex-1 min-w-0 w-full max-w-[1760px] mx-auto p-4 md:p-6">
+          <Outlet />
+        </main>
+      </div>
+
+      {/* Password Change Modal */}
+      <Modal
+        open={pwdModalOpen}
+        onClose={() => setPwdModalOpen(false)}
+        maxWidthClass="max-w-md"
+        title={
+          <>
+            <KeyRound className="h-4 w-4 text-xblue shrink-0" />
+            <span>{tx("修改口令", "Change Password")}</span>
+          </>
+        }
+      >
+        <form
+          onSubmit={(e) => void handlePasswordSubmit(e)}
+          className="space-y-3"
+        >
+          <div className="space-y-1">
+            <label className="text-xs font-medium">
+              {tx("原口令", "Current password")} *
+            </label>
+            <PasswordInput
+              required
+              autoComplete="current-password"
+              value={oldPassword}
+              onChange={(e) => setOldPassword(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">
+              {tx("新口令（至少 12 位）", "New password (min 12 chars)")} *
+            </label>
+            <PasswordInput
+              required
+              autoComplete="new-password"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">
+              {tx("确认新口令", "Confirm new password")} *
+            </label>
+            <PasswordInput
+              required
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+            />
           </div>
 
-          <button
-            type="button"
-            onClick={toggleTheme}
-            className="w-full flex items-center gap-2 rounded-md border border-border px-2.5 py-2 text-xs text-muted-foreground hover:text-foreground cursor-pointer"
-          >
-            {dark ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
-            {dark ? "浅色极简模式" : "深色极简模式"}
-          </button>
-        </div>
-      </aside>
-
-      <main
-        className={cn(
-          "flex-1 min-w-0 w-full mx-auto",
-          activeModule?.wideLayout
-            ? "p-4 md:p-6 max-w-[1600px]"
-            : "p-6 md:p-8 max-w-6xl"
-        )}
-      >
-        <Outlet />
-      </main>
-
-      {pwdModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-          <Card className="w-full max-w-md p-5 space-y-4">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <div className="text-sm font-semibold flex items-center gap-2">
-                <KeyRound className="h-4 w-4 text-xblue" />
-                修改当前账号登录口令
-              </div>
-              <button
-                type="button"
-                onClick={() => setPwdModalOpen(false)}
-                className="text-muted-foreground hover:text-foreground cursor-pointer"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            <form
-              onSubmit={(e) => void handlePasswordSubmit(e)}
-              className="space-y-3"
+          {pwdError && (
+            <div
+              role="alert"
+              className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-600 dark:text-red-400"
             >
-              <div className="space-y-1">
-                <label className="text-xs font-medium">当前旧口令 *</label>
-                <Input
-                  required
-                  type="password"
-                  value={oldPassword}
-                  onChange={(e) => setOldPassword(e.target.value)}
-                  className="h-8 text-xs"
-                />
-              </div>
-              <div className="space-y-1">
-                <label className="text-xs font-medium">
-                  新口令（≥ 12 位且不含用户名）*
-                </label>
-                <Input
-                  required
-                  type="password"
-                  value={newPassword}
-                  onChange={(e) => setNewPassword(e.target.value)}
-                  className="h-8 text-xs"
-                />
-              </div>
+              {pwdError}
+            </div>
+          )}
 
-              {pwdError && (
-                <div
-                  role="alert"
-                  className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs"
-                >
-                  {pwdError}
-                </div>
-              )}
-
-              <div className="flex justify-end gap-2 pt-2 border-t border-border">
-                <Button
-                  variant="outline"
-                  type="button"
-                  onClick={() => setPwdModalOpen(false)}
-                >
-                  取消
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={pwdSaving || !oldPassword || !newPassword}
-                >
-                  {pwdSaving ? "提交中..." : "确认修改并重新登录"}
-                </Button>
-              </div>
-            </form>
-          </Card>
-        </div>
-      )}
+          <div className="flex justify-end gap-2 pt-2 border-t border-border">
+            <Button
+              variant="outline"
+              type="button"
+              onClick={() => setPwdModalOpen(false)}
+            >
+              {tx("取消", "Cancel")}
+            </Button>
+            <Button
+              type="submit"
+              disabled={
+                pwdSaving || !oldPassword || !newPassword || !confirmPassword
+              }
+            >
+              {pwdSaving ? tx("保存中…", "Saving…") : tx("保存", "Save")}
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   );
 }

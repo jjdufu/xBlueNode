@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Play, Send } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   xblueviewApi,
   type InvokeWidgetActionResponse,
@@ -14,6 +15,7 @@ import {
   isRecord,
   readBoolean,
   readString,
+  type KnownNodeSummary,
 } from "./utils";
 
 export interface ActionWidgetProps {
@@ -22,6 +24,7 @@ export interface ActionWidgetProps {
   readOnly?: boolean;
   selectedNodeId?: string | null;
   filterValues?: Record<string, unknown>;
+  knownNodes?: Readonly<Record<string, KnownNodeSummary>>;
   onActionSuccess?: () => void;
 }
 
@@ -40,7 +43,9 @@ function parseInputSchemaFields(
   if (!schema) return [];
   const rawProps = isRecord(schema.properties) ? schema.properties : {};
   const requiredList = Array.isArray(schema.required)
-    ? schema.required.filter((item): item is string => typeof item === "string")
+    ? schema.required.filter(
+        (item): item is string => typeof item === "string"
+      )
     : [];
   const requiredSet = new Set(requiredList);
 
@@ -91,8 +96,10 @@ export function ActionWidget({
   readOnly = false,
   selectedNodeId,
   filterValues,
+  knownNodes,
   onActionSuccess,
 }: ActionWidgetProps) {
+  const { tx, tEnum, fmtTime } = useI18n();
   const ds = widget.data_source.kind === "ACTION" ? widget.data_source : null;
   const fields = useMemo(
     () => parseInputSchemaFields(ds?.input_schema),
@@ -143,7 +150,7 @@ export function ActionWidget({
   if (!ds) {
     return (
       <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-        动作数据源配置缺失
+        {tx("动作配置缺失", "Action config missing")}
       </div>
     );
   }
@@ -151,7 +158,17 @@ export function ActionWidget({
   const isButton = widget.widget_kind === "ACTION_BUTTON";
   const buttonLabel =
     readString(widget.options, "button_label") ??
-    (ds.action_type === "RUN_FLOW" ? "触发业务流程" : "执行节点回写");
+    (ds.action_type === "RUN_FLOW"
+      ? tx("触发流程", "Run Flow")
+      : tx("提交回写", "Submit"));
+
+  const resolvedNodeId = resolveActionTargetNodeId(ds.node_id, selectedNodeId);
+  const knownTargetNode = resolvedNodeId ? knownNodes?.[resolvedNodeId] : undefined;
+  const targetNodeLabel = knownTargetNode
+    ? knownTargetNode.nodeKey && knownTargetNode.nodeKey !== knownTargetNode.title
+      ? `${knownTargetNode.title} (${knownTargetNode.nodeKey})`
+      : knownTargetNode.title
+    : null;
 
   const updateFieldValue = (key: string, value: unknown) => {
     setTouchedKeys((prev) => {
@@ -172,16 +189,21 @@ export function ActionWidget({
       for (const f of fields) {
         const raw = formValues[f.key];
         if (f.type === "number" || f.type === "integer") {
-          const str = raw === undefined || raw === null ? "" : String(raw).trim();
+          const str =
+            raw === undefined || raw === null ? "" : String(raw).trim();
           if (str === "") {
             if (f.required) {
-              throw new Error(`请填写必填数值参数「${f.title}」`);
+              throw new Error(
+                tx(`请填写「${f.title}」`, `${f.title} is required`)
+              );
             }
             continue;
           }
           const num = Number(str);
           if (!Number.isFinite(num)) {
-            throw new Error(`参数「${f.title}」必须是有效数字`);
+            throw new Error(
+              tx(`「${f.title}」必须是有效数字`, `${f.title} must be numeric`)
+            );
           }
           inputs[f.key] = f.type === "integer" ? Math.trunc(num) : num;
         } else if (f.type === "boolean") {
@@ -189,7 +211,9 @@ export function ActionWidget({
         } else {
           const str = raw === undefined || raw === null ? "" : String(raw);
           if (f.required && str.trim() === "") {
-            throw new Error(`请填写必填参数「${f.title}」`);
+            throw new Error(
+              tx(`请填写「${f.title}」`, `${f.title} is required`)
+            );
           }
           if (str !== "") {
             inputs[f.key] = str;
@@ -198,13 +222,9 @@ export function ActionWidget({
       }
 
       const idempotencyKey = `xv-${widget.id}-${Date.now()}`;
-      const targetNodeId = resolveActionTargetNodeId(
-        ds.node_id,
-        selectedNodeId
-      );
       const res = await xblueviewApi.invokeWidgetAction(widget.id, {
         inputs,
-        target_node_id: targetNodeId,
+        target_node_id: resolvedNodeId,
         idempotency_key: idempotencyKey,
       });
       setLastResult(res);
@@ -220,32 +240,112 @@ export function ActionWidget({
   const recentLogs = data?.rows ?? [];
   const logColMap = buildColumnIndexMap(data);
   const skipConfirm = readBoolean(widget.options, "skip_confirm") === true;
+  const isCompactSingleField =
+    !isButton && fields.length === 1 && fields[0]?.type !== "boolean";
+  const singleField = isCompactSingleField ? fields[0] : null;
 
   return (
     <div
-      className="h-full flex flex-col justify-between gap-2 text-xs overflow-y-auto"
+      className="h-full flex flex-col justify-between gap-1.5 text-xs"
       data-testid={`widget-action-${widget.id}`}
     >
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground">
-          <Badge variant="xblue">{ds.action_type}</Badge>
-          {ds.action_type === "WRITE_NODE" && ds.key && (
-            <span className="font-mono-tech">
-              目标: {ds.target_kind ?? "METRIC"}.{ds.key}
+      <div className="space-y-1.5">
+        {/* Compact Target Summary */}
+        <div className="flex flex-wrap items-center justify-between gap-1.5 text-[11px] text-muted-foreground">
+          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+            <Badge variant="xblue">{tEnum(ds.action_type)}</Badge>
+            {(targetNodeLabel || ds.key) && (
+              <span className="font-mono-tech truncate">
+                {targetNodeLabel ? `${targetNodeLabel}` : ""}
+                {targetNodeLabel && ds.key ? " · " : ""}
+                {ds.key ? ds.key : ""}
+              </span>
+            )}
+          </div>
+          {singleField && (
+            <span className="text-[11px] text-muted-foreground shrink-0">
+              {singleField.title}
+              {singleField.required && (
+                <span className="text-xblue ml-0.5">*</span>
+              )}
             </span>
           )}
         </div>
 
-        {!isButton && fields.length > 0 && (
+        {/* Single-field ultra-compact side-by-side form */}
+        {singleField && (
           <form
             onSubmit={(e) => {
               e.preventDefault();
               void executeInvoke();
             }}
-            className="space-y-2"
+            className="flex items-center gap-1.5"
+          >
+            {singleField.enumValues && singleField.enumValues.length > 0 ? (
+              <select
+                disabled={readOnly}
+                value={String(formValues[singleField.key] ?? "")}
+                onChange={(e) =>
+                  updateFieldValue(singleField.key, e.target.value)
+                }
+                className="h-7 flex-1 min-w-0 rounded-md border border-input bg-background px-2 text-xs"
+                data-testid={`action-input-${singleField.key}`}
+              >
+                <option value="">{tx("未选择", "Select")}</option>
+                {singleField.enumValues.map((opt) => (
+                  <option key={opt} value={opt}>
+                    {opt}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <Input
+                type={
+                  singleField.type === "number" ||
+                  singleField.type === "integer"
+                    ? "number"
+                    : "text"
+                }
+                step={singleField.type === "number" ? "any" : undefined}
+                disabled={readOnly}
+                value={String(formValues[singleField.key] ?? "")}
+                onChange={(e) =>
+                  updateFieldValue(singleField.key, e.target.value)
+                }
+                placeholder={
+                  singleField.type === "number" ||
+                  singleField.type === "integer"
+                    ? "0"
+                    : singleField.title
+                }
+                className="h-7 flex-1 min-w-0 text-xs font-mono-tech"
+                data-testid={`action-input-${singleField.key}`}
+              />
+            )}
+            <Button
+              type="submit"
+              size="sm"
+              disabled={readOnly || submitting}
+              className="h-7 px-2.5 shrink-0"
+              data-testid={`action-submit-${widget.id}`}
+            >
+              <Send className="h-3 w-3" />
+              {submitting ? tx("提交中…", "Saving…") : buttonLabel}
+            </Button>
+          </form>
+        )}
+
+        {/* Multi-field or boolean form */}
+        {!isButton && !singleField && fields.length > 0 && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void executeInvoke();
+            }}
+            className="space-y-1.5"
           >
             {fields.map((f) => (
-              <div key={f.key} className="space-y-1">
+              <div key={f.key} className="space-y-0.5">
                 <label className="block text-[11px] text-muted-foreground">
                   {f.title}
                   {f.required && <span className="text-xblue ml-0.5">*</span>}
@@ -256,18 +356,20 @@ export function ActionWidget({
                       type="checkbox"
                       disabled={readOnly}
                       checked={Boolean(formValues[f.key])}
-                      onChange={(e) => updateFieldValue(f.key, e.target.checked)}
+                      onChange={(e) =>
+                        updateFieldValue(f.key, e.target.checked)
+                      }
                     />
-                    <span>是 / 启用</span>
+                    <span>{tx("启用", "Enabled")}</span>
                   </label>
                 ) : f.enumValues && f.enumValues.length > 0 ? (
                   <select
                     disabled={readOnly}
                     value={String(formValues[f.key] ?? "")}
                     onChange={(e) => updateFieldValue(f.key, e.target.value)}
-                    className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                    className="h-7 w-full rounded-md border border-input bg-background px-2 text-xs"
                   >
-                    <option value="">请选择</option>
+                    <option value="">{tx("未选择", "Select")}</option>
                     {f.enumValues.map((opt) => (
                       <option key={opt} value={opt}>
                         {opt}
@@ -276,13 +378,21 @@ export function ActionWidget({
                   </select>
                 ) : (
                   <Input
-                    type={f.type === "number" || f.type === "integer" ? "number" : "text"}
+                    type={
+                      f.type === "number" || f.type === "integer"
+                        ? "number"
+                        : "text"
+                    }
                     step={f.type === "number" ? "any" : undefined}
                     disabled={readOnly}
                     value={String(formValues[f.key] ?? "")}
                     onChange={(e) => updateFieldValue(f.key, e.target.value)}
-                    placeholder={`输入 ${f.title}`}
-                    className="h-8 text-xs font-mono-tech"
+                    placeholder={
+                      f.type === "number" || f.type === "integer"
+                        ? "0"
+                        : f.title
+                    }
+                    className="h-7 text-xs font-mono-tech"
                     data-testid={`action-input-${f.key}`}
                   />
                 )}
@@ -291,43 +401,48 @@ export function ActionWidget({
 
             <Button
               type="submit"
+              size="sm"
               disabled={readOnly || submitting}
               className="w-full"
               data-testid={`action-submit-${widget.id}`}
             >
-              <Send className="h-3.5 w-3.5" />
-              {submitting ? "提交执行中..." : buttonLabel}
+              <Send className="h-3 w-3" />
+              {submitting ? tx("提交中…", "Saving…") : buttonLabel}
             </Button>
           </form>
         )}
 
+        {/* Action Button / Zero-field mode */}
         {(isButton || fields.length === 0) && (
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {confirming && ds.confirm_text ? (
-              <div className="rounded border border-xblue/40 bg-xblue-soft/50 p-2 space-y-2">
+              <div className="rounded border border-xblue/40 bg-xblue-soft/50 p-2 space-y-1.5">
                 <div className="text-xs font-medium">{ds.confirm_text}</div>
                 <div className="flex items-center gap-2">
                   <Button
                     type="button"
+                    size="sm"
                     disabled={readOnly || submitting}
                     onClick={() => void executeInvoke()}
-                    className="px-2.5 py-1 text-xs"
                   >
-                    {submitting ? "执行中..." : "确认执行"}
+                    {submitting
+                      ? tx("执行中…", "Running…")
+                      : tx("确认", "Confirm")}
                   </Button>
                   <Button
                     type="button"
+                    size="sm"
                     variant="outline"
                     onClick={() => setConfirming(false)}
-                    className="px-2.5 py-1 text-xs"
                   >
-                    取消
+                    {tx("取消", "Cancel")}
                   </Button>
                 </div>
               </div>
             ) : (
               <Button
                 type="button"
+                size="sm"
                 disabled={readOnly || submitting}
                 onClick={() => {
                   if (ds.confirm_text && !skipConfirm) {
@@ -339,27 +454,27 @@ export function ActionWidget({
                 className="w-full"
                 data-testid={`action-trigger-${widget.id}`}
               >
-                <Play className="h-3.5 w-3.5" />
-                {submitting ? "执行中..." : buttonLabel}
+                <Play className="h-3 w-3" />
+                {submitting ? tx("执行中…", "Running…") : buttonLabel}
               </Button>
             )}
           </div>
         )}
 
         {errorMsg && (
-          <div className="rounded border border-foreground/30 bg-muted px-2 py-1 text-[11px]">
+          <div className="rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-700 dark:text-red-300">
             {errorMsg}
           </div>
         )}
 
         {lastResult && (
           <div
-            className="rounded border border-xblue/30 bg-xblue-soft/40 px-2 py-1 text-[11px] flex items-center justify-between"
+            className="rounded border border-xblue/30 bg-xblue-soft/40 px-2 py-0.5 text-[11px] flex items-center justify-between"
             data-testid={`action-result-${widget.id}`}
           >
             <span className="inline-flex items-center gap-1 font-medium text-xblue">
               <CheckCircle2 className="h-3 w-3" />
-              已执行 ({lastResult.status})
+              {tEnum(lastResult.status)} ({lastResult.status})
             </span>
             {lastResult.run_id && (
               <span className="font-mono-tech text-[10px] text-muted-foreground">
@@ -370,52 +485,36 @@ export function ActionWidget({
         )}
       </div>
 
-      {/* Recent Execution Logs */}
+      {/* Compact Recent Execution Status */}
       {recentLogs.length > 0 && (
-        <div className="border-t border-border pt-1.5 space-y-1">
-          <div className="text-[10px] text-muted-foreground font-mono-tech">
-            最近执行记录 ({recentLogs.length})
-          </div>
-          <div className="space-y-1 max-h-24 overflow-y-auto">
-            {recentLogs.slice(0, 5).map((r, idx) => {
-              const kindStr = String(
-                getCell(r, logColMap, "action_kind", 1) ?? r[0] ?? "ACTION"
-              );
-              const statusStr = String(
-                getCell(r, logColMap, "status", 3) ?? "DONE"
-              );
-              const createdAtRaw = getCell(r, logColMap, "created_at", -1);
-              const errRaw = getCell(r, logColMap, "error_message", -1);
-              const createdStr =
-                typeof createdAtRaw === "string" && createdAtRaw.trim()
-                  ? createdAtRaw.slice(0, 19).replace("T", " ")
-                  : "";
-              const errStr =
-                typeof errRaw === "string" && errRaw.trim() ? errRaw.trim() : "";
+        <div className="border-t border-border/70 pt-1 space-y-1">
+          {recentLogs.slice(0, 2).map((r, idx) => {
+            const statusStr = String(
+              getCell(r, logColMap, "status", 3) ?? "DONE"
+            );
+            const createdAtRaw = getCell(r, logColMap, "created_at", -1);
+            const errRaw = getCell(r, logColMap, "error_message", -1);
+            const createdStr =
+              typeof createdAtRaw === "string" && createdAtRaw.trim()
+                ? fmtTime(createdAtRaw, true)
+                : "";
+            const errStr =
+              typeof errRaw === "string" && errRaw.trim() ? errRaw.trim() : "";
 
-              return (
-                <div
-                  key={idx}
-                  className="text-[10px] font-mono-tech bg-muted/40 rounded px-1.5 py-0.5 space-y-0.5"
-                >
-                  <div className="flex items-center justify-between gap-1">
-                    <span className="truncate">{kindStr}</span>
-                    <div className="flex items-center gap-1 shrink-0">
-                      {createdStr && (
-                        <span className="text-muted-foreground">{createdStr}</span>
-                      )}
-                      <Badge variant="outline">{statusStr}</Badge>
-                    </div>
-                  </div>
-                  {errStr && (
-                    <div className="text-muted-foreground truncate" title={errStr}>
-                      {errStr}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+            return (
+              <div
+                key={idx}
+                className="text-[10px] font-mono-tech bg-muted/35 rounded px-1.5 py-0.5 flex items-center justify-between gap-1.5"
+              >
+                <span className="text-muted-foreground truncate">
+                  {errStr || createdStr || tx("最近执行", "Last run")}
+                </span>
+                <Badge variant="outline" className="px-1 py-0 text-[10px]">
+                  {statusStr}
+                </Badge>
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

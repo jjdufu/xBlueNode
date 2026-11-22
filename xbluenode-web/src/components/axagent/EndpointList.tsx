@@ -6,7 +6,6 @@ import {
   FileJson,
   Plus,
   Trash2,
-  X,
 } from "lucide-react";
 import type { EndpointKind, Environment } from "@/lib/api/enums";
 import {
@@ -19,7 +18,16 @@ import {
   type EndpointSpec,
   type SkillManifest,
 } from "@/lib/api/axagent";
-import { Badge, Button, Card } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Modal,
+  Select,
+  StatusBadge,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { EndpointPublishDialog } from "./EndpointPublishDialog";
 
@@ -38,6 +46,10 @@ export function EndpointList({
   objectTypeNames = [],
   onRefresh,
 }: EndpointListProps) {
+  const { tx, tEnum } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("AGENT_EDIT");
+
   const [envFilter, setEnvFilter] = useState<"ALL" | Environment>("ALL");
   const [kindFilter, setKindFilter] = useState<"ALL" | EndpointKind>("ALL");
   const [publishOpen, setPublishOpen] = useState(false);
@@ -70,19 +82,25 @@ export function EndpointList({
     ep: EndpointSpec,
     field: "enabled" | "expose_mcp" | "show_as_app"
   ) => {
+    if (!canEdit) return;
     setBusyId(ep.id);
     setErrorMsg(null);
     try {
       await updateEndpoint(ep.id, { [field]: !ep[field] });
       await onRefresh();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "更新端点配置失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("更新端点失败", "Failed to update endpoint")
+      );
     } finally {
       setBusyId(null);
     }
   };
 
   const handlePromote = async (ep: EndpointSpec) => {
+    if (!canEdit) return;
     setBusyId(ep.id);
     setErrorMsg(null);
     setFeedbackMsg(null);
@@ -90,27 +108,35 @@ export function EndpointList({
       const prodEp = await promoteEndpoint(ep.id);
       await onRefresh();
       setFeedbackMsg(
-        `已将端点 ${prodEp.slug} 提升至 PROD 环境${
-          prodEp.target_version !== null
-            ? `（锁定版本 v${prodEp.target_version}）`
-            : ""
-        }`
+        tx(
+          `已将端点 ${prodEp.slug} 提升至 PROD 环境`,
+          `Promoted endpoint ${prodEp.slug} to PROD`
+        )
       );
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "提升至 PROD 失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("提升失败", "Failed to promote endpoint")
+      );
     } finally {
       setBusyId(null);
     }
   };
 
   const handleDelete = async (ep: EndpointSpec) => {
+    if (!canEdit) return;
     setBusyId(ep.id);
     setErrorMsg(null);
     try {
       await deleteEndpoint(ep.id);
       await onRefresh();
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "删除端点失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("删除失败", "Failed to delete endpoint")
+      );
     } finally {
       setBusyId(null);
     }
@@ -123,7 +149,11 @@ export function EndpointList({
       const manifest = await fetchEndpointSkillManifest(ep.id);
       setSkillModal({ endpoint: ep, manifest });
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "读取 Skill 清单失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("读取 Skill 清单失败", "Failed to load Skill manifest")
+      );
     } finally {
       setBusyId(null);
     }
@@ -135,7 +165,11 @@ export function EndpointList({
       const doc = await fetchPublishedOpenApi(env);
       setOpenApiModal({ env, doc });
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "导出 OpenAPI 3.1 失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("读取 OpenAPI 失败", "Failed to fetch OpenAPI specification")
+      );
     }
   };
 
@@ -170,26 +204,26 @@ export function EndpointList({
                     : "text-muted-foreground hover:text-foreground"
                 )}
               >
-                {env === "ALL" ? "全部环境" : env}
+                {env === "ALL" ? tx("全部环境", "All Envs") : tEnum(env)}
               </button>
             ))}
           </div>
 
-          <select
+          <Select
             data-testid="endpoint-kind-filter"
             value={kindFilter}
             onChange={(e) =>
               setKindFilter(e.target.value as "ALL" | EndpointKind)
             }
-            className="h-8 rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
+            className="h-8"
           >
-            <option value="ALL">全部类型</option>
-            <option value="METRIC">METRIC</option>
-            <option value="SAVED_QUERY">SAVED_QUERY</option>
-            <option value="OBJECT_TYPE">OBJECT_TYPE</option>
-            <option value="FLOW">FLOW</option>
-            <option value="AGENT">AGENT</option>
-          </select>
+            <option value="ALL">{tx("全部类型", "All Kinds")}</option>
+            <option value="METRIC">{tEnum("METRIC")}</option>
+            <option value="SAVED_QUERY">{tEnum("SAVED_QUERY")}</option>
+            <option value="OBJECT_TYPE">{tEnum("OBJECT_TYPE")}</option>
+            <option value="FLOW">{tEnum("FLOW")}</option>
+            <option value="AGENT">{tEnum("AGENT")}</option>
+          </Select>
         </div>
 
         <div className="flex items-center gap-2">
@@ -202,14 +236,16 @@ export function EndpointList({
             <FileJson className="h-3.5 w-3.5" />
             OpenAPI 3.1
           </Button>
-          <Button
-            type="button"
-            data-testid="open-publish-endpoint-btn"
-            onClick={() => setPublishOpen(true)}
-          >
-            <Plus className="h-3.5 w-3.5" />
-            发布新端点
-          </Button>
+          {canEdit && (
+            <Button
+              type="button"
+              data-testid="open-publish-endpoint-btn"
+              onClick={() => setPublishOpen(true)}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {tx("发布端点", "Publish Endpoint")}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -230,19 +266,31 @@ export function EndpointList({
       <Card className="overflow-hidden">
         {filteredEndpoints.length === 0 ? (
           <div className="p-8 text-center text-xs text-muted-foreground">
-            当前筛选条件下暂无已发布能力端点
+            {tx("暂无已发布能力端点", "No published endpoints")}
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead className="bg-muted/50 text-muted-foreground border-b border-border">
                 <tr>
-                  <th className="px-4 py-2.5 font-medium">端点名称 / Slug</th>
-                  <th className="px-3 py-2.5 font-medium">环境与版本</th>
-                  <th className="px-3 py-2.5 font-medium">能力类型</th>
-                  <th className="px-3 py-2.5 font-medium">限流 / 缓存</th>
-                  <th className="px-3 py-2.5 font-medium">开关策略</th>
-                  <th className="px-4 py-2.5 font-medium text-right">操作</th>
+                  <th className="px-4 py-2.5 font-medium whitespace-nowrap">
+                    {tx("端点名称 / 路径", "Endpoint / Path")}
+                  </th>
+                  <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                    {tx("环境与版本", "Env & Version")}
+                  </th>
+                  <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                    {tx("能力类型", "Kind")}
+                  </th>
+                  <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                    {tx("限流 / 缓存", "Rate / Cache")}
+                  </th>
+                  <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                    {tx("策略", "Flags")}
+                  </th>
+                  <th className="px-4 py-2.5 font-medium text-right whitespace-nowrap">
+                    {tx("操作", "Actions")}
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -261,57 +309,53 @@ export function EndpointList({
                         {ep.tenant_id}/{ep.slug}
                       </div>
                     </td>
-                    <td className="px-3 py-3">
+                    <td className="px-3 py-3 whitespace-nowrap">
                       <div className="flex items-center gap-1.5">
-                        <Badge
-                          variant={
-                            ep.environment === "PROD" ? "xblue" : "neutral"
-                          }
-                        >
-                          {ep.environment}
-                        </Badge>
+                        <StatusBadge status={ep.environment} />
                         <Badge variant="outline">
                           {ep.target_version !== null
-                            ? `固定 v${ep.target_version}`
-                            : "跟随最新"}
+                            ? `v${ep.target_version}`
+                            : tx("最新", "Latest")}
                         </Badge>
                       </div>
                     </td>
-                    <td className="px-3 py-3">
+                    <td className="px-3 py-3 whitespace-nowrap">
                       <div className="space-y-0.5">
-                        <Badge variant="outline">{ep.kind}</Badge>
+                        <Badge variant="outline">{tEnum(ep.kind)}</Badge>
                         <div className="font-mono-tech text-[11px] text-muted-foreground truncate max-w-[140px]">
                           {ep.target_id}
                         </div>
                       </div>
                     </td>
-                    <td className="px-3 py-3 font-mono-tech text-[11px] text-muted-foreground">
+                    <td className="px-3 py-3 font-mono-tech text-[11px] text-muted-foreground whitespace-nowrap">
                       <div>{ep.rate_limit_rpm} RPM</div>
                       <div>TTL {ep.cache_ttl_s}s</div>
                     </td>
-                    <td className="px-3 py-3">
+                    <td className="px-3 py-3 whitespace-nowrap">
                       <div className="flex flex-wrap gap-1.5">
                         <button
                           type="button"
-                          disabled={busyId === ep.id}
+                          disabled={!canEdit || busyId === ep.id}
                           onClick={() => void handleToggleFlag(ep, "enabled")}
                           className={cn(
-                            "rounded border px-1.5 py-0.5 text-[10px] font-mono-tech cursor-pointer",
+                            "rounded border px-1.5 py-0.5 text-[10px] font-mono-tech cursor-pointer disabled:opacity-50",
                             ep.enabled
                               ? "border-xblue bg-xblue-soft text-xblue"
                               : "border-border text-muted-foreground"
                           )}
                         >
-                          {ep.enabled ? "启用" : "停用"}
+                          {ep.enabled
+                            ? tx("启用", "Enabled")
+                            : tx("停用", "Disabled")}
                         </button>
                         <button
                           type="button"
-                          disabled={busyId === ep.id}
+                          disabled={!canEdit || busyId === ep.id}
                           onClick={() =>
                             void handleToggleFlag(ep, "expose_mcp")
                           }
                           className={cn(
-                            "rounded border px-1.5 py-0.5 text-[10px] font-mono-tech cursor-pointer",
+                            "rounded border px-1.5 py-0.5 text-[10px] font-mono-tech cursor-pointer disabled:opacity-50",
                             ep.expose_mcp
                               ? "border-xblue bg-xblue-soft text-xblue"
                               : "border-border text-muted-foreground"
@@ -321,12 +365,12 @@ export function EndpointList({
                         </button>
                         <button
                           type="button"
-                          disabled={busyId === ep.id}
+                          disabled={!canEdit || busyId === ep.id}
                           onClick={() =>
                             void handleToggleFlag(ep, "show_as_app")
                           }
                           className={cn(
-                            "rounded border px-1.5 py-0.5 text-[10px] font-mono-tech cursor-pointer",
+                            "rounded border px-1.5 py-0.5 text-[10px] font-mono-tech cursor-pointer disabled:opacity-50",
                             ep.show_as_app
                               ? "border-xblue bg-xblue-soft text-xblue"
                               : "border-border text-muted-foreground"
@@ -336,36 +380,36 @@ export function EndpointList({
                         </button>
                       </div>
                     </td>
-                    <td className="px-4 py-3">
+                    <td className="px-4 py-3 whitespace-nowrap">
                       <div className="flex items-center justify-end gap-1.5">
-                        {ep.environment === "TEST" ? (
+                        {canEdit && ep.environment === "TEST" ? (
                           <Button
                             type="button"
                             variant="outline"
+                            size="sm"
                             data-testid={`promote-endpoint-btn-${ep.slug}`}
                             disabled={busyId === ep.id}
                             onClick={() => void handlePromote(ep)}
-                            className="h-7 px-2.5"
                           >
                             <ArrowUpRight className="h-3.5 w-3.5 text-xblue" />
-                            提升至 PROD
+                            {tx("提升至生产", "Promote")}
                           </Button>
                         ) : null}
                         <Button
                           type="button"
                           variant="outline"
+                          size="sm"
                           data-testid={`skill-manifest-btn-${ep.slug}-${ep.environment}`}
                           disabled={busyId === ep.id}
                           onClick={() => void handleOpenSkill(ep)}
-                          className="h-7 px-2.5"
                         >
                           Skill JSON
                         </Button>
                         <Button
                           type="button"
                           variant="ghost"
+                          size="sm"
                           onClick={() => void copyCurl(ep)}
-                          className="h-7 px-2"
                         >
                           {copiedId === ep.id ? (
                             <Check className="h-3.5 w-3.5 text-xblue" />
@@ -373,15 +417,17 @@ export function EndpointList({
                             <Copy className="h-3.5 w-3.5" />
                           )}
                         </Button>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          disabled={busyId === ep.id}
-                          onClick={() => void handleDelete(ep)}
-                          className="h-7 px-2"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </Button>
+                        {canEdit && (
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            disabled={busyId === ep.id}
+                            onClick={() => void handleDelete(ep)}
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -404,73 +450,53 @@ export function EndpointList({
       />
 
       {/* Skill Manifest Modal */}
-      {skillModal ? (
-        <div
-          data-testid="skill-manifest-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-        >
-          <Card className="w-full max-w-xl p-5 space-y-3">
-            <div className="flex items-center justify-between border-b border-border pb-2.5">
-              <h3 className="text-sm font-semibold">
-                Skill 清单 · {skillModal.endpoint.slug}
-              </h3>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setSkillModal(null)}
-                className="h-7 w-7 p-0"
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-            <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono-tech text-[11px] overflow-x-auto max-h-80">
-              {JSON.stringify(skillModal.manifest, null, 2)}
-            </pre>
-          </Card>
-        </div>
-      ) : null}
+      <Modal
+        open={Boolean(skillModal)}
+        onClose={() => setSkillModal(null)}
+        maxWidthClass="max-w-xl"
+        testId="skill-manifest-modal"
+        title={`Skill JSON · ${skillModal?.endpoint.slug ?? ""}`}
+      >
+        {skillModal && (
+          <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono-tech text-[11px] overflow-x-auto max-h-80">
+            {JSON.stringify(skillModal.manifest, null, 2)}
+          </pre>
+        )}
+      </Modal>
 
       {/* OpenAPI 3.1 Modal */}
-      {openApiModal ? (
-        <div
-          data-testid="openapi-modal"
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
-        >
-          <Card className="w-full max-w-2xl p-5 space-y-3">
-            <div className="flex items-center justify-between border-b border-border pb-2.5">
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold">
-                  OpenAPI 3.1 规范文档 ({openApiModal.env})
-                </h3>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() =>
-                    void handleOpenApi(
-                      openApiModal.env === "PROD" ? "TEST" : "PROD"
-                    )
-                  }
-                  className="h-6 px-2 text-[11px]"
-                >
-                  切换至 {openApiModal.env === "PROD" ? "TEST" : "PROD"}
-                </Button>
-              </div>
+      <Modal
+        open={Boolean(openApiModal)}
+        onClose={() => setOpenApiModal(null)}
+        maxWidthClass="max-w-2xl"
+        testId="openapi-modal"
+        closeTestId="close-openapi-modal-btn"
+        title={`OpenAPI 3.1 (${openApiModal?.env ?? "PROD"})`}
+      >
+        {openApiModal && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-end">
               <Button
                 type="button"
-                variant="ghost"
-                data-testid="close-openapi-modal-btn"
-                onClick={() => setOpenApiModal(null)}
-                className="h-7 w-7 p-0"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  void handleOpenApi(
+                    openApiModal.env === "PROD" ? "TEST" : "PROD"
+                  )
+                }
               >
-                <X className="h-4 w-4" />
+                {openApiModal.env === "PROD"
+                  ? tx("查看测试环境", "Switch to Staging")
+                  : tx("查看生产环境", "Switch to Production")}
               </Button>
             </div>
             <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono-tech text-[11px] overflow-x-auto max-h-96">
               {JSON.stringify(openApiModal.doc, null, 2)}
             </pre>
-          </Card>
-        </div>
-      ) : null}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

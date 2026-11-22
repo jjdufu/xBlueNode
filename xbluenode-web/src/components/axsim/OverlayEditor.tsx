@@ -7,6 +7,7 @@ import {
   Network,
   Plus,
   RotateCcw,
+  Search,
   ShieldAlert,
   Table2,
   Trash2,
@@ -17,7 +18,18 @@ import {
   type SandboxGraphLink,
   type SandboxGraphNode,
 } from "@/lib/api/axsim";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  IconButton,
+  Input,
+  Pagination,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
+import { useTheme } from "@/lib/theme";
 
 export interface OverlayEditorProps {
   sandboxId: string;
@@ -35,6 +47,8 @@ interface MetricDraftRow {
   value: string;
 }
 
+const PAGE_SIZE = 20;
+
 export function OverlayEditor({
   sandboxId,
   nodes,
@@ -43,10 +57,20 @@ export function OverlayEditor({
   loading = false,
   onRefreshGraph,
 }: OverlayEditorProps) {
+  const { tx, fmtNum } = useI18n();
+  const { isDark } = useTheme();
+  const { can } = usePrincipal();
+  const canSimRun = can("SIM_RUN");
+
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [searchText, setSearchText] = useState("");
+  const [linkSearchText, setLinkSearchText] = useState("");
+  const [nodePage, setNodePage] = useState(1);
+  const [linkPage, setLinkPage] = useState(1);
+
   const [showAddNode, setShowAddNode] = useState(false);
   const [showAddLink, setShowAddLink] = useState(false);
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
 
   // Add Virtual Node state
   const [newNodeType, setNewNodeType] = useState("Warehouse");
@@ -77,26 +101,8 @@ export function OverlayEditor({
   const [busy, setBusy] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // ECharts graph refs
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
-  const [isDark, setIsDark] = useState(
-    () =>
-      typeof document !== "undefined" &&
-      document.documentElement.classList.contains("dark")
-  );
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const observer = new MutationObserver(() => {
-      setIsDark(document.documentElement.classList.contains("dark"));
-    });
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class"],
-    });
-    return () => observer.disconnect();
-  }, []);
 
   useEffect(() => {
     if (nodes.length > 0 && !newLinkSrc) {
@@ -109,6 +115,11 @@ export function OverlayEditor({
     }
   }, [nodes, newLinkDst, newLinkSrc]);
 
+  useEffect(() => {
+    setNodePage(1);
+    setLinkPage(1);
+  }, [sandboxId]);
+
   const nodeTitleMap = useMemo(() => {
     const map = new Map<string, string>();
     for (const n of nodes) {
@@ -119,14 +130,66 @@ export function OverlayEditor({
 
   const filteredNodes = useMemo(() => {
     const q = searchText.trim().toLowerCase();
-    if (!q) return nodes;
-    return nodes.filter(
-      (n) =>
-        n.title.toLowerCase().includes(q) ||
-        n.node_key.toLowerCase().includes(q) ||
-        n.type_name.toLowerCase().includes(q)
-    );
+    const matched = q
+      ? nodes.filter(
+          (n) =>
+            n.title.toLowerCase().includes(q) ||
+            n.node_key.toLowerCase().includes(q) ||
+            n.type_name.toLowerCase().includes(q)
+        )
+      : nodes;
+    return [...matched].sort((a, b) => {
+      const rankA = a.is_new ? 0 : a.is_modified ? 1 : 2;
+      const rankB = b.is_new ? 0 : b.is_modified ? 1 : 2;
+      return rankA - rankB;
+    });
   }, [nodes, searchText]);
+
+  const filteredLinks = useMemo(() => {
+    const q = linkSearchText.trim().toLowerCase();
+    const matched = q
+      ? links.filter((lk) => {
+          const srcName = (nodeTitleMap.get(lk.src_node_id) ?? lk.src_node_id).toLowerCase();
+          const dstName = (nodeTitleMap.get(lk.dst_node_id) ?? lk.dst_node_id).toLowerCase();
+          return (
+            lk.link_type.toLowerCase().includes(q) ||
+            srcName.includes(q) ||
+            dstName.includes(q)
+          );
+        })
+      : links;
+    return [...matched].sort((a, b) => {
+      const rankA = a.is_new ? 0 : a.is_modified ? 1 : 2;
+      const rankB = b.is_new ? 0 : b.is_modified ? 1 : 2;
+      return rankA - rankB;
+    });
+  }, [linkSearchText, links, nodeTitleMap]);
+
+  const safeNodePage = Math.min(
+    nodePage,
+    Math.max(1, Math.ceil(filteredNodes.length / PAGE_SIZE))
+  );
+  const pagedNodes = useMemo(
+    () =>
+      filteredNodes.slice(
+        (safeNodePage - 1) * PAGE_SIZE,
+        safeNodePage * PAGE_SIZE
+      ),
+    [filteredNodes, safeNodePage]
+  );
+
+  const safeLinkPage = Math.min(
+    linkPage,
+    Math.max(1, Math.ceil(filteredLinks.length / PAGE_SIZE))
+  );
+  const pagedLinks = useMemo(
+    () =>
+      filteredLinks.slice(
+        (safeLinkPage - 1) * PAGE_SIZE,
+        safeLinkPage * PAGE_SIZE
+      ),
+    [filteredLinks, safeLinkPage]
+  );
 
   const overlayStats = useMemo(() => {
     const newNodes = nodes.filter((n) => n.is_new).length;
@@ -136,6 +199,7 @@ export function OverlayEditor({
   }, [links, nodes]);
 
   const startEditNode = (node: SandboxGraphNode) => {
+    if (!canSimRun) return;
     setEditingNode(node);
     setEditTitle(node.title);
     setEditMetrics(
@@ -150,7 +214,6 @@ export function OverlayEditor({
     setErrorMsg(null);
   };
 
-  // Initialize ECharts when in graph mode
   useEffect(() => {
     if (viewMode !== "graph") {
       if (chartRef.current) {
@@ -166,7 +229,9 @@ export function OverlayEditor({
     chartRef.current = chart;
 
     const resizeObserver = new ResizeObserver(() => {
-      chart.resize();
+      if (!chart.isDisposed()) {
+        chart.resize();
+      }
     });
     resizeObserver.observe(el);
 
@@ -179,7 +244,7 @@ export function OverlayEditor({
       ) {
         const nodeId = String((params.data as { id: unknown }).id);
         const found = nodes.find((n) => n.id === nodeId);
-        if (found) {
+        if (found && canSimRun) {
           startEditNode(found);
         }
       }
@@ -190,9 +255,8 @@ export function OverlayEditor({
       chart.dispose();
       chartRef.current = null;
     };
-  }, [viewMode, nodes]);
+  }, [canSimRun, nodes, viewMode]);
 
-  // Update ECharts options
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || viewMode !== "graph") return;
@@ -203,16 +267,17 @@ export function OverlayEditor({
     const borderColor = isDark ? "#27272a" : "#e4e4e7";
     const accentBlue = isDark ? "#3b82f6" : "#2563eb";
 
-    const chartNodes = filteredNodes.map((n, idx) => {
+    const graphSampleNodes = filteredNodes.slice(0, 80);
+    const chartNodes = graphSampleNodes.map((n, idx) => {
       const isOverlay = n.is_new || n.is_modified;
-      const angle = (2 * Math.PI * idx) / Math.max(1, filteredNodes.length);
+      const angle = (2 * Math.PI * idx) / Math.max(1, graphSampleNodes.length);
       return {
         id: n.id,
         name: n.title,
         value: n.type_name,
         x: 240 + Math.cos(angle) * 160,
         y: 160 + Math.sin(angle) * 110,
-        symbolSize: isOverlay ? 36 : 28,
+        symbolSize: isOverlay ? 34 : 26,
         itemStyle: {
           color: n.is_new
             ? accentBlue
@@ -226,7 +291,7 @@ export function OverlayEditor({
           borderType: isOverlay ? ("dashed" as const) : ("solid" as const),
         },
         label: {
-          show: true,
+          show: graphSampleNodes.length <= 45,
           position: "bottom" as const,
           color: fgColor,
           fontSize: 11,
@@ -235,9 +300,11 @@ export function OverlayEditor({
       };
     });
 
-    const visibleIds = new Set(filteredNodes.map((n) => n.id));
+    const visibleIds = new Set(graphSampleNodes.map((n) => n.id));
     const chartLinks = links
-      .filter((l) => visibleIds.has(l.src_node_id) && visibleIds.has(l.dst_node_id))
+      .filter(
+        (l) => visibleIds.has(l.src_node_id) && visibleIds.has(l.dst_node_id)
+      )
       .map((l) => {
         const isOverlay = l.is_new || l.is_modified;
         return {
@@ -251,8 +318,8 @@ export function OverlayEditor({
             curveness: 0.12,
           },
           label: {
-            show: true,
-            formatter: `${l.link_type} · ${l.weight}`,
+            show: graphSampleNodes.length <= 30,
+            formatter: `${l.link_type} · ${fmtNum(l.weight, 2)}`,
             fontSize: 10,
             color: mutedColor,
           },
@@ -273,6 +340,7 @@ export function OverlayEditor({
           layout: "force",
           roam: true,
           draggable: true,
+          labelLayout: { hideOverlap: true },
           force: {
             repulsion: 280,
             edgeLength: [90, 160],
@@ -287,12 +355,18 @@ export function OverlayEditor({
 
     chart.setOption(option, true);
     chart.resize();
-  }, [filteredNodes, isDark, links, viewMode]);
+  }, [filteredNodes, fmtNum, isDark, links, viewMode]);
 
   const handleCreateNode = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSimRun) return;
     if (!newNodeType.trim() || !newNodeKey.trim() || !newNodeTitle.trim()) {
-      setErrorMsg("请填写虚拟节点类型、标识键和标题");
+      setErrorMsg(
+        tx(
+          "请填写虚拟节点类型、标识键和名称",
+          "Node type, key, and title are required"
+        )
+      );
       return;
     }
     setBusy(true);
@@ -308,7 +382,11 @@ export function OverlayEditor({
       let properties: Record<string, unknown> = {};
       if (newNodePropsJson.trim()) {
         const parsed: unknown = JSON.parse(newNodePropsJson);
-        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          !Array.isArray(parsed)
+        ) {
           properties = parsed as Record<string, unknown>;
         }
       }
@@ -323,6 +401,7 @@ export function OverlayEditor({
       setNewNodeKey("");
       setNewNodeTitle("");
       setShowAddNode(false);
+      setNodePage(1);
       await onRefreshGraph();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -333,7 +412,7 @@ export function OverlayEditor({
 
   const handleSaveNodePatch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingNode) return;
+    if (!editingNode || !canSimRun) return;
     setBusy(true);
     setErrorMsg(null);
     try {
@@ -355,7 +434,11 @@ export function OverlayEditor({
       let properties: Record<string, unknown> | undefined;
       if (editPropsText.trim()) {
         const parsed: unknown = JSON.parse(editPropsText);
-        if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          !Array.isArray(parsed)
+        ) {
           properties = parsed as Record<string, unknown>;
         }
       }
@@ -375,6 +458,7 @@ export function OverlayEditor({
   };
 
   const handleDeleteNode = async (nodeId: string) => {
+    if (!canSimRun) return;
     setBusy(true);
     setErrorMsg(null);
     try {
@@ -390,8 +474,14 @@ export function OverlayEditor({
 
   const handleCreateLink = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSimRun) return;
     if (!newLinkSrc || !newLinkDst || !newLinkType.trim()) {
-      setErrorMsg("请选择起止节点与关系类型");
+      setErrorMsg(
+        tx(
+          "请指定源节点、目标节点与关系类型",
+          "Source node, target node, and link type are required"
+        )
+      );
       return;
     }
     const weight = Number.parseFloat(newLinkWeight);
@@ -405,6 +495,7 @@ export function OverlayEditor({
         weight: Number.isFinite(weight) ? weight : 1,
       });
       setShowAddLink(false);
+      setLinkPage(1);
       await onRefreshGraph();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -414,6 +505,7 @@ export function OverlayEditor({
   };
 
   const handleSaveLinkWeight = async (linkId: string) => {
+    if (!canSimRun) return;
     const weight = Number.parseFloat(editLinkWeight);
     if (!Number.isFinite(weight)) return;
     setBusy(true);
@@ -430,6 +522,7 @@ export function OverlayEditor({
   };
 
   const handleDeleteLink = async (linkId: string) => {
+    if (!canSimRun) return;
     setBusy(true);
     setErrorMsg(null);
     try {
@@ -443,11 +536,13 @@ export function OverlayEditor({
   };
 
   const handleResetOverlay = async () => {
+    if (!canSimRun) return;
     setBusy(true);
     setErrorMsg(null);
     try {
       await axsimApi.resetOverlay(sandboxId);
       setEditingNode(null);
+      setConfirmResetOpen(false);
       await onRefreshGraph();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -461,17 +556,22 @@ export function OverlayEditor({
       {/* CoW isolation notice & toolbar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border bg-muted/20 px-3.5 py-2.5">
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <Badge variant="xblue">COW OVERLAY · 隔离写入</Badge>
+          <Badge variant="xblue">{tx("写时复制隔离", "CoW Overlay")}</Badge>
           <span className="text-muted-foreground flex items-center gap-1">
             <ShieldAlert className="h-3.5 w-3.5 text-xblue" />
-            所有修改仅写入沙盘覆盖层，绝不修改生产主图
+            {tx(
+              "变更仅写入沙盘覆盖层，生产主图不受影响",
+              "Edits stay isolated in the sandbox overlay"
+            )}
           </span>
           {overlayHash && (
             <Badge variant="outline">hash: {overlayHash.slice(0, 8)}</Badge>
           )}
           <Badge variant="neutral">
-            +{overlayStats.newNodes} 虚拟节点 · {overlayStats.modNodes} 已修改 ·{" "}
-            {overlayStats.overlayLinks} 覆盖关系
+            {tx(
+              `+${overlayStats.newNodes} 虚拟节点 · ${overlayStats.modNodes} 已修改 · ${overlayStats.overlayLinks} 覆盖关系`,
+              `+${overlayStats.newNodes} virtual · ${overlayStats.modNodes} patched · ${overlayStats.overlayLinks} links`
+            )}
           </Badge>
         </div>
 
@@ -488,7 +588,7 @@ export function OverlayEditor({
               data-testid="overlay-view-table-btn"
             >
               <Table2 className="h-3.5 w-3.5" />
-              表格视图
+              {tx("表格视图", "Table")}
             </button>
             <button
               type="button"
@@ -501,41 +601,45 @@ export function OverlayEditor({
               data-testid="overlay-view-graph-btn"
             >
               <Network className="h-3.5 w-3.5" />
-              拓扑图视图
+              {tx("拓扑视图", "Graph")}
             </button>
           </div>
 
-          <Button
-            type="button"
-            variant="outline"
-            className="h-8 px-2.5 text-xs"
-            onClick={() => setShowAddNode((v) => !v)}
-            data-testid="overlay-add-node-toggle"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            虚拟节点
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            className="h-8 px-2.5 text-xs"
-            onClick={() => setShowAddLink((v) => !v)}
-            data-testid="overlay-add-link-toggle"
-          >
-            <Link2 className="h-3.5 w-3.5" />
-            虚拟关系
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            className="h-8 px-2.5 text-xs"
-            onClick={() => void handleResetOverlay()}
-            disabled={busy}
-            data-testid="overlay-reset-btn"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            清空覆盖层
-          </Button>
+          {canSimRun && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setShowAddNode((v) => !v)}
+                data-testid="overlay-add-node-toggle"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {tx("虚拟节点", "Add Node")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setShowAddLink((v) => !v)}
+                data-testid="overlay-add-link-toggle"
+              >
+                <Link2 className="h-3.5 w-3.5" />
+                {tx("虚拟关系", "Add Link")}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirmResetOpen(true)}
+                disabled={busy}
+                data-testid="overlay-reset-btn"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                {tx("清空覆盖层", "Reset Overlay")}
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
@@ -546,44 +650,50 @@ export function OverlayEditor({
       )}
 
       {/* Add virtual node form */}
-      {showAddNode && (
-        <Card className="p-4 border-dashed border-xblue/50 space-y-3" data-testid="overlay-add-node-form">
+      {showAddNode && canSimRun && (
+        <Card
+          className="p-4 border-dashed border-xblue/50 space-y-3"
+          data-testid="overlay-add-node-form"
+        >
           <div className="flex items-center justify-between text-xs font-medium">
-            <span>新增沙盘虚拟节点 (OVERLAY · NEW)</span>
-            <button
-              type="button"
+            <span>{tx("新增沙盘虚拟节点", "Add Virtual Node")}</span>
+            <IconButton
+              size="sm"
               onClick={() => setShowAddNode(false)}
-              className="text-muted-foreground hover:text-foreground cursor-pointer"
+              aria-label={tx("关闭", "Close")}
             >
               <X className="h-3.5 w-3.5" />
-            </button>
+            </IconButton>
           </div>
-          <form onSubmit={(e) => void handleCreateNode(e)} className="grid grid-cols-1 md:grid-cols-6 gap-2.5">
+          <form
+            onSubmit={(e) => void handleCreateNode(e)}
+            className="grid grid-cols-1 md:grid-cols-6 gap-2.5"
+          >
             <Input
               value={newNodeType}
               onChange={(e) => setNewNodeType(e.target.value)}
-              placeholder="类型 (如 Warehouse)"
+              placeholder="Warehouse"
               className="h-8 text-xs"
               data-testid="overlay-new-node-type"
             />
             <Input
               value={newNodeKey}
               onChange={(e) => setNewNodeKey(e.target.value)}
-              placeholder="标识键 (如 W-VIRTUAL-1)"
+              placeholder="W-VIRTUAL-1"
               className="h-8 text-xs font-mono-tech"
               data-testid="overlay-new-node-key"
             />
             <Input
               value={newNodeTitle}
               onChange={(e) => setNewNodeTitle(e.target.value)}
-              placeholder="显示名称 (如 应急备选仓)"
+              placeholder={tx("华东应急备选仓", "Backup Warehouse")}
               className="h-8 text-xs"
               data-testid="overlay-new-node-title"
             />
             <Input
               value={newNodeMetricKey}
               onChange={(e) => setNewNodeMetricKey(e.target.value)}
-              placeholder="初始指标名"
+              placeholder="inventory"
               className="h-8 text-xs font-mono-tech"
               data-testid="overlay-new-node-metric-key"
             />
@@ -592,15 +702,22 @@ export function OverlayEditor({
               step="any"
               value={newNodeMetricVal}
               onChange={(e) => setNewNodeMetricVal(e.target.value)}
-              placeholder="指标值"
+              placeholder="100"
               className="h-8 text-xs font-mono-tech"
               data-testid="overlay-new-node-metric-val"
             />
-            <Button type="submit" disabled={busy} className="h-8 text-xs" data-testid="overlay-new-node-submit">
-              创建虚拟节点
+            <Button
+              type="submit"
+              disabled={busy}
+              className="h-8 text-xs"
+              data-testid="overlay-new-node-submit"
+            >
+              {tx("创建节点", "Create Node")}
             </Button>
             <div className="md:col-span-6 flex items-center gap-2">
-              <span className="text-[11px] text-muted-foreground shrink-0">属性 JSON:</span>
+              <span className="text-[11px] text-muted-foreground shrink-0">
+                {tx("属性 JSON:", "Properties JSON:")}
+              </span>
               <Input
                 value={newNodePropsJson}
                 onChange={(e) => setNewNodePropsJson(e.target.value)}
@@ -612,19 +729,25 @@ export function OverlayEditor({
       )}
 
       {/* Add virtual link form */}
-      {showAddLink && (
-        <Card className="p-4 border-dashed border-xblue/50 space-y-3" data-testid="overlay-add-link-form">
+      {showAddLink && canSimRun && (
+        <Card
+          className="p-4 border-dashed border-xblue/50 space-y-3"
+          data-testid="overlay-add-link-form"
+        >
           <div className="flex items-center justify-between text-xs font-medium">
-            <span>新增沙盘虚拟关系 (OVERLAY · NEW)</span>
-            <button
-              type="button"
+            <span>{tx("新增沙盘虚拟关系", "Add Virtual Link")}</span>
+            <IconButton
+              size="sm"
               onClick={() => setShowAddLink(false)}
-              className="text-muted-foreground hover:text-foreground cursor-pointer"
+              aria-label={tx("关闭", "Close")}
             >
               <X className="h-3.5 w-3.5" />
-            </button>
+            </IconButton>
           </div>
-          <form onSubmit={(e) => void handleCreateLink(e)} className="grid grid-cols-1 md:grid-cols-5 gap-2.5">
+          <form
+            onSubmit={(e) => void handleCreateLink(e)}
+            className="grid grid-cols-1 md:grid-cols-5 gap-2.5"
+          >
             <select
               value={newLinkSrc}
               onChange={(e) => setNewLinkSrc(e.target.value)}
@@ -652,7 +775,7 @@ export function OverlayEditor({
             <Input
               value={newLinkType}
               onChange={(e) => setNewLinkType(e.target.value)}
-              placeholder="关系类型 (如 SUPPLIES)"
+              placeholder="SUPPLIES"
               className="h-8 text-xs font-mono-tech"
               data-testid="overlay-new-link-type"
             />
@@ -661,55 +784,55 @@ export function OverlayEditor({
               step="any"
               value={newLinkWeight}
               onChange={(e) => setNewLinkWeight(e.target.value)}
-              placeholder="权重 (0.8)"
+              placeholder="0.8"
               className="h-8 text-xs font-mono-tech"
               data-testid="overlay-new-link-weight"
             />
-            <Button type="submit" disabled={busy} className="h-8 text-xs" data-testid="overlay-new-link-submit">
-              创建虚拟关系
+            <Button
+              type="submit"
+              disabled={busy}
+              className="h-8 text-xs"
+              data-testid="overlay-new-link-submit"
+            >
+              {tx("创建关系", "Create Link")}
             </Button>
           </form>
         </Card>
       )}
 
-      {/* Search bar */}
-      <div className="flex items-center justify-between gap-2">
-        <Input
-          value={searchText}
-          onChange={(e) => setSearchText(e.target.value)}
-          placeholder="搜索沙盘节点标题、node_key 或类型..."
-          className="h-8 max-w-sm text-xs"
-          data-testid="overlay-search-input"
-        />
-        <span className="text-[11px] font-mono-tech text-muted-foreground">
-          {loading ? "加载沙盘视图中..." : `共 ${filteredNodes.length} 节点 / ${links.length} 关系`}
-        </span>
-      </div>
-
-      {/* Inline node patch drawer/panel */}
-      {editingNode && (
-        <Card className="p-4 border-xblue space-y-3" data-testid="overlay-node-patch-panel">
+      {/* Inline node patch panel */}
+      {editingNode && canSimRun && (
+        <Card
+          className="p-4 border-xblue space-y-3"
+          data-testid="overlay-node-patch-panel"
+        >
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-xs font-semibold">
               <Edit3 className="h-3.5 w-3.5 text-xblue" />
               <span>
-                编辑沙盘节点：[{editingNode.type_name}] {editingNode.title}
+                {tx("编辑沙盘节点：", "Edit Node: ")}[{editingNode.type_name}]{" "}
+                {editingNode.title}
               </span>
               <Badge variant="xblue">OVERLAY PATCH</Badge>
             </div>
-            <button
-              type="button"
+            <IconButton
+              size="sm"
               onClick={() => setEditingNode(null)}
-              className="text-muted-foreground hover:text-foreground cursor-pointer"
+              aria-label={tx("关闭", "Close")}
             >
               <X className="h-3.5 w-3.5" />
-            </button>
+            </IconButton>
           </div>
 
-          <form onSubmit={(e) => void handleSaveNodePatch(e)} className="space-y-3">
+          <form
+            onSubmit={(e) => void handleSaveNodePatch(e)}
+            className="space-y-3"
+          >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">节点标题</label>
+                <label className="text-[11px] text-muted-foreground">
+                  {tx("节点名称", "Node Title")}
+                </label>
                 <Input
                   value={editTitle}
                   onChange={(e) => setEditTitle(e.target.value)}
@@ -717,7 +840,9 @@ export function OverlayEditor({
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-[11px] text-muted-foreground">属性 JSON (properties)</label>
+                <label className="text-[11px] text-muted-foreground">
+                  {tx("属性 JSON", "Properties JSON")}
+                </label>
                 <Input
                   value={editPropsText}
                   onChange={(e) => setEditPropsText(e.target.value)}
@@ -727,11 +852,16 @@ export function OverlayEditor({
             </div>
 
             <div className="space-y-2">
-              <div className="text-[11px] text-muted-foreground">指标键值对 (metrics)</div>
+              <div className="text-[11px] text-muted-foreground">
+                {tx("指标数值", "Metrics")}
+              </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2">
                 {editMetrics.map((m, idx) => (
                   <div key={m.key} className="flex items-center gap-1.5">
-                    <span className="text-[11px] font-mono-tech w-24 truncate" title={m.key}>
+                    <span
+                      className="text-[11px] font-mono-tech w-24 truncate"
+                      title={m.key}
+                    >
                       {m.key}
                     </span>
                     <Input
@@ -754,7 +884,7 @@ export function OverlayEditor({
                   <Input
                     value={newMetricKey}
                     onChange={(e) => setNewMetricKey(e.target.value)}
-                    placeholder="新增指标名"
+                    placeholder={tx("指标名", "metric_key")}
                     className="h-7 text-xs font-mono-tech"
                   />
                   <Input
@@ -762,7 +892,7 @@ export function OverlayEditor({
                     step="any"
                     value={newMetricValue}
                     onChange={(e) => setNewMetricValue(e.target.value)}
-                    placeholder="数值"
+                    placeholder="0"
                     className="h-7 w-20 text-xs font-mono-tech"
                   />
                 </div>
@@ -770,11 +900,21 @@ export function OverlayEditor({
             </div>
 
             <div className="flex justify-end gap-2">
-              <Button type="button" variant="outline" className="h-8 text-xs" onClick={() => setEditingNode(null)}>
-                取消
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setEditingNode(null)}
+              >
+                {tx("取消", "Cancel")}
               </Button>
-              <Button type="submit" disabled={busy} className="h-8 text-xs" data-testid="overlay-patch-save-btn">
-                保存覆盖层修改
+              <Button
+                type="submit"
+                size="sm"
+                disabled={busy}
+                data-testid="overlay-patch-save-btn"
+              >
+                {tx("保存修改", "Save Patch")}
               </Button>
             </div>
           </form>
@@ -784,8 +924,18 @@ export function OverlayEditor({
       {viewMode === "graph" ? (
         <Card className="p-3 space-y-2">
           <div className="flex items-center justify-between text-[11px] text-muted-foreground">
-            <span>虚线边框/虚线连线表示覆盖层修改或新建元素；点击节点可直接编辑指标</span>
-            <Badge variant="outline">ECharts Force Graph</Badge>
+            <span>
+              {tx(
+                "虚线元素表示覆盖层新增或修改项",
+                "Dashed borders and edges indicate sandbox overlay edits"
+              )}
+            </span>
+            <Badge variant="outline">
+              {tx(
+                `展示前 ${Math.min(80, filteredNodes.length)} 节点`,
+                `Showing ${Math.min(80, filteredNodes.length)} nodes`
+              )}
+            </Badge>
           </div>
           <div
             ref={chartContainerRef}
@@ -796,21 +946,48 @@ export function OverlayEditor({
       ) : (
         <div className="space-y-4">
           {/* Nodes table */}
-          <Card className="p-4 space-y-2">
-            <div className="text-xs font-semibold">沙盘节点清单（Base + Overlay 合并视图）</div>
+          <Card className="p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold">
+                  {tx("沙盘节点清单", "Sandbox Nodes")}
+                </span>
+                <Badge variant="neutral">
+                  {loading
+                    ? tx("加载中…", "Loading…")
+                    : fmtNum(filteredNodes.length, 0)}
+                </Badge>
+              </div>
+              <div className="relative w-full sm:w-64">
+                <Search className="h-3.5 w-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <Input
+                  value={searchText}
+                  onChange={(e) => {
+                    setSearchText(e.target.value);
+                    setNodePage(1);
+                  }}
+                  placeholder={tx("名称 / Key / 类型", "Title / key / type")}
+                  className="h-8 pl-8 text-xs"
+                  data-testid="overlay-search-input"
+                />
+              </div>
+            </div>
+
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border text-left text-muted-foreground">
-                    <th className="py-2 pr-2">状态</th>
-                    <th className="py-2 pr-2">节点名称</th>
-                    <th className="py-2 pr-2">类型 / Key</th>
-                    <th className="py-2 pr-2">指标 (metrics)</th>
-                    <th className="py-2 text-right">操作</th>
+                    <th className="py-2 pr-2">{tx("状态", "Status")}</th>
+                    <th className="py-2 pr-2">{tx("节点名称", "Title")}</th>
+                    <th className="py-2 pr-2">{tx("类型 / Key", "Type / Key")}</th>
+                    <th className="py-2 pr-2">{tx("指标", "Metrics")}</th>
+                    {canSimRun && (
+                      <th className="py-2 text-right">{tx("操作", "Actions")}</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
-                  {filteredNodes.map((n) => {
+                  {pagedNodes.map((n) => {
                     const isOverlay = n.is_new || n.is_modified;
                     return (
                       <tr
@@ -840,64 +1017,103 @@ export function OverlayEditor({
                         <td className="py-2 pr-2 font-mono-tech">
                           {Object.entries(n.metrics ?? {}).length > 0
                             ? Object.entries(n.metrics)
-                                .map(([k, v]) => `${k}=${v}`)
+                                .map(([k, v]) => `${k}=${fmtNum(v, 4)}`)
                                 .join(" · ")
-                            : "—"}
+                            : "-"}
                         </td>
-                        <td className="py-2 text-right space-x-1">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="h-7 px-2 text-[11px]"
-                            onClick={() => startEditNode(n)}
-                            data-testid={`overlay-edit-node-${n.node_key}`}
-                          >
-                            <Edit3 className="h-3 w-3" />
-                            编辑
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            className="h-7 px-2 text-[11px] text-red-600 dark:text-red-400"
-                            onClick={() => void handleDeleteNode(n.id)}
-                            disabled={busy}
-                            data-testid={`overlay-delete-node-${n.node_key}`}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </Button>
-                        </td>
+                        {canSimRun && (
+                          <td className="py-2 text-right space-x-1 whitespace-nowrap">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-[11px]"
+                              onClick={() => startEditNode(n)}
+                              data-testid={`overlay-edit-node-${n.node_key}`}
+                            >
+                              <Edit3 className="h-3 w-3" />
+                              {tx("编辑", "Edit")}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2 text-[11px] text-red-600 dark:text-red-400"
+                              onClick={() => void handleDeleteNode(n.id)}
+                              disabled={busy}
+                              data-testid={`overlay-delete-node-${n.node_key}`}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
-                  {filteredNodes.length === 0 && (
+                  {pagedNodes.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="py-6 text-center text-muted-foreground">
-                        暂无沙盘节点
+                      <td
+                        colSpan={canSimRun ? 5 : 4}
+                        className="py-6 text-center text-muted-foreground"
+                      >
+                        {tx("暂无沙盘节点", "No sandbox nodes")}
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
+
+            <Pagination
+              page={safeNodePage}
+              pageSize={PAGE_SIZE}
+              total={filteredNodes.length}
+              onPageChange={setNodePage}
+            />
           </Card>
 
           {/* Links table */}
-          <Card className="p-4 space-y-2">
-            <div className="text-xs font-semibold">沙盘关系清单</div>
+          <Card className="p-4 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold">
+                  {tx("沙盘关系清单", "Sandbox Links")}
+                </span>
+                <Badge variant="neutral">
+                  {fmtNum(filteredLinks.length, 0)}
+                </Badge>
+              </div>
+              <div className="relative w-full sm:w-64">
+                <Search className="h-3.5 w-3.5 text-muted-foreground absolute left-2.5 top-1/2 -translate-y-1/2" />
+                <Input
+                  value={linkSearchText}
+                  onChange={(e) => {
+                    setLinkSearchText(e.target.value);
+                    setLinkPage(1);
+                  }}
+                  placeholder={tx("源节点 / 目标节点 / 类型", "Source / target / type")}
+                  className="h-8 pl-8 text-xs"
+                  data-testid="overlay-link-search-input"
+                />
+              </div>
+            </div>
+
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border text-left text-muted-foreground">
-                    <th className="py-2 pr-2">状态</th>
-                    <th className="py-2 pr-2">源节点</th>
-                    <th className="py-2 pr-2">关系类型</th>
-                    <th className="py-2 pr-2">目标节点</th>
-                    <th className="py-2 pr-2">传导权重</th>
-                    <th className="py-2 text-right">操作</th>
+                    <th className="py-2 pr-2">{tx("状态", "Status")}</th>
+                    <th className="py-2 pr-2">{tx("源节点", "Source")}</th>
+                    <th className="py-2 pr-2">{tx("关系类型", "Link Type")}</th>
+                    <th className="py-2 pr-2">{tx("目标节点", "Target")}</th>
+                    <th className="py-2 pr-2">{tx("传导权重", "Weight")}</th>
+                    {canSimRun && (
+                      <th className="py-2 text-right">{tx("操作", "Actions")}</th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
-                  {links.map((lk) => {
+                  {pagedLinks.map((lk) => {
                     const isOverlay = lk.is_new || lk.is_modified;
                     const isEditing = editingLinkId === lk.id;
                     return (
@@ -923,7 +1139,9 @@ export function OverlayEditor({
                         <td className="py-2 pr-2">
                           {nodeTitleMap.get(lk.src_node_id) ?? lk.src_node_id}
                         </td>
-                        <td className="py-2 pr-2 font-mono-tech">{lk.link_type}</td>
+                        <td className="py-2 pr-2 font-mono-tech">
+                          {lk.link_type}
+                        </td>
                         <td className="py-2 pr-2">
                           {nodeTitleMap.get(lk.dst_node_id) ?? lk.dst_node_id}
                         </td>
@@ -934,12 +1152,15 @@ export function OverlayEditor({
                                 type="number"
                                 step="any"
                                 value={editLinkWeight}
-                                onChange={(e) => setEditLinkWeight(e.target.value)}
+                                onChange={(e) =>
+                                  setEditLinkWeight(e.target.value)
+                                }
                                 className="h-7 w-20 text-xs font-mono-tech"
                               />
                               <Button
                                 type="button"
                                 variant="outline"
+                                size="sm"
                                 className="h-7 px-1.5"
                                 onClick={() => void handleSaveLinkWeight(lk.id)}
                               >
@@ -948,6 +1169,7 @@ export function OverlayEditor({
                               <Button
                                 type="button"
                                 variant="ghost"
+                                size="sm"
                                 className="h-7 px-1.5"
                                 onClick={() => setEditingLinkId(null)}
                               >
@@ -955,47 +1177,74 @@ export function OverlayEditor({
                               </Button>
                             </div>
                           ) : (
-                            lk.weight
+                            fmtNum(lk.weight, 4)
                           )}
                         </td>
-                        <td className="py-2 text-right space-x-1">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            className="h-7 px-2 text-[11px]"
-                            onClick={() => {
-                              setEditingLinkId(lk.id);
-                              setEditLinkWeight(String(lk.weight));
-                            }}
-                          >
-                            调权
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            className="h-7 px-2 text-[11px] text-red-600 dark:text-red-400"
-                            onClick={() => void handleDeleteLink(lk.id)}
-                            disabled={busy}
-                          >
-                            <Trash2 className="h-3 w-3" />
-                          </Button>
-                        </td>
+                        {canSimRun && (
+                          <td className="py-2 text-right space-x-1 whitespace-nowrap">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-[11px]"
+                              onClick={() => {
+                                setEditingLinkId(lk.id);
+                                setEditLinkWeight(String(lk.weight));
+                              }}
+                            >
+                              {tx("调权", "Weight")}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className="h-7 px-2 text-[11px] text-red-600 dark:text-red-400"
+                              onClick={() => void handleDeleteLink(lk.id)}
+                              disabled={busy}
+                            >
+                              <Trash2 className="h-3 w-3" />
+                            </Button>
+                          </td>
+                        )}
                       </tr>
                     );
                   })}
-                  {links.length === 0 && (
+                  {pagedLinks.length === 0 && (
                     <tr>
-                      <td colSpan={6} className="py-5 text-center text-muted-foreground">
-                        暂无关系连线
+                      <td
+                        colSpan={canSimRun ? 6 : 5}
+                        className="py-5 text-center text-muted-foreground"
+                      >
+                        {tx("暂无关系连线", "No sandbox links")}
                       </td>
                     </tr>
                   )}
                 </tbody>
               </table>
             </div>
+
+            <Pagination
+              page={safeLinkPage}
+              pageSize={PAGE_SIZE}
+              total={filteredLinks.length}
+              onPageChange={setLinkPage}
+            />
           </Card>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmResetOpen}
+        onClose={() => setConfirmResetOpen(false)}
+        onConfirm={() => void handleResetOverlay()}
+        loading={busy}
+        title={tx("清空沙盘覆盖层", "Reset Sandbox Overlay")}
+        description={tx(
+          "该操作将清除当前沙盘中所有新增虚拟节点、虚拟关系及指标补丁，恢复至生产基线快照。",
+          "All virtual nodes, virtual links, and metric patches in this sandbox will be discarded and restored to the baseline snapshot."
+        )}
+        confirmLabel={tx("清空", "Reset")}
+      />
     </div>
   );
 }

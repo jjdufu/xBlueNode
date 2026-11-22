@@ -10,7 +10,16 @@ import {
 } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import { axguardApi, type DepartmentRecord } from "@/lib/api/axguard";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Input,
+  Select,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import {
   buildDepartmentTree,
@@ -26,6 +35,10 @@ interface DeptTreeProps {
 const DEPT_SLUG_REGEX = /^[a-z0-9_-]{1,64}$/;
 
 export function DeptTree({ departments, onReload }: DeptTreeProps) {
+  const { tx } = useI18n();
+  const { can } = usePrincipal();
+  const canWrite = can("GUARD_ADMIN");
+
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [editingMode, setEditingMode] = useState<"create" | "edit">("create");
   const [deptId, setDeptId] = useState("");
@@ -72,12 +85,18 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
     if (!DEPT_SLUG_REGEX.test(cleanId)) {
       setFeedback({
         kind: "err",
-        text: "部门编码仅允许小写字母、数字、下划线或连字符（1～64 位）",
+        text: tx(
+          "部门编码仅允许小写字母、数字、下划线或连字符（1～64 位）",
+          "Department ID must be 1–64 lowercase letters, digits, underscores, or hyphens"
+        ),
       });
       return;
     }
     if (!cleanName) {
-      setFeedback({ kind: "err", text: "请输入部门名称" });
+      setFeedback({
+        kind: "err",
+        text: tx("部门名称不能为空", "Department name is required"),
+      });
       return;
     }
 
@@ -93,8 +112,14 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
         kind: "ok",
         text:
           editingMode === "create"
-            ? `已创建部门 ${cleanName} (${cleanId})`
-            : `已更新部门 ${cleanName} (${cleanId}) 层级与名称`,
+            ? tx(
+                `已创建部门 ${cleanName} (${cleanId})`,
+                `Created department ${cleanName} (${cleanId})`
+              )
+            : tx(
+                `已保存部门 ${cleanName} (${cleanId})`,
+                `Saved department ${cleanName} (${cleanId})`
+              ),
       });
       if (editingMode === "create") {
         setDeptId("");
@@ -104,7 +129,10 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
       if (err instanceof ApiError && err.status === 409) {
         setFeedback({
           kind: "err",
-          text: `层级冲突 [409 ${err.errorCode}]：${err.message}`,
+          text: tx(
+            `层级冲突 [409 ${err.errorCode}]：${err.message}`,
+            `Hierarchy conflict [409 ${err.errorCode}]: ${err.message}`
+          ),
         });
       } else {
         setFeedback({
@@ -122,7 +150,13 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
 
   const handleDelete = async (record: DepartmentRecord) => {
     if (record.dept_id === "default") {
-      setFeedback({ kind: "err", text: "系统根默认部门 (default) 不可删除" });
+      setFeedback({
+        kind: "err",
+        text: tx(
+          "系统默认根部门不可删除",
+          "Default root department cannot be deleted"
+        ),
+      });
       return;
     }
     setFeedback(null);
@@ -131,13 +165,19 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
       await onReload();
       setFeedback({
         kind: "ok",
-        text: `已删除部门 ${record.name} (${record.dept_id})`,
+        text: tx(
+          `已删除部门 ${record.name} (${record.dept_id})`,
+          `Deleted department ${record.name} (${record.dept_id})`
+        ),
       });
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         setFeedback({
           kind: "err",
-          text: `无法删除部门 ${record.dept_id}（409 冲突）：该部门下仍存在子部门、关联用户或归属资源（${err.message}）。`,
+          text: tx(
+            `无法删除部门 ${record.dept_id}（409 冲突）：仍存在子部门、关联用户或资源（${err.message}）`,
+            `Cannot delete ${record.dept_id} (409 conflict): active sub-departments, users, or resources exist (${err.message})`
+          ),
         });
       } else {
         setFeedback({
@@ -199,42 +239,44 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
             <Badge variant="outline">{node.record.dept_id}</Badge>
             {node.record.parent_id && (
               <span className="text-[11px] text-muted-foreground font-mono-tech">
-                上级: {node.record.parent_id}
+                {tx("上级", "Parent")}: {node.record.parent_id}
               </span>
             )}
           </div>
 
-          <div className="flex items-center gap-1 shrink-0">
-            <Button
-              variant="ghost"
-              type="button"
-              onClick={() => startCreateChild(node.record.dept_id)}
-              className="px-2 py-1 text-[11px]"
-            >
-              <Plus className="h-3 w-3 text-xblue" />
-              新增下级
-            </Button>
-            <Button
-              variant="ghost"
-              type="button"
-              onClick={() => startEdit(node.record)}
-              className="px-2 py-1 text-[11px]"
-            >
-              <Edit3 className="h-3 w-3" />
-              编辑
-            </Button>
-            {node.record.dept_id !== "default" && (
+          {canWrite && (
+            <div className="flex items-center gap-1 shrink-0">
               <Button
                 variant="ghost"
+                size="sm"
                 type="button"
-                onClick={() => void handleDelete(node.record)}
-                data-testid={`delete-dept-${node.record.dept_id}`}
-                className="px-2 py-1 text-[11px]"
+                onClick={() => startCreateChild(node.record.dept_id)}
               >
-                <Trash2 className="h-3 w-3" />
+                <Plus className="h-3 w-3 text-xblue" />
+                {tx("新增下级", "Add Child")}
               </Button>
-            )}
-          </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                type="button"
+                onClick={() => startEdit(node.record)}
+              >
+                <Edit3 className="h-3 w-3" />
+                {tx("编辑", "Edit")}
+              </Button>
+              {node.record.dept_id !== "default" && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  type="button"
+                  onClick={() => void handleDelete(node.record)}
+                  data-testid={`delete-dept-${node.record.dept_id}`}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </Button>
+              )}
+            </div>
+          )}
         </div>
 
         {hasChildren && !isCollapsed && (
@@ -269,28 +311,34 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
             <div>
               <div className="text-xs font-semibold flex items-center gap-1.5">
                 <FolderTree className="h-3.5 w-3.5 text-xblue" />
-                组织部门层级树（Cedar Entity Hierarchy）
+                {tx("组织部门树", "Department Hierarchy")}
               </div>
               <p className="text-[11px] text-muted-foreground">
-                上级部门主体在 Cedar 判定中自动继承对下级部门归属资源的部门内访问关系。
+                {tx(
+                  "上级部门自动继承下级部门资源的访问关系。",
+                  "Parent departments automatically inherit access to child department resources."
+                )}
               </p>
             </div>
-            <Button
-              variant="outline"
-              type="button"
-              onClick={() => startCreateChild(null)}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              新建顶级部门
-            </Button>
+            {canWrite && (
+              <Button
+                variant="outline"
+                size="sm"
+                type="button"
+                onClick={() => startCreateChild(null)}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {tx("新建顶级部门", "New Root Dept")}
+              </Button>
+            )}
           </div>
 
           {treeRoots.length === 0 ? (
-            <div className="py-8 text-center text-xs text-muted-foreground">
-              暂无部门数据
-            </div>
+            <EmptyState title={tx("暂无部门数据", "No departments")} />
           ) : (
-            <div className="space-y-1.5">{treeRoots.map((n) => renderNode(n))}</div>
+            <div className="space-y-1.5">
+              {treeRoots.map((n) => renderNode(n))}
+            </div>
           )}
         </Card>
 
@@ -298,21 +346,26 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
           <div className="border-b border-border pb-3">
             <div className="text-xs font-semibold">
               {editingMode === "create"
-                ? "新建部门节点"
-                : `编辑部门 / 调整上级 (${deptId})`}
+                ? tx("新建部门", "New Department")
+                : `${tx("编辑部门", "Edit Department")} (${deptId})`}
             </div>
             <div className="text-[11px] text-muted-foreground">
-              部门编码创建后作为主键引用（如 default / east / south）。
+              {tx(
+                "部门编码创建后作为主键标识。",
+                "Department ID acts as the immutable primary slug."
+              )}
             </div>
           </div>
 
           <form onSubmit={(e) => void handleSave(e)} className="space-y-3">
             <div className="space-y-1">
-              <label className="text-xs font-medium">部门编码 (dept_id) *</label>
+              <label className="text-xs font-medium">
+                {tx("部门编码", "Department ID")} *
+              </label>
               <Input
                 required
-                disabled={editingMode === "edit"}
-                placeholder="如 east / east_logistics"
+                disabled={!canWrite || editingMode === "edit"}
+                placeholder="east_logistics"
                 value={deptId}
                 onChange={(e) => setDeptId(e.target.value)}
                 data-testid="dept-id-input"
@@ -321,10 +374,13 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
             </div>
 
             <div className="space-y-1">
-              <label className="text-xs font-medium">部门名称 *</label>
+              <label className="text-xs font-medium">
+                {tx("部门名称", "Department Name")} *
+              </label>
               <Input
                 required
-                placeholder="如 华东大区"
+                disabled={!canWrite}
+                placeholder={tx("华东物流部", "East Logistics")}
                 value={deptName}
                 onChange={(e) => setDeptName(e.target.value)}
                 data-testid="dept-name-input"
@@ -333,13 +389,16 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
             </div>
 
             <div className="space-y-1">
-              <label className="text-xs font-medium">上级部门 (parent_id)</label>
-              <select
+              <label className="text-xs font-medium">
+                {tx("上级部门", "Parent Department")}
+              </label>
+              <Select
                 value={parentId}
+                disabled={!canWrite}
                 onChange={(e) => setParentId(e.target.value)}
-                className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+                className="h-8 w-full text-xs"
               >
-                <option value="">（无上级 · 顶级部门）</option>
+                <option value="">{tx("无（顶级部门）", "None (Root)")}</option>
                 {departments
                   .filter((d) => !forbiddenParentIds.has(d.dept_id))
                   .map((d) => (
@@ -347,31 +406,33 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
                       {d.name} ({d.dept_id})
                     </option>
                   ))}
-              </select>
+              </Select>
             </div>
 
-            <div className="flex justify-end gap-2 pt-2">
-              {editingMode === "edit" && (
+            {canWrite && (
+              <div className="flex justify-end gap-2 pt-2">
+                {editingMode === "edit" && (
+                  <Button
+                    variant="outline"
+                    type="button"
+                    onClick={() => startCreateChild(null)}
+                  >
+                    {tx("新建模式", "New Mode")}
+                  </Button>
+                )}
                 <Button
-                  variant="outline"
-                  type="button"
-                  onClick={() => startCreateChild(null)}
+                  type="submit"
+                  disabled={saving || !deptId.trim() || !deptName.trim()}
+                  data-testid="save-dept-btn"
                 >
-                  切换为新建
+                  {saving
+                    ? tx("保存中…", "Saving…")
+                    : editingMode === "create"
+                      ? tx("创建", "Create")
+                      : tx("保存", "Save")}
                 </Button>
-              )}
-              <Button
-                type="submit"
-                disabled={saving || !deptId.trim() || !deptName.trim()}
-                data-testid="save-dept-btn"
-              >
-                {saving
-                  ? "保存中..."
-                  : editingMode === "create"
-                    ? "创建部门"
-                    : "保存层级变更"}
-              </Button>
-            </div>
+              </div>
+            )}
           </form>
         </Card>
       </div>

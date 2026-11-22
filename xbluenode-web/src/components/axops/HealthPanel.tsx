@@ -17,6 +17,8 @@ import type {
   SystemInfoResponse,
 } from "@/lib/api/axops";
 import { Badge, Button, Card } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import {
   evaluateOverallDeepHealth,
@@ -28,8 +30,18 @@ export interface HealthPanelProps {
   report: DeepHealthReport | null;
   outboxStats: OutboxStats | null;
   systemInfo: SystemInfoResponse | null;
+  embeddingModel?: string | null;
   loading: boolean;
   onRefresh: () => Promise<void>;
+}
+
+function shortenLocalPath(rawPath: string | null | undefined): string {
+  if (!rawPath) return "—";
+  const normalized = rawPath.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalized) return "/";
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length <= 2) return normalized;
+  return `…/${parts.slice(-2).join("/")}`;
 }
 
 function HealthStatusPill({ ok }: { ok: boolean }) {
@@ -56,13 +68,24 @@ export function HealthPanel({
   report,
   outboxStats,
   systemInfo,
+  embeddingModel,
   loading,
   onRefresh,
 }: HealthPanelProps) {
+  const { tx, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const isOpsAdmin = can("OPS_ADMIN");
+
   const overall = evaluateOverallDeepHealth(report);
   const effectiveOutbox = outboxStats ?? report?.outbox ?? null;
   const jobsStats = report?.jobs ?? null;
   const outboxLagHigh = (effectiveOutbox?.lag_s ?? 0) > 60;
+
+  const embedStatusLabel = report?.embed.ok
+    ? report.embed.provider?.trim() ||
+      embeddingModel?.trim() ||
+      tx("向量服务就绪", "Embedding Ready")
+    : tx("不可用", "Unavailable");
 
   return (
     <div className="space-y-4" data-testid="axops-health-panel">
@@ -71,19 +94,22 @@ export function HealthPanel({
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-2">
             <Activity className="h-4 w-4 text-xblue" />
-            <span className="text-sm font-semibold">全链路深度健康巡检</span>
+            <span className="text-sm font-semibold">
+              {tx("全链路深度健康巡检", "Deep Subsystem Health")}
+            </span>
           </div>
           {report ? (
             <HealthStatusPill ok={overall.allOk} />
           ) : (
-            <Badge variant="outline">待加载</Badge>
+            <Badge variant="outline">{tx("待加载", "Pending")}</Badge>
           )}
           {!overall.allOk && overall.degradedComponents.length > 0 && (
             <span
               className="text-xs font-mono-tech text-red-600 dark:text-red-400"
               data-testid="axops-health-degraded-list"
             >
-              异常组件: {overall.degradedComponents.join(", ")}
+              {tx("异常组件", "Degraded")}:{" "}
+              {overall.degradedComponents.join(", ")}
             </span>
           )}
         </div>
@@ -91,19 +117,19 @@ export function HealthPanel({
         <div className="flex items-center gap-2">
           {report?.version && (
             <Badge variant="outline" className="font-mono-tech">
-              Core v{report.version}
+              v{report.version}
             </Badge>
           )}
           <Button
             type="button"
             variant="outline"
-            className="h-8 px-3 text-xs"
+            size="sm"
             data-testid="axops-health-refresh-btn"
             disabled={loading}
             onClick={() => void onRefresh()}
           >
             <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-            {loading ? "巡检中..." : "刷新健康巡检"}
+            {loading ? tx("巡检中…", "Probing…") : tx("刷新", "Refresh")}
           </Button>
         </div>
       </Card>
@@ -115,7 +141,7 @@ export function HealthPanel({
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
               <Server className="h-3.5 w-3.5 text-xblue" />
-              实例运行信息 (System Info)
+              {tx("实例运行信息", "Instance Runtime")}
             </span>
             {systemInfo && (
               <Badge variant="xblue" className="uppercase">
@@ -126,27 +152,36 @@ export function HealthPanel({
           {systemInfo ? (
             <div className="grid grid-cols-2 gap-2 pt-1 text-xs">
               <div>
-                <div className="text-[11px] text-muted-foreground">持续运行时长</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {tx("运行时长", "Uptime")}
+                </div>
                 <div className="font-mono-tech font-semibold">
                   {formatDurationSeconds(systemInfo.uptime_s)}
                 </div>
               </div>
               <div>
-                <div className="text-[11px] text-muted-foreground">预置行业模板包</div>
+                <div className="text-[11px] text-muted-foreground">
+                  {tx("内置模板包", "Template Packs")}
+                </div>
                 <div className="font-mono-tech font-semibold">
-                  {systemInfo.template_packs_count} 套
+                  {fmtNum(systemInfo.template_packs_count, 0)}
                 </div>
               </div>
               <div className="col-span-2">
-                <div className="text-[11px] text-muted-foreground">数据根目录</div>
-                <div className="font-mono-tech text-[11px] truncate">
-                  {systemInfo.data_root}
+                <div className="text-[11px] text-muted-foreground">
+                  {tx("数据卷目录", "Data Volume")}
+                </div>
+                <div
+                  className="font-mono-tech text-[11px] truncate"
+                  title={isOpsAdmin ? systemInfo.data_root : undefined}
+                >
+                  {shortenLocalPath(systemInfo.data_root)}
                 </div>
               </div>
             </div>
           ) : (
             <div className="text-xs text-muted-foreground py-2">
-              正在读取实例环境元数据...
+              {tx("加载中…", "Loading…")}
             </div>
           )}
         </Card>
@@ -156,15 +191,19 @@ export function HealthPanel({
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
               <Layers className="h-3.5 w-3.5 text-xblue" />
-              事务外发积压 (ax_outbox)
+              {tx("事务外发队列", "Transactional Outbox")}
             </span>
-            <Badge variant={outboxLagHigh ? "outline" : "neutral"}>
-              {outboxLagHigh ? "延迟告警 (>60s)" : "投递正常"}
+            <Badge variant={outboxLagHigh ? "warning" : "success"}>
+              {outboxLagHigh
+                ? tx("延迟偏高 (>60s)", "High Lag (>60s)")
+                : tx("正常", "Normal")}
             </Badge>
           </div>
           <div className="grid grid-cols-2 gap-2 pt-1 text-xs">
             <div>
-              <div className="text-[11px] text-muted-foreground">最大消费延迟</div>
+              <div className="text-[11px] text-muted-foreground">
+                {tx("最大消费延迟", "Max Consumer Lag")}
+              </div>
               <div
                 className={cn(
                   "text-lg font-mono-tech font-semibold",
@@ -176,12 +215,14 @@ export function HealthPanel({
               </div>
             </div>
             <div>
-              <div className="text-[11px] text-muted-foreground">待分发事件数</div>
+              <div className="text-[11px] text-muted-foreground">
+                {tx("待分发事件", "Pending Events")}
+              </div>
               <div
                 className="text-lg font-mono-tech font-semibold"
                 data-testid="axops-outbox-pending"
               >
-                {effectiveOutbox ? effectiveOutbox.pending : "—"}
+                {effectiveOutbox ? fmtNum(effectiveOutbox.pending, 0) : "—"}
               </div>
             </div>
           </div>
@@ -192,27 +233,33 @@ export function HealthPanel({
           <div className="flex items-center justify-between">
             <span className="text-xs font-medium text-muted-foreground flex items-center gap-1.5">
               <Cpu className="h-3.5 w-3.5 text-xblue" />
-              异步任务队列健康 (ax_jobs)
+              {tx("异步任务队列", "Async Job Queue")}
             </span>
             <Badge variant="outline">
-              24h 失败: {jobsStats?.failed_24h ?? 0}
+              {tx("24h 失败", "24h Failed")}: {jobsStats?.failed_24h ?? 0}
             </Badge>
           </div>
           <div className="grid grid-cols-3 gap-2 pt-1 text-xs">
             <div>
-              <div className="text-[11px] text-muted-foreground">排队中</div>
+              <div className="text-[11px] text-muted-foreground">
+                {tx("排队中", "Pending")}
+              </div>
               <div className="text-base font-mono-tech font-semibold">
-                {jobsStats?.pending ?? "—"}
+                {jobsStats ? fmtNum(jobsStats.pending, 0) : "—"}
               </div>
             </div>
             <div>
-              <div className="text-[11px] text-muted-foreground">运行中</div>
+              <div className="text-[11px] text-muted-foreground">
+                {tx("运行中", "Running")}
+              </div>
               <div className="text-base font-mono-tech font-semibold text-xblue">
-                {jobsStats?.running ?? "—"}
+                {jobsStats ? fmtNum(jobsStats.running, 0) : "—"}
               </div>
             </div>
             <div>
-              <div className="text-[11px] text-muted-foreground">最老等待</div>
+              <div className="text-[11px] text-muted-foreground">
+                {tx("最久等待", "Oldest Wait")}
+              </div>
               <div className="text-base font-mono-tech font-semibold">
                 {jobsStats
                   ? formatDurationSeconds(jobsStats.oldest_pending_s)
@@ -234,17 +281,19 @@ export function HealthPanel({
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold flex items-center gap-1.5">
                 <Database className="h-3.5 w-3.5 text-xblue" />
-                PostgreSQL 主备库
+                {tx("PostgreSQL 数据库", "PostgreSQL")}
               </span>
               <HealthStatusPill ok={report.database.ok} />
             </div>
             <div className="text-[11px] font-mono-tech text-muted-foreground space-y-0.5">
-              <div>探针延迟: {report.database.latency_ms} ms</div>
               <div>
-                流复制延迟:{" "}
+                {tx("探针延迟", "Latency")}: {report.database.latency_ms} ms
+              </div>
+              <div>
+                {tx("复制延迟", "Replication Lag")}:{" "}
                 {report.database.replication_lag_s !== null
                   ? `${report.database.replication_lag_s.toFixed(2)}s`
-                  : "单主 / 同步零延迟"}
+                  : tx("单主零延迟", "Primary (0s)")}
               </div>
               {report.database.error && (
                 <div className="text-red-600 dark:text-red-400 break-all">
@@ -259,13 +308,20 @@ export function HealthPanel({
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold flex items-center gap-1.5">
                 <FileCode2 className="h-3.5 w-3.5 text-xblue" />
-                多格式解析与出品引擎
+                {tx("多格式解析与出品引擎", "Parser & Export Engine")}
               </span>
               <HealthStatusPill ok={report.parser.ok} />
             </div>
             <div className="text-[11px] font-mono-tech text-muted-foreground space-y-0.5">
-              <div>版本: {report.parser.version || "—"}</div>
-              <div>职责: 双轨入湖 / 湖维护 / 多格式出品</div>
+              <div>
+                {tx("版本", "Version")}: {report.parser.version || "—"}
+              </div>
+              <div>
+                {tx(
+                  "双轨入湖 / 湖维护 / 多格式出品",
+                  "Ingest / Lake Maintenance / Exports"
+                )}
+              </div>
               {report.parser.error && (
                 <div className="text-red-600 dark:text-red-400 break-all">
                   {report.parser.error}
@@ -279,13 +335,15 @@ export function HealthPanel({
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold flex items-center gap-1.5">
                 <Layers className="h-3.5 w-3.5 text-xblue" />
-                DuckLake 分析湖目录
+                {tx("DuckLake 分析湖", "DuckLake Catalog")}
               </span>
               <HealthStatusPill ok={report.lake.ok} />
             </div>
             <div className="text-[11px] font-mono-tech text-muted-foreground space-y-0.5">
-              <div>最新快照号: #{report.lake.snapshot_id}</div>
-              <div>存储模式: lake_catalog + Parquet</div>
+              <div>
+                {tx("最新快照", "Snapshot")}: #{report.lake.snapshot_id}
+              </div>
+              <div>lake_catalog + Parquet</div>
               {report.lake.error && (
                 <div className="text-red-600 dark:text-red-400 break-all">
                   {report.lake.error}
@@ -299,15 +357,19 @@ export function HealthPanel({
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold flex items-center gap-1.5">
                 <Database className="h-3.5 w-3.5 text-xblue" />
-                数据库模式迁移
+                {tx("数据库模式迁移", "Schema Migrations")}
               </span>
               <HealthStatusPill
                 ok={report.migrations.ok && report.migrations.pending === 0}
               />
             </div>
             <div className="text-[11px] font-mono-tech text-muted-foreground space-y-0.5">
-              <div>当前生效版本: #{report.migrations.current}</div>
-              <div>待执行迁移数: {report.migrations.pending}</div>
+              <div>
+                {tx("当前版本", "Current")}: #{report.migrations.current}
+              </div>
+              <div>
+                {tx("待执行数", "Pending")}: {report.migrations.pending}
+              </div>
             </div>
           </Card>
 
@@ -316,12 +378,14 @@ export function HealthPanel({
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold flex items-center gap-1.5">
                 <Bot className="h-3.5 w-3.5 text-xblue" />
-                大模型推理通道 (LLM)
+                {tx("大模型推理通道", "LLM Gateway")}
               </span>
               <HealthStatusPill ok={report.llm.ok} />
             </div>
             <div className="text-[11px] font-mono-tech text-muted-foreground space-y-0.5">
-              <div>Provider: {report.llm.provider || "—"}</div>
+              <div>
+                {tx("提供方", "Provider")}: {report.llm.provider || "—"}
+              </div>
               {report.llm.error && (
                 <div className="text-red-600 dark:text-red-400 break-all">
                   {report.llm.error}
@@ -335,12 +399,14 @@ export function HealthPanel({
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold flex items-center gap-1.5">
                 <Cpu className="h-3.5 w-3.5 text-xblue" />
-                向量化表征引擎 (Embed)
+                {tx("向量表征服务", "Embedding Service")}
               </span>
               <HealthStatusPill ok={report.embed.ok} />
             </div>
             <div className="text-[11px] font-mono-tech text-muted-foreground space-y-0.5">
-              <div>状态: {report.embed.ok ? "BGE-M3 / Embedding 就绪" : "不可用"}</div>
+              <div>
+                {tx("提供方", "Provider")}: {embedStatusLabel}
+              </div>
               {report.embed.error && (
                 <div className="text-red-600 dark:text-red-400 break-all">
                   {report.embed.error}
@@ -357,12 +423,14 @@ export function HealthPanel({
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-semibold flex items-center gap-1.5">
                 <HardDrive className="h-3.5 w-3.5 text-xblue" />
-                共享数据卷可用空间 (AXPOINT_DATA_ROOT)
+                {tx("共享数据卷可用空间", "Data Volume Free Space")}
               </span>
               <HealthStatusPill ok={report.disk.ok} />
             </div>
             <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
-              <span className="text-muted-foreground">剩余可用容量:</span>
+              <span className="text-muted-foreground">
+                {tx("剩余容量", "Available Capacity")}
+              </span>
               <span className="text-base font-mono-tech font-semibold text-foreground">
                 {formatByteSize(report.disk.data_root_free_bytes)}
               </span>

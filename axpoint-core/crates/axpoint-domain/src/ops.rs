@@ -673,6 +673,9 @@ pub struct LlmHealth {
 pub struct EmbedHealth {
     /// Embedding gateway availability status.
     pub ok: bool,
+    /// Active embedding provider or model identifier, if known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
     /// Diagnostic error if `!ok`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,

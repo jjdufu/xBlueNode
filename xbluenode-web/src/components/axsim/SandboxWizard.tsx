@@ -23,7 +23,17 @@ import {
   type BlueNode,
   type SubgraphInfo,
 } from "@/lib/api/xblue";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  IconButton,
+  Input,
+  StatusBadge,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 
 export interface SandboxWizardProps {
   open: boolean;
@@ -35,12 +45,6 @@ export interface SandboxWizardProps {
   onOverlayChanged: () => void;
 }
 
-const DIRECTION_OPTIONS: ReadonlyArray<{ value: GraphDirection; label: string }> = [
-  { value: "BOTH", label: "双向 (BOTH)" },
-  { value: "OUT", label: "下游 (OUT)" },
-  { value: "IN", label: "上游 (IN)" },
-];
-
 export function SandboxWizard({
   open,
   activeSandbox,
@@ -50,6 +54,10 @@ export function SandboxWizard({
   onDeleted,
   onOverlayChanged,
 }: SandboxWizardProps) {
+  const { tx, fmtTime, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canSimRun = can("SIM_RUN");
+
   const [name, setName] = useState("");
   const [subgraphs, setSubgraphs] = useState<SubgraphInfo[]>([]);
   const [selectedSubgraph, setSelectedSubgraph] = useState("main");
@@ -72,9 +80,21 @@ export function SandboxWizard({
   const [estimatedNodes, setEstimatedNodes] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [actionBusy, setActionBusy] = useState<string | null>(null);
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  const [refreshReport, setRefreshReport] = useState<RefreshBaseResponse | null>(null);
+  const [confirmResetOpen, setConfirmResetOpen] = useState(false);
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [refreshReport, setRefreshReport] = useState<RefreshBaseResponse | null>(
+    null
+  );
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  const directionOptions: ReadonlyArray<{
+    value: GraphDirection;
+    label: string;
+  }> = [
+    { value: "BOTH", label: tx("双向", "Bidirectional") },
+    { value: "OUT", label: tx("下游", "Downstream") },
+    { value: "IN", label: tx("上游", "Upstream") },
+  ];
 
   // Poll when activeSandbox is in CLONING state
   useEffect(() => {
@@ -100,13 +120,12 @@ export function SandboxWizard({
     };
   }, [activeSandbox, onUpdated]);
 
-  // Reset delete confirmation & refresh report when switching sandboxes
   useEffect(() => {
-    setConfirmDelete(false);
+    setConfirmDeleteOpen(false);
+    setConfirmResetOpen(false);
     setRefreshReport(null);
   }, [activeSandbox?.id]);
 
-  // Load subgraphs and schema when wizard opens
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -130,7 +149,9 @@ export function SandboxWizard({
     let cancelled = false;
     void (async () => {
       try {
-        const schema = await xblueApi.getPublishedSchema(selectedSubgraph).catch(() => null);
+        const schema = await xblueApi
+          .getPublishedSchema(selectedSubgraph)
+          .catch(() => null);
         if (!cancelled && schema) {
           const ntNames = Array.isArray(schema.node_types)
             ? schema.node_types.map((n) => n.name)
@@ -164,7 +185,6 @@ export function SandboxWizard({
     };
   }, [open, selectedSubgraph]);
 
-  // Estimate matching node count for wizard preview
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -172,8 +192,12 @@ export function SandboxWizard({
       try {
         const res = await xblueApi
           .querySubgraph({
-            type_names: selectedTypes.length > 0 ? selectedTypes.join(",") : undefined,
-            link_types: selectedLinkTypes.length > 0 ? selectedLinkTypes.join(",") : undefined,
+            type_names:
+              selectedTypes.length > 0 ? selectedTypes.join(",") : undefined,
+            link_types:
+              selectedLinkTypes.length > 0
+                ? selectedLinkTypes.join(",")
+                : undefined,
             limit: 500,
           })
           .catch(() => null);
@@ -187,7 +211,7 @@ export function SandboxWizard({
     return () => {
       cancelled = true;
     };
-  }, [open, selectedTypes, selectedLinkTypes]);
+  }, [open, selectedLinkTypes, selectedTypes]);
 
   const searchSeedNodes = async () => {
     setSearchingSeeds(true);
@@ -218,13 +242,17 @@ export function SandboxWizard({
 
   const toggleType = (typeName: string) => {
     setSelectedTypes((prev) =>
-      prev.includes(typeName) ? prev.filter((t) => t !== typeName) : [...prev, typeName]
+      prev.includes(typeName)
+        ? prev.filter((t) => t !== typeName)
+        : [...prev, typeName]
     );
   };
 
   const toggleLinkType = (linkType: string) => {
     setSelectedLinkTypes((prev) =>
-      prev.includes(linkType) ? prev.filter((t) => t !== linkType) : [...prev, linkType]
+      prev.includes(linkType)
+        ? prev.filter((t) => t !== linkType)
+        : [...prev, linkType]
     );
   };
 
@@ -266,22 +294,28 @@ export function SandboxWizard({
   const scopePreview = useMemo(() => {
     const parts: string[] = [];
     if (selectedSeeds.length > 0) {
-      parts.push(`${selectedSeeds.length} 个种子节点`);
+      parts.push(
+        tx(`${selectedSeeds.length} 个种子节点`, `${selectedSeeds.length} seeds`)
+      );
     } else {
-      parts.push("全图范围");
+      parts.push(tx("全图范围", "Full graph"));
     }
-    parts.push(`深度 ${maxDepth || "3"} (${direction})`);
+    parts.push(
+      tx(`深度 ${maxDepth || "3"}`, `Depth ${maxDepth || "3"}`) +
+        ` (${direction})`
+    );
     if (selectedTypes.length > 0) {
-      parts.push(`类型: ${selectedTypes.join(", ")}`);
+      parts.push(`${selectedTypes.join(", ")}`);
     }
     return parts.join(" · ");
-  }, [direction, maxDepth, selectedSeeds.length, selectedTypes]);
+  }, [direction, maxDepth, selectedSeeds.length, selectedTypes, tx]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canSimRun) return;
     const trimmedName = name.trim();
     if (!trimmedName) {
-      setErrorMsg("请输入沙盘分支名称");
+      setErrorMsg(tx("请填写沙盘名称", "Sandbox name is required"));
       return;
     }
     setCreating(true);
@@ -334,7 +368,7 @@ export function SandboxWizard({
   };
 
   const handleRefreshBase = async () => {
-    if (!activeSandbox) return;
+    if (!activeSandbox || !canSimRun) return;
     setActionBusy("refresh");
     setErrorMsg(null);
     try {
@@ -352,11 +386,12 @@ export function SandboxWizard({
   };
 
   const handleResetOverlay = async () => {
-    if (!activeSandbox) return;
+    if (!activeSandbox || !canSimRun) return;
     setActionBusy("reset");
     setErrorMsg(null);
     try {
       await axsimApi.resetOverlay(activeSandbox.id);
+      setConfirmResetOpen(false);
       onOverlayChanged();
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -366,16 +401,12 @@ export function SandboxWizard({
   };
 
   const handleDeleteSandbox = async () => {
-    if (!activeSandbox) return;
-    if (!confirmDelete) {
-      setConfirmDelete(true);
-      return;
-    }
+    if (!activeSandbox || !canSimRun) return;
     setActionBusy("delete");
     setErrorMsg(null);
     try {
       await axsimApi.deleteSandbox(activeSandbox.id);
-      setConfirmDelete(false);
+      setConfirmDeleteOpen(false);
       onDeleted(activeSandbox.id);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -394,10 +425,13 @@ export function SandboxWizard({
           <div className="flex items-center gap-2 text-xblue font-medium">
             <Loader2 className="h-4 w-4 animate-spin" />
             <span>
-              沙盘「{activeSandbox.name}」正在后台克隆生产快照（CLONING），就绪后将自动刷新…
+              {tx(
+                `沙盘「${activeSandbox.name}」克隆中…`,
+                `Cloning sandbox "${activeSandbox.name}"…`
+              )}
             </span>
           </div>
-          <Badge variant="xblue">POLLING</Badge>
+          <StatusBadge status="POLL" />
         </div>
       )}
 
@@ -405,55 +439,62 @@ export function SandboxWizard({
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
           <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
             <span className="font-mono-tech">
-              基线捕获:{" "}
+              {tx("基线捕获: ", "Baseline: ")}
               {activeSandbox.base_captured_at
-                ? activeSandbox.base_captured_at.replace("T", " ").slice(0, 19)
-                : "实时快照"}
+                ? fmtTime(activeSandbox.base_captured_at)
+                : tx("实时快照", "Live snapshot")}
             </span>
             {activeSandbox.schema_version != null && (
-              <Badge variant="outline">Schema v{activeSandbox.schema_version}</Badge>
+              <Badge variant="outline">
+                Schema v{activeSandbox.schema_version}
+              </Badge>
             )}
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              className="h-7 px-2.5 text-[11px]"
-              onClick={() => void handleRefreshBase()}
-              disabled={actionBusy !== null}
-              data-testid="sandbox-refresh-base-btn"
-            >
-              <RefreshCw
-                className={`h-3 w-3 ${actionBusy === "refresh" ? "animate-spin" : ""}`}
-              />
-              刷新生产基线
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className="h-7 px-2.5 text-[11px]"
-              onClick={() => void handleResetOverlay()}
-              disabled={actionBusy !== null}
-              data-testid="sandbox-reset-overlay-btn"
-            >
-              <RotateCcw className="h-3 w-3" />
-              清空覆盖层
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              className={`h-7 px-2.5 text-[11px] ${
-                confirmDelete ? "border-red-500 text-red-600 dark:text-red-400" : ""
-              }`}
-              onClick={() => void handleDeleteSandbox()}
-              disabled={actionBusy !== null}
-              data-testid="sandbox-delete-btn"
-            >
-              <Trash2 className="h-3 w-3" />
-              {confirmDelete ? "确认删除沙盘" : "删除沙盘"}
-            </Button>
-          </div>
+          {canSimRun && (
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2.5 text-[11px]"
+                onClick={() => void handleRefreshBase()}
+                disabled={actionBusy !== null}
+                data-testid="sandbox-refresh-base-btn"
+              >
+                <RefreshCw
+                  className={`h-3 w-3 ${
+                    actionBusy === "refresh" ? "animate-spin" : ""
+                  }`}
+                />
+                {tx("刷新基线", "Sync Base")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2.5 text-[11px]"
+                onClick={() => setConfirmResetOpen(true)}
+                disabled={actionBusy !== null}
+                data-testid="sandbox-reset-overlay-btn"
+              >
+                <RotateCcw className="h-3 w-3" />
+                {tx("清空覆盖层", "Reset Overlay")}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="h-7 px-2.5 text-[11px]"
+                onClick={() => setConfirmDeleteOpen(true)}
+                disabled={actionBusy !== null}
+                data-testid="sandbox-delete-btn"
+              >
+                <Trash2 className="h-3 w-3" />
+                {tx("删除沙盘", "Delete")}
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
@@ -466,11 +507,16 @@ export function SandboxWizard({
           >
             <div className="flex items-center gap-1.5 font-medium text-amber-700 dark:text-amber-300">
               <AlertTriangle className="h-3.5 w-3.5" />
-              基线已刷新，检测到以下覆盖层条目在最新生产快照中已不存在（标记为孤立）：
+              {tx(
+                "基线已刷新，以下覆盖层条目在最新生产快照中已不存在：",
+                "Baseline synced; the following overlay items no longer exist in production:"
+              )}
             </div>
             <div className="font-mono-tech text-[11px] text-muted-foreground">
-              孤立节点: {refreshReport.orphaned_node_ids.join(", ") || "无"} · 孤立关系:{" "}
-              {refreshReport.orphaned_link_ids.join(", ") || "无"}
+              {tx("孤立节点: ", "Orphaned nodes: ")}
+              {refreshReport.orphaned_node_ids.join(", ") || tx("无", "None")} ·{" "}
+              {tx("孤立关系: ", "Orphaned links: ")}
+              {refreshReport.orphaned_link_ids.join(", ") || tx("无", "None")}
             </div>
           </div>
         )}
@@ -481,41 +527,46 @@ export function SandboxWizard({
         </div>
       )}
 
-      {open && (
-        <Card className="p-4 space-y-4 border-xblue/40" data-testid="sandbox-wizard-panel">
+      {open && canSimRun && (
+        <Card
+          className="p-4 space-y-4 border-xblue/40"
+          data-testid="sandbox-wizard-panel"
+        >
           <div className="flex items-center justify-between border-b border-border pb-2.5">
             <div className="flex items-center gap-2 text-sm font-medium">
               <GitBranch className="h-4 w-4 text-xblue" />
-              <span>新建隔离推演沙盘（范围克隆 CoW）</span>
+              <span>{tx("新建推演沙盘", "New Simulation Sandbox")}</span>
             </div>
-            <Button
-              type="button"
-              variant="ghost"
-              className="h-7 px-2"
+            <IconButton
+              size="sm"
               onClick={onClose}
-              aria-label="关闭向导"
+              aria-label={tx("关闭", "Close")}
             >
               <X className="h-3.5 w-3.5" />
-            </Button>
+            </IconButton>
           </div>
 
           <form onSubmit={(e) => void handleCreate(e)} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="md:col-span-2 space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">
-                  沙盘名称 <span className="text-red-500">*</span>
+                  {tx("沙盘名称", "Sandbox Name")}{" "}
+                  <span className="text-red-500">*</span>
                 </label>
                 <Input
                   value={name}
                   onChange={(e) => setName(e.target.value)}
-                  placeholder="例如：华东断供 3 天应急推演"
+                  placeholder={tx(
+                    "华东断供 3 天应急推演",
+                    "East China 3-day outage simulation"
+                  )}
                   data-testid="wizard-sandbox-name"
                 />
               </div>
 
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">
-                  参考子图模型 (Subgraph)
+                  {tx("参考子图", "Subgraph")}
                 </label>
                 <select
                   value={selectedSubgraph}
@@ -523,7 +574,9 @@ export function SandboxWizard({
                   className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs"
                   data-testid="wizard-subgraph-select"
                 >
-                  <option value="main">main (企业主图)</option>
+                  <option value="main">
+                    {tx("main · 企业主图", "main · Enterprise Graph")}
+                  </option>
                   {subgraphs
                     .filter((sg) => sg.slug !== "main")
                     .map((sg) => (
@@ -539,7 +592,7 @@ export function SandboxWizard({
             <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">
-                  最大扩展深度 (1–6)
+                  {tx("最大扩展深度", "Max Depth")}
                 </label>
                 <Input
                   type="number"
@@ -552,15 +605,17 @@ export function SandboxWizard({
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">
-                  拓扑遍历方向
+                  {tx("遍历方向", "Traversal Direction")}
                 </label>
                 <select
                   value={direction}
-                  onChange={(e) => setDirection(e.target.value as GraphDirection)}
+                  onChange={(e) =>
+                    setDirection(e.target.value as GraphDirection)
+                  }
                   className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs"
                   data-testid="wizard-direction"
                 >
-                  {DIRECTION_OPTIONS.map((opt) => (
+                  {directionOptions.map((opt) => (
                     <option key={opt.value} value={opt.value}>
                       {opt.label}
                     </option>
@@ -569,7 +624,7 @@ export function SandboxWizard({
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">
-                  最大节点上限 (max_nodes)
+                  {tx("最大节点上限", "Node Limit")}
                 </label>
                 <Input
                   type="number"
@@ -586,18 +641,19 @@ export function SandboxWizard({
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="text-xs font-medium text-muted-foreground">
-                  节点类型过滤 (type_names，留空克隆全类型)
+                  {tx("节点类型过滤", "Node Type Filter")}
                 </label>
                 <div className="flex items-center gap-1.5">
                   <Input
                     value={customTypeInput}
                     onChange={(e) => setCustomTypeInput(e.target.value)}
-                    placeholder="补充类型名..."
+                    placeholder="Warehouse"
                     className="h-7 w-32 text-xs"
                   />
                   <Button
                     type="button"
                     variant="outline"
+                    size="sm"
                     className="h-7 px-2 text-[11px]"
                     onClick={addCustomType}
                   >
@@ -606,26 +662,28 @@ export function SandboxWizard({
                 </div>
               </div>
               <div className="flex flex-wrap gap-1.5">
-                {Array.from(new Set([...availableTypes, ...selectedTypes])).map((t) => {
-                  const active = selectedTypes.includes(t);
-                  return (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => toggleType(t)}
-                      className={`rounded px-2 py-1 text-[11px] font-mono-tech border transition-colors cursor-pointer ${
-                        active
-                          ? "border-xblue bg-xblue-soft text-xblue font-semibold"
-                          : "border-border bg-background text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      {t}
-                    </button>
-                  );
-                })}
+                {Array.from(new Set([...availableTypes, ...selectedTypes])).map(
+                  (t) => {
+                    const active = selectedTypes.includes(t);
+                    return (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => toggleType(t)}
+                        className={`rounded px-2 py-1 text-[11px] font-mono-tech border transition-colors cursor-pointer ${
+                          active
+                            ? "border-xblue bg-xblue-soft text-xblue font-semibold"
+                            : "border-border bg-background text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {t}
+                      </button>
+                    );
+                  }
+                )}
                 {availableTypes.length === 0 && selectedTypes.length === 0 && (
                   <span className="text-[11px] text-muted-foreground">
-                    当前 Schema 无预设类型，默认全量克隆
+                    {tx("默认全量克隆", "Clones all node types by default")}
                   </span>
                 )}
               </div>
@@ -634,7 +692,7 @@ export function SandboxWizard({
             {availableLinkTypes.length > 0 && (
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-muted-foreground">
-                  关系类型过滤 (link_types)
+                  {tx("关系类型过滤", "Link Type Filter")}
                 </label>
                 <div className="flex flex-wrap gap-1.5">
                   {availableLinkTypes.map((lt) => {
@@ -661,11 +719,13 @@ export function SandboxWizard({
             {/* Seed node search */}
             <div className="space-y-2 rounded-md border border-border p-3 bg-muted/20">
               <div className="text-xs font-medium flex items-center justify-between">
-                <span>种子根节点检索 (seed_node_ids，留空从全图克隆)</span>
+                <span>{tx("种子节点检索", "Seed Nodes")}</span>
                 {estimatedNodes !== null && (
                   <Badge variant="outline">
-                    预计范围节点数: ~{estimatedNodes}
-                    {estimatedNodes >= 500 ? "+" : ""}
+                    {tx(
+                      `预计节点: ~${fmtNum(estimatedNodes, 0)}${estimatedNodes >= 500 ? "+" : ""}`,
+                      `Est. nodes: ~${fmtNum(estimatedNodes, 0)}${estimatedNodes >= 500 ? "+" : ""}`
+                    )}
                   </Badge>
                 )}
               </div>
@@ -675,7 +735,7 @@ export function SandboxWizard({
                   <Input
                     value={seedQuery}
                     onChange={(e) => setSeedQuery(e.target.value)}
-                    placeholder="按关键字搜索生产节点（如：F-1、华东仓）..."
+                    placeholder={tx("F-1 / 华东仓", "F-1 / East Warehouse")}
                     className="h-8 text-xs"
                     data-testid="wizard-seed-search"
                   />
@@ -687,7 +747,7 @@ export function SandboxWizard({
                     disabled={searchingSeeds}
                   >
                     <Search className="h-3.5 w-3.5" />
-                    检索
+                    {tx("检索", "Search")}
                   </Button>
                 </div>
 
@@ -695,7 +755,7 @@ export function SandboxWizard({
                   <Input
                     value={manualSeedId}
                     onChange={(e) => setManualSeedId(e.target.value)}
-                    placeholder="或直接输入节点 UUID"
+                    placeholder="00000000-0000-0000-0000-000000000001"
                     className="h-8 w-48 text-xs font-mono-tech"
                   />
                   <Button
@@ -704,7 +764,7 @@ export function SandboxWizard({
                     className="h-8 px-2.5 text-xs"
                     onClick={addManualSeedId}
                   >
-                    添加
+                    {tx("添加", "Add")}
                   </Button>
                 </div>
               </div>
@@ -733,7 +793,9 @@ export function SandboxWizard({
 
               {selectedSeeds.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                  <span className="text-[11px] text-muted-foreground">已选种子:</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {tx("已选种子:", "Selected:")}
+                  </span>
                   {selectedSeeds.map((seed) => (
                     <span
                       key={seed.id}
@@ -755,11 +817,12 @@ export function SandboxWizard({
 
             <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
               <div className="text-[11px] font-mono-tech text-muted-foreground">
-                范围摘要：{scopePreview}
+                {tx("范围：", "Scope: ")}
+                {scopePreview}
               </div>
               <div className="flex items-center gap-2">
                 <Button type="button" variant="outline" onClick={onClose}>
-                  取消
+                  {tx("取消", "Cancel")}
                 </Button>
                 <Button
                   type="submit"
@@ -767,13 +830,41 @@ export function SandboxWizard({
                   data-testid="wizard-create-submit"
                 >
                   <DatabaseBackup className="h-3.5 w-3.5" />
-                  {creating ? "克隆创建中..." : "创建并克隆沙盘"}
+                  {creating
+                    ? tx("创建中…", "Creating…")
+                    : tx("创建沙盘", "Create Sandbox")}
                 </Button>
               </div>
             </div>
           </form>
         </Card>
       )}
+
+      <ConfirmDialog
+        open={confirmResetOpen}
+        onClose={() => setConfirmResetOpen(false)}
+        onConfirm={() => void handleResetOverlay()}
+        loading={actionBusy === "reset"}
+        title={tx("清空沙盘覆盖层", "Reset Sandbox Overlay")}
+        description={tx(
+          "该操作将清除当前沙盘中所有虚拟节点、虚拟关系及指标补丁，恢复至基线快照。",
+          "All virtual nodes, virtual links, and metric patches in this sandbox will be discarded and restored to the baseline snapshot."
+        )}
+        confirmLabel={tx("清空", "Reset")}
+      />
+
+      <ConfirmDialog
+        open={confirmDeleteOpen}
+        onClose={() => setConfirmDeleteOpen(false)}
+        onConfirm={() => void handleDeleteSandbox()}
+        loading={actionBusy === "delete"}
+        title={tx("删除推演沙盘", "Delete Sandbox")}
+        description={tx(
+          `将永久删除沙盘「${activeSandbox?.name ?? ""}」及其关联的所有推演场景与覆盖层数据。`,
+          `Permanently deletes sandbox "${activeSandbox?.name ?? ""}" and all of its scenarios and overlay edits.`
+        )}
+        confirmLabel={tx("删除", "Delete")}
+      />
     </div>
   );
 }

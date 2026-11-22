@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
+import { useI18n } from "@/i18n";
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
 import {
   formatDisplayValue,
@@ -26,6 +27,7 @@ const VIRTUAL_ROW_HEIGHT = 32;
 const VIRTUAL_OVERSCAN = 10;
 
 export function TableWidget({ widget, data, onRowClick }: TableWidgetProps) {
+  const { tx, fmtNum } = useI18n();
   const [sortColIdx, setSortColIdx] = useState<number | null>(null);
   const [sortAsc, setSortAsc] = useState(true);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -97,7 +99,7 @@ export function TableWidget({ widget, data, onRowClick }: TableWidgetProps) {
   if (!data || data.columns.length === 0) {
     return (
       <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
-        暂无表格数据
+        {tx("暂无表格数据", "No table data")}
       </div>
     );
   }
@@ -172,7 +174,7 @@ export function TableWidget({ widget, data, onRowClick }: TableWidgetProps) {
                   colSpan={data.columns.length}
                   className="px-3 py-6 text-center text-muted-foreground"
                 >
-                  查询返回 0 行
+                  {tx("暂无行数据", "0 rows")}
                 </td>
               </tr>
             ) : (
@@ -181,7 +183,11 @@ export function TableWidget({ widget, data, onRowClick }: TableWidgetProps) {
                   <tr aria-hidden="true">
                     <td
                       colSpan={data.columns.length}
-                      style={{ height: `${topSpacerHeight}px`, padding: 0, border: 0 }}
+                      style={{
+                        height: `${topSpacerHeight}px`,
+                        padding: 0,
+                        border: 0,
+                      }}
                     />
                   </tr>
                 )}
@@ -247,7 +253,10 @@ export function TableWidget({ widget, data, onRowClick }: TableWidgetProps) {
       </div>
       {data.truncated && (
         <div className="pt-1 text-[10px] font-mono-tech text-muted-foreground text-right">
-          已截断显示前 {data.row_count} 行
+          {tx(
+            `已截断前 ${fmtNum(data.row_count, 0)} 行`,
+            `Showing first ${fmtNum(data.row_count, 0)} rows`
+          )}
         </div>
       )}
     </div>

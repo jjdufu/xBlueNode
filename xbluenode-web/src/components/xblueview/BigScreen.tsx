@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Maximize2, Minimize2, Radio } from "lucide-react";
+import { useI18n } from "@/i18n";
 import type {
   DashboardDetail,
   DrillPathItem,
@@ -48,6 +49,7 @@ export function BigScreen({
   onSelectNode,
   onActionSuccess,
 }: BigScreenProps) {
+  const { tx } = useI18n();
   const rootRef = useRef<HTMLDivElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [viewport, setViewport] = useState(() => ({
@@ -84,7 +86,9 @@ export function BigScreen({
   const toggleFullscreen = async () => {
     try {
       if (!document.fullscreenElement) {
-        await (rootRef.current ?? document.documentElement).requestFullscreen();
+        await (
+          rootRef.current ?? document.documentElement
+        ).requestFullscreen();
       } else {
         await document.exitFullscreen();
       }
@@ -117,7 +121,9 @@ export function BigScreen({
               {dashboard.name}
             </h1>
             {dashboard.description && (
-              <span className="text-xs text-zinc-400">{dashboard.description}</span>
+              <span className="text-xs text-zinc-400">
+                {dashboard.description}
+              </span>
             )}
           </div>
 
@@ -128,7 +134,7 @@ export function BigScreen({
                   sseConnected ? "text-xblue animate-pulse" : "text-zinc-500"
                 }`}
               />
-              {sseConnected ? "LIVE 实时" : "轮询"}
+              {sseConnected ? tx("实时流", "Live") : tx("轮询", "Polling")}
             </span>
             <span className="font-mono-tech text-zinc-400">
               {designW}×{designH} ({Math.round(safeScale * 100)}%)
@@ -144,7 +150,9 @@ export function BigScreen({
               ) : (
                 <Maximize2 className="h-3.5 w-3.5" />
               )}
-              {isFullscreen ? "退出全屏" : "全屏"}
+              {isFullscreen
+                ? tx("退出全屏", "Exit Fullscreen")
+                : tx("全屏", "Fullscreen")}
             </button>
             <button
               type="button"
@@ -153,7 +161,7 @@ export function BigScreen({
               data-testid="big-screen-exit-btn"
             >
               <ArrowLeft className="h-3.5 w-3.5" />
-              返回标准视图
+              {tx("退出大屏", "Exit Screen")}
             </button>
           </div>
         </header>

@@ -7,6 +7,7 @@ import {
   type LayoutItem,
 } from "react-grid-layout";
 import "react-grid-layout/css/styles.css";
+import { useI18n } from "@/i18n";
 import type {
   CanvasConfig,
   DrillPathItem,
@@ -14,7 +15,10 @@ import type {
   WidgetDataResponse,
   WidgetRecord,
 } from "@/lib/api/xblueview";
-import type { SelectedNodeContext } from "./utils";
+import {
+  extractKnownNodesFromWidgetDataMap,
+  type SelectedNodeContext,
+} from "./utils";
 import { WidgetFrame } from "./WidgetFrame";
 
 export interface DashboardGridProps {
@@ -75,9 +79,15 @@ export function DashboardGrid({
   onSelectNode,
   onActionSuccess,
 }: DashboardGridProps) {
+  const { tx } = useI18n();
   const { width: measuredWidth, containerRef } = useContainerWidth({
     initialWidth: fixedWidth ?? 1200,
   });
+
+  const knownNodes = useMemo(
+    () => extractKnownNodesFromWidgetDataMap(widgetDataMap),
+    [widgetDataMap]
+  );
 
   const visibleWidgets = useMemo(
     () =>
@@ -97,16 +107,18 @@ export function DashboardGrid({
 
   const layout = useMemo<Layout>(
     () =>
-      visibleWidgets.map((w): LayoutItem => ({
-        i: w.id,
-        x: Math.max(0, Math.min(cols - 1, w.position?.x ?? 0)),
-        y: Math.max(0, w.position?.y ?? 0),
-        w: Math.max(2, Math.min(cols, w.position?.w ?? 6)),
-        h: Math.max(2, w.position?.h ?? 4),
-        minW: 2,
-        minH: 2,
-        static: !isEditing,
-      })),
+      visibleWidgets.map(
+        (w): LayoutItem => ({
+          i: w.id,
+          x: Math.max(0, Math.min(cols - 1, w.position?.x ?? 0)),
+          y: Math.max(0, w.position?.y ?? 0),
+          w: Math.max(2, Math.min(cols, w.position?.w ?? 6)),
+          h: Math.max(2, w.position?.h ?? 4),
+          minW: 2,
+          minH: 2,
+          static: !isEditing,
+        })
+      ),
     [cols, isEditing, visibleWidgets]
   );
 
@@ -132,8 +144,8 @@ export function DashboardGrid({
         data-testid="dashboard-grid-empty"
       >
         {readOnly
-          ? "当前分享看板暂无可展示组件。"
-          : "当前驾驶舱暂无组件，请切换到「编辑布局」添加组件。"}
+          ? tx("当前看板暂无可展示组件", "No widgets available")
+          : tx("当前驾驶舱暂无组件", "No widgets configured")}
       </div>
     );
   }
@@ -174,6 +186,7 @@ export function DashboardGrid({
               drillPath={drillMap[w.id] ?? []}
               selectedNodeId={selectedNodeId}
               filterValues={filterValues}
+              knownNodes={knownNodes}
               onRefresh={onRefreshWidget}
               onEdit={onEditWidget}
               onDelete={onDeleteWidget}

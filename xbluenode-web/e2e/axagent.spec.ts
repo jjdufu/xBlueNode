@@ -948,8 +948,9 @@ test("AxAgent 6-tab workbench, SSE tool-calling stream, Query-as-App, Endpoint p
     );
 
     await page.goto("/login");
+    await page.getByTestId("pat-accordion-toggle").click();
     await page.locator("#access-token-input").fill(token);
-    await page.getByRole("button", { name: "验证并进入工作台" }).click();
+    await page.getByTestId("pat-submit-btn").click();
     await expect(page).toHaveURL(/\/$/);
 
     await page.goto("/agents");

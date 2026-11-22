@@ -2,11 +2,13 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import { useI18n } from "@/i18n";
 import {
   xblueviewApi,
   type WidgetDataResponse,
   type WidgetRecord,
 } from "@/lib/api/xblueview";
+import { useTheme } from "@/lib/theme";
 import { parseNodesGeoData, type GeoNodePoint } from "./logic";
 import {
   parseThresholds,
@@ -27,9 +29,7 @@ function isWebGlSupported(): boolean {
   if (typeof document === "undefined") return false;
   try {
     const canvas = document.createElement("canvas");
-    return Boolean(
-      canvas.getContext("webgl2") || canvas.getContext("webgl")
-    );
+    return Boolean(canvas.getContext("webgl2") || canvas.getContext("webgl"));
   } catch {
     return false;
   }
@@ -38,10 +38,14 @@ function isWebGlSupported(): boolean {
 export function MapWidget({
   widget,
   data,
-  isDark = false,
+  isDark,
   onSelectNode,
   onCrossFilter,
 }: MapWidgetProps) {
+  const { tx, fmtNum } = useI18n();
+  const { isDark: themeDark } = useTheme();
+  const effectiveDark = isDark ?? themeDark;
+
   const echartsContainerRef = useRef<HTMLDivElement | null>(null);
   const echartsRef = useRef<echarts.ECharts | null>(null);
   const maplibreContainerRef = useRef<HTMLDivElement | null>(null);
@@ -67,7 +71,6 @@ export function MapWidget({
     [data]
   );
 
-  // Load optional GEOJSON asset
   useEffect(() => {
     if (!geojsonAssetId || useMaplibre) {
       setGeoJsonReady(null);
@@ -82,7 +85,10 @@ export function MapWidget({
         const raw: unknown = await resp.json();
         if (cancelled) return;
         const mapName = `xv_geo_${geojsonAssetId}`;
-        echarts.registerMap(mapName, raw as Parameters<typeof echarts.registerMap>[1]);
+        echarts.registerMap(
+          mapName,
+          raw as Parameters<typeof echarts.registerMap>[1]
+        );
         setGeoJsonReady(mapName);
       } catch {
         if (!cancelled) setGeoJsonReady(null);
@@ -148,7 +154,7 @@ export function MapWidget({
         type: "line",
         source: "xv-fly-lines",
         paint: {
-          "line-color": isDark ? "#3b82f6" : "#2563eb",
+          "line-color": effectiveDark ? "#3b82f6" : "#2563eb",
           "line-width": 2,
           "line-opacity": 0.85,
         },
@@ -202,7 +208,7 @@ export function MapWidget({
       map.remove();
       maplibreRef.current = null;
     };
-  }, [flyLines, isDark, points, thresholds, tileUrl, useMaplibre]);
+  }, [effectiveDark, flyLines, points, thresholds, tileUrl, useMaplibre]);
 
   // ECharts Geo / Cartesian mode
   useEffect(() => {
@@ -256,11 +262,11 @@ export function MapWidget({
     const chart = echartsRef.current;
     if (!chart || chart.isDisposed() || useMaplibre) return;
 
-    const fg = isDark ? "#fafafa" : "#09090b";
-    const muted = isDark ? "#a1a1aa" : "#71717a";
-    const gridLine = isDark ? "#27272a" : "#e4e4e7";
-    const cardBg = isDark ? "#18181b" : "#ffffff";
-    const lineAccent = isDark ? "#3b82f6" : "#2563eb";
+    const fg = effectiveDark ? "#fafafa" : "#09090b";
+    const muted = effectiveDark ? "#a1a1aa" : "#71717a";
+    const gridLine = effectiveDark ? "#27272a" : "#e4e4e7";
+    const cardBg = effectiveDark ? "#18181b" : "#ffffff";
+    const lineAccent = effectiveDark ? "#3b82f6" : "#2563eb";
 
     const seriesData = points.map((pt) => ({
       name: pt.title,
@@ -296,6 +302,10 @@ export function MapWidget({
             color: fg,
             fontSize: 10,
           },
+          labelLayout: {
+            hideOverlap: true,
+            moveOverlap: "shiftY",
+          },
         },
       ];
       if (linesSeriesData.length > 0) {
@@ -326,11 +336,13 @@ export function MapWidget({
             map: geoJsonReady,
             roam: true,
             itemStyle: {
-              areaColor: isDark ? "#18181b" : "#f4f4f5",
+              areaColor: effectiveDark ? "#18181b" : "#f4f4f5",
               borderColor: gridLine,
             },
             emphasis: {
-              itemStyle: { areaColor: isDark ? "#27272a" : "#e4e4e7" },
+              itemStyle: {
+                areaColor: effectiveDark ? "#27272a" : "#e4e4e7",
+              },
             },
           },
           series: geoSeries,
@@ -348,22 +360,33 @@ export function MapWidget({
       ...points.map((p) => p.lat),
       ...flyLines.flatMap((lk) => [lk.srcLat, lk.dstLat]),
     ];
-    const minLng = lngs.length > 0 ? Math.min(...lngs) - 0.5 : 100;
-    const maxLng = lngs.length > 0 ? Math.max(...lngs) + 0.5 : 130;
-    const minLat = lats.length > 0 ? Math.min(...lats) - 0.5 : 20;
-    const maxLat = lats.length > 0 ? Math.max(...lats) + 0.5 : 45;
+    const rawMinLng = lngs.length > 0 ? Math.min(...lngs) : 100;
+    const rawMaxLng = lngs.length > 0 ? Math.max(...lngs) : 130;
+    const rawMinLat = lats.length > 0 ? Math.min(...lats) : 20;
+    const rawMaxLat = lats.length > 0 ? Math.max(...lats) : 45;
+    const lngSpan = Math.max(0.8, rawMaxLng - rawMinLng);
+    const latSpan = Math.max(0.8, rawMaxLat - rawMinLat);
+    const minLng = Number((rawMinLng - lngSpan * 0.16).toFixed(2));
+    const maxLng = Number((rawMaxLng + lngSpan * 0.26).toFixed(2));
+    const minLat = Number((rawMinLat - latSpan * 0.18).toFixed(2));
+    const maxLat = Number((rawMaxLat + latSpan * 0.18).toFixed(2));
 
     const cartesianSeries: echarts.SeriesOption[] = [
       {
         type: "effectScatter",
-        symbolSize: 14,
+        symbolSize: 13,
         data: seriesData,
         label: {
           show: seriesData.length <= 30,
           formatter: "{b}",
           position: "right",
+          distance: 5,
           color: fg,
-          fontSize: 11,
+          fontSize: 10.5,
+        },
+        labelLayout: {
+          hideOverlap: true,
+          moveOverlap: "shiftY",
         },
       },
     ];
@@ -399,44 +422,65 @@ export function MapWidget({
             if (!node) {
               return p.data?.name ? `${p.data.name}` : "";
             }
-            return `${node.title} (${node.nodeKey})<br/>经纬度: ${node.lng.toFixed(3)}, ${node.lat.toFixed(3)}${
-              node.metricValue !== null ? `<br/>指标: ${node.metricValue}` : ""
+            return `${node.title} (${node.nodeKey})<br/>${tx("坐标", "Coords")}: ${node.lng.toFixed(3)}, ${node.lat.toFixed(3)}${
+              node.metricValue !== null
+                ? `<br/>${tx("指标", "Value")}: ${fmtNum(node.metricValue, 2)}`
+                : ""
             }`;
           },
         },
-        grid: { top: 20, right: 20, bottom: 28, left: 46, containLabel: true },
+        grid: {
+          top: 28,
+          right: 36,
+          bottom: 28,
+          left: 48,
+          containLabel: true,
+        },
         xAxis: {
           type: "value",
-          name: "经度",
+          name: tx("经度", "Lng"),
+          nameLocation: "end",
+          nameGap: 5,
+          nameTextStyle: { color: muted, fontSize: 10 },
           min: minLng,
           max: maxLng,
-          axisLabel: { color: muted, fontSize: 10 },
+          splitNumber: 4,
+          axisLabel: { color: muted, fontSize: 10, hideOverlap: true },
+          axisLine: { lineStyle: { color: gridLine } },
           splitLine: { lineStyle: { color: gridLine, type: "dashed" } },
         },
         yAxis: {
           type: "value",
-          name: "纬度",
+          name: tx("纬度", "Lat"),
+          nameLocation: "end",
+          nameGap: 8,
+          nameTextStyle: { color: muted, fontSize: 10, align: "left" },
           min: minLat,
           max: maxLat,
-          axisLabel: { color: muted, fontSize: 10 },
+          splitNumber: 4,
+          axisLabel: { color: muted, fontSize: 10, hideOverlap: true },
+          axisLine: { lineStyle: { color: gridLine } },
           splitLine: { lineStyle: { color: gridLine, type: "dashed" } },
         },
         series: cartesianSeries,
       },
       true
     );
-  }, [flyLines, geoJsonReady, isDark, points, thresholds, useMaplibre]);
+  }, [effectiveDark, flyLines, fmtNum, geoJsonReady, points, thresholds, tx, useMaplibre]);
 
   return (
     <div className="h-full relative" data-testid={`widget-map-${widget.id}`}>
       {useMaplibre ? (
-        <div ref={maplibreContainerRef} className="h-full w-full min-h-[160px] rounded overflow-hidden" />
+        <div
+          ref={maplibreContainerRef}
+          className="h-full w-full min-h-[160px] rounded overflow-hidden"
+        />
       ) : (
         <div ref={echartsContainerRef} className="h-full w-full min-h-[160px]" />
       )}
       {points.length === 0 && flyLines.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs text-muted-foreground">
-          暂无带经纬度坐标的业务节点
+          {tx("暂无地理坐标节点", "No geo-located nodes")}
         </div>
       )}
     </div>

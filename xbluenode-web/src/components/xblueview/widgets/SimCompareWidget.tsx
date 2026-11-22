@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef } from "react";
 import * as echarts from "echarts";
+import { useI18n } from "@/i18n";
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
-import { buildColumnIndexMap, formatDisplayValue, getCell, toNumericValue } from "../utils";
+import { useTheme } from "@/lib/theme";
+import { chartSpec } from "../logic";
+import {
+  buildColumnIndexMap,
+  formatDisplayValue,
+  getCell,
+  toNumericValue,
+} from "../utils";
 
 export interface SimCompareWidgetProps {
   widget: WidgetRecord;
@@ -12,19 +20,31 @@ export interface SimCompareWidgetProps {
 export function SimCompareWidget({
   widget,
   data,
-  isDark = false,
+  isDark,
 }: SimCompareWidgetProps) {
+  const { tx } = useI18n();
+  const { isDark: themeDark } = useTheme();
+  const effectiveDark = isDark ?? themeDark;
+
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
 
   const parsed = useMemo(() => {
     if (!data || data.rows.length === 0) {
-      return { metrics: [] as string[], scenarios: [] as string[], values: new Map<string, number>() };
+      return {
+        metrics: [] as string[],
+        scenarios: [] as string[],
+        values: new Map<string, number>(),
+      };
     }
     const colMap = buildColumnIndexMap(data);
-    const hasScenarioName = colMap.has("scenario_name") || colMap.has("scenario");
+    const hasScenarioName =
+      colMap.has("scenario_name") || colMap.has("scenario");
     const hasMetric = colMap.has("metric");
-    const hasAfter = colMap.has("after_val") || colMap.has("after_sum") || colMap.has("value");
+    const hasAfter =
+      colMap.has("after_val") ||
+      colMap.has("after_sum") ||
+      colMap.has("value");
 
     if (hasScenarioName && hasMetric && hasAfter) {
       const metrics: string[] = [];
@@ -37,7 +57,7 @@ export function SimCompareWidget({
         const sName = String(
           getCell(r, colMap, "scenario_name", 0) ??
             getCell(r, colMap, "scenario", 0) ??
-            "方案"
+            tx("方案", "Scenario")
         );
         const mName = String(getCell(r, colMap, "metric", 1) ?? "metric");
         const val =
@@ -60,7 +80,6 @@ export function SimCompareWidget({
       return { metrics, scenarios, values };
     }
 
-    // Generic tabular comparison: col 0 = metric/label, cols 1..n = scenarios
     const labelCol = data.columns[0]?.name ?? "metric";
     const scenarioCols = data.columns.slice(1).map((c) => c.name);
     const metrics: string[] = [];
@@ -75,7 +94,7 @@ export function SimCompareWidget({
       });
     }
     return { metrics, scenarios: scenarioCols, values };
-  }, [data]);
+  }, [data, tx]);
 
   useEffect(() => {
     const el = chartContainerRef.current;
@@ -108,40 +127,58 @@ export function SimCompareWidget({
     const chart = chartRef.current;
     if (!chart || chart.isDisposed() || parsed.metrics.length === 0) return;
 
-    const muted = isDark ? "#a1a1aa" : "#71717a";
-    const gridLine = isDark ? "#27272a" : "#e4e4e7";
-    const palette = isDark
-      ? ["#3b82f6", "#fafafa", "#a1a1aa", "#60a5fa"]
-      : ["#2563eb", "#09090b", "#71717a", "#60a5fa"];
+    const tokens = effectiveDark ? chartSpec.tokens.dark : chartSpec.tokens.light;
+    const palette = effectiveDark
+      ? chartSpec.palette.dark
+      : chartSpec.palette.light;
 
     chart.setOption(
       {
         animation: false,
-        color: palette,
-        tooltip: { trigger: "axis" },
-        legend: { top: 0, textStyle: { color: muted, fontSize: 10 } },
-        grid: { top: 26, right: 12, bottom: 22, left: 40, containLabel: true },
+        color: [...palette],
+        tooltip: {
+          trigger: "axis",
+          backgroundColor: tokens.tooltipBg,
+          borderColor: tokens.tooltipBorder,
+          textStyle: { color: tokens.text, fontSize: 11 },
+        },
+        legend: {
+          top: 2,
+          type: "scroll",
+          textStyle: { color: tokens.subtext, fontSize: 10 },
+        },
+        grid: {
+          top: 38,
+          right: 16,
+          bottom: 22,
+          left: 44,
+          containLabel: true,
+        },
         xAxis: {
           type: "category",
           data: parsed.metrics,
-          axisLabel: { color: muted, fontSize: 10 },
-          axisLine: { lineStyle: { color: gridLine } },
+          axisLabel: { color: tokens.subtext, fontSize: 10, hideOverlap: true },
+          axisLine: { lineStyle: { color: tokens.axisLine } },
         },
         yAxis: {
           type: "value",
-          axisLabel: { color: muted, fontSize: 10 },
-          splitLine: { lineStyle: { color: gridLine, type: "dashed" } },
+          splitNumber: 3,
+          axisLabel: { color: tokens.subtext, fontSize: 10, hideOverlap: true },
+          splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
         },
-        series: parsed.scenarios.map((sc) => ({
+        series: parsed.scenarios.map((sc, sIdx) => ({
           name: sc,
           type: "bar",
           barMaxWidth: 26,
-          data: parsed.metrics.map((m) => parsed.values.get(`${sc}::${m}`) ?? 0),
+          itemStyle: { color: palette[sIdx % palette.length] },
+          data: parsed.metrics.map(
+            (m) => parsed.values.get(`${sc}::${m}`) ?? 0
+          ),
         })),
       },
       true
     );
-  }, [isDark, parsed]);
+  }, [effectiveDark, parsed]);
 
   if (!data || data.rows.length === 0) {
     return (
@@ -149,7 +186,7 @@ export function SimCompareWidget({
         className="h-full flex items-center justify-center text-xs text-muted-foreground"
         data-testid={`widget-sim-${widget.id}`}
       >
-        暂无沙盘对比数据
+        {tx("暂无沙盘对比数据", "No comparison data")}
       </div>
     );
   }

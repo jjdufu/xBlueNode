@@ -2,16 +2,22 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   BookOpenCheck,
+  ChevronDown,
+  ChevronUp,
   Code2,
+  Database,
   FilePlus2,
   GitCompare,
   History,
   RefreshCw,
   Save,
+  ShieldAlert,
   Sparkles,
   Trash2,
   UploadCloud,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { ApiError } from "@/lib/api/client";
 import { axhubApi, type Dataset } from "@/lib/api/axhub";
 import { api, type TopologyNode } from "@/lib/api/rag";
@@ -33,7 +39,13 @@ import {
   type TypeMergeResolution,
   type ValidationIssue,
 } from "@/lib/api/xblue";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Input,
+} from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { AiDraftWizard } from "@/components/xbluestudio/AiDraftWizard";
 import { DomainApiDrawer } from "@/components/xbluestudio/DomainApiDrawer";
@@ -50,6 +62,7 @@ import { SubgraphMergeDialog } from "@/components/xbluestudio/SubgraphMergeDialo
 import { VersionPanel } from "@/components/xbluestudio/VersionPanel";
 
 type InspectorTab = "basic" | "properties" | "rules" | "edge" | "mappings";
+type DockTab = "issues" | "nodes";
 
 const EMPTY_DOC: SchemaDoc = {
   node_types: [],
@@ -58,6 +71,11 @@ const EMPTY_DOC: SchemaDoc = {
 };
 
 export function XBlueStudioPage() {
+  const { tx, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("STUDIO_EDIT");
+  const canPublish = can("STUDIO_PUBLISH");
+
   const [subgraphs, setSubgraphs] = useState<SubgraphInfo[]>([]);
   const [activeSubgraph, setActiveSubgraph] = useState<string>("main");
   const [mainDoc, setMainDoc] = useState<SchemaDoc>(EMPTY_DOC);
@@ -92,6 +110,8 @@ export function XBlueStudioPage() {
     number | null
   >(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("basic");
+  const [dockTab, setDockTab] = useState<DockTab>("issues");
+  const [dockCollapsed, setDockCollapsed] = useState<boolean>(false);
 
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [conflictBanner, setConflictBanner] = useState<string | null>(null);
@@ -200,7 +220,12 @@ export function XBlueStudioPage() {
       const [nodeSnap, dsResp, topoResp] = await Promise.all([
         xblueApi
           .getNodes()
-          .catch(() => ({ nodes: [] as BlueNode[], links: [], items: [] as BlueNode[], next_cursor: null })),
+          .catch(() => ({
+            nodes: [] as BlueNode[],
+            links: [],
+            items: [] as BlueNode[],
+            next_cursor: null,
+          })),
         axhubApi
           .listDatasets({ limit: 100 })
           .catch(() => ({ items: [] as Dataset[], next_cursor: null })),
@@ -286,12 +311,12 @@ export function XBlueStudioPage() {
 
   const selectedNode =
     selectedNodeIndex >= 0
-      ? workingDoc.node_types[selectedNodeIndex] ?? null
+      ? (workingDoc.node_types[selectedNodeIndex] ?? null)
       : null;
 
   const selectedEdge =
     selectedEdgeIndex !== null
-      ? workingDoc.edge_types[selectedEdgeIndex] ?? null
+      ? (workingDoc.edge_types[selectedEdgeIndex] ?? null)
       : null;
 
   const handleSelectSubgraph = async (slug: string) => {
@@ -304,23 +329,35 @@ export function XBlueStudioPage() {
   const handleCreateSubgraph = async (req: CreateSubgraphRequest) => {
     const created = await xblueApi.createSubgraph(req);
     setActiveSubgraph(created.slug);
-    setStatusBanner(`已创建部门隔离建模子图 ${created.display_name} (${created.slug})`);
+    setStatusBanner(
+      tx(
+        `已创建部门子图 ${created.display_name} (${created.slug})`,
+        `Created subgraph ${created.display_name} (${created.slug})`
+      )
+    );
     await loadSubgraphWorkspace(created.slug);
   };
 
   const handleDeleteSubgraph = async (slug: string) => {
-    if (slug === "main") return;
+    if (slug === "main" || !canEdit) return;
     try {
       await xblueApi.deleteSubgraph(slug);
       setActiveSubgraph("main");
-      setStatusBanner(`已删除部门子图 ${slug}`);
+      setStatusBanner(
+        tx(`已删除子图 ${slug}`, `Deleted subgraph ${slug}`)
+      );
       await loadSubgraphWorkspace("main");
     } catch (err) {
-      setStatusBanner(err instanceof Error ? err.message : "删除子图失败");
+      setStatusBanner(
+        err instanceof Error
+          ? err.message
+          : tx("删除子图失败", "Failed to delete subgraph")
+      );
     }
   };
 
   const handleCreateNodeType = (name: string, displayName: string) => {
+    if (!canEdit) return;
     const idx = workingDoc.node_types.length;
     const newSpec: NodeTypeSpec = {
       name,
@@ -333,8 +370,8 @@ export function XBlueStudioPage() {
       agg_rules: [],
       derived_rules: [],
       sync_to_knowledge: false,
-      pos_x: 120 + (idx % 3) * 280,
-      pos_y: 120 + Math.floor(idx / 3) * 180,
+      pos_x: 100 + (idx % 3) * 340,
+      pos_y: 120 + Math.floor(idx / 3) * 190,
     };
     mutateDoc((prev) => ({
       ...prev,
@@ -346,6 +383,7 @@ export function XBlueStudioPage() {
   };
 
   const handleCreateEdgeType = (edge: EdgeTypeSpec) => {
+    if (!canEdit) return;
     const nextIdx = workingDoc.edge_types.length;
     mutateDoc((prev) => ({
       ...prev,
@@ -357,7 +395,7 @@ export function XBlueStudioPage() {
   };
 
   const handleUpdateSelectedNode = (updated: NodeTypeSpec) => {
-    if (selectedNodeIndex < 0) return;
+    if (!canEdit || selectedNodeIndex < 0) return;
     const oldName = workingDoc.node_types[selectedNodeIndex]?.name;
     mutateDoc((prev) => ({
       ...prev,
@@ -379,7 +417,7 @@ export function XBlueStudioPage() {
   };
 
   const handleDeleteSelectedNode = () => {
-    if (!selectedNode) return;
+    if (!canEdit || !selectedNode) return;
     const targetName = selectedNode.name;
     mutateDoc((prev) => ({
       ...prev,
@@ -393,6 +431,7 @@ export function XBlueStudioPage() {
   };
 
   const handleSaveDraft = async () => {
+    if (!canEdit) return;
     setBusyOp("save-draft");
     setStatusBanner(null);
     try {
@@ -405,7 +444,9 @@ export function XBlueStudioPage() {
       } else {
         saved = await xblueApi.createDraft(
           {
-            title: draftTitle || `${activeSubgraph} 草案`,
+            title:
+              draftTitle ||
+              tx(`${activeSubgraph} 草案`, `${activeSubgraph} Draft`),
             schema_doc: workingDoc,
             base_version: baseVersion,
           },
@@ -419,9 +460,18 @@ export function XBlueStudioPage() {
         .listDrafts(activeSubgraph)
         .catch(() => [saved]);
       setDrafts(latestDrafts.filter((d) => d.status === "DRAFT"));
-      setStatusBanner(`草案「${saved.title}」已保存 (基于版本 v${saved.base_version})`);
+      setStatusBanner(
+        tx(
+          `草案「${saved.title}」已保存 (基线 v${saved.base_version})`,
+          `Draft "${saved.title}" saved (base v${saved.base_version})`
+        )
+      );
     } catch (err) {
-      setStatusBanner(err instanceof Error ? err.message : "保存草案失败");
+      setStatusBanner(
+        err instanceof Error
+          ? err.message
+          : tx("保存草案失败", "Failed to save draft")
+      );
     } finally {
       setBusyOp(null);
     }
@@ -440,24 +490,39 @@ export function XBlueStudioPage() {
   };
 
   const handleDiscardActiveDraft = async () => {
-    if (!activeDraft?.id) return;
+    if (!canEdit || !activeDraft?.id) return;
     setBusyOp("discard-draft");
     try {
       await xblueApi.discardDraft(activeDraft.id);
-      setStatusBanner(`已丢弃草案「${activeDraft.title}」`);
+      setStatusBanner(
+        tx(
+          `已丢弃草案「${activeDraft.title}」`,
+          `Discarded draft "${activeDraft.title}"`
+        )
+      );
       await loadSubgraphWorkspace(activeSubgraph);
     } catch (err) {
-      setStatusBanner(err instanceof Error ? err.message : "丢弃草案失败");
+      setStatusBanner(
+        err instanceof Error
+          ? err.message
+          : tx("丢弃草案失败", "Failed to discard draft")
+      );
     } finally {
       setBusyOp(null);
     }
   };
 
   const executePublish = async (forceOverride?: boolean) => {
+    if (!canPublish) return;
     const errorCount = issues.filter((i) => i.severity === "ERROR").length;
     if (errorCount > 0) {
+      setDockCollapsed(false);
+      setDockTab("issues");
       setStatusBanner(
-        `当前模型存在 ${errorCount} 个 ERROR 级校验问题，请修复后再发布`
+        tx(
+          `存在 ${errorCount} 个阻断校验错误，修复后方可发布`,
+          `${errorCount} blocking validation errors must be resolved before publishing`
+        )
       );
       return;
     }
@@ -473,7 +538,9 @@ export function XBlueStudioPage() {
       if (!targetDraft?.id) {
         targetDraft = await xblueApi.createDraft(
           {
-            title: draftTitle || `${activeSubgraph} 发布草案`,
+            title:
+              draftTitle ||
+              tx(`${activeSubgraph} 发布草案`, `${activeSubgraph} Release`),
             schema_doc: workingDoc,
             base_version: baseVersion,
           },
@@ -489,12 +556,16 @@ export function XBlueStudioPage() {
       if (targetDraft.id) {
         const pubRes = await xblueApi.publishDraft(targetDraft.id, {
           change_summary:
-            changeSummary.trim() || `发布 ${activeSubgraph} 模型更新`,
+            changeSummary.trim() ||
+            tx(`发布 ${activeSubgraph} 模型更新`, `Publish ${activeSubgraph}`),
           force: useForce,
           cascade: useForce && cascadeDelete,
         });
         setStatusBanner(
-          `子图 ${pubRes.subgraph_slug} 已成功发布新版本 v${pubRes.version}`
+          tx(
+            `子图 ${pubRes.subgraph_slug} 已发布版本 v${pubRes.version}`,
+            `Published ${pubRes.subgraph_slug} v${pubRes.version}`
+          )
         );
       } else {
         const directRes = await xblueApi.saveSchemaDirect(
@@ -502,14 +573,18 @@ export function XBlueStudioPage() {
             ...workingDoc,
             base_version: baseVersion,
             change_summary:
-              changeSummary.trim() || `发布 ${activeSubgraph} 模型更新`,
+              changeSummary.trim() ||
+              tx(`发布 ${activeSubgraph} 模型更新`, `Publish ${activeSubgraph}`),
             force: useForce,
             cascade: useForce && cascadeDelete,
           },
           activeSubgraph
         );
         setStatusBanner(
-          `子图 ${directRes.subgraph_slug} 已发布版本 v${directRes.version}`
+          tx(
+            `子图 ${directRes.subgraph_slug} 已发布版本 v${directRes.version}`,
+            `Published ${directRes.subgraph_slug} v${directRes.version}`
+          )
         );
       }
 
@@ -522,7 +597,10 @@ export function XBlueStudioPage() {
         if (err.status === 409 && err.errorCode === "VERSION_CONFLICT") {
           setConflictBanner(
             err.message ||
-              "并发版本冲突 (VERSION_CONFLICT)：当前子图已有更新的已发布版本，请查看差异或基于最新版本重新加载。"
+              tx(
+                "并发版本冲突：当前子图已有新发布版本",
+                "Version conflict: a newer version was published concurrently"
+              )
           );
           return;
         }
@@ -532,12 +610,19 @@ export function XBlueStudioPage() {
         ) {
           setBreakingBanner(
             err.message ||
-              "检测到破坏性模型变更 (SCHEMA_BREAKING_CHANGE)：删除已有数据的节点/关系类型或修改不兼容字段类型需勾选强制发布 (force=true)。"
+              tx(
+                "检测到破坏性模型变更：需确认强制发布",
+                "Breaking schema change detected: force publish confirmation required"
+              )
           );
           return;
         }
       }
-      setStatusBanner(err instanceof Error ? err.message : "发布模型版本失败");
+      setStatusBanner(
+        err instanceof Error
+          ? err.message
+          : tx("发布失败", "Failed to publish schema")
+      );
     } finally {
       setBusyOp(null);
     }
@@ -552,7 +637,12 @@ export function XBlueStudioPage() {
     setWorkingDoc(restored.schema_doc);
     setIssues(restored.issues);
     setIsDirty(false);
-    setStatusBanner(`已从历史版本 v${v} 恢复为待审阅草案「${restored.title}」`);
+    setStatusBanner(
+      tx(
+        `已从 v${v} 恢复草案「${restored.title}」`,
+        `Restored draft "${restored.title}" from v${v}`
+      )
+    );
   };
 
   const handleGenerateAiDraft = async (req: AiDraftRequest) => {
@@ -570,7 +660,10 @@ export function XBlueStudioPage() {
       .catch(() => [generated]);
     setDrafts(latestDrafts.filter((d) => d.status === "DRAFT"));
     setStatusBanner(
-      `AI 草案「${generated.title}」已生成并载入画布，请审阅节点、关系与校验诊断后发布`
+      tx(
+        `AI 草案「${generated.title}」已载入画布`,
+        `Loaded AI draft "${generated.title}"`
+      )
     );
   };
 
@@ -583,7 +676,11 @@ export function XBlueStudioPage() {
       const prev = await xblueApi.previewSubgraphMerge(activeSubgraph);
       setMergePreview(prev);
     } catch (err) {
-      setMergeError(err instanceof Error ? err.message : "加载合并预演失败");
+      setMergeError(
+        err instanceof Error
+          ? err.message
+          : tx("合并预演加载失败", "Failed to load merge preview")
+      );
     } finally {
       setMergeLoading(false);
     }
@@ -598,7 +695,11 @@ export function XBlueStudioPage() {
       });
       setMergePreview(prev);
     } catch (err) {
-      setMergeError(err instanceof Error ? err.message : "刷新合并预演失败");
+      setMergeError(
+        err instanceof Error
+          ? err.message
+          : tx("刷新预演失败", "Failed to refresh preview")
+      );
     } finally {
       setMergeLoading(false);
     }
@@ -613,10 +714,17 @@ export function XBlueStudioPage() {
       setActiveSubgraph("main");
       await loadSubgraphWorkspace("main");
       setStatusBanner(
-        `部门子图 ${activeSubgraph} 已成功对齐合并入企业主图 main (最新主图版本 v${res.version})`
+        tx(
+          `子图 ${activeSubgraph} 已合并发布至企业主图 main (v${res.version})`,
+          `Merged ${activeSubgraph} into main (v${res.version})`
+        )
       );
     } catch (err) {
-      setMergeError(err instanceof Error ? err.message : "执行子图合并失败");
+      setMergeError(
+        err instanceof Error
+          ? err.message
+          : tx("合并失败", "Failed to merge subgraph")
+      );
     } finally {
       setMerging(false);
     }
@@ -666,94 +774,118 @@ export function XBlueStudioPage() {
   const activeSubgraphInfo = subgraphs.find((s) => s.slug === activeSubgraph);
 
   return (
-    <div className="space-y-4">
-      {/* Page Header — h1 strictly preserves smoke.spec.ts assertion */}
+    <div className="space-y-3.5">
+      {/* Page Header — h1 preserves smoke.spec.ts zh-CN assertion */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
-        <div>
+        <div className="flex flex-wrap items-center gap-2">
           <h1 className="text-lg font-semibold tracking-tight">
-            xBlueStudio · 节点与关系建模
+            {tx(
+              "xBlueStudio · 节点与关系建模",
+              "xBlueStudio · Ontology Studio"
+            )}
           </h1>
-          <p className="text-xs text-muted-foreground mt-0.5">
-            企业多子图隔离建模、AI 草案推导、动态聚合/派生指标与领域 GraphQL 自动发布工作台
-          </p>
+          <Badge variant="outline">
+            {workingDoc.node_types.length} {tx("类型", "Types")} ·{" "}
+            {workingDoc.edge_types.length} {tx("关系", "Relations")}
+          </Badge>
         </div>
 
         <div className="flex flex-wrap items-center gap-1.5">
-          <Button
-            variant="outline"
-            className="h-8 px-2.5 text-xs"
-            data-testid="open-ai-wizard-btn"
-            onClick={() => setAiWizardOpen(true)}
-          >
-            <Sparkles className="h-3.5 w-3.5 text-xblue" />
-            AI 草案向导
-          </Button>
+          {canEdit && (
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 px-2.5"
+                data-testid="open-ai-wizard-btn"
+                onClick={() => setAiWizardOpen(true)}
+              >
+                <Sparkles className="h-3.5 w-3.5 text-xblue" />
+                {tx("AI 草案", "AI Draft")}
+              </Button>
+
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-8 px-2.5"
+                data-testid="knowledge-candidates-btn"
+                onClick={() => setKnowledgeCandidatesOpen(true)}
+              >
+                <BookOpenCheck className="h-3.5 w-3.5 text-xblue" />
+                {tx("知识建点", "KG Candidates")}
+              </Button>
+            </>
+          )}
 
           <Button
             variant="outline"
-            className="h-8 px-2.5 text-xs"
-            data-testid="knowledge-candidates-btn"
-            onClick={() => setKnowledgeCandidatesOpen(true)}
-          >
-            <BookOpenCheck className="h-3.5 w-3.5 text-xblue" />
-            知识候选建点
-          </Button>
-
-          <Button
-            variant="outline"
-            className="h-8 px-2.5 text-xs"
+            size="sm"
+            className="h-8 px-2.5"
             data-testid="open-version-panel-btn"
             onClick={() => setVersionPanelOpen(true)}
           >
             <History className="h-3.5 w-3.5" />
-            版本历史
+            {tx("版本历史", "Versions")}
           </Button>
 
           <Button
             variant="outline"
-            className="h-8 px-2.5 text-xs"
+            size="sm"
+            className="h-8 px-2.5"
             data-testid="open-domain-drawer-btn"
             onClick={() => setDomainDrawerOpen(true)}
           >
             <Code2 className="h-3.5 w-3.5 text-xblue" />
-            领域接口
+            {tx("领域接口", "Domain API")}
           </Button>
 
-          <Button
-            variant="outline"
-            className="h-8 px-2.5 text-xs"
-            data-testid="save-draft-btn"
-            disabled={busyOp !== null}
-            onClick={() => void handleSaveDraft()}
-          >
-            <Save className="h-3.5 w-3.5" />
-            {busyOp === "save-draft" ? "保存中..." : "保存草案"}
-          </Button>
+          {canEdit && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 px-2.5"
+              data-testid="save-draft-btn"
+              disabled={busyOp !== null}
+              onClick={() => void handleSaveDraft()}
+            >
+              <Save className="h-3.5 w-3.5" />
+              {busyOp === "save-draft"
+                ? tx("保存中…", "Saving…")
+                : tx("保存草案", "Save Draft")}
+            </Button>
+          )}
 
-          <Input
-            data-testid="publish-summary-input"
-            value={changeSummary}
-            onChange={(e) => setChangeSummary(e.target.value)}
-            placeholder="输入版本发布摘要..."
-            className="h-8 w-44 text-xs"
-          />
+          {canPublish && (
+            <>
+              <Input
+                data-testid="publish-summary-input"
+                value={changeSummary}
+                onChange={(e) => setChangeSummary(e.target.value)}
+                placeholder={tx("版本发布摘要", "Release summary")}
+                className="h-8 w-44 text-xs"
+              />
 
-          <Button
-            className="h-8 px-3 text-xs"
-            data-testid="publish-schema-btn"
-            disabled={
-              busyOp !== null ||
-              issues.some((iss) => iss.severity === "ERROR")
-            }
-            onClick={() => void executePublish()}
-          >
-            <UploadCloud className="h-3.5 w-3.5" />
-            {busyOp === "publish" ? "发布中..." : "发布模型版本"}
-          </Button>
+              <Button
+                size="sm"
+                className="h-8 px-3"
+                data-testid="publish-schema-btn"
+                disabled={
+                  busyOp !== null ||
+                  issues.some((iss) => iss.severity === "ERROR")
+                }
+                onClick={() => void executePublish()}
+              >
+                <UploadCloud className="h-3.5 w-3.5" />
+                {busyOp === "publish"
+                  ? tx("发布中…", "Publishing…")
+                  : tx("发布版本", "Publish")}
+              </Button>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Subgraph Switcher & Always-On Context Bar */}
+      {/* Subgraph Switcher & Context Bar */}
       <StudioSubgraphBar
         subgraphs={subgraphs}
         activeSubgraph={activeSubgraph}
@@ -774,7 +906,9 @@ export function XBlueStudioPage() {
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-1.5 text-xs">
           <div className="flex flex-wrap items-center gap-1.5">
             <FilePlus2 className="h-3.5 w-3.5 text-muted-foreground" />
-            <span className="text-muted-foreground">待发布草案列表:</span>
+            <span className="text-muted-foreground">
+              {tx("待发布草案:", "Open Drafts:")}
+            </span>
             {drafts.map((d) => (
               <button
                 key={d.id || d.title}
@@ -795,19 +929,20 @@ export function XBlueStudioPage() {
           <div className="flex items-center gap-1.5">
             <Input
               value={draftTitle}
+              disabled={!canEdit}
               onChange={(e) => setDraftTitle(e.target.value)}
-              placeholder="编辑当前草案标题"
+              placeholder={tx("草案标题", "Draft title")}
               className="h-7 w-44 text-xs"
             />
-            {activeDraft?.id && (
+            {activeDraft?.id && canEdit && (
               <Button
-                variant="ghost"
-                className="h-7 px-2 py-1 text-xs text-red-600 dark:text-red-400"
+                variant="danger"
+                size="sm"
                 disabled={busyOp !== null}
                 onClick={() => void handleDiscardActiveDraft()}
               >
                 <Trash2 className="h-3 w-3" />
-                丢弃草案
+                {tx("丢弃草案", "Discard")}
               </Button>
             )}
           </div>
@@ -827,18 +962,18 @@ export function XBlueStudioPage() {
           <div className="flex items-center gap-2">
             <Button
               variant="outline"
-              className="h-7 px-2.5 py-1 text-xs"
+              size="sm"
               onClick={() => setVersionPanelOpen(true)}
             >
               <GitCompare className="h-3.5 w-3.5" />
-              查看差异
+              {tx("查看差异", "View Diff")}
             </Button>
             <Button
-              className="h-7 px-2.5 py-1 text-xs"
+              size="sm"
               onClick={() => void loadSubgraphWorkspace(activeSubgraph)}
             >
               <RefreshCw className="h-3.5 w-3.5" />
-              基于最新版本重新加载
+              {tx("重载最新", "Reload Latest")}
             </Button>
           </div>
         </div>
@@ -863,7 +998,9 @@ export function XBlueStudioPage() {
                   checked={forcePublish}
                   onChange={(e) => setForcePublish(e.target.checked)}
                 />
-                <span>确认强制发布破坏性变更 (force=true)</span>
+                <span>
+                  {tx("确认强制发布破坏性变更", "Confirm force publish")}
+                </span>
               </label>
               {activeSubgraph === "main" && (
                 <label className="flex items-center gap-1.5 cursor-pointer">
@@ -872,17 +1009,22 @@ export function XBlueStudioPage() {
                     checked={cascadeDelete}
                     onChange={(e) => setCascadeDelete(e.target.checked)}
                   />
-                  <span>级联删除已移除类型的运行时实例 (cascade=true)</span>
+                  <span>
+                    {tx(
+                      "级联删除已移除类型的运行时实例",
+                      "Cascade delete runtime instances of removed types"
+                    )}
+                  </span>
                 </label>
               )}
             </div>
             <Button
-              className="h-7 px-3 py-1 text-xs"
+              size="sm"
               data-testid="confirm-force-publish-btn"
-              disabled={!forcePublish || busyOp !== null}
+              disabled={!canPublish || !forcePublish || busyOp !== null}
               onClick={() => void executePublish(true)}
             >
-              确认强制发布
+              {tx("强制发布", "Force Publish")}
             </Button>
           </div>
         </div>
@@ -900,14 +1042,14 @@ export function XBlueStudioPage() {
             onClick={() => setStatusBanner(null)}
             className="text-muted-foreground hover:text-foreground cursor-pointer"
           >
-            关闭
+            {tx("关闭", "Close")}
           </button>
         </Card>
       )}
 
-      {/* Main Split Workbench: Canvas + IssueList on Left, Multi-Tab Inspector on Right */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-        <div className="xl:col-span-7 space-y-3">
+      {/* Master IDE Split: Flexible StudioCanvas on Left, Wide Inspector on Right */}
+      <div className="flex flex-col lg:flex-row gap-4 items-stretch">
+        <div className="flex-1 min-w-0">
           <StudioCanvas
             nodeTypes={workingDoc.node_types}
             edgeTypes={workingDoc.edge_types}
@@ -946,246 +1088,333 @@ export function XBlueStudioPage() {
             onCreateNodeType={handleCreateNodeType}
             onCreateEdgeType={handleCreateEdgeType}
           />
-
-          <IssueList
-            issues={issues}
-            validating={validating}
-            onLocateIssue={handleLocateIssue}
-          />
         </div>
 
-        {/* Right Inspector Workbench */}
-        <div className="xl:col-span-5 space-y-3">
-          <Card className="p-3 space-y-3">
-            {/* Inspector Tabs */}
-            <div className="flex flex-wrap items-center gap-1 border-b border-border pb-2">
-              {(
-                [
-                  { id: "basic", label: "节点基础" },
-                  { id: "properties", label: "属性与指标" },
-                  { id: "rules", label: "聚合与派生" },
-                  {
-                    id: "edge",
-                    label: `关系连线 (${workingDoc.edge_types.length})`,
-                  },
-                  {
-                    id: "mappings",
-                    label: `数据映射 (${workingDoc.mappings.length})`,
-                  },
-                ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  data-testid={`inspector-tab-${tab.id}`}
-                  onClick={() => setInspectorTab(tab.id)}
-                  className={cn(
-                    "rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer",
-                    inspectorTab === tab.id
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  )}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
+        {/* Right Inspector Workbench — 440px wide so hex color input #16a34a never truncates */}
+        <Card className="w-full lg:w-[440px] shrink-0 p-3.5 space-y-3 max-h-[560px] overflow-y-auto">
+          <div className="flex flex-wrap items-center gap-1 border-b border-border pb-2">
+            {(
+              [
+                { id: "basic", label: tx("基础信息", "General") },
+                { id: "properties", label: tx("属性指标", "Fields") },
+                { id: "rules", label: tx("聚合派生", "Rules") },
+                {
+                  id: "edge",
+                  label: `${tx("关系", "Relations")} (${workingDoc.edge_types.length})`,
+                },
+                {
+                  id: "mappings",
+                  label: `${tx("数据映射", "Mappings")} (${workingDoc.mappings.length})`,
+                },
+              ] as const
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                data-testid={`inspector-tab-${tab.id}`}
+                onClick={() => setInspectorTab(tab.id)}
+                className={cn(
+                  "rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer",
+                  inspectorTab === tab.id
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:text-foreground hover:bg-muted"
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
 
-            {/* Node Selector Pill Strip for node-scoped tabs */}
-            {(inspectorTab === "basic" ||
-              inspectorTab === "properties" ||
-              inspectorTab === "rules") &&
-              workingDoc.node_types.length > 0 && (
+          {/* Node Selector Pill Strip for node-scoped tabs */}
+          {(inspectorTab === "basic" ||
+            inspectorTab === "properties" ||
+            inspectorTab === "rules") &&
+            workingDoc.node_types.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1">
+                <span className="text-[11px] text-muted-foreground mr-1">
+                  {tx("当前节点:", "Node:")}
+                </span>
+                {workingDoc.node_types.map((nt) => (
+                  <button
+                    key={nt.name}
+                    type="button"
+                    onClick={() => setSelectedNodeName(nt.name)}
+                    className={cn(
+                      "rounded border px-2 py-0.5 text-[11px] font-mono-tech cursor-pointer",
+                      selectedNode?.name === nt.name
+                        ? "border-xblue bg-xblue-soft text-xblue font-semibold"
+                        : "border-border bg-background text-muted-foreground hover:text-foreground"
+                    )}
+                  >
+                    {nt.display_name} ({nt.name})
+                  </button>
+                ))}
+              </div>
+            )}
+
+          {/* Tab Panels */}
+          {inspectorTab === "basic" &&
+            (selectedNode ? (
+              <NodeTypeCard
+                nodeType={selectedNode}
+                onChange={handleUpdateSelectedNode}
+                onDelete={handleDeleteSelectedNode}
+              />
+            ) : (
+              <EmptyState
+                title={tx("未选中节点类型", "No node type selected")}
+              />
+            ))}
+
+          {inspectorTab === "properties" &&
+            (selectedNode ? (
+              <PropertyTable
+                properties={selectedNode.properties}
+                onChange={(nextProps) =>
+                  handleUpdateSelectedNode({
+                    ...selectedNode,
+                    properties: nextProps,
+                  })
+                }
+              />
+            ) : (
+              <EmptyState
+                title={tx("未选中节点类型", "No node type selected")}
+              />
+            ))}
+
+          {inspectorTab === "rules" &&
+            (selectedNode ? (
+              <RuleEditor
+                nodeIndex={selectedNodeIndex}
+                nodeType={selectedNode}
+                allNodeTypes={availableNodeTypesForEdges}
+                edgeTypes={workingDoc.edge_types}
+                issues={issues}
+                subgraph={activeSubgraph}
+                onChangeAggRules={(nextAgg) =>
+                  handleUpdateSelectedNode({
+                    ...selectedNode,
+                    agg_rules: nextAgg,
+                  })
+                }
+                onChangeDerivedRules={(nextDerived) =>
+                  handleUpdateSelectedNode({
+                    ...selectedNode,
+                    derived_rules: nextDerived,
+                  })
+                }
+              />
+            ) : (
+              <EmptyState
+                title={tx("未选中节点类型", "No node type selected")}
+              />
+            ))}
+
+          {inspectorTab === "edge" && (
+            <div className="space-y-3">
+              {workingDoc.edge_types.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1">
-                  <span className="text-[11px] text-muted-foreground mr-1">
-                    当前节点:
-                  </span>
-                  {workingDoc.node_types.map((nt) => (
+                  {workingDoc.edge_types.map((et, idx) => (
                     <button
-                      key={nt.name}
+                      key={`${et.name}-${idx}`}
                       type="button"
-                      onClick={() => setSelectedNodeName(nt.name)}
+                      onClick={() => setSelectedEdgeIndex(idx)}
                       className={cn(
-                        "rounded border px-2 py-0.5 text-[11px] font-mono-tech cursor-pointer",
-                        selectedNode?.name === nt.name
+                        "rounded border px-2 py-0.5 font-mono-tech text-[11px] cursor-pointer",
+                        selectedEdgeIndex === idx
                           ? "border-xblue bg-xblue-soft text-xblue font-semibold"
                           : "border-border bg-background text-muted-foreground hover:text-foreground"
                       )}
                     >
-                      {nt.display_name} ({nt.name})
+                      {et.src_type_name} → {et.name} → {et.dst_type_name}
                     </button>
                   ))}
                 </div>
               )}
 
-            {/* Tab Panels */}
-            {inspectorTab === "basic" &&
-              (selectedNode ? (
-                <NodeTypeCard
-                  nodeType={selectedNode}
-                  onChange={handleUpdateSelectedNode}
-                  onDelete={handleDeleteSelectedNode}
+              {selectedEdge && selectedEdgeIndex !== null ? (
+                <EdgeTypeEditor
+                  edgeType={selectedEdge}
+                  availableNodeTypes={availableNodeTypesForEdges}
+                  onChange={(updatedEdge) =>
+                    mutateDoc((prev) => ({
+                      ...prev,
+                      edge_types: prev.edge_types.map((et, i) =>
+                        i === selectedEdgeIndex ? updatedEdge : et
+                      ),
+                    }))
+                  }
+                  onDelete={() => {
+                    const rmIdx = selectedEdgeIndex;
+                    mutateDoc((prev) => ({
+                      ...prev,
+                      edge_types: prev.edge_types.filter((_, i) => i !== rmIdx),
+                    }));
+                    setSelectedEdgeIndex(null);
+                  }}
                 />
               ) : (
-                <div className="py-8 text-center text-xs text-muted-foreground">
-                  请在左侧画布点击选择一个节点类型卡片，或点击“新增节点类型”。
-                </div>
-              ))}
-
-            {inspectorTab === "properties" &&
-              (selectedNode ? (
-                <PropertyTable
-                  properties={selectedNode.properties}
-                  onChange={(nextProps) =>
-                    handleUpdateSelectedNode({
-                      ...selectedNode,
-                      properties: nextProps,
-                    })
-                  }
+                <EmptyState
+                  title={tx("未选中关系连线", "No relation selected")}
                 />
-              ) : (
-                <div className="py-8 text-center text-xs text-muted-foreground">
-                  请先选择一个业务节点类型以编辑其静态属性与时序指标。
-                </div>
-              ))}
-
-            {inspectorTab === "rules" &&
-              (selectedNode ? (
-                <RuleEditor
-                  nodeIndex={selectedNodeIndex}
-                  nodeType={selectedNode}
-                  allNodeTypes={availableNodeTypesForEdges}
-                  edgeTypes={workingDoc.edge_types}
-                  issues={issues}
-                  subgraph={activeSubgraph}
-                  onChangeAggRules={(nextAgg) =>
-                    handleUpdateSelectedNode({
-                      ...selectedNode,
-                      agg_rules: nextAgg,
-                    })
-                  }
-                  onChangeDerivedRules={(nextDerived) =>
-                    handleUpdateSelectedNode({
-                      ...selectedNode,
-                      derived_rules: nextDerived,
-                    })
-                  }
-                />
-              ) : (
-                <div className="py-8 text-center text-xs text-muted-foreground">
-                  请先选择一个业务节点类型以配置跨边聚合或节点内派生公式。
-                </div>
-              ))}
-
-            {inspectorTab === "edge" && (
-              <div className="space-y-3">
-                {workingDoc.edge_types.length > 0 && (
-                  <div className="flex flex-wrap items-center gap-1">
-                    {workingDoc.edge_types.map((et, idx) => (
-                      <button
-                        key={`${et.name}-${idx}`}
-                        type="button"
-                        onClick={() => setSelectedEdgeIndex(idx)}
-                        className={cn(
-                          "rounded border px-2 py-0.5 font-mono-tech text-[11px] cursor-pointer",
-                          selectedEdgeIndex === idx
-                            ? "border-xblue bg-xblue-soft text-xblue font-semibold"
-                            : "border-border bg-background text-muted-foreground hover:text-foreground"
-                        )}
-                      >
-                        {et.src_type_name} → {et.name} → {et.dst_type_name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {selectedEdge && selectedEdgeIndex !== null ? (
-                  <EdgeTypeEditor
-                    edgeType={selectedEdge}
-                    availableNodeTypes={availableNodeTypesForEdges}
-                    onChange={(updatedEdge) =>
-                      mutateDoc((prev) => ({
-                        ...prev,
-                        edge_types: prev.edge_types.map((et, i) =>
-                          i === selectedEdgeIndex ? updatedEdge : et
-                        ),
-                      }))
-                    }
-                    onDelete={() => {
-                      const rmIdx = selectedEdgeIndex;
-                      mutateDoc((prev) => ({
-                        ...prev,
-                        edge_types: prev.edge_types.filter(
-                          (_, i) => i !== rmIdx
-                        ),
-                      }));
-                      setSelectedEdgeIndex(null);
-                    }}
-                  />
-                ) : (
-                  <div className="py-6 text-center text-xs text-muted-foreground">
-                    在画布上点击关系连线标签，或从节点右侧蓝点拖拽至目标节点即可创建新关系。
-                  </div>
-                )}
-              </div>
-            )}
-
-            {inspectorTab === "mappings" && (
-              <MappingEditor
-                activeSubgraph={activeSubgraph}
-                mappings={workingDoc.mappings}
-                persistedMappings={persistedMappings}
-                datasets={datasets}
-                nodeTypes={workingDoc.node_types}
-                edgeTypes={workingDoc.edge_types}
-                selectedMappingIndex={selectedMappingIndex}
-                onSelectMappingIndex={setSelectedMappingIndex}
-                onChangeMappings={(nextMappings: MappingSpec[]) =>
-                  mutateDoc((prev) => ({ ...prev, mappings: nextMappings }))
-                }
-                onRefreshPersistedMappings={async () => {
-                  const latest = await xblueApi
-                    .listMappings(activeSubgraph)
-                    .catch(() => [] as MappingRecord[]);
-                  setPersistedMappings(latest);
-                }}
-              />
-            )}
-          </Card>
-
-          {/* Compact Live Runtime Nodes Summary */}
-          <Card className="p-3 space-y-2">
-            <div className="flex items-center justify-between">
-              <h2 className="text-xs font-semibold">
-                企业主图已注册运行时节点快照 ({runtimeNodes.length})
-              </h2>
-              <Badge variant="outline">subgraph=main</Badge>
+              )}
             </div>
-            {runtimeNodes.length === 0 ? (
-              <div className="text-xs text-muted-foreground">
-                暂无运行时实例，发布主图映射后将自动从 DuckLake 物化写入。
+          )}
+
+          {inspectorTab === "mappings" && (
+            <MappingEditor
+              activeSubgraph={activeSubgraph}
+              mappings={workingDoc.mappings}
+              persistedMappings={persistedMappings}
+              datasets={datasets}
+              nodeTypes={workingDoc.node_types}
+              edgeTypes={workingDoc.edge_types}
+              selectedMappingIndex={selectedMappingIndex}
+              onSelectMappingIndex={setSelectedMappingIndex}
+              onChangeMappings={(nextMappings: MappingSpec[]) =>
+                mutateDoc((prev) => ({ ...prev, mappings: nextMappings }))
+              }
+              onRefreshPersistedMappings={async () => {
+                const latest = await xblueApi
+                  .listMappings(activeSubgraph)
+                  .catch(() => [] as MappingRecord[]);
+                setPersistedMappings(latest);
+              }}
+            />
+          )}
+        </Card>
+      </div>
+
+      {/* Bottom Collapsible Dock: Schema Diagnostics | Runtime Node Snapshots */}
+      <Card className="overflow-hidden" data-testid="studio-bottom-dock">
+        <div className="flex items-center justify-between gap-2 border-b border-border bg-muted/25 px-3 py-1.5">
+          <div className="flex items-center gap-1" role="tablist">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={dockTab === "issues"}
+              onClick={() => {
+                setDockTab("issues");
+                setDockCollapsed(false);
+              }}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer",
+                dockTab === "issues"
+                  ? "bg-card text-foreground shadow-2xs border border-border/80"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <ShieldAlert className="h-3.5 w-3.5 text-xblue" />
+              <span>{tx("校验诊断", "Diagnostics")}</span>
+              <Badge variant={issues.length > 0 ? "warning" : "neutral"}>
+                {issues.length}
+              </Badge>
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={dockTab === "nodes"}
+              onClick={() => {
+                setDockTab("nodes");
+                setDockCollapsed(false);
+              }}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer",
+                dockTab === "nodes"
+                  ? "bg-card text-foreground shadow-2xs border border-border/80"
+                  : "text-muted-foreground hover:text-foreground"
+              )}
+            >
+              <Database className="h-3.5 w-3.5 text-xblue" />
+              <span>{tx("运行时节点快照", "Runtime Snapshots")}</span>
+              <Badge variant="neutral">{runtimeNodes.length}</Badge>
+            </button>
+          </div>
+
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setDockCollapsed((v) => !v)}
+          >
+            {dockCollapsed ? (
+              <>
+                <ChevronUp className="h-3.5 w-3.5" />
+                {tx("展开", "Expand")}
+              </>
+            ) : (
+              <>
+                <ChevronDown className="h-3.5 w-3.5" />
+                {tx("收起", "Collapse")}
+              </>
+            )}
+          </Button>
+        </div>
+
+        {!dockCollapsed && (
+          <div className="p-3">
+            {dockTab === "issues" ? (
+              <IssueList
+                issues={issues}
+                validating={validating}
+                embedded
+                onLocateIssue={handleLocateIssue}
+              />
+            ) : runtimeNodes.length === 0 ? (
+              <div className="py-4 text-center text-xs text-muted-foreground">
+                {tx("暂无已注册运行时节点实例", "No registered runtime nodes")}
               </div>
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 text-xs max-h-36 overflow-y-auto">
-                {runtimeNodes.slice(0, 8).map((node) => (
-                  <div
-                    key={node.id}
-                    className="rounded border border-border px-2.5 py-1.5"
-                  >
-                    <div className="flex items-center justify-between gap-1">
-                      <span className="font-medium truncate">{node.title}</span>
-                      <Badge variant="outline">{node.type_name}</Badge>
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2 text-xs max-h-48 overflow-y-auto">
+                {runtimeNodes.slice(0, 16).map((node) => {
+                  const metricPairs = Object.entries(node.metrics ?? {});
+                  const propPairs = Object.entries(
+                    node.properties ?? {}
+                  ).filter(([k]) => !k.startsWith("__"));
+                  return (
+                    <div
+                      key={node.id}
+                      className="rounded border border-border bg-background p-2.5 space-y-1.5"
+                    >
+                      <div className="flex items-center justify-between gap-1.5">
+                        <div className="min-w-0 flex items-center gap-1.5">
+                          <span className="font-medium truncate">
+                            {node.title}
+                          </span>
+                          <span className="font-mono-tech text-[11px] text-muted-foreground shrink-0">
+                            ({node.node_key})
+                          </span>
+                        </div>
+                        <Badge variant="xblue">{node.type_name}</Badge>
+                      </div>
+
+                      <div className="flex flex-wrap gap-1">
+                        {metricPairs.map(([mk, mv]) => (
+                          <Badge key={`m-${mk}`} variant="neutral">
+                            {mk}: {fmtNum(mv, 2)}
+                          </Badge>
+                        ))}
+                        {propPairs.slice(0, 3).map(([pk, pv]) => (
+                          <Badge key={`p-${pk}`} variant="outline">
+                            {pk}: {String(pv ?? "")}
+                          </Badge>
+                        ))}
+                        {metricPairs.length === 0 && propPairs.length === 0 && (
+                          <span className="text-[11px] text-muted-foreground">
+                            —
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="font-mono-tech text-[10px] text-muted-foreground truncate mt-0.5">
-                      {node.node_key} · {JSON.stringify(node.metrics)}
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
-          </Card>
-        </div>
-      </div>
+          </div>
+        )}
+      </Card>
 
       {/* Drawers & Modals */}
       <VersionPanel
@@ -1231,7 +1460,10 @@ export function XBlueStudioPage() {
         onClose={() => setKnowledgeCandidatesOpen(false)}
         onCandidateAccepted={(res, cand) => {
           setStatusBanner(
-            `已从超图知识实体「${cand.name}」确认建点：${res.node.title || cand.name} (${res.node.node_key})`
+            tx(
+              `已从超图实体「${cand.name}」确认建点：${res.node.title || cand.name} (${res.node.node_key})`,
+              `Created node ${res.node.title || cand.name} (${res.node.node_key}) from entity "${cand.name}"`
+            )
           );
           if (res.node.id || res.node.node_key) {
             setRuntimeNodes((prev) => {

@@ -1,5 +1,12 @@
 import { useMemo, useRef, useState } from "react";
-import { AlertTriangle, Clock, Code2, ShieldCheck, Table2 } from "lucide-react";
+import {
+  AlertTriangle,
+  Clock,
+  Code2,
+  ShieldCheck,
+  Table2,
+} from "lucide-react";
+import { useI18n } from "@/i18n";
 import type { QueryColumn } from "@/lib/api/analytics";
 import type { DataType } from "@/lib/api/enums";
 import { Badge, Button } from "@/components/ui/primitives";
@@ -51,8 +58,9 @@ export function ResultGrid({
   sql,
   maxHeight = 340,
   testId = "analytics-result-grid",
-  emptyText = "执行查询后在此展示结构化结果集",
+  emptyText,
 }: ResultGridProps) {
+  const { tx, tEnum, fmtNum } = useI18n();
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [showExecutedSql, setShowExecutedSql] = useState(false);
@@ -96,25 +104,30 @@ export function ResultGrid({
         <div className="flex flex-wrap items-center gap-2">
           <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
             <Table2 className="h-3.5 w-3.5 text-xblue" />
-            结果明细
+            {tx("结果明细", "Result Grid")}
           </span>
           <Badge variant="neutral" data-testid="result-row-count">
-            {effectiveRowCount.toLocaleString()} 行
+            {fmtNum(effectiveRowCount, 0)} {tx("行", "rows")}
           </Badge>
-          <Badge variant="outline">{columns.length} 列</Badge>
+          <Badge variant="outline">
+            {fmtNum(columns.length, 0)} {tx("列", "cols")}
+          </Badge>
           {durationMs !== null && durationMs !== undefined && (
             <span
               className="inline-flex items-center gap-1 font-mono-tech text-[11px] text-muted-foreground"
               data-testid="result-duration-ms"
             >
               <Clock className="h-3 w-3" />
-              {durationMs} ms
+              {fmtNum(durationMs, 0)} ms
             </span>
           )}
           {maskedColumnCount > 0 && (
             <Badge variant="xblue" data-testid="result-pii-badge">
               <ShieldCheck className="mr-1 h-3 w-3" />
-              PII 脱敏 {maskedColumnCount} 列
+              {tx(
+                `脱敏 ${fmtNum(maskedColumnCount, 0)} 列`,
+                `${fmtNum(maskedColumnCount, 0)} PII cols`
+              )}
             </Badge>
           )}
         </div>
@@ -123,12 +136,14 @@ export function ResultGrid({
           <Button
             type="button"
             variant="ghost"
-            className="px-2 py-1 text-[11px]"
+            size="sm"
             onClick={() => setShowExecutedSql((prev) => !prev)}
             data-testid="result-toggle-rewritten-sql"
           >
             <Code2 className="h-3 w-3" />
-            {showExecutedSql ? "隐藏守卫 SQL" : "守卫改写 SQL"}
+            {showExecutedSql
+              ? tx("收起改写 SQL", "Hide SQL")
+              : tx("守卫改写 SQL", "Guarded SQL")}
           </Button>
         )}
       </div>
@@ -141,9 +156,10 @@ export function ResultGrid({
         >
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-xblue" />
           <span>
-            结果集超出单次安全上限，已截断为前{" "}
-            <strong className="font-mono-tech">{rows.length.toLocaleString()}</strong>{" "}
-            行展示。建议增加过滤条件或聚合维度。
+            {tx(
+              `结果超出单次上限，已截断显示前 ${fmtNum(rows.length, 0)} 行。`,
+              `Result truncated to the first ${fmtNum(rows.length, 0)} rows.`
+            )}
           </span>
         </div>
       )}
@@ -152,7 +168,7 @@ export function ResultGrid({
       {showExecutedSql && sql && (
         <div className="border-b border-border bg-muted/40 px-3 py-2">
           <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground">
-            SQL Guard Rewritten Query
+            {tx("守卫改写查询语句", "SQL Guard Rewritten Query")}
           </div>
           <pre className="overflow-x-auto font-mono-tech text-[11px] text-foreground whitespace-pre-wrap break-all">
             {sql}
@@ -163,7 +179,7 @@ export function ResultGrid({
       {/* Table Body with Virtual Scrolling */}
       {columns.length === 0 ? (
         <div className="flex h-36 items-center justify-center px-4 text-xs text-muted-foreground">
-          {emptyText}
+          {emptyText ?? tx("暂无查询结果", "Run a query to view results")}
         </div>
       ) : (
         <div
@@ -201,9 +217,9 @@ export function ResultGrid({
                           data-testid={`col-pii-${col.name}`}
                         >
                           {col.pii_category !== "NONE"
-                            ? col.pii_category
-                            : "MASKED"}
-                          {col.masked ? "·脱敏" : ""}
+                            ? tEnum(col.pii_category)
+                            : tx("脱敏", "Masked")}
+                          {col.masked ? tx("·脱敏", " · Masked") : ""}
                         </Badge>
                       )}
                     </div>
@@ -218,7 +234,7 @@ export function ResultGrid({
                     colSpan={columns.length + 1}
                     className="px-4 py-8 text-center text-xs text-muted-foreground"
                   >
-                    查询执行成功，返回 0 行记录
+                    {tx("返回 0 行记录", "Query returned 0 rows")}
                   </td>
                 </tr>
               ) : (

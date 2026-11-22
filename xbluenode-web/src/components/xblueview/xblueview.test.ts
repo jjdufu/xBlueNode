@@ -8,6 +8,7 @@ import {
   classifyPivotRow,
   containsFunctionValue,
   detectImplicitNodeMetricGrouping,
+  formatAxisTimestampLabel,
   mergeLockedShareFilters,
   parseGraphTopologyData,
   parseNodesGeoData,
@@ -508,5 +509,63 @@ describe("xBlueView contract logic", () => {
       ),
       { status: "PAID", warehouse: "W-2" }
     );
+  });
+
+  it("buildEChartsOption formats ISO-8601 axis timestamps, applies Y-axis splitNumber/hideOverlap, assigns distinct palette colors, and resolves UUID series names", () => {
+    assert.equal(
+      formatAxisTimestampLabel("2026-11-14T20:06:17.670202205+00:00"),
+      "11-14 20:06"
+    );
+    assert.equal(formatAxisTimestampLabel("PAID"), "PAID");
+
+    const uuid1 = "00000000-0000-0000-0000-000000000301";
+    const uuid2 = "00000000-0000-0000-0000-000000000302";
+    const lineRes = buildEChartsOption({
+      kind: "LINE_CHART",
+      title: "仓库库存趋势",
+      data: {
+        columns: [
+          { name: "bucket_start", data_type: "TIMESTAMP" },
+          { name: "group_key", data_type: "STRING" },
+          { name: "value", data_type: "FLOAT64" },
+        ],
+        rows: [
+          ["2026-11-14T20:06:17.670202205+00:00", uuid1, 500],
+          ["2026-11-14T20:06:17.670202205+00:00", uuid2, 320],
+        ],
+      },
+      isDark: false,
+      nodeLabelMap: {
+        [uuid1]: "华东仓 (W-1)",
+      },
+    });
+
+    const xAxis = lineRes.option.xAxis as Record<string, unknown>;
+    assert.deepEqual(xAxis.data, ["11-14 20:06"]);
+
+    const yAxis = lineRes.option.yAxis as Record<string, unknown>;
+    assert.equal(yAxis.splitNumber, 4);
+    assert.equal(
+      (yAxis.axisLabel as Record<string, unknown>)?.hideOverlap,
+      true
+    );
+
+    const series = lineRes.option.series as Record<string, unknown>[];
+    assert.equal(series.length, 2);
+    assert.equal(series[0]?.name, "华东仓 (W-1)");
+    assert.equal(series[1]?.name, "#000302");
+    assert.equal(
+      (series[0]?.itemStyle as Record<string, unknown>)?.color,
+      chartSpec.palette.light[0]
+    );
+    assert.equal(
+      (series[1]?.itemStyle as Record<string, unknown>)?.color,
+      chartSpec.palette.light[1]
+    );
+    assert.notEqual(
+      (series[0]?.itemStyle as Record<string, unknown>)?.color,
+      (series[1]?.itemStyle as Record<string, unknown>)?.color
+    );
+    assert.equal(containsFunctionValue(lineRes.option), false);
   });
 });

@@ -2,7 +2,9 @@ import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { Lock, Plus, Save, Shield, Trash2 } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import { axguardApi, type GuardRoleRecord } from "@/lib/api/axguard";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { Badge, Button, Card, EmptyState, Input } from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 import { PERMISSION_DOMAIN_GROUPS } from "./constants";
 
@@ -12,6 +14,10 @@ interface RolesPanelProps {
 }
 
 export function RolesPanel({ roles, onReload }: RolesPanelProps) {
+  const { isZh, tx, tEnum } = useI18n();
+  const { can } = usePrincipal();
+  const canWrite = can("GUARD_ADMIN");
+
   const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
   const [draftPermissions, setDraftPermissions] = useState<string[]>([]);
   const [draftName, setDraftName] = useState("");
@@ -42,6 +48,7 @@ export function RolesPanel({ roles, onReload }: RolesPanelProps) {
   }, [selectedRole]);
 
   const togglePermission = (code: string) => {
+    if (!canWrite) return;
     setDraftPermissions((prev) =>
       prev.includes(code) ? prev.filter((p) => p !== code) : [...prev, code]
     );
@@ -58,10 +65,14 @@ export function RolesPanel({ roles, onReload }: RolesPanelProps) {
       setNewRoleName("");
       await onReload();
       setSelectedRoleId(created.id);
-      setBanner(`已创建自定义角色 ${created.name}`);
+      setBanner(
+        tx(`已创建角色 ${created.name}`, `Role ${created.name} created`)
+      );
     } catch (err) {
       setBanner(
-        err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
       );
     } finally {
       setCreating(false);
@@ -78,10 +89,17 @@ export function RolesPanel({ roles, onReload }: RolesPanelProps) {
         permissions: draftPermissions,
       });
       await onReload();
-      setBanner(`已更新角色 ${selectedRole.name} 的权限矩阵`);
+      setBanner(
+        tx(
+          `已保存角色 ${selectedRole.name} 权限配置`,
+          `Permissions saved for ${selectedRole.name}`
+        )
+      );
     } catch (err) {
       setBanner(
-        err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
       );
     } finally {
       setSaving(false);
@@ -95,10 +113,14 @@ export function RolesPanel({ roles, onReload }: RolesPanelProps) {
       await axguardApi.deleteRole(selectedRole.id);
       setSelectedRoleId(null);
       await onReload();
-      setBanner(`已删除自定义角色 ${selectedRole.name}`);
+      setBanner(
+        tx(`已删除角色 ${selectedRole.name}`, `Role ${selectedRole.name} deleted`)
+      );
     } catch (err) {
       setBanner(
-        err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
       );
     }
   };
@@ -120,10 +142,13 @@ export function RolesPanel({ roles, onReload }: RolesPanelProps) {
           <div className="space-y-1">
             <div className="text-xs font-semibold flex items-center gap-1.5">
               <Shield className="h-3.5 w-3.5 text-xblue" />
-              角色目录（内置与自定义）
+              {tx("角色目录", "Role Directory")}
             </div>
             <p className="text-[11px] text-muted-foreground">
-              内置角色（ADMIN / ANALYST / OPERATOR / VIEWER）名称受平台保护不可删除。
+              {tx(
+                "平台内置角色名称不可删除。",
+                "Built-in platform roles cannot be deleted."
+              )}
             </p>
           </div>
 
@@ -143,49 +168,61 @@ export function RolesPanel({ roles, onReload }: RolesPanelProps) {
                   )}
                 >
                   <div>
-                    <div className="font-mono-tech font-semibold">{r.name}</div>
+                    <div className="font-semibold flex items-center gap-1.5">
+                      <span>{tEnum(r.name)}</span>
+                      {tEnum(r.name) !== r.name && (
+                        <span className="text-[11px] font-mono-tech text-muted-foreground">
+                          {r.name}
+                        </span>
+                      )}
+                    </div>
                     <div className="text-[11px] text-muted-foreground">
-                      已授予 {r.permissions.length} 项原子权限
+                      {tx(
+                        `${r.permissions.length} 项权限`,
+                        `${r.permissions.length} permissions`
+                      )}
                     </div>
                   </div>
                   {r.is_builtin ? (
                     <Badge variant="outline" className="gap-1">
                       <Lock className="h-2.5 w-2.5" />
-                      内置
+                      {tx("内置", "Built-in")}
                     </Badge>
                   ) : (
-                    <Badge variant="xblue">自定义</Badge>
+                    <Badge variant="xblue">{tx("自定义", "Custom")}</Badge>
                   )}
                 </button>
               );
             })}
           </div>
 
-          <form
-            onSubmit={(e) => void handleCreateRole(e)}
-            className="border-t border-border pt-3 space-y-2"
-          >
-            <label className="block text-[11px] font-medium text-muted-foreground">
-              新建自定义角色
-            </label>
-            <div className="flex gap-2">
-              <Input
-                placeholder="如 DATA_STEWARD"
-                value={newRoleName}
-                onChange={(e) => setNewRoleName(e.target.value)}
-                data-testid="new-role-name-input"
-                className="h-8 text-xs font-mono-tech"
-              />
-              <Button
-                type="submit"
-                disabled={creating || !newRoleName.trim()}
-                className="h-8 shrink-0"
-              >
-                <Plus className="h-3.5 w-3.5" />
-                新建
-              </Button>
-            </div>
-          </form>
+          {canWrite && (
+            <form
+              onSubmit={(e) => void handleCreateRole(e)}
+              className="border-t border-border pt-3 space-y-2"
+            >
+              <label className="block text-[11px] font-medium text-muted-foreground">
+                {tx("自定义角色编码", "Custom Role Code")}
+              </label>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="DATA_STEWARD"
+                  value={newRoleName}
+                  onChange={(e) => setNewRoleName(e.target.value)}
+                  data-testid="new-role-name-input"
+                  className="h-8 text-xs font-mono-tech"
+                />
+                <Button
+                  type="submit"
+                  disabled={creating || !newRoleName.trim()}
+                  className="h-8 shrink-0"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {tx("新建", "Create")}
+                </Button>
+              </div>
+            </form>
+          )}
         </Card>
 
         {/* Right Interactive Permission Matrix */}
@@ -195,42 +232,52 @@ export function RolesPanel({ roles, onReload }: RolesPanelProps) {
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
                 <div className="flex items-center gap-2">
                   {selectedRole.is_builtin ? (
-                    <span className="font-mono-tech text-sm font-semibold">
-                      {selectedRole.name}
+                    <span className="text-sm font-semibold">
+                      {tEnum(selectedRole.name)}{" "}
+                      <span className="font-mono-tech text-xs text-muted-foreground">
+                        ({selectedRole.name})
+                      </span>
                     </span>
                   ) : (
                     <Input
                       value={draftName}
+                      disabled={!canWrite}
                       onChange={(e) => setDraftName(e.target.value)}
                       className="h-8 w-48 font-mono-tech text-xs font-semibold"
                     />
                   )}
                   <Badge variant={selectedRole.is_builtin ? "outline" : "xblue"}>
-                    {selectedRole.is_builtin ? "平台内置角色" : "租户自定义角色"}
+                    {selectedRole.is_builtin
+                      ? tx("内置角色", "Built-in")
+                      : tx("自定义角色", "Custom")}
                   </Badge>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  {!selectedRole.is_builtin && (
+                {canWrite && (
+                  <div className="flex items-center gap-2">
+                    {!selectedRole.is_builtin && (
+                      <Button
+                        variant="danger"
+                        size="sm"
+                        type="button"
+                        onClick={() => void handleDeleteRole()}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                        {tx("删除", "Delete")}
+                      </Button>
+                    )}
                     <Button
-                      variant="outline"
+                      size="sm"
                       type="button"
-                      onClick={() => void handleDeleteRole()}
+                      disabled={saving}
+                      onClick={() => void handleSaveRole()}
+                      data-testid="save-role-permissions-btn"
                     >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      删除角色
+                      <Save className="h-3.5 w-3.5" />
+                      {saving ? tx("保存中…", "Saving…") : tx("保存", "Save")}
                     </Button>
-                  )}
-                  <Button
-                    type="button"
-                    disabled={saving}
-                    onClick={() => void handleSaveRole()}
-                    data-testid="save-role-permissions-btn"
-                  >
-                    <Save className="h-3.5 w-3.5" />
-                    {saving ? "保存中..." : "保存权限矩阵"}
-                  </Button>
-                </div>
+                  </div>
+                )}
               </div>
 
               <div className="space-y-4">
@@ -240,9 +287,11 @@ export function RolesPanel({ roles, onReload }: RolesPanelProps) {
                     className="rounded-md border border-border p-3 space-y-2.5"
                   >
                     <div>
-                      <div className="text-xs font-semibold">{group.domain}</div>
+                      <div className="text-xs font-semibold">
+                        {isZh ? group.domain : group.enDomain}
+                      </div>
                       <div className="text-[11px] text-muted-foreground">
-                        {group.description}
+                        {isZh ? group.description : group.enDescription}
                       </div>
                     </div>
 
@@ -252,20 +301,29 @@ export function RolesPanel({ roles, onReload }: RolesPanelProps) {
                         return (
                           <label
                             key={perm.code}
+                            title={perm.code}
                             className={cn(
-                              "flex items-center gap-2 rounded border px-2.5 py-2 text-xs transition-colors cursor-pointer",
+                              "flex items-center justify-between gap-2 rounded border px-2.5 py-2 text-xs transition-colors cursor-pointer",
                               checked
                                 ? "border-xblue/60 bg-xblue-soft/40 text-foreground"
                                 : "border-border hover:bg-muted/40 text-muted-foreground"
                             )}
                           >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => togglePermission(perm.code)}
-                              className="accent-[#2563eb]"
-                            />
-                            <span className="truncate">{perm.label}</span>
+                            <span className="flex items-center gap-2 min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={!canWrite}
+                                onChange={() => togglePermission(perm.code)}
+                                className="accent-[#2563eb]"
+                              />
+                              <span className="truncate">
+                                {tEnum(perm.code)}
+                              </span>
+                            </span>
+                            <span className="text-[10px] font-mono-tech text-muted-foreground shrink-0">
+                              {perm.code}
+                            </span>
                           </label>
                         );
                       })}
@@ -275,9 +333,7 @@ export function RolesPanel({ roles, onReload }: RolesPanelProps) {
               </div>
             </>
           ) : (
-            <div className="py-12 text-center text-xs text-muted-foreground">
-              请从左侧选择一个角色以配置其原子权限矩阵
-            </div>
+            <EmptyState title={tx("未选中角色", "No role selected")} />
           )}
         </Card>
       </div>

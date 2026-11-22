@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   createColumnHelper,
   tableFeatures,
@@ -15,6 +15,7 @@ import {
   Trash2,
   Webhook,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   axhubApi,
   type ColumnMeta,
@@ -28,11 +29,24 @@ import {
   type WebhookConfig,
 } from "@/lib/api/axhub";
 import type {
+  DataType,
   PiiCategory,
   QualityRuleKind,
   SourceKind,
 } from "@/lib/api/enums";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { usePrincipal } from "@/lib/permissions";
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  EmptyState,
+  Input,
+  Modal,
+  Select,
+  StatusBadge,
+  Tabs,
+} from "@/components/ui/primitives";
 
 const SOURCE_KINDS: SourceKind[] = [
   "FILE_TABLE",
@@ -65,6 +79,8 @@ const QUALITY_RULE_KINDS: QualityRuleKind[] = [
   "FRESHNESS",
   "ROW_COUNT_MIN",
 ];
+
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/;
 
 const datasetTableFeatures = tableFeatures({});
 const columnHelper = createColumnHelper<typeof datasetTableFeatures, Dataset>();
@@ -104,11 +120,18 @@ export function DatasetTable({
   renderHistorySlot,
   renderLineageSlot,
 }: DatasetTableProps) {
+  const { tx, tEnum, fmtNum, fmtTime } = useI18n();
+  const { can } = usePrincipal();
+  const canSync = can("DATA_SYNC");
+  const canAdmin = can("DATA_ADMIN");
+
   const [filterQ, setFilterQ] = useState("");
   const [filterTag, setFilterTag] = useState("");
   const [filterSourceKind, setFilterSourceKind] = useState<string>("");
 
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [pendingDeleteDs, setPendingDeleteDs] = useState<Dataset | null>(null);
+  const [deletingDs, setDeletingDs] = useState(false);
   const [feedbackMsg, setFeedbackMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -133,6 +156,7 @@ export function DatasetTable({
     >
   >({});
   const [savingCol, setSavingCol] = useState<string | null>(null);
+  const [savingAllCols, setSavingAllCols] = useState(false);
 
   // Quality rules state
   const [qualityRules, setQualityRules] = useState<QualityRule[]>([]);
@@ -151,6 +175,75 @@ export function DatasetTable({
   const [createdWebhookSecret, setCreatedWebhookSecret] =
     useState<CreateWebhookResponse | null>(null);
 
+  const formatSourceKind = useCallback(
+    (kind: SourceKind): string => {
+      switch (kind) {
+        case "NOSQL_COLLECTION":
+          return tx("文档集合", "NoSQL Collection");
+        case "TIMESERIES":
+          return tx("时序表", "Time-Series");
+        case "STREAM":
+          return tx("流数据", "Stream");
+        case "API_RESOURCE":
+          return tx("接口资源", "API Resource");
+        default:
+          return tEnum(kind);
+      }
+    },
+    [tEnum, tx]
+  );
+
+  const formatRuleKind = useCallback(
+    (kind: QualityRuleKind): string => {
+      switch (kind) {
+        case "NOT_NULL":
+          return tx("非空校验", "Not Null");
+        case "UNIQUE":
+          return tx("唯一性校验", "Unique");
+        case "RANGE":
+          return tx("数值区间", "Range");
+        case "REGEX":
+          return tx("正则匹配", "Regex");
+        case "ALLOWED_VALUES":
+          return tx("枚举集合", "Allowed Values");
+        case "FRESHNESS":
+          return tx("时效性", "Freshness");
+        case "ROW_COUNT_MIN":
+          return tx("最小行数", "Min Rows");
+        default:
+          return kind;
+      }
+    },
+    [tx]
+  );
+
+  const formatPreviewCell = useCallback(
+    (val: unknown, colName: string, dataType: DataType): string => {
+      if (val === null || val === undefined) return "NULL";
+      if (typeof val === "number") {
+        const isId =
+          colName === "id" ||
+          colName.endsWith("_id") ||
+          colName.endsWith("_no");
+        return isId ? String(val) : fmtNum(val, 4);
+      }
+      if (typeof val === "string") {
+        if (
+          (dataType === "TIMESTAMP" || dataType === "DATE") &&
+          ISO_TIMESTAMP_RE.test(val)
+        ) {
+          return fmtTime(val);
+        }
+        return val;
+      }
+      if (typeof val === "object") {
+        return JSON.stringify(val);
+      }
+      return String(val);
+    },
+    [fmtNum, fmtTime]
+  );
+
   const selectedDataset = useMemo(
     () => datasets.find((d) => d.id === selectedDatasetId) ?? null,
     [datasets, selectedDatasetId]
@@ -158,14 +251,21 @@ export function DatasetTable({
 
   const handleTriggerSync = useCallback(
     async (ds: Dataset) => {
+      if (!canSync) return;
       setSyncingId(ds.id);
       setErrorMsg(null);
       try {
         const res = await axhubApi.syncDataset(ds.id);
         setFeedbackMsg(
           res.existing
-            ? `数据集「${ds.name}」已有进行中的同步任务 (${res.job_id})`
-            : `已触发数据集「${ds.name}」同步任务 (${res.job_id})`
+            ? tx(
+                `数据集「${ds.name}」正在同步 (${res.job_id.slice(0, 8)})`,
+                `Sync already running for "${ds.name}" (${res.job_id.slice(0, 8)})`
+              )
+            : tx(
+                `已触发「${ds.name}」同步 (${res.job_id.slice(0, 8)})`,
+                `Triggered sync for "${ds.name}" (${res.job_id.slice(0, 8)})`
+              )
         );
         await onRefreshDatasets();
       } catch (err) {
@@ -174,14 +274,33 @@ export function DatasetTable({
         setSyncingId(null);
       }
     },
-    [onRefreshDatasets]
+    [canSync, onRefreshDatasets, tx]
   );
+
+  const handleConfirmDeleteDataset = async () => {
+    if (!pendingDeleteDs || !canAdmin) return;
+    setDeletingDs(true);
+    setErrorMsg(null);
+    try {
+      const target = pendingDeleteDs;
+      await axhubApi.deleteDataset(target.id);
+      setFeedbackMsg(
+        tx(`已删除数据集「${target.name}」`, `Deleted dataset "${target.name}"`)
+      );
+      setPendingDeleteDs(null);
+      await onRefreshDatasets();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDeletingDs(false);
+    }
+  };
 
   const columns = useMemo(
     () =>
       columnHelper.columns([
         columnHelper.accessor("name", {
-          header: "数据集名称",
+          header: tx("数据集", "Dataset"),
           cell: (info) => {
             const ds = info.row.original;
             return (
@@ -189,7 +308,7 @@ export function DatasetTable({
                 <div className="font-mono-tech font-semibold text-foreground">
                   {ds.name}
                 </div>
-                {ds.display_name && (
+                {ds.display_name && ds.display_name !== ds.name && (
                   <div className="text-[11px] text-muted-foreground">
                     {ds.display_name}
                   </div>
@@ -199,36 +318,43 @@ export function DatasetTable({
           },
         }),
         columnHelper.accessor("source_kind", {
-          header: "来源类型",
-          cell: (info) => <Badge variant="outline">{info.getValue()}</Badge>,
+          header: tx("来源类型", "Source"),
+          cell: (info) => (
+            <Badge variant="outline">
+              {formatSourceKind(info.getValue())}
+            </Badge>
+          ),
         }),
         columnHelper.accessor("sync_mode", {
-          header: "同步模式",
-          cell: (info) => <Badge variant="neutral">{info.getValue()}</Badge>,
+          header: tx("同步模式", "Sync Mode"),
+          cell: (info) => (
+            <Badge variant="neutral">{tEnum(info.getValue())}</Badge>
+          ),
         }),
         columnHelper.accessor("row_count", {
-          header: "行数 / 版本",
+          header: tx("行数 / 版本", "Rows / Version"),
           cell: (info) => {
             const ds = info.row.original;
             return (
               <span className="font-mono-tech">
-                {ds.row_count} 行 · v{ds.schema_version}
+                {fmtNum(ds.row_count, 0)} {tx("行", "rows")} · v
+                {ds.schema_version}
               </span>
             );
           },
         }),
         columnHelper.accessor("status", {
-          header: "状态",
+          header: tx("状态", "Status"),
           cell: (info) => {
             const st = info.getValue();
             return (
-              <Badge variant={st === "READY" ? "xblue" : "outline"}>{st}</Badge>
+              <StatusBadge status={st === "SYNCING" ? "RUNNING" : st} />
             );
           },
         }),
         columnHelper.display({
           id: "actions",
-          header: "操作",
+          header: tx("操作", "Actions"),
           cell: (info) => {
             const ds = info.row.original;
             return (
@@ -236,7 +362,7 @@ export function DatasetTable({
                 <Button
                   type="button"
                   variant="outline"
-                  className="px-2.5 py-1 text-[11px]"
+                  size="sm"
                   onClick={(e) => {
                     e.stopPropagation();
                     onSelectDataset(ds.id);
@@ -245,13 +371,13 @@ export function DatasetTable({
                   data-testid={`preview-dataset-btn-${ds.name}`}
                 >
                   <Eye className="h-3 w-3" />
-                  预览
+                  {tx("预览", "Preview")}
                 </Button>
                 <Button
                   type="button"
                   variant="outline"
-                  className="px-2.5 py-1 text-[11px]"
-                  disabled={syncingId === ds.id}
+                  size="sm"
+                  disabled={!canSync || syncingId === ds.id}
                   onClick={(e) => {
                     e.stopPropagation();
                     void handleTriggerSync(ds);
@@ -263,14 +389,39 @@ export function DatasetTable({
                   ) : (
                     <Play className="h-3 w-3" />
                   )}
-                  同步
+                  {tx("同步", "Sync")}
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={!canAdmin}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setPendingDeleteDs(ds);
+                  }}
+                  aria-label={tx("删除", "Delete")}
+                  data-testid={`delete-dataset-btn-${ds.name}`}
+                >
+                  <Trash2 className="h-3 w-3" />
                 </Button>
               </div>
             );
           },
         }),
       ]),
-    [handleTriggerSync, onChangeDetailTab, onSelectDataset, syncingId]
+    [
+      canAdmin,
+      canSync,
+      fmtNum,
+      formatSourceKind,
+      handleTriggerSync,
+      onChangeDetailTab,
+      onSelectDataset,
+      syncingId,
+      tEnum,
+      tx,
+    ]
   );
 
   const table = useTable({
@@ -279,7 +430,6 @@ export function DatasetTable({
     data: datasets,
   });
 
-  // Load preview & snapshots when selectedDataset or snapshot changes
   const loadPreviewAndSnapshots = useCallback(
     async (datasetId: string, snapIdStr: string) => {
       setPreviewLoading(true);
@@ -391,15 +541,37 @@ export function DatasetTable({
     });
   };
 
+  const isColumnDirty = useCallback(
+    (col: ColumnMeta): boolean => {
+      const draft = colEdits[col.column_name];
+      if (!draft) return false;
+      return (
+        draft.pii_category !== col.pii_category ||
+        draft.pii_confirmed !== col.pii_confirmed ||
+        draft.business_term !== col.business_term ||
+        draft.unit !== col.unit ||
+        draft.description !== col.description
+      );
+    },
+    [colEdits]
+  );
+
+  const dirtyColumns = useMemo(
+    () => columnsMeta.filter(isColumnDirty),
+    [columnsMeta, isColumnDirty]
+  );
+
   const handleSaveColumnMeta = async (colName: string) => {
-    if (!selectedDataset) return;
+    if (!selectedDataset || !canSync) return;
     const draft = colEdits[colName];
     if (!draft) return;
     setSavingCol(colName);
     setErrorMsg(null);
     try {
       await axhubApi.updateColumnMeta(selectedDataset.id, colName, draft);
-      setFeedbackMsg(`已更新列「${colName}」元数据与 PII 策略`);
+      setFeedbackMsg(
+        tx(`已保存列「${colName}」配置`, `Saved column "${colName}"`)
+      );
       await loadColumnsMeta(selectedDataset.id);
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
@@ -408,9 +580,38 @@ export function DatasetTable({
     }
   };
 
+  const handleSaveAllColumnsMeta = async () => {
+    if (!selectedDataset || !canSync || dirtyColumns.length === 0) return;
+    setSavingAllCols(true);
+    setErrorMsg(null);
+    try {
+      for (const col of dirtyColumns) {
+        const draft = colEdits[col.column_name];
+        if (draft) {
+          await axhubApi.updateColumnMeta(
+            selectedDataset.id,
+            col.column_name,
+            draft
+          );
+        }
+      }
+      setFeedbackMsg(
+        tx(
+          `已批量保存 ${dirtyColumns.length} 列元数据`,
+          `Saved ${dirtyColumns.length} modified columns`
+        )
+      );
+      await loadColumnsMeta(selectedDataset.id);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSavingAllCols(false);
+    }
+  };
+
   const handleCreateQualityRule = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!selectedDataset) return;
+    if (!selectedDataset || !canSync) return;
     setErrorMsg(null);
     try {
       const parsedParams: unknown = JSON.parse(newRuleParams || "{}");
@@ -435,7 +636,7 @@ export function DatasetTable({
   };
 
   const handleDeleteQualityRule = async (ruleId: string) => {
-    if (!selectedDataset) return;
+    if (!selectedDataset || !canSync) return;
     setErrorMsg(null);
     try {
       await axhubApi.deleteQualityRule(ruleId);
@@ -447,7 +648,7 @@ export function DatasetTable({
 
   const handleCreateWebhook = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!whDatasetName.trim() || !whSlug.trim()) return;
+    if (!canAdmin || !whDatasetName.trim() || !whSlug.trim()) return;
     setErrorMsg(null);
     try {
       const created = await axhubApi.createWebhook({
@@ -467,6 +668,7 @@ export function DatasetTable({
   };
 
   const handleDeleteWebhook = async (id: string) => {
+    if (!canAdmin) return;
     setErrorMsg(null);
     try {
       await axhubApi.deleteWebhook(id);
@@ -480,13 +682,11 @@ export function DatasetTable({
     <div className="space-y-4" data-testid="datasets-section">
       <Card className="p-4 space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
-          <div>
+          <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold">
-              DuckLake 数据集资产列表 ({datasets.length})
+              {tx("数据集资产", "Datasets")}
             </h2>
-            <p className="text-xs text-muted-foreground">
-              统一管理快照版本、增量游标、列级 PII 标注、数据质量守卫与实时 Webhook 流式入湖
-            </p>
+            <Badge variant="neutral">{fmtNum(datasets.length, 0)}</Badge>
           </div>
           <div className="flex items-center gap-2">
             <Button
@@ -502,7 +702,7 @@ export function DatasetTable({
               data-testid="open-webhooks-btn"
             >
               <Webhook className="h-3.5 w-3.5" />
-              Webhook 接入管理
+              {tx("实时推送", "Webhooks")}
             </Button>
             <Button
               type="button"
@@ -511,23 +711,23 @@ export function DatasetTable({
               data-testid="refresh-datasets-btn"
             >
               <RefreshCw className="h-3.5 w-3.5" />
-              刷新列表
+              {tx("刷新", "Refresh")}
             </Button>
           </div>
         </div>
 
         {errorMsg && (
           <div
-            className="rounded border border-foreground/30 bg-muted px-3 py-2 text-xs flex items-center justify-between"
+            className="rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs flex items-center justify-between"
             data-testid="dataset-error-banner"
           >
-            <span>{errorMsg}</span>
+            <span className="text-red-600 dark:text-red-400">{errorMsg}</span>
             <button
               type="button"
               className="text-muted-foreground hover:text-foreground cursor-pointer"
               onClick={() => setErrorMsg(null)}
             >
-              关闭
+              {tx("关闭", "Dismiss")}
             </button>
           </div>
         )}
@@ -543,7 +743,7 @@ export function DatasetTable({
               className="text-xblue cursor-pointer"
               onClick={() => setFeedbackMsg(null)}
             >
-              关闭
+              {tx("关闭", "Dismiss")}
             </button>
           </div>
         )}
@@ -556,43 +756,49 @@ export function DatasetTable({
           <Input
             value={filterQ}
             onChange={(e) => setFilterQ(e.target.value)}
-            placeholder="按名称或关键词筛选..."
+            placeholder="demo_orders"
             data-testid="dataset-filter-q"
           />
-          <select
+          <Select
             value={filterSourceKind}
             onChange={(e) => setFilterSourceKind(e.target.value)}
-            className="h-9 rounded-md border border-input bg-background px-3 text-xs"
             data-testid="dataset-filter-source-kind"
           >
-            <option value="">全部来源类型</option>
+            <option value="">{tx("全部来源", "All Sources")}</option>
             {SOURCE_KINDS.map((sk) => (
               <option key={sk} value={sk}>
-                {sk}
+                {formatSourceKind(sk)}
               </option>
             ))}
-          </select>
+          </Select>
           <Input
             value={filterTag}
             onChange={(e) => setFilterTag(e.target.value)}
-            placeholder="按标签过滤 (tag)..."
+            placeholder="supply_chain"
             data-testid="dataset-filter-tag"
           />
-          <Button type="submit" variant="outline" data-testid="dataset-filter-btn">
-            筛选数据集
+          <Button
+            type="submit"
+            variant="outline"
+            data-testid="dataset-filter-btn"
+          >
+            {tx("筛选", "Filter")}
           </Button>
         </form>
 
-        {/* TanStack Table v9 */}
+        {/* Dataset Table */}
         <div className="overflow-x-auto rounded border border-border">
-          <table className="w-full text-left text-xs" data-testid="dataset-table">
+          <table
+            className="w-full text-left text-xs"
+            data-testid="dataset-table"
+          >
             <thead className="bg-muted border-b border-border">
               {table.getHeaderGroups().map((headerGroup) => (
                 <tr key={headerGroup.id}>
                   {headerGroup.headers.map((header) => (
                     <th
                       key={header.id}
-                      className="px-3 py-2 font-medium text-muted-foreground"
+                      className="px-3 py-2 font-medium text-muted-foreground whitespace-nowrap"
                     >
                       {header.isPlaceholder ? null : (
                         <table.FlexRender header={header} />
@@ -607,9 +813,9 @@ export function DatasetTable({
                 <tr>
                   <td
                     colSpan={6}
-                    className="px-3 py-6 text-center text-muted-foreground"
+                    className="px-3 py-8 text-center text-muted-foreground"
                   >
-                    暂无数据集，请从上方数据源发现创建或上传文件入湖。
+                    {tx("暂无数据集", "No datasets registered")}
                   </td>
                 </tr>
               ) : (
@@ -623,7 +829,7 @@ export function DatasetTable({
                       data-testid={`dataset-row-${ds.name}`}
                       className={`border-b border-border last:border-0 cursor-pointer transition-colors ${
                         isSelected
-                          ? "bg-xblue-soft/60"
+                          ? "bg-xblue-soft/40"
                           : "hover:bg-muted/40"
                       }`}
                     >
@@ -644,95 +850,121 @@ export function DatasetTable({
       {/* Selected Dataset Governance & Inspector Workspace */}
       {selectedDataset && (
         <div className="space-y-3" data-testid="dataset-inspector">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-2">
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-muted-foreground">当前选中数据集:</span>
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-card px-3 pt-2">
+            <div className="flex flex-wrap items-center gap-2 text-xs pb-2">
+              <span className="text-muted-foreground">
+                {tx("当前数据集", "Selected")}:
+              </span>
               <span className="font-mono-tech font-semibold text-xblue">
                 {selectedDataset.name}
               </span>
-              <Badge variant="outline">{selectedDataset.schema_policy}</Badge>
+              <Badge variant="outline">
+                {tEnum(selectedDataset.schema_policy)}
+              </Badge>
               {selectedDataset.last_snapshot_id !== null && (
                 <span className="font-mono-tech text-[11px] text-muted-foreground">
-                  最新快照 #{selectedDataset.last_snapshot_id}
+                  #{fmtNum(selectedDataset.last_snapshot_id, 0)}
                 </span>
               )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-1">
-              {(
-                [
-                  { key: "preview", label: "数据预览与时间旅行" },
-                  { key: "columns", label: "列元数据与 PII" },
-                  { key: "quality", label: "数据质量规则" },
-                  { key: "history", label: "同步历史" },
-                  { key: "lineage", label: "血缘拓扑" },
-                  { key: "webhooks", label: "Webhook 管理" },
-                ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => onChangeDetailTab(tab.key)}
-                  data-testid={`dataset-tab-${tab.key}`}
-                  className={`rounded px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer ${
-                    activeDetailTab === tab.key
-                      ? "bg-xblue text-white"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted"
-                  }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
-            </div>
+            <Tabs
+              className="border-b-0"
+              value={activeDetailTab}
+              onChange={(next) => onChangeDetailTab(next)}
+              items={[
+                {
+                  key: "preview",
+                  label: tx("数据预览", "Preview"),
+                  testId: "dataset-tab-preview",
+                },
+                {
+                  key: "columns",
+                  label: tx("列与敏感项", "Columns & PII"),
+                  count:
+                    dirtyColumns.length > 0 ? dirtyColumns.length : undefined,
+                  testId: "dataset-tab-columns",
+                },
+                {
+                  key: "quality",
+                  label: tx("质量规则", "Quality Rules"),
+                  testId: "dataset-tab-quality",
+                },
+                {
+                  key: "history",
+                  label: tx("同步历史", "Sync History"),
+                  testId: "dataset-tab-history",
+                },
+                {
+                  key: "lineage",
+                  label: tx("血缘拓扑", "Lineage"),
+                  testId: "dataset-tab-lineage",
+                },
+                {
+                  key: "webhooks",
+                  label: tx("实时推送", "Webhooks"),
+                  testId: "dataset-tab-webhooks",
+                },
+              ]}
+            />
           </div>
 
-          {/* Tab 1: Data Preview + Snapshot Time-Travel */}
+          {/* Tab 1: Bounded Data Preview + Snapshot Time-Travel */}
           {activeDetailTab === "preview" && (
             <Card className="p-4 space-y-3" data-testid="dataset-preview-panel">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="text-xs font-semibold">
-                  湖表数据抽样预览 · {selectedDataset.lake_table}
+                <div className="flex items-center gap-2 text-xs font-semibold">
+                  <span>
+                    {tx("样本预览", "Sample Preview")} ·{" "}
+                    {selectedDataset.lake_table}
+                  </span>
+                  {previewData && previewData.rows.length > 0 && (
+                    <Badge variant="neutral">
+                      {fmtNum(previewData.rows.length, 0)} {tx("行", "rows")}
+                    </Badge>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 text-xs">
                   <Clock className="h-3.5 w-3.5 text-xblue" />
                   <span className="text-muted-foreground">
-                    DuckLake 快照时间旅行:
+                    {tx("快照版本", "Snapshot")}:
                   </span>
-                  <select
+                  <Select
                     value={selectedSnapshotId}
                     onChange={(e) => setSelectedSnapshotId(e.target.value)}
-                    className="h-8 rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
+                    className="h-8 font-mono-tech"
                     data-testid="snapshot-selector"
                   >
-                    <option value="">最新当前版本 (HEAD)</option>
+                    <option value="">{tx("当前最新", "Latest (HEAD)")}</option>
                     {snapshots.map((snap) => (
                       <option
                         key={snap.snapshot_id}
                         value={String(snap.snapshot_id)}
                       >
-                        Snapshot #{snap.snapshot_id} (+{snap.rows_added}/-
-                        {snap.rows_deleted}) · {snap.committed_at.slice(0, 19)}
+                        #{snap.snapshot_id} (+{fmtNum(snap.rows_added, 0)}/-
+                        {fmtNum(snap.rows_deleted, 0)}) ·{" "}
+                        {fmtTime(snap.committed_at, true)}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 </div>
               </div>
 
               {previewLoading ? (
                 <div className="py-6 text-center text-xs text-muted-foreground">
-                  正在从 DuckLake 读取数据预览...
+                  {tx("读取预览中…", "Loading sample rows…")}
                 </div>
               ) : !previewData || previewData.columns.length === 0 ? (
-                <div className="py-6 text-center text-xs text-muted-foreground">
-                  暂无可预览列数据（请先执行一次同步）。
-                </div>
+                <EmptyState
+                  title={tx("暂无可预览数据", "No preview rows available")}
+                />
               ) : (
-                <div className="overflow-x-auto rounded border border-border">
+                <div className="max-h-[440px] overflow-auto rounded border border-border">
                   <table
-                    className="w-full text-left text-xs"
+                    className="w-full border-collapse text-left text-xs"
                     data-testid="dataset-preview-table"
                   >
-                    <thead className="bg-muted border-b border-border">
+                    <thead className="sticky top-0 z-10 bg-muted border-b border-border">
                       <tr>
                         {previewData.columns.map((col) => (
                           <th
@@ -745,7 +977,9 @@ export function DatasetTable({
                                 {col.data_type}
                               </span>
                               {col.pii_category !== "NONE" && (
-                                <Badge variant="xblue">{col.pii_category}</Badge>
+                                <Badge variant="xblue">
+                                  {tEnum(col.pii_category)}
+                                </Badge>
                               )}
                             </div>
                           </th>
@@ -756,21 +990,29 @@ export function DatasetTable({
                       {previewData.rows.map((row, idx) => (
                         <tr
                           key={idx}
-                          className="border-b border-border last:border-0"
+                          className="border-b border-border last:border-0 hover:bg-muted/35"
                         >
-                          {previewData.columns.map((col) => (
-                            <td
-                              key={col.name}
-                              className="px-3 py-1.5 font-mono-tech whitespace-nowrap"
-                            >
-                              {row[col.name] === null ||
-                              row[col.name] === undefined
-                                ? "NULL"
-                                : typeof row[col.name] === "object"
-                                  ? JSON.stringify(row[col.name])
-                                  : String(row[col.name])}
-                            </td>
-                          ))}
+                          {previewData.columns.map((col) => {
+                            const rawCell = row[col.name];
+                            const isNull =
+                              rawCell === null || rawCell === undefined;
+                            return (
+                              <td
+                                key={col.name}
+                                className={`px-3 py-1.5 font-mono-tech whitespace-nowrap ${
+                                  isNull
+                                    ? "italic text-muted-foreground/70"
+                                    : "text-foreground"
+                                }`}
+                              >
+                                {formatPreviewCell(
+                                  rawCell,
+                                  col.name,
+                                  col.data_type
+                                )}
+                              </td>
+                            );
+                          })}
                         </tr>
                       ))}
                     </tbody>
@@ -783,22 +1025,42 @@ export function DatasetTable({
           {/* Tab 2: Column Metadata & PII Human Confirmation */}
           {activeDetailTab === "columns" && (
             <Card className="p-4 space-y-3" data-testid="dataset-columns-panel">
-              <div className="flex items-center gap-2 border-b border-border pb-2">
-                <ShieldAlert className="h-4 w-4 text-xblue" />
-                <div>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2.5">
+                <div className="flex items-center gap-2">
+                  <ShieldAlert className="h-4 w-4 text-xblue" />
                   <h3 className="text-xs font-semibold">
-                    列级元数据与 PII 敏感类别人工确认
+                    {tx("列级元数据与敏感分级", "Column Metadata & PII")}
                   </h3>
-                  <p className="text-[11px] text-muted-foreground">
-                    勾选「人工确认」后，后续自动同步列画像不再覆盖该列的 PII 分类设置
-                  </p>
+                  {dirtyColumns.length > 0 && (
+                    <Badge variant="warning">
+                      {tx(
+                        `${dirtyColumns.length} 项未保存`,
+                        `${dirtyColumns.length} unsaved`
+                      )}
+                    </Badge>
+                  )}
                 </div>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={
+                    !canSync || dirtyColumns.length === 0 || savingAllCols
+                  }
+                  onClick={() => void handleSaveAllColumnsMeta()}
+                  data-testid="save-all-col-meta-btn"
+                >
+                  <Save className="h-3.5 w-3.5" />
+                  {savingAllCols
+                    ? tx("保存中…", "Saving…")
+                    : tx("保存全部", "Save All")}
+                </Button>
               </div>
 
               {columnsMeta.length === 0 ? (
-                <div className="py-4 text-xs text-muted-foreground">
-                  暂无列元数据。
-                </div>
+                <EmptyState
+                  title={tx("暂无列元数据", "No column metadata available")}
+                />
               ) : (
                 <div className="space-y-2">
                   {columnsMeta.map((col) => {
@@ -809,22 +1071,41 @@ export function DatasetTable({
                       unit: col.unit,
                       description: col.description,
                     };
+                    const dirty = isColumnDirty(col);
                     return (
                       <div
                         key={col.column_name}
-                        className="grid grid-cols-1 md:grid-cols-12 gap-2 items-center rounded border border-border p-2.5 text-xs"
+                        className={`grid grid-cols-1 md:grid-cols-12 gap-2 items-center rounded border p-2.5 text-xs transition-colors ${
+                          dirty
+                            ? "border-amber-500/50 bg-amber-500/5"
+                            : "border-border bg-background"
+                        }`}
                         data-testid={`column-meta-row-${col.column_name}`}
                       >
-                        <div className="md:col-span-2 font-mono-tech">
-                          <div className="font-semibold">{col.column_name}</div>
+                        <div className="md:col-span-2 font-mono-tech min-w-0">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className="font-semibold truncate"
+                              title={col.column_name}
+                            >
+                              {col.column_name}
+                            </span>
+                            {dirty && (
+                              <span
+                                className="h-2 w-2 rounded-full bg-amber-500 shrink-0"
+                                title={tx("未保存变更", "Unsaved changes")}
+                              />
+                            )}
+                          </div>
                           <div className="text-[11px] text-muted-foreground">
                             {col.data_type}
                           </div>
                         </div>
 
                         <div className="md:col-span-2">
-                          <select
+                          <Select
                             value={draft.pii_category}
+                            disabled={!canSync}
                             onChange={(e) =>
                               setColEdits((prev) => ({
                                 ...prev,
@@ -834,21 +1115,22 @@ export function DatasetTable({
                                 },
                               }))
                             }
-                            className="h-8 w-full rounded border border-input bg-background px-2 text-xs font-mono-tech"
+                            className="h-8 w-full"
                             data-testid={`col-pii-select-${col.column_name}`}
                           >
                             {PII_CATEGORIES.map((cat) => (
                               <option key={cat} value={cat}>
-                                PII: {cat}
+                                {tEnum(cat)}
                               </option>
                             ))}
-                          </select>
+                          </Select>
                         </div>
 
                         <label className="md:col-span-2 inline-flex items-center gap-1.5 cursor-pointer">
                           <input
                             type="checkbox"
                             checked={draft.pii_confirmed}
+                            disabled={!canSync}
                             onChange={(e) =>
                               setColEdits((prev) => ({
                                 ...prev,
@@ -860,13 +1142,14 @@ export function DatasetTable({
                             }
                             data-testid={`col-pii-confirmed-${col.column_name}`}
                           />
-                          人工确认
+                          <span>{tx("人工锁定", "Confirmed")}</span>
                         </label>
 
                         <div className="md:col-span-2">
                           <Input
                             className="h-8 text-xs"
                             value={draft.business_term}
+                            disabled={!canSync}
                             onChange={(e) =>
                               setColEdits((prev) => ({
                                 ...prev,
@@ -876,7 +1159,7 @@ export function DatasetTable({
                                 },
                               }))
                             }
-                            placeholder="业务术语"
+                            placeholder={tx("业务术语", "Business term")}
                           />
                         </div>
 
@@ -884,6 +1167,7 @@ export function DatasetTable({
                           <Input
                             className="h-8 text-xs"
                             value={draft.description}
+                            disabled={!canSync}
                             onChange={(e) =>
                               setColEdits((prev) => ({
                                 ...prev,
@@ -893,19 +1177,20 @@ export function DatasetTable({
                                 },
                               }))
                             }
-                            placeholder="列业务说明 / 单位"
+                            placeholder={tx("字段说明", "Column description")}
                           />
                         </div>
 
                         <div className="md:col-span-1 flex justify-end">
                           <Button
                             type="button"
-                            variant="outline"
-                            className="px-2 py-1 text-[11px]"
-                            disabled={savingCol === col.column_name}
+                            variant={dirty ? "primary" : "outline"}
+                            size="sm"
+                            disabled={!canSync || savingCol === col.column_name}
                             onClick={() =>
                               void handleSaveColumnMeta(col.column_name)
                             }
+                            aria-label={tx("保存", "Save")}
                             data-testid={`save-col-meta-${col.column_name}`}
                           >
                             <Save className="h-3 w-3" />
@@ -922,71 +1207,72 @@ export function DatasetTable({
           {/* Tab 3: Quality Rules */}
           {activeDetailTab === "quality" && (
             <Card className="p-4 space-y-3" data-testid="dataset-quality-panel">
-              <div className="border-b border-border pb-2">
+              <div className="flex items-center justify-between border-b border-border pb-2">
                 <h3 className="text-xs font-semibold">
-                  数据质量规则配置（入湖事务前校验）
+                  {tx("数据质量守卫规则", "Data Quality Rules")}
                 </h3>
-                <p className="text-[11px] text-muted-foreground">
-                  BLOCK 策略在规则不满足时自动回滚 DuckLake 快照事务；WARN 仅记录至同步校验报告
-                </p>
+                <Badge variant="neutral">{fmtNum(qualityRules.length, 0)}</Badge>
               </div>
 
               <form
                 onSubmit={(e) => void handleCreateQualityRule(e)}
                 className="grid grid-cols-1 md:grid-cols-5 gap-2"
               >
-                <select
+                <Select
                   value={newRuleKind}
+                  disabled={!canSync}
                   onChange={(e) =>
                     setNewRuleKind(e.target.value as QualityRuleKind)
                   }
-                  className="h-9 rounded-md border border-input bg-background px-2 text-xs font-mono-tech"
                   data-testid="quality-rule-kind-select"
                 >
                   {QUALITY_RULE_KINDS.map((rk) => (
                     <option key={rk} value={rk}>
-                      {rk}
+                      {formatRuleKind(rk)}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <Input
                   value={newRuleCol}
+                  disabled={!canSync}
                   onChange={(e) => setNewRuleCol(e.target.value)}
-                  placeholder="目标列名（表级规则留空）"
+                  placeholder="amount"
                   data-testid="quality-rule-column-input"
                 />
                 <Input
                   value={newRuleParams}
+                  disabled={!canSync}
                   onChange={(e) => setNewRuleParams(e.target.value)}
-                  placeholder='参数 JSON，如 {"min":0}'
+                  placeholder='{"min": 0}'
                   className="font-mono-tech text-xs"
                   data-testid="quality-rule-params-input"
                 />
-                <select
+                <Select
                   value={newRuleOnFail}
+                  disabled={!canSync}
                   onChange={(e) =>
                     setNewRuleOnFail(e.target.value as QualityOnFail)
                   }
-                  className="h-9 rounded-md border border-input bg-background px-2 text-xs"
                   data-testid="quality-rule-onfail-select"
                 >
-                  <option value="WARN">失败动作: WARN</option>
-                  <option value="BLOCK">失败动作: BLOCK</option>
-                </select>
+                  <option value="WARN">{tEnum("WARN")}</option>
+                  <option value="BLOCK">{tx("阻断提交", "Block Commit")}</option>
+                </Select>
                 <Button
                   type="submit"
                   variant="outline"
+                  disabled={!canSync}
                   data-testid="quality-rule-add-btn"
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  新增规则
+                  {tx("新增规则", "Add Rule")}
                 </Button>
               </form>
 
               {qualityRules.length === 0 ? (
-                <div className="text-xs text-muted-foreground py-2">
-                  当前数据集暂未配置质量校验规则。
-                </div>
+                <EmptyState
+                  title={tx("暂无质量校验规则", "No quality rules configured")}
+                />
               ) : (
                 <div className="space-y-1.5">
                   {qualityRules.map((rule) => (
@@ -994,14 +1280,22 @@ export function DatasetTable({
                       key={rule.id}
                       className="rounded border border-border px-3 py-2 text-xs flex items-center justify-between"
                     >
-                      <div className="flex items-center gap-2 font-mono-tech">
+                      <div className="flex flex-wrap items-center gap-2 font-mono-tech">
                         <Badge
-                          variant={rule.on_fail === "BLOCK" ? "xblue" : "neutral"}
+                          variant={
+                            rule.on_fail === "BLOCK" ? "danger" : "warning"
+                          }
                         >
-                          {rule.on_fail}
+                          {rule.on_fail === "BLOCK"
+                            ? tx("阻断", "Block")
+                            : tEnum("WARN")}
                         </Badge>
-                        <span className="font-semibold">{rule.rule_kind}</span>
-                        <span>列: {rule.column_name ?? "*"}</span>
+                        <span className="font-semibold">
+                          {formatRuleKind(rule.rule_kind)}
+                        </span>
+                        <span>
+                          {tx("列", "Col")}: {rule.column_name ?? "*"}
+                        </span>
                         <span className="text-muted-foreground">
                           {JSON.stringify(rule.params)}
                         </span>
@@ -1009,8 +1303,10 @@ export function DatasetTable({
                       <Button
                         type="button"
                         variant="ghost"
-                        className="px-2 py-1 text-xs"
+                        size="sm"
+                        disabled={!canSync}
                         onClick={() => void handleDeleteQualityRule(rule.id)}
+                        aria-label={tx("删除", "Delete")}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
@@ -1030,13 +1326,11 @@ export function DatasetTable({
           {/* Tab 6: Webhook Management */}
           {activeDetailTab === "webhooks" && (
             <Card className="p-4 space-y-3" data-testid="webhooks-panel">
-              <div className="border-b border-border pb-2">
+              <div className="flex items-center justify-between border-b border-border pb-2">
                 <h3 className="text-xs font-semibold">
-                  Webhook 实时事件接入端点管理
+                  {tx("实时推送端点", "Webhook Endpoints")}
                 </h3>
-                <p className="text-[11px] text-muted-foreground">
-                  创建 HMAC-SHA256 或 Bearer 签名校验的推送入口，微批幂等刷入 DuckLake 流式表
-                </p>
+                <Badge variant="neutral">{fmtNum(webhooks.length, 0)}</Badge>
               </div>
 
               <form
@@ -1045,56 +1339,50 @@ export function DatasetTable({
               >
                 <Input
                   value={whDatasetName}
+                  disabled={!canAdmin}
                   onChange={(e) => setWhDatasetName(e.target.value)}
-                  placeholder="目标数据集名 (如 iot_events)"
+                  placeholder="iot_events"
                   data-testid="webhook-dataset-input"
                 />
                 <Input
                   value={whSlug}
+                  disabled={!canAdmin}
                   onChange={(e) => setWhSlug(e.target.value)}
-                  placeholder="路径标识 slug (如 demo-events)"
+                  placeholder="demo-events"
                   data-testid="webhook-slug-input"
                 />
-                <select
+                <Select
                   value={whAuthScheme}
+                  disabled={!canAdmin}
                   onChange={(e) =>
                     setWhAuthScheme(e.target.value as WebhookAuthScheme)
                   }
-                  className="h-9 rounded-md border border-input bg-background px-2 text-xs"
                 >
-                  <option value="HMAC_SHA256">HMAC_SHA256</option>
-                  <option value="BEARER">BEARER</option>
-                </select>
+                  <option value="HMAC_SHA256">HMAC-SHA256</option>
+                  <option value="BEARER">Bearer</option>
+                </Select>
                 <Input
                   value={whRecordPath}
+                  disabled={!canAdmin}
                   onChange={(e) => setWhRecordPath(e.target.value)}
-                  placeholder="JSONPath 记录路径 ($)"
+                  placeholder="$"
                   className="font-mono-tech text-xs"
                 />
                 <Button
                   type="submit"
                   variant="outline"
+                  disabled={!canAdmin}
                   data-testid="webhook-create-btn"
                 >
                   <Plus className="h-3.5 w-3.5" />
-                  创建端点
+                  {tx("创建端点", "Create")}
                 </Button>
               </form>
 
-              {createdWebhookSecret && (
-                <div className="rounded border border-xblue/40 bg-xblue-soft p-3 text-xs space-y-1 font-mono-tech">
-                  <div className="font-semibold text-xblue">
-                    Webhook 已创建（密钥仅展示一次，请立即妥善保存）
-                  </div>
-                  <div>URL: {createdWebhookSecret.url}</div>
-                  <div>Secret: {createdWebhookSecret.secret}</div>
-                </div>
-              )}
-
               {webhooks.length === 0 ? (
-                <div className="text-xs text-muted-foreground py-2">
-                  暂无已配置的 Webhook 接收端点。
-                </div>
+                <EmptyState
+                  title={tx("暂无推送端点", "No webhook endpoints")}
+                />
               ) : (
                 <div className="space-y-1.5">
                   {webhooks.map((wh) => (
@@ -1103,17 +1391,23 @@ export function DatasetTable({
                       className="rounded border border-border px-3 py-2 text-xs flex items-center justify-between font-mono-tech"
                     >
                       <div className="flex items-center gap-2">
-                        <Badge variant="xblue">{wh.auth_scheme}</Badge>
+                        <Badge variant="xblue">
+                          {wh.auth_scheme === "HMAC_SHA256"
+                            ? "HMAC-SHA256"
+                            : "Bearer"}
+                        </Badge>
                         <span className="font-semibold">{wh.slug}</span>
                         <span className="text-muted-foreground">
-                          path={wh.record_path}
+                          {wh.record_path}
                         </span>
                       </div>
                       <Button
                         type="button"
                         variant="ghost"
-                        className="px-2 py-1 text-xs"
+                        size="sm"
+                        disabled={!canAdmin}
                         onClick={() => void handleDeleteWebhook(wh.id)}
+                        aria-label={tx("删除", "Delete")}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                       </Button>
@@ -1125,6 +1419,52 @@ export function DatasetTable({
           )}
         </div>
       )}
+
+      {/* One-time Webhook Secret Modal */}
+      <Modal
+        open={Boolean(createdWebhookSecret)}
+        onClose={() => setCreatedWebhookSecret(null)}
+        title={tx("端点凭证", "Webhook Credentials")}
+        footer={
+          <Button
+            type="button"
+            onClick={() => setCreatedWebhookSecret(null)}
+          >
+            {tx("完成", "Done")}
+          </Button>
+        }
+      >
+        {createdWebhookSecret && (
+          <div className="space-y-2 font-mono-tech text-xs">
+            <p className="font-sans text-muted-foreground">
+              {tx(
+                "签名密钥仅展示一次，关闭后无法再次读取明文。",
+                "This signing secret is shown once and cannot be retrieved later."
+              )}
+            </p>
+            <div className="rounded border border-border bg-muted/40 p-2.5 break-all">
+              <div className="text-[11px] text-muted-foreground">URL</div>
+              <div>{createdWebhookSecret.url}</div>
+            </div>
+            <div className="rounded border border-border bg-muted/40 p-2.5 break-all">
+              <div className="text-[11px] text-muted-foreground">Secret</div>
+              <div>{createdWebhookSecret.secret}</div>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <ConfirmDialog
+        open={Boolean(pendingDeleteDs)}
+        onClose={() => setPendingDeleteDs(null)}
+        onConfirm={() => void handleConfirmDeleteDataset()}
+        loading={deletingDs}
+        title={tx("删除数据集", "Delete Dataset")}
+        description={tx(
+          `确定删除数据集「${pendingDeleteDs?.name ?? ""}」及其湖表快照元数据？`,
+          `Delete dataset "${pendingDeleteDs?.name ?? ""}" and its lake snapshot metadata?`
+        )}
+      />
     </div>
   );
 }

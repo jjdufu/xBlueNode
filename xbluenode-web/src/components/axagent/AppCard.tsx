@@ -6,14 +6,24 @@ import {
   Play,
   RefreshCw,
   Terminal,
-  X,
 } from "lucide-react";
 import {
   getPublishedRunStatus,
   invokePublishedEndpoint,
   type EndpointSpec,
 } from "@/lib/api/axagent";
-import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Drawer,
+  Input,
+  Select,
+  StatusBadge,
+  Textarea,
+} from "@/components/ui/primitives";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 
 interface SchemaPropertySpec {
   key: string;
@@ -134,6 +144,10 @@ export interface AppCardProps {
 }
 
 export function AppCard({ endpoint, activePat = null }: AppCardProps) {
+  const { tx, tEnum, fmtNum } = useI18n();
+  const { canAny } = usePrincipal();
+  const canRun = canAny(["AGENT_RUN", "DATA_READ", "AGENT_EDIT"]);
+
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [copiedCurl, setCopiedCurl] = useState(false);
 
@@ -175,6 +189,7 @@ export function AppCard({ endpoint, activePat = null }: AppCardProps) {
   };
 
   const handleRun = async () => {
+    if (!canRun) return;
     setErrorMsg(null);
     let payload: Record<string, unknown> = {};
 
@@ -186,12 +201,14 @@ export function AppCard({ endpoint, activePat = null }: AppCardProps) {
           parsed === null ||
           Array.isArray(parsed)
         ) {
-          setErrorMsg("请求体必须是 JSON 对象");
+          setErrorMsg(
+            tx("请求体须为 JSON 对象", "Request body must be a JSON object")
+          );
           return;
         }
         payload = parsed as Record<string, unknown>;
       } catch {
-        setErrorMsg("JSON 入参格式有误");
+        setErrorMsg(tx("JSON 格式有误", "Invalid JSON input"));
         return;
       }
     } else {
@@ -224,7 +241,12 @@ export function AppCard({ endpoint, activePat = null }: AppCardProps) {
                 payload[field.key] = obj;
               }
             } catch {
-              setErrorMsg(`字段 ${field.key} 不是合法 JSON 对象`);
+              setErrorMsg(
+                tx(
+                  `字段 ${field.key} 非合法 JSON 对象`,
+                  `Field ${field.key} is not a valid JSON object`
+                )
+              );
               return;
             }
           } else if (typeof raw === "object" && raw !== null) {
@@ -244,7 +266,11 @@ export function AppCard({ endpoint, activePat = null }: AppCardProps) {
       });
       setResult(resp);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "调用应用失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("调用失败", "Invocation failed")
+      );
     } finally {
       setRunning(false);
     }
@@ -262,7 +288,11 @@ export function AppCard({ endpoint, activePat = null }: AppCardProps) {
       );
       setResult(statusResp);
     } catch (err) {
-      setErrorMsg(err instanceof Error ? err.message : "刷新运行状态失败");
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : tx("刷新状态失败", "Failed to refresh run status")
+      );
     } finally {
       setRunning(false);
     }
@@ -317,28 +347,30 @@ export function AppCard({ endpoint, activePat = null }: AppCardProps) {
               </p>
             </div>
             <div className="flex items-center gap-1 shrink-0">
-              <Badge
-                variant={endpoint.environment === "PROD" ? "xblue" : "neutral"}
-              >
-                {endpoint.environment}
-              </Badge>
-              <Badge variant="outline">{endpoint.kind}</Badge>
+              <StatusBadge status={endpoint.environment} />
+              <Badge variant="outline">{tEnum(endpoint.kind)}</Badge>
             </div>
           </div>
 
           <p className="text-xs text-muted-foreground line-clamp-2 min-h-[32px]">
-            {endpoint.description || "自动生成交互式参数表单，一键运行并可视化输出结果。"}
+            {endpoint.description ||
+              tx(
+                "动态生成参数表单并可视化返回结果。",
+                "Dynamic parameter form with structured result rendering."
+              )}
           </p>
         </div>
 
         <div className="flex items-center justify-between gap-2 pt-2 border-t border-border">
-          <Badge variant="outline">输出: {endpoint.output_shape}</Badge>
+          <Badge variant="outline">
+            {tx("输出", "Output")}: {endpoint.output_shape}
+          </Badge>
           <div className="flex items-center gap-1.5">
             <Button
               type="button"
               variant="ghost"
+              size="sm"
               onClick={() => void handleCopyCurl()}
-              className="h-7 px-2"
             >
               {copiedCurl ? (
                 <Check className="h-3.5 w-3.5 text-xblue" />
@@ -347,359 +379,350 @@ export function AppCard({ endpoint, activePat = null }: AppCardProps) {
               )}
               cURL
             </Button>
-            <Button
-              type="button"
-              data-testid={`open-app-btn-${endpoint.slug}`}
-              onClick={() => {
-                setPatInput(activePat ?? "");
-                setDrawerOpen(true);
-              }}
-              className="h-7 px-3"
-            >
-              <Play className="h-3 w-3" />
-              运行应用
-            </Button>
+            {canRun && (
+              <Button
+                type="button"
+                size="sm"
+                data-testid={`open-app-btn-${endpoint.slug}`}
+                onClick={() => {
+                  setPatInput(activePat ?? "");
+                  setDrawerOpen(true);
+                }}
+              >
+                <Play className="h-3 w-3" />
+                {tx("运行", "Run")}
+              </Button>
+            )}
           </div>
         </div>
       </Card>
 
-      {drawerOpen ? (
-        <div
-          data-testid="app-runner-drawer"
-          className="fixed inset-0 z-50 flex justify-end bg-black/50"
-        >
-          <div className="w-full max-w-2xl bg-background border-l border-border p-5 overflow-y-auto space-y-5">
-            <div className="flex items-center justify-between border-b border-border pb-3">
-              <div className="space-y-0.5">
-                <div className="flex items-center gap-2">
-                  <h2 className="text-sm font-semibold">{endpoint.title}</h2>
-                  <Badge
-                    variant={
-                      endpoint.environment === "PROD" ? "xblue" : "neutral"
-                    }
-                  >
-                    {endpoint.environment}
-                  </Badge>
-                  <Badge variant="outline">{endpoint.kind}</Badge>
-                </div>
-                <p className="text-[11px] font-mono-tech text-muted-foreground">
-                  slug: {endpoint.slug} · shape: {endpoint.output_shape}
-                </p>
-              </div>
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setDrawerOpen(false)}
-                className="h-7 w-7 p-0"
-              >
-                <X className="h-4 w-4" />
-              </Button>
+      <Drawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        widthClass="max-w-2xl"
+        testId="app-runner-drawer"
+        title={
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="truncate">{endpoint.title}</span>
+            <StatusBadge status={endpoint.environment} />
+            <Badge variant="outline">{tEnum(endpoint.kind)}</Badge>
+          </div>
+        }
+      >
+        <p className="text-[11px] font-mono-tech text-muted-foreground">
+          slug: {endpoint.slug} · shape: {endpoint.output_shape}
+        </p>
+
+        {/* Dynamic Schema Form */}
+        <div className="rounded-md border border-border bg-muted/20 p-4 space-y-3 text-xs">
+          <div className="font-semibold text-foreground">
+            {tx("输入参数", "Input Parameters")}
+          </div>
+          {schemaFields.length === 0 ? (
+            <div className="space-y-1">
+              <label className="text-[11px] text-muted-foreground">
+                {tx("请求体 JSON", "Request JSON")}
+              </label>
+              <Textarea
+                value={rawJsonInput}
+                onChange={(e) => setRawJsonInput(e.target.value)}
+                rows={3}
+                className="font-mono-tech text-xs"
+              />
             </div>
-
-            {/* Dynamic Schema Form */}
-            <div className="rounded-md border border-border bg-muted/20 p-4 space-y-3 text-xs">
-              <div className="font-semibold text-foreground">输入参数表单</div>
-              {schemaFields.length === 0 ? (
-                <div className="space-y-1">
-                  <label className="text-[11px] text-muted-foreground">
-                    JSON 请求参数
-                  </label>
-                  <Textarea
-                    value={rawJsonInput}
-                    onChange={(e) => setRawJsonInput(e.target.value)}
-                    rows={3}
-                    className="font-mono-tech text-xs"
-                  />
-                </div>
-              ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  {schemaFields.map((field) => (
-                    <div
-                      key={field.key}
-                      className={
-                        field.type === "object" ? "sm:col-span-2 space-y-1" : "space-y-1"
-                      }
-                    >
-                      <label className="text-[11px] font-medium text-foreground flex items-center gap-1">
-                        <span className="font-mono-tech">{field.key}</span>
-                        {field.required ? (
-                          <span className="text-xblue">*</span>
-                        ) : null}
-                      </label>
-
-                      {field.enumValues ? (
-                        <select
-                          data-testid={`app-field-${field.key}`}
-                          value={String(formValues[field.key] ?? "")}
-                          onChange={(e) =>
-                            setFormValues((prev) => ({
-                              ...prev,
-                              [field.key]: e.target.value,
-                            }))
-                          }
-                          className="h-8 w-full rounded-md border border-input bg-background px-2.5 text-xs font-mono-tech"
-                        >
-                          <option value="">-- 请选择 --</option>
-                          {field.enumValues.map((opt) => (
-                            <option key={opt} value={opt}>
-                              {opt}
-                            </option>
-                          ))}
-                        </select>
-                      ) : field.type === "boolean" ? (
-                        <label className="flex items-center gap-2 h-8">
-                          <input
-                            type="checkbox"
-                            data-testid={`app-field-${field.key}`}
-                            checked={Boolean(formValues[field.key])}
-                            onChange={(e) =>
-                              setFormValues((prev) => ({
-                                ...prev,
-                                [field.key]: e.target.checked,
-                              }))
-                            }
-                            className="accent-[#2563eb]"
-                          />
-                          <span className="text-muted-foreground">启用</span>
-                        </label>
-                      ) : field.type === "array" && field.itemEnumValues ? (
-                        <div className="flex flex-wrap gap-1.5 pt-0.5">
-                          {field.itemEnumValues.map((opt) => {
-                            const arr = Array.isArray(formValues[field.key])
-                              ? (formValues[field.key] as string[])
-                              : [];
-                            const selected = arr.includes(opt);
-                            return (
-                              <label
-                                key={opt}
-                                className="inline-flex items-center gap-1 rounded border border-border bg-background px-2 py-0.5 text-[11px] font-mono-tech cursor-pointer"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={selected}
-                                  onChange={() => {
-                                    const next = selected
-                                      ? arr.filter((x) => x !== opt)
-                                      : [...arr, opt];
-                                    setFormValues((prev) => ({
-                                      ...prev,
-                                      [field.key]: next,
-                                    }));
-                                  }}
-                                  className="accent-[#2563eb]"
-                                />
-                                {opt}
-                              </label>
-                            );
-                          })}
-                        </div>
-                      ) : field.type === "object" ? (
-                        <Textarea
-                          data-testid={`app-field-${field.key}`}
-                          rows={2}
-                          value={
-                            typeof formValues[field.key] === "string"
-                              ? (formValues[field.key] as string)
-                              : formValues[field.key]
-                                ? JSON.stringify(formValues[field.key])
-                                : ""
-                          }
-                          onChange={(e) =>
-                            setFormValues((prev) => ({
-                              ...prev,
-                              [field.key]: e.target.value,
-                            }))
-                          }
-                          placeholder='{"from": "2026-01-01"}'
-                          className="font-mono-tech text-xs"
-                        />
-                      ) : (
-                        <Input
-                          data-testid={`app-field-${field.key}`}
-                          type={
-                            field.type === "number" || field.type === "integer"
-                              ? "number"
-                              : field.format === "date"
-                                ? "date"
-                                : "text"
-                          }
-                          value={String(formValues[field.key] ?? "")}
-                          onChange={(e) =>
-                            setFormValues((prev) => ({
-                              ...prev,
-                              [field.key]: e.target.value,
-                            }))
-                          }
-                          placeholder={
-                            field.type === "array"
-                              ? "逗号分隔，如 W-1, W-2"
-                              : field.description || field.key
-                          }
-                          className="h-8 text-xs font-mono-tech"
-                        />
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {/* Optional PAT testing token */}
-              <div className="pt-2 border-t border-border flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                <div className="flex-1 flex items-center gap-2">
-                  <Terminal className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  <Input
-                    data-testid="app-pat-input"
-                    value={patInput}
-                    onChange={(e) => setPatInput(e.target.value)}
-                    placeholder="可选：填入 axp_... 令牌走公开端点 /api/published 测试（留空使用当前登录主体执行）"
-                    className="h-8 text-xs font-mono-tech"
-                  />
-                </div>
-                <Button
-                  type="button"
-                  data-testid="app-run-submit-btn"
-                  disabled={running}
-                  onClick={() => void handleRun()}
-                  className="h-8 px-4 shrink-0"
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              {schemaFields.map((field) => (
+                <div
+                  key={field.key}
+                  className={
+                    field.type === "object"
+                      ? "sm:col-span-2 space-y-1"
+                      : "space-y-1"
+                  }
                 >
-                  <Play className="h-3.5 w-3.5" />
-                  {running ? "执行中…" : "立即执行"}
-                </Button>
-              </div>
-            </div>
-
-            {errorMsg ? (
-              <div className="rounded-md border border-border bg-muted px-3 py-2 text-xs text-foreground">
-                {errorMsg}
-              </div>
-            ) : null}
-
-            {/* Output Section */}
-            {result ? (
-              <div
-                data-testid="app-run-result"
-                className="space-y-3 text-xs border-t border-border pt-4"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold text-foreground">执行结果</span>
-                  {resultRows && resultRows.length > 0 ? (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      data-testid="app-export-csv-btn"
-                      onClick={() =>
-                        downloadRowsAsCsv(endpoint.slug, resultRows)
-                      }
-                      className="h-7 px-2.5"
-                    >
-                      <Download className="h-3.5 w-3.5" />
-                      导出 CSV ({resultRows.length} 行)
-                    </Button>
-                  ) : null}
-                </div>
-
-                {/* ROWS Table */}
-                {resultRows ? (
-                  resultRows.length === 0 ? (
-                    <p className="text-muted-foreground py-4 text-center border border-dashed border-border rounded-md">
-                      查询成功，返回 0 行记录
-                    </p>
-                  ) : (
-                    <div className="overflow-x-auto rounded-md border border-border">
-                      <table className="w-full text-left text-xs">
-                        <thead className="bg-muted text-muted-foreground border-b border-border">
-                          <tr>
-                            {rowColumns.map((c) => (
-                              <th
-                                key={c}
-                                className="px-3 py-2 font-mono-tech font-medium"
-                              >
-                                {c}
-                              </th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-border">
-                          {resultRows.map((row, rIdx) => (
-                            <tr key={rIdx} className="bg-background">
-                              {rowColumns.map((c) => (
-                                <td
-                                  key={c}
-                                  className="px-3 py-1.5 font-mono-tech whitespace-nowrap"
-                                >
-                                  {row[c] === null || row[c] === undefined
-                                    ? "—"
-                                    : typeof row[c] === "object"
-                                      ? JSON.stringify(row[c])
-                                      : String(row[c])}
-                                </td>
-                              ))}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )
-                ) : resultObjects ? (
-                  /* OBJECT Cards */
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    {resultObjects.map((obj, idx) => (
-                      <Card key={idx} className="p-3 space-y-2">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-semibold">
-                            {typeof obj.title === "string"
-                              ? obj.title
-                              : String(obj.node_key ?? `Object #${idx + 1}`)}
-                          </span>
-                          <Badge variant="xblue">
-                            {String(obj.node_key ?? obj.type_name ?? "OBJECT")}
-                          </Badge>
-                        </div>
-                        <pre className="rounded border border-border bg-muted/40 p-2 text-[11px] font-mono-tech overflow-x-auto max-h-40">
-                          {JSON.stringify(obj, null, 2)}
-                        </pre>
-                      </Card>
-                    ))}
-                  </div>
-                ) : typeof result.answer === "string" ? (
-                  /* TEXT Prose */
-                  <Card className="p-3.5 whitespace-pre-wrap leading-relaxed">
-                    {result.answer}
-                  </Card>
-                ) : typeof result.run_id === "string" ? (
-                  /* RUN Status */
-                  <Card className="p-3.5 flex items-center justify-between gap-2">
-                    <div className="space-y-1">
-                      <div className="font-medium">流程异步执行已触发</div>
-                      <div className="font-mono-tech text-[11px] text-muted-foreground">
-                        run_id: {result.run_id} · status:{" "}
-                        {String(result.status ?? "RUNNING")}
-                      </div>
-                    </div>
-                    {(patInput.trim() || activePat || "").startsWith("axp_") ? (
-                      <Button
-                        type="button"
-                        variant="outline"
-                        onClick={() =>
-                          void handleRefreshRunStatus(String(result.run_id))
-                        }
-                        className="h-7 px-2.5"
-                      >
-                        <RefreshCw className="h-3.5 w-3.5" />
-                        刷新状态
-                      </Button>
+                  <label className="text-[11px] font-medium text-foreground flex items-center gap-1">
+                    <span className="font-mono-tech">{field.key}</span>
+                    {field.required ? (
+                      <span className="text-xblue">*</span>
                     ) : null}
-                  </Card>
-                ) : (
-                  <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono-tech text-[11px] overflow-x-auto">
-                    {JSON.stringify(result, null, 2)}
-                  </pre>
-                )}
-              </div>
-            ) : null}
+                  </label>
+
+                  {field.enumValues ? (
+                    <Select
+                      data-testid={`app-field-${field.key}`}
+                      value={String(formValues[field.key] ?? "")}
+                      onChange={(e) =>
+                        setFormValues((prev) => ({
+                          ...prev,
+                          [field.key]: e.target.value,
+                        }))
+                      }
+                      className="h-8 w-full font-mono-tech"
+                    >
+                      <option value="">{tx("未指定", "Unspecified")}</option>
+                      {field.enumValues.map((opt) => (
+                        <option key={opt} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                    </Select>
+                  ) : field.type === "boolean" ? (
+                    <label className="flex items-center gap-2 h-8">
+                      <input
+                        type="checkbox"
+                        data-testid={`app-field-${field.key}`}
+                        checked={Boolean(formValues[field.key])}
+                        onChange={(e) =>
+                          setFormValues((prev) => ({
+                            ...prev,
+                            [field.key]: e.target.checked,
+                          }))
+                        }
+                        className="accent-[#2563eb]"
+                      />
+                      <span className="text-muted-foreground">
+                        {tx("启用", "Enabled")}
+                      </span>
+                    </label>
+                  ) : field.type === "array" && field.itemEnumValues ? (
+                    <div className="flex flex-wrap gap-1.5 pt-0.5">
+                      {field.itemEnumValues.map((opt) => {
+                        const arr = Array.isArray(formValues[field.key])
+                          ? (formValues[field.key] as string[])
+                          : [];
+                        const selected = arr.includes(opt);
+                        return (
+                          <label
+                            key={opt}
+                            className="inline-flex items-center gap-1 rounded border border-border bg-background px-2 py-0.5 text-[11px] font-mono-tech cursor-pointer"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              onChange={() => {
+                                const next = selected
+                                  ? arr.filter((x) => x !== opt)
+                                  : [...arr, opt];
+                                setFormValues((prev) => ({
+                                  ...prev,
+                                  [field.key]: next,
+                                }));
+                              }}
+                              className="accent-[#2563eb]"
+                            />
+                            {opt}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : field.type === "object" ? (
+                    <Textarea
+                      data-testid={`app-field-${field.key}`}
+                      rows={2}
+                      value={
+                        typeof formValues[field.key] === "string"
+                          ? (formValues[field.key] as string)
+                          : formValues[field.key]
+                            ? JSON.stringify(formValues[field.key])
+                            : ""
+                      }
+                      onChange={(e) =>
+                        setFormValues((prev) => ({
+                          ...prev,
+                          [field.key]: e.target.value,
+                        }))
+                      }
+                      placeholder='{"from": "2026-01-01"}'
+                      className="font-mono-tech text-xs"
+                    />
+                  ) : (
+                    <Input
+                      data-testid={`app-field-${field.key}`}
+                      type={
+                        field.type === "number" || field.type === "integer"
+                          ? "number"
+                          : field.format === "date"
+                            ? "date"
+                            : "text"
+                      }
+                      value={String(formValues[field.key] ?? "")}
+                      onChange={(e) =>
+                        setFormValues((prev) => ({
+                          ...prev,
+                          [field.key]: e.target.value,
+                        }))
+                      }
+                      placeholder={
+                        field.type === "array"
+                          ? "W-1, W-2"
+                          : field.description || field.key
+                      }
+                      className="h-8 text-xs font-mono-tech"
+                    />
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Optional PAT testing token */}
+          <div className="pt-2 border-t border-border flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+            <div className="flex-1 flex items-center gap-2">
+              <Terminal className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <Input
+                data-testid="app-pat-input"
+                value={patInput}
+                onChange={(e) => setPatInput(e.target.value)}
+                placeholder="axp_..."
+                className="h-8 text-xs font-mono-tech"
+              />
+            </div>
+            <Button
+              type="button"
+              data-testid="app-run-submit-btn"
+              disabled={!canRun || running}
+              onClick={() => void handleRun()}
+              className="h-8 px-4 shrink-0"
+            >
+              <Play className="h-3.5 w-3.5" />
+              {running ? tx("运行中…", "Running…") : tx("执行", "Execute")}
+            </Button>
           </div>
         </div>
-      ) : null}
+
+        {errorMsg ? (
+          <div className="rounded-md border border-border bg-muted px-3 py-2 text-xs text-foreground">
+            {errorMsg}
+          </div>
+        ) : null}
+
+        {/* Output Section */}
+        {result ? (
+          <div
+            data-testid="app-run-result"
+            className="space-y-3 text-xs border-t border-border pt-4"
+          >
+            <div className="flex items-center justify-between">
+              <span className="font-semibold text-foreground">
+                {tx("执行结果", "Result")}
+              </span>
+              {resultRows && resultRows.length > 0 ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  data-testid="app-export-csv-btn"
+                  onClick={() => downloadRowsAsCsv(endpoint.slug, resultRows)}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  {tx(
+                    `导出 CSV (${fmtNum(resultRows.length, 0)})`,
+                    `Export CSV (${fmtNum(resultRows.length, 0)})`
+                  )}
+                </Button>
+              ) : null}
+            </div>
+
+            {resultRows ? (
+              resultRows.length === 0 ? (
+                <p className="text-muted-foreground py-4 text-center border border-dashed border-border rounded-md">
+                  {tx("暂无记录", "No rows returned")}
+                </p>
+              ) : (
+                <div className="overflow-x-auto rounded-md border border-border">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-muted text-muted-foreground border-b border-border">
+                      <tr>
+                        {rowColumns.map((c) => (
+                          <th
+                            key={c}
+                            className="px-3 py-2 font-mono-tech font-medium"
+                          >
+                            {c}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {resultRows.map((row, rIdx) => (
+                        <tr key={rIdx} className="bg-background">
+                          {rowColumns.map((c) => (
+                            <td
+                              key={c}
+                              className="px-3 py-1.5 font-mono-tech whitespace-nowrap"
+                            >
+                              {row[c] === null || row[c] === undefined
+                                ? "—"
+                                : typeof row[c] === "object"
+                                  ? JSON.stringify(row[c])
+                                  : String(row[c])}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )
+            ) : resultObjects ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {resultObjects.map((obj, idx) => (
+                  <Card key={idx} className="p-3 space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-semibold">
+                        {typeof obj.title === "string"
+                          ? obj.title
+                          : String(obj.node_key ?? `#${idx + 1}`)}
+                      </span>
+                      <Badge variant="xblue">
+                        {String(obj.node_key ?? obj.type_name ?? "OBJECT")}
+                      </Badge>
+                    </div>
+                    <pre className="rounded border border-border bg-muted/40 p-2 text-[11px] font-mono-tech overflow-x-auto max-h-40">
+                      {JSON.stringify(obj, null, 2)}
+                    </pre>
+                  </Card>
+                ))}
+              </div>
+            ) : typeof result.answer === "string" ? (
+              <Card className="p-3.5 whitespace-pre-wrap leading-relaxed">
+                {result.answer}
+              </Card>
+            ) : typeof result.run_id === "string" ? (
+              <Card className="p-3.5 flex items-center justify-between gap-2">
+                <div className="space-y-1">
+                  <div className="font-medium">
+                    {tx("流程异步运行已触发", "Flow execution triggered")}
+                  </div>
+                  <div className="font-mono-tech text-[11px] text-muted-foreground">
+                    run_id: {result.run_id} ·{" "}
+                    {String(result.status ?? "RUNNING")}
+                  </div>
+                </div>
+                {(patInput.trim() || activePat || "").startsWith("axp_") ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() =>
+                      void handleRefreshRunStatus(String(result.run_id))
+                    }
+                  >
+                    <RefreshCw className="h-3.5 w-3.5" />
+                    {tx("刷新", "Refresh")}
+                  </Button>
+                ) : null}
+              </Card>
+            ) : (
+              <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono-tech text-[11px] overflow-x-auto">
+                {JSON.stringify(result, null, 2)}
+              </pre>
+            )}
+          </div>
+        ) : null}
+      </Drawer>
     </>
   );
 }

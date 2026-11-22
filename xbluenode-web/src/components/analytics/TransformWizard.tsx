@@ -6,35 +6,40 @@ import {
   Trash2,
   Wand2,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   analyticsApi,
   type AnalyticsCatalogResponse,
   type ApplyTransformResponse,
-  type QueryColumn,
   type TransformDraft,
 } from "@/lib/api/analytics";
+import { usePrincipal } from "@/lib/permissions";
 import { ResultGrid } from "@/components/analytics/ResultGrid";
-import { Badge, Button, Card, Input, Textarea } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  Input,
+  StatusBadge,
+  Textarea,
+} from "@/components/ui/primitives";
 
 export interface TransformWizardProps {
   catalog: AnalyticsCatalogResponse;
   onMaterialized?: () => Promise<void> | void;
-  onSyncBottomResult?: (payload: {
-    columns: QueryColumn[];
-    rows: Record<string, unknown>[];
-    sql: string;
-    durationMs: number;
-  }) => void;
 }
 
 export function TransformWizard({
   catalog,
   onMaterialized,
-  onSyncBottomResult,
 }: TransformWizardProps) {
+  const { tx, tEnum, fmtNum } = useI18n();
+  const { canAny } = usePrincipal();
+  const canTransform = canAny(["DATA_SYNC", "DATA_ADMIN", "STUDIO_EDIT"]);
+
   const [instruction, setInstruction] = useState("");
   const [sourceDatasetIds, setSourceDatasetIds] = useState<string[]>([]);
-  const [targetName, setTargetName] = useState("derived_clean_orders");
+  const [targetName, setTargetName] = useState("");
 
   const [draft, setDraft] = useState<TransformDraft | null>(null);
   const [editedSql, setEditedSql] = useState("");
@@ -55,13 +60,10 @@ export function TransformWizard({
   }, [catalog.datasets, sourceDatasetIds.length]);
 
   const handleGenerateDraft = async () => {
-    if (
-      !instruction.trim() ||
-      sourceDatasetIds.length === 0 ||
-      !targetName.trim()
-    ) {
+    if (!canTransform || !instruction.trim() || sourceDatasetIds.length === 0) {
       return;
     }
+    const effectiveTargetName = targetName.trim() || "clean_orders_summary";
     setGenerating(true);
     setErrorMsg(null);
     setAppliedInfo(null);
@@ -69,16 +71,10 @@ export function TransformWizard({
       const created = await analyticsApi.createTransformDraft({
         instruction: instruction.trim(),
         source_datasets: sourceDatasetIds,
-        target_dataset_name: targetName.trim(),
+        target_dataset_name: effectiveTargetName,
       });
       setDraft(created);
       setEditedSql(created.sql_text);
-      onSyncBottomResult?.({
-        columns: created.preview.columns,
-        rows: created.preview.rows,
-        sql: created.sql_text,
-        durationMs: 0,
-      });
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -87,7 +83,7 @@ export function TransformWizard({
   };
 
   const handleUpdateDraftSql = async () => {
-    if (!draft || !editedSql.trim()) return;
+    if (!canTransform || !draft || !editedSql.trim()) return;
     setUpdatingSql(true);
     setErrorMsg(null);
     try {
@@ -97,12 +93,6 @@ export function TransformWizard({
       );
       setDraft(updated);
       setEditedSql(updated.sql_text);
-      onSyncBottomResult?.({
-        columns: updated.preview.columns,
-        rows: updated.preview.rows,
-        sql: updated.sql_text,
-        durationMs: 0,
-      });
     } catch (err) {
       setErrorMsg(err instanceof Error ? err.message : String(err));
     } finally {
@@ -111,7 +101,7 @@ export function TransformWizard({
   };
 
   const handleApplyDraft = async () => {
-    if (!draft) return;
+    if (!canTransform || !draft) return;
     setApplying(true);
     setErrorMsg(null);
     try {
@@ -127,7 +117,7 @@ export function TransformWizard({
   };
 
   const handleDiscardDraft = async () => {
-    if (!draft) return;
+    if (!canTransform || !draft) return;
     setDiscarding(true);
     setErrorMsg(null);
     try {
@@ -140,6 +130,24 @@ export function TransformWizard({
     }
   };
 
+  const renderDraftStatus = (status: TransformDraft["status"]) => {
+    if (status === "APPLIED") {
+      return (
+        <Badge variant="success" data-testid="transform-draft-status">
+          {tx("已物化", "Applied")}
+        </Badge>
+      );
+    }
+    if (status === "DISCARDED") {
+      return (
+        <Badge variant="outline" data-testid="transform-draft-status">
+          {tx("已丢弃", "Discarded")}
+        </Badge>
+      );
+    }
+    return <StatusBadge status={status} data-testid="transform-draft-status" />;
+  };
+
   return (
     <div className="space-y-3" data-testid="analytics-transform-wizard">
       {/* Step 1: Natural Language Specification */}
@@ -147,23 +155,25 @@ export function TransformWizard({
         <div className="flex items-center justify-between border-b border-border pb-2 text-xs">
           <div className="flex items-center gap-2 font-semibold">
             <Wand2 className="h-3.5 w-3.5 text-xblue" />
-            <span>AI 数据处理与派生视图向导</span>
+            <span>{tx("智能数据变换与派生视图", "AI Data Transform")}</span>
           </div>
-          <Badge variant="outline">
-            指令 → SQL 守卫试运行 → 物化 DERIVED_VIEW
-          </Badge>
+          <Badge variant="outline">{tEnum("DERIVED_VIEW")}</Badge>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-12 gap-3 text-xs">
           <div className="md:col-span-7 space-y-1.5">
             <label className="font-medium text-muted-foreground">
-              自然语言清洗 / 关联 / 聚合指令
+              {tx("清洗与聚合指令", "Transform Instruction")}
             </label>
             <Textarea
               rows={3}
               value={instruction}
+              disabled={!canTransform}
               onChange={(e) => setInstruction(e.target.value)}
-              placeholder="例如：筛选 status = 'PAID' 的有效订单，剔除异常金额并按 warehouse_code 汇总订单笔数与总金额"
+              placeholder={tx(
+                "筛选已支付订单并按仓库编码汇总笔数与总金额",
+                "Filter paid orders and aggregate order count and total amount by warehouse"
+              )}
               className="text-xs"
               data-testid="transform-instruction-input"
             />
@@ -172,12 +182,12 @@ export function TransformWizard({
           <div className="md:col-span-5 space-y-2.5">
             <div className="space-y-1">
               <label className="font-medium text-muted-foreground">
-                勾选上游源数据集
+                {tx("源数据集", "Source Datasets")}
               </label>
               <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">
                 {(catalog.datasets ?? []).length === 0 ? (
                   <span className="text-[11px] text-muted-foreground">
-                    暂无可用源数据集
+                    {tx("暂无源数据集", "No source datasets")}
                   </span>
                 ) : (
                   (catalog.datasets ?? []).map((ds) => {
@@ -194,6 +204,7 @@ export function TransformWizard({
                         <input
                           type="checkbox"
                           checked={checked}
+                          disabled={!canTransform}
                           onChange={(e) => {
                             if (e.target.checked) {
                               setSourceDatasetIds((prev) => [...prev, ds.id]);
@@ -216,13 +227,14 @@ export function TransformWizard({
 
             <div className="space-y-1">
               <label className="font-medium text-muted-foreground">
-                目标派生数据集名称 (a-z0-9_)
+                {tx("目标数据集标识", "Target Dataset Name")}
               </label>
               <div className="flex gap-2">
                 <Input
                   value={targetName}
+                  disabled={!canTransform}
                   onChange={(e) => setTargetName(e.target.value)}
-                  placeholder="derived_paid_orders"
+                  placeholder="clean_orders_summary"
                   className="h-8 text-xs font-mono-tech"
                   data-testid="transform-target-name"
                 />
@@ -230,16 +242,18 @@ export function TransformWizard({
                   type="button"
                   variant="primary"
                   disabled={
+                    !canTransform ||
                     generating ||
                     !instruction.trim() ||
-                    sourceDatasetIds.length === 0 ||
-                    !targetName.trim()
+                    sourceDatasetIds.length === 0
                   }
                   onClick={() => void handleGenerateDraft()}
                   data-testid="transform-generate-btn"
                 >
                   <Sparkles className="h-3.5 w-3.5" />
-                  {generating ? "生成中..." : "生成草案"}
+                  {generating
+                    ? tx("生成中…", "Generating…")
+                    : tx("生成草案", "Generate")}
                 </Button>
               </div>
             </div>
@@ -248,31 +262,26 @@ export function TransformWizard({
       </Card>
 
       {errorMsg && (
-        <Card className="border-foreground/40 bg-muted/40 p-3 text-xs">
-          <span className="font-mono-tech font-semibold">变换操作失败：</span>
+        <Card className="border-red-500/30 bg-red-500/5 p-3 text-xs text-red-600 dark:text-red-400">
           {errorMsg}
         </Card>
       )}
 
-      {/* Step 2 & 3: Draft SQL Edit + Schema Diff + 100-Row Preview + Apply/Discard */}
+      {/* Step 2 & 3: Draft SQL Edit + Schema Diff + Preview + Apply/Discard */}
       {draft && (
         <Card className="p-4 space-y-3" data-testid="transform-draft-panel">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2 text-xs">
             <div className="flex flex-wrap items-center gap-2">
               <span className="font-semibold">
-                变换草案 ·{" "}
+                {tx("变换草案", "Transform Draft")} ·{" "}
                 <span className="font-mono-tech">
                   {draft.target_dataset_name}
                 </span>
               </span>
-              <Badge
-                variant={draft.status === "APPLIED" ? "xblue" : "neutral"}
-                data-testid="transform-draft-status"
-              >
-                {draft.status}
-              </Badge>
+              {renderDraftStatus(draft.status)}
               <Badge variant="outline">
-                预计 {draft.preview.row_count_estimate} 行
+                ~{fmtNum(draft.preview.row_count_estimate, 0)}{" "}
+                {tx("行", "rows")}
               </Badge>
             </div>
 
@@ -281,7 +290,8 @@ export function TransformWizard({
                 <Button
                   type="button"
                   variant="outline"
-                  disabled={updatingSql || !editedSql.trim()}
+                  size="sm"
+                  disabled={!canTransform || updatingSql || !editedSql.trim()}
                   onClick={() => void handleUpdateDraftSql()}
                   data-testid="transform-repreview-btn"
                 >
@@ -290,29 +300,33 @@ export function TransformWizard({
                       updatingSql ? "animate-spin" : ""
                     }`}
                   />
-                  更新 SQL 并预览
+                  {tx("刷新预览", "Refresh")}
                 </Button>
 
                 <Button
                   type="button"
                   variant="ghost"
-                  disabled={discarding}
+                  size="sm"
+                  disabled={!canTransform || discarding}
                   onClick={() => void handleDiscardDraft()}
                   data-testid="transform-discard-btn"
                 >
                   <Trash2 className="h-3.5 w-3.5" />
-                  丢弃草案
+                  {tx("丢弃草案", "Discard")}
                 </Button>
 
                 <Button
                   type="button"
                   variant="primary"
-                  disabled={applying}
+                  size="sm"
+                  disabled={!canTransform || applying}
                   onClick={() => void handleApplyDraft()}
                   data-testid="transform-apply-btn"
                 >
                   <CheckCircle2 className="h-3.5 w-3.5" />
-                  {applying ? "物化入湖中..." : "确认物化"}
+                  {applying
+                    ? tx("物化中…", "Materializing…")
+                    : tx("物化入湖", "Materialize")}
                 </Button>
               </div>
             )}
@@ -325,7 +339,9 @@ export function TransformWizard({
               className="flex flex-wrap items-center gap-1.5 text-xs"
               data-testid="transform-schema-diff"
             >
-              <span className="text-muted-foreground">列结构变更:</span>
+              <span className="text-muted-foreground">
+                {tx("列变更", "Schema Diff")}:
+              </span>
               {draft.preview.added_columns.map((col) => (
                 <Badge key={`add-${col}`} variant="xblue">
                   +{col}
@@ -342,12 +358,12 @@ export function TransformWizard({
           {/* Editable SQL */}
           <div className="space-y-1">
             <label className="text-xs text-muted-foreground">
-              变换 SELECT 语句（可手改后点击「更新 SQL 并预览」）
+              {tx("变换查询语句", "Transform SQL")}
             </label>
             <Textarea
               rows={3}
               value={editedSql}
-              disabled={draft.status !== "DRAFT"}
+              disabled={draft.status !== "DRAFT" || !canTransform}
               onChange={(e) => setEditedSql(e.target.value)}
               className="font-mono-tech text-xs"
               data-testid="transform-sql-textarea"
@@ -359,22 +375,20 @@ export function TransformWizard({
               className="rounded border border-xblue/35 bg-xblue-soft/40 p-2.5 text-xs"
               data-testid="transform-applied-banner"
             >
-              已创建派生数据集{" "}
+              {tx("已创建派生数据集 ", "Materialized dataset ")}
               <strong className="font-mono-tech">
                 {appliedInfo.dataset.name}
-              </strong>
-              （任务 ID:{" "}
-              <span className="font-mono-tech">{appliedInfo.job_id}</span>
-              ），已自动入队 DuckLake 物化同步。
+              </strong>{" "}
+              ({appliedInfo.job_id.slice(0, 8)})
             </div>
           )}
 
-          {/* 100-Row Preview Grid */}
+          {/* Preview Grid */}
           <ResultGrid
             columns={draft.preview.columns}
             rows={draft.preview.rows}
             rowCount={draft.preview.rows.length}
-            maxHeight={220}
+            maxHeight={240}
             testId="transform-preview-grid"
           />
         </Card>

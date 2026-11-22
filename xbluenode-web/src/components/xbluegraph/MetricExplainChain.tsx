@@ -5,6 +5,7 @@ import {
   ChevronRight,
   GitBranch,
 } from "lucide-react";
+import { useI18n } from "@/i18n";
 import {
   xblueApi,
   type ExplainInputItem,
@@ -15,13 +16,22 @@ import { Badge } from "@/components/ui/primitives";
 
 const MAX_EXPLAIN_DEPTH = 4;
 
-const PRODUCER_LABELS: Record<MetricProducer, string> = {
+const PRODUCER_LABELS_ZH: Record<MetricProducer, string> = {
   AGG: "AGG 聚合",
   DERIVED: "DERIVED 派生",
   SYNC: "SYNC 映射同步",
   MANUAL: "MANUAL 手工",
   ACTION: "ACTION 动作",
   ALGORITHM: "ALGORITHM 算法",
+};
+
+const PRODUCER_LABELS_EN: Record<MetricProducer, string> = {
+  AGG: "AGG Rollup",
+  DERIVED: "DERIVED Formula",
+  SYNC: "SYNC Mapped",
+  MANUAL: "MANUAL",
+  ACTION: "ACTION",
+  ALGORITHM: "ALGORITHM",
 };
 
 function formatNumberCompact(val: number | null | undefined): string {
@@ -99,15 +109,6 @@ function formatRuleSummary(
   return null;
 }
 
-function formatTimestamp(ts: string | null): string | null {
-  if (!ts) return null;
-  const trimmed = ts.trim();
-  if (!trimmed) return null;
-  const d = new Date(trimmed);
-  if (Number.isNaN(d.getTime())) return trimmed;
-  return d.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
-}
-
 interface ExplainChainLevelProps {
   nodeId: string;
   metric: string;
@@ -121,6 +122,7 @@ function ExplainChainLevel({
   depth,
   visited,
 }: ExplainChainLevelProps) {
+  const { isZh, tx, fmtTime } = useI18n();
   const [report, setReport] = useState<MetricExplainResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [unavailable, setUnavailable] = useState(false);
@@ -165,7 +167,7 @@ function ExplainChainLevel({
   if (loading) {
     return (
       <div className="py-2 text-[11px] text-muted-foreground font-mono-tech">
-        正在追溯指标计算来源 ({metric})...
+        {tx(`追溯中 (${metric})…`, `Tracing (${metric})…`)}
       </div>
     );
   }
@@ -173,13 +175,18 @@ function ExplainChainLevel({
   if (unavailable || !report) {
     return (
       <div className="py-1.5 text-[11px] text-muted-foreground">
-        暂无该指标的计算溯源记录。
+        {tx("暂无指标溯源记录", "No lineage record")}
       </div>
     );
   }
 
   const ruleText = formatRuleSummary(report.producer, report.rule);
-  const formattedTime = formatTimestamp(report.computed_at);
+  const formattedTime = report.computed_at
+    ? fmtTime(report.computed_at, true)
+    : null;
+  const producerLabel = isZh
+    ? PRODUCER_LABELS_ZH[report.producer]
+    : PRODUCER_LABELS_EN[report.producer];
 
   const toggleInputExpand = (itemKey: string) => {
     setExpandedKeys((prev) => ({
@@ -204,7 +211,7 @@ function ExplainChainLevel({
             }
             data-testid={depth === 0 ? "explain-producer-badge" : undefined}
           >
-            {PRODUCER_LABELS[report.producer]}
+            {producerLabel}
           </Badge>
 
           {report.value !== null && (
@@ -217,11 +224,10 @@ function ExplainChainLevel({
           {report.warnings.map((wCode) => (
             <Badge
               key={wCode}
-              variant="outline"
+              variant="warning"
               data-testid={
                 depth === 0 ? `explain-warning-${wCode}` : undefined
               }
-              className="border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-300"
             >
               <AlertTriangle className="h-3 w-3 mr-1" />
               {wCode}
@@ -234,7 +240,7 @@ function ExplainChainLevel({
             className="font-mono-tech text-[10px] text-muted-foreground"
             data-testid={depth === 0 ? "explain-computed-at" : undefined}
           >
-            计算于 {formattedTime}
+            {formattedTime}
           </span>
         )}
       </div>
@@ -253,10 +259,9 @@ function ExplainChainLevel({
       {report.inputs.length > 0 && (
         <div className="space-y-1.5">
           <div className="text-[11px] font-medium text-muted-foreground flex items-center justify-between">
-            <span>上游输入项 ({report.inputs.length})</span>
-            {depth < MAX_EXPLAIN_DEPTH && (
-              <span className="text-[10px]">可逐级展开追溯</span>
-            )}
+            <span>
+              {tx("上游输入", "Upstream Inputs")} ({report.inputs.length})
+            </span>
           </div>
 
           <div
@@ -319,19 +324,23 @@ function ExplainChainLevel({
                         {isExpanded ? (
                           <>
                             <ChevronDown className="h-3 w-3 text-xblue" />
-                            收起上游计算链
+                            {tx("收起", "Collapse")}
                           </>
                         ) : (
                           <>
                             <ChevronRight className="h-3 w-3 text-xblue" />
-                            展开上游计算链
+                            {tx("展开上游", "Trace")}
                           </>
                         )}
                       </button>
                     ) : isCycle ? (
-                      <Badge variant="outline">环路已截断</Badge>
+                      <Badge variant="outline">
+                        {tx("环路截断", "Cycle Cut")}
+                      </Badge>
                     ) : reachedMaxDepth && !isPropRef ? (
-                      <Badge variant="outline">深度上限 (4)</Badge>
+                      <Badge variant="outline">
+                        {tx("深度上限", "Max Depth")}
+                      </Badge>
                     ) : null}
                   </div>
 
@@ -364,6 +373,7 @@ export function MetricExplainChain({
   nodeId,
   metric,
 }: MetricExplainChainProps) {
+  const { tx } = useI18n();
   const emptySet = useMemo(() => new Set<string>(), []);
 
   return (
@@ -374,7 +384,7 @@ export function MetricExplainChain({
       <div className="flex items-center justify-between border-b border-border pb-1.5">
         <span className="font-semibold flex items-center gap-1.5">
           <GitBranch className="h-3.5 w-3.5 text-xblue" />
-          指标计算溯源链 ({metric})
+          {tx("指标计算溯源链", "Metric Lineage")} ({metric})
         </span>
         <span className="font-mono-tech text-[10px] text-muted-foreground">
           Explain DAG

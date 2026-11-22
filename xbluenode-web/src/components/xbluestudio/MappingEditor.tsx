@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import { Eye, Play, Plus, Trash2 } from "lucide-react";
+import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import { axhubApi, type Dataset } from "@/lib/api/axhub";
 import {
   xblueApi,
@@ -14,7 +16,14 @@ import {
   type NodeTypeSpec,
   type OnSourceDelete,
 } from "@/lib/api/xblue";
-import { Badge, Button, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  EmptyState,
+  Input,
+  Select,
+  StatusBadge,
+} from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 export interface MappingEditorProps {
@@ -42,6 +51,10 @@ export function MappingEditor({
   onChangeMappings,
   onRefreshPersistedMappings,
 }: MappingEditorProps) {
+  const { tx, fmtNum } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("STUDIO_EDIT");
+
   const effectiveIndex =
     selectedMappingIndex !== null && mappings[selectedMappingIndex]
       ? selectedMappingIndex
@@ -50,7 +63,7 @@ export function MappingEditor({
         : null;
 
   const currentMapping =
-    effectiveIndex !== null ? mappings[effectiveIndex] ?? null : null;
+    effectiveIndex !== null ? (mappings[effectiveIndex] ?? null) : null;
 
   const [datasetColumns, setDatasetColumns] = useState<string[]>([]);
   const [previewData, setPreviewData] =
@@ -118,6 +131,7 @@ export function MappingEditor({
   }, [matchedRecord?.id]);
 
   const addMapping = () => {
+    if (!canEdit) return;
     const idx = mappings.length + 1;
     const defaultDs = datasets[0]?.name ?? "demo_orders";
     const defaultNt = nodeTypes[0]?.name ?? "Order";
@@ -140,14 +154,14 @@ export function MappingEditor({
   };
 
   const updateCurrent = (patch: Partial<MappingSpec>) => {
-    if (effectiveIndex === null) return;
+    if (!canEdit || effectiveIndex === null) return;
     onChangeMappings(
       mappings.map((m, i) => (i === effectiveIndex ? { ...m, ...patch } : m))
     );
   };
 
   const deleteCurrent = () => {
-    if (effectiveIndex === null) return;
+    if (!canEdit || effectiveIndex === null) return;
     const next = mappings.filter((_, i) => i !== effectiveIndex);
     onChangeMappings(next);
     onSelectMappingIndex(next.length > 0 ? 0 : null);
@@ -184,7 +198,7 @@ export function MappingEditor({
   };
 
   const addLinkRule = () => {
-    if (!currentMapping) return;
+    if (!currentMapping || !canEdit) return;
     const firstEdge = edgeTypes[0];
     const nextLink: MappingLinkSpec = {
       link_type: firstEdge?.name ?? "FULFILLS",
@@ -220,17 +234,22 @@ export function MappingEditor({
       const resp = await xblueApi.previewMapping(matchedRecord.id);
       setPreviewData(resp);
       setActionMsg(
-        `已预览 ${resp.sampled_rows} 行源数据：成功 ${resp.items.length} 行，拒绝 ${resp.rows_rejected} 行`
+        tx(
+          `抽样 ${resp.sampled_rows} 行：通过 ${resp.items.length} · 拒绝 ${resp.rows_rejected}`,
+          `Sampled ${resp.sampled_rows} rows: ${resp.items.length} valid · ${resp.rows_rejected} rejected`
+        )
       );
     } catch (err) {
-      setActionMsg(err instanceof Error ? err.message : "预览执行失败");
+      setActionMsg(
+        err instanceof Error ? err.message : tx("预览失败", "Preview failed")
+      );
     } finally {
       setBusyAction(null);
     }
   };
 
   const handleRun = async () => {
-    if (!matchedRecord?.id || !currentMapping) return;
+    if (!canEdit || !matchedRecord?.id || !currentMapping) return;
     setBusyAction("run");
     setActionMsg(null);
     try {
@@ -239,13 +258,20 @@ export function MappingEditor({
         currentMapping.mode
       );
       setActionMsg(
-        `已提交物化任务 (${resp.mode}) · Job ${resp.job_id.slice(0, 8)}`
+        tx(
+          `已提交物化任务 (${resp.mode}) · Job ${resp.job_id.slice(0, 8)}`,
+          `Materialization queued (${resp.mode}) · Job ${resp.job_id.slice(0, 8)}`
+        )
       );
       await onRefreshPersistedMappings();
       const latestRuns = await xblueApi.listMappingRuns(matchedRecord.id);
       setRuns(latestRuns);
     } catch (err) {
-      setActionMsg(err instanceof Error ? err.message : "触发物化任务失败");
+      setActionMsg(
+        err instanceof Error
+          ? err.message
+          : tx("提交物化失败", "Failed to run mapping")
+      );
     } finally {
       setBusyAction(null);
     }
@@ -258,23 +284,25 @@ export function MappingEditor({
   ) => {
     if (datasetColumns.length > 0) {
       return (
-        <select
+        <Select
           value={value}
+          disabled={!canEdit}
           onChange={(e) => onSelect(e.target.value)}
-          className="h-7 w-full rounded border border-input bg-background px-1.5 text-xs font-mono-tech"
+          className="h-7 w-full px-1.5 font-mono-tech"
         >
-          <option value="">-- 未绑定 --</option>
+          <option value="">{tx("未绑定", "Unbound")}</option>
           {datasetColumns.map((col) => (
             <option key={col} value={col}>
               {col}
             </option>
           ))}
-        </select>
+        </Select>
       );
     }
     return (
       <Input
         value={value}
+        disabled={!canEdit}
         onChange={(e) => onSelect(e.target.value)}
         placeholder={placeholder}
         className="h-7 px-2 text-xs font-mono-tech"
@@ -302,28 +330,31 @@ export function MappingEditor({
             </button>
           ))}
         </div>
-        <Button
-          variant="outline"
-          className="h-7 px-2 py-1 text-xs"
-          data-testid="add-mapping-btn"
-          onClick={addMapping}
-        >
-          <Plus className="h-3 w-3" />
-          新建数据映射
-        </Button>
+        {canEdit && (
+          <Button
+            variant="outline"
+            size="sm"
+            data-testid="add-mapping-btn"
+            onClick={addMapping}
+          >
+            <Plus className="h-3 w-3" />
+            {tx("新建映射", "New Mapping")}
+          </Button>
+        )}
       </div>
 
       {!currentMapping ? (
-        <div className="rounded border border-dashed border-border p-4 text-center text-muted-foreground">
-          当前子图尚未配置 AxHub 数据集到图节点的映射规则。
-        </div>
+        <EmptyState title={tx("暂无数据映射规则", "No data mappings")} />
       ) : (
         <div className="space-y-3 rounded border border-border p-3">
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="block font-medium mb-1">映射名称 (name)</label>
+              <label className="block font-medium mb-1">
+                {tx("映射名称", "Mapping Name")}
+              </label>
               <Input
                 value={currentMapping.name}
+                disabled={!canEdit}
                 onChange={(e) => updateCurrent({ name: e.target.value })}
                 placeholder="orders_to_order_nodes"
                 className="h-8 text-xs font-mono-tech"
@@ -331,24 +362,26 @@ export function MappingEditor({
             </div>
             <div>
               <label className="block font-medium mb-1">
-                源 AxHub 数据集 (dataset)
+                {tx("源数据集", "Source Dataset")}
               </label>
               {datasets.length > 0 ? (
-                <select
+                <Select
                   value={currentMapping.dataset}
+                  disabled={!canEdit}
                   onChange={(e) => updateCurrent({ dataset: e.target.value })}
-                  className="h-8 w-full rounded border border-input bg-background px-2 text-xs font-mono-tech"
+                  className="h-8 w-full font-mono-tech"
                 >
-                  <option value="">选择数据集...</option>
+                  <option value="">{tx("未指定", "None")}</option>
                   {datasets.map((ds) => (
                     <option key={ds.id} value={ds.name}>
-                      {ds.name} ({ds.display_name} · {ds.row_count}行)
+                      {ds.name} ({ds.display_name})
                     </option>
                   ))}
-                </select>
+                </Select>
               ) : (
                 <Input
                   value={currentMapping.dataset}
+                  disabled={!canEdit}
                   onChange={(e) => updateCurrent({ dataset: e.target.value })}
                   placeholder="demo_orders"
                   className="h-8 text-xs font-mono-tech"
@@ -359,23 +392,26 @@ export function MappingEditor({
 
           <div className="grid grid-cols-3 gap-2">
             <div>
-              <label className="block font-medium mb-1">目标节点类型</label>
-              <select
+              <label className="block font-medium mb-1">
+                {tx("目标类型", "Target Type")}
+              </label>
+              <Select
                 value={currentMapping.node_type}
+                disabled={!canEdit}
                 onChange={(e) => updateCurrent({ node_type: e.target.value })}
-                className="h-7 w-full rounded border border-input bg-background px-1.5 text-xs font-mono-tech"
+                className="h-7 w-full px-1.5 font-mono-tech"
               >
-                <option value="">选择类型...</option>
+                <option value="">{tx("未指定", "None")}</option>
                 {nodeTypes.map((nt) => (
                   <option key={nt.name} value={nt.name}>
                     {nt.name}
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
             <div>
               <label className="block font-medium mb-1">
-                主键列 (key_column)
+                {tx("主键列", "Key Column")}
               </label>
               {renderColumnControl(
                 currentMapping.key_column,
@@ -384,11 +420,14 @@ export function MappingEditor({
               )}
             </div>
             <div>
-              <label className="block font-medium mb-1">标题模板 (title)</label>
+              <label className="block font-medium mb-1">
+                {tx("标题模板", "Title Template")}
+              </label>
               <Input
                 value={currentMapping.title}
+                disabled={!canEdit}
                 onChange={(e) => updateCurrent({ title: e.target.value })}
-                placeholder="订单 {id}"
+                placeholder="{id}"
                 className="h-7 px-2 text-xs font-mono-tech"
               />
             </div>
@@ -397,7 +436,7 @@ export function MappingEditor({
           <div className="grid grid-cols-3 gap-2">
             <div>
               <label className="block font-medium mb-1">
-                指标时间列 (metric_time_column)
+                {tx("时间列", "Time Column")}
               </label>
               {renderColumnControl(
                 currentMapping.metric_time_column ?? "",
@@ -406,43 +445,50 @@ export function MappingEditor({
               )}
             </div>
             <div>
-              <label className="block font-medium mb-1">物化模式 (mode)</label>
-              <select
+              <label className="block font-medium mb-1">
+                {tx("物化模式", "Sync Mode")}
+              </label>
+              <Select
                 value={currentMapping.mode}
+                disabled={!canEdit}
                 onChange={(e) =>
                   updateCurrent({ mode: e.target.value as MappingMode })
                 }
-                className="h-7 w-full rounded border border-input bg-background px-1.5 text-xs font-mono-tech"
+                className="h-7 w-full px-1.5 font-mono-tech"
               >
-                <option value="INCREMENTAL">INCREMENTAL (增量)</option>
-                <option value="FULL">FULL (全量)</option>
-              </select>
+                <option value="INCREMENTAL">
+                  {tx("增量更新", "Incremental")}
+                </option>
+                <option value="FULL">{tx("全量刷新", "Full Refresh")}</option>
+              </Select>
             </div>
             <div>
               <label className="block font-medium mb-1">
-                源行删除策略 (on_source_delete)
+                {tx("源行删除策略", "On Delete")}
               </label>
-              <select
+              <Select
                 value={currentMapping.on_source_delete}
+                disabled={!canEdit}
                 onChange={(e) =>
                   updateCurrent({
                     on_source_delete: e.target.value as OnSourceDelete,
                   })
                 }
-                className="h-7 w-full rounded border border-input bg-background px-1.5 text-xs font-mono-tech"
+                className="h-7 w-full px-1.5 font-mono-tech"
               >
-                <option value="KEEP">KEEP (保留节点)</option>
-                <option value="DELETE">DELETE (同步删除)</option>
-              </select>
+                <option value="KEEP">{tx("保留节点", "Keep Node")}</option>
+                <option value="DELETE">{tx("同步删除", "Delete Node")}</option>
+              </Select>
             </div>
           </div>
 
           <div>
             <label className="block font-medium mb-1">
-              源行过滤条件 (filter，可选)
+              {tx("源行过滤条件", "Row Filter")}
             </label>
             <Input
               value={currentMapping.filter ?? ""}
+              disabled={!canEdit}
               onChange={(e) =>
                 updateCurrent({ filter: e.target.value || null })
               }
@@ -456,7 +502,7 @@ export function MappingEditor({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 border-t border-border pt-2">
               <div className="space-y-1.5">
                 <div className="font-semibold text-[11px]">
-                  静态属性列映射 (attributes)
+                  {tx("静态属性列映射", "Attribute Bindings")}
                 </div>
                 {attrProps.map((p) => (
                   <div
@@ -467,14 +513,14 @@ export function MappingEditor({
                     {renderColumnControl(
                       currentMapping.attributes[p.name] ?? "",
                       (val) => setAttrColumn(p.name, val),
-                      "源表列名"
+                      "column"
                     )}
                   </div>
                 ))}
               </div>
               <div className="space-y-1.5">
                 <div className="font-semibold text-[11px]">
-                  数值指标列映射 (metrics)
+                  {tx("时序指标列映射", "Metric Bindings")}
                 </div>
                 {metricProps.map((p) => (
                   <div
@@ -487,7 +533,7 @@ export function MappingEditor({
                     {renderColumnControl(
                       currentMapping.metrics[p.name] ?? "",
                       (val) => setMetricColumn(p.name, val),
-                      "源表数值列"
+                      "metric_col"
                     )}
                   </div>
                 ))}
@@ -499,16 +545,14 @@ export function MappingEditor({
           <div className="space-y-1.5 border-t border-border pt-2">
             <div className="flex items-center justify-between">
               <span className="font-semibold text-[11px]">
-                外键关系映射 (links)
+                {tx("外键关系映射", "Foreign-Key Relations")}
               </span>
-              <Button
-                variant="ghost"
-                className="h-6 px-2 py-0.5 text-[11px]"
-                onClick={addLinkRule}
-              >
-                <Plus className="h-3 w-3" />
-                添加外键边
-              </Button>
+              {canEdit && (
+                <Button variant="ghost" size="sm" onClick={addLinkRule}>
+                  <Plus className="h-3 w-3" />
+                  {tx("添加外键边", "Add Link")}
+                </Button>
+              )}
             </div>
             {currentMapping.links.map((lk, lIdx) => (
               <div
@@ -517,26 +561,29 @@ export function MappingEditor({
               >
                 <Input
                   value={lk.link_type}
+                  disabled={!canEdit}
                   onChange={(e) =>
                     updateLinkRule(lIdx, { link_type: e.target.value })
                   }
                   placeholder="FULFILLS"
                   className="col-span-3 h-7 px-1.5 text-[11px] font-mono-tech"
                 />
-                <select
+                <Select
                   value={lk.direction}
+                  disabled={!canEdit}
                   onChange={(e) =>
                     updateLinkRule(lIdx, {
                       direction: e.target.value as LinkDirection,
                     })
                   }
-                  className="col-span-2 h-7 rounded border border-input bg-background px-1 text-[11px] font-mono-tech"
+                  className="col-span-2 h-7 px-1 text-[11px] font-mono-tech"
                 >
                   <option value="OUT">OUT</option>
                   <option value="IN">IN</option>
-                </select>
+                </Select>
                 <Input
                   value={lk.target_type}
+                  disabled={!canEdit}
                   onChange={(e) =>
                     updateLinkRule(lIdx, { target_type: e.target.value })
                   }
@@ -545,6 +592,7 @@ export function MappingEditor({
                 />
                 <Input
                   value={lk.target_key_column}
+                  disabled={!canEdit}
                   onChange={(e) =>
                     updateLinkRule(lIdx, {
                       target_key_column: e.target.value,
@@ -553,13 +601,15 @@ export function MappingEditor({
                   placeholder="warehouse_code"
                   className="col-span-3 h-7 px-1.5 text-[11px] font-mono-tech"
                 />
-                <button
-                  type="button"
-                  onClick={() => removeLinkRule(lIdx)}
-                  className="col-span-1 flex justify-center text-muted-foreground hover:text-red-600 cursor-pointer"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                {canEdit && (
+                  <button
+                    type="button"
+                    onClick={() => removeLinkRule(lIdx)}
+                    className="col-span-1 flex justify-center text-muted-foreground hover:text-red-600 cursor-pointer"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -569,53 +619,50 @@ export function MappingEditor({
             <div className="flex items-center gap-1.5">
               <Button
                 variant="outline"
-                className="h-7 px-2.5 py-1 text-xs"
+                size="sm"
                 data-testid="mapping-preview-btn"
                 disabled={!matchedRecord || busyAction !== null}
                 onClick={() => void handlePreview()}
-                title={
-                  matchedRecord
-                    ? "干运行预览前 50 行映射结果与拒绝样本（不写库）"
-                    : "请先发布草案以持久化该映射后再执行在线预览"
-                }
               >
                 <Eye className="h-3.5 w-3.5" />
-                {busyAction === "preview" ? "预览中..." : "预览前 50 行"}
+                {busyAction === "preview"
+                  ? tx("预览中…", "Previewing…")
+                  : tx("预览 50 行", "Preview 50 Rows")}
               </Button>
-              <Button
-                variant="primary"
-                className="h-7 px-2.5 py-1 text-xs"
-                data-testid="mapping-run-btn"
-                disabled={
-                  !matchedRecord ||
-                  activeSubgraph !== "main" ||
-                  busyAction !== null
-                }
-                onClick={() => void handleRun()}
-                title={
-                  activeSubgraph !== "main"
-                    ? "部门子图仅支持映射预览，合并至主图后可执行物化"
-                    : "立即入队执行 MAP_MATERIALIZE 物化任务"
-                }
-              >
-                <Play className="h-3.5 w-3.5" />
-                {busyAction === "run" ? "提交中..." : "立即运行物化"}
-              </Button>
+              {canEdit && (
+                <Button
+                  variant="primary"
+                  size="sm"
+                  data-testid="mapping-run-btn"
+                  disabled={
+                    !matchedRecord ||
+                    activeSubgraph !== "main" ||
+                    busyAction !== null
+                  }
+                  onClick={() => void handleRun()}
+                >
+                  <Play className="h-3.5 w-3.5" />
+                  {busyAction === "run"
+                    ? tx("提交中…", "Submitting…")
+                    : tx("运行物化", "Materialize")}
+                </Button>
+              )}
             </div>
 
-            <button
-              type="button"
-              onClick={deleteCurrent}
-              className="inline-flex items-center gap-1 rounded px-2 py-1 text-red-600 dark:text-red-400 hover:bg-red-500/10 cursor-pointer"
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              删除映射
-            </button>
+            {canEdit && (
+              <Button variant="danger" size="sm" onClick={deleteCurrent}>
+                <Trash2 className="h-3.5 w-3.5" />
+                {tx("删除映射", "Delete")}
+              </Button>
+            )}
           </div>
 
           {!matchedRecord && (
             <div className="text-[11px] text-muted-foreground">
-              提示：当前映射尚处于未发布草案状态，发布版本后即可执行前 50 行干运行预览与物化调度。
+              {tx(
+                "未发布映射草案：发布版本后支持预览与物化",
+                "Unpublished mapping draft: publish schema to preview or materialize"
+              )}
             </div>
           )}
 
@@ -632,12 +679,18 @@ export function MappingEditor({
             >
               <div className="flex items-center justify-between">
                 <span className="font-semibold">
-                  前 50 行干运行预览 ({previewData.items.length} 条有效节点)
+                  {tx(
+                    `预览结果 (${previewData.items.length} 条有效节点)`,
+                    `Preview (${previewData.items.length} valid nodes)`
+                  )}
                 </span>
                 <Badge
-                  variant={previewData.rows_rejected > 0 ? "neutral" : "xblue"}
+                  variant={previewData.rows_rejected > 0 ? "warning" : "xblue"}
                 >
-                  拒绝 {previewData.rows_rejected} 行
+                  {tx(
+                    `拒绝 ${previewData.rows_rejected} 行`,
+                    `${previewData.rows_rejected} rejected`
+                  )}
                 </Badge>
               </div>
               {previewData.items.length > 0 && (
@@ -645,10 +698,10 @@ export function MappingEditor({
                   <table className="w-full text-left border-collapse text-[11px] font-mono-tech">
                     <thead className="bg-muted/60 text-muted-foreground">
                       <tr>
-                        <th className="px-2 py-1">node_key</th>
-                        <th className="px-2 py-1">title</th>
-                        <th className="px-2 py-1">attributes</th>
-                        <th className="px-2 py-1">metrics</th>
+                        <th className="px-2 py-1">{tx("主键", "Key")}</th>
+                        <th className="px-2 py-1">{tx("标题", "Title")}</th>
+                        <th className="px-2 py-1">{tx("属性", "Attributes")}</th>
+                        <th className="px-2 py-1">{tx("指标", "Metrics")}</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
@@ -658,11 +711,30 @@ export function MappingEditor({
                             {item.node_key}
                           </td>
                           <td className="px-2 py-1">{item.title}</td>
-                          <td className="px-2 py-1 truncate max-w-[160px]">
-                            {JSON.stringify(item.attributes)}
+                          <td className="px-2 py-1">
+                            <div className="flex flex-wrap gap-1">
+                              {Object.entries(item.attributes ?? {}).map(
+                                ([ak, av]) => (
+                                  <Badge key={ak} variant="outline">
+                                    {ak}: {String(av ?? "")}
+                                  </Badge>
+                                )
+                              )}
+                            </div>
                           </td>
-                          <td className="px-2 py-1 text-xblue">
-                            {JSON.stringify(item.metrics)}
+                          <td className="px-2 py-1">
+                            <div className="flex flex-wrap gap-1">
+                              {Object.entries(item.metrics ?? {}).map(
+                                ([mk, mv]) => (
+                                  <Badge key={mk} variant="xblue">
+                                    {mk}:{" "}
+                                    {typeof mv === "number"
+                                      ? fmtNum(mv, 2)
+                                      : String(mv ?? "")}
+                                  </Badge>
+                                )
+                              )}
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -673,14 +745,15 @@ export function MappingEditor({
               {previewData.reject_samples.length > 0 && (
                 <div className="space-y-1">
                   <div className="font-medium text-amber-600 dark:text-amber-400">
-                    拒绝样本 ({previewData.reject_samples.length})
+                    {tx("拒绝样本", "Rejected Samples")} (
+                    {previewData.reject_samples.length})
                   </div>
                   {previewData.reject_samples.slice(0, 5).map((rej, idx) => (
                     <div
                       key={idx}
                       className="rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 font-mono-tech text-[10px]"
                     >
-                      原因: {rej.reason} · 行: {JSON.stringify(rej.row)}
+                      {rej.reason}
                     </div>
                   ))}
                 </div>
@@ -690,18 +763,21 @@ export function MappingEditor({
 
           {runs.length > 0 && (
             <div className="space-y-1 border-t border-border pt-2">
-              <div className="font-semibold text-[11px]">最近物化运行记录</div>
+              <div className="font-semibold text-[11px]">
+                {tx("最近物化记录", "Recent Runs")}
+              </div>
               {runs.slice(0, 3).map((r) => (
                 <div
                   key={r.id}
                   className="flex items-center justify-between rounded border border-border px-2 py-1 font-mono-tech text-[11px]"
                 >
-                  <span>
-                    {r.status} · {r.mode}
+                  <span className="inline-flex items-center gap-1.5">
+                    <StatusBadge status={r.status} />
+                    <span>{r.mode}</span>
                   </span>
                   <span className="text-muted-foreground">
-                    +{r.nodes_upserted} 节点 / +{r.links_upserted} 边 / 拒{" "}
-                    {r.rows_rejected}
+                    +{r.nodes_upserted} {tx("节点", "nodes")} / +
+                    {r.links_upserted} {tx("边", "edges")}
                   </span>
                 </div>
               ))}
