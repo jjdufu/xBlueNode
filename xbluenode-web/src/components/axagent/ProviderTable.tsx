@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { z } from "zod";
 import {
   Activity,
@@ -7,6 +7,7 @@ import {
   KeyRound,
   Plus,
   Trash2,
+  XCircle,
   Zap,
 } from "lucide-react";
 import {
@@ -17,8 +18,10 @@ import {
   type LlmProviderRecord,
   type LlmPurpose,
   type LlmUsageRecord,
+  type ProviderScope,
   type ProviderTestResponse,
   type SaveLlmProviderRequest,
+  type StructuredOutputMode,
 } from "@/lib/api/axagent";
 import {
   Badge,
@@ -27,7 +30,10 @@ import {
   Input,
   Modal,
   PasswordInput,
+  Select,
   StatusBadge,
+  Switch,
+  type SelectOptionItem,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
@@ -41,6 +47,22 @@ const ALL_PURPOSES: readonly LlmPurpose[] = [
   "EXTRACT",
   "EMBED",
 ];
+
+const STRUCTURED_MODES: readonly StructuredOutputMode[] = [
+  "NONE",
+  "JSON_OBJECT",
+  "JSON_SCHEMA",
+];
+
+function isStructuredOutputMode(val: string): val is StructuredOutputMode {
+  return (
+    val === "NONE" || val === "JSON_OBJECT" || val === "JSON_SCHEMA"
+  );
+}
+
+function isProviderScope(val: string): val is ProviderScope {
+  return val === "SYSTEM" || val === "PERSONAL";
+}
 
 export interface ProviderTableProps {
   providers: LlmProviderRecord[];
@@ -59,9 +81,51 @@ export function ProviderTable({
   onChangeUsageRange,
   onRefresh,
 }: ProviderTableProps) {
-  const { tx, fmtNum } = useI18n();
-  const { can } = usePrincipal();
-  const canEdit = can("AGENT_EDIT");
+  const { tx, tEnum, fmtNum } = useI18n();
+  const { me, can, canAny } = usePrincipal();
+  const canGuardAdmin = can("GUARD_ADMIN");
+  const canSystemAdmin = canAny(["GUARD_ADMIN", "OPS_ADMIN"]);
+  const canTestSystem = canAny(["AGENT_EDIT", "GUARD_ADMIN", "OPS_ADMIN"]);
+  const canCreateProvider = canAny([
+    "GUARD_ADMIN",
+    "OPS_ADMIN",
+    "AGENT_EDIT",
+    "AGENT_RUN",
+    "DATA_READ",
+  ]);
+
+  const isProviderReadonly = useCallback(
+    (p: LlmProviderRecord): boolean => {
+      const isSystem = !p.owner_user_id;
+      return p.is_readonly !== undefined
+        ? p.is_readonly
+        : isSystem && !canSystemAdmin;
+    },
+    [canSystemAdmin]
+  );
+
+  const canEditProvider = useCallback(
+    (p: LlmProviderRecord): boolean => {
+      if (isProviderReadonly(p)) return false;
+      if (!p.owner_user_id) {
+        return canSystemAdmin;
+      }
+      return (
+        (!me?.user_id || p.owner_user_id === me.user_id) && canCreateProvider
+      );
+    },
+    [canCreateProvider, canSystemAdmin, isProviderReadonly, me?.user_id]
+  );
+
+  const canTestRow = useCallback(
+    (p: LlmProviderRecord): boolean => {
+      if (!p.owner_user_id) {
+        return canTestSystem;
+      }
+      return !me?.user_id || p.owner_user_id === me.user_id;
+    },
+    [canTestSystem, me?.user_id]
+  );
 
   const sortedProviders = useMemo(
     () => [...providers].sort((a, b) => a.priority - b.priority),
@@ -75,6 +139,7 @@ export function ProviderTable({
   const [presetKind, setPresetKind] = useState<
     "OPENAI_COMPAT" | "VLLM" | "OLLAMA"
   >("OPENAI_COMPAT");
+  const [scope, setScope] = useState<ProviderScope>("SYSTEM");
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("https://api.openai.com/v1");
   const [model, setModel] = useState("gpt-4o-mini");
@@ -87,8 +152,13 @@ export function ProviderTable({
   const [priority, setPriority] = useState("100");
   const [temperature, setTemperature] = useState("0.2");
   const [maxTokens, setMaxTokens] = useState("4096");
+  const [maxContextTokens, setMaxContextTokens] = useState("32768");
   const [timeoutS, setTimeoutS] = useState("60");
   const [rpmLimit, setRpmLimit] = useState("");
+  const [structuredMode, setStructuredMode] =
+    useState<StructuredOutputMode>("NONE");
+  const [deterministicSeed, setDeterministicSeed] = useState("");
+  const [isLocalModel, setIsLocalModel] = useState(false);
   const [supportsTools, setSupportsTools] = useState(true);
   const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(false);
   const [enabled, setEnabled] = useState(true);
@@ -100,9 +170,45 @@ export function ProviderTable({
   >({});
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
+  const effectiveScope: ProviderScope = editingProvider
+    ? editingProvider.owner_user_id
+      ? "PERSONAL"
+      : "SYSTEM"
+    : canSystemAdmin
+      ? scope
+      : "PERSONAL";
+
+  const scopeOptions = useMemo<readonly SelectOptionItem[]>(
+    () => [
+      {
+        value: "SYSTEM",
+        label: tx("系统", "System"),
+        text: tx("系统", "System"),
+        disabled: !canSystemAdmin,
+      },
+      {
+        value: "PERSONAL",
+        label: tx("个人", "Personal"),
+        text: tx("个人", "Personal"),
+      },
+    ],
+    [canSystemAdmin, tx]
+  );
+
+  const structuredModeOptions = useMemo<readonly SelectOptionItem[]>(
+    () =>
+      STRUCTURED_MODES.map((m) => ({
+        value: m,
+        label: m,
+        text: m,
+      })),
+    []
+  );
+
   const openCreateModal = () => {
     setEditingProvider(null);
     setPresetKind("OPENAI_COMPAT");
+    setScope(canSystemAdmin ? "SYSTEM" : "PERSONAL");
     setName("");
     setBaseUrl("https://api.openai.com/v1");
     setModel("gpt-4o-mini");
@@ -111,8 +217,12 @@ export function ProviderTable({
     setPriority("100");
     setTemperature("0.2");
     setMaxTokens("4096");
+    setMaxContextTokens("32768");
     setTimeoutS("60");
     setRpmLimit("");
+    setStructuredMode("NONE");
+    setDeterministicSeed("");
+    setIsLocalModel(false);
     setSupportsTools(true);
     setAllowPrivateNetwork(false);
     setEnabled(true);
@@ -121,7 +231,9 @@ export function ProviderTable({
   };
 
   const openEditModal = (p: LlmProviderRecord) => {
+    if (!canEditProvider(p)) return;
     setEditingProvider(p);
+    setScope(p.owner_user_id ? "PERSONAL" : "SYSTEM");
     setName(p.name);
     setBaseUrl(p.base_url);
     setModel(p.model);
@@ -130,8 +242,16 @@ export function ProviderTable({
     setPriority(String(p.priority));
     setTemperature(String(p.temperature));
     setMaxTokens(String(p.max_tokens));
+    setMaxContextTokens(String(p.max_context_tokens ?? 32768));
     setTimeoutS(String(p.timeout_s));
     setRpmLimit(p.rpm_limit !== null ? String(p.rpm_limit) : "");
+    setStructuredMode(p.structured_mode ?? "NONE");
+    setDeterministicSeed(
+      p.deterministic_seed !== null && p.deterministic_seed !== undefined
+        ? String(p.deterministic_seed)
+        : ""
+    );
+    setIsLocalModel(Boolean(p.is_local_model));
     setSupportsTools(p.supports_tools);
     setAllowPrivateNetwork(p.allow_private_network);
     setEnabled(p.enabled);
@@ -144,10 +264,26 @@ export function ProviderTable({
     if (!editingProvider) {
       if (nextKind === "VLLM") {
         setBaseUrl("http://127.0.0.1:8000/v1");
+        setStructuredMode("JSON_SCHEMA");
+        setIsLocalModel(true);
+        setDeterministicSeed("42");
+        if (canGuardAdmin) {
+          setAllowPrivateNetwork(true);
+        }
       } else if (nextKind === "OLLAMA") {
         setBaseUrl("http://127.0.0.1:11434/v1");
+        setStructuredMode("JSON_SCHEMA");
+        setIsLocalModel(true);
+        setDeterministicSeed("42");
+        if (canGuardAdmin) {
+          setAllowPrivateNetwork(true);
+        }
       } else {
         setBaseUrl("https://api.openai.com/v1");
+        setStructuredMode("NONE");
+        setIsLocalModel(false);
+        setDeterministicSeed("");
+        setAllowPrivateNetwork(false);
       }
     }
   };
@@ -159,7 +295,12 @@ export function ProviderTable({
   };
 
   const handleSave = async () => {
-    if (!canEdit) return;
+    if (editingProvider !== null) {
+      if (!canEditProvider(editingProvider)) return;
+    } else if (!canCreateProvider) {
+      return;
+    }
+
     setErrorMsg(null);
     const providerFormSchema = z.object({
       name: z
@@ -181,8 +322,16 @@ export function ProviderTable({
       priority: z.number().int().min(1).max(10000),
       temperature: z.number().min(0).max(2),
       max_tokens: z.number().int().min(64).max(131072),
+      max_context_tokens: z.number().int().min(2048).max(2097152),
       timeout_s: z.number().int().min(1).max(600),
+      deterministic_seed: z.number().int().nullable(),
     });
+
+    const trimmedContext = maxContextTokens.trim();
+    const parsedMaxContext =
+      trimmedContext.length > 0 ? Number(trimmedContext) : 32768;
+    const trimmedSeed = deterministicSeed.trim();
+    const parsedSeed = trimmedSeed.length > 0 ? Number(trimmedSeed) : null;
 
     const check = providerFormSchema.safeParse({
       name,
@@ -192,7 +341,9 @@ export function ProviderTable({
       priority: Number(priority),
       temperature: Number(temperature),
       max_tokens: Number(maxTokens),
+      max_context_tokens: parsedMaxContext,
       timeout_s: Number(timeoutS),
+      deterministic_seed: parsedSeed,
     });
     if (!check.success) {
       setErrorMsg(
@@ -202,18 +353,27 @@ export function ProviderTable({
       return;
     }
 
+    const effectiveAllowPrivateNetwork = canGuardAdmin
+      ? allowPrivateNetwork
+      : Boolean(editingProvider?.allow_private_network);
+
     const req: SaveLlmProviderRequest = {
       name: check.data.name,
+      ...(!editingProvider ? { scope: effectiveScope } : {}),
       base_url: check.data.base_url,
       model: check.data.model,
       purposes,
       priority: check.data.priority,
       temperature: check.data.temperature,
       max_tokens: check.data.max_tokens,
+      max_context_tokens: check.data.max_context_tokens,
       timeout_s: check.data.timeout_s,
       rpm_limit: rpmLimit.trim().length > 0 ? Number(rpmLimit) : null,
+      structured_mode: structuredMode,
+      deterministic_seed: check.data.deterministic_seed,
+      is_local_model: isLocalModel,
       supports_tools: supportsTools,
-      allow_private_network: allowPrivateNetwork,
+      allow_private_network: effectiveAllowPrivateNetwork,
       enabled,
       ...(apiKey.trim().length > 0 ? { api_key: apiKey.trim() } : {}),
     };
@@ -239,6 +399,7 @@ export function ProviderTable({
   };
 
   const handleTest = async (p: LlmProviderRecord) => {
+    if (!canTestRow(p)) return;
     setTestingId(p.id);
     setErrorMsg(null);
     try {
@@ -256,7 +417,7 @@ export function ProviderTable({
   };
 
   const handleDelete = async (p: LlmProviderRecord) => {
-    if (!canEdit) return;
+    if (!canEditProvider(p)) return;
     setErrorMsg(null);
     try {
       await deleteLlmProvider(p.id);
@@ -287,25 +448,17 @@ export function ProviderTable({
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold">
-            {tx("模型路由注册表", "LLM Provider Router")}
-          </h2>
-          <p className="text-xs text-muted-foreground">
-            {tx(
-              "按优先级升序调度，连续异常自动熔断并切换备用提供方。",
-              "Routes by ascending priority with automatic circuit-breaking failover."
-            )}
-          </p>
-        </div>
-        {canEdit && (
+        <h2 className="text-sm font-semibold">
+          {tx("模型路由注册表", "LLM Provider Router")}
+        </h2>
+        {canCreateProvider && (
           <Button
             type="button"
             data-testid="new-provider-btn"
             onClick={openCreateModal}
           >
             <Plus className="h-3.5 w-3.5" />
-            {tx("注册提供方", "New Provider")}
+            {tx("注册模型", "New Provider")}
           </Button>
         )}
       </div>
@@ -320,7 +473,7 @@ export function ProviderTable({
       <Card className="overflow-hidden">
         {sortedProviders.length === 0 ? (
           <div className="p-8 text-center text-xs text-muted-foreground">
-            {tx("未单独配置提供方，回退至系统环境变量网关", "No custom providers registered; using default gateway")}
+            {tx("暂无模型提供方", "No providers")}
           </div>
         ) : (
           <div className="overflow-x-auto">
@@ -332,6 +485,12 @@ export function ProviderTable({
                   </th>
                   <th className="px-3 py-2.5 font-medium whitespace-nowrap">
                     {tx("提供方 / 模型", "Provider / Model")}
+                  </th>
+                  <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                    {tx("作用域", "Scope")}
+                  </th>
+                  <th className="px-3 py-2.5 font-medium whitespace-nowrap">
+                    {tx("解码能力", "Decoding")}
                   </th>
                   <th className="px-3 py-2.5 font-medium whitespace-nowrap">
                     {tx("路由用途", "Purposes")}
@@ -350,6 +509,13 @@ export function ProviderTable({
               <tbody className="divide-y divide-border">
                 {sortedProviders.map((p) => {
                   const testRes = testResults[p.id];
+                  const isSystem = !p.owner_user_id;
+                  const isReadonly = isProviderReadonly(p);
+                  const canModifyRow = canEditProvider(p);
+                  const allowTestRow = canTestRow(p);
+                  const rowStructuredMode: StructuredOutputMode =
+                    p.structured_mode ?? "NONE";
+
                   return (
                     <tr
                       key={p.id}
@@ -370,6 +536,54 @@ export function ProviderTable({
                         </div>
                         <div className="font-mono-tech text-[11px] text-muted-foreground">
                           {p.model} · {p.base_url}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        <div className="flex items-center flex-wrap gap-1">
+                          {isSystem ? (
+                            <Badge
+                              variant="xblue"
+                              data-testid={`provider-scope-system-${p.id}`}
+                            >
+                              {tx("系统", "System")}
+                            </Badge>
+                          ) : (
+                            <Badge
+                              variant="neutral"
+                              data-testid={`provider-scope-personal-${p.id}`}
+                            >
+                              {tx("个人", "Personal")}
+                            </Badge>
+                          )}
+                          {isSystem && isReadonly ? (
+                            <Badge
+                              variant="outline"
+                              data-testid={`provider-readonly-lock-${p.id}`}
+                            >
+                              {tx("只读", "Read-only")}
+                            </Badge>
+                          ) : null}
+                        </div>
+                      </td>
+                      <td className="px-3 py-3 whitespace-nowrap">
+                        <div className="flex items-center flex-wrap gap-1">
+                          <Badge
+                            variant={
+                              rowStructuredMode === "JSON_SCHEMA"
+                                ? "success"
+                                : rowStructuredMode === "JSON_OBJECT"
+                                  ? "xblue"
+                                  : "outline"
+                            }
+                            data-testid={`provider-structured-badge-${p.id}`}
+                          >
+                            {rowStructuredMode}
+                          </Badge>
+                          {p.is_local_model ? (
+                            <Badge variant="neutral">
+                              {tx("本地", "Local")}
+                            </Badge>
+                          ) : null}
                         </div>
                       </td>
                       <td className="px-3 py-3">
@@ -406,9 +620,41 @@ export function ProviderTable({
                             data-testid={`provider-test-result-${p.name}`}
                             className="space-y-0.5 text-[11px]"
                           >
-                            <div className="flex items-center gap-1 font-mono-tech text-xblue">
-                              <CheckCircle2 className="h-3.5 w-3.5" />
-                              {testRes.latency_ms}ms · {testRes.model}
+                            <div
+                              className={cn(
+                                "flex items-center flex-wrap gap-1.5 font-mono-tech",
+                                testRes.ok
+                                  ? "text-xblue"
+                                  : "text-red-600 dark:text-red-400"
+                              )}
+                            >
+                              {testRes.ok ? (
+                                <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                              ) : (
+                                <XCircle className="h-3.5 w-3.5 shrink-0" />
+                              )}
+                              <span>
+                                {testRes.latency_ms}ms · {testRes.model}
+                              </span>
+                              {!testRes.ok ? (
+                                <Badge variant="danger">
+                                  {tx("失败", "Failed")}
+                                </Badge>
+                              ) : null}
+                              {testRes.structured_mode &&
+                              testRes.structured_mode !== "NONE" ? (
+                                <Badge variant="outline">
+                                  {tEnum(testRes.structured_mode)}
+                                </Badge>
+                              ) : null}
+                              {testRes.structured_verified ? (
+                                <Badge
+                                  variant="success"
+                                  data-testid={`provider-test-verified-${p.name}`}
+                                >
+                                  {tx("已核验", "Verified")}
+                                </Badge>
+                              ) : null}
                             </div>
                             <div className="text-muted-foreground truncate max-w-[180px]">
                               {testRes.reply}
@@ -422,25 +668,29 @@ export function ProviderTable({
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
                         <div className="flex items-center justify-end gap-1.5">
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            data-testid={`test-provider-btn-${p.name}`}
-                            disabled={testingId === p.id}
-                            onClick={() => void handleTest(p)}
-                          >
-                            <Zap className="h-3.5 w-3.5 text-xblue" />
-                            {testingId === p.id
-                              ? tx("测试中…", "Testing…")
-                              : tx("测试连接", "Test")}
-                          </Button>
-                          {canEdit && (
+                          {allowTestRow && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              data-testid={`test-provider-btn-${p.name}`}
+                              disabled={testingId === p.id}
+                              onClick={() => void handleTest(p)}
+                            >
+                              <Zap className="h-3.5 w-3.5 text-xblue" />
+                              {testingId === p.id
+                                ? tx("测试中…", "Testing…")
+                                : tx("测试连接", "Test")}
+                            </Button>
+                          )}
+                          {canModifyRow && (
                             <>
                               <Button
                                 type="button"
                                 variant="ghost"
                                 size="sm"
+                                data-testid={`edit-provider-btn-${p.name}`}
+                                aria-label={tx("编辑", "Edit")}
                                 onClick={() => openEditModal(p)}
                               >
                                 <Edit3 className="h-3.5 w-3.5" />
@@ -449,6 +699,8 @@ export function ProviderTable({
                                 type="button"
                                 variant="ghost"
                                 size="sm"
+                                data-testid={`delete-provider-btn-${p.name}`}
+                                aria-label={tx("删除", "Delete")}
                                 onClick={() => void handleDelete(p)}
                               >
                                 <Trash2 className="h-3.5 w-3.5" />
@@ -593,10 +845,10 @@ export function ProviderTable({
         title={
           editingProvider
             ? tx(
-                `编辑提供方 · ${editingProvider.name}`,
+                `编辑模型 · ${editingProvider.name}`,
                 `Edit Provider · ${editingProvider.name}`
               )
-            : tx("注册模型提供方", "New LLM Provider")
+            : tx("注册模型", "New Provider")
         }
         footer={
           <>
@@ -635,6 +887,7 @@ export function ProviderTable({
               <button
                 key={k}
                 type="button"
+                data-testid={`provider-preset-${k}`}
                 onClick={() => applyPreset(k)}
                 className={cn(
                   "rounded border px-2.5 py-1 text-[11px] cursor-pointer",
@@ -649,21 +902,39 @@ export function ProviderTable({
           </div>
         ) : null}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="block text-[11px] text-muted-foreground">
+              {tx("作用域", "Scope")}
+            </label>
+            <Select
+              className="w-full"
+              aria-label={tx("作用域", "Scope")}
+              data-testid="provider-scope-select"
+              value={effectiveScope}
+              options={scopeOptions}
+              disabled={Boolean(editingProvider) || !canSystemAdmin}
+              onChange={(e) => {
+                if (isProviderScope(e.target.value)) {
+                  setScope(e.target.value);
+                }
+              }}
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-[11px] text-muted-foreground">
               {tx("提供方名称", "Provider Name")}
             </label>
             <Input
               data-testid="provider-name-input"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="primary-openai"
+              placeholder="primary-gateway"
               className="font-mono-tech text-xs"
             />
           </div>
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="block text-[11px] text-muted-foreground">
               {tx("默认模型", "Model")}
             </label>
             <Input
@@ -678,18 +949,19 @@ export function ProviderTable({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="block text-[11px] text-muted-foreground">
               {tx("接口根地址", "Base URL")}
             </label>
             <Input
               data-testid="provider-baseurl-input"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
+              placeholder="http://127.0.0.1:8000/v1"
               className="font-mono-tech text-xs"
             />
           </div>
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="block text-[11px] text-muted-foreground">
               {tx("API 密钥", "API Key")}
             </label>
             <PasswordInput
@@ -697,17 +969,61 @@ export function ProviderTable({
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={
-                editingProvider?.has_api_key
-                  ? "••••••••"
-                  : "sk-..."
+                editingProvider?.has_api_key ? "••••••••" : "sk-..."
               }
               className="font-mono-tech text-xs"
             />
           </div>
         </div>
 
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div className="space-y-1">
+            <label className="block text-[11px] text-muted-foreground">
+              {tx("结构化解码", "Decoding")}
+            </label>
+            <Select
+              className="w-full font-mono-tech"
+              aria-label={tx("结构化解码", "Decoding")}
+              data-testid="provider-structured-mode-select"
+              value={structuredMode}
+              options={structuredModeOptions}
+              onChange={(e) => {
+                if (isStructuredOutputMode(e.target.value)) {
+                  setStructuredMode(e.target.value);
+                }
+              }}
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-[11px] text-muted-foreground">
+              {tx("随机种子", "Seed")}
+            </label>
+            <Input
+              type="number"
+              data-testid="provider-seed-input"
+              value={deterministicSeed}
+              onChange={(e) => setDeterministicSeed(e.target.value)}
+              placeholder="42"
+              className="font-mono-tech text-xs"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="block text-[11px] text-muted-foreground">
+              {tx("上下文上限", "Max Context")}
+            </label>
+            <Input
+              type="number"
+              data-testid="provider-max-context-input"
+              value={maxContextTokens}
+              onChange={(e) => setMaxContextTokens(e.target.value)}
+              placeholder="32768"
+              className="font-mono-tech text-xs"
+            />
+          </div>
+        </div>
+
         <div className="space-y-1.5">
-          <label className="text-[11px] text-muted-foreground">
+          <label className="block text-[11px] text-muted-foreground">
             {tx("路由用途", "Purposes")}
           </label>
           <div className="flex flex-wrap gap-2">
@@ -720,7 +1036,7 @@ export function ProviderTable({
                   type="checkbox"
                   checked={purposes.includes(p)}
                   onChange={() => togglePurpose(p)}
-                  className="accent-[#2563eb]"
+                  className="accent-xblue"
                 />
                 {p}
               </label>
@@ -730,7 +1046,7 @@ export function ProviderTable({
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="block text-[11px] text-muted-foreground">
               {tx("优先级", "Priority")}
             </label>
             <Input
@@ -741,7 +1057,7 @@ export function ProviderTable({
             />
           </div>
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="block text-[11px] text-muted-foreground">
               {tx("限流 (RPM)", "RPM Limit")}
             </label>
             <Input
@@ -753,7 +1069,7 @@ export function ProviderTable({
             />
           </div>
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="block text-[11px] text-muted-foreground">
               {tx("超时（秒）", "Timeout (s)")}
             </label>
             <Input
@@ -764,7 +1080,7 @@ export function ProviderTable({
             />
           </div>
           <div className="space-y-1">
-            <label className="text-[11px] text-muted-foreground">
+            <label className="block text-[11px] text-muted-foreground">
               {tx("最大 Token", "Max Tokens")}
             </label>
             <Input
@@ -776,22 +1092,37 @@ export function ProviderTable({
           </div>
         </div>
 
-        <div className="flex flex-wrap gap-4 pt-1">
+        <div className="flex flex-wrap items-center gap-4 pt-1">
+          <div className="inline-flex items-center gap-2">
+            <Switch
+              checked={isLocalModel}
+              onCheckedChange={setIsLocalModel}
+              aria-label={tx("本地小模型", "Local Model")}
+              data-testid="provider-local-model-switch"
+            />
+            <span>{tx("本地小模型", "Local Model")}</span>
+          </div>
           <label className="inline-flex items-center gap-2 cursor-pointer">
             <input
               type="checkbox"
               checked={supportsTools}
               onChange={(e) => setSupportsTools(e.target.checked)}
-              className="accent-[#2563eb]"
+              className="accent-xblue"
             />
             <span>{tx("支持工具调用", "Supports Tools")}</span>
           </label>
-          <label className="inline-flex items-center gap-2 cursor-pointer">
+          <label
+            className={cn(
+              "inline-flex items-center gap-2",
+              canGuardAdmin ? "cursor-pointer" : "opacity-50"
+            )}
+          >
             <input
               type="checkbox"
               checked={allowPrivateNetwork}
+              disabled={!canGuardAdmin}
               onChange={(e) => setAllowPrivateNetwork(e.target.checked)}
-              className="accent-[#2563eb]"
+              className="accent-xblue"
             />
             <span>{tx("允许私网地址", "Allow Private Network")}</span>
           </label>
@@ -800,7 +1131,7 @@ export function ProviderTable({
               type="checkbox"
               checked={enabled}
               onChange={(e) => setEnabled(e.target.checked)}
-              className="accent-[#2563eb]"
+              className="accent-xblue"
             />
             <span>{tx("启用提供方", "Enable Provider")}</span>
           </label>
