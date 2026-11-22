@@ -7,6 +7,8 @@ import type {
   CopilotActionMode,
   DataType,
   DesignMaturity,
+  EndpointKind,
+  Environment,
   GraphAlgo,
   GroundingMode,
   MetricSourceTag,
@@ -700,6 +702,67 @@ export interface SubgraphSpecDoc {
 export interface GetSubgraphSpecDocOptions {
   draftId?: string | null;
   format?: "json" | "markdown";
+}
+
+export type PublishedKind = EndpointKind;
+
+export interface TrialCloneTemplateRequest {
+  pack_id: string;
+  slug_override?: string | null;
+  display_name?: string | null;
+}
+
+export interface TrialCloneTemplateResponse {
+  subgraph_slug: string;
+  display_name: string;
+  is_dev_sandbox: boolean;
+  source_template_id: string;
+  draft_id: string;
+  nodes_materialized: number;
+  links_materialized: number;
+  studio_url: string;
+}
+
+export interface PackageSubgraphAgentRequest {
+  agent_name: string;
+  description?: string;
+  node_types?: string[];
+  metric_names?: string[];
+  environment?: Environment;
+  expose_mcp?: boolean;
+  publish_agent?: boolean;
+}
+
+export interface PackagedEndpointItem {
+  id: string;
+  slug: string;
+  kind: PublishedKind;
+  expose_mcp: boolean;
+}
+
+export interface PackageSubgraphAgentResponse {
+  agent_id: string;
+  agent_name: string;
+  agent_version: number;
+  endpoints_upserted: PackagedEndpointItem[];
+  mcp_exposed_count: number;
+  mcp_tool_names: string[];
+  workbench_url: string;
+}
+
+export interface NodeConsumptionCounts {
+  endpoint_count: number;
+  agent_count: number;
+  dashboard_count: number;
+  rule_count: number;
+  endpoint_slugs: string[];
+  agent_ids: string[];
+  dashboard_slugs: string[];
+}
+
+export interface SubgraphConsumptionResponse {
+  subgraph_slug: string;
+  by_node_type: Record<string, NodeConsumptionCounts>;
 }
 
 export function computeNodeBadgeCounts(spec: NodeTypeSpec): NodeBadgeCounts {
@@ -3263,4 +3326,30 @@ export const xblueApi = {
       `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/spec-doc?${params.toString()}`
     );
   },
+  cloneSubgraphFromTemplate: (
+    body: TrialCloneTemplateRequest
+  ): Promise<TrialCloneTemplateResponse> =>
+    requestJson<TrialCloneTemplateResponse>("/api/xblue/subgraphs/from-template", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  packageSubgraphAgent: (
+    subgraphSlug: string,
+    body: PackageSubgraphAgentRequest
+  ): Promise<PackageSubgraphAgentResponse> =>
+    requestJson<PackageSubgraphAgentResponse>(
+      `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/package-agent`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    ),
+  getSubgraphConsumption: (
+    subgraphSlug: string
+  ): Promise<SubgraphConsumptionResponse> =>
+    requestJson<SubgraphConsumptionResponse>(
+      `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/consumption`
+    ),
 };

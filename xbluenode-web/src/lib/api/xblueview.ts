@@ -226,6 +226,15 @@ export interface AiGenerateDashboardRequest {
   theme?: DashboardTheme;
 }
 
+export interface AiDraftDashboardRequest {
+  name: string;
+  slug?: string | null;
+  prompt: string;
+  subgraph_slug?: string | null;
+  seed_node_types?: string[];
+  theme?: DashboardTheme | null;
+}
+
 export interface DrillPathItem {
   field: string;
   value: unknown;
@@ -362,6 +371,13 @@ export const xblueviewApi = {
 
   aiGenerateDashboard: (body: AiGenerateDashboardRequest) =>
     requestJson<DashboardDetail>("/api/xblueview/dashboards/ai-generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  aiDraftDashboard: (body: AiDraftDashboardRequest) =>
+    requestJson<DashboardDetail>("/api/xblueview/dashboards/ai-draft", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),

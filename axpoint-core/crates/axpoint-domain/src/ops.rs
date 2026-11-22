@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppError;
-use crate::enums::{RetentionTarget, SyncMode};
+use crate::enums::{Cardinality, RetentionTarget, SyncMode};
 
 macro_rules! ops_str_enum {
     (
@@ -167,10 +167,12 @@ ops_str_enum! {
 
 ops_str_enum! {
     /// Name-conflict resolution policy during template planning (`§14.5.3`).
+    #[derive(Default)]
     pub enum TemplateConflictStrategy {
         /// Reuse/skip conflicting object names.
         Skip => "SKIP",
         /// Append `_<pack_id>` suffix to conflicting names.
+        #[default]
         Rename => "RENAME",
     }
 }
@@ -387,7 +389,7 @@ pub struct CreateWorkItemCommentRequest {
 }
 
 /// Dataset descriptor inside `manifest.json` (`§14.5.1`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplateDatasetEntry {
     /// Logical key referenced via `{"$ref": "dataset:<key>"}`.
     pub key: String,
@@ -403,7 +405,7 @@ pub struct TemplateDatasetEntry {
 }
 
 /// `contents` section of a template pack `manifest.json` (`§14.5.1`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplateContents {
     /// Relative path to `SchemaDoc` JSON (`schema.json`).
     pub schema: String,
@@ -431,7 +433,7 @@ pub struct TemplateContents {
 }
 
 /// Industry template pack `manifest.json` contract (`§14.0`, `§14.5.1`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplateManifest {
     /// Stable pack identifier (`supply_chain`, `manufacturing_equipment`, `retail_store`).
     pub id: String,
@@ -778,6 +780,300 @@ pub struct NewTemplateInstallInput {
     pub installed_by: Option<Uuid>,
 }
 
+ops_str_enum! {
+    /// Canonical stage identifier in the 5-step tenant onboarding tracker (`05-STEP19` §19.1.1).
+    pub enum OnboardingStepKey {
+        /// Stage 1: dataset or knowledge document ingestion (`ds_datasets > 0 || hg_docs > 0`).
+        DataIngest => "DATA_INGEST",
+        /// Stage 2: node schema modeling & publication (`xb_node_types > 0 && xb_schema_versions >= 1`).
+        NodeModeling => "NODE_MODELING",
+        /// Stage 3: runtime node materialization & workflow orchestration (`xb_nodes > 0`).
+        MappingAndFlow => "MAPPING_AND_FLOW",
+        /// Stage 4: causal simulation verification (`ax_sim_scenarios.SUCCEEDED > 0 || ax_sandboxes > 0`).
+        SimVerification => "SIM_VERIFICATION",
+        /// Stage 5: twin cockpit & domain agent packaging (`xv_dashboards > 0 || ax_agents > 0`).
+        CockpitAndAgent => "COCKPIT_AND_AGENT",
+    }
+}
+
+/// Single step item inside [`OnboardingStatusResponse`] (`05-STEP19` §19.1.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnboardingStepItem {
+    /// 1-based stage ordinal (`1..=5`).
+    pub step_no: u8,
+    /// Stage machine key.
+    pub step_key: OnboardingStepKey,
+    /// Chinese stage label.
+    pub label_zh: String,
+    /// English stage label.
+    pub label_en: String,
+    /// Whether this stage has met its live completion criterion.
+    pub completed: bool,
+    /// Primary asset count displayed in the stage pill.
+    pub count_primary: u64,
+    /// Secondary asset count displayed in the stage pill.
+    pub count_secondary: u64,
+    /// Formatted live metric badge label.
+    pub metric_label: String,
+    /// Frontend route path navigated to when continuing or clicking the step.
+    pub target_path: String,
+}
+
+/// Response returned by `GET /api/axops/onboarding-status` (`05-STEP19` §19.1.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnboardingStatusResponse {
+    /// Count of completed stages (`0..=5`).
+    pub completed_steps: u8,
+    /// Fixed total stage count (`5`).
+    pub total_steps: u8,
+    /// Completion percentage (`completed_steps * 20`, in `0..=100`).
+    pub progress_pct: u8,
+    /// First incomplete stage key (`None` when all `5 / 5` stages are complete).
+    pub recommended_next_step: Option<OnboardingStepKey>,
+    /// Whether at least one `is_dev_sandbox = true` trial subgraph exists in the tenant.
+    pub has_trial_subgraph: bool,
+    /// Ordered 5-stage status breakdown.
+    pub steps: Vec<OnboardingStepItem>,
+}
+
+/// Raw tenant asset counters queried in one read-only transaction to compute [`OnboardingStatusResponse`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnboardingRawCounts {
+    /// Count of `ds_datasets` rows.
+    pub dataset_count: u64,
+    /// Count of `hg_docs` rows.
+    pub doc_count: u64,
+    /// Count of `xb_node_types` rows.
+    pub node_type_count: u64,
+    /// Count of `xb_edge_types` rows.
+    pub edge_type_count: u64,
+    /// Count of `xb_schema_versions` rows across subgraphs.
+    pub schema_version_count: u64,
+    /// Count of materialized `xb_nodes` rows.
+    pub node_count: u64,
+    /// Count of `ax_flows` rows.
+    pub flow_count: u64,
+    /// Count of `ax_sim_scenarios` rows with `status = 'SUCCEEDED'`.
+    pub succeeded_scenario_count: u64,
+    /// Count of `ax_sandboxes` rows.
+    pub sandbox_count: u64,
+    /// Count of `xv_dashboards` rows.
+    pub dashboard_count: u64,
+    /// Count of `ax_agents` rows.
+    pub agent_count: u64,
+    /// Whether the tenant currently has at least one `is_dev_sandbox = true` subgraph.
+    pub has_trial_subgraph: bool,
+}
+
+/// Deterministically derives the 5-step [`OnboardingStatusResponse`] from [`OnboardingRawCounts`] (`05-STEP19` §19.1.1).
+#[must_use]
+pub fn build_onboarding_status(counts: &OnboardingRawCounts) -> OnboardingStatusResponse {
+    let steps = vec![
+        OnboardingStepItem {
+            step_no: 1,
+            step_key: OnboardingStepKey::DataIngest,
+            label_zh: String::from("1. 数据接入"),
+            label_en: String::from("1. Data Ingest"),
+            completed: counts.dataset_count > 0 || counts.doc_count > 0,
+            count_primary: counts.dataset_count,
+            count_secondary: counts.doc_count,
+            metric_label: format!(
+                "{} 数据集 · {} 文档",
+                counts.dataset_count, counts.doc_count
+            ),
+            target_path: String::from("/hub"),
+        },
+        OnboardingStepItem {
+            step_no: 2,
+            step_key: OnboardingStepKey::NodeModeling,
+            label_zh: String::from("2. 节点建模"),
+            label_en: String::from("2. Node Modeling"),
+            completed: counts.node_type_count > 0 && counts.schema_version_count >= 1,
+            count_primary: counts.node_type_count,
+            count_secondary: counts.edge_type_count,
+            metric_label: format!(
+                "{} 节点类型 · {} 关系",
+                counts.node_type_count, counts.edge_type_count
+            ),
+            target_path: String::from("/studio"),
+        },
+        OnboardingStepItem {
+            step_no: 3,
+            step_key: OnboardingStepKey::MappingAndFlow,
+            label_zh: String::from("3. 映射与编排"),
+            label_en: String::from("3. Mapping & Flow"),
+            completed: counts.node_count > 0,
+            count_primary: counts.node_count,
+            count_secondary: counts.flow_count,
+            metric_label: format!(
+                "{} 业务节点 · {} 流程",
+                counts.node_count, counts.flow_count
+            ),
+            target_path: String::from("/flow"),
+        },
+        OnboardingStepItem {
+            step_no: 4,
+            step_key: OnboardingStepKey::SimVerification,
+            label_zh: String::from("4. 推演验证"),
+            label_en: String::from("4. Simulation"),
+            completed: counts.succeeded_scenario_count > 0 || counts.sandbox_count > 0,
+            count_primary: counts.succeeded_scenario_count,
+            count_secondary: counts.sandbox_count,
+            metric_label: format!("{} 推演方案", counts.succeeded_scenario_count),
+            target_path: String::from("/sim"),
+        },
+        OnboardingStepItem {
+            step_no: 5,
+            step_key: OnboardingStepKey::CockpitAndAgent,
+            label_zh: String::from("5. 驾驶舱与智能体"),
+            label_en: String::from("5. Apps & Agents"),
+            completed: counts.dashboard_count > 0 || counts.agent_count > 0,
+            count_primary: counts.dashboard_count,
+            count_secondary: counts.agent_count,
+            metric_label: format!(
+                "{} 驾驶舱 · {} 智能体",
+                counts.dashboard_count, counts.agent_count
+            ),
+            target_path: String::from("/view"),
+        },
+    ];
+
+    let completed_steps = u8::try_from(steps.iter().filter(|s| s.completed).count()).unwrap_or(5);
+    let progress_pct = completed_steps.saturating_mul(20);
+    let recommended_next_step = steps.iter().find(|s| !s.completed).map(|s| s.step_key);
+
+    OnboardingStatusResponse {
+        completed_steps,
+        total_steps: 5,
+        progress_pct,
+        recommended_next_step,
+        has_trial_subgraph: counts.has_trial_subgraph,
+        steps,
+    }
+}
+
+/// Node type summary item in [`TemplateTopologySummary`] (`05-STEP19` §19.2.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateNodeTypePreview {
+    /// Machine `NodeTypeSpec.name`.
+    pub name: String,
+    /// Human-readable display label.
+    pub display_name: String,
+    /// Total attribute and metric property count.
+    pub property_count: usize,
+    /// Numeric metric property count.
+    pub metric_count: usize,
+}
+
+/// Relationship type summary item in [`TemplateTopologySummary`] (`05-STEP19` §19.2.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateEdgeTypePreview {
+    /// Relationship type identifier.
+    pub name: String,
+    /// Source `NodeTypeSpec.name`.
+    pub src_type_name: String,
+    /// Destination `NodeTypeSpec.name`.
+    pub dst_type_name: String,
+    /// Relationship cardinality (`ONE_TO_ONE`, `ONE_TO_MANY`, `MANY_TO_ONE`, `MANY_TO_MANY`).
+    pub cardinality: Cardinality,
+}
+
+/// Entity-relationship topology summary inside [`TemplatePreviewResponse`] (`05-STEP19` §19.2.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateTopologySummary {
+    /// Node type summaries declared in `schema.json`.
+    pub node_types: Vec<TemplateNodeTypePreview>,
+    /// Directed edge type summaries declared in `schema.json`.
+    pub edge_types: Vec<TemplateEdgeTypePreview>,
+    /// Total cross-link aggregation rule count across node types.
+    pub agg_rule_count: usize,
+    /// Total intra-node derived formula rule count across node types.
+    pub derived_rule_count: usize,
+}
+
+/// Sample semantic or node metric item inside [`TemplatePreviewResponse`] (`05-STEP19` §19.2.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateSampleMetricPreview {
+    /// Metric machine identifier.
+    pub name: String,
+    /// Human-readable metric title.
+    pub display_name: String,
+    /// Measurement unit label (empty when dimensionless).
+    #[serde(default)]
+    pub unit: String,
+}
+
+/// Dashboard preview item inside [`TemplatePreviewResponse`] (`05-STEP19` §19.2.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateDashboardPreviewItem {
+    /// Dashboard URL slug.
+    pub slug: String,
+    /// Dashboard display name.
+    pub name: String,
+    /// Number of widgets configured on the dashboard.
+    pub widget_count: usize,
+}
+
+/// Bundled `AxAgent` preview item inside [`TemplatePreviewResponse`] (`05-STEP19` §19.2.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateAgentPreviewItem {
+    /// Agent identifier / name.
+    pub name: String,
+    /// Agent summary description.
+    #[serde(default)]
+    pub description: String,
+    /// Number of bound tools declared in `spec.tools`.
+    pub tool_count: usize,
+}
+
+/// Tabular CSV sample preview for a dataset inside [`TemplatePreviewResponse`] (`05-STEP19` §19.2.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateSampleRowsPreview {
+    /// Dataset name in `manifest.contents.datasets`.
+    pub dataset_name: String,
+    /// Ordered CSV column headers.
+    pub headers: Vec<String>,
+    /// Sample row string cells aligned with `headers`.
+    pub rows: Vec<Vec<String>>,
+    /// Total data row count in the CSV file.
+    pub total_rows: usize,
+}
+
+/// Read-only preview bundle returned by `GET /api/axops/templates/{id}/preview` (`05-STEP19` §19.2.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplatePreviewResponse {
+    /// Parsed `manifest.json` metadata.
+    pub manifest: TemplateManifest,
+    /// Pack `README.md` Markdown content.
+    pub readme_markdown: String,
+    /// Node/edge topology and rule counts extracted from `schema.json`.
+    pub topology_summary: TemplateTopologySummary,
+    /// Sample semantic and node metrics.
+    #[serde(default)]
+    pub sample_metrics: Vec<TemplateSampleMetricPreview>,
+    /// Bundled twin dashboard summaries.
+    #[serde(default)]
+    pub dashboard_previews: Vec<TemplateDashboardPreviewItem>,
+    /// Sample CSV dataset rows.
+    #[serde(default)]
+    pub sample_rows: Vec<TemplateSampleRowsPreview>,
+    /// Bundled domain agent summaries.
+    #[serde(default)]
+    pub agents: Vec<TemplateAgentPreviewItem>,
+}
+
+/// Request body for production full-pack installation `POST /api/axops/templates/{id}/install` (`05-STEP19` §19.2.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InstallTemplateRequest {
+    /// When `true`, computes and records the installation plan without applying mutations.
+    #[serde(default)]
+    pub dry_run: bool,
+    /// Conflict resolution policy (`RENAME` default, or `SKIP`).
+    #[serde(default)]
+    pub on_conflict: TemplateConflictStrategy,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -803,5 +1099,67 @@ mod tests {
             "manufacturing_equipment"
         );
         assert_eq!(DemoScenario::RetailStore.as_str(), "retail_store");
+    }
+
+    #[test]
+    fn onboarding_status_derives_empty_partial_and_complete_states() {
+        let empty = build_onboarding_status(&OnboardingRawCounts::default());
+        assert_eq!(empty.total_steps, 5);
+        assert_eq!(empty.completed_steps, 0);
+        assert_eq!(empty.progress_pct, 0);
+        assert_eq!(
+            empty.recommended_next_step,
+            Some(OnboardingStepKey::DataIngest)
+        );
+        assert!(!empty.has_trial_subgraph);
+        assert_eq!(empty.steps.len(), 5);
+
+        // Step 1 done via docs, Step 2 still incomplete without published schema_version, Step 3 done via nodes.
+        let gapped = build_onboarding_status(&OnboardingRawCounts {
+            doc_count: 2,
+            node_type_count: 4,
+            edge_type_count: 3,
+            schema_version_count: 0,
+            node_count: 12,
+            has_trial_subgraph: true,
+            ..OnboardingRawCounts::default()
+        });
+        assert_eq!(gapped.completed_steps, 2);
+        assert_eq!(gapped.progress_pct, 40);
+        assert_eq!(
+            gapped.recommended_next_step,
+            Some(OnboardingStepKey::NodeModeling)
+        );
+        assert!(gapped.has_trial_subgraph);
+        assert_eq!(
+            gapped.steps.get(1).map(|s| s.target_path.as_str()),
+            Some("/studio")
+        );
+
+        let complete = build_onboarding_status(&OnboardingRawCounts {
+            dataset_count: 4,
+            doc_count: 1,
+            node_type_count: 4,
+            edge_type_count: 3,
+            schema_version_count: 1,
+            node_count: 24,
+            flow_count: 1,
+            succeeded_scenario_count: 1,
+            sandbox_count: 1,
+            dashboard_count: 1,
+            agent_count: 1,
+            has_trial_subgraph: true,
+        });
+        assert_eq!(complete.completed_steps, 5);
+        assert_eq!(complete.progress_pct, 100);
+        assert_eq!(complete.recommended_next_step, None);
+    }
+
+    #[test]
+    fn install_template_request_defaults_cleanly() -> Result<(), serde_json::Error> {
+        let parsed: InstallTemplateRequest = serde_json::from_str("{}")?;
+        assert!(!parsed.dry_run);
+        assert_eq!(parsed.on_conflict, TemplateConflictStrategy::Rename);
+        Ok(())
     }
 }

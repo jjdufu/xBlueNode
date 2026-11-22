@@ -667,6 +667,28 @@ pub struct AiGenerateDashboardRequest {
     pub theme: Option<DashboardTheme>,
 }
 
+/// Request payload for Studio-contextual `POST /api/xblueview/dashboards/ai-draft` (`05-STEP19` §19.3 / §19.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AiDraftDashboardRequest {
+    /// Dashboard display name.
+    pub name: String,
+    /// Optional explicit URL slug (`^[a-z0-9][a-z0-9-]{0,62}$`).
+    #[serde(default)]
+    pub slug: Option<String>,
+    /// Natural-language prompt describing desired monitoring cockpit.
+    pub prompt: String,
+    /// Optional originating `xBlueStudio` subgraph slug (`"main"` default).
+    #[serde(default)]
+    pub subgraph_slug: Option<String>,
+    /// Pre-selected `NodeTypeSpec.name` list passed from `xBlueStudio`.
+    #[serde(default)]
+    pub seed_node_types: Vec<String>,
+    /// Optional visual theme override.
+    #[serde(default)]
+    pub theme: Option<DashboardTheme>,
+}
+
 /// Widget draft item emitted by AI dashboard generation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiWidgetDraft {

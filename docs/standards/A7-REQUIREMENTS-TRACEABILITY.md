@@ -60,6 +60,7 @@
 | C57 | 业务对象自动生成领域 REST / 动态 GraphQL 接口与 MCP 暴露 | 05 / 09 | §05.6、[08](../../plans/completed/v1-foundation-step00-14/08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) §09.3～§09.4 | step05 “domain-graphql”、“domain-objects”；step09 “published-object”、“mcp-tools” |
 | C66 | `AxBuilder` 构建态 MCP 工具集（拉取/校验/推送模型、流程与看板草案并回传深链） | 17 | [03-STEP17](../../plans/v2-ux-and-grounded-ai/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2～§17.3 | step17 “mcp-axbuilder-preflight”、“mcp-push-draft”、“mcp-deeplink” |
 | C67 | 细粒度构建令牌预设与隔离开发子图试灌及一键清空 | 17 | [03-STEP17](../../plans/v2-ux-and-grounded-ai/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2.2、§17.4 | step17 “builder-token-no-prod”、“dev-subgraph-reset” |
+| C72 | `xBlueStudio` 一键双态应用包装（领域智能体 + 孪生驾驶舱） | 19 | [05-STEP19](../../plans/v2-ux-and-grounded-ai/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.3 | step19 “studio-pack-agent”、“studio-pack-dashboard” |
 
 ### D 智能
 
@@ -111,6 +112,7 @@
 | C54 | 行业应用模板复用 | 14 | §14.5 | step14 “template-installed”、“template-dashboard”、“template-uninstalled” |
 | C55 | 样例数据一键装载演示 | 14 | §14.6 | `POST /api/axops/demo/supply_chain/load` 后 `scripts/demo/supply_chain.md` 各步结果；`e2e/full-journey.spec.ts` |
 | C61 | 系统级只读模型与用户个人默认模型分级覆盖 | 15 | [01-STEP15](../../plans/v2-ux-and-grounded-ai/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.3.4、§15.4 | step15 “user-default-provider”、“system-provider-readonly” |
+| C71 | 系统概览 5 步实时构建向导与免运维权限演练子图模板试用 | 19 | [05-STEP19](../../plans/v2-ux-and-grounded-ai/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.1～§19.2 | step19 “onboarding-progress”、“trial-template-clone” |
 
 ---
 

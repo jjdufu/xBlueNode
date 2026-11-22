@@ -1,5 +1,5 @@
 import { requestJson } from "./client";
-import type { JobKind, JobStatus, RetentionTarget, SyncMode } from "./enums";
+import type { Cardinality, JobKind, JobStatus, RetentionTarget, SyncMode } from "./enums";
 
 export type WorkItemKind = "TASK" | "ISSUE" | "CHANGE";
 export type WorkItemStatus = "OPEN" | "IN_PROGRESS" | "BLOCKED" | "DONE" | "CANCELED";
@@ -182,6 +182,95 @@ export interface TemplatePackDetail extends TemplateManifest {
   readme: string;
 }
 
+export type OnboardingStepKey =
+  | "DATA_INGEST"
+  | "NODE_MODELING"
+  | "MAPPING_AND_FLOW"
+  | "SIM_VERIFICATION"
+  | "COCKPIT_AND_AGENT";
+
+export interface OnboardingStepItem {
+  step_no: number;
+  step_key: OnboardingStepKey;
+  label_zh: string;
+  label_en: string;
+  completed: boolean;
+  count_primary: number;
+  count_secondary: number;
+  metric_label: string;
+  target_path: string;
+}
+
+export interface OnboardingStatusResponse {
+  completed_steps: number;
+  total_steps: number;
+  progress_pct: number;
+  recommended_next_step: OnboardingStepKey | null;
+  has_trial_subgraph: boolean;
+  steps: OnboardingStepItem[];
+}
+
+export interface TemplateNodeTypePreview {
+  name: string;
+  display_name: string;
+  property_count: number;
+  metric_count: number;
+}
+
+export interface TemplateEdgeTypePreview {
+  name: string;
+  src_type_name: string;
+  dst_type_name: string;
+  cardinality: Cardinality;
+}
+
+export interface TemplateTopologySummary {
+  node_types: TemplateNodeTypePreview[];
+  edge_types: TemplateEdgeTypePreview[];
+  agg_rule_count: number;
+  derived_rule_count: number;
+}
+
+export interface TemplateSampleMetricPreview {
+  name: string;
+  display_name: string;
+  unit: string;
+}
+
+export interface TemplateDashboardPreviewItem {
+  slug: string;
+  name: string;
+  widget_count: number;
+}
+
+export interface TemplateAgentPreviewItem {
+  name: string;
+  description: string;
+  tool_count: number;
+}
+
+export interface TemplateSampleRowsPreview {
+  dataset_name: string;
+  headers: string[];
+  rows: string[][];
+  total_rows: number;
+}
+
+export interface TemplatePreviewResponse {
+  manifest: TemplateManifest;
+  readme_markdown: string;
+  topology_summary: TemplateTopologySummary;
+  sample_metrics: TemplateSampleMetricPreview[];
+  dashboard_previews: TemplateDashboardPreviewItem[];
+  sample_rows: TemplateSampleRowsPreview[];
+  agents: TemplateAgentPreviewItem[];
+}
+
+export interface InstallTemplateRequest {
+  dry_run?: boolean;
+  on_conflict?: TemplateConflictStrategy;
+}
+
 export interface TemplatePlannedObject {
   category: string;
   key: string;
@@ -361,6 +450,10 @@ export const axopsApi = {
     return requestJson<SystemInfoResponse>("/api/axops/system/info");
   },
 
+  getOnboardingStatus(): Promise<OnboardingStatusResponse> {
+    return requestJson<OnboardingStatusResponse>("/api/axops/onboarding-status");
+  },
+
   listRetentionPolicies(): Promise<RetentionListResponse> {
     return requestJson<RetentionListResponse>("/api/axops/retention");
   },
@@ -411,6 +504,25 @@ export const axopsApi = {
   getTemplate(packId: string): Promise<TemplatePackDetail> {
     return requestJson<TemplatePackDetail>(
       `/api/axops/templates/${encodeURIComponent(packId)}`
+    );
+  },
+
+  getTemplatePreview(packId: string): Promise<TemplatePreviewResponse> {
+    return requestJson<TemplatePreviewResponse>(
+      `/api/axops/templates/${encodeURIComponent(packId)}/preview`
+    );
+  },
+
+  installTemplate(
+    packId: string,
+    body?: InstallTemplateRequest
+  ): Promise<TemplateInstallRecord> {
+    return requestJson<TemplateInstallRecord>(
+      `/api/axops/templates/${encodeURIComponent(packId)}/install`,
+      {
+        method: "POST",
+        body: JSON.stringify(body ?? {}),
+      }
     );
   },
 

@@ -7,8 +7,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
+pub use crate::enums::PublishedKind;
 use crate::enums::{
-    AggFn, Cardinality, CopilotActionMode, DataType, DesignMaturity, PiiCategory,
+    AggFn, Cardinality, CopilotActionMode, DataType, DesignMaturity, Environment, PiiCategory,
     SemanticLayerTier, SubgraphMergeStrategy,
 };
 use crate::graph::GeoPoint;
@@ -1932,6 +1933,297 @@ pub struct DownstreamConsumerBinding {
     pub target_metric: Option<String>,
 }
 
+/// Request body for `POST /api/xblue/subgraphs/from-template` (`05-STEP19` §19.2.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TrialCloneTemplateRequest {
+    /// Built-in template pack identifier (also accepts legacy `"template_id"` alias).
+    #[serde(alias = "template_id")]
+    pub pack_id: String,
+    /// Optional custom trial subgraph slug (`^trial_[a-z0-9_-]{1,56}$`).
+    #[serde(default)]
+    pub slug_override: Option<String>,
+    /// Optional subgraph display name override.
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+/// Response returned by `POST /api/xblue/subgraphs/from-template` (`05-STEP19` §19.2.3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrialCloneTemplateResponse {
+    /// Created trial subgraph slug (`trial_<pack>_<hex4>`).
+    pub subgraph_slug: String,
+    /// Human-readable subgraph display name.
+    pub display_name: String,
+    /// Always `true` for isolated trial sandboxes.
+    pub is_dev_sandbox: bool,
+    /// Source built-in template pack identifier.
+    pub source_template_id: String,
+    /// Initial editable `SchemaDraft` UUID created inside the sandbox.
+    pub draft_id: Uuid,
+    /// Number of sample `BlueNode` records materialized into the sandbox.
+    pub nodes_materialized: usize,
+    /// Number of sample `BlueLink` records materialized into the sandbox.
+    pub links_materialized: usize,
+    /// Frontend `xBlueStudio` route targeting the cloned sandbox subgraph.
+    pub studio_url: String,
+}
+
+/// Derives a deterministic `trial_<sanitized>_<hex4>` sandbox subgraph slug (`<= 63` chars, `05-STEP19` §19.2.3).
+#[must_use]
+pub fn derive_trial_subgraph_slug(pack_id: &str, short_hex4: &str) -> String {
+    let mut sanitized = String::with_capacity(pack_id.len());
+    for ch in pack_id.chars() {
+        if ch.is_ascii_alphanumeric() {
+            sanitized.push(ch.to_ascii_lowercase());
+        } else if (ch == '_' || ch == '-') && !sanitized.is_empty() {
+            if !sanitized.ends_with('_') && !sanitized.ends_with('-') {
+                sanitized.push(ch);
+            }
+        } else if !sanitized.is_empty() && !sanitized.ends_with('_') && !sanitized.ends_with('-') {
+            sanitized.push('_');
+        }
+    }
+    let trimmed = sanitized.trim_matches(['_', '-']);
+    let base_pack = if trimmed.is_empty() { "pack" } else { trimmed };
+
+    let mut hex_part: String = short_hex4
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .map(|c| c.to_ascii_lowercase())
+        .take(4)
+        .collect();
+    if hex_part.is_empty() {
+        hex_part.push_str("0000");
+    }
+
+    // Ensure `rest` after `"trial_"` fits in `1..=56` chars (`total <= 62 <= 63`).
+    let max_pack_len = 56_usize.saturating_sub(hex_part.len().saturating_add(1));
+    let truncated: String = base_pack.chars().take(max_pack_len).collect();
+    let clean_pack = truncated.trim_end_matches(['_', '-']);
+    let final_pack = if clean_pack.is_empty() {
+        "pack"
+    } else {
+        clean_pack
+    };
+    format!("trial_{final_pack}_{hex_part}")
+}
+
+/// Validates a trial sandbox subgraph slug (`05-STEP19` §19.2.3).
+///
+/// Rejects `"main"` and requires `^trial_[a-z0-9_-]{1,56}$`.
+///
+/// # Errors
+/// Returns [`crate::AppError::BadRequest`] (`INVALID_ARGUMENT`) when `slug` is `"main"` or fails `^trial_[a-z0-9_-]{1,56}$`.
+pub fn validate_trial_subgraph_slug(slug: &str) -> Result<(), crate::AppError> {
+    if slug == "main" {
+        return Err(crate::AppError::bad(
+            "INVALID_ARGUMENT",
+            "trial subgraph slug must not be 'main'",
+        ));
+    }
+    let Some(rest) = slug.strip_prefix("trial_") else {
+        return Err(crate::AppError::bad(
+            "INVALID_ARGUMENT",
+            "trial subgraph slug must start with 'trial_'",
+        ));
+    };
+    if rest.is_empty()
+        || rest.len() > 56
+        || !rest
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+    {
+        return Err(crate::AppError::bad(
+            "INVALID_ARGUMENT",
+            "trial subgraph slug must match ^trial_[a-z0-9_-]{1,56}$",
+        ));
+    }
+    Ok(())
+}
+
+const fn default_prod_env() -> Environment {
+    Environment::Prod
+}
+
+/// Request body for `POST /api/xblue/subgraphs/{slug}/package-agent` (`05-STEP19` §19.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PackageSubgraphAgentRequest {
+    /// Target `AxAgent` machine/display name.
+    pub agent_name: String,
+    /// Optional domain assistant description.
+    #[serde(default)]
+    pub description: String,
+    /// Published `NodeTypeSpec.name` items to expose as `OBJECT_TYPE` endpoints.
+    #[serde(default)]
+    pub node_types: Vec<String>,
+    /// Certified `MetricDef.name` items to expose as `METRIC` endpoints.
+    #[serde(default)]
+    pub metric_names: Vec<String>,
+    /// Target endpoint environment (`PROD` default; `TEST` required on sandbox subgraphs).
+    #[serde(default = "default_prod_env")]
+    pub environment: Environment,
+    /// Whether upserted endpoints are exposed as MCP tools (`true` default).
+    #[serde(default = "default_true")]
+    pub expose_mcp: bool,
+    /// Whether to publish a new immutable `ax_agent_versions` snapshot immediately (`true` default).
+    #[serde(default = "default_true")]
+    pub publish_agent: bool,
+}
+
+/// Upserted published endpoint summary inside [`PackageSubgraphAgentResponse`] (`05-STEP19` §19.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackagedEndpointItem {
+    /// Endpoint UUID (`ax_published_endpoints.id`).
+    pub id: Uuid,
+    /// Generated kebab-case endpoint slug.
+    pub slug: String,
+    /// Published endpoint capability kind (`OBJECT_TYPE` or `METRIC`).
+    pub kind: PublishedKind,
+    /// Whether this endpoint is exposed on `/api/mcp`.
+    pub expose_mcp: bool,
+}
+
+/// Response returned by `POST /api/xblue/subgraphs/{slug}/package-agent` (`05-STEP19` §19.3.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PackageSubgraphAgentResponse {
+    /// Created or updated `AxAgent` UUID.
+    pub agent_id: Uuid,
+    /// Agent name.
+    pub agent_name: String,
+    /// Published `ax_agents.version` (`0` when draft-only).
+    pub agent_version: i32,
+    /// Upserted `OBJECT_TYPE` and `METRIC` published endpoints bound to the agent.
+    pub endpoints_upserted: Vec<PackagedEndpointItem>,
+    /// Count of upserted endpoints with `expose_mcp == true`.
+    pub mcp_exposed_count: usize,
+    /// MCP tool names registered for upserted endpoints when `expose_mcp == true`.
+    #[serde(default)]
+    pub mcp_tool_names: Vec<String>,
+    /// Frontend `AxAgent` workbench URL targeting this agent.
+    pub workbench_url: String,
+}
+
+fn to_kebab_segment(raw: &str) -> String {
+    let chars: Vec<char> = raw.chars().collect();
+    let mut out = String::with_capacity(raw.len().saturating_add(4));
+    for (idx, &ch) in chars.iter().enumerate() {
+        if ch.is_ascii_alphanumeric() {
+            if ch.is_ascii_uppercase() && !out.is_empty() && !out.ends_with('-') {
+                let prev = idx.checked_sub(1).and_then(|i| chars.get(i)).copied();
+                let next = chars.get(idx.saturating_add(1)).copied();
+                let split_here = prev.is_some_and(|p| p.is_ascii_lowercase() || p.is_ascii_digit())
+                    || (prev.is_some_and(|p| p.is_ascii_uppercase())
+                        && next.is_some_and(|n| n.is_ascii_lowercase()));
+                if split_here {
+                    out.push('-');
+                }
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
+}
+
+/// Builds an idempotent lowercase kebab-case endpoint slug matching `^[a-z0-9][a-z0-9-]{2,62}$` (`05-STEP19` §19.3.1).
+///
+/// Examples:
+/// - `("main", true, "Warehouse", "objects") -> "warehouse-objects"`
+/// - `("logistics", false, "Warehouse", "objects") -> "logistics-warehouse-objects"`
+/// - `("main", true, "paid_amount", "metric") -> "paid-amount-metric"`
+#[must_use]
+pub fn build_packaged_endpoint_slug(
+    subgraph_slug: &str,
+    is_main: bool,
+    target_name: &str,
+    suffix: &str,
+) -> String {
+    let target_seg = {
+        let s = to_kebab_segment(target_name);
+        if s.is_empty() {
+            String::from("item")
+        } else {
+            s
+        }
+    };
+    let suffix_seg = to_kebab_segment(suffix);
+    let prefix_seg = if is_main {
+        String::new()
+    } else {
+        to_kebab_segment(subgraph_slug)
+    };
+
+    let head = if prefix_seg.is_empty() {
+        target_seg
+    } else {
+        format!("{prefix_seg}-{target_seg}")
+    };
+
+    let mut slug = if suffix_seg.is_empty() {
+        let capped: String = head.chars().take(63).collect();
+        capped.trim_end_matches('-').to_owned()
+    } else if suffix_seg.len() >= 58 {
+        let joined = format!("{head}-{suffix_seg}");
+        let capped: String = joined.chars().take(63).collect();
+        capped.trim_end_matches('-').to_owned()
+    } else {
+        let max_head_len = 63_usize.saturating_sub(suffix_seg.len().saturating_add(1));
+        let capped_head: String = head.chars().take(max_head_len).collect();
+        let clean_head = capped_head.trim_end_matches('-');
+        let effective_head = if clean_head.is_empty() {
+            "ep"
+        } else {
+            clean_head
+        };
+        format!("{effective_head}-{suffix_seg}")
+    };
+
+    if slug.is_empty() {
+        slug = String::from("ep-0");
+    } else if slug.len() < 3 {
+        slug.push_str("-ep");
+    }
+    slug
+}
+
+/// Reverse downstream asset counts referencing a single `NodeTypeSpec` (`05-STEP19` §19.3.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeConsumptionCounts {
+    /// Enabled `OBJECT_TYPE` published endpoints targeting this node type.
+    pub endpoint_count: usize,
+    /// `AxAgent` definitions binding any of those object endpoints.
+    pub agent_count: usize,
+    /// Distinct `xBlueView` dashboards referencing this node type in widget `deps` or `data_source`.
+    pub dashboard_count: usize,
+    /// Enabled `METRIC` alert rules (`ax_rules`) targeting this node type.
+    pub rule_count: usize,
+    /// Slugs of matching published endpoints.
+    #[serde(default)]
+    pub endpoint_slugs: Vec<String>,
+    /// UUIDs of matching `AxAgent` records.
+    #[serde(default)]
+    pub agent_ids: Vec<Uuid>,
+    /// Slugs of matching `xBlueView` dashboards.
+    #[serde(default)]
+    pub dashboard_slugs: Vec<String>,
+}
+
+/// Response returned by `GET /api/xblue/subgraphs/{slug}/consumption` (`05-STEP19` §19.3.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubgraphConsumptionResponse {
+    /// Inspected subgraph slug.
+    pub subgraph_slug: String,
+    /// Downstream consumption counters keyed by `NodeTypeSpec.name`.
+    #[serde(default)]
+    pub by_node_type: BTreeMap<String, NodeConsumptionCounts>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1967,6 +2259,70 @@ mod tests {
         let wire = serde_json::to_string(&resp)?;
         let parsed_doc: SchemaDoc = serde_json::from_str(&wire)?;
         assert_eq!(parsed_doc.node_types.len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn trial_subgraph_slug_derivation_and_validation() {
+        let slug = derive_trial_subgraph_slug("supply_chain", "8A2F");
+        assert_eq!(slug, "trial_supply_chain_8a2f");
+        assert!(validate_trial_subgraph_slug(&slug).is_ok());
+
+        let long_pack = "very_long_enterprise_manufacturing_template_pack_identifier_v2_extra";
+        let derived_long = derive_trial_subgraph_slug(long_pack, "deadbeef");
+        assert!(derived_long.len() <= 63);
+        assert!(derived_long.ends_with("_dead"));
+        assert!(validate_trial_subgraph_slug(&derived_long).is_ok());
+
+        assert!(validate_trial_subgraph_slug("main").is_err());
+        assert!(validate_trial_subgraph_slug("logistics").is_err());
+        assert!(validate_trial_subgraph_slug("trial_").is_err());
+        assert!(validate_trial_subgraph_slug("trial_UpperCase").is_err());
+        let too_long_override = format!("trial_{}", "a".repeat(57));
+        assert!(validate_trial_subgraph_slug(&too_long_override).is_err());
+        let max_valid_override = format!("trial_{}", "a".repeat(56));
+        assert!(validate_trial_subgraph_slug(&max_valid_override).is_ok());
+    }
+
+    #[test]
+    fn packaged_endpoint_slug_converts_pascal_and_snake_and_caps_length() {
+        assert_eq!(
+            build_packaged_endpoint_slug("main", true, "Warehouse", "objects"),
+            "warehouse-objects"
+        );
+        assert_eq!(
+            build_packaged_endpoint_slug("main", true, "PurchaseOrder", "objects"),
+            "purchase-order-objects"
+        );
+        assert_eq!(
+            build_packaged_endpoint_slug("trial_supply_8a2f", false, "Warehouse", "objects"),
+            "trial-supply-8a2f-warehouse-objects"
+        );
+        assert_eq!(
+            build_packaged_endpoint_slug("main", true, "paid_amount", "metric"),
+            "paid-amount-metric"
+        );
+
+        let huge_sg = "trial_extremely_verbose_department_sandbox_subgraph_identifier_1234";
+        let capped =
+            build_packaged_endpoint_slug(huge_sg, false, "DistributionWarehouse", "objects");
+        assert!(capped.len() <= 63);
+        assert!(capped.len() >= 3);
+        assert!(!capped.ends_with('-'));
+        assert!(capped.ends_with("-objects"));
+        assert!(
+            capped
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        );
+    }
+
+    #[test]
+    fn trial_clone_request_accepts_template_id_alias() -> Result<(), serde_json::Error> {
+        let req: TrialCloneTemplateRequest =
+            serde_json::from_str(r#"{"template_id":"supply_chain"}"#)?;
+        assert_eq!(req.pack_id, "supply_chain");
+        assert_eq!(req.slug_override, None);
         Ok(())
     }
 }

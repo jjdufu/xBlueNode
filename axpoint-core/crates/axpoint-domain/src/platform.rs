@@ -10,6 +10,13 @@ use uuid::Uuid;
 
 use crate::AppError;
 use crate::enums::{AuditAction, JobKind, JobStatus, OutboxTopic, Permission, TokenKind};
+pub use crate::ops::{
+    InstallTemplateRequest, OnboardingRawCounts, OnboardingStatusResponse, OnboardingStepItem,
+    OnboardingStepKey, TemplateAgentPreviewItem, TemplateDashboardPreviewItem,
+    TemplateEdgeTypePreview, TemplateNodeTypePreview, TemplatePreviewResponse,
+    TemplateSampleMetricPreview, TemplateSampleRowsPreview, TemplateTopologySummary,
+    build_onboarding_status,
+};
 
 /// Boxed asynchronous result used by object-safe registries (`JobHandler`, `OutboxSubscriber`).
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, AppError>> + Send + 'a>>;
