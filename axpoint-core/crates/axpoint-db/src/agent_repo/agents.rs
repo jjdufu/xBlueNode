@@ -175,6 +175,12 @@ fn decode_conversation_row(row: &PgRow) -> Result<ConversationRecord, AppError> 
     let embed_id: Option<Uuid> = row
         .try_get("embed_id")
         .map_err(|e| AppError::Database(format!("decode ax_conversations.embed_id: {e}")))?;
+    let im_connector_id: Option<Uuid> = row
+        .try_get("im_connector_id")
+        .map_err(|e| AppError::Database(format!("decode ax_conversations.im_connector_id: {e}")))?;
+    let external_chat_id: Option<String> = row.try_get("external_chat_id").map_err(|e| {
+        AppError::Database(format!("decode ax_conversations.external_chat_id: {e}"))
+    })?;
     let title: String = row
         .try_get("title")
         .map_err(|e| AppError::Database(format!("decode ax_conversations.title: {e}")))?;
@@ -197,6 +203,8 @@ fn decode_conversation_row(row: &PgRow) -> Result<ConversationRecord, AppError> 
         user_id,
         channel,
         embed_id,
+        im_connector_id,
+        external_chat_id,
         title,
         status,
         created_at,
@@ -572,8 +580,8 @@ pub(super) async fn create_conversation_impl(
     let mut tx = begin_tenant_tx(&store.pool, tenant_id).await?;
     let row = sqlx::query(
         "INSERT INTO ax_conversations
-            (tenant_id, agent_id, agent_version, user_id, channel, embed_id, title, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'ACTIVE')
+            (tenant_id, agent_id, agent_version, user_id, channel, embed_id, im_connector_id, external_chat_id, title, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'ACTIVE')
          RETURNING *",
     )
     .bind(tenant_id)
@@ -582,6 +590,8 @@ pub(super) async fn create_conversation_impl(
     .bind(input.user_id)
     .bind(input.channel.as_str())
     .bind(input.embed_id)
+    .bind(input.im_connector_id)
+    .bind(&input.external_chat_id)
     .bind(&input.title)
     .fetch_one(&mut *tx)
     .await

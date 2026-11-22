@@ -26,6 +26,7 @@
 | 0016 | `0016_grounded_ask_eval.sql` | Step 16 | 问数轮次接地路径审计列（`grounding_mode`、`verified_numbers`、`verified_citations`、`abstained`、`slot_payload`）与双轨反幻觉评测运行表 `an_grounding_eval_runs` | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.1 |
 | 0017 | `0017_axbuilder_scopes.sql` | Step 17 | `AxBuilder` 构建令牌档位与深链基址、开发子图沙盒元数据、运行态节点 `subgraph_slug` 隔离索引与审计动作扩展 | [03-STEP17](../../plans/v2-ux-and-grounded-ai/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.1 |
 | 0018 | `0018_studio_proposal_status.sql` | Step 18 | 模型草案增量快照表 `xb_schema_draft_snapshots`、`xb_schema_drafts.pass_count`、节点类型语义分层/业务域列与 `STUDIO_SNAPSHOT_RESTORE` 审计动作 | [04-STEP18](../../plans/v2-ux-and-grounded-ai/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.1 |
+| 0019 | `0019_im_bot_bindings.sql` | Step 21 | 企业 IM 出站长连接连接器 `ax_im_connectors`、身份映射 `ax_im_user_bindings`、一次性挑战码 `ax_im_bind_challenges`、事件去重 `ax_im_event_dedup`、`ax_conversations` IM 通道扩展及单主租约与原子绑定核销函数 | [07-STEP21](../../plans/v2-ux-and-grounded-ai/builder-and-ux/07-STEP21-IM-BIDIRECTIONAL-AGENT-CONNECTORS.md) §21.1 |
 
 Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 中的时序表）。
 
@@ -49,8 +50,9 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `sec_users` | 0002 | 0013 | 00 / 13 | 是 |
 | `sec_roles`、`sec_user_roles` | 0002 | — | 00 | 是 |
 | `sec_api_tokens` | 0002 | 0017（`token_profile`、`web_base_url`） | 00 / 09 / 17 | 是 |
-| `sec_audit_logs` | 0002 | 0013（哈希链）、0017（构建与克隆动作）、0018（快照回退动作） | 00 / 13 / 17 / 18 | 是（应用角色无 UPDATE / DELETE） |
-| `ax_jobs`、`ax_outbox`、`ax_retention_policies` | 0002 | — | 00 | 是 |
+| `sec_audit_logs` | 0002 | 0013（哈希链）、0017（构建与克隆动作）、0018（快照回退动作）、0019（`IM_ACCOUNT_BIND`） | 00 / 13 / 17 / 18 / 21 | 是（应用角色无 UPDATE / DELETE） |
+| `ax_jobs`、`ax_outbox` | 0002 | — | 00 | 是 |
+| `ax_retention_policies` | 0002 | 0019（`IM_EVENT_DEDUP` 目标） | 00 / 21 | 是 |
 | `ds_credentials`、`ds_connections`、`ds_column_meta`、`ds_sync_jobs`、`ds_uploads`、`ds_webhooks`、`ds_webhook_buffer`、`ds_stream_offsets`、`ds_quality_rules`、`ds_glossary_terms`、`ds_lineage` | 0003 | — | 02 | 是 |
 | `ds_datasets` | 0003 | 0013（归属、密级） | 02 / 13 | 是 |
 | `xb_metric_series`（按月分区，含 `xb_metric_series_default`） | 0004 | — | 03 | 是 |
@@ -67,7 +69,9 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `ax_notify_channels`、`ax_rules`、`ax_alerts`、`ax_alert_events`、`ax_notify_deliveries`、`ax_alert_silences` | 0008 | — | 08 | 是 |
 | `ax_llm_providers` | 0009 | 0013（`allow_pii`）、0015（受限解码与个人归属） | 09 / 13 / 15 | 是 |
 | `ax_user_llm_preferences` | 0015 | — | 15 | 是 |
-| `ax_llm_usage`、`ax_published_endpoints`、`ax_mcp_clients`、`ax_agent_versions`、`ax_conversations`、`ax_messages`、`ax_agent_embeds` | 0009 | — | 09 | 是 |
+| `ax_llm_usage`、`ax_published_endpoints`、`ax_mcp_clients`、`ax_agent_versions`、`ax_messages`、`ax_agent_embeds` | 0009 | — | 09 | 是 |
+| `ax_conversations` | 0009 | 0019（`IM` 通道、`im_connector_id`、`external_chat_id`） | 09 / 21 | 是 |
+| `ax_im_connectors`、`ax_im_user_bindings`、`ax_im_bind_challenges`、`ax_im_event_dedup` | 0019 | — | 21 | 是 |
 | `ax_agents` | 0009 | 0013（归属、密级） | 09 / 13 | 是 |
 | `ax_sim_base_nodes`、`ax_sim_base_links`、`ax_sim_overlay_nodes`、`ax_sim_overlay_links`、`ax_sim_scenarios`、`ax_sim_impacts`、`ax_sim_checkpoints`、`ax_sim_decisions` | 0010 | — | 10 | 是 |
 | `xv_dashboards` | 0011 | 0013（归属、密级） | 11 / 13 | 是 |
@@ -107,6 +111,9 @@ DuckLake 目录表位于 `lake_catalog` 模式，属主为 `axpoint_lake`，由 
 | `ax_resolve_share(hash)` | 0012 | 分享链接 |
 | `ax_lookup_login(tenant, username)` | 0013 | 本地登录 |
 | `ax_resolve_session(hash)` | 0013 | 刷新令牌 |
+| `ax_claim_im_connectors(holder, limit, lease_s)` | 0019 | IM 连接器单主租约认领与续期 |
+| `ax_release_im_connectors(holder)` | 0019 | 优雅停机释放本实例持有的 IM 连接器租约 |
+| `ax_consume_im_bind_challenge(hash, tenant, user_id)` | 0019 | 原子校验核销一次性 IM 绑定挑战码并写入绑定记录 |
 
 函数返回结果后，调用方立即以返回的 `tenant_id` 开启租户事务（`begin_tenant_tx`），后续读写全部受 RLS 约束。
 

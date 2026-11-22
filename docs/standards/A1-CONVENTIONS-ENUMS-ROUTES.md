@@ -100,7 +100,7 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `JobStatus` | `PENDING` `RUNNING` `SUCCEEDED` `FAILED` `CANCELED` `EXPIRED` | `ax_jobs`、`ds_sync_jobs`、`xv_export_jobs` |
 | `JobKind` | `SYNC_DATASET` `PARSE_FILE` `FLOW_STEP` `EXPORT` `RULE_EVAL` `ROLLUP` `LAKE_MAINTENANCE` `RETENTION` `CREDENTIAL_ROTATE` `BACKUP` `EMBED_NODES` `MAP_MATERIALIZE` `GRAPH_AGGREGATE` `KNOWLEDGE_SYNC` | `ax_jobs.kind` |
 | `OutboxTopic` | `dataset.synced` `node.metrics_changed` `node.upserted` `approval.decided` `sim.applied` `alert.opened` `alert.resolved` `export.finished` | `ax_outbox.topic` |
-| `RetentionTarget` | `METRIC_SERIES` `METRIC_ROLLUP_MINUTE` `AUDIT` `EXPORT_FILE` `FLOW_STEP_LOG` `JOB` `OUTBOX` `LAKE_SNAPSHOT` `MESSAGE` `QUERY_HISTORY` `CONVERSATION` | `ax_retention_policies.target` |
+| `RetentionTarget` | `METRIC_SERIES` `METRIC_ROLLUP_MINUTE` `AUDIT` `EXPORT_FILE` `FLOW_STEP_LOG` `JOB` `OUTBOX` `LAKE_SNAPSHOT` `MESSAGE` `QUERY_HISTORY` `CONVERSATION` `IM_EVENT_DEDUP` | `ax_retention_policies.target` |
 | `Cardinality` | `ONE_TO_ONE` `ONE_TO_MANY` `MANY_TO_ONE` `MANY_TO_MANY`（界面显示 `1:1` `1:N` `N:1` `N:M`） | `xb_edge_types.cardinality` |
 | `SubgraphMergeStrategy` | `REUSE_MAIN` `EXTEND_PROPS` `BRIDGE_LINK` | 子图对齐融合（Step 05） |
 | `GraphAlgo` | `DEGREE` `PAGERANK` `STRONGLY_CONNECTED` `WEAKLY_CONNECTED` `LABEL_PROPAGATION` | `xb_graph_algo_results.algo` |
@@ -123,13 +123,16 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `Sensitivity` | `PUBLIC` `INTERNAL` `CONFIDENTIAL` `SECRET` | 资源 `sensitivity`、用户 `clearance` |
 | `Permission` | `DATA_READ` `DATA_SYNC` `DATA_ADMIN` `STUDIO_EDIT` `STUDIO_PUBLISH` `FLOW_EDIT` `FLOW_RUN` `FLOW_PUBLISH` `APPROVAL_DECIDE` `RULE_EDIT` `ALERT_ACK` `AGENT_EDIT` `AGENT_RUN` `SIM_RUN` `SIM_APPLY` `VIEW_EDIT` `VIEW_SHARE` `EXPORT_DATA` `PII_RAW_READ` `GUARD_ADMIN` `OPS_ADMIN` | `sec_roles.permissions` |
 | `BuiltinRole` | `ADMIN`（全部权限）`ANALYST` `OPERATOR` `VIEWER` | `sec_roles.name` |
-| `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` `BUILDER_MCP_MUTATE` `TRIAL_TEMPLATE_CLONE` `STUDIO_SNAPSHOT_RESTORE` | `sec_audit_logs.action` |
+| `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` `BUILDER_MCP_MUTATE` `TRIAL_TEMPLATE_CLONE` `STUDIO_SNAPSHOT_RESTORE` `IM_ACCOUNT_BIND` | `sec_audit_logs.action` |
 | `StructuredOutputMode` | `NONE` `JSON_OBJECT` `JSON_SCHEMA` | `ax_llm_providers.structured_mode`（Step 15） |
 | `GroundingMode` | `SEMANTIC_METRIC` `DOMAIN_OBJECT` `GUARDED_SQL` `GROUNDED_DOC` `ABSTAINED` `CLARIFICATION` | `an_ask_turns.grounding_mode`（Step 16） |
 | `TokenProfile` | `GENERAL` `BUILDER` | `sec_api_tokens.token_profile`（Step 17） |
 | `DesignMaturity` | `PROPOSED` `CONFIRMED` | `NodeTypeSpec` / `PropertySpec` / `EdgeTypeSpec` / 规则成熟度状态（Step 18） |
 | `SemanticLayerTier` | `STATIC_FACT` `EVENT_DYNAMIC` `CUBE_ROLLUP` | `xb_node_types.semantic_layer_tier`（Step 18） |
 | `CopilotActionMode` | `DIAGNOSE_ONLY` `PATCH_DRAFT` | `xBlueStudio` 焦点感知助手动作模式（Step 18） |
+| `ImPlatform` | `FEISHU` `DINGTALK` `WECOM` | `ax_im_connectors.platform`、`ax_im_user_bindings.platform`（Step 21） |
+| `ImIdentityPolicy` | `REQUIRE_USER_BIND` `CREATOR_DELEGATED` | `ax_im_connectors.identity_policy`（Step 21） |
+| `ImConnectorStatus` | `DISCONNECTED` `CONNECTING` `CONNECTED` `DEGRADED` `ERROR` | `ax_im_connectors.status`（Step 21） |
 
 ---
 

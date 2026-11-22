@@ -229,6 +229,7 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   "BUILDER_MCP_MUTATE",
   "TRIAL_TEMPLATE_CLONE",
   "STUDIO_SNAPSHOT_RESTORE",
+  "IM_ACCOUNT_BIND",
 ];
 
 export interface CedarSnippetTemplate {

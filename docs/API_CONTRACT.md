@@ -182,6 +182,8 @@
 - `POST /api/axagent/agents/{id}/chat`（`AGENT_RUN`；`draft=true` 需 `AGENT_EDIT`）：智能体多轮工具循环对话（支持 `Accept: text/event-stream` 流式 `token|tool_call|tool_result|approval_required|final|error` 事件与 `Accept: application/json` 同步返回，写 `ax_messages` 与 `AGENT_CHAT` 审计）。
 - `GET /api/axagent/conversations` / `GET /api/axagent/conversations/{id}/messages` / `DELETE /api/axagent/conversations/{id}`（`AGENT_RUN`，仅本人会话）：工作台多轮会话与消息流管理。
 - `POST /api/axagent/agents/{id}/embeds` / `GET /api/axagent/agents/{id}/embeds` / `DELETE /api/axagent/embeds/{embed_id}`（`VIEW_SHARE`）与 `POST /api/axagent/embed/{token}/chat`（公开嵌入令牌 `axe_...`）：按权限子集与 `allowed_origins` 签发、查询、吊销外部嵌入链接及按 `(embed_id, client_ip)` 限流的公开对话入口。
+- `GET /api/axagent/im-connectors` / `POST /api/axagent/im-connectors` / `PATCH /api/axagent/im-connectors/{id}` / `DELETE /api/axagent/im-connectors/{id}` / `POST /api/axagent/im-connectors/{id}/test`（`DATA_READ | AGENT_EDIT` 读取，变更与探测需 `AGENT_EDIT`，`config.allow_private_network=true` 需 `GUARD_ADMIN`）：管理飞书（`FEISHU`）、钉钉（`DINGTALK`）与企业微信（`WECOM`）零入站端口出站长连接双向机器人、30s 单主租约心跳状态与连通性探测（密钥密封于 `ds_credentials`，Step 21）。
+- `GET /api/axagent/im-bindings` / `DELETE /api/axagent/im-bindings/{id}`（`DATA_READ` 仅见本人，`AGENT_EDIT` 可见并管理全租户）与 `GET /api/axagent/im-bind/preview?token=` / `POST /api/axagent/im-bind/confirm`（已认证用户）：预览与原子核销 10 分钟一次性 IM 私聊挑战码 `axim_...`，将外部 IM 身份绑定至平台 `sec_users` 主体（记录 `IM_ACCOUNT_BIND` 审计，强制剥离 `PII_RAW_READ` 并全量继承行级策略与列脱敏，Step 21）。
 
 ### `AxSim` 写时复制沙盘、因果推演、对比问数与决策下发（`/api/axsim/*`，Step 10）
 

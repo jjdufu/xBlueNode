@@ -13,6 +13,7 @@ pub mod flow;
 pub mod graph;
 pub mod grounding;
 pub mod guard;
+pub mod im;
 pub mod json_schema;
 pub mod ops;
 pub mod platform;

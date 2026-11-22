@@ -364,6 +364,8 @@ define_str_enum! {
         QueryHistory => "QUERY_HISTORY",
         /// `AxAgent` multi-turn conversations.
         Conversation => "CONVERSATION",
+        /// Inbound enterprise IM event deduplication and expired bind challenges (`07-STEP21`).
+        ImEventDedup => "IM_EVENT_DEDUP",
     }
 }
 
@@ -840,6 +842,8 @@ define_str_enum! {
         TrialTemplateClone => "TRIAL_TEMPLATE_CLONE",
         /// `xBlueStudio` draft snapshot restored (`04-STEP18`).
         StudioSnapshotRestore => "STUDIO_SNAPSHOT_RESTORE",
+        /// External enterprise IM account bound to a platform user (`07-STEP21`).
+        ImAccountBind => "IM_ACCOUNT_BIND",
     }
 }
 
@@ -892,7 +896,7 @@ define_str_enum! {
 }
 
 define_str_enum! {
-    /// Originating channel of an `AxAgent` conversation (`08-STEP09` §09.1).
+    /// Originating channel of an `AxAgent` conversation (`08-STEP09` §09.1 & `07-STEP21` §21.1).
     pub enum ConversationChannel {
         /// Interactive multi-turn workbench UI.
         Workbench => "WORKBENCH",
@@ -904,6 +908,8 @@ define_str_enum! {
         Flow => "FLOW",
         /// MCP tool invocation.
         Mcp => "MCP",
+        /// Bidirectional outbound enterprise IM bot connector (`07-STEP21`).
+        Im => "IM",
     }
 }
 
@@ -1014,6 +1020,48 @@ define_str_enum! {
         DiagnoseOnly => "DIAGNOSE_ONLY",
         /// Records a pre-mutation snapshot and applies `PROPOSED` schema patches.
         PatchDraft => "PATCH_DRAFT",
+    }
+}
+
+define_str_enum! {
+    /// Enterprise IM platform supported by outbound bidirectional `AxAgent` connectors (`07-STEP21` §21.1).
+    pub enum ImPlatform {
+        /// Feishu / Lark outbound WebSocket bot.
+        Feishu => "FEISHU",
+        /// `DingTalk` outbound Stream bot.
+        Dingtalk => "DINGTALK",
+        /// Enterprise `WeChat` (`WeCom`) intelligent bot outbound WebSocket.
+        Wecom => "WECOM",
+    }
+}
+
+define_str_enum! {
+    /// Identity resolution and authorization policy for an [`ImPlatform`] connector (`07-STEP21` §21.1 & §21.3).
+    #[derive(Default)]
+    pub enum ImIdentityPolicy {
+        /// Requires every external IM user to complete a one-time challenge bind to a `sec_users` principal.
+        #[default]
+        RequireUserBind => "REQUIRE_USER_BIND",
+        /// Uses a designated `delegated_user_id` strictly capped to `{DATA_READ, AGENT_RUN}` and `INTERNAL` clearance.
+        CreatorDelegated => "CREATOR_DELEGATED",
+    }
+}
+
+define_str_enum! {
+    /// Runtime connection health status of an outbound IM connector (`07-STEP21` §21.1).
+    #[derive(Default)]
+    pub enum ImConnectorStatus {
+        /// Disabled or awaiting leader lease acquisition.
+        #[default]
+        Disconnected => "DISCONNECTED",
+        /// Exchanging ticket or establishing WebSocket/Stream handshake.
+        Connecting => "CONNECTING",
+        /// Active outbound WebSocket/Stream connected with valid lease.
+        Connected => "CONNECTED",
+        /// Experiencing transient reconnect backoff while holding lease.
+        Degraded => "DEGRADED",
+        /// Authentication, SSRF guard, or repeated dial failure.
+        Error => "ERROR",
     }
 }
 

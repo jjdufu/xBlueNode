@@ -140,7 +140,8 @@ export type RetentionTarget =
   | "LAKE_SNAPSHOT"
   | "MESSAGE"
   | "QUERY_HISTORY"
-  | "CONVERSATION";
+  | "CONVERSATION"
+  | "IM_EVENT_DEDUP";
 
 export type Cardinality =
   | "ONE_TO_ONE"
@@ -332,7 +333,8 @@ export type AuditAction =
   | "TEMPLATE_INSTALL"
   | "BUILDER_MCP_MUTATE"
   | "TRIAL_TEMPLATE_CLONE"
-  | "STUDIO_SNAPSHOT_RESTORE";
+  | "STUDIO_SNAPSHOT_RESTORE"
+  | "IM_ACCOUNT_BIND";
 
 export type TokenKind =
   | "ACCESS"
@@ -361,3 +363,14 @@ export type SemanticLayerTier =
   | "CUBE_ROLLUP";
 
 export type CopilotActionMode = "DIAGNOSE_ONLY" | "PATCH_DRAFT";
+
+export type ImPlatform = "FEISHU" | "DINGTALK" | "WECOM";
+
+export type ImIdentityPolicy = "REQUIRE_USER_BIND" | "CREATOR_DELEGATED";
+
+export type ImConnectorStatus =
+  | "DISCONNECTED"
+  | "CONNECTING"
+  | "CONNECTED"
+  | "DEGRADED"
+  | "ERROR";

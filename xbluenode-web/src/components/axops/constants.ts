@@ -143,6 +143,16 @@ export const RETENTION_TARGET_META: readonly RetentionTargetMeta[] = [
     defaultKeepDays: 180,
     ownerScriptOnly: false,
   },
+  {
+    target: "IM_EVENT_DEDUP",
+    label: "IM 事件去重与挑战码",
+    enLabel: "IM Event Dedup & Challenges",
+    description: "清理超期的企业 IM 入站幂等去重记录与已过期绑定挑战码",
+    enDescription:
+      "Purges expired enterprise IM inbound deduplication records and bind challenges",
+    defaultKeepDays: 7,
+    ownerScriptOnly: false,
+  },
 ];
 
 export const ALL_JOB_KINDS: readonly JobKind[] = [
