@@ -733,6 +733,7 @@ pub async fn generate_ai_dashboard<S>(
     store: &S,
     llm_router: &LlmRouter,
     tenant_id: &str,
+    caller_user_id: Option<Uuid>,
     created_by: Option<Uuid>,
     req: AiGenerateDashboardRequest,
 ) -> Result<DashboardDetail, AppError>
@@ -754,19 +755,25 @@ where
     let ctx = collect_dashboard_gen_context_for_user(
         store,
         tenant_id,
-        created_by.unwrap_or_else(Uuid::nil),
+        caller_user_id.or(created_by).unwrap_or_else(Uuid::nil),
     )
     .await?;
     let (sys, usr) = build_dashboard_gen_prompts(&ctx, &req);
 
     let raw = llm_router
-        .complete_chat(tenant_id, Purpose::Extract, &sys, &usr)
+        .complete_chat_for_user(tenant_id, caller_user_id, Purpose::Extract, &sys, &usr)
         .await?;
     let mut draft = match parse_and_validate(&raw, &ctx) {
         Ok(d) => d,
         Err((repair_usr, _)) => {
             let repaired_raw = llm_router
-                .complete_chat(tenant_id, Purpose::Extract, &sys, &repair_usr)
+                .complete_chat_for_user(
+                    tenant_id,
+                    caller_user_id,
+                    Purpose::Extract,
+                    &sys,
+                    &repair_usr,
+                )
                 .await?;
             match parse_and_validate(&repaired_raw, &ctx) {
                 Ok(d) => d,

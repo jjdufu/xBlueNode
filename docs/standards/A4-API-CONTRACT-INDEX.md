@@ -110,6 +110,7 @@
 | 方法与路径 | 鉴权 | 定义 |
 | :--- | :--- | :--- |
 | `GET /api/axagent/providers`、`POST /api/axagent/providers`、`PUT /api/axagent/providers/{id}`、`DELETE /api/axagent/providers/{id}`、`POST /api/axagent/providers/{id}/test`、`GET /api/axagent/usage` | `AGENT_EDIT` | [08](../../plans/completed/v1-foundation-step00-14/08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) §09.9 |
+| `GET /api/axagent/llm-preferences`、`PUT /api/axagent/llm-preferences` | 已登录用户 | [01-STEP15](../../plans/v2-ux-and-grounded-ai/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.4.2 |
 | `GET /api/axagent/endpoints`、`POST /api/axagent/endpoints`、`PUT /api/axagent/endpoints/{id}`、`DELETE /api/axagent/endpoints/{id}`、`POST /api/axagent/endpoints/{id}/promote` | `DATA_READ` / `STUDIO_PUBLISH` | 同上 |
 | `GET /api/axagent/endpoints/openapi.json`、`GET /api/axagent/endpoints/{id}/skill.json` | `DATA_READ` | 同上 |
 | `POST /api/axagent/apps/{endpoint_id}/run` | 端点要求的权限 | 同上 |

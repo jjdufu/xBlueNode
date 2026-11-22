@@ -266,6 +266,7 @@ async fn ai_generate_dashboard_handler(
         &state.store,
         &state.view.llm_router,
         &principal.tenant_id,
+        Some(principal.user_id),
         actor_uuid(&principal),
         req,
     )

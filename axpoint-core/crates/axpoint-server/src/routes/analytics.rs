@@ -1343,6 +1343,7 @@ pub(crate) async fn execute_ask_for_principal(
     let nl2sql_ai = state
         .ai
         .for_tenant(&principal.tenant_id)
+        .for_user(principal.user_id)
         .with_purpose_override(axpoint_domain::enums::Purpose::Nl2Sql);
     let out = axpoint_analytics::nl2sql::run_ask_pipeline_with_policy(
         &nl2sql_ai,
@@ -1438,8 +1439,18 @@ async fn create_transform_draft_handler(
     let (session, catalog) = acquire_tenant_session(&state, &principal.tenant_id, false).await?;
     validate_target_dataset_name(&req.target_dataset_name, &catalog)?;
 
-    let generated_sql =
-        generate_transform_sql(&state.ai, &req.instruction, &req.source_datasets, &catalog).await?;
+    let transform_ai = state
+        .ai
+        .for_tenant(&principal.tenant_id)
+        .for_user(principal.user_id)
+        .with_purpose_override(axpoint_domain::enums::Purpose::Nl2Sql);
+    let generated_sql = generate_transform_sql(
+        &transform_ai,
+        &req.instruction,
+        &req.source_datasets,
+        &catalog,
+    )
+    .await?;
     let plan = preview_transform_sql(
         &session,
         &catalog,

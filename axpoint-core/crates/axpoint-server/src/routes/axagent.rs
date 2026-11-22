@@ -1,7 +1,7 @@
 //! `AxAgent` multi-model provider management, capability publishing, Query-as-App, external MCP clients,
 //! multi-turn agent workbench, and external embed share routes (`/api/axagent/*`, `08-STEP09` §09.9).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use axpoint_agent::{ChannelChatCall, EmbedRequestMeta, PublishedInvokeOutcome};
@@ -11,11 +11,13 @@ use axpoint_domain::agent::{
     ConversationListQuery, ConversationRecord, CreateAgentEmbedRequest, CreateAgentEmbedResponse,
     CreateAgentRequest, CreateEndpointRequest, CreateMcpClientRequest, CredentialMutation,
     EmbedChatRequest, EndpointListQuery, EndpointSpec, LlmProviderRecord, LlmUsageQuery,
-    LlmUsageRecord, McpClientRecord, MessageRecord, ProviderTestResponse, SaveLlmProviderInput,
-    SaveLlmProviderRequest, SkillManifest, UpdateAgentRequest, UpdateEndpointRequest,
+    LlmUsageRecord, McpClientRecord, MessageRecord, ProviderScope, ProviderTestResponse,
+    PutUserLlmPreferencesRequest, SaveLlmProviderInput, SaveLlmProviderRequest, SkillManifest,
+    UpdateAgentRequest, UpdateEndpointRequest, UserLlmPreferenceRecord,
 };
 use axpoint_domain::axhub::{PaginatedList, SealedCredential};
-use axpoint_domain::enums::{ConversationChannel, Environment, Permission};
+use axpoint_domain::enums::{AuditAction, ConversationChannel, Environment, Permission};
+use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::{AgentRepository as _, OutboundUrlGuardPort as _};
 use axpoint_security::{AuthPrincipal, CredentialKeyring, NetGuard};
 use axum::body::Bytes;
@@ -24,6 +26,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
+use chrono::Utc;
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -60,6 +63,10 @@ fn providers_router() -> Router<AppState> {
             put(update_provider_handler).delete(delete_provider_handler),
         )
         .route("/axagent/providers/{id}/test", post(test_provider_handler))
+        .route(
+            "/axagent/llm-preferences",
+            get(get_llm_preferences_handler).put(put_llm_preferences_handler),
+        )
         .route("/axagent/usage", get(query_usage_handler))
 }
 
@@ -147,13 +154,29 @@ fn seal_provider_api_key(
     keyring.seal_credential(cred_id, &aad, encoded.as_slice())
 }
 
+fn is_system_provider_admin(principal: &AuthPrincipal) -> bool {
+    principal.has(Permission::GuardAdmin) || principal.has(Permission::OpsAdmin)
+}
+
+fn can_access_providers(principal: &AuthPrincipal) -> bool {
+    principal.has(Permission::DataRead)
+        || principal.has(Permission::AgentRun)
+        || principal.has(Permission::AgentEdit)
+        || is_system_provider_admin(principal)
+}
+
+fn decorate_provider_readonly(mut p: LlmProviderRecord, is_sys_admin: bool) -> LlmProviderRecord {
+    p.is_readonly = p.owner_user_id.is_none() && !is_sys_admin;
+    p
+}
+
 async fn validate_and_build_provider_input(
     state: &AppState,
     principal: &AuthPrincipal,
     req: SaveLlmProviderRequest,
     is_create: bool,
+    owner_user_id: Option<Uuid>,
 ) -> Result<SaveLlmProviderInput, AppError> {
-    principal.require(Permission::AgentEdit)?;
     if req.flags.allow_private_network || req.flags.allow_pii {
         principal.require(Permission::GuardAdmin)?;
     }
@@ -177,6 +200,12 @@ async fn validate_and_build_provider_input(
         return Err(AppError::bad(
             "INVALID_ARGUMENT",
             "max_tokens and timeout_s must be positive integers",
+        ));
+    }
+    if !(2_048..=2_097_152).contains(&req.structured_caps.max_context_tokens) {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            "max_context_tokens must be in 2048..=2097152",
         ));
     }
     if let Some(rpm) = req.rpm_limit
@@ -219,7 +248,7 @@ async fn validate_and_build_provider_input(
         embedding_dim: req.embedding_dim,
         flags: req.flags,
         structured_caps: req.structured_caps,
-        owner_user_id: None,
+        owner_user_id,
         enabled: req.enabled,
     })
 }
@@ -228,10 +257,18 @@ async fn list_providers_handler(
     State(state): State<AppState>,
     principal: AuthPrincipal,
 ) -> Result<Json<PaginatedList<LlmProviderRecord>>, HttpError> {
-    if !principal.has(Permission::AgentEdit) && !principal.has(Permission::DataRead) {
+    if !can_access_providers(&principal) {
         return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
     }
-    let items = state.store.list_llm_providers(&principal.tenant_id).await?;
+    let is_sys_admin = is_system_provider_admin(&principal);
+    let visible = state
+        .store
+        .list_visible_llm_providers(&principal.tenant_id, principal.user_id)
+        .await?;
+    let items = visible
+        .into_iter()
+        .map(|p| decorate_provider_readonly(p, is_sys_admin))
+        .collect();
     Ok(Json(PaginatedList {
         items,
         next_cursor: None,
@@ -243,7 +280,29 @@ async fn create_provider_handler(
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<SaveLlmProviderRequest>,
 ) -> Result<Json<LlmProviderRecord>, HttpError> {
-    let input = validate_and_build_provider_input(&state, &principal, req, true).await?;
+    let is_sys_admin = is_system_provider_admin(&principal);
+    let scope = req.scope.unwrap_or(if is_sys_admin {
+        ProviderScope::System
+    } else {
+        ProviderScope::Personal
+    });
+    let owner_user_id = match scope {
+        ProviderScope::System => {
+            if !is_sys_admin {
+                return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+            }
+            None
+        }
+        ProviderScope::Personal => {
+            if !can_access_providers(&principal) {
+                return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+            }
+            Some(principal.user_id)
+        }
+    };
+
+    let input =
+        validate_and_build_provider_input(&state, &principal, req, true, owner_user_id).await?;
     let created = state
         .store
         .create_llm_provider(&principal.tenant_id, input)
@@ -252,7 +311,7 @@ async fn create_provider_handler(
         .llm_router
         .invalidate_tenant(&principal.tenant_id)
         .await;
-    Ok(Json(created))
+    Ok(Json(decorate_provider_readonly(created, is_sys_admin)))
 }
 
 async fn update_provider_handler(
@@ -261,17 +320,50 @@ async fn update_provider_handler(
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<SaveLlmProviderRequest>,
 ) -> Result<Json<LlmProviderRecord>, HttpError> {
-    let input = validate_and_build_provider_input(&state, &principal, req, false).await?;
+    let (existing, _cred) = state
+        .store
+        .get_llm_provider(&principal.tenant_id, id)
+        .await?
+        .ok_or(AppError::NotFound("PROVIDER_NOT_FOUND"))?;
+
+    let is_sys_admin = is_system_provider_admin(&principal);
+    if existing.owner_user_id.is_none() {
+        if !is_sys_admin {
+            return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+        }
+        if req.scope == Some(ProviderScope::Personal) {
+            return Err(HttpError(AppError::bad(
+                "INVALID_ARGUMENT",
+                "cannot change provider scope across SYSTEM and PERSONAL",
+            )));
+        }
+    } else if existing.owner_user_id == Some(principal.user_id) {
+        if !can_access_providers(&principal) {
+            return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+        }
+        if req.scope == Some(ProviderScope::System) {
+            return Err(HttpError(AppError::bad(
+                "INVALID_ARGUMENT",
+                "cannot change provider scope across SYSTEM and PERSONAL",
+            )));
+        }
+    } else {
+        return Err(HttpError(AppError::NotFound("PROVIDER_NOT_FOUND")));
+    }
+
+    let input =
+        validate_and_build_provider_input(&state, &principal, req, false, existing.owner_user_id)
+            .await?;
     let updated = state
         .store
         .update_llm_provider(&principal.tenant_id, id, input)
         .await?
-        .ok_or(AppError::NotFound("NOT_FOUND"))?;
+        .ok_or(AppError::NotFound("PROVIDER_NOT_FOUND"))?;
     state
         .llm_router
         .invalidate_tenant(&principal.tenant_id)
         .await;
-    Ok(Json(updated))
+    Ok(Json(decorate_provider_readonly(updated, is_sys_admin)))
 }
 
 async fn delete_provider_handler(
@@ -279,13 +371,30 @@ async fn delete_provider_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
-    principal.require(Permission::AgentEdit)?;
+    let (existing, _cred) = state
+        .store
+        .get_llm_provider(&principal.tenant_id, id)
+        .await?
+        .ok_or(AppError::NotFound("PROVIDER_NOT_FOUND"))?;
+
+    if existing.owner_user_id.is_none() {
+        if !is_system_provider_admin(&principal) {
+            return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+        }
+    } else if existing.owner_user_id == Some(principal.user_id) {
+        if !can_access_providers(&principal) {
+            return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+        }
+    } else {
+        return Err(HttpError(AppError::NotFound("PROVIDER_NOT_FOUND")));
+    }
+
     let deleted = state
         .store
         .delete_llm_provider(&principal.tenant_id, id)
         .await?;
     if !deleted {
-        return Err(HttpError(AppError::NotFound("NOT_FOUND")));
+        return Err(HttpError(AppError::NotFound("PROVIDER_NOT_FOUND")));
     }
     state
         .llm_router
@@ -299,17 +408,118 @@ async fn test_provider_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<ProviderTestResponse>, HttpError> {
-    principal.require(Permission::AgentEdit)?;
     let (provider, _cred) = state
         .store
         .get_llm_provider(&principal.tenant_id, id)
         .await?
-        .ok_or(AppError::NotFound("NOT_FOUND"))?;
+        .ok_or(AppError::NotFound("PROVIDER_NOT_FOUND"))?;
+
+    if provider.owner_user_id.is_none() {
+        if !principal.has(Permission::AgentEdit) && !is_system_provider_admin(&principal) {
+            return Err(HttpError(AppError::Forbidden("PERMISSION_DENIED")));
+        }
+    } else if provider.owner_user_id != Some(principal.user_id) {
+        return Err(HttpError(AppError::NotFound("PROVIDER_NOT_FOUND")));
+    }
+
     let resp = state
         .llm_router
         .probe_provider(&principal.tenant_id, &provider, None)
         .await;
     Ok(Json(resp))
+}
+
+async fn get_llm_preferences_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+) -> Result<Json<PaginatedList<UserLlmPreferenceRecord>>, HttpError> {
+    let items = state
+        .store
+        .list_user_llm_preferences(&principal.tenant_id, principal.user_id)
+        .await?;
+    Ok(Json(PaginatedList {
+        items,
+        next_cursor: None,
+    }))
+}
+
+async fn put_llm_preferences_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<PutUserLlmPreferencesRequest>,
+) -> Result<Json<PaginatedList<UserLlmPreferenceRecord>>, HttpError> {
+    let mut seen_purposes = BTreeSet::new();
+    for item in &req.preferences {
+        if !seen_purposes.insert(item.purpose) {
+            return Err(HttpError(AppError::bad(
+                "INVALID_ARGUMENT",
+                format!(
+                    "duplicate purpose '{}' in preferences",
+                    item.purpose.as_str()
+                ),
+            )));
+        }
+    }
+
+    let visible = state
+        .store
+        .list_visible_llm_providers(&principal.tenant_id, principal.user_id)
+        .await?;
+    let mut pairs = Vec::with_capacity(req.preferences.len());
+    for item in &req.preferences {
+        let found = visible
+            .iter()
+            .find(|p| p.id == item.provider_id)
+            .ok_or(AppError::NotFound("PROVIDER_NOT_FOUND"))?;
+        if !found.enabled {
+            return Err(HttpError(AppError::bad(
+                "INVALID_ARGUMENT",
+                "preferred LLM provider must be enabled",
+            )));
+        }
+        if !found.purposes.contains(&item.purpose) {
+            return Err(HttpError(AppError::bad(
+                "INVALID_ARGUMENT",
+                format!(
+                    "provider '{}' does not support purpose '{}'",
+                    found.name,
+                    item.purpose.as_str()
+                ),
+            )));
+        }
+        pairs.push((item.purpose, item.provider_id));
+    }
+
+    let items = state
+        .store
+        .replace_user_llm_preferences(&principal.tenant_id, principal.user_id, &pairs)
+        .await?;
+    state
+        .llm_router
+        .invalidate_user_preferences(&principal.tenant_id, principal.user_id)
+        .await;
+
+    state.audit.record(AuditRecord {
+        tenant_id: principal.tenant_id.clone(),
+        user_id: (!principal.user_id.is_nil()).then_some(principal.user_id),
+        username: principal.username.clone(),
+        action: AuditAction::PolicyChange,
+        resource_ref: String::from("llm_preferences"),
+        status_code: 200,
+        client_ip: extract_client_ip(&headers),
+        trace_id: current_trace_id(),
+        detail_json: serde_json::json!({ "count": items.len() }),
+        created_at: Utc::now(),
+    });
+    if let Err(err) = state.audit.flush().await {
+        tracing::warn!(error = %err, "put_llm_preferences audit flush failed");
+    }
+
+    Ok(Json(PaginatedList {
+        items,
+        next_cursor: None,
+    }))
 }
 
 async fn query_usage_handler(
@@ -318,10 +528,20 @@ async fn query_usage_handler(
     ApiQuery(query): ApiQuery<LlmUsageQuery>,
 ) -> Result<Json<PaginatedList<LlmUsageRecord>>, HttpError> {
     principal.require(Permission::AgentEdit)?;
-    let items = state
+    let mut items = state
         .store
         .query_llm_usage(&principal.tenant_id, query)
         .await?;
+    if !is_system_provider_admin(&principal) {
+        let visible_ids: BTreeSet<Uuid> = state
+            .store
+            .list_visible_llm_providers(&principal.tenant_id, principal.user_id)
+            .await?
+            .into_iter()
+            .map(|p| p.id)
+            .collect();
+        items.retain(|row| visible_ids.contains(&row.provider_id));
+    }
     Ok(Json(PaginatedList {
         items,
         next_cursor: None,
