@@ -96,22 +96,23 @@ export function ResultGrid({
 
   return (
     <div
-      className="rounded-md border border-border bg-card overflow-hidden"
+      className="flex h-full flex-col rounded-md border border-border bg-card overflow-hidden"
       data-testid={testId}
     >
       {/* Top Status & Telemetry Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/25 px-3 py-2 text-xs">
         <div className="flex flex-wrap items-center gap-2">
           <span className="inline-flex items-center gap-1.5 font-medium text-foreground">
             <Table2 className="h-3.5 w-3.5 text-xblue" />
             {tx("结果明细", "Result Grid")}
           </span>
-          <Badge variant="neutral" data-testid="result-row-count">
-            {fmtNum(effectiveRowCount, 0)} {tx("行", "rows")}
-          </Badge>
-          <Badge variant="outline">
+          <span
+            className="text-[11px] font-mono-tech tabular-nums text-muted-foreground"
+            data-testid="result-row-count"
+          >
+            {fmtNum(effectiveRowCount, 0)} {tx("行", "rows")} ·{" "}
             {fmtNum(columns.length, 0)} {tx("列", "cols")}
-          </Badge>
+          </span>
           {durationMs !== null && durationMs !== undefined && (
             <span
               className="inline-flex items-center gap-1 font-mono-tech text-[11px] text-muted-foreground"
@@ -178,15 +179,16 @@ export function ResultGrid({
 
       {/* Table Body with Virtual Scrolling */}
       {columns.length === 0 ? (
-        <div className="flex h-36 items-center justify-center px-4 text-xs text-muted-foreground">
-          {emptyText ?? tx("暂无查询结果", "Run a query to view results")}
+        <div className="flex flex-1 min-h-[180px] flex-col items-center justify-center gap-1.5 px-4 text-xs text-muted-foreground">
+          <Table2 className="h-5 w-5 text-muted-foreground/45" />
+          <span>{emptyText ?? tx("暂无查询结果", "Run a query to view results")}</span>
         </div>
       ) : (
         <div
           ref={scrollContainerRef}
           style={{ maxHeight: `${maxHeight}px` }}
           onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-          className="overflow-auto"
+          className="flex-1 min-h-0 overflow-auto"
           data-testid="result-scroll-viewport"
         >
           <table

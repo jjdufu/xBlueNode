@@ -7,6 +7,7 @@ import {
   History,
   Play,
   Save,
+  Settings2,
   Trash2,
   X,
 } from "lucide-react";
@@ -24,9 +25,11 @@ import {
   Badge,
   Button,
   Card,
+  IconButton,
   Input,
   Select,
   StatusBadge,
+  Switch,
 } from "@/components/ui/primitives";
 
 type PreloadedMonaco = NonNullable<
@@ -548,112 +551,54 @@ export function SqlEditor({
     }
   };
 
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    const onDown = (ev: MouseEvent) => {
+      if (
+        settingsRef.current &&
+        !settingsRef.current.contains(ev.target as Node)
+      ) {
+        setSettingsOpen(false);
+      }
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setSettingsOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [settingsOpen]);
+
   const sqlSavedQueries = useMemo(
     () => savedQueries.filter((sq) => sq.kind === "SQL" || sq.kind === "ASK"),
     [savedQueries]
   );
 
   return (
-    <div className="space-y-3" data-testid="analytics-sql-editor">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2">
-        <div className="flex flex-wrap items-center gap-2">
+    <div className="space-y-2" data-testid="analytics-sql-editor">
+      {/* Single-Row Partitioned SQL Toolbar */}
+      <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/25 px-2.5 py-1.5">
+        {/* Left: Core Primary & Authoring Actions */}
+        <div className="flex items-center gap-1.5 min-w-0">
           <Button
             type="button"
             variant="primary"
             onClick={triggerRun}
             disabled={running || !sql.trim()}
+            title={`${tx("运行", "Run")} (${shortcutLabel})`}
             data-testid="sql-run-btn"
           >
-            <Play className="h-3.5 w-3.5" />
-            {running ? tx("运行中…", "Running…") : tx("运行", "Run")}
-            <span className="font-mono-tech text-[10px] opacity-75">
+            <Play className="h-3.5 w-3.5 fill-current" />
+            <span>{running ? tx("运行中…", "Running…") : tx("运行", "Run")}</span>
+            <span className="hidden sm:inline font-mono-tech text-[10px] opacity-70">
               {shortcutLabel}
             </span>
-          </Button>
-
-          <Button
-            type="button"
-            variant="outline"
-            onClick={triggerExplain}
-            disabled={explaining || !sql.trim()}
-            data-testid="sql-explain-btn"
-          >
-            <FileSearch className="h-3.5 w-3.5 text-xblue" />
-            {explaining ? tx("解析中…", "Explaining…") : tx("执行计划", "Explain")}
-          </Button>
-
-          <label className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-2.5 py-1.5 text-xs cursor-pointer">
-            <input
-              type="checkbox"
-              checked={allowLive}
-              onChange={(e) => setAllowLive(e.target.checked)}
-              className="rounded border-input accent-xblue"
-              data-testid="sql-allow-live-toggle"
-            />
-            <span>{tx("允许外部直连", "Allow Live")}</span>
-          </label>
-
-          {canRevealPii && (
-            <label className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-2.5 py-1.5 text-xs cursor-pointer">
-              <input
-                type="checkbox"
-                checked={revealPii}
-                onChange={(e) => setRevealPii(e.target.checked)}
-                className="rounded border-input accent-xblue"
-                data-testid="sql-reveal-pii-toggle"
-              />
-              <Eye className="h-3.5 w-3.5 text-xblue" />
-              <span>{tx("显示敏感原文", "Reveal PII")}</span>
-            </label>
-          )}
-
-          {canRevealPii && revealPii && (
-            <Badge variant="warning" data-testid="sql-reveal-pii-audit-badge">
-              {tx("原文调阅已记审计", "PII Audited")}
-            </Badge>
-          )}
-
-          <div className="flex items-center gap-1 text-xs">
-            <span className="text-muted-foreground">
-              {tx("行数上限", "Max Rows")}
-            </span>
-            <Select
-              value={maxRows}
-              onChange={(e) => setMaxRows(Number(e.target.value))}
-              className="h-7 font-mono-tech"
-              data-testid="sql-max-rows-select"
-            >
-              <option value={100}>{fmtNum(100, 0)}</option>
-              <option value={1000}>{fmtNum(1000, 0)}</option>
-              <option value={10000}>{fmtNum(10000, 0)}</option>
-            </Select>
-          </div>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5">
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() =>
-              setSideDrawer((prev) => (prev === "saved" ? "none" : "saved"))
-            }
-            data-testid="sql-saved-drawer-btn"
-          >
-            <Bookmark className="h-3.5 w-3.5 text-xblue" />
-            {tx("已保存", "Saved")} ({fmtNum(sqlSavedQueries.length, 0)})
-          </Button>
-
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() =>
-              setSideDrawer((prev) => (prev === "history" ? "none" : "history"))
-            }
-            data-testid="sql-history-drawer-btn"
-          >
-            <History className="h-3.5 w-3.5 text-xblue" />
-            {tx("历史", "History")} ({fmtNum(historyEntries.length, 0)})
           </Button>
 
           <Button
@@ -666,8 +611,130 @@ export function SqlEditor({
             data-testid="sql-save-open-btn"
           >
             <Save className="h-3.5 w-3.5 text-xblue" />
-            {tx("保存查询", "Save Query")}
+            <span>{tx("保存查询", "Save")}</span>
           </Button>
+
+          <Button
+            type="button"
+            variant="outline"
+            onClick={triggerExplain}
+            disabled={explaining || !sql.trim()}
+            data-testid="sql-explain-btn"
+          >
+            <FileSearch className="h-3.5 w-3.5 text-muted-foreground" />
+            <span>
+              {explaining ? tx("解析中…", "Explaining…") : tx("执行计划", "Explain")}
+            </span>
+          </Button>
+
+          {canRevealPii && revealPii && (
+            <Badge variant="warning" data-testid="sql-reveal-pii-audit-badge">
+              {tx("原文调阅已记审计", "PII Audited")}
+            </Badge>
+          )}
+        </div>
+
+        {/* Right: Lightweight Borderless Records & Settings Popover */}
+        <div className="flex items-center gap-1 shrink-0">
+          <Button
+            type="button"
+            variant="ghost"
+            active-state={sideDrawer === "saved" ? "true" : undefined}
+            onClick={() =>
+              setSideDrawer((prev) => (prev === "saved" ? "none" : "saved"))
+            }
+            className={
+              sideDrawer === "saved" ? "bg-xblue-soft text-xblue" : undefined
+            }
+            data-testid="sql-saved-drawer-btn"
+          >
+            <Bookmark className="h-3.5 w-3.5 text-xblue" />
+            <span>{tx("已保存", "Saved")}</span>
+            <span className="font-mono-tech text-[11px] tabular-nums opacity-75">
+              {fmtNum(sqlSavedQueries.length, 0)}
+            </span>
+          </Button>
+
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() =>
+              setSideDrawer((prev) => (prev === "history" ? "none" : "history"))
+            }
+            className={
+              sideDrawer === "history" ? "bg-xblue-soft text-xblue" : undefined
+            }
+            data-testid="sql-history-drawer-btn"
+          >
+            <History className="h-3.5 w-3.5 text-xblue" />
+            <span>{tx("历史", "History")}</span>
+            <span className="font-mono-tech text-[11px] tabular-nums opacity-75">
+              {fmtNum(historyEntries.length, 0)}
+            </span>
+          </Button>
+
+          <div className="h-4 w-px bg-border mx-0.5" />
+
+          <div ref={settingsRef} className="relative flex items-center">
+            <IconButton
+              active={settingsOpen || allowLive || revealPii || maxRows !== 1000}
+              onClick={() => setSettingsOpen((v) => !v)}
+              aria-label={tx("查询参数", "Query options")}
+              title={tx("查询参数", "Query options")}
+              data-testid="sql-settings-popover-btn"
+            >
+              <Settings2 className="h-4 w-4" />
+            </IconButton>
+
+            {settingsOpen && (
+              <div className="absolute right-0 top-full mt-1.5 w-64 rounded-md border border-border bg-card text-card-foreground shadow-lg p-3 space-y-3 z-40 text-xs">
+                <div className="font-semibold text-foreground">
+                  {tx("查询参数", "Query Options")}
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-muted-foreground">
+                    {tx("行数上限", "Max Rows")}
+                  </span>
+                  <Select
+                    value={maxRows}
+                    onChange={(e) => setMaxRows(Number(e.target.value))}
+                    className="h-7 w-28 font-mono-tech"
+                    data-testid="sql-max-rows-select"
+                  >
+                    <option value={100}>{fmtNum(100, 0)}</option>
+                    <option value={1000}>{fmtNum(1000, 0)}</option>
+                    <option value={10000}>{fmtNum(10000, 0)}</option>
+                  </Select>
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-foreground">
+                    {tx("允许外部直连", "Allow Live")}
+                  </span>
+                  <Switch
+                    checked={allowLive}
+                    onCheckedChange={setAllowLive}
+                    data-testid="sql-allow-live-toggle"
+                  />
+                </div>
+
+                {canRevealPii && (
+                  <div className="flex items-center justify-between gap-2 pt-1 border-t border-border/60">
+                    <span className="inline-flex items-center gap-1.5 text-foreground">
+                      <Eye className="h-3.5 w-3.5 text-xblue" />
+                      {tx("显示敏感原文", "Reveal PII")}
+                    </span>
+                    <Switch
+                      checked={revealPii}
+                      onCheckedChange={setRevealPii}
+                      data-testid="sql-reveal-pii-toggle"
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

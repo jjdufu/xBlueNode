@@ -170,7 +170,7 @@ export function SchemaTree({
               {tx("暂无数据集", "No datasets")}
             </div>
           ) : (
-            <div className="space-y-1">
+            <div className="space-y-0.5">
               {filteredDatasets.map((ds, idx) => {
                 const key = `ds:${ds.id}`;
                 const open = isExpanded(key, idx === 0);
@@ -179,14 +179,12 @@ export function SchemaTree({
                   <div
                     key={ds.id}
                     title={ds.name}
-                    className={`rounded border ${
-                      isSelectedPivot
-                        ? "border-xblue/40 bg-xblue-soft/20"
-                        : "border-border/70"
+                    className={`rounded-md ${
+                      isSelectedPivot ? "bg-xblue-soft/35" : ""
                     }`}
                     data-testid={`schema-dataset-${ds.name}`}
                   >
-                    <div className="flex items-start justify-between gap-1.5 px-2 py-1.5 hover:bg-muted/50">
+                    <div className="flex items-start justify-between gap-1.5 rounded-md px-2 py-1.5 hover:bg-muted/60 transition-colors">
                       <button
                         type="button"
                         title={ds.name}
@@ -246,7 +244,7 @@ export function SchemaTree({
                     </div>
 
                     {open && ds.columns.length > 0 && (
-                      <div className="border-t border-border/60 bg-background/60 px-2 py-1 space-y-0.5">
+                      <div className="ml-3.5 border-l border-border/70 pl-2 py-0.5 space-y-0.5">
                         {ds.columns.map((col) => (
                           <button
                             key={col.column_name}
@@ -312,7 +310,7 @@ export function SchemaTree({
               {tx("暂无联邦视图", "No platform views")}
             </div>
           ) : (
-            <div className="space-y-1">
+            <div className="space-y-0.5">
               {filteredViews.map((view) => {
                 const key = `view:${view.name}`;
                 const open = isExpanded(key, false);
@@ -320,10 +318,10 @@ export function SchemaTree({
                   <div
                     key={view.name}
                     title={view.name}
-                    className="rounded border border-border/70"
+                    className="rounded-md"
                     data-testid={`schema-view-${view.name}`}
                   >
-                    <div className="flex items-center justify-between gap-1 px-2 py-1.5 hover:bg-muted/50">
+                    <div className="flex items-center justify-between gap-1 rounded-md px-2 py-1.5 hover:bg-muted/60 transition-colors">
                       <button
                         type="button"
                         title={view.name}
@@ -365,7 +363,7 @@ export function SchemaTree({
                     </div>
 
                     {open && view.columns.length > 0 && (
-                      <div className="border-t border-border/60 bg-background/60 px-2 py-1 space-y-0.5">
+                      <div className="ml-3.5 border-l border-border/70 pl-2 py-0.5 space-y-0.5">
                         {view.description && (
                           <div className="px-1.5 py-0.5 text-[10px] text-muted-foreground">
                             {view.description}
@@ -421,7 +419,7 @@ export function SchemaTree({
                   title={live.alias}
                   onClick={() => onInsertIdentifier?.(live.alias)}
                   data-testid={`schema-live-${live.alias}`}
-                  className="flex w-full items-center justify-between gap-1 rounded border border-border/70 px-2 py-1.5 text-left hover:bg-muted/50 cursor-pointer"
+                  className="flex w-full items-center justify-between gap-1 rounded-md px-2 py-1.5 text-left hover:bg-muted/60 transition-colors cursor-pointer"
                 >
                   <div className="min-w-0">
                     <div className="truncate font-mono-tech text-[11px] font-medium text-foreground">
