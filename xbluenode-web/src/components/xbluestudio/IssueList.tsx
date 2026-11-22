@@ -1,19 +1,26 @@
 import {
   AlertCircle,
   AlertTriangle,
+  CheckCheck,
   CheckCircle2,
   Crosshair,
+  Info,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { usePrincipal } from "@/lib/permissions";
 import type { ValidationIssue } from "@/lib/api/xblue";
-import { Badge } from "@/components/ui/primitives";
+import { Badge, Button } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 export interface IssueListProps {
   issues: ValidationIssue[];
   validating: boolean;
+  passCount?: number;
+  unconfirmedCount?: number;
+  confirmingAll?: boolean;
   embedded?: boolean;
   onLocateIssue: (issue: ValidationIssue) => void;
+  onConfirmAllProposals?: () => void;
 }
 
 const ISSUE_CODE_LABELS: Readonly<
@@ -31,19 +38,37 @@ const ISSUE_CODE_LABELS: Readonly<
   UNKNOWN_SOURCE_METRIC: { zh: "源指标未定义", en: "Undefined Source Metric" },
   UNKNOWN_LINK_TYPE: { zh: "关联关系未定义", en: "Undefined Relation" },
   RULE_CYCLE_DETECTED: { zh: "指标计算存在环路", en: "Metric Rule Cycle" },
+  AGG_CYCLE: { zh: "聚合规则环路", en: "Aggregation Cycle" },
   EXPR_INVALID: { zh: "表达式语法错误", en: "Invalid Expression" },
+  RULE_EXPR_INVALID: { zh: "公式表达式错误", en: "Invalid Formula" },
   EXPR_TYPE_MISMATCH: { zh: "表达式类型不匹配", en: "Expression Type Mismatch" },
   MAPPING_DATASET_MISSING: { zh: "源数据集缺失", en: "Missing Dataset" },
   MAPPING_NODE_TYPE_MISSING: { zh: "映射目标类型缺失", en: "Missing Target Type" },
+  NODE_DESCRIPTION_EMPTY: { zh: "缺失业务说明", en: "Missing Description" },
+  ISOLATED_NODE_TYPE: { zh: "孤立节点类型", en: "Isolated Node Type" },
+  METRIC_UNIT_MISSING: { zh: "指标缺失单位", en: "Missing Metric Unit" },
+  EDGE_PROPAGATION_DEFAULT: { zh: "默认传导参数", en: "Default Propagation" },
+  NODE_UNMAPPED: { zh: "节点未绑定映射", en: "Unmapped Node Type" },
+  UNCONFIRMED_PROPOSAL: { zh: "存在待确认提议", en: "Unconfirmed Proposal" },
+  UNCONFIRMED_PROPOSALS_REMAIN: {
+    zh: "存在未确认提议",
+    en: "Unconfirmed Proposals Remain",
+  },
 };
 
 export function IssueList({
   issues,
   validating,
+  passCount = 0,
+  unconfirmedCount = 0,
+  confirmingAll = false,
   embedded = false,
   onLocateIssue,
+  onConfirmAllProposals,
 }: IssueListProps) {
   const { isZh, tx } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("STUDIO_EDIT");
   const errorCount = issues.filter((i) => i.severity === "ERROR").length;
   const warnCount = issues.filter((i) => i.severity === "WARN").length;
 
@@ -56,29 +81,24 @@ export function IssueList({
       data-testid="studio-issue-list"
     >
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           {!embedded && (
             <span className="font-semibold">
               {tx("模型校验诊断", "Schema Diagnostics")}
             </span>
           )}
-          {validating ? (
-            <Badge variant="outline">
-              {tx("校验中…", "Validating…")}
-            </Badge>
-          ) : errorCount === 0 && warnCount === 0 ? (
-            <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-medium">
-              <CheckCircle2 className="h-3.5 w-3.5" />
-              {tx("校验通过 · 0 阻断错误", "Valid · 0 Blocking Errors")}
-            </span>
-          ) : null}
-        </div>
-
-        <div className="flex items-center gap-1.5 font-mono-tech">
+          <Badge
+            variant="success"
+            data-testid="issue-pass-count"
+            className="tabular-nums"
+          >
+            <CheckCircle2 className="h-3 w-3 mr-1" />
+            {tx(`${passCount} 项通过`, `${passCount} Passed`)}
+          </Badge>
           <span
             data-testid="issue-error-count"
             className={cn(
-              "rounded px-1.5 py-0.5 text-[11px]",
+              "rounded px-1.5 py-0.5 text-[11px] font-mono-tech tabular-nums",
               errorCount > 0
                 ? "bg-red-500/15 text-red-600 dark:text-red-400 font-semibold"
                 : "bg-muted text-muted-foreground"
@@ -89,7 +109,7 @@ export function IssueList({
           <span
             data-testid="issue-warn-count"
             className={cn(
-              "rounded px-1.5 py-0.5 text-[11px]",
+              "rounded px-1.5 py-0.5 text-[11px] font-mono-tech tabular-nums",
               warnCount > 0
                 ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 font-semibold"
                 : "bg-muted text-muted-foreground"
@@ -97,6 +117,34 @@ export function IssueList({
           >
             WARN {warnCount}
           </span>
+          <Badge
+            variant={unconfirmedCount > 0 ? "warning" : "neutral"}
+            data-testid="issue-proposal-count"
+            className="tabular-nums"
+          >
+            {tx(`${unconfirmedCount} 待确认`, `${unconfirmedCount} Proposed`)}
+          </Badge>
+          {validating && (
+            <Badge variant="outline">{tx("校验中…", "Validating…")}</Badge>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          {unconfirmedCount > 0 && canEdit && onConfirmAllProposals && (
+            <Button
+              type="button"
+              variant="primary"
+              size="sm"
+              data-testid="confirm-all-proposals-btn"
+              disabled={confirmingAll}
+              onClick={onConfirmAllProposals}
+            >
+              <CheckCheck className="h-3.5 w-3.5" />
+              {confirmingAll
+                ? tx("确认中…", "Confirming…")
+                : tx("全部确认", "Confirm All")}
+            </Button>
+          )}
         </div>
       </div>
 
@@ -104,6 +152,7 @@ export function IssueList({
         <div className="max-h-44 overflow-y-auto divide-y divide-border rounded border border-border">
           {issues.map((issue, idx) => {
             const isErr = issue.severity === "ERROR";
+            const isInfo = issue.severity === "INFO";
             const codeMeta = ISSUE_CODE_LABELS[issue.code];
             const codeLabel = codeMeta
               ? isZh
@@ -121,6 +170,8 @@ export function IssueList({
                 <div className="flex items-start gap-2 min-w-0">
                   {isErr ? (
                     <AlertCircle className="h-3.5 w-3.5 text-red-600 dark:text-red-400 shrink-0 mt-0.5" />
+                  ) : isInfo ? (
+                    <Info className="h-3.5 w-3.5 text-xblue shrink-0 mt-0.5" />
                   ) : (
                     <AlertTriangle className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
                   )}
@@ -131,7 +182,9 @@ export function IssueList({
                           "font-mono-tech text-[10px] font-semibold rounded px-1 py-0.2",
                           isErr
                             ? "bg-red-500/15 text-red-600 dark:text-red-400"
-                            : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                            : isInfo
+                              ? "bg-xblue-soft text-xblue"
+                              : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
                         )}
                       >
                         {codeLabel}

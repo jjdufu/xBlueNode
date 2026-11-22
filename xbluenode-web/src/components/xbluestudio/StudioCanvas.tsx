@@ -18,7 +18,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import ELK from "elkjs/lib/elk.bundled.js";
-import { LayoutGrid, Link2, Plus } from "lucide-react";
+import { GitBranch, LayoutGrid, Link2, Plus } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 import { useTheme } from "@/lib/theme";
@@ -122,7 +122,9 @@ function StudioRelationshipEdge({
                 "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-mono-tech shadow-xs backdrop-blur-xs transition-colors cursor-pointer",
                 selected
                   ? "border-xblue bg-xblue text-white"
-                  : "border-border bg-card/95 text-foreground hover:border-xblue"
+                  : spec.maturity === "PROPOSED"
+                    ? "border-dashed border-amber-500/70 bg-card/95 text-foreground hover:border-xblue"
+                    : "border-border bg-card/95 text-foreground hover:border-xblue"
               )}
             >
               <span className="font-semibold">{spec.name}</span>
@@ -166,6 +168,8 @@ export interface StudioCanvasProps {
   ) => void;
   onCreateNodeType: (name: string, displayName: string) => void;
   onCreateEdgeType: (edge: EdgeTypeSpec) => void;
+  onConfirmNode?: (nodeName: string) => void;
+  onOpenLineage?: (nodeName: string) => void;
 }
 
 export function StudioCanvas({
@@ -180,6 +184,8 @@ export function StudioCanvas({
   onApplyLayoutPositions,
   onCreateNodeType,
   onCreateEdgeType,
+  onConfirmNode,
+  onOpenLineage,
 }: StudioCanvasProps) {
   const { tx } = useI18n();
   const { isDark } = useTheme();
@@ -254,10 +260,18 @@ export function StudioCanvas({
           selected: selectedNodeName === nt.name,
           issueCount: st.count,
           hasError: st.hasError,
+          onConfirmNode,
+          onDoubleClickNode: onOpenLineage,
         },
       };
     });
-  }, [nodeTypes, selectedNodeName, issueStatsByNode]);
+  }, [
+    nodeTypes,
+    selectedNodeName,
+    issueStatsByNode,
+    onConfirmNode,
+    onOpenLineage,
+  ]);
 
   const [liveNodes, setLiveNodes] = useState<StudioFlowNode[]>(flowNodes);
 
@@ -493,6 +507,22 @@ export function StudioCanvas({
             ? tx("排布中…", "Arranging…")
             : tx("自动分层布局", "Auto Layout")}
         </Button>
+        {onOpenLineage && nodeTypes.length > 0 && (
+          <Button
+            variant="outline"
+            size="sm"
+            data-testid="canvas-open-lineage-btn"
+            onClick={() => {
+              const target = selectedNodeName ?? nodeTypes[0]?.name;
+              if (target) {
+                onOpenLineage(target);
+              }
+            }}
+          >
+            <GitBranch className="h-3.5 w-3.5 text-xblue" />
+            {tx("血缘视图", "Lineage")}
+          </Button>
+        )}
       </div>
 
       {/* Quick Create Node Popover */}
@@ -607,6 +637,11 @@ export function StudioCanvas({
         onNodeClick={(_event, node) => {
           onSelectEdge(null);
           onSelectNode(node.id);
+        }}
+        onNodeDoubleClick={(_event, node) => {
+          onSelectEdge(null);
+          onSelectNode(node.id);
+          onOpenLineage?.(node.id);
         }}
         onEdgeClick={(_event, edge) => {
           if (typeof edge.data?.edgeIndex === "number") {

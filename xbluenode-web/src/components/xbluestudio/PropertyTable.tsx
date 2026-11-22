@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  Check,
   ChevronDown,
   ChevronRight,
   Maximize2,
@@ -159,6 +160,7 @@ export function PropertyTable({ properties, onChange }: PropertyTableProps) {
           {properties.map((row, idx) => {
             const expanded = expandedIndex === idx;
             const isMetric = row.kind === "METRIC";
+            const isProposed = row.maturity === "PROPOSED";
             return (
               <div
                 key={`${idx}-${row.kind}`}
@@ -166,7 +168,8 @@ export function PropertyTable({ properties, onChange }: PropertyTableProps) {
                   "rounded-md border transition-colors",
                   expanded
                     ? "border-xblue/50 bg-xblue-soft/10"
-                    : "border-border bg-background hover:border-foreground/30"
+                    : "border-border bg-background hover:border-foreground/30",
+                  isProposed && "border-dashed border-amber-500/70"
                 )}
               >
                 <div className="flex items-center justify-between gap-2 px-2.5 py-2">
@@ -198,6 +201,27 @@ export function PropertyTable({ properties, onChange }: PropertyTableProps) {
                   </button>
 
                   <div className="flex items-center gap-1 shrink-0">
+                    {isProposed && (
+                      <Badge
+                        variant="warning"
+                        data-testid={`prop-proposed-badge-${row.name || idx}`}
+                      >
+                        {tx("待确认", "Proposed")}
+                      </Badge>
+                    )}
+                    {isProposed && canEdit && (
+                      <button
+                        type="button"
+                        data-testid={`prop-confirm-btn-${row.name || idx}`}
+                        onClick={() =>
+                          updateRow(idx, { maturity: "CONFIRMED" })
+                        }
+                        className="inline-flex items-center gap-0.5 rounded border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 cursor-pointer"
+                      >
+                        <Check className="h-2.5 w-2.5" />
+                        {tx("确认", "Confirm")}
+                      </button>
+                    )}
                     {row.unit && (
                       <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                         {row.unit}
@@ -434,15 +458,22 @@ export function PropertyTable({ properties, onChange }: PropertyTableProps) {
               {properties.map((row, idx) => (
                 <tr key={idx} className="hover:bg-muted/20">
                   <td className="p-2">
-                    <Input
-                      value={row.name}
-                      disabled={!canEdit}
-                      onChange={(e) =>
-                        updateRow(idx, { name: e.target.value })
-                      }
-                      placeholder="inventory"
-                      className="h-8 font-mono-tech min-w-[120px]"
-                    />
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        value={row.name}
+                        disabled={!canEdit}
+                        onChange={(e) =>
+                          updateRow(idx, { name: e.target.value })
+                        }
+                        placeholder="inventory"
+                        className="h-8 font-mono-tech min-w-[120px]"
+                      />
+                      {row.maturity === "PROPOSED" && (
+                        <Badge variant="warning">
+                          {tx("待确认", "Proposed")}
+                        </Badge>
+                      )}
+                    </div>
                   </td>
                   <td className="p-2">
                     <Input

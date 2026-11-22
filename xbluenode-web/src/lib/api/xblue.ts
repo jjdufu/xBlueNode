@@ -687,6 +687,7 @@ export interface SpecDocSection {
 export interface SubgraphSpecDoc {
   subgraph_slug: string;
   display_name: string;
+  title?: string;
   version: number;
   draft_id?: string | null;
   pass_count: number;
@@ -694,6 +695,151 @@ export interface SubgraphSpecDoc {
   sections: SpecDocSection[];
   acceptance_prompts: AcceptancePromptItem[];
   markdown: string;
+}
+
+export interface GetSubgraphSpecDocOptions {
+  draftId?: string | null;
+  format?: "json" | "markdown";
+}
+
+export function computeNodeBadgeCounts(spec: NodeTypeSpec): NodeBadgeCounts {
+  return {
+    property_count: spec.properties.length,
+    metric_count: spec.properties.filter((p) => p.kind === "METRIC").length,
+    rule_count: spec.agg_rules.length + spec.derived_rules.length,
+  };
+}
+
+export function hasProposedElements(spec: NodeTypeSpec): boolean {
+  return (
+    spec.maturity === "PROPOSED" ||
+    spec.properties.some((p) => p.maturity === "PROPOSED") ||
+    spec.agg_rules.some((r) => r.maturity === "PROPOSED") ||
+    spec.derived_rules.some((d) => d.maturity === "PROPOSED")
+  );
+}
+
+export function countUnconfirmedProposals(doc: SchemaDoc): number {
+  let count = 0;
+  for (const nt of doc.node_types) {
+    if (nt.maturity === "PROPOSED") count += 1;
+    for (const p of nt.properties) {
+      if (p.maturity === "PROPOSED") count += 1;
+    }
+    for (const r of nt.agg_rules) {
+      if (r.maturity === "PROPOSED") count += 1;
+    }
+    for (const d of nt.derived_rules) {
+      if (d.maturity === "PROPOSED") count += 1;
+    }
+  }
+  for (const et of doc.edge_types) {
+    if (et.maturity === "PROPOSED") count += 1;
+    for (const p of et.properties ?? []) {
+      if (p.maturity === "PROPOSED") count += 1;
+    }
+  }
+  return count;
+}
+
+export function confirmProposalsLocally(
+  doc: SchemaDoc,
+  req: ConfirmProposalsRequest
+): SchemaDoc {
+  const confirmAll = req.scope === "ALL";
+  const nodeSet = new Set(req.node_types ?? []);
+  const edgeSet = new Set(req.edge_types ?? []);
+  return {
+    ...doc,
+    node_types: doc.node_types.map((nt) => {
+      if (!confirmAll && !nodeSet.has(nt.name)) return nt;
+      return {
+        ...nt,
+        maturity: "CONFIRMED",
+        properties: nt.properties.map((p) => ({ ...p, maturity: "CONFIRMED" })),
+        agg_rules: nt.agg_rules.map((r) => ({ ...r, maturity: "CONFIRMED" })),
+        derived_rules: nt.derived_rules.map((d) => ({
+          ...d,
+          maturity: "CONFIRMED",
+        })),
+      };
+    }),
+    edge_types: doc.edge_types.map((et) => {
+      if (!confirmAll && !edgeSet.has(et.name)) return et;
+      return {
+        ...et,
+        maturity: "CONFIRMED",
+        properties: (et.properties ?? []).map((p) => ({
+          ...p,
+          maturity: "CONFIRMED",
+        })),
+      };
+    }),
+  };
+}
+
+export function computeLocalPassCount(doc: SchemaDoc): number {
+  let pass = 0;
+  for (const nt of doc.node_types) {
+    if (nt.name.trim().length > 0 && nt.display_name.trim().length > 0) {
+      pass += 1;
+    }
+    for (const p of nt.properties) {
+      if (p.name.trim().length > 0) pass += 1;
+    }
+    for (const r of nt.agg_rules) {
+      if (r.target_metric.trim().length > 0 && r.source_metric.trim().length > 0) {
+        pass += 1;
+      }
+    }
+    for (const d of nt.derived_rules) {
+      if (d.target_metric.trim().length > 0 && d.expression.trim().length > 0) {
+        pass += 1;
+      }
+    }
+  }
+  for (const et of doc.edge_types) {
+    if (
+      et.name.trim().length > 0 &&
+      et.src_type_name.trim().length > 0 &&
+      et.dst_type_name.trim().length > 0
+    ) {
+      pass += 1;
+    }
+  }
+  for (const m of doc.mappings) {
+    if (
+      m.name.trim().length > 0 &&
+      m.dataset.trim().length > 0 &&
+      m.node_type.trim().length > 0 &&
+      m.key_column.trim().length > 0
+    ) {
+      pass += 1;
+    }
+  }
+  if (countUnconfirmedProposals(doc) === 0) {
+    pass += 1;
+  }
+  return pass;
+}
+
+export function countSchemaDiffChanges(
+  diff: SchemaDiff | null | undefined
+): { added: number; changed: number; removed: number } {
+  if (!diff) {
+    return { added: 0, changed: 0, removed: 0 };
+  }
+  const sections = [diff.node_types, diff.edge_types, diff.mappings];
+  let added = 0;
+  let changed = 0;
+  let removed = 0;
+  for (const sec of sections) {
+    if (!sec) continue;
+    added += Array.isArray(sec.added) ? sec.added.length : 0;
+    changed += Array.isArray(sec.changed) ? sec.changed.length : 0;
+    removed += Array.isArray(sec.removed) ? sec.removed.length : 0;
+  }
+  return { added, changed, removed };
 }
 
 export interface UpdateDraftRequest {
@@ -3099,11 +3245,19 @@ export const xblueApi = {
   },
   getSubgraphSpecDoc: (
     subgraphSlug: string,
-    draftId?: string
+    draftIdOrOptions?: string | GetSubgraphSpecDocOptions
   ): Promise<SubgraphSpecDoc> => {
-    const params = new URLSearchParams({ format: "json" });
-    if (draftId) {
-      params.set("draft_id", draftId);
+    const resolvedFormat =
+      typeof draftIdOrOptions === "object" && draftIdOrOptions?.format
+        ? draftIdOrOptions.format
+        : "json";
+    const resolvedDraftId =
+      typeof draftIdOrOptions === "string"
+        ? draftIdOrOptions
+        : draftIdOrOptions?.draftId ?? undefined;
+    const params = new URLSearchParams({ format: resolvedFormat });
+    if (resolvedDraftId) {
+      params.set("draft_id", resolvedDraftId);
     }
     return requestJson<SubgraphSpecDoc>(
       `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/spec-doc?${params.toString()}`

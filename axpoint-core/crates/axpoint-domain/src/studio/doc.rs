@@ -477,6 +477,12 @@ impl SchemaDoc {
         count
     }
 
+    /// Returns `true` when at least one element in this `SchemaDoc` is still in `PROPOSED` state.
+    #[must_use]
+    pub fn has_unconfirmed_proposals(&self) -> bool {
+        self.unconfirmed_proposal_count() > 0
+    }
+
     /// Transitions matching `PROPOSED` elements (and their child items) to `CONFIRMED` (`04-STEP18` §18.3.1).
     pub fn confirm_proposals(&mut self, req: &ConfirmProposalsRequest) {
         let confirm_all = req.scope == ConfirmProposalsScope::All;

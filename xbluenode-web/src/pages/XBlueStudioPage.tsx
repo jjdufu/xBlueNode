@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  ArrowLeft,
+  BookOpen,
   BookOpenCheck,
+  CheckCheck,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
   Code2,
   Database,
+  GitBranch,
   GitCompare,
   History,
   Plus,
@@ -23,6 +27,9 @@ import { ApiError } from "@/lib/api/client";
 import { axhubApi, type Dataset } from "@/lib/api/axhub";
 import { api, type TopologyNode } from "@/lib/api/rag";
 import {
+  computeLocalPassCount,
+  confirmProposalsLocally,
+  countUnconfirmedProposals,
   xblueApi,
   type AiDraftRequest,
   type BlueNode,
@@ -61,6 +68,8 @@ import { EdgeTypeEditor } from "@/components/xbluestudio/EdgeTypeEditor";
 import { IssueList } from "@/components/xbluestudio/IssueList";
 import { KnowledgeCandidatesModal } from "@/components/xbluestudio/KnowledgeCandidatesModal";
 import { MappingEditor } from "@/components/xbluestudio/MappingEditor";
+import { ModelSpecOverview } from "@/components/xbluestudio/ModelSpecOverview";
+import { NodeLineageCanvas } from "@/components/xbluestudio/NodeLineageCanvas";
 import {
   NodeTypeCard,
   renderNodeIcon,
@@ -68,6 +77,7 @@ import {
 import { PropertyTable } from "@/components/xbluestudio/PropertyTable";
 import { RuleEditor } from "@/components/xbluestudio/RuleEditor";
 import { StudioCanvas } from "@/components/xbluestudio/StudioCanvas";
+import { StudioCopilotPanel } from "@/components/xbluestudio/StudioCopilotPanel";
 import { StudioSubgraphBar } from "@/components/xbluestudio/StudioSubgraphBar";
 import { SubgraphMergeDialog } from "@/components/xbluestudio/SubgraphMergeDialog";
 import { VersionPanel } from "@/components/xbluestudio/VersionPanel";
@@ -111,9 +121,11 @@ export function XBlueStudioPage() {
   const [docNodes, setDocNodes] = useState<TopologyNode[]>([]);
 
   const [issues, setIssues] = useState<ValidationIssue[]>([]);
+  const [serverPassCount, setServerPassCount] = useState<number | null>(null);
   const [validating, setValidating] = useState<boolean>(false);
 
   const [selectedNodeName, setSelectedNodeName] = useState<string | null>(null);
+  const [lineageNodeName, setLineageNodeName] = useState<string | null>(null);
   const [selectedEdgeIndex, setSelectedEdgeIndex] = useState<number | null>(
     null
   );
@@ -124,6 +136,8 @@ export function XBlueStudioPage() {
   const [dockTab, setDockTab] = useState<DockTab>("issues");
   // Collapsed 34px status bar by default in 100vh IDE mode; auto-expands on errors or tab click
   const [dockCollapsed, setDockCollapsed] = useState<boolean>(true);
+  const [copilotCollapsed, setCopilotCollapsed] = useState<boolean>(false);
+  const [specOverviewOpen, setSpecOverviewOpen] = useState<boolean>(false);
 
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [conflictBanner, setConflictBanner] = useState<string | null>(null);
@@ -227,6 +241,7 @@ export function XBlueStudioPage() {
         setBaseVersion(targetDraft.base_version);
         setWorkingDoc(targetDraft.schema_doc);
         setIssues(targetDraft.issues);
+        setServerPassCount(targetDraft.pass_count ?? null);
         setIsDirty(false);
         setSelectedNodeName(targetDraft.schema_doc.node_types[0]?.name ?? null);
       } else {
@@ -235,10 +250,12 @@ export function XBlueStudioPage() {
         setBaseVersion(pubSchema.version);
         setWorkingDoc(schemaDoc);
         setIssues([]);
+        setServerPassCount(null);
         setIsDirty(false);
         setSelectedNodeName(schemaDoc.node_types[0]?.name ?? null);
       }
 
+      setLineageNodeName(null);
       setSelectedEdgeIndex(null);
       setSelectedMappingIndex(null);
       setConflictBanner(null);
@@ -296,6 +313,11 @@ export function XBlueStudioPage() {
         .then((res) => {
           if (!cancelled) {
             setIssues(res.issues);
+            if (typeof res.pass_count === "number") {
+              setServerPassCount(res.pass_count);
+            } else {
+              setServerPassCount(null);
+            }
           }
         })
         .catch(() => {
@@ -315,6 +337,7 @@ export function XBlueStudioPage() {
 
   const mutateDoc = useCallback((updater: (prev: SchemaDoc) => SchemaDoc) => {
     setWorkingDoc((prev) => updater(prev));
+    setServerPassCount(null);
     setIsDirty(true);
   }, []);
 
@@ -361,6 +384,19 @@ export function XBlueStudioPage() {
   const errorCount = useMemo(
     () => issues.filter((i) => i.severity === "ERROR").length,
     [issues]
+  );
+
+  const unconfirmedCount = useMemo(
+    () => countUnconfirmedProposals(workingDoc),
+    [workingDoc]
+  );
+
+  const passCount = useMemo(
+    () =>
+      serverPassCount ??
+      activeDraft?.pass_count ??
+      computeLocalPassCount(workingDoc),
+    [serverPassCount, activeDraft?.pass_count, workingDoc]
   );
 
   const handleSelectSubgraph = async (slug: string) => {
@@ -606,6 +642,7 @@ export function XBlueStudioPage() {
       }
       setActiveDraft(saved);
       setIssues(saved.issues);
+      setServerPassCount(saved.pass_count ?? null);
       setIsDirty(false);
       const latestDrafts = await xblueApi
         .listDrafts(activeSubgraph)
@@ -628,6 +665,160 @@ export function XBlueStudioPage() {
     }
   };
 
+  const ensureActiveDraft = useCallback(async (): Promise<SchemaDraft | null> => {
+    if (!canEdit) return activeDraft;
+    if (activeDraft?.id && !isDirty) {
+      return activeDraft;
+    }
+    let saved: SchemaDraft;
+    if (activeDraft?.id) {
+      saved = await xblueApi.updateDraft(activeDraft.id, {
+        title: draftTitle,
+        schema_doc: workingDoc,
+      });
+    } else {
+      saved = await xblueApi.createDraft(
+        {
+          subgraph_slug: activeSubgraph,
+          title:
+            draftTitle ||
+            tx(`${activeSubgraph} 草案`, `${activeSubgraph} Draft`),
+          schema_doc: workingDoc,
+          base_version: baseVersion,
+        },
+        activeSubgraph
+      );
+    }
+    skipNextValidationRef.current = true;
+    setActiveDraft(saved);
+    setIssues(saved.issues);
+    setServerPassCount(saved.pass_count ?? null);
+    setIsDirty(false);
+    const latestDrafts = await xblueApi
+      .listDrafts(activeSubgraph)
+      .catch(() => [saved]);
+    setDrafts(latestDrafts.filter((d) => d.status === "DRAFT"));
+    return saved;
+  }, [
+    canEdit,
+    activeDraft,
+    isDirty,
+    draftTitle,
+    workingDoc,
+    activeSubgraph,
+    baseVersion,
+    tx,
+  ]);
+
+  const handleApplyUpdatedDraft = useCallback(
+    (draft: SchemaDraft, notice?: string) => {
+      skipNextValidationRef.current = true;
+      setActiveDraft(draft);
+      setDraftTitle(draft.title);
+      setBaseVersion(draft.base_version);
+      setWorkingDoc(draft.schema_doc);
+      setIssues(draft.issues);
+      setServerPassCount(draft.pass_count ?? null);
+      setIsDirty(false);
+      setDrafts((prev) => {
+        const filtered = prev.filter((d) => d.id !== draft.id);
+        return draft.id ? [draft, ...filtered] : prev;
+      });
+      if (
+        selectedNodeName &&
+        !draft.schema_doc.node_types.some((n) => n.name === selectedNodeName)
+      ) {
+        setSelectedNodeName(draft.schema_doc.node_types[0]?.name ?? null);
+      } else if (!selectedNodeName && draft.schema_doc.node_types.length > 0) {
+        setSelectedNodeName(draft.schema_doc.node_types[0]?.name ?? null);
+      }
+      if (notice) {
+        setStatusBanner(notice);
+      }
+    },
+    [selectedNodeName]
+  );
+
+  const handleConfirmAllProposals = async () => {
+    if (!canEdit || busyOp !== null) return;
+    setBusyOp("confirm-proposals");
+    setStatusBanner(null);
+    try {
+      const draft = await ensureActiveDraft();
+      if (draft?.id) {
+        const confirmed = await xblueApi.confirmDraftProposals(draft.id, {
+          scope: "ALL",
+        });
+        if (
+          confirmed &&
+          confirmed.id &&
+          Array.isArray(confirmed.schema_doc?.node_types)
+        ) {
+          handleApplyUpdatedDraft(
+            confirmed,
+            tx("已确认全部待审提议要素", "Confirmed all proposed items")
+          );
+          return;
+        }
+      }
+      mutateDoc((prev) => confirmProposalsLocally(prev, { scope: "ALL" }));
+      setStatusBanner(
+        tx("已确认全部待审提议要素", "Confirmed all proposed items")
+      );
+    } catch (err) {
+      setStatusBanner(
+        err instanceof Error
+          ? err.message
+          : tx("确认提议失败", "Failed to confirm proposals")
+      );
+    } finally {
+      setBusyOp(null);
+    }
+  };
+
+  const handleConfirmNodeProposal = async (nodeName: string) => {
+    if (!canEdit || busyOp !== null) return;
+    setBusyOp("confirm-proposals");
+    setStatusBanner(null);
+    try {
+      const draft = await ensureActiveDraft();
+      if (draft?.id) {
+        const confirmed = await xblueApi.confirmDraftProposals(draft.id, {
+          scope: "SELECTED",
+          node_types: [nodeName],
+        });
+        if (
+          confirmed &&
+          confirmed.id &&
+          Array.isArray(confirmed.schema_doc?.node_types)
+        ) {
+          handleApplyUpdatedDraft(
+            confirmed,
+            tx(`已确认 ${nodeName} 提议要素`, `Confirmed proposals on ${nodeName}`)
+          );
+          return;
+        }
+      }
+      mutateDoc((prev) =>
+        confirmProposalsLocally(prev, {
+          scope: "SELECTED",
+          node_types: [nodeName],
+        })
+      );
+      setStatusBanner(
+        tx(`已确认 ${nodeName} 提议要素`, `Confirmed proposals on ${nodeName}`)
+      );
+    } catch (err) {
+      setStatusBanner(
+        err instanceof Error
+          ? err.message
+          : tx("确认提议失败", "Failed to confirm proposals")
+      );
+    } finally {
+      setBusyOp(null);
+    }
+  };
+
   const handleSelectDraft = (draft: SchemaDraft) => {
     skipNextValidationRef.current = true;
     setActiveDraft(draft);
@@ -635,6 +826,7 @@ export function XBlueStudioPage() {
     setBaseVersion(draft.base_version);
     setWorkingDoc(draft.schema_doc);
     setIssues(draft.issues);
+    setServerPassCount(draft.pass_count ?? null);
     setIsDirty(false);
     setSelectedNodeName(draft.schema_doc.node_types[0]?.name ?? null);
     setSelectedEdgeIndex(null);
@@ -770,6 +962,21 @@ export function XBlueStudioPage() {
           );
           return;
         }
+        if (
+          err.status === 400 &&
+          err.errorCode === "UNCONFIRMED_PROPOSALS_REMAIN"
+        ) {
+          setDockCollapsed(false);
+          setDockTab("issues");
+          setStatusBanner(
+            err.message ||
+              tx(
+                "存在待确认提议要素，确认后方可发布",
+                "Unconfirmed proposals remain; sign off before publishing"
+              )
+          );
+          return;
+        }
       }
       setStatusBanner(
         err instanceof Error
@@ -789,6 +996,7 @@ export function XBlueStudioPage() {
     setBaseVersion(restored.base_version);
     setWorkingDoc(restored.schema_doc);
     setIssues(restored.issues);
+    setServerPassCount(restored.pass_count ?? null);
     setIsDirty(false);
     setStatusBanner(
       tx(
@@ -806,6 +1014,7 @@ export function XBlueStudioPage() {
     setBaseVersion(generated.base_version);
     setWorkingDoc(generated.schema_doc);
     setIssues(generated.issues);
+    setServerPassCount(generated.pass_count ?? null);
     setIsDirty(false);
     setSelectedNodeName(generated.schema_doc.node_types[0]?.name ?? null);
     const latestDrafts = await xblueApi
@@ -883,11 +1092,11 @@ export function XBlueStudioPage() {
     }
   };
 
-  const handleLocateIssue = (issue: ValidationIssue) => {
-    const nodeMatch = /^node_types\[(\d+)\](?:\.([a-z_]+))?/.exec(issue.path);
-    if (nodeMatch) {
-      const idx = Number(nodeMatch[1]);
-      const subField = nodeMatch[2] ?? "";
+  const handleLocateTargetPath = (rawPath: string) => {
+    const nodeIdxMatch = /^node_types\[(\d+)\](?:\.([a-z_]+))?/.exec(rawPath);
+    if (nodeIdxMatch) {
+      const idx = Number(nodeIdxMatch[1]);
+      const subField = nodeIdxMatch[2] ?? "";
       const targetNode = workingDoc.node_types[idx];
       if (targetNode) {
         setSelectedEdgeIndex(null);
@@ -903,9 +1112,29 @@ export function XBlueStudioPage() {
       }
     }
 
-    const edgeMatch = /^edge_types\[(\d+)\]/.exec(issue.path);
-    if (edgeMatch) {
-      const eIdx = Number(edgeMatch[1]);
+    const nodeNamedMatch = /^node_types\[([A-Za-z0-9_]+)\](?:\.([a-z_]+))?/.exec(
+      rawPath
+    );
+    if (nodeNamedMatch) {
+      const targetName = nodeNamedMatch[1] ?? "";
+      const subField = nodeNamedMatch[2] ?? "";
+      if (workingDoc.node_types.some((n) => n.name === targetName)) {
+        setSelectedEdgeIndex(null);
+        setSelectedNodeName(targetName);
+        if (subField === "agg_rules" || subField === "derived_rules") {
+          setInspectorTab("rules");
+        } else if (subField === "properties") {
+          setInspectorTab("properties");
+        } else {
+          setInspectorTab("basic");
+        }
+        return;
+      }
+    }
+
+    const edgeIdxMatch = /^edge_types\[(\d+)\]/.exec(rawPath);
+    if (edgeIdxMatch) {
+      const eIdx = Number(edgeIdxMatch[1]);
       if (workingDoc.edge_types[eIdx]) {
         setSelectedNodeName(null);
         setSelectedEdgeIndex(eIdx);
@@ -914,7 +1143,19 @@ export function XBlueStudioPage() {
       }
     }
 
-    const mapMatch = /^mappings\[(\d+)\]/.exec(issue.path);
+    const edgeNamedMatch = /^edge_types\[([A-Za-z0-9_]+)\]/.exec(rawPath);
+    if (edgeNamedMatch) {
+      const eName = edgeNamedMatch[1] ?? "";
+      const foundIdx = workingDoc.edge_types.findIndex((e) => e.name === eName);
+      if (foundIdx >= 0) {
+        setSelectedNodeName(null);
+        setSelectedEdgeIndex(foundIdx);
+        setInspectorTab("edge");
+        return;
+      }
+    }
+
+    const mapMatch = /^mappings\[(\d+)\]/.exec(rawPath);
     if (mapMatch) {
       const mIdx = Number(mapMatch[1]);
       if (workingDoc.mappings[mIdx]) {
@@ -922,6 +1163,10 @@ export function XBlueStudioPage() {
         setInspectorTab("mappings");
       }
     }
+  };
+
+  const handleLocateIssue = (issue: ValidationIssue) => {
+    handleLocateTargetPath(issue.path);
   };
 
   const activeSubgraphInfo = subgraphs.find((s) => s.slug === activeSubgraph);
@@ -971,6 +1216,46 @@ export function XBlueStudioPage() {
                 </Button>
               </>
             )}
+
+            <Button
+              variant="outline"
+              data-testid="toggle-lineage-view-btn"
+              disabled={
+                lineageNodeName === null && workingDoc.node_types.length === 0
+              }
+              onClick={() => {
+                if (lineageNodeName !== null) {
+                  setLineageNodeName(null);
+                } else {
+                  const target =
+                    selectedNode?.name ?? workingDoc.node_types[0]?.name;
+                  if (target) {
+                    setLineageNodeName(target);
+                  }
+                }
+              }}
+            >
+              {lineageNodeName !== null ? (
+                <>
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                  {tx("返回画布", "Canvas")}
+                </>
+              ) : (
+                <>
+                  <GitBranch className="h-3.5 w-3.5 text-xblue" />
+                  {tx("血缘视图", "Lineage")}
+                </>
+              )}
+            </Button>
+
+            <Button
+              variant="outline"
+              data-testid="open-spec-doc-btn"
+              onClick={() => setSpecOverviewOpen(true)}
+            >
+              <BookOpen className="h-3.5 w-3.5 text-xblue" />
+              {tx("模型规格书", "Spec Doc")}
+            </Button>
 
             <Button
               variant="outline"
@@ -1146,58 +1431,77 @@ export function XBlueStudioPage() {
         </Card>
       )}
 
-      {/* Locked 100vh Master IDE Split: Flexible StudioCanvas on Left, Independent Scroll Inspector on Right */}
-      <div className="flex flex-1 min-h-0 flex-col lg:flex-row gap-3 overflow-hidden">
+      {/* Locked 100vh Master IDE Split: Canvas/Lineage + Inspector + Collapsible Copilot */}
+      <div className="flex flex-1 min-h-0 flex-col lg:flex-row gap-2.5 overflow-hidden">
         <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-          <StudioCanvas
-            nodeTypes={workingDoc.node_types}
-            edgeTypes={workingDoc.edge_types}
-            issues={issues}
-            selectedNodeName={
-              inspectorTab === "edge" ? null : (selectedNode?.name ?? null)
-            }
-            selectedEdgeIndex={
-              inspectorTab === "edge" ? effectiveEdgeIndex : selectedEdgeIndex
-            }
-            onSelectNode={(name) => {
-              if (name) {
-                setSelectedNodeName(name);
-                setSelectedEdgeIndex(null);
-                if (inspectorTab === "edge" || inspectorTab === "mappings") {
-                  setInspectorTab("basic");
+          {lineageNodeName ? (
+            <NodeLineageCanvas
+              subgraphSlug={activeSubgraph}
+              nodeType={lineageNodeName}
+              activeDraftId={activeDraft?.id ?? null}
+              workingDoc={workingDoc}
+              onSelectNodeType={(nextType) => {
+                setSelectedNodeName(nextType);
+                setLineageNodeName(nextType);
+              }}
+              onBackToCanvas={() => setLineageNodeName(null)}
+            />
+          ) : (
+            <StudioCanvas
+              nodeTypes={workingDoc.node_types}
+              edgeTypes={workingDoc.edge_types}
+              issues={issues}
+              selectedNodeName={
+                inspectorTab === "edge" ? null : (selectedNode?.name ?? null)
+              }
+              selectedEdgeIndex={
+                inspectorTab === "edge" ? effectiveEdgeIndex : selectedEdgeIndex
+              }
+              onSelectNode={(name) => {
+                if (name) {
+                  setSelectedNodeName(name);
+                  setSelectedEdgeIndex(null);
+                  if (inspectorTab === "edge" || inspectorTab === "mappings") {
+                    setInspectorTab("basic");
+                  }
                 }
-              }
-            }}
-            onSelectEdge={(edgeIdx) => {
-              setSelectedEdgeIndex(edgeIdx);
-              if (edgeIdx !== null) {
-                setInspectorTab("edge");
-              }
-            }}
-            onUpdateNodePosition={(name, posX, posY) => {
-              mutateDoc((prev) => ({
-                ...prev,
-                node_types: prev.node_types.map((nt) =>
-                  nt.name === name ? { ...nt, pos_x: posX, pos_y: posY } : nt
-                ),
-              }));
-            }}
-            onApplyLayoutPositions={(positions) => {
-              mutateDoc((prev) => ({
-                ...prev,
-                node_types: prev.node_types.map((nt) => {
-                  const pos = positions[nt.name];
-                  return pos ? { ...nt, pos_x: pos.x, pos_y: pos.y } : nt;
-                }),
-              }));
-            }}
-            onCreateNodeType={handleCreateNodeType}
-            onCreateEdgeType={handleCreateEdgeType}
-          />
+              }}
+              onSelectEdge={(edgeIdx) => {
+                setSelectedEdgeIndex(edgeIdx);
+                if (edgeIdx !== null) {
+                  setInspectorTab("edge");
+                }
+              }}
+              onUpdateNodePosition={(name, posX, posY) => {
+                mutateDoc((prev) => ({
+                  ...prev,
+                  node_types: prev.node_types.map((nt) =>
+                    nt.name === name ? { ...nt, pos_x: posX, pos_y: posY } : nt
+                  ),
+                }));
+              }}
+              onApplyLayoutPositions={(positions) => {
+                mutateDoc((prev) => ({
+                  ...prev,
+                  node_types: prev.node_types.map((nt) => {
+                    const pos = positions[nt.name];
+                    return pos ? { ...nt, pos_x: pos.x, pos_y: pos.y } : nt;
+                  }),
+                }));
+              }}
+              onCreateNodeType={handleCreateNodeType}
+              onCreateEdgeType={handleCreateEdgeType}
+              onConfirmNode={(name) => void handleConfirmNodeProposal(name)}
+              onOpenLineage={(name) => {
+                setSelectedNodeName(name);
+                setLineageNodeName(name);
+              }}
+            />
+          )}
         </div>
 
-        {/* Right Inspector Workbench — Full Height Independent Scroll with High-Contrast Tabs */}
-        <Card className="w-full lg:w-[440px] shrink-0 h-full min-h-0 p-3 flex flex-col gap-2.5 overflow-hidden">
+        {/* Center-Right Inspector Workbench — Full Height Independent Scroll with High-Contrast Tabs */}
+        <Card className="w-full lg:w-[376px] xl:w-[416px] shrink-0 h-full min-h-0 p-3 flex flex-col gap-2.5 overflow-hidden">
           <Tabs<InspectorTab>
             className="shrink-0"
             value={inspectorTab}
@@ -1267,6 +1571,11 @@ export function XBlueStudioPage() {
                   nodeType={selectedNode}
                   onChange={handleUpdateSelectedNode}
                   onDelete={handleDeleteSelectedNode}
+                  onConfirmNode={(name) => void handleConfirmNodeProposal(name)}
+                  onOpenLineage={(name) => {
+                    setSelectedNodeName(name);
+                    setLineageNodeName(name);
+                  }}
                 />
               ) : (
                 <EmptyState
@@ -1410,6 +1719,34 @@ export function XBlueStudioPage() {
             )}
           </div>
         </Card>
+
+        {/* Right-Hand Collapsible Resident Copilot Sidebar */}
+        <StudioCopilotPanel
+          collapsed={copilotCollapsed}
+          onToggleCollapsed={() => setCopilotCollapsed((v) => !v)}
+          activeDraft={activeDraft}
+          selectedNodeName={
+            inspectorTab === "edge" || inspectorTab === "mappings"
+              ? null
+              : (selectedNode?.name ?? null)
+          }
+          selectedEdgeName={
+            inspectorTab === "edge"
+              ? (selectedEdge?.name ?? null)
+              : selectedEdgeIndex !== null
+                ? (workingDoc.edge_types[selectedEdgeIndex]?.name ?? null)
+                : null
+          }
+          activeInspectorTab={inspectorTab}
+          datasets={datasets}
+          onEnsureDraft={ensureActiveDraft}
+          onDraftUpdated={handleApplyUpdatedDraft}
+          onDiagnosticsUpdated={(nextPass, nextIssues) => {
+            setServerPassCount(nextPass);
+            setIssues(nextIssues);
+          }}
+          onLocateTargetPath={handleLocateTargetPath}
+        />
       </div>
 
       {/* Persistent Sticky Bottom IDE Status Bar & Collapsible Diagnostics / Snapshots Dock */}
@@ -1418,7 +1755,7 @@ export function XBlueStudioPage() {
         data-testid="studio-bottom-dock"
       >
         <div className="flex items-center justify-between gap-2 bg-muted/25 px-3 py-1">
-          <div className="flex items-center gap-2" role="tablist">
+          <div className="flex flex-wrap items-center gap-2" role="tablist">
             <button
               type="button"
               role="tab"
@@ -1440,17 +1777,44 @@ export function XBlueStudioPage() {
             >
               <ShieldAlert className="h-3.5 w-3.5 text-xblue" />
               <span>{tx("校验诊断", "Diagnostics")}</span>
-              {issues.length > 0 ? (
+              <Badge
+                variant="success"
+                data-testid="dock-pass-count-badge"
+                className="tabular-nums"
+              >
+                <CheckCircle2 className="h-3 w-3 mr-0.5" />
+                {tx(`${passCount} 项通过`, `${passCount} Passed`)}
+              </Badge>
+              {issues.length > 0 && (
                 <Badge variant={errorCount > 0 ? "danger" : "warning"}>
                   {issues.length}
                 </Badge>
-              ) : (
-                <span className="inline-flex items-center gap-0.5 text-[11px] text-emerald-600 dark:text-emerald-400">
-                  <CheckCircle2 className="h-3 w-3" />
-                  {tx("通过", "Valid")}
-                </span>
+              )}
+              {unconfirmedCount > 0 && (
+                <Badge
+                  variant="warning"
+                  data-testid="dock-proposal-count-badge"
+                  className="tabular-nums"
+                >
+                  {tx(`${unconfirmedCount} 待确认`, `${unconfirmedCount} Proposed`)}
+                </Badge>
               )}
             </button>
+
+            {unconfirmedCount > 0 && canEdit && dockCollapsed && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                data-testid="dock-confirm-all-btn"
+                disabled={busyOp !== null}
+                onClick={() => void handleConfirmAllProposals()}
+                className="h-6 px-2 text-[11px] border-amber-500/50 text-amber-700 dark:text-amber-300"
+              >
+                <CheckCheck className="h-3 w-3" />
+                {tx("全部确认", "Confirm All")}
+              </Button>
+            )}
 
             <span className="text-border">|</span>
 
@@ -1508,8 +1872,12 @@ export function XBlueStudioPage() {
               <IssueList
                 issues={issues}
                 validating={validating}
+                passCount={passCount}
+                unconfirmedCount={unconfirmedCount}
+                confirmingAll={busyOp === "confirm-proposals"}
                 embedded
                 onLocateIssue={handleLocateIssue}
+                onConfirmAllProposals={() => void handleConfirmAllProposals()}
               />
             ) : runtimeNodes.length === 0 ? (
               <div className="py-4 text-center text-xs text-muted-foreground">
@@ -1611,6 +1979,29 @@ export function XBlueStudioPage() {
             </span>
           </div>
 
+          {unconfirmedCount > 0 && (
+            <div className="flex items-center justify-between gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2">
+              <span className="text-amber-800 dark:text-amber-300">
+                {tx(
+                  `含 ${unconfirmedCount} 项待确认提议`,
+                  `${unconfirmedCount} proposed items pending sign-off`
+                )}
+              </span>
+              {canEdit && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={busyOp !== null}
+                  onClick={() => void handleConfirmAllProposals()}
+                >
+                  <CheckCheck className="h-3.5 w-3.5" />
+                  {tx("全部确认", "Confirm All")}
+                </Button>
+              )}
+            </div>
+          )}
+
           <div>
             <label className="block font-medium mb-1">
               {tx("草案标题", "Draft Title")}
@@ -1643,6 +2034,16 @@ export function XBlueStudioPage() {
       </Modal>
 
       {/* Drawers & Modals */}
+      <ModelSpecOverview
+        open={specOverviewOpen}
+        subgraphSlug={activeSubgraph}
+        subgraphDisplayName={activeSubgraphInfo?.display_name ?? activeSubgraph}
+        publishedVersion={publishedVersion}
+        activeDraftId={activeDraft?.id ?? null}
+        workingDoc={workingDoc}
+        onClose={() => setSpecOverviewOpen(false)}
+      />
+
       <VersionPanel
         open={versionPanelOpen}
         subgraphSlug={activeSubgraph}
