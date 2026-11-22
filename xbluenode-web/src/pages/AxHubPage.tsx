@@ -10,9 +10,9 @@ import {
 } from "@/lib/api/axhub";
 import type { SourceKind } from "@/lib/api/enums";
 import {
-  Badge,
   PageHeader,
   SegmentedControl,
+  StatText,
 } from "@/components/ui/primitives";
 import { CatalogSearch } from "@/components/axhub/CatalogSearch";
 import { ConnectionForm } from "@/components/axhub/ConnectionForm";
@@ -36,6 +36,7 @@ export function AxHubPage() {
   const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(
     null
   );
+  const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
   const [detailTab, setDetailTab] = useState<DatasetDetailTab>("preview");
   const [datasetFilters, setDatasetFilters] = useState<{
     q?: string;
@@ -67,7 +68,7 @@ export function AxHubPage() {
           if (prev && items.some((item) => item.id === prev)) {
             return prev;
           }
-          return items[0]?.id ?? null;
+          return null;
         });
       } catch {
         setDatasets([]);
@@ -98,25 +99,36 @@ export function AxHubPage() {
     await loadDatasets(nextFilters);
   };
 
-  const handleJumpToDataset = (datasetId: string) => {
+  const handleOpenDatasetDetail = (
+    datasetId: string,
+    tab: DatasetDetailTab = "preview"
+  ) => {
     setSelectedDatasetId(datasetId);
-    setDetailTab("preview");
+    setDetailTab(tab);
+    setDetailDrawerOpen(true);
+  };
+
+  const handleJumpToDataset = (datasetId: string) => {
     setActiveView("workspace");
+    handleOpenDatasetDetail(datasetId, "preview");
   };
 
   return (
-    <div className="space-y-5" data-testid="axhub-page">
+    <div className="space-y-3.5" data-testid="axhub-page">
       <PageHeader
         title={tx(MODULE_META.axhub.label, MODULE_META.axhub.enLabel)}
         badges={
-          <>
-            <Badge variant="neutral">
-              {tx("连接", "Connections")} {fmtNum(connections.length, 0)}
-            </Badge>
-            <Badge variant="xblue">
-              {tx("数据集", "Datasets")} {fmtNum(datasets.length, 0)}
-            </Badge>
-          </>
+          <div className="flex items-center gap-3 pl-1">
+            <StatText
+              label={tx("连接", "Connections")}
+              value={fmtNum(connections.length, 0)}
+            />
+            <span className="text-border">·</span>
+            <StatText
+              label={tx("数据集", "Datasets")}
+              value={fmtNum(datasets.length, 0)}
+            />
+          </div>
         }
         actions={
           <SegmentedControl
@@ -126,19 +138,19 @@ export function AxHubPage() {
               {
                 key: "workspace",
                 label: tx("连接与数据集", "Workspace"),
-                icon: <Cable className="h-3.5 w-3.5 text-xblue" />,
+                icon: <Cable className="h-3.5 w-3.5" />,
                 testId: "axhub-nav-workspace",
               },
               {
                 key: "uploads",
                 label: tx("文件入湖", "File Upload"),
-                icon: <FileUp className="h-3.5 w-3.5 text-xblue" />,
+                icon: <FileUp className="h-3.5 w-3.5" />,
                 testId: "axhub-nav-uploads",
               },
               {
                 key: "catalog",
                 label: tx("资产目录", "Catalog"),
-                icon: <Search className="h-3.5 w-3.5 text-xblue" />,
+                icon: <Search className="h-3.5 w-3.5" />,
                 testId: "axhub-nav-catalog",
               },
             ]}
@@ -147,7 +159,7 @@ export function AxHubPage() {
       />
 
       {activeView === "workspace" && (
-        <div className="space-y-5">
+        <div className="space-y-3.5">
           <ConnectionForm
             connections={connections}
             connectorSpecs={connectorSpecs}
@@ -158,8 +170,10 @@ export function AxHubPage() {
           <DatasetTable
             datasets={datasets}
             selectedDatasetId={selectedDatasetId}
+            detailOpen={detailDrawerOpen}
             activeDetailTab={detailTab}
-            onSelectDataset={(id) => setSelectedDatasetId(id)}
+            onSelectDataset={(id) => handleOpenDatasetDetail(id, detailTab)}
+            onCloseDetail={() => setDetailDrawerOpen(false)}
             onChangeDetailTab={(tab) => setDetailTab(tab)}
             onFilterChange={handleFilterChange}
             onRefreshDatasets={() => loadDatasets()}
