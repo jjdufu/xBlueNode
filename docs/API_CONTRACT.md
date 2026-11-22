@@ -1,6 +1,6 @@
 # xBlueNode / AxPoint 接口契约（API Contract）
 
-本文件记录**已合入 `main` 的接口**，每个 Step 的契约 PR 把该 Step 的接口条目写入对应小节。全部接口（含各 Step 计划交付的接口）的方法、路径、权限与定义位置见 [blueprint/A4-API-CONTRACT-INDEX.md](./blueprint/A4-API-CONTRACT-INDEX.md)；前缀、分页、错误码、序列化约定见 [blueprint/A1-CONVENTIONS-ENUMS-ROUTES.md](./blueprint/A1-CONVENTIONS-ENUMS-ROUTES.md)。
+本文件记录**已合入 `main` 的接口**，每个 Step 的契约 PR 把该 Step 的接口条目写入对应小节。全部接口的方法、路径、权限与定义位置见 [standards/A4-API-CONTRACT-INDEX.md](./standards/A4-API-CONTRACT-INDEX.md)；前缀、分页、错误码、序列化约定见 [standards/A1-CONVENTIONS-ENUMS-ROUTES.md](./standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
 
 ---
 

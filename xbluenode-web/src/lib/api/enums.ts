@@ -1,7 +1,7 @@
 /**
  * Canonical public enums synchronized across Rust (`axpoint-domain/src/enums.rs`),
  * Python (`axpoint-parser/schemas.py`), TypeScript, and PostgreSQL CHECK constraints.
- * Reference: `docs/blueprint/A1-CONVENTIONS-ENUMS-ROUTES.md` §4 & §6.
+ * Reference: `docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md` §4 & §6.
  */
 
 export type DataType =

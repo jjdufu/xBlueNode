@@ -1,6 +1,6 @@
 # A2 · 数据库迁移索引
 
-迁移文件位于 `deploy/migrations/`，命名 `NNNN_<module>.sql`，由 `sqlx migrate` 按编号顺序执行；规则见 `deploy/migrations/README.md`（全文在 [01](./01-STEP00-FOUNDATION-AND-GUARD-SKELETON.md) §00.5.4）。每个迁移只属于一个 Step，契约 PR 按编号顺序合入；已合入 `main` 的迁移文件不再修改，修正以下一个编号的迁移完成。
+迁移文件位于 `deploy/migrations/`，命名 `NNNN_<module>.sql`，由 `sqlx migrate` 按编号顺序执行；规则见 `deploy/migrations/README.md`（全文在 [01](../../plans/completed/v1-foundation-step00-14/01-STEP00-FOUNDATION-AND-GUARD-SKELETON.md) §00.5.4）。每个迁移只属于一个 Step，契约 PR 按编号顺序合入；已合入 `main` 的迁移文件不再修改，修正以下一个编号的迁移完成。
 
 ---
 
@@ -9,19 +9,19 @@
 | 编号 | 文件 | 所属 Step | 内容概要 | 定义位置 |
 | :--- | :--- | :--- | :--- | :--- |
 | 0001 | `0001_init_core.sql` | 仓库已有 | 扩展 `vector`、`pgcrypto`；超图 `hg_*`；业务节点 `xb_*`；`ax_flows`、`ax_sandboxes` | 仓库文件 |
-| 0002 | `0002_platform_foundation.sql` | Step 00 | 角色 `axpoint_app` / `axpoint_lake`、`lake_catalog` 模式、租户注册、`ax_enable_tenant_rls`、身份表、审计、任务队列、外发表、保留策略、内置角色 | [01](./01-STEP00-FOUNDATION-AND-GUARD-SKELETON.md) §00.5.2 |
-| 0003 | `0003_data_fabric.sql` | Step 02 | 凭证、连接、数据集、列画像、同步记录、上传、Webhook、流位点、质量规则、术语、血缘 | [03](./03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md) |
-| 0004 | `0004_axgraph_timeseries.sql` | Step 03 | 节点属性 / 地理 / 全文 / 行版本；关系唯一索引；时序分区表与汇总；实体链接；图算法结果 | [04](./04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md) |
-| 0005 | `0005_analytics_semantic.sql` | Step 04 | 指标、保存查询、查询历史、问数轮次、AI 处理草稿 | [05](./05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) |
-| 0006 | `0006_xbluestudio_modeling.sql` | Step 05 | 部门子图注册、节点 / 关系类型扩展、模型头 / 版本 / 草稿、映射与映射运行 | [06](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) |
-| 0007 | `0007_axflow_orchestration.sql` | Step 07 | 流程 DAG 列与链式转换、版本、部署、运行、步骤日志、审批、动作日志、钩子 | [07](./07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md) |
-| 0008 | `0008_rules_alerts.sql` | Step 08 | 通知渠道、规则、告警、告警事件、投递记录、静默 | [07](./07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md) |
-| 0009 | `0009_publishing_agents.sql` | Step 09 | 模型提供方与用量、发布端点、MCP 客户端、智能体与版本、会话与消息、嵌入 | [08](./08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) |
-| 0010 | `0010_axsim_scenarios.sql` | Step 10 | 沙盘范围、基线快照、写时复制覆盖层、场景、影响、检查点、决策 | [09](./09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) §10.1 |
-| 0011 | `0011_xblueview_dashboards.sql` | Step 11 | 驾驶舱、组件、资产、平面图摆放、3D 孪生场景绑定 | [10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.1 |
-| 0012 | `0012_export_and_share.sql` | Step 12 | 出品模板、出品任务、分享链接 | [10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §12.1 |
-| 0013 | `0013_axguard_policies.sql` | Step 13 | 登录安全、会话、部门与属性、资源归属与密级、Cedar 策略、行列策略、跨部门授权、PII 位置、审计链 | [11](./11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.1 |
-| 0014 | `0014_ops_templates_delivery.sql` | Step 14 | 工作项、模板安装、备份记录、审计链锚点 | [12](./12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.1 |
+| 0002 | `0002_platform_foundation.sql` | Step 00 | 角色 `axpoint_app` / `axpoint_lake`、`lake_catalog` 模式、租户注册、`ax_enable_tenant_rls`、身份表、审计、任务队列、外发表、保留策略、内置角色 | [01](../../plans/completed/v1-foundation-step00-14/01-STEP00-FOUNDATION-AND-GUARD-SKELETON.md) §00.5.2 |
+| 0003 | `0003_data_fabric.sql` | Step 02 | 凭证、连接、数据集、列画像、同步记录、上传、Webhook、流位点、质量规则、术语、血缘 | [03](../../plans/completed/v1-foundation-step00-14/03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md) |
+| 0004 | `0004_axgraph_timeseries.sql` | Step 03 | 节点属性 / 地理 / 全文 / 行版本；关系唯一索引；时序分区表与汇总；实体链接；图算法结果 | [04](../../plans/completed/v1-foundation-step00-14/04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md) |
+| 0005 | `0005_analytics_semantic.sql` | Step 04 | 指标、保存查询、查询历史、问数轮次、AI 处理草稿 | [05](../../plans/completed/v1-foundation-step00-14/05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) |
+| 0006 | `0006_xbluestudio_modeling.sql` | Step 05 | 部门子图注册、节点 / 关系类型扩展、模型头 / 版本 / 草稿、映射与映射运行 | [06](../../plans/completed/v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) |
+| 0007 | `0007_axflow_orchestration.sql` | Step 07 | 流程 DAG 列与链式转换、版本、部署、运行、步骤日志、审批、动作日志、钩子 | [07](../../plans/completed/v1-foundation-step00-14/07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md) |
+| 0008 | `0008_rules_alerts.sql` | Step 08 | 通知渠道、规则、告警、告警事件、投递记录、静默 | [07](../../plans/completed/v1-foundation-step00-14/07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md) |
+| 0009 | `0009_publishing_agents.sql` | Step 09 | 模型提供方与用量、发布端点、MCP 客户端、智能体与版本、会话与消息、嵌入 | [08](../../plans/completed/v1-foundation-step00-14/08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) |
+| 0010 | `0010_axsim_scenarios.sql` | Step 10 | 沙盘范围、基线快照、写时复制覆盖层、场景、影响、检查点、决策 | [09](../../plans/completed/v1-foundation-step00-14/09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) §10.1 |
+| 0011 | `0011_xblueview_dashboards.sql` | Step 11 | 驾驶舱、组件、资产、平面图摆放、3D 孪生场景绑定 | [10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.1 |
+| 0012 | `0012_export_and_share.sql` | Step 12 | 出品模板、出品任务、分享链接 | [10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §12.1 |
+| 0013 | `0013_axguard_policies.sql` | Step 13 | 登录安全、会话、部门与属性、资源归属与密级、Cedar 策略、行列策略、跨部门授权、PII 位置、审计链 | [11](../../plans/completed/v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.1 |
+| 0014 | `0014_ops_templates_delivery.sql` | Step 14 | 工作项、模板安装、备份记录、审计链锚点 | [12](../../plans/completed/v1-foundation-step00-14/12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.1 |
 
 Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 中的时序表）。
 

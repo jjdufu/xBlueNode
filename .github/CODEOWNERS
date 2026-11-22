@@ -1,8 +1,14 @@
 # xBlueNode / AxPoint Monorepo Code Owners
 
-# 全局规范与蓝图
+# 全局规范、记忆文件与实施方案
 /IRON_RULES.md                      @xbluenode/maintainers
+/AGENTS.md                          @xbluenode/maintainers
+/GEMINI.md                          @xbluenode/maintainers
+/CLAUDE.md                          @xbluenode/maintainers
+/.agents/                           @xbluenode/maintainers
 /docs/                              @xbluenode/maintainers
+/plans/                             @xbluenode/maintainers
+/scripts/                           @xbluenode/maintainers
 /deploy/                            @xbluenode/infra
 
 # Rust 核心引擎按 Crate 分模块负责

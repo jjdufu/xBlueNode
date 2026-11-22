@@ -26,7 +26,7 @@
 | 新建 | `scripts/demo/{supply_chain.md, manufacturing_equipment.md, retail_store.md}` | 演示讲解脚本 |
 | 新建 | `xbluenode-web/src/pages/AxOpsPage.tsx`、`src/components/axops/{HealthPanel.tsx, JobsPanel.tsx, RetentionPanel.tsx, BackupPanel.tsx, TemplateGallery.tsx, WorkItemBoard.tsx}` | 运维界面 |
 | 新建 | `scripts/gate/step14.sh`、`xbluenode-web/e2e/full-journey.spec.ts` | 门禁与端到端旅程 |
-| 新建 | `scripts/check_routes.py` | 路由实现与 [A4](./A4-API-CONTRACT-INDEX.md) 双向比对（A4 §检查方法） |
+| 新建 | `scripts/check_routes.py` | 路由实现与 [A4](../../../docs/standards/A4-API-CONTRACT-INDEX.md) 双向比对（A4 §检查方法） |
 | 新建 | `scripts/check_traceability.py` | 读取 A7 表格中的断言名，逐个确认出现在对应 `scripts/gate/stepNN.sh` 中，缺失项打印并以 1 退出 |
 | 修改 | `scripts/gate/all.sh` | 最终形态：全新环境重建、全部 Step 门禁、端到端旅程（§14.9.1） |
 

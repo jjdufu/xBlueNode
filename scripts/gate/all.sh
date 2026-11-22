@@ -23,8 +23,13 @@ if [[ -n "${NAMING_DENYLIST:-}" || -f .env ]]; then
   bash scripts/naming-guard.sh
 fi
 python3 scripts/lint-guard.py
-python3 scripts/check_routes.py --routes axpoint-core/crates/axpoint-server/src/routes --index docs/blueprint/A4-API-CONTRACT-INDEX.md
-python3 scripts/check_traceability.py docs/blueprint/A7-REQUIREMENTS-TRACEABILITY.md scripts/gate
+python3 scripts/web-guard.py
+python3 scripts/python-guard.py
+python3 scripts/hallucination-guard.py
+python3 scripts/docs-and-plans-guard.py
+python3 scripts/check_routes.py --routes axpoint-core/crates/axpoint-server/src/routes --index docs/standards/A4-API-CONTRACT-INDEX.md
+python3 scripts/check_traceability.py docs/standards/A7-REQUIREMENTS-TRACEABILITY.md scripts/gate
+bash scripts/check-write-scope.sh --self-test
 
 mkdir -p .gate
 for n in $(seq -w 0 14); do

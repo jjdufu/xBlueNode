@@ -53,7 +53,7 @@ Sidecar（`axpoint-parser`，端口 `8001`，只在内部网络暴露）：`/hea
 路由书写规则：
 
 1. 路径参数用 Axum 0.8 语法 `{id}`；集合名用复数（`/datasets`、`/flows`）；动作用子路径动词（`/run`、`/publish`、`/apply`）。
-2. 所有 `/api/*` 业务路由不接受 `tenant_id` 查询参数或请求体字段；租户只从 `AuthPrincipal` 取得（Step 00 起生效）。外部入口分两类，均用各自的令牌鉴权（总表见 [11](./11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.2）：① 路径中显式带 `{tenant_id}` 的已发布端点（`/api/published/{env}/{tenant_id}/{slug}`）与 Webhook 接收（`/api/axhub/webhooks/{tenant_id}/{slug}/ingest`）、流程钩子（`/api/axflow/hooks/{tenant_id}/{slug}`）；② 路径中不带租户、由令牌经 `SECURITY DEFINER` 函数解析租户的分享页（`/api/xblueview/share/{token}/*`，`ax_resolve_share`）与智能体嵌入（`axe_` 令牌，`ax_resolve_agent_embed`）。
+2. 所有 `/api/*` 业务路由不接受 `tenant_id` 查询参数或请求体字段；租户只从 `AuthPrincipal` 取得（Step 00 起生效）。外部入口分两类，均用各自的令牌鉴权（总表见 [11](../../plans/completed/v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.2）：① 路径中显式带 `{tenant_id}` 的已发布端点（`/api/published/{env}/{tenant_id}/{slug}`）与 Webhook 接收（`/api/axhub/webhooks/{tenant_id}/{slug}/ingest`）、流程钩子（`/api/axflow/hooks/{tenant_id}/{slug}`）；② 路径中不带租户、由令牌经 `SECURITY DEFINER` 函数解析租户的分享页（`/api/xblueview/share/{token}/*`，`ax_resolve_share`）与智能体嵌入（`axe_` 令牌，`ax_resolve_agent_embed`）。
 3. 列表接口统一分页参数 `?limit=50&cursor=<opaque>`，响应 `{items: [...], next_cursor: string|null}`。`limit` 范围 `1..=500`。
 
 ---

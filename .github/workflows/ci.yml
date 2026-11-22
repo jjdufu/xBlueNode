@@ -27,14 +27,17 @@ jobs:
               - 'tests/data/**'
               - 'xbluenode-web/src/lib/chartSpec.json'
               - 'scripts/lint-guard.py'
+              - 'scripts/hallucination-guard.py'
               - '.github/workflows/ci.yml'
             python:
               - 'axpoint-parser/**'
               - 'deploy/migrations/**'
               - 'tests/data/**'
+              - 'scripts/python-guard.py'
               - '.github/workflows/ci.yml'
             web:
               - 'xbluenode-web/**'
+              - 'scripts/web-guard.py'
               - '.github/workflows/ci.yml'
 
   rust-core:
@@ -210,11 +213,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Verify Autonomous Naming & Rust Anti-Bypass Policy
+      - name: Verify Autonomous Naming, Anti-Bypass, Grounded AI & Docs/Contract Guards
         env:
           NAMING_DENYLIST: ${{ vars.NAMING_DENYLIST }}
         run: |
           bash scripts/naming-guard.sh
           python3 scripts/lint-guard.py
-          python3 scripts/check_routes.py --routes axpoint-core/crates/axpoint-server/src/routes --index docs/blueprint/A4-API-CONTRACT-INDEX.md
-          python3 scripts/check_traceability.py docs/blueprint/A7-REQUIREMENTS-TRACEABILITY.md scripts/gate
+          python3 scripts/web-guard.py
+          python3 scripts/python-guard.py
+          python3 scripts/hallucination-guard.py
+          python3 scripts/docs-and-plans-guard.py
+          python3 scripts/check_routes.py --routes axpoint-core/crates/axpoint-server/src/routes --index docs/standards/A4-API-CONTRACT-INDEX.md
+          python3 scripts/check_traceability.py docs/standards/A7-REQUIREMENTS-TRACEABILITY.md scripts/gate
+          bash scripts/check-write-scope.sh --self-test

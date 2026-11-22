@@ -54,7 +54,7 @@ Step 11 3D 数字孪生模型样本（`axpoint-parser/tests/data/models/`，由�
 
 | 文件 | 规格 |
 | :--- | :--- |
-| `warehouse_twin.glb` | 最小合法 glTF 2.0 二进制模型（`.glb`），包含单个命名网格节点 `"Rack_A"`（单位立方体几何体 + PBR 材质），逐字节确定性生成；供 [10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.4 与 Step 11 门禁 `scene-3d` 使用 |
+| `warehouse_twin.glb` | 最小合法 glTF 2.0 二进制模型（`.glb`），包含单个命名网格节点 `"Rack_A"`（单位立方体几何体 + PBR 材质），逐字节确定性生成；供 [10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.4 与 Step 11 门禁 `scene-3d` 使用 |
 
 ---
 
@@ -174,7 +174,7 @@ restart_core() {
 gate_pass() { echo "GATE $1 PASS"; }
 ```
 
-`.env.test` 由 `scripts/dev-up.sh` 生成（[01](./01-STEP00-FOUNDATION-AND-GUARD-SKELETON.md) §00.10.1），包含 `CORE_BASE_URL`、`PARSER_BASE_URL`、`DATABASE_URL`、`MIGRATION_DATABASE_URL`、`AXPOINT_DEV_TOKEN`、`AXPOINT_INTERNAL_TOKEN` 等；`all.sh` 另行设置 `AXPOINT_LLM_CASSETTE` 指向录制文件。
+`.env.test` 由 `scripts/dev-up.sh` 生成（[01](../../plans/completed/v1-foundation-step00-14/01-STEP00-FOUNDATION-AND-GUARD-SKELETON.md) §00.10.1），包含 `CORE_BASE_URL`、`PARSER_BASE_URL`、`DATABASE_URL`、`MIGRATION_DATABASE_URL`、`AXPOINT_DEV_TOKEN`、`AXPOINT_INTERNAL_TOKEN` 等；`all.sh` 另行设置 `AXPOINT_LLM_CASSETTE` 指向录制文件。
 
 **自测**：`scripts/gate/lib_test.sh` 用 `python3 -m http.server` 模拟接口，覆盖 `expect_json` 的真 / 假 / 非法 JSON、`expect_code` 的 `_NOAUTH` 与覆盖令牌分支、`wait_until` 超时；作为 Step 00 门禁的第一项执行。
 
@@ -188,8 +188,8 @@ gate_pass() { echo "GATE $1 PASS"; }
 | 02 | `02-axhub.sh` | `DEMO_PG_CONN_ID`、`DEMO_ORDERS_DATASET_ID`、`SUPPLY_UPLOAD_ID`、`WEBHOOK_SLUG`、`WEBHOOK_SECRET` |
 | 03 | `03-axgraph.sh` | `FACTORY1_NODE_ID`、`ORDER20_NODE_ID`、`SEED_DAY1`、`SEED_DAY2` 等 |
 | 04 | `04-analytics.sh` | `PAID_METRIC_NAME` |
-| 05 | `05-studio.sh` | `ORDER_MAPPING_ID` 等映射 ID 与模型版本（见 [06](./06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §05.8；Step 06 无种子脚本） |
-| 07 / 08 | `07-axflow.sh`、`08-rules.sh` | `FLOW_ID`、`CYCLIC_FLOW_ID`、`LOW_INV_RULE_ID`、`SINK_SECRET`、`SINK_FILE`（见 [07](./07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md)） |
+| 05 | `05-studio.sh` | `ORDER_MAPPING_ID` 等映射 ID 与模型版本（见 [06](../../plans/completed/v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §05.8；Step 06 无种子脚本） |
+| 07 / 08 | `07-axflow.sh`、`08-rules.sh` | `FLOW_ID`、`CYCLIC_FLOW_ID`、`LOW_INV_RULE_ID`、`SINK_SECRET`、`SINK_FILE`（见 [07](../../plans/completed/v1-foundation-step00-14/07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md)） |
 | 09 | `09-agents.sh` | `GATE_PAT`、`PAID_ENDPOINT_SLUG`、`OBJECT_ENDPOINT_SLUG`、`SUPERVISOR_AGENT_ID` |
 | 10 | `10-axsim.sh` | `SANDBOX_ID`、`SIM_S1_ID`、`SIM_S2_ID` |
 | 11 | `11-xblueview.sh` | `DASHBOARD_ID`、`KPI_WIDGET_ID`、`BAR_WIDGET_ID`、`MODEL3D_ASSET_ID`、`SCENE3D_WIDGET_ID`、`ACTION_WIDGET_ID` |
@@ -219,10 +219,10 @@ gate_pass() { echo "GATE $1 PASS"; }
 
 | 脚本 | 场景 | 断言 | 定义 |
 | :--- | :--- | :--- | :--- |
-| `analytics-data.sh` / `analytics-bench.sh` | 1 000 万行聚合、透视、指标、守卫 | 见 [05](./05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) §04.11 | Step 04 |
-| `sim-bench.sh` | 5 万节点 / 20 万关系推演 | 稳态 P95 ≤ 2 秒；200 次抽样 P95 ≤ 20 秒 | [09](./09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) §10.11 |
-| `graph-render-bench.mjs` | 图浏览器 1 万节点 / 3 万关系 | 帧率 ≥ 30 fps（Playwright + `requestAnimationFrame` 计数） | [10](./10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.6 |
-| `guard-bench.sh` | 含行列策略的 SQL 改写 | P95 ≤ 10 毫秒 | [11](./11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.6.3 |
+| `analytics-data.sh` / `analytics-bench.sh` | 1 000 万行聚合、透视、指标、守卫 | 见 [05](../../plans/completed/v1-foundation-step00-14/05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) §04.11 | Step 04 |
+| `sim-bench.sh` | 5 万节点 / 20 万关系推演 | 稳态 P95 ≤ 2 秒；200 次抽样 P95 ≤ 20 秒 | [09](../../plans/completed/v1-foundation-step00-14/09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) §10.11 |
+| `graph-render-bench.mjs` | 图浏览器 1 万节点 / 3 万关系 | 帧率 ≥ 30 fps（Playwright + `requestAnimationFrame` 计数） | [10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.6 |
+| `guard-bench.sh` | 含行列策略的 SQL 改写 | P95 ≤ 10 毫秒 | [11](../../plans/completed/v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.6.3 |
 
 ---
 

@@ -38,8 +38,8 @@ Step 00 把仓库从“可演示骨架”变成“每一步都能自动验证、
 | 新建 | `deploy/docker/postgres-init.sh` | 首次建库时创建 `axpoint_app`、`axpoint_lake` 并设置口令 |
 | 新建 | `deploy/docker/axpoint-core.Dockerfile` | 多阶段：web 构建 → Rust 构建 → distroless 运行 |
 | 新建 | `deploy/docker/axpoint-parser.Dockerfile` | `lite` / `full` 两个 target |
-| 修改 | `deploy/.env.example` | 补齐 [A1 §10](./A1-CONVENTIONS-ENUMS-ROUTES.md) 的全部变量 |
-| 修改 | `axpoint-core/Cargo.toml` | 成员 `axpoint-security`；依赖见 [A6](./A6-DEPENDENCY-BASELINE.md) Step 00 行 |
+| 修改 | `deploy/.env.example` | 补齐 [A1 §10](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md) 的全部变量 |
+| 修改 | `axpoint-core/Cargo.toml` | 成员 `axpoint-security`；依赖见 [A6](../../../docs/standards/A6-DEPENDENCY-BASELINE.md) Step 00 行 |
 | 新建 | `axpoint-core/crates/axpoint-security/{Cargo.toml, src/lib.rs, src/principal.rs, src/authenticator.rs, src/audit.rs}` | 身份与审计骨架 |
 | 新建 | `axpoint-core/crates/axpoint-domain/src/enums.rs` | 公共枚举 |
 | 修改 | `axpoint-core/crates/axpoint-domain/src/lib.rs` | `AppError` 全集、`pub mod enums` |
@@ -56,7 +56,7 @@ Step 00 把仓库从“可演示骨架”变成“每一步都能自动验证、
 | 修改 | `axpoint-parser/pyproject.toml` | `pydantic-settings`、顶层模块声明与子包自动发现 |
 | 新建 | `axpoint-parser/{settings.py, security.py}` | 配置与内部令牌中间件 |
 | 修改 | `axpoint-parser/main.py` | 挂载中间件、统一错误体 |
-| 新建 | `axpoint-parser/tests/fixtures/make_fixtures.py`、`fixtures.sha256` | 样本生成器（规格见 [A5 §1](./A5-TEST-FIXTURES-AND-GATES.md)） |
+| 新建 | `axpoint-parser/tests/fixtures/make_fixtures.py`、`fixtures.sha256` | 样本生成器（规格见 [A5 §1](../../../docs/standards/A5-TEST-FIXTURES-AND-GATES.md)） |
 | 新建 | `axpoint-parser/tests/test_security_token.py` | 内部令牌用例 |
 | 修改 | `xbluenode-web/package.json` | `react-router`、`@tanstack/react-query`、`zod`、`@playwright/test` |
 | 修改 | `xbluenode-web/src/{App.tsx, main.tsx, modules/registry.ts}` | 路由化、注册表含 `path` |
@@ -74,7 +74,7 @@ Step 00 把仓库从“可演示骨架”变成“每一步都能自动验证、
 
 ### 00.5.1 规则
 
-- 文件名 `NNNN_<module>.sql`，`NNNN` 为四位递增整数；`0001_init_core.sql` 为基线。完整清单见 [A2](./A2-DATABASE-MIGRATIONS-INDEX.md)。
+- 文件名 `NNNN_<module>.sql`，`NNNN` 为四位递增整数；`0001_init_core.sql` 为基线。完整清单见 [A2](../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)。
 - 已有表只用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`、`CREATE INDEX IF NOT EXISTS` 扩展；只有新表使用 `CREATE TABLE IF NOT EXISTS`。
 - 每个含 `tenant_id` 的新表在同一迁移末尾调用 `SELECT ax_enable_tenant_rls('<table>');`。
 - 唯一执行入口：
@@ -370,7 +370,7 @@ SQL
 ```markdown
 # 数据库迁移规范
 
-- 格式：sqlx，文件名 `NNNN_<module>.sql`，四位递增编号，只追加不修改。清单见 `docs/blueprint/A2-DATABASE-MIGRATIONS-INDEX.md`。
+- 格式：sqlx，文件名 `NNNN_<module>.sql`，四位递增编号，只追加不修改。清单见 `docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md`。
 - 执行：`sqlx migrate run --source deploy/migrations --database-url "$MIGRATION_DATABASE_URL"`，或 Core 启动时自动执行（`AXPOINT_MIGRATE_ON_START=true`）。
 - 已有表只用 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` 扩展；新表使用 `CREATE TABLE IF NOT EXISTS`。
 - 每个带 `tenant_id` 的新表在迁移末尾执行 `SELECT ax_enable_tenant_rls('<table>');`。
@@ -443,7 +443,7 @@ impl AppError {
 }
 ```
 
-`axpoint-server/src/state.rs` 中 `HttpError::into_response` 按 [A1 §5](./A1-CONVENTIONS-ENUMS-ROUTES.md) 映射状态码，响应体为 `{"error_code","message","trace_id"}`；`trace_id` 取当前 `tracing` span 的 OpenTelemetry trace id，没有则取 `x-request-id`。500 类错误的 `message` 固定为 `internal error`，原始信息只写日志。
+`axpoint-server/src/state.rs` 中 `HttpError::into_response` 按 [A1 §5](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md) 映射状态码，响应体为 `{"error_code","message","trace_id"}`；`trace_id` 取当前 `tracing` span 的 OpenTelemetry trace id，没有则取 `x-request-id`。500 类错误的 `message` 固定为 `internal error`，原始信息只写日志。
 
 ### 00.6.2 基础端口（`axpoint-domain/src/ports.rs` 追加）
 
@@ -690,7 +690,7 @@ class InternalTokenMiddleware(BaseHTTPMiddleware):
 
 ## 00.8 前端路由与令牌
 
-- `registry.ts` 的 `ModuleRouteSpec` 增加 `path: string` 与 `public?: boolean`，条目按 [A1 §3](./A1-CONVENTIONS-ENUMS-ROUTES.md)；本步只注册仓库已有的 7 个页面与 `LoginPage`。
+- `registry.ts` 的 `ModuleRouteSpec` 增加 `path: string` 与 `public?: boolean`，条目按 [A1 §3](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)；本步只注册仓库已有的 7 个页面与 `LoginPage`。
 - `App.tsx`：`createBrowserRouter([{ path: "/login", element: <LoginPage/> }, { element: <ShellLayout/>, children: MODULE_REGISTRY.filter(m => !m.public).map(m => ({ path: m.path, element: <m.component/> })) }])`；`ShellLayout` 保留现有侧栏、主题切换和版本号（`__APP_VERSION__`），未登录时重定向 `/login`。
 - `lib/api/auth.ts`：令牌只保存在内存模块变量中；开发模式下若存在 `import.meta.env.VITE_DEV_TOKEN` 则自动使用。`LoginPage` 在 Step 00 提供“粘贴访问令牌”表单，调用 `GET /api/auth/me` 校验；Step 13 替换为账号口令与 OIDC 登录。
 - `lib/api/client.ts`：`requestJson` 自动附加 `Authorization`；响应非 2xx 时解析三字段错误体并抛出 `ApiError { status, errorCode, message, traceId }`；收到 401 跳转 `/login`。
@@ -960,7 +960,7 @@ O2=$(api POST /api/xblue/nodes "{\"type_name\":\"Order\",\"node_key\":\"O-2\",\"
 echo "DOC_ID=$DOC"; echo "WAREHOUSE_NODE_ID=$W1"; echo "ORDER1_NODE_ID=$O1"; echo "ORDER2_NODE_ID=$O2"
 ```
 
-`scripts/gate/lib.sh`（完整函数清单见 [A5 §2](./A5-TEST-FIXTURES-AND-GATES.md)）把 `$ROOT/axpoint-parser/.venv/bin` 前置到 `PATH`，并提供 `api METHOD PATH [JSON]`、`api_noauth`、`expect_eq NAME ACTUAL EXPECTED`、`expect_code NAME CODE METHOD PATH [JSON]`（`METHOD` 支持 `GET_NOAUTH` / `POST_NOAUTH` 无令牌请求）、`expect_json NAME JSON JQ_EXPR`、`sql_owner SQL`、`sql_app TENANT SQL`、`gate_pass STEP`。
+`scripts/gate/lib.sh`（完整函数清单见 [A5 §2](../../../docs/standards/A5-TEST-FIXTURES-AND-GATES.md)）把 `$ROOT/axpoint-parser/.venv/bin` 前置到 `PATH`，并提供 `api METHOD PATH [JSON]`、`api_noauth`、`expect_eq NAME ACTUAL EXPECTED`、`expect_code NAME CODE METHOD PATH [JSON]`（`METHOD` 支持 `GET_NOAUTH` / `POST_NOAUTH` 无令牌请求）、`expect_json NAME JSON JQ_EXPR`、`sql_owner SQL`、`sql_app TENANT SQL`、`gate_pass STEP`。
 
 ---
 
