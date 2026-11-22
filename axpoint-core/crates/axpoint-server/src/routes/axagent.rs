@@ -569,6 +569,9 @@ async fn create_endpoint_handler(
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<CreateEndpointRequest>,
 ) -> Result<Json<EndpointSpec>, HttpError> {
+    if req.environment == Environment::Prod {
+        principal.enforce_no_prod_mutation()?;
+    }
     let spec = state
         .axagent
         .publisher
@@ -583,6 +586,11 @@ async fn update_endpoint_handler(
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<UpdateEndpointRequest>,
 ) -> Result<Json<EndpointSpec>, HttpError> {
+    if let Some(existing) = state.store.get_endpoint(&principal.tenant_id, id).await?
+        && existing.environment == Environment::Prod
+    {
+        principal.enforce_no_prod_mutation()?;
+    }
     let spec = state
         .axagent
         .publisher
@@ -596,6 +604,11 @@ async fn delete_endpoint_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<serde_json::Value>, HttpError> {
+    if let Some(existing) = state.store.get_endpoint(&principal.tenant_id, id).await?
+        && existing.environment == Environment::Prod
+    {
+        principal.enforce_no_prod_mutation()?;
+    }
     state
         .axagent
         .publisher
@@ -609,6 +622,7 @@ async fn promote_endpoint_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<EndpointSpec>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     let promoted = state
         .axagent
         .publisher
@@ -801,6 +815,7 @@ async fn publish_agent_handler(
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<AgentVersionRecord>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     let ver = state.axagent.runtime.publish_agent(&principal, id).await?;
     Ok(Json(ver))
 }
