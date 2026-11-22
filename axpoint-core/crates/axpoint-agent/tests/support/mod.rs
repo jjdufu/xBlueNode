@@ -1,6 +1,7 @@
 //! In-memory Step 09 test harness (`MockStep09Store`, `MockCapabilityPort`, `MockUrlGuard`, `MockAuditSink`)
 //! backing `axpoint-agent` offline evaluation and integration tests.
 
+pub mod im_stubs;
 pub mod repo_stubs;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -81,6 +82,12 @@ pub struct StoreInner {
     pub approvals: Vec<ApprovalRecord>,
     pub action_logs: Vec<ActionLogRecord>,
     pub principals: HashMap<(String, Uuid), PrincipalRecord>,
+    pub disabled_users: BTreeSet<Uuid>,
+    pub credentials: HashMap<(String, Uuid), SealedCredential>,
+    pub im_connectors: Vec<axpoint_domain::im::ImConnectorRecord>,
+    pub im_bindings: Vec<axpoint_domain::im::ImUserBindingRecord>,
+    pub im_challenges: HashMap<String, (String, axpoint_domain::im::NewImBindChallengeInput, bool)>,
+    pub im_dedup: BTreeSet<(Uuid, String)>,
     pub slow_node_delay_ms: u64,
 }
 

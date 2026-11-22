@@ -3,8 +3,8 @@
 //! and `AxFlow` `AgentTaskPort` implementation (`08-STEP09` §09.5 & §09.6).
 
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 use axpoint_domain::AppError;
@@ -63,7 +63,17 @@ pub struct AgentRuntimeDeps<R> {
     pub audit: Option<AuditWriter>,
 }
 
-/// Invocation descriptor for channel-specific agent execution (`WORKBENCH`, `API`, `EMBED`).
+/// Callback port invoked when a `ConversationChannel::Im` conversation resumes after `approval.decided` (`07-STEP21` §21.2.3).
+pub trait ImApprovalReplyPort: Send + Sync {
+    /// Pushes the resumed assistant reply (or subsequent approval gate link) back to the active IM thread.
+    fn push_resumed_im_reply<'a>(
+        &'a self,
+        conversation: &'a ConversationRecord,
+        response: &'a AgentChatResponse,
+    ) -> BoxFuture<'a, ()>;
+}
+
+/// Invocation descriptor for channel-specific agent execution (`WORKBENCH`, `API`, `EMBED`, `IM`).
 #[derive(Debug, Clone)]
 pub struct ChannelChatCall {
     /// Target `ax_agents.id`.
@@ -78,6 +88,10 @@ pub struct ChannelChatCall {
     pub channel: ConversationChannel,
     /// Optional `ax_agent_embeds.id` when `channel == EMBED`.
     pub embed_id: Option<Uuid>,
+    /// Optional `ax_im_connectors.id` when `channel == IM` (`07-STEP21` §21.1).
+    pub im_connector_id: Option<Uuid>,
+    /// Optional external IM thread/chat identifier when `channel == IM` (`07-STEP21` §21.1).
+    pub external_chat_id: Option<String>,
 }
 
 #[derive(Clone)]
@@ -126,6 +140,7 @@ pub struct AgentRuntime<R> {
     publisher: Arc<CapabilityPublisher<R>>,
     mcp_clients: Arc<McpClientManager<R>>,
     audit: Option<AuditWriter>,
+    im_reply_sink: RwLock<Option<Weak<dyn ImApprovalReplyPort>>>,
 }
 
 impl<R> AgentRuntime<R> {
@@ -139,6 +154,38 @@ impl<R> AgentRuntime<R> {
             publisher: deps.publisher,
             mcp_clients: deps.mcp_clients,
             audit: deps.audit,
+            im_reply_sink: RwLock::new(None),
+        }
+    }
+
+    /// Registers a weak callback sink notified when an IM conversation completes after `approval.decided`.
+    pub fn register_im_reply_sink(&self, sink: Weak<dyn ImApprovalReplyPort>) {
+        if let Ok(mut guard) = self.im_reply_sink.write() {
+            *guard = Some(sink);
+        }
+    }
+
+    async fn notify_im_approval_resumed(
+        &self,
+        conv: &ConversationRecord,
+        resp: &AgentChatResponse,
+    ) {
+        if conv.channel != ConversationChannel::Im {
+            return;
+        }
+        let upgraded = self
+            .im_reply_sink
+            .read()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(Weak::upgrade));
+        if let Some(sink) = upgraded
+            && let Err(err) = sink.push_resumed_im_reply(conv, resp).await
+        {
+            tracing::warn!(
+                conversation_id = %conv.id,
+                error = %err,
+                "failed to push resumed approval reply to IM channel"
+            );
         }
     }
 }
@@ -437,6 +484,8 @@ where
                 request: req,
                 channel: ConversationChannel::Workbench,
                 embed_id: None,
+                im_connector_id: None,
+                external_chat_id: None,
             },
             None,
         )
@@ -463,10 +512,25 @@ where
                 request: req,
                 channel: ConversationChannel::Workbench,
                 embed_id: None,
+                im_connector_id: None,
+                external_chat_id: None,
             },
             Some(event_tx),
         )
         .await
+    }
+
+    /// Alias for [`Self::chat_in_channel`] used by outbound channel gateways (`07-STEP21` §21.3).
+    ///
+    /// # Errors
+    /// Returns [`AppError`] on permission denial, invalid message, conversation conflict, or runtime error.
+    pub async fn chat_on_channel(
+        &self,
+        principal: &AuthPrincipal,
+        call: ChannelChatCall,
+        event_tx: Option<mpsc::Sender<AgentEvent>>,
+    ) -> Result<AgentChatResponse, AppError> {
+        self.chat_in_channel(principal, call, event_tx).await
     }
 
     /// Executes a multi-turn chat turn across any [`ConversationChannel`] (`WORKBENCH`, `API`, `EMBED`).
@@ -549,7 +613,7 @@ where
         }
 
         let principal = self
-            .rehydrate_approval_principal(tenant_id, &approval)
+            .rehydrate_approval_principal(tenant_id, &approval, conv.channel)
             .await?;
         let (agent_name, spec) = self
             .load_spec_for_version(tenant_id, conv.agent_id, conv.agent_version)
@@ -577,11 +641,13 @@ where
             .complete_pending_tool_calls(&loop_ctx, &approval, &approved_call_id)
             .await?
         {
+            self.notify_im_approval_resumed(&conv, &paused).await;
             return Ok(Some(paused));
         }
 
         let resp = self.run_loop_on_conversation(&loop_ctx, None).await?;
         self.emit_agent_audit(&principal, conv.agent_id, &resp);
+        self.notify_im_approval_resumed(&conv, &resp).await;
         Ok(Some(resp))
     }
 
@@ -1617,6 +1683,9 @@ where
             if conv.agent_id != call.agent_id || conv.embed_id != call.embed_id {
                 return Err(AppError::NotFound("NOT_FOUND"));
             }
+            if call.im_connector_id.is_some() && conv.im_connector_id != call.im_connector_id {
+                return Err(AppError::NotFound("NOT_FOUND"));
+            }
             if call.channel != ConversationChannel::Embed
                 && conv.user_id.is_some()
                 && conv.user_id != non_nil_uid(principal.user_id)
@@ -1644,8 +1713,8 @@ where
                     user_id: owner_uid,
                     channel: call.channel,
                     embed_id: call.embed_id,
-                    im_connector_id: None,
-                    external_chat_id: None,
+                    im_connector_id: call.im_connector_id,
+                    external_chat_id: call.external_chat_id.clone(),
                     title,
                 },
             )
@@ -1656,6 +1725,7 @@ where
         &self,
         tenant_id: &str,
         approval: &ApprovalRecord,
+        channel: ConversationChannel,
     ) -> Result<AuthPrincipal, AppError> {
         let saved_uid = approval
             .detail
@@ -1663,17 +1733,28 @@ where
             .and_then(serde_json::Value::as_str)
             .and_then(|s| Uuid::parse_str(s).ok())
             .unwrap_or_else(Uuid::nil);
+        let saved_perms_opt: Option<BTreeSet<Permission>> = approval
+            .detail
+            .get("permissions")
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
 
         if !saved_uid.is_nil()
             && let Some(rec) = self.store.load_principal(tenant_id, saved_uid).await?
         {
+            let mut permissions = rec.permissions;
+            if channel == ConversationChannel::Im {
+                permissions.remove(&Permission::PiiRawRead);
+                if let Some(ref cap_set) = saved_perms_opt {
+                    permissions.retain(|perm| cap_set.contains(perm));
+                }
+            }
             return Ok(AuthPrincipal {
                 user_id: rec.user_id,
                 tenant_id: rec.tenant_id,
                 username: rec.username,
                 dept_id: rec.dept_id,
                 roles: rec.roles,
-                permissions: rec.permissions,
+                permissions,
                 token_kind: TokenKind::Access,
                 token_profile: axpoint_domain::enums::TokenProfile::General,
                 web_base_url: None,
@@ -1697,11 +1778,10 @@ where
             .get("roles")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
-        let permissions: BTreeSet<Permission> = approval
-            .detail
-            .get("permissions")
-            .and_then(|v| serde_json::from_value(v.clone()).ok())
-            .unwrap_or_default();
+        let mut permissions = saved_perms_opt.unwrap_or_default();
+        if channel == ConversationChannel::Im {
+            permissions.remove(&Permission::PiiRawRead);
+        }
 
         Ok(AuthPrincipal {
             user_id: saved_uid,
@@ -1773,6 +1853,8 @@ where
                     request: call.request,
                     channel: call.channel,
                     embed_id: None,
+                    im_connector_id: None,
+                    external_chat_id: None,
                 },
                 event_tx,
             )
