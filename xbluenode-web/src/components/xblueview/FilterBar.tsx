@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Filter, Lock, RotateCcw } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { xblueviewApi, type FilterDef } from "@/lib/api/xblueview";
-import { Button, Input } from "@/components/ui/primitives";
+import { Button, Input, Select } from "@/components/ui/primitives";
 
 export interface FilterBarProps {
   filters: FilterDef[];
@@ -108,11 +108,11 @@ export function FilterBar({
             <div key={f.key} className="space-y-1 min-w-[140px]">
               {renderLabel(f, isLocked)}
               {opts.length > 0 ? (
-                <select
+                <Select
                   disabled={isLocked}
                   value={typeof currentVal === "string" ? currentVal : ""}
                   onChange={(e) => safeChange(e.target.value || undefined)}
-                  className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs disabled:opacity-60 disabled:cursor-not-allowed"
+                  className="h-8 w-full"
                   data-testid={`filter-${f.key}`}
                 >
                   <option value="">{tx("全部", "All")}</option>
@@ -121,7 +121,7 @@ export function FilterBar({
                       {opt}
                     </option>
                   ))}
-                </select>
+                </Select>
               ) : (
                 <Input
                   disabled={isLocked}

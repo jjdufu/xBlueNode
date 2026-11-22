@@ -10,7 +10,7 @@ import {
   type SimParams,
 } from "@/lib/api/axsim";
 import type { InterventionMode } from "@/lib/api/enums";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { Badge, Button, Card, Input, Select } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 
@@ -329,13 +329,13 @@ export function ActionList({
                     <label className="text-[11px] text-muted-foreground">
                       {tx("目标节点", "Target Node")}
                     </label>
-                    <select
+                    <Select
                       value={row.target_node_id}
                       disabled={!canSimRun}
                       onChange={(e) =>
                         updateAction(row.id, { target_node_id: e.target.value })
                       }
-                      className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs disabled:opacity-50"
+                      className="h-8 w-full"
                       data-testid={`action-node-select-${idx}`}
                     >
                       {nodes.map((n) => (
@@ -343,7 +343,7 @@ export function ActionList({
                           [{n.type_name}] {n.node_key} · {n.title}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </div>
 
                   <div className="md:col-span-2 space-y-1">
@@ -371,7 +371,7 @@ export function ActionList({
                     <label className="text-[11px] text-muted-foreground">
                       {tx("干预方式", "Mode")}
                     </label>
-                    <select
+                    <Select
                       value={row.mode}
                       disabled={!canSimRun}
                       onChange={(e) =>
@@ -379,7 +379,7 @@ export function ActionList({
                           mode: e.target.value as InterventionMode,
                         })
                       }
-                      className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs disabled:opacity-50"
+                      className="h-8 w-full"
                       data-testid={`action-mode-select-${idx}`}
                     >
                       {modeOptions.map((opt) => (
@@ -387,7 +387,7 @@ export function ActionList({
                           {opt.label}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </div>
 
                   <div className="md:col-span-2 space-y-1">

@@ -4,7 +4,7 @@ import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 import { axflowApi, type TriggerCfg } from "@/lib/api/axflow";
 import type { OutboxTopic, TriggerType } from "@/lib/api/enums";
-import { Badge, Button, Input, Select } from "@/components/ui/primitives";
+import { Badge, Button, Input, Select, Switch } from "@/components/ui/primitives";
 
 const OUTBOX_TOPICS: readonly OutboxTopic[] = [
   "dataset.synced",
@@ -185,19 +185,18 @@ export function TriggerEditor({
             />
           </div>
 
-          <label className="flex items-center justify-between pt-1 cursor-pointer">
+          <div className="flex items-center justify-between pt-1">
             <span>{tx("补跑错过的调度周期", "Catch up missed windows")}</span>
-            <input
+            <Switch
               data-testid="trigger-catchup-checkbox"
-              type="checkbox"
               checked={Boolean(triggerCfg.catch_up)}
               disabled={!canEdit}
-              onChange={(e) =>
-                onChangeTrigger({ ...triggerCfg, catch_up: e.target.checked })
+              onCheckedChange={(checked) =>
+                onChangeTrigger({ ...triggerCfg, catch_up: checked })
               }
-              className="h-3.5 w-3.5 accent-blue-600"
+              aria-label={tx("补跑错过的调度周期", "Catch up missed windows")}
             />
-          </label>
+          </div>
         </div>
       )}
 

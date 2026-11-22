@@ -16,7 +16,7 @@ import {
   type ScenarioRecord,
 } from "@/lib/api/axsim";
 import { axflowApi, type FlowRecord } from "@/lib/api/axflow";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import { Badge, Button, Card, Input, Select } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 
@@ -327,11 +327,11 @@ export function DecisionPanel({
               <label className="text-muted-foreground">
                 {tx("联动编排流程", "Linked Flow")}
               </label>
-              <select
+              <Select
                 value={triggerFlowId}
                 disabled={!canSimApply}
                 onChange={(e) => setTriggerFlowId(e.target.value)}
-                className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs disabled:opacity-50"
+                className="h-9 w-full"
                 data-testid="decision-flow-select"
               >
                 <option value="">{tx("不联动流程", "None")}</option>
@@ -340,7 +340,7 @@ export function DecisionPanel({
                     {f.name} ({tEnum(f.status)})
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
           </div>
 

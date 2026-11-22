@@ -1007,7 +1007,8 @@ test("AxSim Step 10 end-to-end workbench: sandbox, intervention, overlay, steppe
   await page.getByTestId("wizard-sandbox-name").fill("华东断供推演沙盘");
   await page.getByTestId("wizard-create-submit").click();
 
-  await expect(page.getByTestId("sandbox-selector")).toHaveValue(
+  await expect(page.getByTestId("sandbox-selector")).toHaveAttribute(
+    "data-value",
     SANDBOX_CREATED_ID
   );
 

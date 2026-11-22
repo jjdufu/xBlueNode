@@ -610,7 +610,7 @@ export function FlowCanvas({
   return (
     <div
       ref={canvasContainerRef}
-      className="relative h-[540px] w-full rounded-md border border-border bg-muted/20 overflow-hidden"
+      className="relative flex-1 min-h-[340px] h-full w-full rounded-md border border-border bg-muted/15 overflow-hidden"
       data-testid="axflow-canvas"
       onDragOver={(e) => {
         if (!canEdit) return;
@@ -907,19 +907,21 @@ export function FlowCanvas({
           size={1}
         />
         <Controls showInteractive={false} />
-        <MiniMap
-          pannable
-          zoomable
-          style={{ width: 130, height: 88 }}
-          nodeColor={(n) => {
-            const rt = (n.data as AxFlowRfNode["data"] | undefined)?.runtime;
-            if (rt?.status === "FAILED") return "#dc2626";
-            if (rt?.status === "WAITING_APPROVAL") return "#d97706";
-            if (rt?.status === "SUCCEEDED") return "#059669";
-            return isDark ? "#3b82f6" : "#2563eb";
-          }}
-          className="!bg-card !border !border-border rounded"
-        />
+        {nodes.length > 6 && (
+          <MiniMap
+            pannable
+            zoomable
+            style={{ width: 120, height: 80 }}
+            nodeColor={(n) => {
+              const rt = (n.data as AxFlowRfNode["data"] | undefined)?.runtime;
+              if (rt?.status === "FAILED") return "#dc2626";
+              if (rt?.status === "WAITING_APPROVAL") return "#d97706";
+              if (rt?.status === "SUCCEEDED") return "#059669";
+              return isDark ? "#3b82f6" : "#2563eb";
+            }}
+            className="!bg-card !border !border-border rounded"
+          />
+        )}
       </ReactFlow>
     </div>
   );

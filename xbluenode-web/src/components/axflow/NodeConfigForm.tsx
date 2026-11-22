@@ -18,7 +18,9 @@ import {
   Button,
   EmptyState,
   Input,
+  NumberInput,
   Select,
+  Switch,
   Textarea,
 } from "@/components/ui/primitives";
 import { resolveOperatorDesc } from "./OperatorPalette";
@@ -297,22 +299,18 @@ export function NodeConfigForm({
           <label className="block font-medium mb-1">
             {tx("超时上限 (秒)", "Timeout (s)")}
           </label>
-          <Input
-            type="number"
+          <NumberInput
             min={1}
             max={86400}
+            step={30}
             disabled={!canEdit}
             value={node.timeout_s}
-            onChange={(e) =>
+            onChange={(val) =>
               onChangeNode({
                 ...node,
-                timeout_s: Math.min(
-                  86400,
-                  Math.max(1, Number(e.target.value) || 600)
-                ),
+                timeout_s: Math.min(86400, Math.max(1, val || 600)),
               })
             }
-            className="h-8 font-mono-tech text-xs"
           />
         </div>
 
@@ -368,64 +366,55 @@ export function NodeConfigForm({
         </div>
       </div>
 
-      {/* Retry Policy */}
+      {/* Retry Policy (2-Column Balanced Grid, Zero Native Steppers) */}
       <div className="rounded-md border border-border bg-muted/20 p-2.5 space-y-2">
         <div className="font-medium text-[11px]">
           {tx("重试策略", "Retry Policy")}
         </div>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-2 gap-2">
           <div>
-            <label className="block text-[10px] text-muted-foreground whitespace-nowrap mb-0.5">
+            <label className="block text-[10px] text-muted-foreground mb-0.5">
               {tx("最大尝试", "Max Retries")}
             </label>
-            <Input
-              type="number"
+            <NumberInput
               min={1}
               max={10}
               disabled={!canEdit}
               value={node.retry.max_attempts}
-              onChange={(e) =>
+              onChange={(val) =>
                 onChangeNode({
                   ...node,
                   retry: {
                     ...node.retry,
-                    max_attempts: Math.min(
-                      10,
-                      Math.max(1, Number(e.target.value) || 1)
-                    ),
+                    max_attempts: Math.min(10, Math.max(1, val || 1)),
                   },
                 })
               }
-              className="h-7 px-2 font-mono-tech text-xs"
             />
           </div>
           <div>
-            <label className="block text-[10px] text-muted-foreground whitespace-nowrap mb-0.5">
+            <label className="block text-[10px] text-muted-foreground mb-0.5">
               {tx("退避间隔 (s)", "Interval (s)")}
             </label>
-            <Input
-              type="number"
+            <NumberInput
               min={1}
               max={3600}
+              step={5}
               disabled={!canEdit}
               value={node.retry.backoff_s}
-              onChange={(e) =>
+              onChange={(val) =>
                 onChangeNode({
                   ...node,
                   retry: {
                     ...node.retry,
-                    backoff_s: Math.min(
-                      3600,
-                      Math.max(1, Number(e.target.value) || 10)
-                    ),
+                    backoff_s: Math.min(3600, Math.max(1, val || 10)),
                   },
                 })
               }
-              className="h-7 px-2 font-mono-tech text-xs"
             />
           </div>
-          <div>
-            <label className="block text-[10px] text-muted-foreground whitespace-nowrap mb-0.5">
+          <div className="col-span-2">
+            <label className="block text-[10px] text-muted-foreground mb-0.5">
               {tx("退避方式", "Backoff")}
             </label>
             <Select
@@ -440,10 +429,12 @@ export function NodeConfigForm({
                   },
                 })
               }
-              className="h-7 w-full px-1.5 font-mono-tech text-[11px]"
+              className="h-8 w-full px-2 font-mono-tech text-xs"
             >
-              <option value="FIXED">{tx("固定", "FIXED")}</option>
-              <option value="EXPONENTIAL">{tx("指数", "EXP")}</option>
+              <option value="FIXED">{tx("固定间隔 (FIXED)", "FIXED")}</option>
+              <option value="EXPONENTIAL">
+                {tx("指数退避 (EXPONENTIAL)", "EXPONENTIAL")}
+              </option>
             </Select>
           </div>
         </div>
@@ -562,22 +553,21 @@ export function NodeConfigForm({
 
               if (pType === "boolean") {
                 return (
-                  <label
+                  <div
                     key={propKey}
-                    className="flex items-center justify-between rounded border border-border bg-muted/20 px-2.5 py-1.5 cursor-pointer"
+                    className="flex items-center justify-between rounded-md bg-muted/30 px-2.5 py-2"
                   >
                     <span>{fieldLabel}</span>
-                    <input
+                    <Switch
                       data-testid={`config-field-${propKey}`}
-                      type="checkbox"
                       checked={Boolean(val)}
                       disabled={!canEdit}
-                      onChange={(e) =>
-                        updateConfigField(propKey, e.target.checked)
+                      onCheckedChange={(checked) =>
+                        updateConfigField(propKey, checked)
                       }
-                      className="h-3.5 w-3.5 accent-blue-600"
+                      aria-label={fieldLabel}
                     />
-                  </label>
+                  </div>
                 );
               }
 
@@ -588,28 +578,20 @@ export function NodeConfigForm({
                       {fieldLabel}
                       {isRequired && <span className="text-xblue ml-0.5">*</span>}
                     </label>
-                    <Input
+                    <NumberInput
                       data-testid={`config-field-${propKey}`}
-                      type="number"
                       min={propSpec.minimum}
                       max={propSpec.maximum}
+                      step={pType === "integer" ? 1 : 0.1}
                       disabled={!canEdit}
-                      value={typeof val === "number" ? val : ""}
-                      onChange={(e) => {
-                        const rawStr = e.target.value;
-                        if (rawStr === "") {
-                          updateConfigField(propKey, undefined);
-                        } else {
-                          const num =
-                            pType === "integer"
-                              ? Math.trunc(Number(rawStr))
-                              : Number(rawStr);
-                          if (Number.isFinite(num)) {
-                            updateConfigField(propKey, num);
-                          }
+                      value={typeof val === "number" ? val : 0}
+                      onChange={(num) => {
+                        const clean =
+                          pType === "integer" ? Math.trunc(num) : num;
+                        if (Number.isFinite(clean)) {
+                          updateConfigField(propKey, clean);
                         }
                       }}
-                      className="h-8 font-mono-tech text-xs"
                     />
                   </div>
                 );

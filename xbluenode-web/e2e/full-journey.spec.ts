@@ -1329,16 +1329,22 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
 
   const sandboxSelect = page.getByTestId("sandbox-selector");
   await expect(sandboxSelect).toBeVisible();
-  if ((await sandboxSelect.inputValue()) === "") {
+  if (((await sandboxSelect.getAttribute("data-value")) ?? "") === "") {
     await page.getByTestId("open-sandbox-wizard-btn").click();
     await page.getByTestId("wizard-sandbox-name").fill("终验推演沙盘");
     await page.getByTestId("wizard-create-submit").click();
-    await expect(sandboxSelect).not.toHaveValue("", { timeout: 15_000 });
+    await expect(sandboxSelect).toHaveAttribute("data-value", /.+/, {
+      timeout: 15_000,
+    });
   }
 
-  await expect(page.getByTestId("action-node-select-0")).not.toHaveValue("", {
-    timeout: 15_000,
-  });
+  await expect(page.getByTestId("action-node-select-0")).toHaveAttribute(
+    "data-value",
+    /.+/,
+    {
+      timeout: 15_000,
+    }
+  );
   await page.getByTestId("scenario-name-input").fill("journey_cut_30");
   await page.getByTestId("run-scenario-btn").click();
 

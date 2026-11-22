@@ -12,7 +12,7 @@ import {
   type SimAskCandidate,
   type SimAskResponse,
 } from "@/lib/api/axsim";
-import { Badge, Button, Card, Textarea } from "@/components/ui/primitives";
+import { Badge, Button, Card, Select, Textarea } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 
 export interface SimAskProps {
@@ -92,10 +92,10 @@ export function SimAsk({
           <span className="text-muted-foreground">
             {tx("上下文场景:", "Context:")}
           </span>
-          <select
+          <Select
             value={contextScenarioId || activeScenarioId || ""}
             onChange={(e) => setContextScenarioId(e.target.value)}
-            className="h-7 rounded border border-input bg-background px-2 text-xs"
+            className="h-7 w-48"
             data-testid="sim-ask-scenario-select"
           >
             <option value="">{tx("自动 / 新建推演", "Auto / New What-If")}</option>
@@ -104,7 +104,7 @@ export function SimAsk({
                 {s.name}
               </option>
             ))}
-          </select>
+          </Select>
         </div>
       </div>
 
