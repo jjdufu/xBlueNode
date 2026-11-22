@@ -1,0 +1,361 @@
+{
+  "suite_name": "hallucination_50",
+  "cases": [
+    {
+      "id": "H01",
+      "category": "CAT1_METRIC_SLOT",
+      "mode": "DATA",
+      "question": "按状态统计已支付金额（按月汇总）",
+      "expected_metric": { "metrics": ["paid_amount"], "dimensions": ["status"], "grain": "MONTH" }
+    },
+    {
+      "id": "H02",
+      "category": "CAT1_METRIC_SLOT",
+      "mode": "DATA",
+      "question": "按区域统计已支付金额（按月）",
+      "expected_metric": { "metrics": ["paid_amount"], "dimensions": ["region"], "grain": "MONTH" }
+    },
+    {
+      "id": "H03",
+      "category": "CAT1_METRIC_SLOT",
+      "mode": "DATA",
+      "question": "查询华东区域已支付金额月度汇总",
+      "expected_metric": {
+        "metrics": ["paid_amount"],
+        "dimensions": [],
+        "filters": [{ "field": "region", "op": "EQ", "value": "华东" }],
+        "grain": "MONTH"
+      }
+    },
+    {
+      "id": "H04",
+      "category": "CAT1_METRIC_SLOT",
+      "mode": "DATA",
+      "question": "2026年1月已支付金额同比去年同期变化",
+      "expected_metric": {
+        "metrics": ["paid_amount"],
+        "dimensions": [],
+        "time_from": "2026-01-01T00:00:00Z",
+        "time_to": "2026-02-01T00:00:00Z",
+        "grain": "MONTH",
+        "compare": "SAME_PERIOD_LAST_YEAR"
+      }
+    },
+    {
+      "id": "H05",
+      "category": "CAT1_METRIC_SLOT",
+      "mode": "DATA",
+      "question": "2026年2月已支付金额环比上月对比",
+      "expected_metric": {
+        "metrics": ["paid_amount"],
+        "dimensions": [],
+        "time_from": "2026-02-01T00:00:00Z",
+        "time_to": "2026-03-01T00:00:00Z",
+        "grain": "MONTH",
+        "compare": "PREVIOUS_PERIOD"
+      }
+    },
+    {
+      "id": "H06",
+      "category": "CAT1_METRIC_SLOT",
+      "mode": "DATA",
+      "question": "按区域统计订单笔数（按月）",
+      "expected_metric": { "metrics": ["order_count"], "dimensions": ["region"], "grain": "MONTH" }
+    },
+    {
+      "id": "H07",
+      "category": "CAT1_METRIC_SLOT",
+      "mode": "DATA",
+      "question": "按状态统计退款金额",
+      "expected_metric": { "metrics": ["refund_amount"], "dimensions": ["status"], "grain": "MONTH" }
+    },
+    {
+      "id": "H08",
+      "category": "CAT1_METRIC_SLOT",
+      "mode": "DATA",
+      "question": "按区域并列对比已支付金额与订单笔数",
+      "expected_metric": { "metrics": ["paid_amount", "order_count"], "dimensions": ["region"], "grain": "MONTH" }
+    },
+    {
+      "id": "H09",
+      "category": "CAT1_METRIC_SLOT",
+      "mode": "DATA",
+      "question": "按月并列统计已支付金额与退款金额",
+      "expected_metric": { "metrics": ["paid_amount", "refund_amount"], "dimensions": [], "grain": "MONTH" }
+    },
+    {
+      "id": "H10",
+      "category": "CAT1_METRIC_SLOT",
+      "mode": "DATA",
+      "question": "2026年1月华东与华南已支付金额按区域汇总",
+      "expected_metric": {
+        "metrics": ["paid_amount"],
+        "dimensions": ["region"],
+        "filters": [{ "field": "region", "op": "IN", "value": ["华东", "华南"] }],
+        "time_from": "2026-01-01T00:00:00Z",
+        "time_to": "2026-02-01T00:00:00Z",
+        "grain": "MONTH"
+      }
+    },
+    {
+      "id": "H11",
+      "category": "CAT2_JOIN_GUARD",
+      "mode": "DATA",
+      "question": "关联营销活动预算查询各区域订单明细",
+      "expect_join_rejected": true
+    },
+    {
+      "id": "H12",
+      "category": "CAT2_JOIN_GUARD",
+      "mode": "DATA",
+      "question": "笛卡尔积组合全部订单与履约仓库清单",
+      "expect_join_rejected": true
+    },
+    {
+      "id": "H13",
+      "category": "CAT2_JOIN_GUARD",
+      "mode": "DATA",
+      "question": "隐式逗号连接查询订单与仓库名称",
+      "expect_join_rejected": true
+    },
+    {
+      "id": "H14",
+      "category": "CAT2_JOIN_GUARD",
+      "mode": "DATA",
+      "question": "按订单金额匹配运单重量查询承运商",
+      "expect_join_rejected": true
+    },
+    {
+      "id": "H15",
+      "category": "CAT2_JOIN_GUARD",
+      "mode": "DATA",
+      "question": "自然连接订单表与仓库表统计编号",
+      "expect_join_rejected": true
+    },
+    {
+      "id": "H16",
+      "category": "CAT2_JOIN_GUARD",
+      "mode": "DATA",
+      "question": "用订单区域强行关联仓库区域查询安全库存",
+      "expect_join_rejected": true
+    },
+    {
+      "id": "H17",
+      "category": "CAT2_JOIN_GUARD",
+      "mode": "DATA",
+      "question": "按履约仓库名称查询各仓关联订单编号与金额",
+      "expect_join_rejected": false
+    },
+    {
+      "id": "H18",
+      "category": "CAT2_JOIN_GUARD",
+      "mode": "DATA",
+      "question": "查询各履约仓库对应的上游供应商名称与交期",
+      "expect_join_rejected": false
+    },
+    {
+      "id": "H19",
+      "category": "CAT2_JOIN_GUARD",
+      "mode": "DATA",
+      "question": "联查订单所属履约仓库及上游供应商等级",
+      "expect_join_rejected": false
+    },
+    {
+      "id": "H20",
+      "category": "CAT2_JOIN_GUARD",
+      "mode": "DATA",
+      "question": "通过CTE筛选高额订单并关联履约仓库安全库存",
+      "expect_join_rejected": false
+    },
+    {
+      "id": "H21",
+      "category": "CAT3_NUMERIC_VERIFY",
+      "mode": "DATA",
+      "question": "列出华东区域订单编号与金额"
+    },
+    {
+      "id": "H22",
+      "category": "CAT3_NUMERIC_VERIFY",
+      "mode": "DATA",
+      "question": "查询订单O-2的金额明细"
+    },
+    {
+      "id": "H23",
+      "category": "CAT3_NUMERIC_VERIFY",
+      "mode": "DATA",
+      "question": "查询订单O-2的金额与数量"
+    },
+    {
+      "id": "H24",
+      "category": "CAT3_NUMERIC_VERIFY",
+      "mode": "DATA",
+      "question": "列出所有仓库编号与安全库存"
+    },
+    {
+      "id": "H25",
+      "category": "CAT3_NUMERIC_VERIFY",
+      "mode": "DATA",
+      "question": "查询供应商S-1的名称与交期天数"
+    },
+    {
+      "id": "H26",
+      "category": "CAT3_NUMERIC_VERIFY",
+      "mode": "DATA",
+      "question": "查询各仓库名称与安全库存构成"
+    },
+    {
+      "id": "H27",
+      "category": "CAT3_NUMERIC_VERIFY",
+      "mode": "DATA",
+      "question": "查询状态为PENDING的订单编号与金额"
+    },
+    {
+      "id": "H28",
+      "category": "CAT3_NUMERIC_VERIFY",
+      "mode": "DATA",
+      "question": "按订单号排序查询2026年2月订单金额"
+    },
+    {
+      "id": "H29",
+      "category": "CAT3_NUMERIC_VERIFY",
+      "mode": "DATA",
+      "question": "查询华南区域订单O-3的金额"
+    },
+    {
+      "id": "H30",
+      "category": "CAT3_NUMERIC_VERIFY",
+      "mode": "DATA",
+      "question": "查询订单O-5的区域与金额"
+    },
+    {
+      "id": "H31",
+      "category": "CAT4_CITATION_GUARD",
+      "mode": "DOC",
+      "question": "补货审批制度的安全库存阈值是多少？",
+      "recalled_doc_count": 2
+    },
+    {
+      "id": "H32",
+      "category": "CAT4_CITATION_GUARD",
+      "mode": "DOC",
+      "question": "紧急补货单需要哪两级签批？",
+      "recalled_doc_count": 2
+    },
+    {
+      "id": "H33",
+      "category": "CAT4_CITATION_GUARD",
+      "mode": "DOC",
+      "question": "华东仓负责履约哪些订单？",
+      "recalled_doc_count": 1
+    },
+    {
+      "id": "H34",
+      "category": "CAT4_CITATION_GUARD",
+      "mode": "DOC",
+      "question": "晶圆一厂交期与补货安全库存阈值分别是多少？",
+      "recalled_doc_count": 3
+    },
+    {
+      "id": "H35",
+      "category": "CAT4_CITATION_GUARD",
+      "mode": "DOC",
+      "question": "紧急补货单签批层级说明",
+      "recalled_doc_count": 1
+    },
+    {
+      "id": "H36",
+      "category": "CAT4_CITATION_GUARD",
+      "mode": "DOC",
+      "question": "未来7日缺口触发紧急补货的阈值是多少？",
+      "recalled_doc_count": 2
+    },
+    {
+      "id": "H37",
+      "category": "CAT4_CITATION_GUARD",
+      "mode": "DOC",
+      "question": "A级供应商准入交期标准是什么？",
+      "recalled_doc_count": 3
+    },
+    {
+      "id": "H38",
+      "category": "CAT4_CITATION_GUARD",
+      "mode": "DOC",
+      "question": "华南仓的安全库存定额是多少？",
+      "recalled_doc_count": 2
+    },
+    {
+      "id": "H39",
+      "category": "CAT4_CITATION_GUARD",
+      "mode": "DOC",
+      "question": "区域仓在库库存低于多少件触发补货？",
+      "recalled_doc_count": 1
+    },
+    {
+      "id": "H40",
+      "category": "CAT4_CITATION_GUARD",
+      "mode": "DOC",
+      "question": "汇总供应链履约、补货阈值与供应商准入条款",
+      "recalled_doc_count": 3
+    },
+    {
+      "id": "H41",
+      "category": "CAT5_ZERO_EVIDENCE",
+      "mode": "DATA",
+      "question": "星际货运舱位周转率按星区统计是多少？"
+    },
+    {
+      "id": "H42",
+      "category": "CAT5_ZERO_EVIDENCE",
+      "mode": "DATA",
+      "question": "核聚变冷却塔重水消耗量月度均值是多少？"
+    },
+    {
+      "id": "H43",
+      "category": "CAT5_ZERO_EVIDENCE",
+      "mode": "DATA",
+      "question": "月球基地氦3采掘合格率同比变化？"
+    },
+    {
+      "id": "H44",
+      "category": "CAT5_ZERO_EVIDENCE",
+      "mode": "DATA",
+      "question": "量子跃迁中继站跃迁能耗排名前十？"
+    },
+    {
+      "id": "H45",
+      "category": "CAT5_ZERO_EVIDENCE",
+      "mode": "DATA",
+      "question": "深海采矿船钛合金钻头磨损率统计？"
+    },
+    {
+      "id": "H46",
+      "category": "CAT5_ZERO_EVIDENCE",
+      "mode": "DOC",
+      "question": "核聚变反应堆氘氚燃料棒存储细则第12条是什么？"
+    },
+    {
+      "id": "H47",
+      "category": "CAT5_ZERO_EVIDENCE",
+      "mode": "DOC",
+      "question": "反物质曲率引擎反应堆舱门维护规程第88条是什么？"
+    },
+    {
+      "id": "H48",
+      "category": "CAT5_ZERO_EVIDENCE",
+      "mode": "DOC",
+      "question": "星际殖民地生态穹顶氧气配给办法第5条规定了什么？"
+    },
+    {
+      "id": "H49",
+      "category": "CAT5_ZERO_EVIDENCE",
+      "mode": "DOC",
+      "question": "深空虫洞航道曲率信标校准规程有哪些要求？"
+    },
+    {
+      "id": "H50",
+      "category": "CAT5_ZERO_EVIDENCE",
+      "mode": "DOC",
+      "question": "轨道电梯碳纳米缆索防微陨石规范如何规定？"
+    }
+  ]
+}

@@ -1,8 +1,10 @@
-//! Controlled NL2SQL 7-stage pipeline: intent routing, hybrid schema linking, prompt building,
-//! SQL guard + `EXPLAIN` dry-run, 2-round self-repair, masked execution, and grounded summary (`05-STEP04` §04.6).
+//! Controlled NL2SQL 7-stage pipeline: intent routing, hybrid schema linking, Stage 0 ontology
+//! slot routing, prompt building, SQL guard + `EXPLAIN` dry-run, 2-round self-repair, masked
+//! execution, and grounded summary (`05-STEP04` §04.6, `02-STEP16` §16.2–§16.4).
 
 pub mod chart;
 pub mod intent;
+pub mod ontology_route;
 pub mod prompt;
 pub mod schema_link;
 
@@ -15,16 +17,26 @@ use axpoint_domain::analytics::{
     AskIntent, AskRequest, AskResponse, AskTurnRecord, FewShotTurn, QueryHistoryStatus,
     QueryResult, SchemaRecallBundle,
 };
+use axpoint_domain::enums::GroundingMode;
+use axpoint_domain::grounding::{
+    ABSTAIN_NO_DATA_OR_DOC_ZH, count_grounded_numbers, should_abstain_zero_evidence,
+};
 use axpoint_domain::guard::PolicyContext;
 use axpoint_domain::ports::AiPort;
 use chrono::{SecondsFormat, Utc};
 use uuid::Uuid;
 
-use crate::nl2sql::chart::{fallback_table_summary, recommend_chart, verify_or_fallback_summary};
+use crate::nl2sql::chart::{
+    fallback_table_summary, recommend_chart, verify_or_fallback_summary_with_count,
+};
 use crate::nl2sql::intent::route_intent;
+use crate::nl2sql::ontology_route::{
+    OntologyCompileArgs, OntologyRouteOutcome, compile_and_execute_slots_conn,
+    compile_and_execute_slots_session, extract_ontology_slots, should_attempt_ontology_route,
+};
 use crate::nl2sql::prompt::{
     CHITCHAT_SYSTEM_PROMPT, LlmSqlDraft, SUMMARY_SYSTEM_PROMPT, build_nl2sql_system_prompt,
-    build_nl2sql_user_prompt, build_repair_user_prompt, build_summary_user_prompt,
+    build_nl2sql_user_prompt, build_repair_user_prompt_with_joins, build_summary_user_prompt,
     parse_llm_sql_response, strip_trailing_semicolons,
 };
 use crate::nl2sql::schema_link::{LinkedSchemaContext, SchemaLinkExtras, build_linked_schema};
@@ -103,12 +115,13 @@ pub fn validate_corrected_sql(
             allow_live: false,
             params: BTreeMap::new(),
             policy: None,
+            ..GuardOptions::default()
         },
     )?;
     Ok(clean)
 }
 
-/// Executes the full 7-stage NL2SQL pipeline against an async [`TenantDb`] session (`05-STEP04` §04.6).
+/// Executes the full NL2SQL pipeline against an async [`TenantDb`] session (`05-STEP04` §04.6).
 ///
 /// # Errors
 /// Propagates [`AppError::BadRequest`] if `question` is empty, [`AppError::Llm`] (`UPSTREAM_LLM`)
@@ -121,8 +134,8 @@ pub async fn run_ask_pipeline<A: AiPort>(
     run_ask_pipeline_with_policy(ai, session, input, None).await
 }
 
-/// Executes the full 7-stage NL2SQL pipeline against an async [`TenantDb`] session under an
-/// optional compiled `AxGuard` [`PolicyContext`] (`11-STEP13` §13.6.3).
+/// Executes the full NL2SQL pipeline against an async [`TenantDb`] session under an
+/// optional compiled `AxGuard` [`PolicyContext`] (`11-STEP13` §13.6.3, `02-STEP16` §16.2).
 ///
 /// # Errors
 /// Propagates [`AppError`] on empty question, `POLICY_DENIED`, upstream LLM failure, or `DuckDB` timeout.
@@ -148,11 +161,30 @@ pub async fn run_ask_pipeline_with_policy<A: AiPort>(
     if matches!(intent, AskIntent::Chitchat | AskIntent::Doc) {
         return finish_non_sql_intent(ai, intent, session_id, question, linked, started).await;
     }
+    if should_abstain_zero_evidence(
+        linked.has_positive_hit,
+        !input.session_turns.is_empty(),
+        0,
+        false,
+    ) {
+        return Ok(build_zero_evidence_output(
+            session_id, intent, linked, started,
+        ));
+    }
+    let s0_meta = Stage0TurnMeta {
+        session_id,
+        intent,
+        question,
+        started,
+        policy,
+    };
+    if let Some(stage0_out) = try_stage0_session(ai, session, input, &linked, s0_meta).await? {
+        return Ok(stage0_out);
+    }
 
     let (sys_prompt, user_prompt) = build_prompts(input, &linked);
     let initial_raw = ai.chat(&sys_prompt, &user_prompt).await?;
     let initial_draft = parse_llm_sql_response(&initial_raw)?;
-
     if initial_draft.sql.is_empty() {
         return Ok(build_clarification_output(
             session_id,
@@ -170,6 +202,7 @@ pub async fn run_ask_pipeline_with_policy<A: AiPort>(
         (&sys_prompt, &user_prompt),
         initial_draft,
         policy,
+        &linked,
     )
     .await?;
 
@@ -192,7 +225,6 @@ pub async fn run_ask_pipeline_with_policy<A: AiPort>(
     let exec_out = session
         .execute_guarded(&guarded, input.catalog, input.timeout_ms, false, false)
         .await?;
-
     finalize_succeeded_output(
         ai,
         SucceededTurnArgs {
@@ -206,13 +238,15 @@ pub async fn run_ask_pipeline_with_policy<A: AiPort>(
             linked,
             repair_rounds,
             started,
+            grounding_mode: GroundingMode::GuardedSql,
+            slot_payload: None,
         },
     )
     .await
 }
 
-/// Executes the full 7-stage NL2SQL pipeline against an in-memory/open `duckdb::Connection`
-/// (used by deterministic `nl2sql_eval` and unit tests).
+/// Executes the full NL2SQL pipeline against an in-memory/open `duckdb::Connection`
+/// (used by deterministic `nl2sql_eval`, `hallucination_eval`, and unit tests).
 ///
 /// # Errors
 /// Propagates [`AppError`] on empty question or upstream LLM generation failure.
@@ -237,11 +271,37 @@ pub async fn run_ask_pipeline_conn<A: AiPort>(
     if matches!(intent, AskIntent::Chitchat | AskIntent::Doc) {
         return finish_non_sql_intent(ai, intent, session_id, question, linked, started).await;
     }
+    if should_abstain_zero_evidence(
+        linked.has_positive_hit,
+        !input.session_turns.is_empty(),
+        0,
+        false,
+    ) {
+        return Ok(build_zero_evidence_output(
+            session_id, intent, linked, started,
+        ));
+    }
+    if let Some(stage0_out) = try_stage0_conn(
+        ai,
+        conn,
+        input,
+        &linked,
+        Stage0TurnMeta {
+            session_id,
+            intent,
+            question,
+            started,
+            policy: None,
+        },
+    )
+    .await?
+    {
+        return Ok(stage0_out);
+    }
 
     let (sys_prompt, user_prompt) = build_prompts(input, &linked);
     let initial_raw = ai.chat(&sys_prompt, &user_prompt).await?;
     let initial_draft = parse_llm_sql_response(&initial_raw)?;
-
     if initial_draft.sql.is_empty() {
         return Ok(build_clarification_output(
             session_id,
@@ -256,9 +316,9 @@ pub async fn run_ask_pipeline_conn<A: AiPort>(
         ai,
         conn,
         input.catalog,
-        &sys_prompt,
-        &user_prompt,
+        (&sys_prompt, &user_prompt),
         initial_draft,
+        &linked,
     )
     .await?;
 
@@ -292,9 +352,156 @@ pub async fn run_ask_pipeline_conn<A: AiPort>(
             linked,
             repair_rounds,
             started,
+            grounding_mode: GroundingMode::GuardedSql,
+            slot_payload: None,
         },
     )
     .await
+}
+
+struct Stage0TurnMeta<'a> {
+    session_id: Uuid,
+    intent: AskIntent,
+    question: &'a str,
+    started: Instant,
+    policy: Option<&'a PolicyContext>,
+}
+
+async fn try_stage0_session<A: AiPort>(
+    ai: &A,
+    session: &TenantDb,
+    input: &AskPipelineInput<'_>,
+    linked: &LinkedSchemaContext,
+    meta: Stage0TurnMeta<'_>,
+) -> Result<Option<AskPipelineOutput>, AppError> {
+    if !should_attempt_ontology_route(meta.question, linked, input.catalog) {
+        return Ok(None);
+    }
+    let (tz, now_str) = resolve_tz_and_now(input);
+    let Some(draft) = extract_ontology_slots(
+        ai,
+        meta.question,
+        linked,
+        input.catalog,
+        tz,
+        &now_str,
+        input.request.context.as_ref(),
+    )
+    .await
+    else {
+        return Ok(None);
+    };
+
+    let outcome = compile_and_execute_slots_session(
+        session,
+        &OntologyCompileArgs {
+            draft: &draft,
+            linked,
+            catalog: input.catalog,
+            context: input.request.context.as_ref(),
+            timeout_ms: input.timeout_ms,
+            policy: meta.policy,
+        },
+    )
+    .await?;
+    finish_stage0_outcome(ai, outcome, linked, meta).await
+}
+
+async fn try_stage0_conn<A: AiPort>(
+    ai: &A,
+    conn: &duckdb::Connection,
+    input: &AskPipelineInput<'_>,
+    linked: &LinkedSchemaContext,
+    meta: Stage0TurnMeta<'_>,
+) -> Result<Option<AskPipelineOutput>, AppError> {
+    if !should_attempt_ontology_route(meta.question, linked, input.catalog) {
+        return Ok(None);
+    }
+    let (tz, now_str) = resolve_tz_and_now(input);
+    let Some(draft) = extract_ontology_slots(
+        ai,
+        meta.question,
+        linked,
+        input.catalog,
+        tz,
+        &now_str,
+        input.request.context.as_ref(),
+    )
+    .await
+    else {
+        return Ok(None);
+    };
+
+    let outcome = compile_and_execute_slots_conn(
+        conn,
+        &OntologyCompileArgs {
+            draft: &draft,
+            linked,
+            catalog: input.catalog,
+            context: input.request.context.as_ref(),
+            timeout_ms: input.timeout_ms,
+            policy: meta.policy,
+        },
+    )?;
+    finish_stage0_outcome(ai, outcome, linked, meta).await
+}
+
+async fn finish_stage0_outcome<A: AiPort>(
+    ai: &A,
+    outcome: OntologyRouteOutcome,
+    linked: &LinkedSchemaContext,
+    meta: Stage0TurnMeta<'_>,
+) -> Result<Option<AskPipelineOutput>, AppError> {
+    match outcome {
+        OntologyRouteOutcome::Executed {
+            grounding_mode,
+            clean_sql,
+            rewritten_sql,
+            qr,
+            explanation,
+            slot_payload,
+        } => {
+            let out = finalize_succeeded_output(
+                ai,
+                SucceededTurnArgs {
+                    session_id: meta.session_id,
+                    intent: meta.intent,
+                    question: meta.question,
+                    clean_sql,
+                    explanation,
+                    rewritten_sql,
+                    qr,
+                    linked: linked.clone(),
+                    repair_rounds: 0,
+                    started: meta.started,
+                    grounding_mode,
+                    slot_payload: Some(slot_payload),
+                },
+            )
+            .await?;
+            Ok(Some(out))
+        }
+        OntologyRouteOutcome::Clarify {
+            message,
+            slot_payload,
+        } => {
+            let draft = LlmSqlDraft {
+                sql: String::new(),
+                explanation: message,
+                used_metrics: Vec::new(),
+            };
+            let mut out = build_clarification_output(
+                meta.session_id,
+                meta.intent,
+                &draft,
+                linked.clone(),
+                meta.started,
+            );
+            out.response.slot_payload = slot_payload;
+            Ok(Some(out))
+        }
+        OntologyRouteOutcome::FallbackSql => Ok(None),
+    }
 }
 
 enum ValidatedDraftOutcome {
@@ -305,6 +512,11 @@ enum ValidatedDraftOutcome {
         repair_rounds: usize,
     },
     Clarify(LlmSqlDraft, usize),
+    RejectedJoin {
+        last_sql: String,
+        last_error: String,
+        repair_rounds: usize,
+    },
     Exhausted {
         last_sql: String,
         last_error: String,
@@ -355,7 +567,7 @@ async fn determine_intent<A: AiPort>(
     .await
 }
 
-fn build_prompts(input: &AskPipelineInput<'_>, linked: &LinkedSchemaContext) -> (String, String) {
+fn resolve_tz_and_now<'a>(input: &'a AskPipelineInput<'_>) -> (&'a str, String) {
     let tz = if input.timezone.trim().is_empty() {
         "UTC"
     } else {
@@ -365,6 +577,11 @@ fn build_prompts(input: &AskPipelineInput<'_>, linked: &LinkedSchemaContext) -> 
         || Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         String::from,
     );
+    (tz, now_str)
+}
+
+fn build_prompts(input: &AskPipelineInput<'_>, linked: &LinkedSchemaContext) -> (String, String) {
+    let (tz, now_str) = resolve_tz_and_now(input);
     let sys = build_nl2sql_system_prompt(&now_str, tz);
     let usr = build_nl2sql_user_prompt(
         &input.request.question,
@@ -374,6 +591,41 @@ fn build_prompts(input: &AskPipelineInput<'_>, linked: &LinkedSchemaContext) -> 
         input.request.context.as_ref(),
     );
     (sys, usr)
+}
+
+fn build_zero_evidence_output(
+    session_id: Uuid,
+    intent: AskIntent,
+    linked: LinkedSchemaContext,
+    started: Instant,
+) -> AskPipelineOutput {
+    let duration_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    AskPipelineOutput {
+        response: AskResponse {
+            turn_id: Uuid::new_v4(),
+            session_id,
+            intent,
+            status: QueryHistoryStatus::Succeeded,
+            sql: String::new(),
+            columns: Vec::new(),
+            rows: Vec::new(),
+            truncated: false,
+            answer: String::from(ABSTAIN_NO_DATA_OR_DOC_ZH),
+            chart: None,
+            need_clarification: false,
+            explanation: String::from(ABSTAIN_NO_DATA_OR_DOC_ZH),
+            linked_objects: linked.linked_objects,
+            citations: Vec::new(),
+            grounding_mode: GroundingMode::Abstained,
+            verified_numbers: 0,
+            verified_citations: 0,
+            abstained: true,
+            slot_payload: None,
+        },
+        rewritten_sql: String::new(),
+        repair_rounds: 0,
+        duration_ms,
+    }
 }
 
 async fn finish_non_sql_intent<A: AiPort>(
@@ -412,7 +664,7 @@ async fn finish_non_sql_intent<A: AiPort>(
             explanation: String::new(),
             linked_objects: linked.linked_objects,
             citations: Vec::new(),
-            grounding_mode: axpoint_domain::enums::GroundingMode::Clarification,
+            grounding_mode: GroundingMode::Clarification,
             verified_numbers: 0,
             verified_citations: 0,
             abstained: false,
@@ -453,7 +705,7 @@ fn build_clarification_output(
             explanation: msg,
             linked_objects: linked.linked_objects,
             citations: Vec::new(),
-            grounding_mode: axpoint_domain::enums::GroundingMode::Clarification,
+            grounding_mode: GroundingMode::Clarification,
             verified_numbers: 0,
             verified_citations: 0,
             abstained: false,
@@ -472,6 +724,7 @@ async fn guard_and_explain_session_loop<A: AiPort>(
     prompts: (&str, &str),
     mut current_draft: LlmSqlDraft,
     policy: Option<&PolicyContext>,
+    linked: &LinkedSchemaContext,
 ) -> Result<ValidatedDraftOutcome, AppError> {
     let (sys_prompt, user_prompt) = prompts;
     let guard_opts = GuardOptions {
@@ -479,10 +732,13 @@ async fn guard_and_explain_session_loop<A: AiPort>(
         allow_live: false,
         params: BTreeMap::new(),
         policy: policy.cloned(),
+        strict_ontology_join: linked.enforce_ontology_joins,
+        allowed_joins: linked.allowed_joins.clone(),
     };
 
     for round in 0..=MAX_REPAIR_ROUNDS {
-        let err_opt = match guard(&current_draft.sql, catalog, &guard_opts) {
+        let (is_ungrounded_join, last_error) = match guard(&current_draft.sql, catalog, &guard_opts)
+        {
             Ok(guarded) => match session.explain_guarded(&guarded, None).await {
                 Ok(_plan) => {
                     return Ok(ValidatedDraftOutcome::Ready {
@@ -492,13 +748,22 @@ async fn guard_and_explain_session_loop<A: AiPort>(
                         repair_rounds: round,
                     });
                 }
-                Err(explain_err) => Some(first_error_line(&explain_err)),
+                Err(explain_err) => (false, first_error_line(&explain_err)),
             },
             Err(AppError::Forbidden(code)) => return Err(AppError::Forbidden(code)),
-            Err(guard_err) => Some(first_error_line(&guard_err)),
+            Err(guard_err) => (
+                guard_err.error_code() == "JOIN_PATH_UNGROUNDED",
+                first_error_line(&guard_err),
+            ),
         };
 
-        let last_error = err_opt.unwrap_or_default();
+        if is_ungrounded_join && (linked.allowed_joins.is_empty() || round == MAX_REPAIR_ROUNDS) {
+            return Ok(ValidatedDraftOutcome::RejectedJoin {
+                last_sql: current_draft.sql,
+                last_error,
+                repair_rounds: round,
+            });
+        }
         if round == MAX_REPAIR_ROUNDS {
             return Ok(ValidatedDraftOutcome::Exhausted {
                 last_sql: current_draft.sql,
@@ -508,8 +773,13 @@ async fn guard_and_explain_session_loop<A: AiPort>(
         }
 
         let next_round = round.saturating_add(1);
-        let repair_usr =
-            build_repair_user_prompt(user_prompt, &current_draft.sql, &last_error, next_round);
+        let repair_usr = build_repair_user_prompt_with_joins(
+            user_prompt,
+            &current_draft.sql,
+            &last_error,
+            next_round,
+            &linked.allowed_joins,
+        );
         let repaired_raw = ai.chat(sys_prompt, &repair_usr).await?;
         current_draft = parse_llm_sql_response(&repaired_raw)?;
         if current_draft.sql.is_empty() {
@@ -528,19 +798,23 @@ async fn guard_and_explain_conn_loop<A: AiPort>(
     ai: &A,
     conn: &duckdb::Connection,
     catalog: &TenantCatalog,
-    sys_prompt: &str,
-    user_prompt: &str,
+    prompts: (&str, &str),
     mut current_draft: LlmSqlDraft,
+    linked: &LinkedSchemaContext,
 ) -> Result<ValidatedDraftOutcome, AppError> {
+    let (sys_prompt, user_prompt) = prompts;
     let guard_opts = GuardOptions {
         max_rows: NL2SQL_MAX_ROWS,
         allow_live: false,
         params: BTreeMap::new(),
         policy: None,
+        strict_ontology_join: linked.enforce_ontology_joins,
+        allowed_joins: linked.allowed_joins.clone(),
     };
 
     for round in 0..=MAX_REPAIR_ROUNDS {
-        let err_opt = match guard(&current_draft.sql, catalog, &guard_opts) {
+        let (is_ungrounded_join, last_error) = match guard(&current_draft.sql, catalog, &guard_opts)
+        {
             Ok(guarded) => match explain_on_conn(conn, &guarded.sql) {
                 Ok(()) => {
                     return Ok(ValidatedDraftOutcome::Ready {
@@ -550,12 +824,22 @@ async fn guard_and_explain_conn_loop<A: AiPort>(
                         repair_rounds: round,
                     });
                 }
-                Err(explain_err) => Some(first_error_line(&explain_err)),
+                Err(explain_err) => (false, first_error_line(&explain_err)),
             },
-            Err(guard_err) => Some(first_error_line(&guard_err)),
+            Err(AppError::Forbidden(code)) => return Err(AppError::Forbidden(code)),
+            Err(guard_err) => (
+                guard_err.error_code() == "JOIN_PATH_UNGROUNDED",
+                first_error_line(&guard_err),
+            ),
         };
 
-        let last_error = err_opt.unwrap_or_default();
+        if is_ungrounded_join && (linked.allowed_joins.is_empty() || round == MAX_REPAIR_ROUNDS) {
+            return Ok(ValidatedDraftOutcome::RejectedJoin {
+                last_sql: current_draft.sql,
+                last_error,
+                repair_rounds: round,
+            });
+        }
         if round == MAX_REPAIR_ROUNDS {
             return Ok(ValidatedDraftOutcome::Exhausted {
                 last_sql: current_draft.sql,
@@ -565,8 +849,13 @@ async fn guard_and_explain_conn_loop<A: AiPort>(
         }
 
         let next_round = round.saturating_add(1);
-        let repair_usr =
-            build_repair_user_prompt(user_prompt, &current_draft.sql, &last_error, next_round);
+        let repair_usr = build_repair_user_prompt_with_joins(
+            user_prompt,
+            &current_draft.sql,
+            &last_error,
+            next_round,
+            &linked.allowed_joins,
+        );
         let repaired_raw = ai.chat(sys_prompt, &repair_usr).await?;
         current_draft = parse_llm_sql_response(&repaired_raw)?;
         if current_draft.sql.is_empty() {
@@ -595,6 +884,36 @@ fn finalize_non_ready_outcome(
             out.repair_rounds = rounds;
             out
         }
+        ValidatedDraftOutcome::RejectedJoin {
+            last_sql,
+            last_error,
+            repair_rounds,
+        } => AskPipelineOutput {
+            response: AskResponse {
+                turn_id: Uuid::new_v4(),
+                session_id,
+                intent,
+                status: QueryHistoryStatus::Rejected,
+                sql: last_sql,
+                columns: Vec::new(),
+                rows: Vec::new(),
+                truncated: false,
+                answer: format!("跨表关联缺少已发布本体外键依据，已拦截：{last_error}"),
+                chart: None,
+                need_clarification: false,
+                explanation: last_error,
+                linked_objects: linked.linked_objects,
+                citations: Vec::new(),
+                grounding_mode: GroundingMode::Abstained,
+                verified_numbers: 0,
+                verified_citations: 0,
+                abstained: true,
+                slot_payload: None,
+            },
+            rewritten_sql: String::new(),
+            repair_rounds,
+            duration_ms,
+        },
         ValidatedDraftOutcome::Exhausted {
             last_sql,
             last_error,
@@ -615,7 +934,7 @@ fn finalize_non_ready_outcome(
                 explanation: last_error,
                 linked_objects: linked.linked_objects,
                 citations: Vec::new(),
-                grounding_mode: axpoint_domain::enums::GroundingMode::GuardedSql,
+                grounding_mode: GroundingMode::GuardedSql,
                 verified_numbers: 0,
                 verified_citations: 0,
                 abstained: false,
@@ -641,7 +960,7 @@ fn finalize_non_ready_outcome(
                 explanation: String::new(),
                 linked_objects: linked.linked_objects,
                 citations: Vec::new(),
-                grounding_mode: axpoint_domain::enums::GroundingMode::GuardedSql,
+                grounding_mode: GroundingMode::GuardedSql,
                 verified_numbers: 0,
                 verified_citations: 0,
                 abstained: false,
@@ -665,6 +984,8 @@ struct SucceededTurnArgs<'a> {
     linked: LinkedSchemaContext,
     repair_rounds: usize,
     started: Instant,
+    grounding_mode: GroundingMode,
+    slot_payload: Option<serde_json::Value>,
 }
 
 async fn finalize_succeeded_output<A: AiPort>(
@@ -672,17 +993,22 @@ async fn finalize_succeeded_output<A: AiPort>(
     args: SucceededTurnArgs<'_>,
 ) -> Result<AskPipelineOutput, AppError> {
     let chart = recommend_chart(args.question, &args.qr.columns, args.qr.rows.len());
-    let answer = if args.qr.rows.is_empty() || args.qr.rows.len() > MAX_SUMMARY_ROWS {
-        fallback_table_summary(args.qr.rows.len())
-    } else {
-        let sum_usr = build_summary_user_prompt(args.question, &args.qr.columns, &args.qr.rows);
-        match ai.chat(SUMMARY_SYSTEM_PROMPT, &sum_usr).await {
-            Ok(raw_summary) => verify_or_fallback_summary(&raw_summary, &args.qr.rows),
-            Err(_) => fallback_table_summary(args.qr.rows.len()),
-        }
-    };
+    let (answer, verified_numbers) =
+        if args.qr.rows.is_empty() || args.qr.rows.len() > MAX_SUMMARY_ROWS {
+            let fb = fallback_table_summary(args.qr.rows.len());
+            let cnt = count_grounded_numbers(&fb);
+            (fb, cnt)
+        } else {
+            let sum_usr = build_summary_user_prompt(args.question, &args.qr.columns, &args.qr.rows);
+            if let Ok(raw_summary) = ai.chat(SUMMARY_SYSTEM_PROMPT, &sum_usr).await {
+                verify_or_fallback_summary_with_count(&raw_summary, &args.qr.rows)
+            } else {
+                let fb = fallback_table_summary(args.qr.rows.len());
+                let cnt = count_grounded_numbers(&fb);
+                (fb, cnt)
+            }
+        };
 
-    let verified_numbers = axpoint_domain::grounding::count_grounded_numbers(&answer);
     let duration_ms = u64::try_from(args.started.elapsed().as_millis()).unwrap_or(u64::MAX);
     let response = AskResponse {
         turn_id: Uuid::new_v4(),
@@ -699,11 +1025,11 @@ async fn finalize_succeeded_output<A: AiPort>(
         explanation: args.explanation,
         linked_objects: args.linked.linked_objects,
         citations: Vec::new(),
-        grounding_mode: axpoint_domain::enums::GroundingMode::GuardedSql,
+        grounding_mode: args.grounding_mode,
         verified_numbers,
         verified_citations: 0,
         abstained: false,
-        slot_payload: None,
+        slot_payload: args.slot_payload,
     };
     Ok(AskPipelineOutput {
         response,

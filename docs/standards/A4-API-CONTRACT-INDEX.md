@@ -82,7 +82,8 @@
 | `GET /metrics`、`POST /metrics`、`GET /metrics/{name}`、`PATCH /metrics/{name}`、`DELETE /metrics/{name}` | `DATA_READ` / `STUDIO_EDIT` | §04.5 |
 | `POST /metrics/{name}/query`、`POST /metrics/query-multi` | `DATA_READ` | 同上 |
 | `GET /saved-queries`、`POST /saved-queries`、`GET /saved-queries/{id}`、`PATCH /saved-queries/{id}`、`DELETE /saved-queries/{id}`、`POST /saved-queries/{id}/run` | `DATA_READ` / `VIEW_EDIT` | §04.9 |
-| `POST /ask`（可选 `context`，见 [10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.6）、`POST /ask/{turn_id}/feedback`、`GET /ask/sessions/{session_id}` | `DATA_READ` | §04.6 |
+| `POST /ask`（可选 `context`，见 [10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.6）、`POST /ask/{turn_id}/feedback`、`GET /ask/sessions/{session_id}` | `DATA_READ` | §04.6、[02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.2 |
+| `POST /grounding-eval/run`、`GET /grounding-eval/runs` | `GUARD_ADMIN` \| `OPS_ADMIN` / `DATA_READ` | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.5 |
 | `POST /transform/draft`、`PATCH /transform/{id}`、`POST /transform/{id}/apply`、`POST /transform/{id}/discard` | `DATA_SYNC` | §04.7 |
 | `GET /history` | `DATA_READ` | §04.9 |
 

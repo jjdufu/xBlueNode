@@ -1,7 +1,9 @@
 //! `AxAnalytics` OLAP session pool, SQL AST guard, pivot engine, semantic layer, NL2SQL, and AI transforms (`05-STEP04`).
 #![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
+pub mod grounding_eval;
 pub mod nl2sql;
+pub(crate) mod ontology_join;
 pub mod pivot;
 pub mod profiling;
 pub mod result;
@@ -16,14 +18,16 @@ use std::path::PathBuf;
 pub use arrow;
 use axpoint_domain::AppError;
 pub use axpoint_domain::analytics::{
-    AnalyticsCatalogResponse, AnalyticsPrincipal, ApplyTransformResponse, AskContext,
-    AskFeedbackKind, AskFeedbackRequest, AskIntent, AskRequest, AskResponse, AskTurnRecord,
-    CatalogDatasetNode, ChartSuggestion, CreateMetricRequest, CreateSavedQueryRequest,
-    CreateTransformDraftRequest, ExplainResult, FewShotTurn, FieldRef, FilterOp, FilterSpec,
+    AllowedDatasetJoinEdge, AnalyticsCatalogResponse, AnalyticsPrincipal, ApplyTransformResponse,
+    AskContext, AskFeedbackKind, AskFeedbackRequest, AskIntent, AskRequest, AskResponse,
+    AskTurnRecord, CatalogDatasetNode, ChartSuggestion, CreateMetricRequest,
+    CreateSavedQueryRequest, CreateTransformDraftRequest, ExplainResult, FewShotTurn, FieldRef,
+    FilterOp, FilterSpec, GroundingEvalRunRecord, GroundingEvalRunResponse, GroundingEvalTrack,
     LinkedColumnHit, LinkedMetricHit, LinkedObjects, LiveConnectionNode, MaterializeRequest,
     MetricCompareMode, MetricDef, MetricDimension, MetricQuery, MetricQueryResult, MetricTimeRange,
-    MultiMetricQuery, NewAskTurnInput, NewQueryHistoryEntry, NewTransformDraftInput, PivotResult,
-    PivotRowKind, PivotSpec, PlatformViewNode, QueryColumn, QueryHistoryEntry, QueryHistoryKind,
+    MultiMetricQuery, NewAskTurnInput, NewGroundingEvalRunInput, NewQueryHistoryEntry,
+    NewTransformDraftInput, OntologySlotDraft, OntologySlotFilter, PivotResult, PivotRowKind,
+    PivotSpec, PlatformViewNode, QueryColumn, QueryHistoryEntry, QueryHistoryKind,
     QueryHistoryListQuery, QueryHistoryStatus, QueryParamSpec, QueryRequest, QueryResult,
     RunSavedQueryRequest, SavedQuery, SavedQueryKind, SchemaRecallBundle, SortDir, SortSpec,
     TimeBucket, TransformDraft, TransformDraftStatus, TransformPreview, UpdateMetricRequest,
@@ -41,6 +45,12 @@ use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
+pub use grounding_eval::{
+    GroundedDocSynthesis, GroundedHybridSynthesis, HybridGroundingInput, MIN_DOC_VECTOR_COSINE_SIM,
+    candidate_has_substantive_term, filter_noise_recall_candidates, run_grounding_eval_suite,
+    run_grounding_eval_track, sanitize_and_ground_doc_answer, sanitize_and_ground_hybrid_answer,
+};
+pub use nl2sql::schema_link::compile_ontology_join_edges;
 pub use nl2sql::{
     AskPipelineInput, AskPipelineOutput, MAX_REPAIR_ROUNDS, MAX_SUMMARY_ROWS, NL2SQL_MAX_ROWS,
     run_ask_pipeline, run_ask_pipeline_conn, run_ask_pipeline_with_policy, validate_corrected_sql,

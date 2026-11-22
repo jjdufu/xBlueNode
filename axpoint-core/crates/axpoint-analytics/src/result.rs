@@ -698,6 +698,7 @@ mod tests {
                 allow_live: false,
                 params: BTreeMap::new(),
                 policy: None,
+                ..GuardOptions::default()
             },
         )?;
 

@@ -502,6 +502,8 @@ impl TenantDb {
             allow_live: req.allow_live,
             params: req.params.clone(),
             policy: policy.cloned(),
+            strict_ontology_join: req.strict_ontology_join,
+            allowed_joins: cat.allowed_joins.clone(),
         };
         let guarded = guard(&req.sql, &cat, &guard_opts)?;
         self.execute_guarded(
@@ -592,6 +594,8 @@ impl TenantDb {
             allow_live: req.allow_live,
             params: req.params.clone(),
             policy: policy.cloned(),
+            strict_ontology_join: req.strict_ontology_join,
+            allowed_joins: cat.allowed_joins.clone(),
         };
         let guarded = guard(&req.sql, &cat, &guard_opts)?;
         self.explain_guarded(&guarded, req.timeout_ms).await

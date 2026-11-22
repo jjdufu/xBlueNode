@@ -980,6 +980,7 @@ where
             allow_live: has_live,
             params,
             policy: Some(policy.clone()),
+            ..GuardOptions::default()
         },
         max_rows_ceiling,
     )?;

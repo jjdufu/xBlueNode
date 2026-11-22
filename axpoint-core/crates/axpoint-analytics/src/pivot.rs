@@ -330,6 +330,7 @@ pub fn compile_pivot_with_policy(
             allow_live: false,
             params,
             policy: policy.cloned(),
+            ..GuardOptions::default()
         },
     )?;
 

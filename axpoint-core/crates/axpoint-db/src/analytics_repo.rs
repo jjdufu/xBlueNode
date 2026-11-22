@@ -6,11 +6,12 @@ use std::str::FromStr;
 use axpoint_domain::AppError;
 use axpoint_domain::analytics::{
     AskCitation, AskFeedbackKind, AskIntent, AskTurnRecord, CreateMetricRequest,
-    CreateSavedQueryRequest, FewShotTurn, LinkedColumnHit, LinkedMetricHit, LinkedObjects,
-    MetricDef, MetricDimension, NewAskTurnInput, NewQueryHistoryEntry, NewTransformDraftInput,
-    QueryHistoryEntry, QueryHistoryKind, QueryHistoryListQuery, QueryHistoryStatus, QueryParamSpec,
-    SavedQuery, SavedQueryKind, SchemaRecallBundle, TransformDraft, TransformDraftStatus,
-    TransformPreview, UpdateMetricRequest, UpdateSavedQueryRequest, ds_column_embedding_id,
+    CreateSavedQueryRequest, FewShotTurn, GroundingEvalRunRecord, GroundingEvalTrack,
+    LinkedColumnHit, LinkedMetricHit, LinkedObjects, MetricDef, MetricDimension, NewAskTurnInput,
+    NewGroundingEvalRunInput, NewQueryHistoryEntry, NewTransformDraftInput, QueryHistoryEntry,
+    QueryHistoryKind, QueryHistoryListQuery, QueryHistoryStatus, QueryParamSpec, SavedQuery,
+    SavedQueryKind, SchemaRecallBundle, TransformDraft, TransformDraftStatus, TransformPreview,
+    UpdateMetricRequest, UpdateSavedQueryRequest, ds_column_embedding_id,
 };
 use axpoint_domain::axhub::{ColumnProfile, Dataset, DatasetStatus, PaginatedList, SchemaPolicy};
 use axpoint_domain::enums::{DataType, JobKind, PiiCategory, RollupGrain, SourceKind, SyncMode};
@@ -3198,6 +3199,111 @@ impl AnalyticsRepository for PgStore {
             .collect::<Result<_, _>>()?;
         topological_sort_downstream(upstream_dataset_id, derived_datasets)
     }
+
+    async fn insert_grounding_eval_run(
+        &self,
+        tenant_id: &str,
+        input: NewGroundingEvalRunInput,
+    ) -> Result<GroundingEvalRunRecord, AppError> {
+        let total_cases = i32::try_from(input.total_cases.max(1)).unwrap_or(i32::MAX);
+        let intercepted_cases = i32::try_from(input.intercepted_cases).unwrap_or(i32::MAX);
+        let pass_rate = if input.pass_rate.is_finite() {
+            input.pass_rate.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let duration_ms = i64::try_from(input.duration_ms).unwrap_or(i64::MAX);
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let row = sqlx::query(
+            "INSERT INTO an_grounding_eval_runs (
+                 tenant_id, suite_name, track, model_name, total_cases,
+                 intercepted_cases, pass_rate, category_breakdown, failures, duration_ms
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             RETURNING id, suite_name, track, model_name, total_cases,
+                       intercepted_cases, pass_rate, category_breakdown, failures, duration_ms, created_at",
+        )
+        .bind(tenant_id)
+        .bind(input.suite_name.trim())
+        .bind(input.track.as_str())
+        .bind(input.model_name.trim())
+        .bind(total_cases)
+        .bind(intercepted_cases)
+        .bind(pass_rate)
+        .bind(input.category_breakdown)
+        .bind(input.failures)
+        .bind(duration_ms)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| {
+            AppError::Database(format!("insert an_grounding_eval_runs failed: {err}"))
+        })?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit insert_grounding_eval_run tx failed: {err}"))
+        })?;
+        decode_grounding_eval_run_row(&row)
+    }
+
+    async fn list_grounding_eval_runs(
+        &self,
+        tenant_id: &str,
+        limit: u32,
+    ) -> Result<Vec<GroundingEvalRunRecord>, AppError> {
+        let cap = i64::from(limit.clamp(1, 200));
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT id, suite_name, track, model_name, total_cases,
+                    intercepted_cases, pass_rate, category_breakdown, failures, duration_ms, created_at
+               FROM an_grounding_eval_runs
+              ORDER BY created_at DESC, id DESC
+              LIMIT $1",
+        )
+        .bind(cap)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| {
+            AppError::Database(format!("list an_grounding_eval_runs failed: {err}"))
+        })?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit list_grounding_eval_runs tx failed: {err}"))
+        })?;
+        rows.iter().map(decode_grounding_eval_run_row).collect()
+    }
+}
+
+fn decode_grounding_eval_run_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<GroundingEvalRunRecord, AppError> {
+    let track_str: String = row.get("track");
+    let track = match track_str.as_str() {
+        "CLOUD" => GroundingEvalTrack::Cloud,
+        "LOCAL_7B" => GroundingEvalTrack::Local7b,
+        other => {
+            return Err(AppError::Database(format!(
+                "unknown GroundingEvalTrack in an_grounding_eval_runs: {other}"
+            )));
+        }
+    };
+    let total_i32: i32 = row.get("total_cases");
+    let intercepted_i32: i32 = row.get("intercepted_cases");
+    let duration_i64: i64 = row.get("duration_ms");
+
+    Ok(GroundingEvalRunRecord {
+        id: row.get("id"),
+        suite_name: row.get("suite_name"),
+        track,
+        model_name: row.get("model_name"),
+        total_cases: u32::try_from(total_i32).unwrap_or(0),
+        intercepted_cases: u32::try_from(intercepted_i32).unwrap_or(0),
+        pass_rate: row.get("pass_rate"),
+        category_breakdown: row.get("category_breakdown"),
+        failures: row.get("failures"),
+        duration_ms: u64::try_from(duration_i64).unwrap_or(0),
+        created_at: row.get("created_at"),
+    })
 }
 
 #[cfg(test)]
