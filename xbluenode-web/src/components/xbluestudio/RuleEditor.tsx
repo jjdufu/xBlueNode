@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
+  Check,
   CheckCircle2,
   FlaskConical,
   Play,
@@ -514,23 +515,53 @@ export function RuleEditor({
               return (
                 <div
                   key={idx}
-                  className="rounded border border-border bg-muted/20 p-2.5 space-y-2"
+                  className={cn(
+                    "rounded border bg-muted/20 p-2.5 space-y-2",
+                    rule.maturity === "PROPOSED"
+                      ? "border-dashed border-amber-500/70"
+                      : "border-border"
+                  )}
                 >
                   <div className="flex items-center justify-between gap-2">
-                    <span className="font-mono-tech text-[11px] font-semibold text-xblue truncate">
-                      {rule.target_metric || "?"} = {rule.op}(
-                      {rule.source_type_name || "?"}.{rule.source_metric || "?"}{" "}
-                      via {rule.via_link_type || "?"} {rule.direction})
-                    </span>
-                    {canEdit && (
-                      <button
-                        type="button"
-                        onClick={() => removeAggRule(idx)}
-                        className="rounded p-1 text-muted-foreground hover:text-red-600 cursor-pointer shrink-0"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    )}
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <span className="font-mono-tech text-[11px] font-semibold text-xblue truncate">
+                        {rule.target_metric || "?"} = {rule.op}(
+                        {rule.source_type_name || "?"}.{rule.source_metric || "?"}{" "}
+                        via {rule.via_link_type || "?"} {rule.direction})
+                      </span>
+                      {rule.maturity === "PROPOSED" && (
+                        <Badge
+                          variant="warning"
+                          data-testid={`agg-rule-proposed-${idx}`}
+                        >
+                          {tx("待确认", "Proposed")}
+                        </Badge>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {rule.maturity === "PROPOSED" && canEdit && (
+                        <button
+                          type="button"
+                          data-testid={`agg-rule-confirm-${idx}`}
+                          onClick={() =>
+                            updateAggRule(idx, { maturity: "CONFIRMED" })
+                          }
+                          className="inline-flex items-center gap-0.5 rounded border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 cursor-pointer"
+                        >
+                          <Check className="h-2.5 w-2.5" />
+                          {tx("确认", "Confirm")}
+                        </button>
+                      )}
+                      {canEdit && (
+                        <button
+                          type="button"
+                          onClick={() => removeAggRule(idx)}
+                          className="rounded p-1 text-muted-foreground hover:text-red-600 cursor-pointer shrink-0"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-2">
@@ -831,7 +862,12 @@ export function RuleEditor({
               return (
                 <div
                   key={idx}
-                  className="rounded-md border border-border bg-muted/20 p-2.5 space-y-2"
+                  className={cn(
+                    "rounded-md border bg-muted/20 p-2.5 space-y-2",
+                    dRule.maturity === "PROPOSED"
+                      ? "border-dashed border-amber-500/70"
+                      : "border-border"
+                  )}
                 >
                   {/* Row 1: Target Metric + Active Switch + Delete (Zero horizontal crowding) */}
                   <div className="flex items-center justify-between gap-2">
@@ -872,7 +908,28 @@ export function RuleEditor({
                       )}
                     </div>
 
-                    <div className="flex items-center gap-2 shrink-0">
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {dRule.maturity === "PROPOSED" && (
+                        <Badge
+                          variant="warning"
+                          data-testid={`derived-rule-proposed-${idx}`}
+                        >
+                          {tx("待确认", "Proposed")}
+                        </Badge>
+                      )}
+                      {dRule.maturity === "PROPOSED" && canEdit && (
+                        <button
+                          type="button"
+                          data-testid={`derived-rule-confirm-${idx}`}
+                          onClick={() =>
+                            updateDerivedRule(idx, { maturity: "CONFIRMED" })
+                          }
+                          className="inline-flex items-center gap-0.5 rounded border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 cursor-pointer"
+                        >
+                          <Check className="h-2.5 w-2.5" />
+                          {tx("确认", "Confirm")}
+                        </button>
+                      )}
                       <span className="text-[11px] text-muted-foreground">
                         {tx("启用", "Active")}
                       </span>

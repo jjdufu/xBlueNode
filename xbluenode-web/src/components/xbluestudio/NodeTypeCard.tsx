@@ -3,9 +3,11 @@ import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import {
   BookOpen,
   Box,
+  Check,
   Cpu,
   Database,
   Factory,
+  GitBranch,
   ShoppingCart,
   Trash2,
   Truck,
@@ -14,7 +16,12 @@ import {
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
-import type { NodeTypeSpec } from "@/lib/api/xblue";
+import type { SemanticLayerTier } from "@/lib/api/enums";
+import {
+  computeNodeBadgeCounts,
+  hasProposedElements,
+  type NodeTypeSpec,
+} from "@/lib/api/xblue";
 import {
   Badge,
   Button,
@@ -30,9 +37,17 @@ export interface StudioNodeCardData extends Record<string, unknown> {
   selected: boolean;
   issueCount: number;
   hasError: boolean;
+  onConfirmNode?: (nodeName: string) => void;
+  onDoubleClickNode?: (nodeName: string) => void;
 }
 
 export type StudioFlowNode = Node<StudioNodeCardData, "studioNode">;
+
+const SEMANTIC_TIER_OPTIONS: readonly SemanticLayerTier[] = [
+  "STATIC_FACT",
+  "EVENT_DYNAMIC",
+  "CUBE_ROLLUP",
+];
 
 const ICON_OPTIONS = [
   { key: "box", zh: "通用实体", en: "Generic Object" },
@@ -78,23 +93,36 @@ export function renderNodeIcon(iconKey: string) {
 
 /** Custom `@xyflow/react` canvas card renderer for a `NodeTypeSpec`. */
 export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
-  const { tx } = useI18n();
-  const { spec, selected, issueCount, hasError } = data;
-  const attrCount = spec.properties.filter(
-    (p) => p.kind === "ATTRIBUTE"
-  ).length;
-  const metricCount = spec.properties.filter((p) => p.kind === "METRIC").length;
-  const ruleCount = spec.agg_rules.length + spec.derived_rules.length;
+  const { tx, tEnum } = useI18n();
+  const { can } = usePrincipal();
+  const canEdit = can("STUDIO_EDIT");
+  const {
+    spec,
+    selected,
+    issueCount,
+    hasError,
+    onConfirmNode,
+    onDoubleClickNode,
+  } = data;
+  const counts = computeNodeBadgeCounts(spec);
+  const isProposed = hasProposedElements(spec);
   const accentColor = spec.color || "#2563eb";
 
   return (
     <div
       data-testid={`canvas-node-${spec.name}`}
+      onDoubleClick={(e) => {
+        if (onDoubleClickNode) {
+          e.stopPropagation();
+          onDoubleClickNode(spec.name);
+        }
+      }}
       className={cn(
-        "w-56 rounded-md border bg-card text-card-foreground shadow-sm transition-shadow select-none overflow-hidden",
+        "w-60 rounded-md border bg-card text-card-foreground shadow-sm transition-shadow select-none overflow-hidden",
         selected
           ? "border-xblue ring-2 ring-xblue/30 shadow-md"
           : "border-border hover:border-foreground/40",
+        isProposed && "border-dashed border-amber-500/70",
         hasError && "border-red-500"
       )}
     >
@@ -124,65 +152,101 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
             </div>
           </div>
 
-          {issueCount > 0 && (
-            <span
-              className={cn(
-                "rounded px-1.5 py-0.5 font-mono-tech text-[10px] font-semibold",
-                hasError
-                  ? "bg-red-500/15 text-red-600 dark:text-red-400"
-                  : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
-              )}
+          <div className="flex items-center gap-1 shrink-0">
+            <Badge
+              variant="neutral"
+              data-testid={`canvas-node-badge-${spec.name}`}
+              className="tabular-nums font-mono-tech text-[10px] px-1.5 py-0.5"
             >
-              {issueCount}
-            </span>
-          )}
+              {`${counts.property_count}p·${counts.metric_count}m·${counts.rule_count}r`}
+            </Badge>
+            {issueCount > 0 && (
+              <span
+                className={cn(
+                  "rounded px-1.5 py-0.5 font-mono-tech text-[10px] font-semibold tabular-nums",
+                  hasError
+                    ? "bg-red-500/15 text-red-600 dark:text-red-400"
+                    : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                )}
+              >
+                {issueCount}
+              </span>
+            )}
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
-          <span>
-            {tx("属性", "Attr")}{" "}
-            <strong className="font-mono-tech text-foreground font-semibold">
-              {attrCount}
-            </strong>
-          </span>
-          <span className="text-border">·</span>
-          <span>
-            {tx("指标", "Metric")}{" "}
-            <strong className="font-mono-tech text-xblue font-semibold">
-              {metricCount}
-            </strong>
-          </span>
-          {ruleCount > 0 && (
-            <>
-              <span className="text-border">·</span>
-              <span>
-                {tx("规则", "Rule")}{" "}
-                <strong className="font-mono-tech text-foreground font-semibold">
-                  {ruleCount}
-                </strong>
-              </span>
-            </>
-          )}
-          {spec.sync_to_knowledge && (
-            <Badge
-              variant="outline"
-              title={tx("已开启知识超图同步", "Knowledge sync enabled")}
-            >
-              <BookOpen className="h-2.5 w-2.5 mr-0.5 text-xblue" />
-              {tx("超图", "KG")}
-            </Badge>
-          )}
-        </div>
+        {(spec.semantic_layer_tier ||
+          spec.domain_group ||
+          isProposed ||
+          spec.sync_to_knowledge) && (
+          <div className="flex flex-wrap items-center justify-between gap-1">
+            <div className="flex flex-wrap items-center gap-1 min-w-0">
+              {spec.semantic_layer_tier && (
+                <Badge
+                  variant="xblue"
+                  data-testid={`canvas-node-tier-${spec.name}`}
+                  className="text-[10px]"
+                >
+                  {tEnum(spec.semantic_layer_tier)}
+                </Badge>
+              )}
+              {spec.domain_group && (
+                <Badge variant="outline" className="text-[10px]">
+                  {spec.domain_group}
+                </Badge>
+              )}
+              {isProposed && (
+                <Badge
+                  variant="warning"
+                  data-testid={`canvas-node-proposed-${spec.name}`}
+                  className="text-[10px]"
+                >
+                  {tx("待确认", "Proposed")}
+                </Badge>
+              )}
+              {spec.sync_to_knowledge && (
+                <Badge
+                  variant="outline"
+                  title={tx("已开启知识超图同步", "Knowledge sync enabled")}
+                >
+                  <BookOpen className="h-2.5 w-2.5 mr-0.5 text-xblue" />
+                  {tx("超图", "KG")}
+                </Badge>
+              )}
+            </div>
+
+            {isProposed && canEdit && onConfirmNode && (
+              <button
+                type="button"
+                data-testid={`confirm-node-btn-${spec.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onConfirmNode(spec.name);
+                }}
+                onDoubleClick={(e) => e.stopPropagation()}
+                className="nodrag nopan inline-flex items-center gap-0.5 rounded border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 cursor-pointer shrink-0"
+              >
+                <Check className="h-2.5 w-2.5" />
+                {tx("确认", "Confirm")}
+              </button>
+            )}
+          </div>
+        )}
 
         {spec.properties.length > 0 && (
           <div className="border-t border-border pt-1.5 space-y-0.5">
             {spec.properties.slice(0, 3).map((prop) => (
               <div
                 key={prop.name}
-                className="flex items-center justify-between text-[10px] font-mono-tech"
+                className="flex items-center justify-between gap-1 text-[10px] font-mono-tech"
               >
-                <span className="truncate text-foreground/90">{prop.name}</span>
-                <span className="text-muted-foreground">
+                <span className="truncate text-foreground/90 flex items-center gap-1">
+                  <span className="truncate">{prop.name}</span>
+                  {prop.maturity === "PROPOSED" && (
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0" />
+                  )}
+                </span>
+                <span className="text-muted-foreground shrink-0">
                   {prop.kind === "METRIC" ? "M·" : ""}
                   {prop.data_type}
                 </span>
@@ -210,6 +274,8 @@ export interface NodeTypeCardProps {
   nodeType: NodeTypeSpec;
   onChange: (updated: NodeTypeSpec) => void;
   onDelete: () => void;
+  onConfirmNode?: (nodeName: string) => void;
+  onOpenLineage?: (nodeName: string) => void;
 }
 
 /** Sidebar basic metadata inspector for a selected `NodeTypeSpec`. */
@@ -217,11 +283,16 @@ export function NodeTypeCard({
   nodeType,
   onChange,
   onDelete,
+  onConfirmNode,
+  onOpenLineage,
 }: NodeTypeCardProps) {
-  const { tx } = useI18n();
+  const { tx, tEnum } = useI18n();
   const { can } = usePrincipal();
   const canEdit = can("STUDIO_EDIT");
   const [confirmDelete, setConfirmDelete] = useState(false);
+
+  const counts = computeNodeBadgeCounts(nodeType);
+  const isProposed = hasProposedElements(nodeType);
 
   const attrNames = nodeType.properties
     .filter((p) => p.kind === "ATTRIBUTE" && p.name.trim().length > 0)
@@ -236,6 +307,55 @@ export function NodeTypeCard({
 
   return (
     <div className="space-y-3 text-xs" data-testid="node-type-card-editor">
+      <div className="flex flex-wrap items-center justify-between gap-1.5 rounded-md border border-border bg-muted/25 px-2.5 py-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <Badge
+            variant="neutral"
+            data-testid="inspector-node-badge-counts"
+            className="tabular-nums font-mono-tech"
+          >
+            {`${counts.property_count}p·${counts.metric_count}m·${counts.rule_count}r`}
+          </Badge>
+          {nodeType.semantic_layer_tier && (
+            <Badge variant="xblue">{tEnum(nodeType.semantic_layer_tier)}</Badge>
+          )}
+          {isProposed && (
+            <Badge variant="warning" data-testid="inspector-node-proposed-badge">
+              {tx("待确认", "Proposed")}
+            </Badge>
+          )}
+        </div>
+
+        <div className="flex items-center gap-1.5">
+          {isProposed && canEdit && onConfirmNode && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              data-testid="inspector-confirm-node-btn"
+              onClick={() => onConfirmNode(nodeType.name)}
+              className="h-6 px-2 border-amber-500/50 text-amber-700 dark:text-amber-300"
+            >
+              <Check className="h-3 w-3" />
+              {tx("确认", "Confirm")}
+            </Button>
+          )}
+          {onOpenLineage && nodeType.name.trim().length > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              data-testid="inspector-open-lineage-btn"
+              onClick={() => onOpenLineage(nodeType.name)}
+              className="h-6 px-2"
+            >
+              <GitBranch className="h-3 w-3 text-xblue" />
+              {tx("血缘视图", "Lineage")}
+            </Button>
+          )}
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 gap-2.5">
         <div>
           <label className="block font-medium mb-1">
@@ -262,6 +382,55 @@ export function NodeTypeCard({
               onChange({ ...nodeType, display_name: e.target.value })
             }
             placeholder={tx("仓储枢纽", "Warehouse Hub")}
+            className="h-8 text-xs"
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2.5">
+        <div>
+          <label className="block font-medium mb-1">
+            {tx("语义分层", "Semantic Tier")}
+          </label>
+          <Select
+            data-testid="node-type-tier-select"
+            value={nodeType.semantic_layer_tier ?? ""}
+            disabled={!canEdit}
+            onChange={(e) => {
+              const raw = e.target.value;
+              const nextTier: SemanticLayerTier | null =
+                raw === "STATIC_FACT" ||
+                raw === "EVENT_DYNAMIC" ||
+                raw === "CUBE_ROLLUP"
+                  ? raw
+                  : null;
+              onChange({ ...nodeType, semantic_layer_tier: nextTier });
+            }}
+            className="h-8 w-full"
+          >
+            <option value="">{tx("未分层", "Unassigned")}</option>
+            {SEMANTIC_TIER_OPTIONS.map((tier) => (
+              <option key={tier} value={tier}>
+                {tEnum(tier)}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div>
+          <label className="block font-medium mb-1">
+            {tx("业务域", "Domain Group")}
+          </label>
+          <Input
+            data-testid="node-type-domain-group-input"
+            value={nodeType.domain_group ?? ""}
+            disabled={!canEdit}
+            onChange={(e) =>
+              onChange({
+                ...nodeType,
+                domain_group: e.target.value || null,
+              })
+            }
+            placeholder={tx("履约域", "Fulfillment")}
             className="h-8 text-xs"
           />
         </div>
