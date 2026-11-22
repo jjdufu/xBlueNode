@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Check,
+  ChevronRight,
   FileText,
   Link2,
   MapPin,
@@ -17,20 +18,25 @@ import {
   type NodeDocumentHit,
 } from "@/lib/api/xblue";
 import { Badge, Button, EmptyState } from "@/components/ui/primitives";
-import { MetricChart } from "@/components/xbluegraph/MetricChart";
-import { MetricExplainChain } from "@/components/xbluegraph/MetricExplainChain";
+import { translateNodeTypeLabel } from "@/components/graph/SigmaCanvas";
 
 export interface NodeInspectorProps {
   node: BlueNode | null;
+  selectedMetric: string | null;
+  onSelectMetric: (metric: string) => void;
   onExpandOneHop?: (nodeId: string) => Promise<void>;
 }
 
-export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
-  const { tx, fmtNum } = useI18n();
+export function NodeInspector({
+  node,
+  selectedMetric,
+  onSelectMetric,
+  onExpandOneHop,
+}: NodeInspectorProps) {
+  const { isZh, tx, fmtNum } = useI18n();
   const { can } = usePrincipal();
   const canEdit = can("STUDIO_EDIT");
 
-  const [selectedMetric, setSelectedMetric] = useState<string | null>(null);
   const [documents, setDocuments] = useState<NodeDocumentHit[]>([]);
   const [candidates, setCandidates] = useState<EntityLink[]>([]);
   const [resolving, setResolving] = useState(false);
@@ -51,21 +57,10 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
   useEffect(() => {
     setActionMsg(null);
     if (!node) {
-      setSelectedMetric(null);
       setDocuments([]);
       setCandidates([]);
       return;
     }
-    const metricKeys = Object.keys(node.metrics ?? {});
-    setSelectedMetric((prev) => {
-      if (prev && metricKeys.includes(prev)) {
-        return prev;
-      }
-      if (metricKeys.includes("inventory")) {
-        return "inventory";
-      }
-      return metricKeys[0] ?? null;
-    });
     void loadSideData(node.id);
   }, [node, loadSideData]);
 
@@ -123,14 +118,16 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
   );
 
   return (
-    <div className="space-y-4 text-xs" data-testid="node-inspector">
+    <div className="space-y-3.5 text-xs" data-testid="node-inspector">
       {/* Node Header */}
-      <div className="space-y-2 border-b border-border pb-3">
+      <div className="space-y-2 border-b border-border pb-2.5">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <div className="text-sm font-semibold flex flex-wrap items-center gap-2">
+            <div className="text-sm font-semibold flex flex-wrap items-center gap-1.5">
               <span data-testid="inspector-node-title">{node.title}</span>
-              <Badge variant="xblue">{node.type_name}</Badge>
+              <Badge variant="xblue">
+                {translateNodeTypeLabel(node.type_name, isZh)}
+              </Badge>
             </div>
             <div className="font-mono-tech text-[11px] text-muted-foreground mt-0.5">
               {tx("业务主键", "Key")}:{" "}
@@ -154,7 +151,7 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
               onClick={() => void onExpandOneHop(node.id)}
               data-testid="inspector-expand-btn"
             >
-              <Share2 className="h-3 w-3" />
+              <Share2 className="h-3 w-3 text-xblue" />
               {tx("展开 1 跳", "Expand 1-Hop")}
             </Button>
           )}
@@ -162,7 +159,7 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
 
         {node.geo && (
           <div
-            className="inline-flex items-center gap-1.5 rounded bg-muted px-2 py-1 font-mono-tech text-[11px]"
+            className="inline-flex items-center gap-1.5 rounded bg-muted/60 px-2 py-1 font-mono-tech text-[11px]"
             data-testid="inspector-node-geo"
           >
             <MapPin className="h-3 w-3 text-xblue" />
@@ -172,17 +169,20 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
         )}
       </div>
 
-      {/* Static Properties */}
+      {/* Borderless Static Properties */}
       {propEntries.length > 0 && (
-        <div className="space-y-1.5">
-          <div className="font-semibold text-muted-foreground">
+        <div className="space-y-1">
+          <div className="text-[11px] font-semibold text-muted-foreground">
             {tx("静态属性", "Properties")}
           </div>
-          <div className="grid grid-cols-1 gap-1 rounded border border-border p-2 bg-muted/20">
+          <div className="divide-y divide-border/60 rounded-md bg-muted/30 px-2.5 py-1">
             {propEntries.map(([k, v]) => (
-              <div key={k} className="flex items-center justify-between gap-2">
+              <div
+                key={k}
+                className="flex items-center justify-between gap-2 py-1"
+              >
                 <span className="font-mono-tech text-muted-foreground">{k}</span>
-                <span className="font-mono-tech font-medium truncate">
+                <span className="font-mono-tech font-medium text-foreground truncate">
                   {typeof v === "object" && v !== null
                     ? JSON.stringify(v)
                     : String(v ?? "")}
@@ -193,23 +193,25 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
         </div>
       )}
 
-      {/* Latest Metrics & Trend */}
-      <div className="space-y-2">
+      {/* Compact Key-Value Metric Snapshot Rows (Opens Wide Bottom Chart + Explain Panel on click) */}
+      <div className="space-y-1.5">
         <div className="flex items-center justify-between">
-          <span className="font-semibold flex items-center gap-1.5">
+          <span className="text-[11px] font-semibold text-muted-foreground flex items-center gap-1">
             <TrendingUp className="h-3.5 w-3.5 text-xblue" />
             {tx("时序指标快照", "Metric Snapshot")}
           </span>
-          <Badge variant="outline">{metricEntries.length}</Badge>
+          <span className="text-[10px] text-muted-foreground">
+            {tx("选择指标查看曲线与溯源", "Select to view trend & lineage")}
+          </span>
         </div>
 
         {metricEntries.length === 0 ? (
-          <div className="rounded border border-dashed border-border py-3 text-center text-muted-foreground">
+          <div className="rounded-md bg-muted/30 py-3 text-center text-muted-foreground">
             {tx("暂无实时指标", "No active metrics")}
           </div>
         ) : (
           <div
-            className="grid grid-cols-2 gap-1.5"
+            className="divide-y divide-border/60 rounded-md bg-muted/25 overflow-hidden"
             data-testid="inspector-metrics-list"
           >
             {metricEntries.map(([mKey, mVal]) => {
@@ -218,41 +220,31 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
                 <button
                   key={mKey}
                   type="button"
-                  onClick={() => setSelectedMetric(mKey)}
+                  onClick={() => onSelectMetric(mKey)}
                   data-testid={`metric-item-${mKey}`}
-                  className={`rounded border px-2.5 py-2 text-left transition-colors cursor-pointer ${
+                  className={`w-full flex items-center justify-between gap-2 px-2.5 py-2 text-left transition-colors cursor-pointer ${
                     isSelected
-                      ? "border-xblue bg-xblue-soft text-xblue"
-                      : "border-border bg-background hover:bg-muted"
+                      ? "bg-xblue-soft text-xblue font-semibold"
+                      : "hover:bg-muted/70 text-foreground"
                   }`}
                 >
-                  <div className="font-mono-tech text-[11px] opacity-80 truncate">
-                    {mKey}
-                  </div>
-                  <div className="font-mono-tech text-sm font-semibold mt-0.5">
-                    {typeof mVal === "number" ? fmtNum(mVal, 2) : String(mVal)}
-                  </div>
+                  <span className="font-mono-tech text-xs truncate">{mKey}</span>
+                  <span className="inline-flex items-center gap-1 font-mono-tech tabular-nums text-xs font-semibold shrink-0">
+                    <span>
+                      {typeof mVal === "number" ? fmtNum(mVal, 2) : String(mVal)}
+                    </span>
+                    <ChevronRight className="h-3.5 w-3.5 opacity-60" />
+                  </span>
                 </button>
               );
             })}
           </div>
         )}
-
-        {selectedMetric && (
-          <>
-            <MetricChart
-              nodeId={node.id}
-              nodeTitle={node.title}
-              metric={selectedMetric}
-            />
-            <MetricExplainChain nodeId={node.id} metric={selectedMetric} />
-          </>
-        )}
       </div>
 
       {/* Associated Knowledge Documents */}
-      <div className="space-y-1.5 border-t border-border pt-3">
-        <div className="font-semibold flex items-center gap-1.5">
+      <div className="space-y-1.5 border-t border-border pt-2.5">
+        <div className="text-[11px] font-semibold text-muted-foreground flex items-center gap-1">
           <FileText className="h-3.5 w-3.5 text-xblue" />
           {tx("关联知识文档", "Linked Documents")} ({documents.length})
         </div>
@@ -266,7 +258,7 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
             {documents.map((doc) => (
               <div
                 key={`${doc.doc_id}-${doc.entity_id}`}
-                className="rounded border border-border p-2 space-y-1 bg-background"
+                className="rounded-md bg-muted/30 p-2 space-y-1"
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-medium truncate">{doc.title}</span>
@@ -275,7 +267,7 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
                 {doc.snippets.slice(0, 2).map((snip, idx) => (
                   <p
                     key={idx}
-                    className="text-[11px] text-muted-foreground leading-relaxed"
+                    className="text-[11px] text-muted-foreground leading-relaxed line-clamp-2"
                   >
                     {snip}
                   </p>
@@ -287,24 +279,25 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
       </div>
 
       {/* Entity Link Candidates Confirmation */}
-      <div className="space-y-2 border-t border-border pt-3">
+      <div className="space-y-2 border-t border-border pt-2.5">
         <div className="flex items-center justify-between">
-          <span className="font-semibold flex items-center gap-1.5">
+          <span className="text-[11px] font-semibold text-muted-foreground flex items-center gap-1">
             <Link2 className="h-3.5 w-3.5 text-xblue" />
             {tx("实体链接候选", "Entity Candidates")} ({candidates.length})
           </span>
           {canEdit && (
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               size="sm"
               disabled={resolving}
               onClick={() => void handleResolveEntities()}
+              className="text-xblue"
               data-testid="resolve-entities-btn"
             >
               {resolving
                 ? tx("对齐中…", "Resolving…")
-                : tx("实体对齐", "Align Entities")}
+                : tx("实体对齐", "Align")}
             </Button>
           )}
         </div>
@@ -324,7 +317,7 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
             {candidates.map((cand) => (
               <div
                 key={`${cand.entity_id}-${cand.node_id}`}
-                className="rounded border border-border p-2 flex items-center justify-between gap-2 bg-background"
+                className="rounded-md bg-muted/30 p-2 flex items-center justify-between gap-2"
               >
                 <div className="min-w-0">
                   <div className="font-medium flex items-center gap-1.5">
@@ -356,6 +349,7 @@ export function NodeInspector({ node, onExpandOneHop }: NodeInspectorProps) {
                       variant="ghost"
                       size="sm"
                       onClick={() => void handleReject(cand)}
+                      className="hover:text-red-600"
                       data-testid={`reject-entity-${cand.entity_id}`}
                     >
                       <X className="h-3 w-3" />

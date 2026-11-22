@@ -26,6 +26,7 @@ import {
   IconButton,
   Input,
   Pagination,
+  Select,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
@@ -748,10 +749,10 @@ export function OverlayEditor({
             onSubmit={(e) => void handleCreateLink(e)}
             className="grid grid-cols-1 md:grid-cols-5 gap-2.5"
           >
-            <select
+            <Select
               value={newLinkSrc}
               onChange={(e) => setNewLinkSrc(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              className="h-8 w-full"
               data-testid="overlay-new-link-src"
             >
               {nodes.map((n) => (
@@ -759,11 +760,11 @@ export function OverlayEditor({
                   [{n.type_name}] {n.title}
                 </option>
               ))}
-            </select>
-            <select
+            </Select>
+            <Select
               value={newLinkDst}
               onChange={(e) => setNewLinkDst(e.target.value)}
-              className="h-8 rounded-md border border-input bg-background px-2 text-xs"
+              className="h-8 w-full"
               data-testid="overlay-new-link-dst"
             >
               {nodes.map((n) => (
@@ -771,7 +772,7 @@ export function OverlayEditor({
                   [{n.type_name}] {n.title}
                 </option>
               ))}
-            </select>
+            </Select>
             <Input
               value={newLinkType}
               onChange={(e) => setNewLinkType(e.target.value)}

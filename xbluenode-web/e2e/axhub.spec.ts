@@ -462,7 +462,7 @@ test("AxHub /hub renders demo_pg & demo_orders, tests connectivity, previews tab
   await page.goto("/hub");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxHub · 数据接入与资产目录" })
+    page.getByRole("heading", { level: 1, name: "AxHub · 数据接入与目录" })
   ).toBeVisible();
 
   // 1. Verify seed connection demo_pg with status OK & non-echoing secret on edit
@@ -481,8 +481,9 @@ test("AxHub /hub renders demo_pg & demo_orders, tests connectivity, previews tab
     "placeholder",
     "已设置（留空保持不变）"
   );
+  await page.keyboard.press("Escape");
 
-  // 2. Verify seed dataset demo_orders & preview data table
+  // 2. Verify seed dataset demo_orders & wide detail drawer preview data table
   const demoDatasetRow = page.getByTestId("dataset-row-demo_orders");
   await expect(demoDatasetRow).toBeVisible();
   await page.getByTestId("preview-dataset-btn-demo_orders").click();
@@ -509,6 +510,7 @@ test("AxHub /hub renders demo_pg & demo_orders, tests connectivity, previews tab
   const lineageBox = await lineageCanvas.boundingBox();
   expect(lineageBox?.width ?? 0).toBeGreaterThan(50);
   expect(lineageBox?.height ?? 0).toBeGreaterThan(50);
+  await page.getByTestId("close-dataset-inspector-btn").click();
 
   // 5. Switch to Catalog Search & search "orders" -> hits demo_orders
   await page.getByTestId("axhub-nav-catalog").click();

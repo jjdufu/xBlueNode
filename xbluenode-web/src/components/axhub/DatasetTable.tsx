@@ -6,14 +6,15 @@ import {
 } from "@tanstack/react-table";
 import {
   Clock,
-  Eye,
-  Play,
   Plus,
   RefreshCw,
   Save,
+  Search,
   ShieldAlert,
+  Tag,
   Trash2,
   Webhook,
+  X,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import {
@@ -40,6 +41,7 @@ import {
   Button,
   Card,
   ConfirmDialog,
+  Drawer,
   EmptyState,
   Input,
   Modal,
@@ -90,14 +92,21 @@ export type DatasetDetailTab =
   | "columns"
   | "quality"
   | "history"
-  | "lineage"
-  | "webhooks";
+  | "lineage";
+
+const NUMERIC_PREVIEW_TYPES: ReadonlySet<DataType> = new Set([
+  "INT64",
+  "FLOAT64",
+  "DECIMAL",
+]);
 
 export interface DatasetTableProps {
   datasets: Dataset[];
   selectedDatasetId: string | null;
+  detailOpen: boolean;
   activeDetailTab: DatasetDetailTab;
   onSelectDataset: (id: string) => void;
+  onCloseDetail: () => void;
   onChangeDetailTab: (tab: DatasetDetailTab) => void;
   onFilterChange: (filters: {
     q?: string;
@@ -112,8 +121,10 @@ export interface DatasetTableProps {
 export function DatasetTable({
   datasets,
   selectedDatasetId,
+  detailOpen,
   activeDetailTab,
   onSelectDataset,
+  onCloseDetail,
   onChangeDetailTab,
   onFilterChange,
   onRefreshDatasets,
@@ -166,6 +177,7 @@ export function DatasetTable({
   const [newRuleOnFail, setNewRuleOnFail] = useState<QualityOnFail>("WARN");
 
   // Webhooks state
+  const [webhooksDrawerOpen, setWebhooksDrawerOpen] = useState(false);
   const [webhooks, setWebhooks] = useState<WebhookConfig[]>([]);
   const [whDatasetName, setWhDatasetName] = useState("");
   const [whSlug, setWhSlug] = useState("");
@@ -220,11 +232,11 @@ export function DatasetTable({
   const formatPreviewCell = useCallback(
     (val: unknown, colName: string, dataType: DataType): string => {
       if (val === null || val === undefined) return "NULL";
+      const isId =
+        colName === "id" ||
+        colName.endsWith("_id") ||
+        colName.endsWith("_no");
       if (typeof val === "number") {
-        const isId =
-          colName === "id" ||
-          colName.endsWith("_id") ||
-          colName.endsWith("_no");
         return isId ? String(val) : fmtNum(val, 4);
       }
       if (typeof val === "string") {
@@ -233,6 +245,13 @@ export function DatasetTable({
           ISO_TIMESTAMP_RE.test(val)
         ) {
           return fmtTime(val);
+        }
+        if (
+          NUMERIC_PREVIEW_TYPES.has(dataType) &&
+          val.trim() !== "" &&
+          Number.isFinite(Number(val))
+        ) {
+          return isId ? val.trim() : fmtNum(Number(val), 4);
         }
         return val;
       }
@@ -305,9 +324,17 @@ export function DatasetTable({
             const ds = info.row.original;
             return (
               <div>
-                <div className="font-mono-tech font-semibold text-foreground">
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onChangeDetailTab("preview");
+                    onSelectDataset(ds.id);
+                  }}
+                  className="font-mono-tech font-semibold text-foreground hover:text-xblue hover:underline text-left cursor-pointer"
+                >
                   {ds.name}
-                </div>
+                </button>
                 {ds.display_name && ds.display_name !== ds.name && (
                   <div className="text-[11px] text-muted-foreground">
                     {ds.display_name}
@@ -328,7 +355,9 @@ export function DatasetTable({
         columnHelper.accessor("sync_mode", {
           header: tx("同步模式", "Sync Mode"),
           cell: (info) => (
-            <Badge variant="neutral">{tEnum(info.getValue())}</Badge>
+            <span className="text-muted-foreground">
+              {tEnum(info.getValue())}
+            </span>
           ),
         }),
         columnHelper.accessor("row_count", {
@@ -336,7 +365,7 @@ export function DatasetTable({
           cell: (info) => {
             const ds = info.row.original;
             return (
-              <span className="font-mono-tech">
+              <span className="font-mono-tech tabular-nums">
                 {fmtNum(ds.row_count, 0)} {tx("行", "rows")} · v
                 {ds.schema_version}
               </span>
@@ -358,39 +387,34 @@ export function DatasetTable({
           cell: (info) => {
             const ds = info.row.original;
             return (
-              <div className="flex items-center gap-1.5">
-                <Button
+              <div className="flex items-center gap-1">
+                <button
                   type="button"
-                  variant="outline"
-                  size="sm"
                   onClick={(e) => {
                     e.stopPropagation();
-                    onSelectDataset(ds.id);
                     onChangeDetailTab("preview");
+                    onSelectDataset(ds.id);
                   }}
+                  className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-xblue hover:bg-xblue-soft/70 transition-colors cursor-pointer"
                   data-testid={`preview-dataset-btn-${ds.name}`}
                 >
-                  <Eye className="h-3 w-3" />
-                  {tx("预览", "Preview")}
-                </Button>
-                <Button
+                  {tx("详情", "Details")}
+                </button>
+                <button
                   type="button"
-                  variant="outline"
-                  size="sm"
                   disabled={!canSync || syncingId === ds.id}
                   onClick={(e) => {
                     e.stopPropagation();
                     void handleTriggerSync(ds);
                   }}
+                  className="inline-flex items-center gap-1 rounded px-2 py-1 text-xs font-medium text-xblue hover:bg-xblue-soft/70 disabled:opacity-40 disabled:pointer-events-none transition-colors cursor-pointer"
                   data-testid={`sync-dataset-btn-${ds.name}`}
                 >
-                  {syncingId === ds.id ? (
+                  {syncingId === ds.id && (
                     <RefreshCw className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Play className="h-3 w-3" />
                   )}
                   {tx("同步", "Sync")}
-                </Button>
+                </button>
                 <Button
                   type="button"
                   variant="ghost"
@@ -401,9 +425,10 @@ export function DatasetTable({
                     setPendingDeleteDs(ds);
                   }}
                   aria-label={tx("删除", "Delete")}
+                  className="hover:text-red-600 hover:bg-red-500/10"
                   data-testid={`delete-dataset-btn-${ds.name}`}
                 >
-                  <Trash2 className="h-3 w-3" />
+                  <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               </div>
             );
@@ -510,24 +535,22 @@ export function DatasetTable({
   }, [selectedDatasetId]);
 
   useEffect(() => {
-    if (!selectedDataset) return;
+    if (!detailOpen || !selectedDataset) return;
     if (activeDetailTab === "preview") {
       void loadPreviewAndSnapshots(selectedDataset.id, selectedSnapshotId);
     } else if (activeDetailTab === "columns") {
       void loadColumnsMeta(selectedDataset.id);
     } else if (activeDetailTab === "quality") {
       void loadQualityRules(selectedDataset.id);
-    } else if (activeDetailTab === "webhooks") {
-      void loadWebhooks();
     }
   }, [
+    detailOpen,
     selectedDataset,
     activeDetailTab,
     selectedSnapshotId,
     loadPreviewAndSnapshots,
     loadColumnsMeta,
     loadQualityRules,
-    loadWebhooks,
   ]);
 
   const applyFilters = (e: React.FormEvent) => {
@@ -678,35 +701,105 @@ export function DatasetTable({
     }
   };
 
+  const hasActiveFilters = Boolean(
+    filterQ.trim() || filterTag.trim() || filterSourceKind
+  );
+
+  const resetFilters = () => {
+    setFilterQ("");
+    setFilterTag("");
+    setFilterSourceKind("");
+    void onFilterChange({});
+  };
+
   return (
-    <div className="space-y-4" data-testid="datasets-section">
-      <Card className="p-4 space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
-          <div className="flex items-center gap-2">
-            <h2 className="text-sm font-semibold">
+    <div className="space-y-3" data-testid="datasets-section">
+      <Card className="p-3.5 space-y-3">
+        {/* Merged Header & Adaptive Filter Toolbar */}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <h2 className="text-sm font-semibold shrink-0 mr-1">
               {tx("数据集资产", "Datasets")}
             </h2>
-            <Badge variant="neutral">{fmtNum(datasets.length, 0)}</Badge>
+
+            <form
+              onSubmit={applyFilters}
+              className="flex flex-wrap items-center gap-2"
+            >
+              <div className="relative w-52">
+                <Search className="pointer-events-none absolute left-2.5 top-2.25 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  value={filterQ}
+                  onChange={(e) => setFilterQ(e.target.value)}
+                  placeholder={tx("搜索数据集名称", "Search dataset name")}
+                  className="pl-8"
+                  data-testid="dataset-filter-q"
+                />
+              </div>
+
+              <Select
+                value={filterSourceKind}
+                onChange={(e) => setFilterSourceKind(e.target.value)}
+                className="w-36"
+                data-testid="dataset-filter-source-kind"
+              >
+                <option value="">{tx("全部来源", "All Sources")}</option>
+                {SOURCE_KINDS.map((sk) => (
+                  <option key={sk} value={sk}>
+                    {formatSourceKind(sk)}
+                  </option>
+                ))}
+              </Select>
+
+              <div className="relative w-44">
+                <Tag className="pointer-events-none absolute left-2.5 top-2.25 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  value={filterTag}
+                  onChange={(e) => setFilterTag(e.target.value)}
+                  placeholder={tx("业务域 / 标签", "Domain or tag")}
+                  className="pl-8"
+                  data-testid="dataset-filter-tag"
+                />
+              </div>
+
+              <Button
+                type="submit"
+                variant="outline"
+                data-testid="dataset-filter-btn"
+              >
+                {tx("筛选", "Filter")}
+              </Button>
+
+              {hasActiveFilters && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={resetFilters}
+                >
+                  <X className="h-3 w-3" />
+                  {tx("重置", "Reset")}
+                </Button>
+              )}
+            </form>
           </div>
-          <div className="flex items-center gap-2">
+
+          <div className="flex items-center gap-1.5 shrink-0">
             <Button
               type="button"
               variant="outline"
               onClick={() => {
-                if (!selectedDataset && datasets[0]) {
-                  onSelectDataset(datasets[0].id);
-                }
-                onChangeDetailTab("webhooks");
+                setWebhooksDrawerOpen(true);
                 void loadWebhooks();
               }}
               data-testid="open-webhooks-btn"
             >
-              <Webhook className="h-3.5 w-3.5" />
-              {tx("实时推送", "Webhooks")}
+              <Webhook className="h-3.5 w-3.5 text-xblue" />
+              {tx("推送端点", "Webhooks")}
             </Button>
             <Button
               type="button"
-              variant="outline"
+              variant="ghost"
               onClick={() => void onRefreshDatasets()}
               data-testid="refresh-datasets-btn"
             >
@@ -748,51 +841,13 @@ export function DatasetTable({
           </div>
         )}
 
-        {/* Filter Bar */}
-        <form
-          onSubmit={applyFilters}
-          className="grid grid-cols-1 md:grid-cols-4 gap-2"
-        >
-          <Input
-            value={filterQ}
-            onChange={(e) => setFilterQ(e.target.value)}
-            placeholder="demo_orders"
-            data-testid="dataset-filter-q"
-          />
-          <Select
-            value={filterSourceKind}
-            onChange={(e) => setFilterSourceKind(e.target.value)}
-            data-testid="dataset-filter-source-kind"
-          >
-            <option value="">{tx("全部来源", "All Sources")}</option>
-            {SOURCE_KINDS.map((sk) => (
-              <option key={sk} value={sk}>
-                {formatSourceKind(sk)}
-              </option>
-            ))}
-          </Select>
-          <Input
-            value={filterTag}
-            onChange={(e) => setFilterTag(e.target.value)}
-            placeholder="supply_chain"
-            data-testid="dataset-filter-tag"
-          />
-          <Button
-            type="submit"
-            variant="outline"
-            data-testid="dataset-filter-btn"
-          >
-            {tx("筛选", "Filter")}
-          </Button>
-        </form>
-
         {/* Dataset Table */}
         <div className="overflow-x-auto rounded border border-border">
           <table
             className="w-full text-left text-xs"
             data-testid="dataset-table"
           >
-            <thead className="bg-muted border-b border-border">
+            <thead className="bg-muted/60 border-b border-border">
               {table.getHeaderGroups().map((headerGroup) => (
                 <tr key={headerGroup.id}>
                   {headerGroup.headers.map((header) => (
@@ -829,12 +884,19 @@ export function DatasetTable({
                       data-testid={`dataset-row-${ds.name}`}
                       className={`border-b border-border last:border-0 cursor-pointer transition-colors ${
                         isSelected
-                          ? "bg-xblue-soft/40"
+                          ? "bg-xblue-soft/55"
                           : "hover:bg-muted/40"
                       }`}
                     >
-                      {row.getAllCells().map((cell) => (
-                        <td key={cell.id} className="px-3 py-2.5">
+                      {row.getAllCells().map((cell, cIdx) => (
+                        <td
+                          key={cell.id}
+                          className={`px-3 py-2 ${
+                            cIdx === 0 && isSelected
+                              ? "border-l-2 border-l-xblue"
+                              : ""
+                          }`}
+                        >
                           <table.FlexRender cell={cell} />
                         </td>
                       ))}
@@ -847,29 +909,42 @@ export function DatasetTable({
         </div>
       </Card>
 
-      {/* Selected Dataset Governance & Inspector Workspace */}
-      {selectedDataset && (
-        <div className="space-y-3" data-testid="dataset-inspector">
-          <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-card px-3 pt-2">
-            <div className="flex flex-wrap items-center gap-2 text-xs pb-2">
-              <span className="text-muted-foreground">
-                {tx("当前数据集", "Selected")}:
-              </span>
-              <span className="font-mono-tech font-semibold text-xblue">
+      {/* Wide Right-Side Dataset Detail & Governance Drawer */}
+      <Drawer
+        open={Boolean(detailOpen && selectedDataset)}
+        onClose={onCloseDetail}
+        widthClass="max-w-5xl w-[82vw]"
+        testId="dataset-inspector"
+        closeTestId="close-dataset-inspector-btn"
+        title={
+          selectedDataset ? (
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <span className="font-mono-tech font-semibold text-foreground truncate">
                 {selectedDataset.name}
               </span>
+              {selectedDataset.display_name &&
+                selectedDataset.display_name !== selectedDataset.name && (
+                  <span className="text-xs font-normal text-muted-foreground truncate">
+                    · {selectedDataset.display_name}
+                  </span>
+                )}
               <Badge variant="outline">
                 {tEnum(selectedDataset.schema_policy)}
               </Badge>
               {selectedDataset.last_snapshot_id !== null && (
-                <span className="font-mono-tech text-[11px] text-muted-foreground">
+                <span className="font-mono-tech text-[11px] font-normal text-muted-foreground">
                   #{fmtNum(selectedDataset.last_snapshot_id, 0)}
                 </span>
               )}
             </div>
-
+          ) : (
+            tx("数据集详情", "Dataset Details")
+          )
+        }
+      >
+        {selectedDataset && (
+          <div className="space-y-3">
             <Tabs
-              className="border-b-0"
               value={activeDetailTab}
               onChange={(next) => onChangeDetailTab(next)}
               items={[
@@ -900,127 +975,143 @@ export function DatasetTable({
                   label: tx("血缘拓扑", "Lineage"),
                   testId: "dataset-tab-lineage",
                 },
-                {
-                  key: "webhooks",
-                  label: tx("实时推送", "Webhooks"),
-                  testId: "dataset-tab-webhooks",
-                },
               ]}
             />
-          </div>
 
-          {/* Tab 1: Bounded Data Preview + Snapshot Time-Travel */}
-          {activeDetailTab === "preview" && (
-            <Card className="p-4 space-y-3" data-testid="dataset-preview-panel">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-2 text-xs font-semibold">
-                  <span>
-                    {tx("样本预览", "Sample Preview")} ·{" "}
-                    {selectedDataset.lake_table}
+            {/* Tab 1: Bounded Data Preview + Snapshot Time-Travel */}
+            {activeDetailTab === "preview" && (
+              <div className="space-y-3" data-testid="dataset-preview-panel">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="text-muted-foreground font-mono-tech">
+                    {tx("湖表", "Lake Table")}: {selectedDataset.lake_table}
+                    {previewData && previewData.rows.length > 0
+                      ? ` · ${tx("抽样", "Sample")} ${fmtNum(previewData.rows.length, 0)} ${tx("行", "rows")}`
+                      : ""}
                   </span>
-                  {previewData && previewData.rows.length > 0 && (
-                    <Badge variant="neutral">
-                      {fmtNum(previewData.rows.length, 0)} {tx("行", "rows")}
-                    </Badge>
-                  )}
-                </div>
-                <div className="flex items-center gap-2 text-xs">
-                  <Clock className="h-3.5 w-3.5 text-xblue" />
-                  <span className="text-muted-foreground">
-                    {tx("快照版本", "Snapshot")}:
-                  </span>
-                  <Select
-                    value={selectedSnapshotId}
-                    onChange={(e) => setSelectedSnapshotId(e.target.value)}
-                    className="h-8 font-mono-tech"
-                    data-testid="snapshot-selector"
-                  >
-                    <option value="">{tx("当前最新", "Latest (HEAD)")}</option>
-                    {snapshots.map((snap) => (
-                      <option
-                        key={snap.snapshot_id}
-                        value={String(snap.snapshot_id)}
-                      >
-                        #{snap.snapshot_id} (+{fmtNum(snap.rows_added, 0)}/-
-                        {fmtNum(snap.rows_deleted, 0)}) ·{" "}
-                        {fmtTime(snap.committed_at, true)}
-                      </option>
-                    ))}
-                  </Select>
-                </div>
-              </div>
-
-              {previewLoading ? (
-                <div className="py-6 text-center text-xs text-muted-foreground">
-                  {tx("读取预览中…", "Loading sample rows…")}
-                </div>
-              ) : !previewData || previewData.columns.length === 0 ? (
-                <EmptyState
-                  title={tx("暂无可预览数据", "No preview rows available")}
-                />
-              ) : (
-                <div className="max-h-[440px] overflow-auto rounded border border-border">
-                  <table
-                    className="w-full border-collapse text-left text-xs"
-                    data-testid="dataset-preview-table"
-                  >
-                    <thead className="sticky top-0 z-10 bg-muted border-b border-border">
-                      <tr>
-                        {previewData.columns.map((col) => (
-                          <th
-                            key={col.name}
-                            className="px-3 py-2 font-mono-tech font-medium whitespace-nowrap"
-                          >
-                            <div className="flex items-center gap-1.5">
-                              <span>{col.name}</span>
-                              <span className="text-[10px] text-muted-foreground">
-                                {col.data_type}
-                              </span>
-                              {col.pii_category !== "NONE" && (
-                                <Badge variant="xblue">
-                                  {tEnum(col.pii_category)}
-                                </Badge>
-                              )}
-                            </div>
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {previewData.rows.map((row, idx) => (
-                        <tr
-                          key={idx}
-                          className="border-b border-border last:border-0 hover:bg-muted/35"
+                  <div className="flex items-center gap-2">
+                    <Clock className="h-3.5 w-3.5 text-xblue" />
+                    <span className="text-muted-foreground">
+                      {tx("快照版本", "Snapshot")}
+                    </span>
+                    <Select
+                      value={selectedSnapshotId}
+                      onChange={(e) => setSelectedSnapshotId(e.target.value)}
+                      className="font-mono-tech"
+                      data-testid="snapshot-selector"
+                    >
+                      <option value="">{tx("当前最新", "Latest (HEAD)")}</option>
+                      {snapshots.map((snap) => (
+                        <option
+                          key={snap.snapshot_id}
+                          value={String(snap.snapshot_id)}
                         >
+                          #{snap.snapshot_id} (+{fmtNum(snap.rows_added, 0)}/-
+                          {fmtNum(snap.rows_deleted, 0)}) ·{" "}
+                          {fmtTime(snap.committed_at, true)}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                </div>
+
+                {previewLoading ? (
+                  <div className="py-10 text-center text-xs text-muted-foreground">
+                    {tx("读取预览中…", "Loading sample rows…")}
+                  </div>
+                ) : !previewData || previewData.columns.length === 0 ? (
+                  <EmptyState
+                    title={tx("暂无可预览数据", "No preview rows available")}
+                  />
+                ) : (
+                  <div className="max-h-[calc(100vh-14rem)] overflow-auto rounded border border-border">
+                    <table
+                      className="w-full border-collapse text-left text-xs"
+                      data-testid="dataset-preview-table"
+                    >
+                      <thead className="sticky top-0 z-10 bg-muted border-b border-border">
+                        <tr>
                           {previewData.columns.map((col) => {
-                            const rawCell = row[col.name];
-                            const isNull =
-                              rawCell === null || rawCell === undefined;
+                            const isIdCol =
+                              col.name === "id" ||
+                              col.name.endsWith("_id") ||
+                              col.name.endsWith("_no");
+                            const isNumCol =
+                              !isIdCol &&
+                              NUMERIC_PREVIEW_TYPES.has(col.data_type);
                             return (
-                              <td
+                              <th
                                 key={col.name}
-                                className={`px-3 py-1.5 font-mono-tech whitespace-nowrap ${
-                                  isNull
-                                    ? "italic text-muted-foreground/70"
-                                    : "text-foreground"
+                                className={`px-3 py-2 font-mono-tech font-medium whitespace-nowrap ${
+                                  isNumCol ? "text-right" : "text-left"
                                 }`}
                               >
-                                {formatPreviewCell(
-                                  rawCell,
-                                  col.name,
-                                  col.data_type
-                                )}
-                              </td>
+                                <div
+                                  className={`inline-flex items-center gap-1.5 ${
+                                    isNumCol ? "justify-end" : ""
+                                  }`}
+                                >
+                                  <span>{col.name}</span>
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {col.data_type}
+                                  </span>
+                                  {col.pii_category !== "NONE" && (
+                                    <Badge variant="xblue">
+                                      {tEnum(col.pii_category)}
+                                    </Badge>
+                                  )}
+                                </div>
+                              </th>
                             );
                           })}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </Card>
-          )}
+                      </thead>
+                      <tbody>
+                        {previewData.rows.map((row, idx) => (
+                          <tr
+                            key={idx}
+                            className="border-b border-border last:border-0 hover:bg-muted/35"
+                          >
+                            {previewData.columns.map((col) => {
+                              const rawCell = row[col.name];
+                              const isNull =
+                                rawCell === null || rawCell === undefined;
+                              const isIdCol =
+                                col.name === "id" ||
+                                col.name.endsWith("_id") ||
+                                col.name.endsWith("_no");
+                              const isNumCol =
+                                !isIdCol &&
+                                (NUMERIC_PREVIEW_TYPES.has(col.data_type) ||
+                                  typeof rawCell === "number");
+                              return (
+                                <td
+                                  key={col.name}
+                                  className={`px-3 py-1.5 font-mono-tech whitespace-nowrap ${
+                                    isNumCol
+                                      ? "text-right tabular-nums"
+                                      : "text-left"
+                                  } ${
+                                    isNull
+                                      ? "italic text-muted-foreground/70"
+                                      : "text-foreground"
+                                  }`}
+                                >
+                                  {formatPreviewCell(
+                                    rawCell,
+                                    col.name,
+                                    col.data_type
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            )}
 
           {/* Tab 2: Column Metadata & PII Human Confirmation */}
           {activeDetailTab === "columns" && (
@@ -1322,103 +1413,110 @@ export function DatasetTable({
 
           {/* Tab 5: Lineage Topology Slot */}
           {activeDetailTab === "lineage" && renderLineageSlot?.(selectedDataset)}
-
-          {/* Tab 6: Webhook Management */}
-          {activeDetailTab === "webhooks" && (
-            <Card className="p-4 space-y-3" data-testid="webhooks-panel">
-              <div className="flex items-center justify-between border-b border-border pb-2">
-                <h3 className="text-xs font-semibold">
-                  {tx("实时推送端点", "Webhook Endpoints")}
-                </h3>
-                <Badge variant="neutral">{fmtNum(webhooks.length, 0)}</Badge>
-              </div>
-
-              <form
-                onSubmit={(e) => void handleCreateWebhook(e)}
-                className="grid grid-cols-1 md:grid-cols-5 gap-2"
-              >
-                <Input
-                  value={whDatasetName}
-                  disabled={!canAdmin}
-                  onChange={(e) => setWhDatasetName(e.target.value)}
-                  placeholder="iot_events"
-                  data-testid="webhook-dataset-input"
-                />
-                <Input
-                  value={whSlug}
-                  disabled={!canAdmin}
-                  onChange={(e) => setWhSlug(e.target.value)}
-                  placeholder="demo-events"
-                  data-testid="webhook-slug-input"
-                />
-                <Select
-                  value={whAuthScheme}
-                  disabled={!canAdmin}
-                  onChange={(e) =>
-                    setWhAuthScheme(e.target.value as WebhookAuthScheme)
-                  }
-                >
-                  <option value="HMAC_SHA256">HMAC-SHA256</option>
-                  <option value="BEARER">Bearer</option>
-                </Select>
-                <Input
-                  value={whRecordPath}
-                  disabled={!canAdmin}
-                  onChange={(e) => setWhRecordPath(e.target.value)}
-                  placeholder="$"
-                  className="font-mono-tech text-xs"
-                />
-                <Button
-                  type="submit"
-                  variant="outline"
-                  disabled={!canAdmin}
-                  data-testid="webhook-create-btn"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  {tx("创建端点", "Create")}
-                </Button>
-              </form>
-
-              {webhooks.length === 0 ? (
-                <EmptyState
-                  title={tx("暂无推送端点", "No webhook endpoints")}
-                />
-              ) : (
-                <div className="space-y-1.5">
-                  {webhooks.map((wh) => (
-                    <div
-                      key={wh.id}
-                      className="rounded border border-border px-3 py-2 text-xs flex items-center justify-between font-mono-tech"
-                    >
-                      <div className="flex items-center gap-2">
-                        <Badge variant="xblue">
-                          {wh.auth_scheme === "HMAC_SHA256"
-                            ? "HMAC-SHA256"
-                            : "Bearer"}
-                        </Badge>
-                        <span className="font-semibold">{wh.slug}</span>
-                        <span className="text-muted-foreground">
-                          {wh.record_path}
-                        </span>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        disabled={!canAdmin}
-                        onClick={() => void handleDeleteWebhook(wh.id)}
-                        aria-label={tx("删除", "Delete")}
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </Card>
-          )}
         </div>
       )}
+      </Drawer>
+
+      {/* Dedicated Global Webhook Endpoints Drawer */}
+      <Drawer
+        open={webhooksDrawerOpen}
+        onClose={() => setWebhooksDrawerOpen(false)}
+        widthClass="max-w-2xl"
+        testId="webhooks-panel"
+        title={
+          <span className="inline-flex items-center gap-2">
+            <Webhook className="h-4 w-4 text-xblue" />
+            <span>{tx("实时推送端点", "Webhook Endpoints")}</span>
+            <Badge variant="neutral">{fmtNum(webhooks.length, 0)}</Badge>
+          </span>
+        }
+      >
+        <div className="space-y-3">
+          <form
+            onSubmit={(e) => void handleCreateWebhook(e)}
+            className="grid grid-cols-1 md:grid-cols-5 gap-2"
+          >
+            <Input
+              value={whDatasetName}
+              disabled={!canAdmin}
+              onChange={(e) => setWhDatasetName(e.target.value)}
+              placeholder="iot_events"
+              data-testid="webhook-dataset-input"
+            />
+            <Input
+              value={whSlug}
+              disabled={!canAdmin}
+              onChange={(e) => setWhSlug(e.target.value)}
+              placeholder="demo-events"
+              data-testid="webhook-slug-input"
+            />
+            <Select
+              value={whAuthScheme}
+              disabled={!canAdmin}
+              onChange={(e) =>
+                setWhAuthScheme(e.target.value as WebhookAuthScheme)
+              }
+            >
+              <option value="HMAC_SHA256">HMAC-SHA256</option>
+              <option value="BEARER">Bearer</option>
+            </Select>
+            <Input
+              value={whRecordPath}
+              disabled={!canAdmin}
+              onChange={(e) => setWhRecordPath(e.target.value)}
+              placeholder="$"
+              className="font-mono-tech text-xs"
+            />
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={!canAdmin}
+              data-testid="webhook-create-btn"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {tx("创建端点", "Create")}
+            </Button>
+          </form>
+
+          {webhooks.length === 0 ? (
+            <EmptyState
+              title={tx("暂无推送端点", "No webhook endpoints")}
+            />
+          ) : (
+            <div className="space-y-1.5">
+              {webhooks.map((wh) => (
+                <div
+                  key={wh.id}
+                  className="rounded border border-border px-3 py-2 text-xs flex items-center justify-between font-mono-tech"
+                >
+                  <div className="flex items-center gap-2">
+                    <Badge variant="xblue">
+                      {wh.auth_scheme === "HMAC_SHA256"
+                        ? "HMAC-SHA256"
+                        : "Bearer"}
+                    </Badge>
+                    <span className="font-semibold">{wh.slug}</span>
+                    <span className="text-muted-foreground">
+                      {wh.record_path}
+                    </span>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={!canAdmin}
+                    onClick={() => void handleDeleteWebhook(wh.id)}
+                    aria-label={tx("删除", "Delete")}
+                    className="hover:text-red-600 hover:bg-red-500/10"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Drawer>
 
       {/* One-time Webhook Secret Modal */}
       <Modal

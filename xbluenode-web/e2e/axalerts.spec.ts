@@ -976,7 +976,7 @@ test("AxAlerts /alerts renders active OPEN alert, inspects timeline & sparkline 
   await expect(
     page.getByRole("heading", {
       level: 1,
-      name: "AxAlerts · 告警与规则中心",
+      name: "AxAlerts · 告警中心",
     })
   ).toBeVisible();
   await expect(page.getByTestId("alerts-polling-badge")).toContainText(

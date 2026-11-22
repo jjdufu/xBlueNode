@@ -70,12 +70,15 @@ function StudioRelationshipEdge({
     targetX,
     targetY,
     targetPosition,
-    borderRadius: 8,
+    borderRadius: 10,
+    offset: 24,
   });
 
   const spec = data?.spec;
   const selected = Boolean(data?.selected);
   const isDark = Boolean(data?.isDark);
+  const edgeIndex = data?.edgeIndex ?? 0;
+  const staggerY = edgeIndex % 3 === 0 ? -10 : edgeIndex % 3 === 1 ? 10 : 0;
   const badgeText = spec
     ? CARDINALITY_SHORT[spec.cardinality] ?? "M:N"
     : "M:N";
@@ -84,8 +87,8 @@ function StudioRelationshipEdge({
       ? "#3b82f6"
       : "#2563eb"
     : isDark
-      ? "#a1a1aa"
-      : "#71717a";
+      ? "#71717a"
+      : "#94a3b8";
 
   return (
     <>
@@ -95,7 +98,7 @@ function StudioRelationshipEdge({
         markerEnd={markerEnd}
         style={{
           stroke: strokeColor,
-          strokeWidth: selected ? 2.2 : 1.5,
+          strokeWidth: selected ? 2.2 : 1.6,
         }}
       />
       {spec && (
@@ -103,7 +106,7 @@ function StudioRelationshipEdge({
           <div
             style={{
               position: "absolute",
-              transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
+              transform: `translate(-50%, -50%) translate(${labelX}px,${labelY + staggerY}px)`,
               pointerEvents: "all",
             }}
             className="nodrag nopan"
@@ -116,10 +119,10 @@ function StudioRelationshipEdge({
                 data?.onSelectEdge(data.edgeIndex);
               }}
               className={cn(
-                "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-mono-tech shadow-xs transition-colors cursor-pointer",
+                "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-mono-tech shadow-xs backdrop-blur-xs transition-colors cursor-pointer",
                 selected
                   ? "border-xblue bg-xblue text-white"
-                  : "border-border bg-card text-foreground hover:border-xblue"
+                  : "border-border bg-card/95 text-foreground hover:border-xblue"
               )}
             >
               <span className="font-semibold">{spec.name}</span>
@@ -213,16 +216,33 @@ export function StudioCanvas({
     return stats;
   }, [issues, nodeTypes]);
 
+  // Collision-free initial placement using full card dimensions (224x156 + 44px margin)
   const flowNodes: StudioFlowNode[] = useMemo(() => {
+    const CARD_MIN_DX = 272;
+    const CARD_MIN_DY = 188;
     const placed: Array<{ x: number; y: number }> = [];
     return nodeTypes.map((nt, idx) => {
       const st = issueStatsByNode[nt.name] ?? { count: 0, hasError: false };
-      const x = Number.isFinite(nt.pos_x) ? nt.pos_x : 100 + idx * 340;
-      let y = Number.isFinite(nt.pos_y) ? nt.pos_y : 120;
+      let x = Number.isFinite(nt.pos_x)
+        ? nt.pos_x
+        : 96 + (idx % 3) * 320;
+      let y = Number.isFinite(nt.pos_y)
+        ? nt.pos_y
+        : 96 + Math.floor(idx / 3) * 212;
+      let shiftStep = 0;
       while (
-        placed.some((p) => Math.abs(p.x - x) < 80 && Math.abs(p.y - y) < 80)
+        placed.some(
+          (p) =>
+            Math.abs(p.x - x) < CARD_MIN_DX && Math.abs(p.y - y) < CARD_MIN_DY
+        )
       ) {
-        y += 280;
+        shiftStep += 1;
+        if (shiftStep % 2 === 1) {
+          y += CARD_MIN_DY;
+        } else {
+          x += CARD_MIN_DX;
+          y -= CARD_MIN_DY;
+        }
       }
       placed.push({ x, y });
       return {
@@ -282,7 +302,7 @@ export function StudioCanvas({
 
   const flowEdges: StudioFlowEdge[] = useMemo(() => {
     const activeStroke = isDark ? "#3b82f6" : "#2563eb";
-    const idleStroke = isDark ? "#a1a1aa" : "#71717a";
+    const idleStroke = isDark ? "#71717a" : "#94a3b8";
     return edgeTypes
       .map((et, idx) => ({ et, idx }))
       .filter(
@@ -309,7 +329,14 @@ export function StudioCanvas({
           },
         },
       }));
-  }, [edgeTypes, isDark, nodeNameSet, selectedEdgeIndex, onSelectEdge, onSelectNode]);
+  }, [
+    edgeTypes,
+    isDark,
+    nodeNameSet,
+    selectedEdgeIndex,
+    onSelectEdge,
+    onSelectNode,
+  ]);
 
   const handleConnect = useCallback(
     (connection: Connection) => {
@@ -339,14 +366,14 @@ export function StudioCanvas({
         layoutOptions: {
           "elk.algorithm": "layered",
           "elk.direction": "RIGHT",
-          "elk.layered.spacing.nodeNodeBetweenLayers": "160",
-          "elk.spacing.nodeNode": "84",
-          "elk.padding": "[top=56,left=48,bottom=48,right=48]",
+          "elk.layered.spacing.nodeNodeBetweenLayers": "180",
+          "elk.spacing.nodeNode": "96",
+          "elk.padding": "[top=64,left=48,bottom=48,right=48]",
         },
         children: nodeTypes.map((nt) => ({
           id: nt.name,
           width: 224,
-          height: 140,
+          height: 152,
         })),
         edges: edgeTypes
           .filter(
@@ -380,7 +407,7 @@ export function StudioCanvas({
       nodeTypes.forEach((nt, idx) => {
         fallback[nt.name] = {
           x: 96 + (idx % 3) * 352,
-          y: 96 + Math.floor(idx / 3) * 192,
+          y: 96 + Math.floor(idx / 3) * 204,
         };
       });
       onApplyLayoutPositions(fallback);
@@ -419,60 +446,53 @@ export function StudioCanvas({
 
   return (
     <div
-      className="relative h-[560px] w-full rounded-md border border-border bg-muted/20 overflow-hidden"
+      className="relative flex-1 min-h-[360px] w-full rounded-md border border-border bg-muted/15 overflow-hidden"
       data-testid="xbluestudio-canvas"
     >
-      {/* Top Floating Canvas Toolbar */}
-      <div className="absolute top-2.5 left-2.5 right-2.5 z-10 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
-        <div className="flex flex-wrap items-center gap-1.5 pointer-events-auto rounded-md border border-border bg-card/95 px-2 py-1.5 shadow-xs">
-          {canEdit && (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                data-testid="canvas-add-node-btn"
-                onClick={() => {
-                  setQuickAddNodeOpen((v) => !v);
-                  setQuickAddEdgeOpen(false);
-                }}
-              >
-                <Plus className="h-3.5 w-3.5" />
-                {tx("新增节点类型", "Add Node Type")}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                data-testid="canvas-add-edge-btn"
-                onClick={() => {
-                  setNewEdgeSrc(nodeTypes[0]?.name ?? "");
-                  setNewEdgeDst(nodeTypes[1]?.name ?? nodeTypes[0]?.name ?? "");
-                  setQuickAddEdgeOpen((v) => !v);
-                  setQuickAddNodeOpen(false);
-                }}
-              >
-                <Link2 className="h-3.5 w-3.5" />
-                {tx("新增关系连线", "Add Relation")}
-              </Button>
-            </>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid="canvas-elk-layout-btn"
-            onClick={() => void runElkLayout()}
-            disabled={layoutRunning || nodeTypes.length === 0}
-          >
-            <LayoutGrid className="h-3.5 w-3.5 text-xblue" />
-            {layoutRunning
-              ? tx("排布中…", "Arranging…")
-              : tx("自动分层布局", "Auto Layout")}
-          </Button>
-        </div>
-
-        <div className="pointer-events-auto rounded-md border border-border bg-card/95 px-2.5 py-1 text-[11px] font-mono-tech text-muted-foreground">
-          {tx("类型", "Types")} {nodeTypes.length} · {tx("关系", "Relations")}{" "}
-          {edgeTypes.length}
-        </div>
+      {/* Top Floating Canvas Toolbar (Deduplicated — counts live in PageHeader) */}
+      <div className="absolute top-2.5 left-2.5 z-10 flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-card/95 px-2 py-1.5 shadow-xs backdrop-blur-xs">
+        {canEdit && (
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="canvas-add-node-btn"
+              onClick={() => {
+                setQuickAddNodeOpen((v) => !v);
+                setQuickAddEdgeOpen(false);
+              }}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {tx("新增节点类型", "Add Node Type")}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              data-testid="canvas-add-edge-btn"
+              onClick={() => {
+                setNewEdgeSrc(nodeTypes[0]?.name ?? "");
+                setNewEdgeDst(nodeTypes[1]?.name ?? nodeTypes[0]?.name ?? "");
+                setQuickAddEdgeOpen((v) => !v);
+                setQuickAddNodeOpen(false);
+              }}
+            >
+              <Link2 className="h-3.5 w-3.5" />
+              {tx("新增关系连线", "Add Relation")}
+            </Button>
+          </>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          data-testid="canvas-elk-layout-btn"
+          onClick={() => void runElkLayout()}
+          disabled={layoutRunning || nodeTypes.length === 0}
+        >
+          <LayoutGrid className="h-3.5 w-3.5 text-xblue" />
+          {layoutRunning
+            ? tx("排布中…", "Arranging…")
+            : tx("自动分层布局", "Auto Layout")}
+        </Button>
       </div>
 
       {/* Quick Create Node Popover */}
@@ -612,7 +632,7 @@ export function StudioCanvas({
         }}
         onConnect={handleConnect}
         fitView
-        fitViewOptions={{ padding: 0.28, maxZoom: 1.0 }}
+        fitViewOptions={{ padding: 0.24, maxZoom: 0.95 }}
         proOptions={{ hideAttribution: true }}
       >
         <Background
@@ -621,16 +641,18 @@ export function StudioCanvas({
           size={1}
         />
         <Controls showInteractive={false} />
-        <MiniMap
-          pannable
-          zoomable
-          style={{ width: 130, height: 88 }}
-          nodeColor={(n) => {
-            const spec = (n.data as StudioFlowNode["data"] | undefined)?.spec;
-            return spec?.color || (isDark ? "#3b82f6" : "#2563eb");
-          }}
-          className="!bg-card !border !border-border !rounded"
-        />
+        {nodeTypes.length > 5 && (
+          <MiniMap
+            pannable
+            zoomable
+            style={{ width: 120, height: 80 }}
+            nodeColor={(n) => {
+              const spec = (n.data as StudioFlowNode["data"] | undefined)?.spec;
+              return spec?.color || (isDark ? "#3b82f6" : "#2563eb");
+            }}
+            className="!bg-card !border !border-border !rounded"
+          />
+        )}
       </ReactFlow>
 
       {/* Non-anchored cross-subgraph edges indicator */}

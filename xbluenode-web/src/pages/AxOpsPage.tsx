@@ -30,6 +30,7 @@ import { TemplateGallery } from "@/components/axops/TemplateGallery";
 import { WorkItemBoard } from "@/components/axops/WorkItemBoard";
 import { Card, PageHeader, Tabs } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 
 interface AxOpsTabSpec {
   readonly key: AxOpsTabKey;
@@ -214,7 +215,7 @@ export function AxOpsPage() {
           title={
             <span className="inline-flex items-center gap-2">
               <ServerCog className="h-4 w-4 text-xblue" />
-              {tx("AxOps · 运维与交付中心", "AxOps · Operations & Delivery")}
+              {tx(MODULE_META.axops.label, MODULE_META.axops.enLabel)}
             </span>
           }
         />
@@ -240,13 +241,9 @@ export function AxOpsPage() {
         title={
           <span className="inline-flex items-center gap-2">
             <ServerCog className="h-4 w-4 text-xblue" />
-            {tx("AxOps · 运维与交付中心", "AxOps · Operations & Delivery")}
+            {tx(MODULE_META.axops.label, MODULE_META.axops.enLabel)}
           </span>
         }
-        subtitle={tx(
-          "全链路健康探针、异步任务队列、数据保留策略、一致性备份、行业模板包与工作项交付。",
-          "Deep health probes, async job queues, retention policies, consistent backups, industry templates, and work items."
-        )}
       />
 
       <Tabs

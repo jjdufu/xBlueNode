@@ -17,7 +17,7 @@ import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 import type { FlowOperator } from "@/lib/api/enums";
 import type { OperatorSpecDto } from "@/lib/api/axflow";
-import { Badge, Button, Input } from "@/components/ui/primitives";
+import { Input, StatText } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 
 export const OPERATOR_I18N: Readonly<
@@ -196,35 +196,38 @@ export function OperatorPalette({
 
   return (
     <div
-      className="flex flex-col h-[540px] rounded-md border border-border bg-card text-card-foreground overflow-hidden"
+      className="flex flex-col h-full min-h-0 rounded-md border border-border bg-card text-card-foreground overflow-hidden"
       data-testid="axflow-operator-palette"
     >
-      <div className="p-3 border-b border-border space-y-2 shrink-0">
+      <div className="p-2.5 border-b border-border space-y-2 shrink-0">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold tracking-tight">
-            {tx("算子组件库", "Operator Library")}
+            {tx("算子组件库", "Operators")}
           </span>
-          <Badge variant="neutral">{operators.length}</Badge>
+          <StatText label="" value={operators.length} />
         </div>
         <div className="relative">
-          <Search className="h-3.5 w-3.5 text-muted-foreground absolute left-2.5 top-2.5 pointer-events-none" />
+          <Search className="h-3.5 w-3.5 text-muted-foreground absolute left-2.5 top-2 pointer-events-none" />
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="SQL_TRANSFORM"
-            className="h-8 pl-8 text-xs"
+            placeholder={tx("搜索算子…", "Search operators…")}
+            className="h-7 pl-8 text-xs"
             data-testid="operator-palette-search"
           />
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2.5 space-y-2">
+      {/* Compact Single-Row Draggable List (Long descriptions in native Tooltip) */}
+      <div className="flex-1 min-h-0 overflow-y-auto p-1.5 pb-3 space-y-0.5">
         {filtered.map((spec) => {
           const title = resolveOperatorTitle(spec, isZh);
           const desc = resolveOperatorDesc(spec, isZh);
+          const tip = desc ? `${title} (${spec.kind})\n${desc}` : `${title} (${spec.kind})`;
           return (
             <div
               key={spec.kind}
+              title={tip}
               draggable={canEdit}
               onDragStart={(e) => {
                 if (!canEdit) return;
@@ -240,44 +243,35 @@ export function OperatorPalette({
               }}
               data-testid={`palette-item-${spec.kind}`}
               className={cn(
-                "group rounded-md border border-border bg-background p-2.5 transition-colors space-y-1.5",
-                canEdit &&
-                  "hover:border-xblue/60 cursor-grab active:cursor-grabbing"
+                "group flex items-center justify-between gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-muted/70",
+                canEdit && "cursor-grab active:cursor-grabbing"
               )}
             >
-              <div className="flex items-start justify-between gap-1.5">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded border border-border bg-muted text-xblue">
-                    {renderOperatorIcon(spec.kind)}
-                  </span>
-                  <div className="min-w-0">
-                    <div className="truncate text-xs font-medium leading-tight">
-                      {title}
-                    </div>
-                    <div className="truncate font-mono-tech text-[10px] text-muted-foreground">
-                      {spec.kind}
-                    </div>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded bg-xblue-soft/75 text-xblue">
+                  {renderOperatorIcon(spec.kind)}
+                </span>
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-medium leading-tight text-foreground">
+                    {title}
+                  </div>
+                  <div className="truncate font-mono-tech text-[10px] text-muted-foreground">
+                    {spec.kind}
                   </div>
                 </div>
-                {canEdit && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-6 px-2 text-[11px]"
-                    data-testid={`palette-add-${spec.kind}`}
-                    onClick={() => onAddOperator(spec)}
-                    title={tx(`添加 ${title}`, `Add ${title}`)}
-                  >
-                    <Plus className="h-3 w-3" />
-                    {tx("添加", "Add")}
-                  </Button>
-                )}
               </div>
-              {desc && (
-                <p className="text-[11px] text-muted-foreground leading-snug line-clamp-2">
-                  {desc}
-                </p>
+
+              {canEdit && (
+                <button
+                  type="button"
+                  data-testid={`palette-add-${spec.kind}`}
+                  onClick={() => onAddOperator(spec)}
+                  title={tx(`添加 ${title}`, `Add ${title}`)}
+                  aria-label={tx(`添加 ${title}`, `Add ${title}`)}
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-xblue hover:bg-xblue-soft/60 transition-colors cursor-pointer"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
               )}
             </div>
           );

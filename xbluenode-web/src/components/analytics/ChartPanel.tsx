@@ -12,7 +12,7 @@ import { useI18n } from "@/i18n";
 import type { ChartSuggestion, QueryColumn } from "@/lib/api/analytics";
 import type { DataType } from "@/lib/api/enums";
 import { useTheme } from "@/lib/theme";
-import { Badge } from "@/components/ui/primitives";
+import { Badge, Select } from "@/components/ui/primitives";
 
 export type SupportedChartKind =
   | "BAR_CHART"
@@ -420,11 +420,11 @@ export function ChartPanel({
 
   return (
     <div
-      className="rounded-md border border-border bg-card overflow-hidden"
+      className="flex h-full flex-col rounded-md border border-border bg-card overflow-hidden"
       data-testid={testId}
     >
       {/* Chart Header & Switcher */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/30 px-3 py-2 text-xs">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/25 px-3 py-2 text-xs">
         <div className="flex items-center gap-2 min-w-0">
           <Sparkles className="h-3.5 w-3.5 text-xblue shrink-0" />
           <span className="font-medium truncate">
@@ -445,10 +445,10 @@ export function ChartPanel({
               activeKind === "PIE_CHART") && (
               <div className="flex items-center gap-1 text-[11px] shrink-0">
                 <span className="text-muted-foreground">X:</span>
-                <select
+                <Select
                   value={xField}
                   onChange={(e) => setManualXField(e.target.value)}
-                  className="h-6 max-w-[110px] rounded border border-input bg-background px-1.5 font-mono-tech text-[11px]"
+                  className="h-7 max-w-[128px] px-2 font-mono-tech text-[11px]"
                   data-testid="chart-x-select"
                 >
                   {columns.map((c) => (
@@ -456,12 +456,12 @@ export function ChartPanel({
                       {c.name}
                     </option>
                   ))}
-                </select>
+                </Select>
                 <span className="text-muted-foreground ml-1">Y:</span>
-                <select
+                <Select
                   value={yField}
                   onChange={(e) => setManualYField(e.target.value)}
-                  className="h-6 max-w-[110px] rounded border border-input bg-background px-1.5 font-mono-tech text-[11px]"
+                  className="h-7 max-w-[128px] px-2 font-mono-tech text-[11px]"
                   data-testid="chart-y-select"
                 >
                   {columns.map((c) => (
@@ -469,7 +469,7 @@ export function ChartPanel({
                       {c.name}
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
             )}
 
@@ -502,14 +502,15 @@ export function ChartPanel({
       {!hasData ? (
         <div
           key="chart-empty"
-          className="flex h-52 items-center justify-center px-4 text-xs text-muted-foreground"
+          className="flex flex-1 min-h-[180px] flex-col items-center justify-center gap-1.5 px-4 text-xs text-muted-foreground"
         >
-          {tx("暂无可绘制数据", "No data to visualize")}
+          <BarChart3 className="h-5 w-5 text-muted-foreground/45" />
+          <span>{tx("暂无可绘制数据", "No data to visualize")}</span>
         </div>
       ) : activeKind === "KPI_CARD" && kpiSummary ? (
         <div
           key="chart-kpi"
-          className="flex h-52 flex-col items-center justify-center gap-2 p-6 text-center"
+          className="flex flex-1 min-h-[180px] flex-col items-center justify-center gap-2 p-6 text-center"
           data-testid="chart-kpi-card"
         >
           <span className="font-mono-tech text-xs uppercase tracking-wider text-muted-foreground">
@@ -525,7 +526,7 @@ export function ChartPanel({
       ) : activeKind === "TABLE" ? (
         <div
           key="chart-table"
-          className="max-h-52 overflow-auto"
+          className="flex-1 min-h-[180px] overflow-auto"
           data-testid="chart-compact-table"
         >
           <table className="w-full border-collapse text-left text-xs">
@@ -565,10 +566,10 @@ export function ChartPanel({
       ) : (
         <div
           key="chart-echarts"
-          className="h-56 w-full p-2"
+          className="flex-1 min-h-[220px] w-full p-2"
           data-testid="chart-echarts-canvas"
         >
-          <div ref={containerRef} className="h-full w-full" />
+          <div ref={containerRef} className="h-full w-full min-h-[200px]" />
         </div>
       )}
     </div>

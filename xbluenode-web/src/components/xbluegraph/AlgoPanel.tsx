@@ -8,7 +8,7 @@ import {
   type TraversalDirection,
 } from "@/lib/api/xblue";
 import type { GraphAlgo } from "@/lib/api/enums";
-import { Badge, Button, Input, Select } from "@/components/ui/primitives";
+import { Badge, Button, Input, Select, Switch } from "@/components/ui/primitives";
 
 const ALGO_OPTIONS: readonly {
   value: GraphAlgo;
@@ -224,14 +224,14 @@ export function AlgoPanel({
         )}
 
         {algo === "CONNECTED_COMPONENTS" && (
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
+          <div className="flex items-center justify-between rounded-md bg-muted/30 px-2.5 py-1.5">
+            <span>{tx("无向弱连通模式", "Weakly Connected Mode")}</span>
+            <Switch
               checked={weakMode}
-              onChange={(e) => setWeakMode(e.target.checked)}
+              onCheckedChange={setWeakMode}
+              aria-label={tx("无向弱连通模式", "Weakly Connected Mode")}
             />
-            {tx("无向弱连通模式", "Weakly Connected Mode")}
-          </label>
+          </div>
         )}
 
         {errorMsg && (

@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Activity,
+  ChevronDown,
+  ChevronUp,
   GitBranch,
   Play,
   Plus,
@@ -7,9 +10,12 @@ import {
   Save,
   Settings2,
   Trash2,
+  UserCheck,
   Webhook,
+  X,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import { usePrincipal } from "@/lib/permissions";
 import {
   DEFAULT_RETRY_POLICY,
@@ -46,7 +52,10 @@ import {
   OperatorPalette,
   resolveOperatorTitle,
 } from "@/components/axflow/OperatorPalette";
-import { RunHistory } from "@/components/axflow/RunHistory";
+import {
+  RunHistory,
+  renderRunStatusBadge,
+} from "@/components/axflow/RunHistory";
 import { RunTimeline } from "@/components/axflow/RunTimeline";
 import { TriggerEditor } from "@/components/axflow/TriggerEditor";
 import { VersionDeployPanel } from "@/components/axflow/VersionDeployPanel";
@@ -54,12 +63,16 @@ import {
   Badge,
   Button,
   Card,
+  Drawer,
   Input,
+  Modal,
+  PageHeader,
   Select,
+  StatText,
+  Tabs,
 } from "@/components/ui/primitives";
-import { cn } from "@/lib/utils";
 
-type InspectorTab = "node" | "trigger" | "version";
+type InspectorTab = "node" | "version";
 
 function buildDefaultConfigFromSpec(
   spec: OperatorSpecDto
@@ -108,12 +121,13 @@ export function AxFlowPage() {
   const [flows, setFlows] = useState<FlowRecord[]>([]);
   const [selectedFlowId, setSelectedFlowId] = useState<string | null>(null);
 
-  // Create flow inline bar state
+  // Create flow modal state
   const [createOpen, setCreateOpen] = useState(false);
   const [newFlowName, setNewFlowName] = useState("");
   const [newFlowDesc, setNewFlowDesc] = useState("");
   const [newFlowSlug, setNewFlowSlug] = useState("");
   const [creating, setCreating] = useState(false);
+  const [confirmDeleteFlow, setConfirmDeleteFlow] = useState(false);
 
   // Draft DAG editing state
   const [draftName, setDraftName] = useState("");
@@ -126,12 +140,13 @@ export function AxFlowPage() {
   const [draftIssues, setDraftIssues] = useState<FlowIssue[]>([]);
   const [isDirty, setIsDirty] = useState(false);
 
-  // Selection & Inspector state
+  // Selection, Inspector & Trigger Popover state
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeIndex, setSelectedEdgeIndex] = useState<number | null>(
     null
   );
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("node");
+  const [triggerPopoverOpen, setTriggerPopoverOpen] = useState(false);
 
   // Versions & Deployments state
   const [versions, setVersions] = useState<FlowVersionRecord[]>([]);
@@ -141,7 +156,7 @@ export function AxFlowPage() {
   const [publishing, setPublishing] = useState(false);
   const [deployingEnv, setDeployingEnv] = useState<Environment | null>(null);
 
-  // Runs & Timeline state
+  // Runs & Collapsible IDE Run Monitor state
   const [runEnvironment, setRunEnvironment] = useState<Environment>("TEST");
   const [startingRun, setStartingRun] = useState(false);
   const [runs, setRuns] = useState<FlowRunRecord[]>([]);
@@ -150,8 +165,11 @@ export function AxFlowPage() {
     useState<FlowRunRecord | null>(null);
   const [runSteps, setRunSteps] = useState<FlowStepRecord[]>([]);
   const [runActions, setRunActions] = useState<ActionLogRecord[]>([]);
+  // Collapsed 34px IDE status bar by default; auto-expands on run trigger
+  const [runDockCollapsed, setRunDockCollapsed] = useState<boolean>(true);
 
-  // Approvals state
+  // Global Approvals Drawer state
+  const [approvalDrawerOpen, setApprovalDrawerOpen] = useState(false);
   const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
   const [approvalStatusFilter, setApprovalStatusFilter] = useState<
     ApprovalStatus | "ALL"
@@ -174,6 +192,7 @@ export function AxFlowPage() {
     setDraftTrigger(flow.trigger_cfg);
     setDraftIssues(flow.issues);
     setIsDirty(false);
+    setConfirmDeleteFlow(false);
     setSelectedNodeId(flow.nodes[0]?.id ?? null);
     setSelectedEdgeIndex(null);
   }, []);
@@ -244,8 +263,9 @@ export function AxFlowPage() {
 
         setRunSteps(stepsRes.items);
         setRunActions(actionsRes.items);
+        return detail;
       } catch {
-        // ignore transient polling errors
+        return null;
       }
     },
     []
@@ -328,12 +348,10 @@ export function AxFlowPage() {
     };
   }, [selectedFlowId, hydrateDraftFromFlow, loadFlowVersionsAndRuns]);
 
-  // Reload approvals when filter changes
   useEffect(() => {
     void loadApprovals();
   }, [loadApprovals]);
 
-  // Load telemetry when selectedRunId changes
   useEffect(() => {
     if (!selectedRunId) {
       setActiveRunDetail(null);
@@ -349,7 +367,6 @@ export function AxFlowPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedRunId, refreshRunTelemetry]);
 
-  // Auto-poll while selected run is non-terminal
   const isRunActive =
     activeRunDetail !== null &&
     (activeRunDetail.status === "PENDING" ||
@@ -365,7 +382,15 @@ export function AxFlowPage() {
     return () => window.clearInterval(timer);
   }, [isRunActive, selectedRunId, refreshRunTelemetry, loadApprovals]);
 
-  // Compute latest step attempt badge per node for FlowCanvas
+  useEffect(() => {
+    if (!triggerPopoverOpen) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setTriggerPopoverOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [triggerPopoverOpen]);
+
   const stepStatusByNodeId = useMemo(() => {
     const map: Record<string, NodeStepRuntimeBadge> = {};
     for (const st of runSteps) {
@@ -395,6 +420,11 @@ export function AxFlowPage() {
   const prodDeployment = useMemo(
     () => deployments.find((d) => d.environment === "PROD") ?? null,
     [deployments]
+  );
+
+  const pendingApprovalsCount = useMemo(
+    () => approvals.filter((a) => a.status === "PENDING").length,
+    [approvals]
   );
 
   // Handlers: Flow CRUD
@@ -484,6 +514,7 @@ export function AxFlowPage() {
     if (!selectedFlowId || !canEdit) return;
     setError(null);
     setNotice(null);
+    setConfirmDeleteFlow(false);
     try {
       await axflowApi.deleteFlow(selectedFlowId);
       const remaining = flows.filter((f) => f.id !== selectedFlowId);
@@ -527,6 +558,7 @@ export function AxFlowPage() {
       setDraftNodes((prev) => [...prev, newNode]);
       setSelectedEdgeIndex(null);
       setSelectedNodeId(newId);
+      setTriggerPopoverOpen(false);
       setInspectorTab("node");
       setIsDirty(true);
     },
@@ -720,6 +752,7 @@ export function AxFlowPage() {
   const handleStartRun = async (req?: StartFlowRunRequest) => {
     if (!selectedFlowId || !canRun) return;
     setStartingRun(true);
+    setRunDockCollapsed(false);
     setError(null);
     setNotice(null);
     try {
@@ -734,11 +767,18 @@ export function AxFlowPage() {
       setRuns(runsRes.items);
 
       const runId = started.run_id || runsRes.items[0]?.id || null;
+      let detail: FlowRunRecord | null = null;
       if (runId) {
         setSelectedRunId(runId);
-        await refreshRunTelemetry(runId, runsRes.items);
+        detail = await refreshRunTelemetry(runId, runsRes.items);
       }
       await loadApprovals();
+      if (
+        detail?.status === "WAITING_APPROVAL" ||
+        runsRes.items.find((r) => r.id === runId)?.status === "WAITING_APPROVAL"
+      ) {
+        setApprovalDrawerOpen(true);
+      }
       setNotice(
         started.existing
           ? tx(
@@ -820,194 +860,135 @@ export function AxFlowPage() {
   };
 
   return (
-    <div className="space-y-3.5">
-      {/* Page Header & Global Flow Bar — h1 preserves smoke.spec.ts & axflow.spec.ts zh-CN assertion */}
-      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3 border-b border-border pb-3.5">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-lg font-semibold tracking-tight">
-            {tx(
-              "AxFlow · 智能编排流水线",
-              "AxFlow · Pipeline Orchestrator"
+    <div className="flex flex-1 min-h-0 flex-col gap-2 overflow-hidden">
+      {/* Unified Header — Single Source of Save & Run Actions + Global Approval Drawer Entry */}
+      <PageHeader
+        className="shrink-0 pb-2"
+        title={tx(MODULE_META.axflow.label, MODULE_META.axflow.enLabel)}
+        badges={
+          <div className="flex items-center gap-2 pl-1">
+            <StatText
+              label={tx("流水线", "Flows")}
+              value={flows.length}
+            />
+          </div>
+        }
+        actions={
+          <>
+            <Select
+              data-testid="axflow-flow-select"
+              value={selectedFlowId ?? ""}
+              onChange={(e) => handleSelectFlowId(e.target.value)}
+              disabled={flows.length === 0}
+              className="h-8 w-52 font-medium"
+            >
+              {flows.length === 0 ? (
+                <option value="">{tx("暂无流水线", "No pipelines")}</option>
+              ) : (
+                flows.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {f.name}
+                  </option>
+                ))
+              )}
+            </Select>
+
+            {testDeployment && (
+              <Badge variant="neutral" data-testid="axflow-badge-test">
+                TEST v{testDeployment.version}
+              </Badge>
             )}
-          </h1>
-          <Badge variant="outline">
-            {flows.length} {tx("流水线", "Flows")}
-          </Badge>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Flow Selector */}
-          <Select
-            data-testid="axflow-flow-select"
-            value={selectedFlowId ?? ""}
-            onChange={(e) => handleSelectFlowId(e.target.value)}
-            disabled={flows.length === 0}
-            className="h-8 min-w-48 font-medium"
-          >
-            {flows.length === 0 ? (
-              <option value="">{tx("暂无流水线", "No pipelines")}</option>
-            ) : (
-              flows.map((f) => (
-                <option key={f.id} value={f.id}>
-                  {f.name}
-                </option>
-              ))
+            {prodDeployment && (
+              <Badge variant="xblue" data-testid="axflow-badge-prod">
+                PROD v{prodDeployment.version}
+              </Badge>
             )}
-          </Select>
 
-          {/* Active Deployment Badges */}
-          {testDeployment && (
-            <Badge variant="neutral" data-testid="axflow-badge-test">
-              TEST v{testDeployment.version}
-            </Badge>
-          )}
-          {prodDeployment && (
-            <Badge variant="xblue" data-testid="axflow-badge-prod">
-              PROD v{prodDeployment.version}
-            </Badge>
-          )}
-
-          {canEdit && (
+            {/* Global Approval Inbox Drawer Trigger (Decoupled from Bottom Run Monitor) */}
             <Button
               type="button"
               variant="outline"
-              size="sm"
-              className="h-8 px-2.5"
-              data-testid="axflow-new-flow-toggle"
-              onClick={() => setCreateOpen((v) => !v)}
+              data-testid="open-approval-drawer-btn"
+              onClick={() => setApprovalDrawerOpen(true)}
             >
-              <Plus className="h-3.5 w-3.5" />
-              {tx("新建流水线", "New Flow")}
-            </Button>
-          )}
-
-          {selectedFlowId && (
-            <>
-              {canEdit && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  className="h-8 px-2.5"
-                  data-testid="header-save-flow-btn"
-                  disabled={saving}
-                  onClick={() => void handleSaveDraft()}
+              <UserCheck className="h-3.5 w-3.5 text-xblue" />
+              <span>{tx("审批待办", "Approvals")}</span>
+              {pendingApprovalsCount > 0 && (
+                <Badge
+                  variant="warning"
+                  data-testid="approval-inbox-count"
                 >
-                  <Save className="h-3.5 w-3.5" />
-                  {tx("保存草稿", "Save Draft")}
-                </Button>
+                  {pendingApprovalsCount}
+                </Badge>
               )}
+            </Button>
 
-              {canRun && (
-                <div className="flex items-center gap-1 rounded-md border border-border bg-muted/30 p-0.5">
-                  <Select
-                    data-testid="axflow-run-env-select"
-                    value={runEnvironment}
-                    onChange={(e) =>
-                      setRunEnvironment(e.target.value as Environment)
-                    }
-                    className="h-7 px-2 font-mono-tech text-[11px]"
-                  >
-                    <option value="TEST">TEST</option>
-                    <option value="PROD">PROD</option>
-                  </Select>
+            {canEdit && (
+              <Button
+                type="button"
+                variant="outline"
+                data-testid="axflow-new-flow-toggle"
+                onClick={() => setCreateOpen(true)}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {tx("新建流水线", "New Flow")}
+              </Button>
+            )}
+
+            {selectedFlowId && (
+              <>
+                {canEdit && (
                   <Button
                     type="button"
-                    size="sm"
-                    className="h-7 px-3"
-                    data-testid="axflow-run-btn"
-                    disabled={startingRun}
-                    onClick={() => void handleStartRun()}
+                    variant="outline"
+                    data-testid="header-save-flow-btn"
+                    disabled={saving}
+                    onClick={() => void handleSaveDraft()}
                   >
-                    <Play className="h-3.5 w-3.5" />
-                    {startingRun
-                      ? tx("启动中…", "Starting…")
-                      : tx("运行流水线", "Run Flow")}
+                    <Save className="h-3.5 w-3.5" />
+                    {saving
+                      ? tx("保存中…", "Saving…")
+                      : tx("保存草稿", "Save Draft")}
                   </Button>
-                </div>
-              )}
-            </>
-          )}
-        </div>
-      </div>
+                )}
 
-      {/* Error & Notice Alerts */}
-      {error && (
-        <Card
-          data-testid="axflow-error-banner"
-          className="p-3 border-red-500/40 bg-red-500/5 text-xs text-red-700 dark:text-red-300"
-        >
-          <span className="font-mono-tech font-semibold">
-            {tx("错误：", "Error: ")}
-          </span>
-          {error}
-        </Card>
-      )}
+                {canRun && (
+                  <div className="flex items-center gap-1 rounded-md border border-border bg-muted/25 p-0.5">
+                    <Select
+                      data-testid="axflow-run-env-select"
+                      value={runEnvironment}
+                      onChange={(e) =>
+                        setRunEnvironment(e.target.value as Environment)
+                      }
+                      className="h-7 w-20 px-2 font-mono-tech text-[11px] border-0 bg-transparent"
+                    >
+                      <option value="TEST">TEST</option>
+                      <option value="PROD">PROD</option>
+                    </Select>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="h-7 px-3"
+                      data-testid="axflow-run-btn"
+                      disabled={startingRun}
+                      onClick={() => void handleStartRun()}
+                    >
+                      <Play className="h-3.5 w-3.5" />
+                      {startingRun
+                        ? tx("启动中…", "Starting…")
+                        : tx("运行流水线", "Run Flow")}
+                    </Button>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        }
+      />
 
-      {notice && (
-        <Card
-          data-testid="axflow-notice-banner"
-          className="p-2.5 border-xblue/30 bg-xblue-soft/60 text-xs text-foreground"
-        >
-          {notice}
-        </Card>
-      )}
-
-      {/* Inline Create Flow Form */}
-      {createOpen && canEdit && (
-        <Card
-          data-testid="axflow-create-card"
-          className="p-3.5 flex flex-col md:flex-row items-stretch md:items-center gap-2"
-        >
-          <Input
-            data-testid="new-flow-name-input"
-            placeholder="daily_supply_refresh"
-            value={newFlowName}
-            onChange={(e) => setNewFlowName(e.target.value)}
-            className="h-8 text-xs"
-          />
-          <Input
-            data-testid="new-flow-desc-input"
-            placeholder={tx("业务流程说明", "Pipeline description")}
-            value={newFlowDesc}
-            onChange={(e) => setNewFlowDesc(e.target.value)}
-            className="h-8 text-xs"
-          />
-          <Input
-            data-testid="new-flow-slug-input"
-            placeholder="daily-supply-hook"
-            value={newFlowSlug}
-            onChange={(e) => setNewFlowSlug(e.target.value)}
-            className="h-8 text-xs font-mono-tech md:w-48"
-          />
-          <div className="flex items-center gap-1.5 shrink-0">
-            <Button
-              type="button"
-              size="sm"
-              className="h-8 px-3"
-              data-testid="confirm-create-flow-btn"
-              disabled={!newFlowName.trim() || creating}
-              onClick={() => void handleCreateFlow()}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {creating ? tx("创建中…", "Creating…") : tx("创建", "Create")}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="h-8 px-2.5"
-              onClick={() => setCreateOpen(false)}
-            >
-              {tx("取消", "Cancel")}
-            </Button>
-          </div>
-        </Card>
-      )}
-
-      {/* Flow Metadata Strip */}
+      {/* Compact Single-Row Flow Metadata + Trigger Popover Strip */}
       {selectedFlowId && (
-        <Card className="px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="shrink-0 relative rounded-md border border-border bg-card px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs">
           <div className="flex flex-wrap items-center gap-2 flex-1 min-w-60">
             <GitBranch className="h-3.5 w-3.5 text-xblue shrink-0" />
             <Input
@@ -1018,7 +999,7 @@ export function AxFlowPage() {
                 setDraftName(e.target.value);
                 setIsDirty(true);
               }}
-              className="h-7 w-52 text-xs font-semibold"
+              className="h-7 w-48 text-xs font-semibold"
             />
             <Input
               data-testid="flow-draft-desc-input"
@@ -1032,129 +1013,79 @@ export function AxFlowPage() {
               className="h-7 flex-1 min-w-44 text-xs text-muted-foreground"
             />
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant="outline">
-              {tx("触发:", "Trigger:")} {tEnum(draftTrigger.type)}
-            </Badge>
+
+          <div className="flex items-center gap-1.5">
             {isDirty && (
-              <Badge variant="xblue">{tx("草稿已修改", "Modified")}</Badge>
+              <Badge variant="xblue">{tx("已修改", "Modified")}</Badge>
             )}
-            {canEdit && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="h-7 px-2"
-                data-testid="delete-flow-btn"
-                onClick={() => void handleDeleteCurrentFlow()}
-                title={tx("删除流水线", "Delete pipeline")}
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            )}
-          </div>
-        </Card>
-      )}
 
-      {/* Main 3-Column IDE Workbench — Wide Right Inspector (372px) */}
-      <div className="flex flex-col xl:flex-row gap-4 items-stretch">
-        {/* Left: Operator Palette */}
-        <div className="w-full xl:w-[264px] shrink-0">
-          <OperatorPalette
-            operators={operators}
-            onAddOperator={(spec) => addOperatorNode(spec)}
-          />
-        </div>
-
-        {/* Center: ReactFlow DAG Canvas */}
-        <div className="flex-1 min-w-0">
-          <FlowCanvas
-            nodes={draftNodes}
-            edges={draftEdges}
-            issues={draftIssues}
-            stepStatusByNodeId={stepStatusByNodeId}
-            selectedNodeId={selectedNodeId}
-            selectedEdgeIndex={selectedEdgeIndex}
-            onSelectNode={(id) => {
-              setSelectedNodeId(id);
-              if (id) setInspectorTab("node");
-            }}
-            onSelectEdge={(idx) => {
-              setSelectedEdgeIndex(idx);
-              if (idx !== null) setInspectorTab("node");
-            }}
-            onUpdateNodePos={handleUpdateNodePos}
-            onApplyLayout={handleApplyLayout}
-            onConnectNodes={handleConnectNodes}
-            onUpdateEdge={handleUpdateEdge}
-            onDeleteEdge={handleDeleteEdge}
-            onDropOperator={handleDropOperator}
-          />
-        </div>
-
-        {/* Right: Tabbed Inspector (Node / Trigger / Version & Deploy) */}
-        <div className="w-full xl:w-[372px] shrink-0 flex flex-col h-[540px] rounded-md border border-border bg-card text-card-foreground overflow-hidden">
-          <div className="grid grid-cols-3 border-b border-border bg-muted/30 p-1 gap-1 text-xs shrink-0">
-            <button
+            {/* Trigger Configuration Popover Button (Replaces 80%-empty right inspector tab) */}
+            <Button
               type="button"
-              data-testid="inspector-tab-node"
-              onClick={() => setInspectorTab("node")}
-              className={cn(
-                "inline-flex items-center justify-center gap-1 rounded py-1.5 font-medium transition-colors cursor-pointer",
-                inspectorTab === "node"
-                  ? "bg-card text-foreground shadow-xs"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Settings2 className="h-3.5 w-3.5" />
-              {tx("节点配置", "Step")}
-            </button>
-            <button
-              type="button"
+              variant={triggerPopoverOpen ? "primary" : "outline"}
+              size="sm"
               data-testid="inspector-tab-trigger"
-              onClick={() => setInspectorTab("trigger")}
-              className={cn(
-                "inline-flex items-center justify-center gap-1 rounded py-1.5 font-medium transition-colors cursor-pointer",
-                inspectorTab === "trigger"
-                  ? "bg-card text-foreground shadow-xs"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
+              onClick={() => setTriggerPopoverOpen((v) => !v)}
             >
               <Webhook className="h-3.5 w-3.5" />
-              {tx("触发器", "Trigger")}
-            </button>
-            <button
-              type="button"
-              data-testid="inspector-tab-version"
-              onClick={() => setInspectorTab("version")}
-              className={cn(
-                "inline-flex items-center justify-center gap-1 rounded py-1.5 font-medium transition-colors cursor-pointer",
-                inspectorTab === "version"
-                  ? "bg-card text-foreground shadow-xs"
-                  : "text-muted-foreground hover:text-foreground"
-              )}
-            >
-              <Rocket className="h-3.5 w-3.5" />
-              {tx("版本部署", "Release")}
-            </button>
+              <span>
+                {tx("触发器:", "Trigger:")} {tEnum(draftTrigger.type)}
+              </span>
+            </Button>
+
+            {canEdit &&
+              (confirmDeleteFlow ? (
+                <div className="flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setConfirmDeleteFlow(false)}
+                  >
+                    {tx("取消", "Cancel")}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="danger"
+                    size="sm"
+                    data-testid="delete-flow-btn"
+                    onClick={() => void handleDeleteCurrentFlow()}
+                  >
+                    {tx("删除", "Delete")}
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 px-2 text-muted-foreground hover:text-red-600"
+                  data-testid="delete-flow-btn"
+                  onClick={() => setConfirmDeleteFlow(true)}
+                  title={tx("删除流水线", "Delete pipeline")}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </Button>
+              ))}
           </div>
 
-          <div className="flex-1 min-h-0 overflow-y-auto p-3.5">
-            {inspectorTab === "node" && (
-              <NodeConfigForm
-                node={selectedNode}
-                allNodes={draftNodes}
-                allEdges={draftEdges}
-                operators={operators}
-                selectedEdge={selectedEdgeObj}
-                onChangeNode={handleUpdateNode}
-                onDeleteNode={handleDeleteNode}
-                onUpdateEdge={handleUpdateEdge}
-                onDeleteEdge={handleDeleteEdge}
-              />
-            )}
-
-            {inspectorTab === "trigger" && (
+          {/* Anchored Trigger Configuration Popover (Positioned left of Right Inspector so tabs stay clickable) */}
+          {triggerPopoverOpen && (
+            <div className="absolute right-2 xl:right-[380px] top-full mt-1.5 z-30 w-96 rounded-md border border-border bg-card p-3.5 shadow-xl space-y-2.5">
+              <div className="flex items-center justify-between border-b border-border pb-2">
+                <span className="font-semibold text-xs flex items-center gap-1.5">
+                  <Webhook className="h-3.5 w-3.5 text-xblue" />
+                  {tx("流水线触发设置", "Pipeline Trigger")}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setTriggerPopoverOpen(false)}
+                  className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
+                  aria-label={tx("关闭触发器设置", "Close trigger settings")}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
               <TriggerEditor
                 flowId={selectedFlowId}
                 slug={draftSlug}
@@ -1169,19 +1100,140 @@ export function AxFlowPage() {
                   setIsDirty(true);
                 }}
               />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Error & Notice Alerts */}
+      {error && (
+        <Card
+          data-testid="axflow-error-banner"
+          className="shrink-0 px-3 py-2 border-red-500/40 bg-red-500/5 text-xs text-red-700 dark:text-red-300 flex items-center justify-between"
+        >
+          <span>
+            <strong className="font-mono-tech">
+              {tx("错误：", "Error: ")}
+            </strong>
+            {error}
+          </span>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            className="text-muted-foreground hover:text-foreground cursor-pointer"
+          >
+            {tx("关闭", "Close")}
+          </button>
+        </Card>
+      )}
+
+      {notice && (
+        <Card
+          data-testid="axflow-notice-banner"
+          className="shrink-0 px-3 py-1.5 border-xblue/30 bg-xblue-soft/60 text-xs text-foreground flex items-center justify-between"
+        >
+          <span>{notice}</span>
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            className="text-muted-foreground hover:text-foreground cursor-pointer"
+          >
+            {tx("关闭", "Close")}
+          </button>
+        </Card>
+      )}
+
+      {/* Locked 100vh 3-Column IDE Workbench (Global sidebar auto-collapsed to 56px) */}
+      <div className="flex flex-1 min-h-0 flex-col xl:flex-row gap-3 overflow-hidden">
+        {/* Left: Compact Operator Palette (216px) */}
+        <div className="w-full xl:w-[216px] shrink-0 h-full min-h-0">
+          <OperatorPalette
+            operators={operators}
+            onAddOperator={(spec) => addOperatorNode(spec)}
+          />
+        </div>
+
+        {/* Center: Expansive ReactFlow DAG Canvas */}
+        <div className="flex-1 min-w-0 min-h-0 flex flex-col">
+          <FlowCanvas
+            nodes={draftNodes}
+            edges={draftEdges}
+            issues={draftIssues}
+            stepStatusByNodeId={stepStatusByNodeId}
+            selectedNodeId={selectedNodeId}
+            selectedEdgeIndex={selectedEdgeIndex}
+            onSelectNode={(id) => {
+              setSelectedNodeId(id);
+              if (id) {
+                setTriggerPopoverOpen(false);
+                setInspectorTab("node");
+              }
+            }}
+            onSelectEdge={(idx) => {
+              setSelectedEdgeIndex(idx);
+              if (idx !== null) {
+                setTriggerPopoverOpen(false);
+                setInspectorTab("node");
+              }
+            }}
+            onUpdateNodePos={handleUpdateNodePos}
+            onApplyLayout={handleApplyLayout}
+            onConnectNodes={handleConnectNodes}
+            onUpdateEdge={handleUpdateEdge}
+            onDeleteEdge={handleDeleteEdge}
+            onDropOperator={handleDropOperator}
+          />
+        </div>
+
+        {/* Right: High-Contrast 2-Tab Inspector (Step Config | Version & Deploy) */}
+        <Card className="w-full xl:w-[368px] shrink-0 h-full min-h-0 p-3 flex flex-col gap-2.5 overflow-hidden">
+          <Tabs<InspectorTab>
+            className="shrink-0"
+            value={inspectorTab}
+            onChange={(tab) => {
+              setTriggerPopoverOpen(false);
+              setInspectorTab(tab);
+            }}
+            items={[
+              {
+                key: "node",
+                label: tx("节点配置", "Step Config"),
+                icon: <Settings2 className="h-3.5 w-3.5" />,
+                testId: "inspector-tab-node",
+              },
+              {
+                key: "version",
+                label: tx("版本部署", "Release"),
+                icon: <Rocket className="h-3.5 w-3.5" />,
+                testId: "inspector-tab-version",
+              },
+            ]}
+          />
+
+          <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
+            {inspectorTab === "node" && (
+              <NodeConfigForm
+                node={selectedNode}
+                allNodes={draftNodes}
+                allEdges={draftEdges}
+                operators={operators}
+                selectedEdge={selectedEdgeObj}
+                onChangeNode={handleUpdateNode}
+                onDeleteNode={handleDeleteNode}
+                onUpdateEdge={handleUpdateEdge}
+                onDeleteEdge={handleDeleteEdge}
+              />
             )}
 
             {inspectorTab === "version" && (
               <VersionDeployPanel
                 isDirty={isDirty}
-                saving={saving}
                 validating={validating}
                 publishing={publishing}
                 deployingEnv={deployingEnv}
                 issues={draftIssues}
                 versions={versions}
                 deployments={deployments}
-                onSaveDraft={() => void handleSaveDraft()}
                 onValidateDraft={() => void handleValidateDraft()}
                 onPublishVersion={handlePublishVersion}
                 onDeployVersion={handleDeployVersion}
@@ -1193,57 +1245,181 @@ export function AxFlowPage() {
               />
             )}
           </div>
-        </div>
+        </Card>
       </div>
 
-      {/* Bottom Aligned Equal-Height Operations Dock: RunHistory + RunTimeline + ApprovalInbox */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-stretch">
-        <div className="xl:col-span-4">
-          <RunHistory
-            runs={runs}
-            selectedRunId={selectedRunId}
-            runEnvironment={runEnvironment}
-            startingRun={startingRun}
-            onChangeEnvironment={setRunEnvironment}
-            onStartRun={handleStartRun}
-            onSelectRun={(id) => setSelectedRunId(id)}
-            onCancelRun={handleCancelRun}
-            onRetryRun={handleRetryRun}
-            onRefresh={async () => {
-              if (selectedFlowId) {
-                const runsRes = await axflowApi.listRuns(selectedFlowId);
-                setRuns(runsRes.items);
-              }
-              if (selectedRunId) {
-                await refreshRunTelemetry(selectedRunId);
-              }
-            }}
-          />
+      {/* Persistent Sticky Bottom IDE Run Monitor (2 Wide Columns: RunHistory + RunTimeline) */}
+      <Card className="shrink-0 overflow-hidden" data-testid="axflow-run-dock">
+        <div className="flex items-center justify-between gap-2 bg-muted/25 px-3 py-1">
+          <button
+            type="button"
+            onClick={() => setRunDockCollapsed((v) => !v)}
+            className="flex items-center gap-2 text-xs font-medium cursor-pointer"
+          >
+            <Activity className="h-3.5 w-3.5 text-xblue" />
+            <span>{tx("运行监控与步骤时间线", "Run Monitor & Timeline")}</span>
+            <span className="font-mono-tech text-[11px] text-muted-foreground tabular-nums">
+              ({runs.length})
+            </span>
+            {activeRunDetail && (
+              <span className="inline-flex items-center gap-1.5 pl-1">
+                {renderRunStatusBadge(activeRunDetail.status)}
+                <span className="font-mono-tech text-[11px] text-muted-foreground">
+                  #{activeRunDetail.id.slice(0, 8)}
+                </span>
+              </span>
+            )}
+          </button>
+
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-[11px]"
+            onClick={() => setRunDockCollapsed((v) => !v)}
+          >
+            {runDockCollapsed ? (
+              <>
+                <ChevronUp className="h-3 w-3" />
+                {tx("展开", "Expand")}
+              </>
+            ) : (
+              <>
+                <ChevronDown className="h-3 w-3" />
+                {tx("收起", "Collapse")}
+              </>
+            )}
+          </Button>
         </div>
 
-        <div className="xl:col-span-5">
-          <RunTimeline
-            run={activeRunDetail}
-            steps={runSteps}
-            actions={runActions}
-            nodes={draftNodes}
-            polling={isRunActive}
-          />
-        </div>
+        {!runDockCollapsed && (
+          <div className="border-t border-border p-2.5 h-64 grid grid-cols-1 xl:grid-cols-12 gap-3 overflow-hidden">
+            <div className="xl:col-span-4 h-full min-h-0">
+              <RunHistory
+                runs={runs}
+                selectedRunId={selectedRunId}
+                onSelectRun={(id) => setSelectedRunId(id)}
+                onCancelRun={handleCancelRun}
+                onRetryRun={handleRetryRun}
+                onRefresh={async () => {
+                  if (selectedFlowId) {
+                    const runsRes = await axflowApi.listRuns(selectedFlowId);
+                    setRuns(runsRes.items);
+                  }
+                  if (selectedRunId) {
+                    await refreshRunTelemetry(selectedRunId);
+                  }
+                }}
+              />
+            </div>
 
-        <div className="xl:col-span-3">
-          <ApprovalInbox
-            approvals={approvals}
-            statusFilter={approvalStatusFilter}
-            mineOnly={approvalMineOnly}
-            decidingId={decidingApprovalId}
-            onChangeStatusFilter={setApprovalStatusFilter}
-            onChangeMineOnly={setApprovalMineOnly}
-            onDecide={handleDecideApproval}
-            onRefresh={loadApprovals}
-          />
+            <div className="xl:col-span-8 h-full min-h-0">
+              <RunTimeline
+                run={activeRunDetail}
+                steps={runSteps}
+                actions={runActions}
+                nodes={draftNodes}
+                polling={isRunActive}
+              />
+            </div>
+          </div>
+        )}
+      </Card>
+
+      {/* Global Pending Approvals Drawer */}
+      <Drawer
+        open={approvalDrawerOpen}
+        onClose={() => setApprovalDrawerOpen(false)}
+        widthClass="max-w-lg"
+        title={
+          <>
+            <UserCheck className="h-4 w-4 text-xblue shrink-0" />
+            <span>{tx("人工审批待办", "Approval Inbox")}</span>
+            <Badge variant={pendingApprovalsCount > 0 ? "warning" : "neutral"}>
+              {approvals.length}
+            </Badge>
+          </>
+        }
+      >
+        <ApprovalInbox
+          approvals={approvals}
+          statusFilter={approvalStatusFilter}
+          mineOnly={approvalMineOnly}
+          decidingId={decidingApprovalId}
+          onChangeStatusFilter={setApprovalStatusFilter}
+          onChangeMineOnly={setApprovalMineOnly}
+          onDecide={handleDecideApproval}
+          onRefresh={loadApprovals}
+        />
+      </Drawer>
+
+      {/* Create Pipeline Modal */}
+      <Modal
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        testId="axflow-create-card"
+        maxWidthClass="max-w-md"
+        title={tx("新建编排流水线", "New Pipeline")}
+        footer={
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setCreateOpen(false)}
+            >
+              {tx("取消", "Cancel")}
+            </Button>
+            <Button
+              type="button"
+              data-testid="confirm-create-flow-btn"
+              disabled={!newFlowName.trim() || creating}
+              onClick={() => void handleCreateFlow()}
+            >
+              <Plus className="h-3.5 w-3.5" />
+              {creating ? tx("创建中…", "Creating…") : tx("创建", "Create")}
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-2.5 text-xs">
+          <div>
+            <label className="block font-medium mb-1">
+              {tx("流水线标识", "Pipeline Key")}
+            </label>
+            <Input
+              data-testid="new-flow-name-input"
+              placeholder="daily_supply_refresh"
+              value={newFlowName}
+              onChange={(e) => setNewFlowName(e.target.value)}
+              className="h-8 text-xs font-mono-tech"
+            />
+          </div>
+          <div>
+            <label className="block font-medium mb-1">
+              {tx("业务说明", "Description")}
+            </label>
+            <Input
+              data-testid="new-flow-desc-input"
+              placeholder={tx("每日供应链补货巡检", "Daily supply inspection")}
+              value={newFlowDesc}
+              onChange={(e) => setNewFlowDesc(e.target.value)}
+              className="h-8 text-xs"
+            />
+          </div>
+          <div>
+            <label className="block font-medium mb-1">
+              {tx("回调标识", "Webhook Slug")}
+            </label>
+            <Input
+              data-testid="new-flow-slug-input"
+              placeholder="daily-supply-hook"
+              value={newFlowSlug}
+              onChange={(e) => setNewFlowSlug(e.target.value)}
+              className="h-8 text-xs font-mono-tech"
+            />
+          </div>
         </div>
-      </div>
+      </Modal>
     </div>
   );
 }

@@ -1,11 +1,16 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AlertTriangle,
+  Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Eye,
   EyeOff,
+  Minus,
+  Plus,
+  Search,
   X,
 } from "lucide-react";
 import { translateEnum, useI18n } from "@/i18n";
@@ -41,18 +46,18 @@ export function Button({
   return (
     <button
       className={cn(
-        "inline-flex items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap shrink-0 transition-colors disabled:pointer-events-none disabled:opacity-40 cursor-pointer",
+        "inline-flex items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap shrink-0 transition-colors disabled:pointer-events-none cursor-pointer",
         size === "sm" && "h-7 px-2.5 text-xs",
-        size === "md" && "h-8.5 px-3.5 py-1.5 text-xs",
+        size === "md" && "h-8 px-3 text-xs",
         size === "lg" && "h-9 px-4 text-sm",
         variant === "primary" &&
-          "bg-primary text-primary-foreground hover:opacity-90",
+          "bg-xblue text-white hover:bg-xblue/90 shadow-2xs disabled:bg-muted disabled:text-muted-foreground disabled:border disabled:border-border disabled:shadow-none",
         variant === "outline" &&
-          "border border-border bg-background hover:bg-muted text-foreground",
+          "border border-border bg-background hover:bg-muted text-foreground disabled:opacity-45",
         variant === "ghost" &&
-          "hover:bg-muted text-muted-foreground hover:text-foreground",
+          "hover:bg-muted text-muted-foreground hover:text-foreground disabled:opacity-40",
         variant === "danger" &&
-          "border border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20",
+          "border border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400 hover:bg-red-500/20 disabled:opacity-45",
         className
       )}
       {...props}
@@ -99,9 +104,9 @@ export function Badge({
     <span
       className={cn(
         "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium font-mono-tech whitespace-nowrap shrink-0",
-        variant === "neutral" && "bg-muted text-foreground",
+        variant === "neutral" && "bg-muted/80 text-muted-foreground",
         variant === "xblue" && "bg-xblue-soft text-xblue border border-xblue/25",
-        variant === "outline" && "border border-border text-muted-foreground",
+        variant === "outline" && "border border-border/80 text-muted-foreground",
         variant === "success" &&
           "bg-emerald-500/12 text-emerald-700 dark:text-emerald-400 border border-emerald-500/25",
         variant === "warning" &&
@@ -112,6 +117,30 @@ export function Badge({
       )}
       {...props}
     />
+  );
+}
+
+export function StatText({
+  label,
+  value,
+  className,
+}: {
+  label: React.ReactNode;
+  value: React.ReactNode;
+  className?: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1 text-xs text-muted-foreground whitespace-nowrap",
+        className
+      )}
+    >
+      <span>{label}</span>
+      <span className="font-mono-tech font-semibold text-foreground tabular-nums">
+        {value}
+      </span>
+    </span>
   );
 }
 
@@ -192,7 +221,7 @@ export function Input({
   return (
     <input
       className={cn(
-        "flex h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-xblue disabled:opacity-50",
+        "flex h-8 w-full rounded-md border border-input bg-background px-2.5 py-1 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-xblue disabled:opacity-50",
         className
       )}
       {...props}
@@ -217,31 +246,570 @@ export function PasswordInput({
         type="button"
         tabIndex={-1}
         onClick={() => setVisible((v) => !v)}
-        aria-label={visible ? tx("隐藏口令", "Hide password") : tx("显示口令", "Show password")}
-        title={visible ? tx("隐藏口令", "Hide password") : tx("显示口令", "Show password")}
+        aria-label={
+          visible
+            ? tx("隐藏口令", "Hide password")
+            : tx("显示口令", "Show password")
+        }
+        title={
+          visible
+            ? tx("隐藏口令", "Hide password")
+            : tx("显示口令", "Show password")
+        }
         className="absolute right-1.5 inline-flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground cursor-pointer"
       >
-        {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
+        {visible ? (
+          <EyeOff className="h-3.5 w-3.5" />
+        ) : (
+          <Eye className="h-3.5 w-3.5" />
+        )}
       </button>
     </div>
   );
 }
 
+export interface SelectOptionItem {
+  readonly value: string;
+  readonly label: React.ReactNode;
+  readonly text: string;
+  readonly disabled?: boolean;
+  readonly dotColor?: string;
+  readonly icon?: React.ReactNode;
+  readonly group?: string;
+}
+
+function flattenNodeText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") {
+    return "";
+  }
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map(flattenNodeText).join("");
+  }
+  if (React.isValidElement<{ children?: React.ReactNode }>(node)) {
+    return flattenNodeText(node.props.children);
+  }
+  return "";
+}
+
+interface ParsedOptionElementProps {
+  value?: string | number;
+  disabled?: boolean;
+  label?: string;
+  children?: React.ReactNode;
+  "data-dot"?: string;
+}
+
+function parseSelectChildren(
+  children: React.ReactNode,
+  group?: string
+): SelectOptionItem[] {
+  const out: SelectOptionItem[] = [];
+  React.Children.forEach(children, (child) => {
+    if (!React.isValidElement<ParsedOptionElementProps>(child)) {
+      return;
+    }
+    if (child.type === React.Fragment) {
+      out.push(...parseSelectChildren(child.props.children, group));
+      return;
+    }
+    if (child.type === "optgroup") {
+      const nextGroup =
+        typeof child.props.label === "string" ? child.props.label : group;
+      out.push(...parseSelectChildren(child.props.children, nextGroup));
+      return;
+    }
+    if (child.type === "option") {
+      const text = flattenNodeText(child.props.children).trim();
+      const rawValue =
+        child.props.value !== undefined ? String(child.props.value) : text;
+      out.push({
+        value: rawValue,
+        label: child.props.children ?? rawValue,
+        text: text || rawValue,
+        disabled: Boolean(child.props.disabled),
+        dotColor: child.props["data-dot"],
+        group,
+      });
+    }
+  });
+  return out;
+}
+
+export interface CustomSelectProps
+  extends Omit<
+    React.SelectHTMLAttributes<HTMLSelectElement>,
+    "multiple" | "size"
+  > {
+  options?: readonly SelectOptionItem[];
+  searchable?: boolean;
+  placeholder?: string;
+  "data-testid"?: string;
+}
+
 export function Select({
   className,
   children,
-  ...props
-}: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  options: explicitOptions,
+  value,
+  defaultValue,
+  onChange,
+  disabled,
+  searchable,
+  placeholder,
+  id,
+  name,
+  title,
+  "aria-label": ariaLabel,
+  "data-testid": testId,
+}: CustomSelectProps) {
+  const { tx } = useI18n();
+  const parsedOptions = useMemo(
+    () =>
+      explicitOptions
+        ? [...explicitOptions]
+        : parseSelectChildren(children),
+    [explicitOptions, children]
+  );
+
+  const [internalVal, setInternalVal] = useState<string>(() =>
+    defaultValue !== undefined
+      ? String(defaultValue)
+      : (parsedOptions[0]?.value ?? "")
+  );
+
+  const currentValue =
+    value !== undefined ? String(value) : internalVal;
+
+  const selectedOption =
+    parsedOptions.find((o) => o.value === currentValue) ??
+    parsedOptions[0] ??
+    null;
+
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [menuPos, setMenuPos] = useState<{
+    top: number;
+    left: number;
+    minWidth: number;
+    maxHeight: number;
+  }>({ top: 0, left: 0, minWidth: 160, maxHeight: 280 });
+
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
+
+  const enableSearch = searchable ?? parsedOptions.length > 10;
+
+  const filteredOptions = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return parsedOptions;
+    return parsedOptions.filter(
+      (opt) =>
+        opt.text.toLowerCase().includes(q) ||
+        opt.value.toLowerCase().includes(q)
+    );
+  }, [parsedOptions, query]);
+
+  const updatePosition = useCallback(() => {
+    const btn = triggerRef.current;
+    if (!btn || typeof window === "undefined") return;
+    const rect = btn.getBoundingClientRect();
+    const viewportH = window.innerHeight;
+    const viewportW = window.innerWidth;
+    const spaceBelow = viewportH - rect.bottom - 12;
+    const spaceAbove = rect.top - 12;
+    const desiredHeight = Math.min(
+      300,
+      Math.max(120, parsedOptions.length * 30 + (enableSearch ? 44 : 10))
+    );
+    const openUpward = spaceBelow < 180 && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(
+      120,
+      Math.min(300, openUpward ? spaceAbove : spaceBelow)
+    );
+    const minWidth = Math.max(140, Math.round(rect.width));
+    const left = Math.max(
+      8,
+      Math.min(Math.round(rect.left), viewportW - minWidth - 8)
+    );
+    const top = openUpward
+      ? Math.max(8, Math.round(rect.top - Math.min(desiredHeight, maxHeight) - 4))
+      : Math.round(rect.bottom + 4);
+    setMenuPos({ top, left, minWidth, maxHeight });
+  }, [parsedOptions.length, enableSearch]);
+
+  const commitValue = useCallback(
+    (nextValue: string) => {
+      if (value === undefined) {
+        setInternalVal(nextValue);
+      }
+      setOpen(false);
+      setQuery("");
+      if (onChange) {
+        const syntheticEvent = {
+          target: { value: nextValue, name: name ?? "" },
+          currentTarget: { value: nextValue, name: name ?? "" },
+          preventDefault: () => {},
+          stopPropagation: () => {},
+        } as unknown as React.ChangeEvent<HTMLSelectElement>;
+        onChange(syntheticEvent);
+      }
+    },
+    [value, onChange, name]
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    updatePosition();
+    const selectedIdx = filteredOptions.findIndex(
+      (o) => o.value === currentValue
+    );
+    setActiveIndex(selectedIdx >= 0 ? selectedIdx : 0);
+    if (enableSearch) {
+      requestAnimationFrame(() => {
+        searchInputRef.current?.focus();
+      });
+    }
+    const onMouseDown = (ev: MouseEvent) => {
+      const target = ev.target as Node | null;
+      if (
+        target &&
+        !triggerRef.current?.contains(target) &&
+        !menuRef.current?.contains(target)
+      ) {
+        setOpen(false);
+        setQuery("");
+      }
+    };
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        ev.stopPropagation();
+        setOpen(false);
+        setQuery("");
+        triggerRef.current?.focus();
+      }
+    };
+    const onViewportChange = () => updatePosition();
+    window.addEventListener("mousedown", onMouseDown);
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("scroll", onViewportChange, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown);
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("scroll", onViewportChange, true);
+    };
+  }, [open, updatePosition, enableSearch, filteredOptions, currentValue]);
+
+  const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (disabled) return;
+    if (!open) {
+      if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
+        e.preventDefault();
+        setOpen(true);
+      }
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActiveIndex((prev) =>
+        filteredOptions.length === 0 ? 0 : (prev + 1) % filteredOptions.length
+      );
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActiveIndex((prev) =>
+        filteredOptions.length === 0
+          ? 0
+          : (prev - 1 + filteredOptions.length) % filteredOptions.length
+      );
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const targetOpt = filteredOptions[activeIndex];
+      if (targetOpt && !targetOpt.disabled) {
+        commitValue(targetOpt.value);
+      }
+    }
+  };
+
   return (
-    <select
+    <>
+      <button
+        ref={triggerRef}
+        id={id}
+        type="button"
+        role="combobox"
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-label={ariaLabel}
+        title={title ?? selectedOption?.text}
+        disabled={disabled}
+        data-testid={testId}
+        data-value={currentValue}
+        onClick={() => {
+          if (!disabled) {
+            setOpen((v) => !v);
+          }
+        }}
+        onKeyDown={handleKeyDown}
+        className={cn(
+          "inline-flex h-8 items-center justify-between gap-2 rounded-md border border-input bg-background px-2.5 py-1 text-xs text-foreground hover:bg-muted/40 focus:outline-none focus:ring-1 focus:ring-xblue disabled:opacity-50 disabled:pointer-events-none cursor-pointer text-left",
+          open && "ring-1 ring-xblue border-xblue/60",
+          className
+        )}
+      >
+        <span className="inline-flex items-center gap-1.5 min-w-0 truncate">
+          {selectedOption?.dotColor && (
+            <span
+              className="h-2 w-2 rounded-full shrink-0"
+              style={{ backgroundColor: selectedOption.dotColor }}
+            />
+          )}
+          {selectedOption?.icon && (
+            <span className="shrink-0 text-muted-foreground">
+              {selectedOption.icon}
+            </span>
+          )}
+          <span className="truncate">
+            {selectedOption ? (
+              selectedOption.label
+            ) : (
+              <span className="text-muted-foreground">
+                {placeholder ?? tx("请选择", "Select")}
+              </span>
+            )}
+          </span>
+        </span>
+        <ChevronDown
+          className={cn(
+            "h-3.5 w-3.5 text-muted-foreground shrink-0 transition-transform",
+            open && "rotate-180"
+          )}
+        />
+      </button>
+
+      {open &&
+        typeof document !== "undefined" &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="listbox"
+            aria-label={ariaLabel}
+            data-testid={testId ? `${testId}-listbox` : undefined}
+            style={{
+              position: "fixed",
+              top: `${menuPos.top}px`,
+              left: `${menuPos.left}px`,
+              minWidth: `${menuPos.minWidth}px`,
+              maxWidth: "min(420px, calc(100vw - 16px))",
+              zIndex: 80,
+            }}
+            className="rounded-md border border-border bg-card text-card-foreground shadow-lg overflow-hidden"
+          >
+            {enableSearch && (
+              <div className="flex items-center gap-1.5 border-b border-border px-2.5 py-1.5 bg-muted/20">
+                <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setActiveIndex(0);
+                  }}
+                  onKeyDown={handleKeyDown}
+                  placeholder={tx("搜索选项…", "Filter options…")}
+                  className="w-full bg-transparent text-xs text-foreground placeholder:text-muted-foreground focus:outline-none"
+                />
+              </div>
+            )}
+            <div
+              style={{ maxHeight: `${menuPos.maxHeight}px` }}
+              className="overflow-y-auto p-1 space-y-0.5"
+            >
+              {filteredOptions.length === 0 ? (
+                <div className="px-2.5 py-3 text-center text-xs text-muted-foreground">
+                  {tx("无匹配项", "No matches")}
+                </div>
+              ) : (
+                filteredOptions.map((opt, idx) => {
+                  const selected = opt.value === currentValue;
+                  const highlighted = idx === activeIndex;
+                  const prevGroup =
+                    idx > 0 ? filteredOptions[idx - 1]?.group : undefined;
+                  const showGroup = opt.group && opt.group !== prevGroup;
+                  return (
+                    <React.Fragment key={`${opt.value}-${idx}`}>
+                      {showGroup && (
+                        <div className="px-2 pt-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          {opt.group}
+                        </div>
+                      )}
+                      <button
+                        type="button"
+                        role="option"
+                        aria-selected={selected}
+                        disabled={opt.disabled}
+                        data-option-value={opt.value}
+                        onMouseEnter={() => setActiveIndex(idx)}
+                        onClick={() => {
+                          if (!opt.disabled) {
+                            commitValue(opt.value);
+                          }
+                        }}
+                        className={cn(
+                          "w-full flex items-center justify-between gap-2 rounded px-2 py-1.5 text-xs text-left transition-colors disabled:opacity-40 disabled:pointer-events-none cursor-pointer",
+                          selected
+                            ? "bg-xblue-soft text-xblue font-medium"
+                            : highlighted
+                              ? "bg-muted text-foreground"
+                              : "text-foreground hover:bg-muted/70"
+                        )}
+                      >
+                        <span className="inline-flex items-center gap-1.5 min-w-0 truncate">
+                          {opt.dotColor && (
+                            <span
+                              className="h-2 w-2 rounded-full shrink-0"
+                              style={{ backgroundColor: opt.dotColor }}
+                            />
+                          )}
+                          {opt.icon && (
+                            <span className="shrink-0">{opt.icon}</span>
+                          )}
+                          <span className="truncate">{opt.label}</span>
+                        </span>
+                        {selected && (
+                          <Check className="h-3.5 w-3.5 text-xblue shrink-0" />
+                        )}
+                      </button>
+                    </React.Fragment>
+                  );
+                })
+              )}
+            </div>
+          </div>,
+          document.body
+        )}
+    </>
+  );
+}
+
+export function NumberInput({
+  value,
+  onChange,
+  min,
+  max,
+  step = 1,
+  disabled,
+  className,
+  "aria-label": ariaLabel,
+  "data-testid": testId,
+}: {
+  value: number;
+  onChange: (next: number) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  disabled?: boolean;
+  className?: string;
+  "aria-label"?: string;
+  "data-testid"?: string;
+}) {
+  const clamp = (n: number): number => {
+    let next = n;
+    if (min !== undefined && next < min) next = min;
+    if (max !== undefined && next > max) next = max;
+    return next;
+  };
+
+  return (
+    <div
       className={cn(
-        "flex h-9 rounded-md border border-input bg-background px-2.5 py-1 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-xblue disabled:opacity-50 cursor-pointer",
+        "inline-flex h-8 items-center rounded-md border border-input bg-background overflow-hidden focus-within:ring-1 focus-within:ring-xblue",
+        disabled && "opacity-50 pointer-events-none",
         className
       )}
-      {...props}
     >
-      {children}
-    </select>
+      <button
+        type="button"
+        tabIndex={-1}
+        disabled={disabled || (min !== undefined && value <= min)}
+        onClick={() => onChange(clamp(Number((value - step).toFixed(6))))}
+        className="inline-flex h-full w-6 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35 cursor-pointer shrink-0"
+      >
+        <Minus className="h-3 w-3" />
+      </button>
+      <input
+        type="number"
+        aria-label={ariaLabel}
+        data-testid={testId}
+        disabled={disabled}
+        min={min}
+        max={max}
+        step={step}
+        value={Number.isFinite(value) ? value : 0}
+        onChange={(e) => {
+          const parsed = Number(e.target.value);
+          if (Number.isFinite(parsed)) {
+            onChange(clamp(parsed));
+          }
+        }}
+        className="w-full min-w-[2.25rem] bg-transparent px-1 text-center text-xs font-mono-tech tabular-nums text-foreground focus:outline-none"
+      />
+      <button
+        type="button"
+        tabIndex={-1}
+        disabled={disabled || (max !== undefined && value >= max)}
+        onClick={() => onChange(clamp(Number((value + step).toFixed(6))))}
+        className="inline-flex h-full w-6 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35 cursor-pointer shrink-0"
+      >
+        <Plus className="h-3 w-3" />
+      </button>
+    </div>
+  );
+}
+
+export function Switch({
+  checked,
+  onCheckedChange,
+  disabled,
+  id,
+  "aria-label": ariaLabel,
+  "data-testid": testId,
+}: {
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+  disabled?: boolean;
+  id?: string;
+  "aria-label"?: string;
+  "data-testid"?: string;
+}) {
+  return (
+    <button
+      id={id}
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      data-testid={testId}
+      disabled={disabled}
+      onClick={() => onCheckedChange(!checked)}
+      className={cn(
+        "relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-xblue/40 disabled:opacity-45 disabled:pointer-events-none cursor-pointer",
+        checked ? "bg-xblue" : "bg-muted border border-border"
+      )}
+    >
+      <span
+        className={cn(
+          "inline-block h-3.5 w-3.5 rounded-full bg-white shadow-xs transition-transform",
+          checked ? "translate-x-4.5" : "translate-x-0.5"
+        )}
+      />
+    </button>
   );
 }
 
@@ -278,12 +846,12 @@ export function PageHeader({
   return (
     <div
       className={cn(
-        "flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3.5",
+        "flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3",
         className
       )}
     >
       <div className="min-w-0 space-y-0.5">
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2.5">
           <h1 className="text-base font-semibold tracking-tight">{title}</h1>
           {badges}
         </div>
@@ -319,7 +887,7 @@ export function StatCard({
         <span className="truncate">{label}</span>
         {icon && <span className="shrink-0 text-muted-foreground">{icon}</span>}
       </div>
-      <div className="text-xl font-semibold font-mono-tech tracking-tight">
+      <div className="text-xl font-semibold font-mono-tech tabular-nums tracking-tight">
         {value}
       </div>
       {hint && <div className="text-[11px] text-muted-foreground">{hint}</div>}
@@ -391,7 +959,7 @@ export function Tabs<K extends string>({
             className={cn(
               "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium whitespace-nowrap shrink-0 transition-colors disabled:opacity-40 disabled:pointer-events-none cursor-pointer -mb-px",
               active
-                ? "border-xblue text-foreground"
+                ? "border-xblue text-xblue font-semibold"
                 : "border-transparent text-muted-foreground hover:text-foreground"
             )}
           >
@@ -400,7 +968,7 @@ export function Tabs<K extends string>({
             {typeof item.count === "number" && (
               <span
                 className={cn(
-                  "rounded px-1.5 py-0.2 text-[10px] font-mono-tech",
+                  "rounded px-1.5 py-0.2 text-[10px] font-mono-tech tabular-nums",
                   active
                     ? "bg-xblue-soft text-xblue"
                     : "bg-muted text-muted-foreground"
@@ -431,7 +999,7 @@ export function SegmentedControl<K extends string>({
     <div
       role="tablist"
       className={cn(
-        "inline-flex items-center gap-0.5 rounded-md border border-border bg-muted/40 p-0.5",
+        "inline-flex items-center gap-0.5 rounded-md border border-border bg-muted/50 p-0.5",
         className
       )}
     >
@@ -447,16 +1015,16 @@ export function SegmentedControl<K extends string>({
             data-testid={item.testId}
             onClick={() => onChange(item.key)}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium whitespace-nowrap shrink-0 transition-colors disabled:opacity-40 cursor-pointer",
+              "inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs whitespace-nowrap shrink-0 transition-colors disabled:opacity-40 cursor-pointer",
               active
-                ? "bg-background text-foreground shadow-2xs border border-border/80"
-                : "text-muted-foreground hover:text-foreground"
+                ? "bg-xblue-soft text-xblue font-semibold border border-xblue/30 shadow-2xs"
+                : "font-medium text-muted-foreground hover:text-foreground border border-transparent"
             )}
           >
             {item.icon}
             <span>{item.label}</span>
             {typeof item.count === "number" && (
-              <span className="text-[10px] font-mono-tech opacity-80">
+              <span className="text-[10px] font-mono-tech tabular-nums opacity-85">
                 {item.count}
               </span>
             )}
@@ -716,7 +1284,12 @@ export function ConfirmDialog({
       }
       footer={
         <>
-          <Button variant="outline" type="button" onClick={onClose} disabled={loading}>
+          <Button
+            variant="outline"
+            type="button"
+            onClick={onClose}
+            disabled={loading}
+          >
             {tx("取消", "Cancel")}
           </Button>
           <Button
@@ -725,7 +1298,8 @@ export function ConfirmDialog({
             onClick={onConfirm}
             disabled={loading}
           >
-            {confirmLabel ?? (danger ? tx("删除", "Delete") : tx("确定", "Confirm"))}
+            {confirmLabel ??
+              (danger ? tx("删除", "Delete") : tx("确定", "Confirm"))}
           </Button>
         </>
       }

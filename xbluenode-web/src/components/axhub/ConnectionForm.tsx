@@ -29,8 +29,10 @@ import {
   Button,
   Card,
   ConfirmDialog,
+  Drawer,
   EmptyState,
   Input,
+  Modal,
   Select,
   StatusBadge,
   Textarea,
@@ -536,20 +538,22 @@ export function ConnectionForm({
   };
 
   return (
-    <Card className="p-4 space-y-4" data-testid="connections-section">
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-semibold">
+    <Card className="px-3.5 py-2.5 space-y-2.5" data-testid="connections-section">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 text-xs">
+          <span className="font-semibold text-foreground">
             {tx("数据源连接", "Data Connections")}
-          </h2>
-          <Badge variant="outline">
-            {fmtNum(specs.length, 0)} {tx("种规格", "Specs")}
-          </Badge>
+          </span>
+          <span className="text-[11px] font-mono-tech text-muted-foreground">
+            {fmtNum(connections.length, 0)} · {fmtNum(specs.length, 0)}{" "}
+            {tx("种连接器", "Specs")}
+          </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
           <Button
             type="button"
-            variant="outline"
+            variant="ghost"
+            size="sm"
             disabled={!canDataAdmin}
             onClick={() => void handleRotateCredentials()}
             data-testid="rotate-credentials-btn"
@@ -559,6 +563,7 @@ export function ConnectionForm({
           </Button>
           <Button
             type="button"
+            size="sm"
             disabled={!canDataAdmin}
             onClick={openCreateForm}
             data-testid="new-connection-btn"
@@ -571,7 +576,7 @@ export function ConnectionForm({
 
       {errorMsg && (
         <div
-          className="rounded border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs flex items-center justify-between"
+          className="rounded border border-red-500/30 bg-red-500/5 px-3 py-1.5 text-xs flex items-center justify-between"
           data-testid="connection-error-banner"
         >
           <span className="text-red-600 dark:text-red-400">{errorMsg}</span>
@@ -587,7 +592,7 @@ export function ConnectionForm({
 
       {statusBanner && (
         <div
-          className="rounded border border-xblue/30 bg-xblue-soft px-3 py-2 text-xs text-xblue flex items-center justify-between"
+          className="rounded border border-xblue/30 bg-xblue-soft px-3 py-1.5 text-xs text-xblue flex items-center justify-between"
           data-testid="connection-status-banner"
         >
           <span>{statusBanner}</span>
@@ -601,9 +606,10 @@ export function ConnectionForm({
         </div>
       )}
 
-      {/* Existing Connections List */}
+      {/* Compact Single-Line Connection Strip */}
       {connections.length === 0 ? (
         <EmptyState
+          className="py-5"
           title={tx("暂无数据源连接", "No data connections configured")}
           action={
             canDataAdmin ? (
@@ -616,7 +622,7 @@ export function ConnectionForm({
         />
       ) : (
         <div
-          className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3"
+          className="divide-y divide-border rounded-md border border-border/80 bg-background"
           data-testid="connection-list"
         >
           {connections.map((conn) => {
@@ -624,76 +630,73 @@ export function ConnectionForm({
             const specForConn = specs.find(
               (s) => s.connector_type === conn.connector_type
             );
+            const nonRedundantMsg =
+              !testResult &&
+              conn.last_test_message &&
+              conn.last_test_message.trim().toLowerCase() !== "connected"
+                ? formatTestMessage(conn.last_test_message)
+                : "";
             return (
               <div
                 key={conn.id}
-                className="rounded-md border border-border p-3 space-y-2.5 bg-background"
+                className="flex flex-wrap items-center justify-between gap-3 px-3 py-2 text-xs hover:bg-muted/35 transition-colors"
                 data-testid={`connection-card-${conn.name}`}
               >
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-xs font-semibold flex flex-wrap items-center gap-1.5">
-                      <span className="truncate">{conn.name}</span>
-                      {conn.allow_private_network && (
-                        <Badge variant="outline">
-                          {tx("私网互通", "Private Net")}
-                        </Badge>
-                      )}
-                    </div>
-                    <div className="text-[11px] font-mono-tech text-muted-foreground mt-0.5 truncate">
-                      {specForConn?.display_name ?? conn.connector_type}
-                      {conn.secret_fields_set.length > 0 && (
-                        <span className="ml-2">
-                          · {tx("已加密", "Encrypted")}:{" "}
-                          {conn.secret_fields_set.join(", ")}
-                        </span>
-                      )}
-                    </div>
-                  </div>
+                <div className="flex flex-wrap items-center gap-2 min-w-0">
+                  <span className="font-mono-tech font-semibold text-foreground truncate">
+                    {conn.name}
+                  </span>
                   <div data-testid={`connection-status-${conn.name}`}>
                     {renderStatusBadge(conn.status)}
                   </div>
-                </div>
-
-                {testResult && (
-                  <div
-                    className="rounded bg-muted px-2.5 py-1.5 text-[11px] font-mono-tech flex items-center justify-between"
-                    data-testid={`conn-test-result-${conn.name}`}
-                  >
-                    <span className="flex items-center gap-1 truncate">
+                  <span className="text-[11px] font-mono-tech text-muted-foreground">
+                    {specForConn?.display_name ?? conn.connector_type}
+                  </span>
+                  {conn.secret_fields_set.length > 0 && (
+                    <span className="text-[11px] text-muted-foreground">
+                      · {tx("已加密", "Encrypted")} ({conn.secret_fields_set.join(", ")})
+                    </span>
+                  )}
+                  {conn.allow_private_network && (
+                    <Badge variant="outline">
+                      {tx("私网互通", "Private Net")}
+                    </Badge>
+                  )}
+                  {testResult && (
+                    <span
+                      className="inline-flex items-center gap-1 rounded bg-muted px-2 py-0.5 text-[11px] font-mono-tech"
+                      data-testid={`conn-test-result-${conn.name}`}
+                    >
                       {testResult.ok ? (
-                        <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                        <CheckCircle2 className="h-3 w-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
                       ) : (
-                        <XCircle className="h-3.5 w-3.5 text-red-500 shrink-0" />
+                        <XCircle className="h-3 w-3 text-red-500 shrink-0" />
                       )}
-                      <span className="truncate">
+                      <span>
                         {testResult.ok
-                          ? tx("连通正常", "Healthy")
-                          : testResult.message || tx("连接失败", "Failed")}
+                          ? `${fmtNum(testResult.latency_ms, 0)} ms`
+                          : `${testResult.message || tx("失败", "Failed")} (${fmtNum(testResult.latency_ms, 0)} ms)`}
                       </span>
                     </span>
-                    <Badge variant={testResult.ok ? "xblue" : "outline"}>
-                      {fmtNum(testResult.latency_ms, 0)} ms
-                    </Badge>
-                  </div>
-                )}
+                  )}
+                  {nonRedundantMsg && (
+                    <span
+                      className="text-[11px] text-muted-foreground truncate max-w-[220px]"
+                      title={conn.last_test_message ?? undefined}
+                    >
+                      · {nonRedundantMsg}
+                    </span>
+                  )}
+                </div>
 
-                {!testResult && conn.last_test_message && (
-                  <div
-                    className="text-[11px] text-muted-foreground truncate"
-                    title={conn.last_test_message}
-                  >
-                    {formatTestMessage(conn.last_test_message)}
-                  </div>
-                )}
-
-                <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t border-border">
+                <div className="flex items-center gap-1 shrink-0">
                   <Button
                     type="button"
-                    variant="outline"
+                    variant="ghost"
                     size="sm"
                     disabled={testingId === conn.id}
                     onClick={() => void handleTest(conn)}
+                    className="text-xblue hover:text-xblue hover:bg-xblue-soft/70"
                     data-testid={`test-connection-btn-${conn.name}`}
                   >
                     {testingId === conn.id ? (
@@ -707,9 +710,10 @@ export function ConnectionForm({
                   {(specForConn?.supports_discover ?? true) && (
                     <Button
                       type="button"
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
                       onClick={() => void handleDiscover(conn)}
+                      className="text-xblue hover:text-xblue hover:bg-xblue-soft/70"
                       data-testid={`discover-connection-btn-${conn.name}`}
                     >
                       <Compass className="h-3 w-3" />
@@ -736,6 +740,7 @@ export function ConnectionForm({
                     disabled={!canDataAdmin}
                     onClick={() => setPendingDeleteConn(conn)}
                     aria-label={tx("删除", "Delete")}
+                    className="hover:text-red-600 hover:bg-red-500/10"
                     data-testid={`delete-connection-btn-${conn.name}`}
                   >
                     <Trash2 className="h-3 w-3" />
@@ -747,31 +752,25 @@ export function ConnectionForm({
         </div>
       )}
 
-      {/* Dynamic Create / Edit Connection Form */}
-      {formOpen && (
+      {/* Dynamic Create / Edit Connection Modal */}
+      <Modal
+        open={formOpen}
+        onClose={() => {
+          setFormOpen(false);
+          setEditingConn(null);
+        }}
+        maxWidthClass="max-w-2xl"
+        title={
+          editingConn
+            ? `${tx("编辑连接", "Edit Connection")} · ${editingConn.name}`
+            : tx("新建数据源连接", "New Data Connection")
+        }
+      >
         <form
           onSubmit={(e) => void handleSubmit(e)}
-          className="rounded-md border border-border bg-muted/30 p-4 space-y-4"
+          className="space-y-4"
           data-testid="connection-form"
         >
-          <div className="flex items-center justify-between border-b border-border pb-2.5">
-            <h3 className="text-xs font-semibold">
-              {editingConn
-                ? `${tx("编辑连接", "Edit Connection")} · ${editingConn.name}`
-                : tx("新建数据源连接", "New Data Connection")}
-            </h3>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setFormOpen(false);
-                setEditingConn(null);
-              }}
-            >
-              {tx("取消", "Cancel")}
-            </Button>
-          </div>
 
           {!editingConn && (
             <div className="space-y-2">
@@ -1041,7 +1040,17 @@ export function ConnectionForm({
             </div>
           )}
 
-          <div className="flex justify-end gap-2">
+          <div className="flex justify-end gap-2 pt-2 border-t border-border">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setFormOpen(false);
+                setEditingConn(null);
+              }}
+            >
+              {tx("取消", "Cancel")}
+            </Button>
             <Button
               type="submit"
               disabled={submitting || !canDataAdmin}
@@ -1051,30 +1060,25 @@ export function ConnectionForm({
             </Button>
           </div>
         </form>
-      )}
+      </Modal>
 
-      {/* Discovered Objects Panel */}
-      {discoveringConn && (
-        <div
-          className="rounded-md border border-border p-3 space-y-3 bg-muted/20"
-          data-testid="discover-panel"
-        >
-          <div className="flex items-center justify-between">
-            <div className="text-xs font-semibold">
-              {tx("源端对象探查", "Discovered Objects")} · {discoveringConn.name}
-            </div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                setDiscoveringConn(null);
-                setSourcePreview(null);
-              }}
-            >
-              {tx("收起", "Close")}
-            </Button>
-          </div>
+      {/* Discovered Objects Drawer */}
+      <Drawer
+        open={Boolean(discoveringConn)}
+        onClose={() => {
+          setDiscoveringConn(null);
+          setSourcePreview(null);
+        }}
+        widthClass="max-w-3xl"
+        testId="discover-panel"
+        title={
+          discoveringConn
+            ? `${tx("源端对象探查", "Discovered Objects")} · ${discoveringConn.name}`
+            : tx("源端对象探查", "Discovered Objects")
+        }
+      >
+        {discoveringConn && (
+          <div className="space-y-3">
 
           {discoverLoading ? (
             <div className="text-xs text-muted-foreground py-3">
@@ -1248,8 +1252,9 @@ export function ConnectionForm({
               </div>
             </div>
           )}
-        </div>
-      )}
+          </div>
+        )}
+      </Drawer>
 
       <ConfirmDialog
         open={Boolean(pendingDeleteConn)}

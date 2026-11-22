@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Award, Code2, TableProperties, Wand2 } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import {
   analyticsApi,
   type AnalyticsCatalogResponse,
@@ -21,10 +22,10 @@ import { SchemaTree } from "@/components/analytics/SchemaTree";
 import { SqlEditor } from "@/components/analytics/SqlEditor";
 import { TransformWizard } from "@/components/analytics/TransformWizard";
 import {
-  Badge,
   Card,
   PageHeader,
   SegmentedControl,
+  StatText,
 } from "@/components/ui/primitives";
 
 type StudioTab = "sql" | "pivot" | "metrics" | "transform";
@@ -267,27 +268,68 @@ export function AnalyticsStudioPage() {
   };
 
   return (
-    <div className="space-y-4" data-testid="analytics-studio-page">
+    <div
+      className="flex flex-1 min-h-0 flex-col gap-3"
+      data-testid="analytics-studio-page"
+    >
       <PageHeader
+        className="shrink-0 pb-2.5"
         title={tx(
-          "AxAnalytics · OLAP 与智能问数",
-          "AxAnalytics · OLAP & Smart Ask"
+          MODULE_META.axanalytics.label,
+          MODULE_META.axanalytics.enLabel
         )}
         badges={
-          <>
-            <Badge variant="neutral">
-              {tx("数据集", "Datasets")} {fmtNum(catalog.datasets.length, 0)}
-            </Badge>
-            <Badge variant="xblue">
-              {tx("指标", "Metrics")} {fmtNum(metrics.length, 0)}
-            </Badge>
-          </>
+          <div className="flex items-center gap-3 pl-1">
+            <StatText
+              label={tx("数据集", "Datasets")}
+              value={fmtNum(catalog.datasets.length, 0)}
+            />
+            <span className="text-border">·</span>
+            <StatText
+              label={tx("指标", "Metrics")}
+              value={fmtNum(metrics.length, 0)}
+            />
+          </div>
+        }
+        actions={
+          <div data-testid="analytics-tabs">
+            <SegmentedControl
+              value={activeTab}
+              onChange={(next) => setActiveTab(next)}
+              items={[
+                {
+                  key: "sql",
+                  label: "SQL",
+                  icon: <Code2 className="h-3.5 w-3.5" />,
+                  testId: "analytics-tab-sql",
+                },
+                {
+                  key: "pivot",
+                  label: tx("透视表", "Pivot"),
+                  icon: <TableProperties className="h-3.5 w-3.5" />,
+                  testId: "analytics-tab-pivot",
+                },
+                {
+                  key: "metrics",
+                  label: tx("语义指标", "Metrics"),
+                  icon: <Award className="h-3.5 w-3.5" />,
+                  testId: "analytics-tab-metrics",
+                },
+                {
+                  key: "transform",
+                  label: tx("数据变换", "Transform"),
+                  icon: <Wand2 className="h-3.5 w-3.5" />,
+                  testId: "analytics-tab-transform",
+                },
+              ]}
+            />
+          </div>
         }
       />
 
-      {/* 3-Pane Studio Layout: Left SchemaTree (w-64 lg:w-72 shrink-0) + Right Workspace */}
-      <div className="flex flex-col lg:flex-row gap-4 items-start">
-        <div className="w-full lg:w-72 shrink-0 lg:sticky lg:top-4 max-h-[780px]">
+      {/* 2-Pane Full-Height Studio Layout: Left SchemaTree + Right Workspace */}
+      <div className="flex flex-1 min-h-0 flex-col lg:flex-row gap-3 items-stretch overflow-hidden">
+        <div className="w-full lg:w-68 shrink-0 h-60 lg:h-full min-h-0 flex flex-col">
           <SchemaTree
             catalog={catalog}
             loading={catalogLoading}
@@ -298,63 +340,32 @@ export function AnalyticsStudioPage() {
           />
         </div>
 
-        <div className="min-w-0 flex-1 w-full space-y-4">
-          <div data-testid="analytics-tabs">
-            <SegmentedControl
-              value={activeTab}
-              onChange={(next) => setActiveTab(next)}
-              items={[
-                {
-                  key: "sql",
-                  label: "SQL",
-                  icon: <Code2 className="h-3.5 w-3.5 text-xblue" />,
-                  testId: "analytics-tab-sql",
-                },
-                {
-                  key: "pivot",
-                  label: tx("透视表", "Pivot"),
-                  icon: <TableProperties className="h-3.5 w-3.5 text-xblue" />,
-                  testId: "analytics-tab-pivot",
-                },
-                {
-                  key: "metrics",
-                  label: tx("语义指标", "Metrics"),
-                  icon: <Award className="h-3.5 w-3.5 text-xblue" />,
-                  testId: "analytics-tab-metrics",
-                },
-                {
-                  key: "transform",
-                  label: tx("数据变换", "Transform"),
-                  icon: <Wand2 className="h-3.5 w-3.5 text-xblue" />,
-                  testId: "analytics-tab-transform",
-                },
-              ]}
-            />
-          </div>
-
-          {/* Tab 1: SQL Workspace + SQL-only ResultGrid & ChartPanel */}
+        <div className="min-w-0 flex-1 w-full h-full min-h-0 flex flex-col overflow-y-auto">
+          {/* Tab 1: SQL Workspace + Equal-Height Stretched ResultGrid & ChartPanel */}
           {activeTab === "sql" && (
-            <div className="space-y-4">
-              <SqlEditor
-                sql={sqlText}
-                onChangeSql={handleChangeSql}
-                catalog={catalog}
-                running={sqlRunning}
-                explaining={sqlExplaining}
-                explainResult={explainResult}
-                onCloseExplain={() => setExplainResult(null)}
-                onRunSql={(opts) => void handleRunSql(opts)}
-                onExplainSql={(opts) => void handleExplainSql(opts)}
-                onSaveQuery={handleSaveSqlQuery}
-                savedQueries={savedQueries}
-                historyEntries={historyEntries}
-                onLoadSavedQuery={handleLoadSavedQuery}
-                onDeleteSavedQuery={(id) => void handleDeleteSavedQuery(id)}
-              />
+            <div className="flex flex-1 min-h-0 flex-col gap-3">
+              <div className="shrink-0">
+                <SqlEditor
+                  sql={sqlText}
+                  onChangeSql={handleChangeSql}
+                  catalog={catalog}
+                  running={sqlRunning}
+                  explaining={sqlExplaining}
+                  explainResult={explainResult}
+                  onCloseExplain={() => setExplainResult(null)}
+                  onRunSql={(opts) => void handleRunSql(opts)}
+                  onExplainSql={(opts) => void handleExplainSql(opts)}
+                  onSaveQuery={handleSaveSqlQuery}
+                  savedQueries={savedQueries}
+                  historyEntries={historyEntries}
+                  onLoadSavedQuery={handleLoadSavedQuery}
+                  onDeleteSavedQuery={(id) => void handleDeleteSavedQuery(id)}
+                />
+              </div>
 
               {sqlError && (
                 <Card
-                  className="border-red-500/30 bg-red-500/5 p-3 text-xs text-red-600 dark:text-red-400"
+                  className="shrink-0 border-red-500/30 bg-red-500/5 p-3 text-xs text-red-600 dark:text-red-400"
                   data-testid="sql-error-card"
                 >
                   <span className="font-mono-tech font-semibold">
@@ -364,8 +375,8 @@ export function AnalyticsStudioPage() {
                 </Card>
               )}
 
-              <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
-                <div className="xl:col-span-7 min-w-0">
+              <div className="grid flex-1 min-h-[240px] grid-cols-1 xl:grid-cols-12 gap-3 items-stretch">
+                <div className="xl:col-span-7 min-w-0 flex flex-col min-h-0">
                   <ResultGrid
                     columns={resultColumns}
                     rows={resultRows}
@@ -375,7 +386,7 @@ export function AnalyticsStudioPage() {
                     sql={resultExecutedSql}
                   />
                 </div>
-                <div className="xl:col-span-5 min-w-0">
+                <div className="xl:col-span-5 min-w-0 flex flex-col min-h-0">
                   <ChartPanel columns={resultColumns} rows={resultRows} />
                 </div>
               </div>

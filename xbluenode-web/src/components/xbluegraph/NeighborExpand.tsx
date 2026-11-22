@@ -7,7 +7,13 @@ import {
   type SubgraphResponse,
   type TraversalDirection,
 } from "@/lib/api/xblue";
-import { Badge, Button, Input, Select } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Input,
+  NumberInput,
+  Select,
+} from "@/components/ui/primitives";
 
 export interface NeighborExpandProps {
   nodes: BlueNode[];
@@ -202,13 +208,12 @@ export function NeighborExpand({
         <label className="text-muted-foreground block">
           {tx("返回节点上限", "Node Limit")}
         </label>
-        <Input
-          type="number"
+        <NumberInput
           min={10}
           max={2000}
+          step={10}
           value={limit}
-          onChange={(e) => setLimit(Number(e.target.value) || 200)}
-          className="font-mono-tech text-xs"
+          onChange={setLimit}
         />
       </div>
 

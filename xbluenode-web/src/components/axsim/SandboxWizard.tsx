@@ -30,6 +30,7 @@ import {
   ConfirmDialog,
   IconButton,
   Input,
+  Select,
   StatusBadge,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
@@ -568,10 +569,10 @@ export function SandboxWizard({
                 <label className="text-xs font-medium text-muted-foreground">
                   {tx("参考子图", "Subgraph")}
                 </label>
-                <select
+                <Select
                   value={selectedSubgraph}
                   onChange={(e) => setSelectedSubgraph(e.target.value)}
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs"
+                  className="h-9 w-full"
                   data-testid="wizard-subgraph-select"
                 >
                   <option value="main">
@@ -584,7 +585,7 @@ export function SandboxWizard({
                         {sg.slug} · {sg.display_name}
                       </option>
                     ))}
-                </select>
+                </Select>
               </div>
             </div>
 
@@ -607,12 +608,12 @@ export function SandboxWizard({
                 <label className="text-xs font-medium text-muted-foreground">
                   {tx("遍历方向", "Traversal Direction")}
                 </label>
-                <select
+                <Select
                   value={direction}
                   onChange={(e) =>
                     setDirection(e.target.value as GraphDirection)
                   }
-                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-xs"
+                  className="h-9 w-full"
                   data-testid="wizard-direction"
                 >
                   {directionOptions.map((opt) => (
@@ -620,7 +621,7 @@ export function SandboxWizard({
                       {opt.label}
                     </option>
                   ))}
-                </select>
+                </Select>
               </div>
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">

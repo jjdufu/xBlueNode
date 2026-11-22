@@ -57,6 +57,7 @@ import { RuleEditor } from "@/components/axalerts/RuleEditor";
 import { SilenceForm } from "@/components/axalerts/SilenceForm";
 import { Badge, Card, PageHeader, Tabs } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
 
@@ -784,7 +785,7 @@ export function AxAlertsPage() {
   return (
     <div className="space-y-5" data-testid="axalerts-page">
       <PageHeader
-        title={tx("AxAlerts · 告警与规则中心", "AxAlerts · Alerts & Rules")}
+        title={tx(MODULE_META.axalerts.label, MODULE_META.axalerts.enLabel)}
         badges={
           <Badge variant="xblue" data-testid="alerts-polling-badge">
             <Activity className="h-3 w-3 mr-1" />

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Eye, Play, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, Eye, Play, Plus, Trash2 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 import { axhubApi, type Dataset } from "@/lib/api/axhub";
@@ -24,7 +24,6 @@ import {
   Select,
   StatusBadge,
 } from "@/components/ui/primitives";
-import { cn } from "@/lib/utils";
 
 export interface MappingEditorProps {
   activeSubgraph: string;
@@ -71,6 +70,7 @@ export function MappingEditor({
   const [runs, setRuns] = useState<MappingRunRecord[]>([]);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const matchedDataset = datasets.find(
     (ds) =>
@@ -113,6 +113,7 @@ export function MappingEditor({
     let cancelled = false;
     setPreviewData(null);
     setActionMsg(null);
+    setConfirmDelete(false);
     if (!matchedRecord?.id) {
       setRuns([]);
       return;
@@ -128,7 +129,7 @@ export function MappingEditor({
     return () => {
       cancelled = true;
     };
-  }, [matchedRecord?.id]);
+  }, [matchedRecord?.id, effectiveIndex]);
 
   const addMapping = () => {
     if (!canEdit) return;
@@ -165,6 +166,7 @@ export function MappingEditor({
     const next = mappings.filter((_, i) => i !== effectiveIndex);
     onChangeMappings(next);
     onSelectMappingIndex(next.length > 0 ? 0 : null);
+    setConfirmDelete(false);
   };
 
   const targetNodeSpec = nodeTypes.find(
@@ -259,8 +261,8 @@ export function MappingEditor({
       );
       setActionMsg(
         tx(
-          `已提交物化任务 (${resp.mode}) · Job ${resp.job_id.slice(0, 8)}`,
-          `Materialization queued (${resp.mode}) · Job ${resp.job_id.slice(0, 8)}`
+          `已提交物化任务 (${resp.mode}) · Job #${resp.job_id.slice(0, 8)}`,
+          `Materialization queued (${resp.mode}) · Job #${resp.job_id.slice(0, 8)}`
         )
       );
       await onRefreshPersistedMappings();
@@ -288,7 +290,7 @@ export function MappingEditor({
           value={value}
           disabled={!canEdit}
           onChange={(e) => onSelect(e.target.value)}
-          className="h-7 w-full px-1.5 font-mono-tech"
+          className="h-8 w-full font-mono-tech"
         >
           <option value="">{tx("未绑定", "Unbound")}</option>
           {datasetColumns.map((col) => (
@@ -305,40 +307,42 @@ export function MappingEditor({
         disabled={!canEdit}
         onChange={(e) => onSelect(e.target.value)}
         placeholder={placeholder}
-        className="h-7 px-2 text-xs font-mono-tech"
+        className="h-8 px-2 text-xs font-mono-tech"
       />
     );
   };
 
   return (
     <div className="space-y-3 text-xs" data-testid="mapping-editor">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-1">
-          {mappings.map((m, idx) => (
-            <button
-              key={`${m.name}-${idx}`}
-              type="button"
-              onClick={() => onSelectMappingIndex(idx)}
-              className={cn(
-                "rounded border px-2 py-1 font-mono-tech text-[11px] cursor-pointer",
-                effectiveIndex === idx
-                  ? "border-xblue bg-xblue-soft text-xblue"
-                  : "border-border bg-background text-muted-foreground hover:text-foreground"
-              )}
-            >
-              {m.name || `mapping_${idx + 1}`}
-            </button>
-          ))}
-        </div>
+      {/* Single-Row Mapping Switcher (<Select> + New Button) */}
+      <div className="flex items-center gap-2">
+        {mappings.length > 0 ? (
+          <Select
+            value={effectiveIndex ?? 0}
+            onChange={(e) => onSelectMappingIndex(Number(e.target.value))}
+            className="h-8 flex-1 min-w-0 font-mono-tech"
+          >
+            {mappings.map((m, idx) => (
+              <option key={`${m.name}-${idx}`} value={idx}>
+                {m.name || `mapping_${idx + 1}`} → {m.node_type || "?"}
+              </option>
+            ))}
+          </Select>
+        ) : (
+          <span className="text-muted-foreground flex-1">
+            {tx("当前全图尚无映射规则", "No schema mappings configured")}
+          </span>
+        )}
         {canEdit && (
           <Button
             variant="outline"
             size="sm"
             data-testid="add-mapping-btn"
             onClick={addMapping}
+            className="shrink-0"
           >
             <Plus className="h-3 w-3" />
-            {tx("新建映射", "New Mapping")}
+            {tx("新建映射", "New")}
           </Button>
         )}
       </div>
@@ -346,7 +350,8 @@ export function MappingEditor({
       {!currentMapping ? (
         <EmptyState title={tx("暂无数据映射规则", "No data mappings")} />
       ) : (
-        <div className="space-y-3 rounded border border-border p-3">
+        <div className="space-y-3 rounded-md border border-border bg-muted/10 p-3">
+          {/* Strictly <= 2 Columns per Row in Narrow Sidebar */}
           <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="block font-medium mb-1">
@@ -362,53 +367,54 @@ export function MappingEditor({
             </div>
             <div>
               <label className="block font-medium mb-1">
-                {tx("源数据集", "Source Dataset")}
-              </label>
-              {datasets.length > 0 ? (
-                <Select
-                  value={currentMapping.dataset}
-                  disabled={!canEdit}
-                  onChange={(e) => updateCurrent({ dataset: e.target.value })}
-                  className="h-8 w-full font-mono-tech"
-                >
-                  <option value="">{tx("未指定", "None")}</option>
-                  {datasets.map((ds) => (
-                    <option key={ds.id} value={ds.name}>
-                      {ds.name} ({ds.display_name})
-                    </option>
-                  ))}
-                </Select>
-              ) : (
-                <Input
-                  value={currentMapping.dataset}
-                  disabled={!canEdit}
-                  onChange={(e) => updateCurrent({ dataset: e.target.value })}
-                  placeholder="demo_orders"
-                  className="h-8 text-xs font-mono-tech"
-                />
-              )}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-2">
-            <div>
-              <label className="block font-medium mb-1">
                 {tx("目标类型", "Target Type")}
               </label>
               <Select
                 value={currentMapping.node_type}
                 disabled={!canEdit}
                 onChange={(e) => updateCurrent({ node_type: e.target.value })}
-                className="h-7 w-full px-1.5 font-mono-tech"
+                className="h-8 w-full font-mono-tech"
               >
                 <option value="">{tx("未指定", "None")}</option>
                 {nodeTypes.map((nt) => (
                   <option key={nt.name} value={nt.name}>
-                    {nt.name}
+                    {nt.name} ({nt.display_name})
                   </option>
                 ))}
               </Select>
             </div>
+          </div>
+
+          <div>
+            <label className="block font-medium mb-1">
+              {tx("源数据集", "Source Dataset")}
+            </label>
+            {datasets.length > 0 ? (
+              <Select
+                value={currentMapping.dataset}
+                disabled={!canEdit}
+                onChange={(e) => updateCurrent({ dataset: e.target.value })}
+                className="h-8 w-full font-mono-tech"
+              >
+                <option value="">{tx("未指定", "None")}</option>
+                {datasets.map((ds) => (
+                  <option key={ds.id} value={ds.name}>
+                    {ds.name} ({ds.display_name})
+                  </option>
+                ))}
+              </Select>
+            ) : (
+              <Input
+                value={currentMapping.dataset}
+                disabled={!canEdit}
+                onChange={(e) => updateCurrent({ dataset: e.target.value })}
+                placeholder="demo_orders"
+                className="h-8 text-xs font-mono-tech"
+              />
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="block font-medium mb-1">
                 {tx("主键列", "Key Column")}
@@ -428,12 +434,12 @@ export function MappingEditor({
                 disabled={!canEdit}
                 onChange={(e) => updateCurrent({ title: e.target.value })}
                 placeholder="{id}"
-                className="h-7 px-2 text-xs font-mono-tech"
+                className="h-8 px-2 text-xs font-mono-tech"
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="block font-medium mb-1">
                 {tx("时间列", "Time Column")}
@@ -454,7 +460,7 @@ export function MappingEditor({
                 onChange={(e) =>
                   updateCurrent({ mode: e.target.value as MappingMode })
                 }
-                className="h-7 w-full px-1.5 font-mono-tech"
+                className="h-8 w-full font-mono-tech"
               >
                 <option value="INCREMENTAL">
                   {tx("增量更新", "Incremental")}
@@ -462,6 +468,9 @@ export function MappingEditor({
                 <option value="FULL">{tx("全量刷新", "Full Refresh")}</option>
               </Select>
             </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="block font-medium mb-1">
                 {tx("源行删除策略", "On Delete")}
@@ -474,77 +483,89 @@ export function MappingEditor({
                     on_source_delete: e.target.value as OnSourceDelete,
                   })
                 }
-                className="h-7 w-full px-1.5 font-mono-tech"
+                className="h-8 w-full font-mono-tech"
               >
                 <option value="KEEP">{tx("保留节点", "Keep Node")}</option>
                 <option value="DELETE">{tx("同步删除", "Delete Node")}</option>
               </Select>
             </div>
+            <div>
+              <label className="block font-medium mb-1">
+                {tx("源行过滤条件", "Row Filter")}
+              </label>
+              <Input
+                value={currentMapping.filter ?? ""}
+                disabled={!canEdit}
+                onChange={(e) =>
+                  updateCurrent({ filter: e.target.value || null })
+                }
+                placeholder="status != 'TEST'"
+                className="h-8 px-2 text-xs font-mono-tech"
+              />
+            </div>
           </div>
 
-          <div>
-            <label className="block font-medium mb-1">
-              {tx("源行过滤条件", "Row Filter")}
-            </label>
-            <Input
-              value={currentMapping.filter ?? ""}
-              disabled={!canEdit}
-              onChange={(e) =>
-                updateCurrent({ filter: e.target.value || null })
-              }
-              placeholder="status != 'TEST'"
-              className="h-7 px-2 text-xs font-mono-tech"
-            />
-          </div>
-
-          {/* Attribute & Metric Column Bindings */}
-          {(attrProps.length > 0 || metricProps.length > 0) && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 border-t border-border pt-2">
+          {/* Vertical Single-Column Field Bindings (Model Field -> Source Column) */}
+          {attrProps.length > 0 && (
+            <div className="space-y-1.5 border-t border-border pt-2.5">
+              <div className="font-semibold text-[11px] text-muted-foreground">
+                {tx("静态属性列映射", "Attribute Bindings")}
+              </div>
               <div className="space-y-1.5">
-                <div className="font-semibold text-[11px]">
-                  {tx("静态属性列映射", "Attribute Bindings")}
-                </div>
                 {attrProps.map((p) => (
                   <div
                     key={p.name}
-                    className="grid grid-cols-2 items-center gap-1.5"
+                    className="grid grid-cols-12 items-center gap-2"
                   >
-                    <span className="font-mono-tech truncate">{p.name}</span>
-                    {renderColumnControl(
-                      currentMapping.attributes[p.name] ?? "",
-                      (val) => setAttrColumn(p.name, val),
-                      "column"
-                    )}
-                  </div>
-                ))}
-              </div>
-              <div className="space-y-1.5">
-                <div className="font-semibold text-[11px]">
-                  {tx("时序指标列映射", "Metric Bindings")}
-                </div>
-                {metricProps.map((p) => (
-                  <div
-                    key={p.name}
-                    className="grid grid-cols-2 items-center gap-1.5"
-                  >
-                    <span className="font-mono-tech text-xblue truncate">
+                    <span className="col-span-5 font-mono-tech truncate text-foreground">
                       {p.name}
                     </span>
-                    {renderColumnControl(
-                      currentMapping.metrics[p.name] ?? "",
-                      (val) => setMetricColumn(p.name, val),
-                      "metric_col"
-                    )}
+                    <ArrowRight className="col-span-1 h-3 w-3 text-muted-foreground justify-self-center" />
+                    <div className="col-span-6">
+                      {renderColumnControl(
+                        currentMapping.attributes[p.name] ?? "",
+                        (val) => setAttrColumn(p.name, val),
+                        "column"
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
           )}
 
-          {/* Foreign-Key Relationship Links */}
-          <div className="space-y-1.5 border-t border-border pt-2">
+          {metricProps.length > 0 && (
+            <div className="space-y-1.5 border-t border-border pt-2.5">
+              <div className="font-semibold text-[11px] text-muted-foreground">
+                {tx("时序指标列映射", "Metric Bindings")}
+              </div>
+              <div className="space-y-1.5">
+                {metricProps.map((p) => (
+                  <div
+                    key={p.name}
+                    className="grid grid-cols-12 items-center gap-2"
+                  >
+                    <span className="col-span-5 font-mono-tech text-xblue font-medium truncate">
+                      {p.name}
+                    </span>
+                    <ArrowRight className="col-span-1 h-3 w-3 text-muted-foreground justify-self-center" />
+                    <div className="col-span-6">
+                      {renderColumnControl(
+                        currentMapping.metrics[p.name] ?? "",
+                        (val) => setMetricColumn(p.name, val),
+                        "metric_col"
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Foreign-Key Relationship Links (2-col rows, zero truncation) */}
+          <div className="space-y-2 border-t border-border pt-2.5">
             <div className="flex items-center justify-between">
-              <span className="font-semibold text-[11px]">
+              <span className="font-semibold text-[11px] text-muted-foreground">
                 {tx("外键关系映射", "Foreign-Key Relations")}
               </span>
               {canEdit && (
@@ -557,59 +578,63 @@ export function MappingEditor({
             {currentMapping.links.map((lk, lIdx) => (
               <div
                 key={lIdx}
-                className="grid grid-cols-12 items-center gap-1 rounded border border-border bg-muted/20 p-1.5"
+                className="rounded-md border border-border bg-background p-2 space-y-1.5"
               >
-                <Input
-                  value={lk.link_type}
-                  disabled={!canEdit}
-                  onChange={(e) =>
-                    updateLinkRule(lIdx, { link_type: e.target.value })
-                  }
-                  placeholder="FULFILLS"
-                  className="col-span-3 h-7 px-1.5 text-[11px] font-mono-tech"
-                />
-                <Select
-                  value={lk.direction}
-                  disabled={!canEdit}
-                  onChange={(e) =>
-                    updateLinkRule(lIdx, {
-                      direction: e.target.value as LinkDirection,
-                    })
-                  }
-                  className="col-span-2 h-7 px-1 text-[11px] font-mono-tech"
-                >
-                  <option value="OUT">OUT</option>
-                  <option value="IN">IN</option>
-                </Select>
-                <Input
-                  value={lk.target_type}
-                  disabled={!canEdit}
-                  onChange={(e) =>
-                    updateLinkRule(lIdx, { target_type: e.target.value })
-                  }
-                  placeholder="Warehouse"
-                  className="col-span-3 h-7 px-1.5 text-[11px] font-mono-tech"
-                />
-                <Input
-                  value={lk.target_key_column}
-                  disabled={!canEdit}
-                  onChange={(e) =>
-                    updateLinkRule(lIdx, {
-                      target_key_column: e.target.value,
-                    })
-                  }
-                  placeholder="warehouse_code"
-                  className="col-span-3 h-7 px-1.5 text-[11px] font-mono-tech"
-                />
-                {canEdit && (
-                  <button
-                    type="button"
-                    onClick={() => removeLinkRule(lIdx)}
-                    className="col-span-1 flex justify-center text-muted-foreground hover:text-red-600 cursor-pointer"
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    value={lk.link_type}
+                    disabled={!canEdit}
+                    onChange={(e) =>
+                      updateLinkRule(lIdx, { link_type: e.target.value })
+                    }
+                    placeholder="FULFILLS"
+                    className="h-7 flex-1 px-2 text-[11px] font-mono-tech"
+                  />
+                  <Select
+                    value={lk.direction}
+                    disabled={!canEdit}
+                    onChange={(e) =>
+                      updateLinkRule(lIdx, {
+                        direction: e.target.value as LinkDirection,
+                      })
+                    }
+                    className="h-7 w-24 px-1.5 text-[11px] font-mono-tech"
                   >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                )}
+                    <option value="OUT">OUT</option>
+                    <option value="IN">IN</option>
+                  </Select>
+                  {canEdit && (
+                    <button
+                      type="button"
+                      onClick={() => removeLinkRule(lIdx)}
+                      className="rounded p-1 text-muted-foreground hover:text-red-600 cursor-pointer shrink-0"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <Input
+                    value={lk.target_type}
+                    disabled={!canEdit}
+                    onChange={(e) =>
+                      updateLinkRule(lIdx, { target_type: e.target.value })
+                    }
+                    placeholder="Warehouse"
+                    className="h-7 px-2 text-[11px] font-mono-tech"
+                  />
+                  <Input
+                    value={lk.target_key_column}
+                    disabled={!canEdit}
+                    onChange={(e) =>
+                      updateLinkRule(lIdx, {
+                        target_key_column: e.target.value,
+                      })
+                    }
+                    placeholder="warehouse_code"
+                    className="h-7 px-2 text-[11px] font-mono-tech"
+                  />
+                </div>
               </div>
             ))}
           </div>
@@ -649,12 +674,31 @@ export function MappingEditor({
               )}
             </div>
 
-            {canEdit && (
-              <Button variant="danger" size="sm" onClick={deleteCurrent}>
-                <Trash2 className="h-3.5 w-3.5" />
-                {tx("删除映射", "Delete")}
-              </Button>
-            )}
+            {canEdit &&
+              (confirmDelete ? (
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setConfirmDelete(false)}
+                  >
+                    {tx("取消", "Cancel")}
+                  </Button>
+                  <Button variant="danger" size="sm" onClick={deleteCurrent}>
+                    {tx("删除", "Delete")}
+                  </Button>
+                </div>
+              ) : (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setConfirmDelete(true)}
+                  className="text-red-600 hover:bg-red-500/10 hover:border-red-500/40 dark:text-red-400"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  {tx("删除", "Delete")}
+                </Button>
+              ))}
           </div>
 
           {!matchedRecord && (
@@ -674,7 +718,7 @@ export function MappingEditor({
 
           {previewData && (
             <div
-              className="space-y-2 rounded border border-border bg-muted/20 p-2.5"
+              className="space-y-2 rounded-md border border-border bg-muted/20 p-2.5"
               data-testid="mapping-preview-result"
             >
               <div className="flex items-center justify-between">
@@ -700,7 +744,9 @@ export function MappingEditor({
                       <tr>
                         <th className="px-2 py-1">{tx("主键", "Key")}</th>
                         <th className="px-2 py-1">{tx("标题", "Title")}</th>
-                        <th className="px-2 py-1">{tx("属性", "Attributes")}</th>
+                        <th className="px-2 py-1">
+                          {tx("属性", "Attributes")}
+                        </th>
                         <th className="px-2 py-1">{tx("指标", "Metrics")}</th>
                       </tr>
                     </thead>
@@ -775,7 +821,7 @@ export function MappingEditor({
                     <StatusBadge status={r.status} />
                     <span>{r.mode}</span>
                   </span>
-                  <span className="text-muted-foreground">
+                  <span className="text-muted-foreground tabular-nums">
                     +{r.nodes_upserted} {tx("节点", "nodes")} / +
                     {r.links_upserted} {tx("边", "edges")}
                   </span>

@@ -1007,7 +1007,7 @@ test("xBlueStudio /studio renders canvas cards & edges, switches subgraph for me
   await page.goto("/studio");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "xBlueStudio · 节点与关系建模" })
+    page.getByRole("heading", { level: 1, name: "xBlueStudio · 节点建模" })
   ).toBeVisible();
 
   // 1. Assert top status bar & @xyflow/react canvas renders Warehouse, Order, and FULFILLS
@@ -1082,6 +1082,7 @@ test("xBlueStudio /studio renders canvas cards & edges, switches subgraph for me
   await expect(sdlPre).toContainText("type Warehouse");
   await expect(sdlPre).toContainText("fulfillsOrders");
 
+  await page.getByTestId("domain-tab-graphql").click();
   await page.getByTestId("graphql-run-btn").click();
   const gqlOut = page.getByTestId("graphql-response-output");
   await expect(gqlOut).toBeVisible();

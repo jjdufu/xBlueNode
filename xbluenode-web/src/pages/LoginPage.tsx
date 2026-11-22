@@ -197,30 +197,32 @@ export function LoginPage() {
       {/* Unified Sticky Top Header: Top-Left Brand + Locale, Top-Right Borderless Theme Icon */}
       <header className="sticky top-0 z-30 h-12 border-b border-border bg-card/95 backdrop-blur-xs px-4 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          <div className="flex items-center gap-1.5 select-none">
-            <span className="inline-block h-2 w-2 rounded-full bg-xblue" />
-            <span className="text-sm font-semibold tracking-tight">
+          <div className="flex items-center gap-2 select-none">
+            <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-xblue text-white text-xs font-bold tracking-tight shrink-0">
+              xB
+            </span>
+            <span className="text-[15px] font-semibold tracking-tight">
               xBlueNode
             </span>
-            <span className="text-[11px] font-mono-tech text-muted-foreground">
+            <span className="text-[11px] font-mono-tech text-muted-foreground/75">
               v{__APP_VERSION__}
             </span>
           </div>
+        </div>
 
+        <div className="flex items-center gap-1">
           <button
             type="button"
             data-testid="locale-toggle-btn"
             onClick={toggleLocale}
             aria-label={tx("切换语言", "Switch language")}
             title={tx("切换为 English", "Switch to 简体中文")}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+            className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
           >
             <Languages className="h-3.5 w-3.5 text-xblue" />
             <span className="font-mono-tech">{isZh ? "中文" : "EN"}</span>
           </button>
-        </div>
 
-        <div className="flex items-center gap-1.5">
           <IconButton
             data-testid="theme-toggle-btn"
             onClick={toggleTheme}

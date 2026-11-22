@@ -7,7 +7,7 @@ import {
   type WidgetDataResponse,
   type WidgetRecord,
 } from "@/lib/api/xblueview";
-import { Badge, Button, Input } from "@/components/ui/primitives";
+import { Badge, Button, Input, Select } from "@/components/ui/primitives";
 import { resolveActionTargetNodeId } from "./logic";
 import {
   buildColumnIndexMap,
@@ -282,13 +282,13 @@ export function ActionWidget({
             className="flex items-center gap-1.5"
           >
             {singleField.enumValues && singleField.enumValues.length > 0 ? (
-              <select
+              <Select
                 disabled={readOnly}
                 value={String(formValues[singleField.key] ?? "")}
                 onChange={(e) =>
                   updateFieldValue(singleField.key, e.target.value)
                 }
-                className="h-7 flex-1 min-w-0 rounded-md border border-input bg-background px-2 text-xs"
+                className="h-7 flex-1 min-w-0"
                 data-testid={`action-input-${singleField.key}`}
               >
                 <option value="">{tx("未选择", "Select")}</option>
@@ -297,7 +297,7 @@ export function ActionWidget({
                     {opt}
                   </option>
                 ))}
-              </select>
+              </Select>
             ) : (
               <Input
                 type={
@@ -363,11 +363,11 @@ export function ActionWidget({
                     <span>{tx("启用", "Enabled")}</span>
                   </label>
                 ) : f.enumValues && f.enumValues.length > 0 ? (
-                  <select
+                  <Select
                     disabled={readOnly}
                     value={String(formValues[f.key] ?? "")}
                     onChange={(e) => updateFieldValue(f.key, e.target.value)}
-                    className="h-7 w-full rounded-md border border-input bg-background px-2 text-xs"
+                    className="h-7 w-full"
                   >
                     <option value="">{tx("未选择", "Select")}</option>
                     {f.enumValues.map((opt) => (
@@ -375,7 +375,7 @@ export function ActionWidget({
                         {opt}
                       </option>
                     ))}
-                  </select>
+                  </Select>
                 ) : (
                   <Input
                     type={

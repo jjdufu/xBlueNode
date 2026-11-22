@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import FA2Layout from "graphology-layout-forceatlas2/worker";
+import { Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
 import Sigma, { DEFAULT_STYLES } from "sigma";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/lib/theme";
@@ -31,31 +32,36 @@ export interface SigmaCanvasProps {
   fa2Running: boolean;
   isDark?: boolean;
   testId?: string;
+  className?: string;
   onSelectNode: (nodeId: string) => void;
   onExpandNode?: (nodeId: string) => void;
   onSetPathEndpoint?: (role: "from" | "to", nodeId: string) => void;
 }
 
 export const LIGHT_TYPE_PALETTE = [
-  "#2563eb", // Blue (Factory)
-  "#059669", // Emerald (Warehouse)
-  "#d97706", // Amber (Order)
-  "#7c3aed", // Violet (Supplier)
-  "#db2777", // Pink (Store)
-  "#0891b2", // Cyan (Shipment / DOC)
-  "#ea580c", // Orange (ENTITY)
-  "#4f46e5", // Indigo
+  "#2563eb", // 0: Blue (Factory)
+  "#059669", // 1: Emerald (Warehouse)
+  "#d97706", // 2: Amber (Order)
+  "#7c3aed", // 3: Violet (Supplier / Line)
+  "#e11d48", // 4: Rose (WorkOrder / Store)
+  "#0891b2", // 5: Cyan (Machine / DOC)
+  "#ea580c", // 6: Orange (Sensor / ENTITY)
+  "#0d9488", // 7: Teal (Shipment)
+  "#c026d3", // 8: Fuchsia (Product)
+  "#4f46e5", // 9: Indigo (PARA)
 ] as const;
 
 export const DARK_TYPE_PALETTE = [
-  "#3b82f6", // Blue (Factory)
-  "#10b981", // Emerald (Warehouse)
-  "#f59e0b", // Amber (Order)
-  "#8b5cf6", // Violet (Supplier)
-  "#ec4899", // Pink (Store)
-  "#06b6d4", // Cyan (Shipment / DOC)
-  "#f97316", // Orange (ENTITY)
-  "#6366f1", // Indigo
+  "#3b82f6", // 0: Blue
+  "#10b981", // 1: Emerald
+  "#f59e0b", // 2: Amber
+  "#8b5cf6", // 3: Violet
+  "#fb7185", // 4: Rose
+  "#06b6d4", // 5: Cyan
+  "#f97316", // 6: Orange
+  "#2dd4bf", // 7: Teal
+  "#e879f9", // 8: Fuchsia
+  "#6366f1", // 9: Indigo
 ] as const;
 
 const SEMANTIC_TYPE_SLOT: Readonly<Record<string, number>> = {
@@ -68,13 +74,69 @@ const SEMANTIC_TYPE_SLOT: Readonly<Record<string, number>> = {
   salesorder: 2,
   supplier: 3,
   vendor: 3,
+  line: 3,
+  productionline: 3,
   store: 4,
   customer: 4,
-  shipment: 5,
+  workorder: 4,
+  machine: 5,
+  equipment: 5,
   doc: 5,
+  sensor: 6,
   entity: 6,
-  para: 7,
+  shipment: 7,
+  product: 8,
+  para: 9,
 };
+
+const NODE_TYPE_ZH_MAP: Readonly<Record<string, string>> = {
+  factory: "工厂",
+  warehouse: "仓库",
+  order: "订单",
+  workorder: "生产工单",
+  line: "生产产线",
+  productionline: "生产产线",
+  machine: "机台设备",
+  sensor: "物联传感",
+  supplier: "供应商",
+  store: "门店客户",
+  shipment: "物流运单",
+  product: "物料产品",
+  doc: "知识文档",
+  entity: "知识实体",
+  para: "正文段落",
+};
+
+const EDGE_TYPE_ZH_MAP: Readonly<Record<string, string>> = {
+  SUPPLIES: "供应",
+  FULFILLS: "履约",
+  ASSIGNED_TO: "派工",
+  HAS_LINE: "下辖产线",
+  HAS_MACHINE: "配备机台",
+  HAS_SENSOR: "挂载传感",
+  LOCATED_IN: "位于",
+  MENTIONS: "提及",
+  HAS_PARA: "包含段落",
+  CO_OCCURS: "同段共现",
+  RELATES: "关联",
+  RELATED_TO: "关联",
+};
+
+export function translateNodeTypeLabel(
+  typeName: string,
+  isZh: boolean
+): string {
+  if (!typeName) return "-";
+  if (!isZh) return typeName;
+  const key = typeName.trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+  return NODE_TYPE_ZH_MAP[key] ?? typeName;
+}
+
+export function translateEdgeTypeLabel(relType: string, isZh: boolean): string {
+  if (!relType) return "";
+  if (!isZh) return relType;
+  return EDGE_TYPE_ZH_MAP[relType.toUpperCase()] ?? relType;
+}
 
 export function resolveNodeTypeColor(
   typeName: string,
@@ -91,7 +153,8 @@ export function resolveNodeTypeColor(
   for (let i = 0; i < key.length; i += 1) {
     hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
   }
-  const slot = key.length > 0 ? hash % palette.length : fallbackIndex % palette.length;
+  const slot =
+    key.length > 0 ? hash % palette.length : fallbackIndex % palette.length;
   return palette[slot] ?? palette[0];
 }
 
@@ -133,23 +196,26 @@ export function SigmaCanvas({
   fa2Running,
   isDark: isDarkProp,
   testId = "xbluegraph-canvas",
+  className,
   onSelectNode,
   onExpandNode,
   onSetPathEndpoint,
 }: SigmaCanvasProps) {
-  const { tx } = useI18n();
+  const { isZh, tx } = useI18n();
   const { isDark: themeDark } = useTheme();
   const isDark = isDarkProp ?? themeDark;
 
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fallbackCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const graph = useMemo(() => new Graph({ multi: true, type: "directed" }), []);
   const sigmaRef = useRef<Sigma | null>(null);
   const fa2Ref = useRef<FA2Layout | null>(null);
   const positionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
-  const initialLayoutDoneRef = useRef<boolean>(false);
+  const prevFingerprintRef = useRef<string>("");
   const drawFallbackRef = useRef<(() => void) | null>(null);
   const projectionRef = useRef<FallbackProjection | null>(null);
+  const fallbackZoomRef = useRef<number>(1);
   const fallbackDragRef = useRef<{
     nodeId: string;
     lockedProj: FallbackProjection;
@@ -159,6 +225,7 @@ export function SigmaCanvas({
   const [webglReady, setWebglReady] = useState<boolean>(() =>
     isWebGl2Supported()
   );
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [cursorMode, setCursorMode] = useState<
     "default" | "grab" | "grabbing"
   >("default");
@@ -177,6 +244,24 @@ export function SigmaCanvas({
     expandRef.current = onExpandNode;
     isDarkRef.current = isDark;
   }, [isDark, onExpandNode, onSelectNode]);
+
+  useEffect(() => {
+    const onFsChange = () => {
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
+  const neighborIdSet = useMemo(() => {
+    const set = new Set<string>();
+    if (!selectedNodeId) return set;
+    for (const e of edges) {
+      if (e.src_node_id === selectedNodeId) set.add(e.dst_node_id);
+      if (e.dst_node_id === selectedNodeId) set.add(e.src_node_id);
+    }
+    return set;
+  }, [edges, selectedNodeId]);
 
   const visualByNodeId = useMemo(() => {
     const palette = isDark ? DARK_TYPE_PALETTE : LIGHT_TYPE_PALETTE;
@@ -211,10 +296,11 @@ export function SigmaCanvas({
     for (const n of nodes) {
       const isSelected = n.id === selectedNodeId;
       const isInPath = pathSet.has(n.id);
+      const isNeighbor = neighborIdSet.has(n.id);
       const algoEntry = algoMap.get(n.id);
       const typeIdx = typeIdxMap.get(n.type_name) ?? 0;
 
-      let baseSize = 10;
+      let baseSize = 6.5;
       let color = resolveNodeTypeColor(n.type_name, typeIdx, isDark);
 
       if (colorMode === "METRIC" && colorMetricKey) {
@@ -222,7 +308,7 @@ export function SigmaCanvas({
         if (typeof val === "number" && Number.isFinite(val)) {
           const span = maxMetric - minMetric;
           const ratio = span > 0 ? (val - minMetric) / span : 0.5;
-          baseSize = Math.round(8 + ratio * 12);
+          baseSize = Math.round(6 + ratio * 9);
           color =
             ratio >= 0.7 ? accentBlue : ratio >= 0.35 ? "#06b6d4" : "#71717a";
         }
@@ -235,7 +321,7 @@ export function SigmaCanvas({
           algoEntry?.score !== undefined &&
           maxScore > 0
         ) {
-          baseSize = Math.round(8 + (algoEntry.score / maxScore) * 14);
+          baseSize = Math.round(6 + (algoEntry.score / maxScore) * 11);
         }
         if (
           algoMode === "COMMUNITY_COLOR" &&
@@ -248,12 +334,13 @@ export function SigmaCanvas({
         }
       }
 
-      // Preserve distinct node type color on selection; highlight via size + outer halo
       const size = isSelected
-        ? Math.max(baseSize + 5, 16)
+        ? Math.max(baseSize + 4.5, 11.5)
         : isInPath
-          ? Math.max(baseSize + 3, 14)
-          : baseSize;
+          ? Math.max(baseSize + 3, 10)
+          : isNeighbor
+            ? Math.max(baseSize + 1.5, 8)
+            : baseSize;
 
       map.set(n.id, {
         color,
@@ -269,30 +356,28 @@ export function SigmaCanvas({
     colorMode,
     highlightedPathIds,
     isDark,
+    neighborIdSet,
     nodes,
     selectedNodeId,
   ]);
 
-  // Sync nodes, edges, and visual attributes into the persistent Graphology instance
+  // Sync nodes, edges, and ForceAtlas2 well-spaced layout into Graphology
   useEffect(() => {
     const incomingIds = new Set(nodes.map((n) => n.id));
-    const existingIds = graph.nodes();
-    for (const oldId of existingIds) {
+    for (const oldId of graph.nodes()) {
       if (!incomingIds.has(oldId)) {
         graph.dropNode(oldId);
       }
     }
 
-    const count = Math.max(nodes.length, 1);
-    let addedNewNodes = false;
-
+    const goldenAngle = 2.399963229728653;
     nodes.forEach((n, idx) => {
       const savedPos = positionsRef.current.get(n.id);
       const hasInGraph = graph.hasNode(n.id);
-      const angle = (2 * Math.PI * idx) / count;
-      const radius = count <= 1 ? 0 : 140;
-      const defaultX = Math.cos(angle) * radius;
-      const defaultY = Math.sin(angle) * radius;
+      const radius = nodes.length <= 1 ? 0 : Math.sqrt(idx + 0.6) * 34;
+      const theta = idx * goldenAngle;
+      const defaultX = Math.cos(theta) * radius;
+      const defaultY = Math.sin(theta) * radius;
 
       const x = hasInGraph
         ? Number(graph.getNodeAttribute(n.id, "x") ?? savedPos?.x ?? defaultX)
@@ -303,36 +388,38 @@ export function SigmaCanvas({
 
       const vis = visualByNodeId.get(n.id) ?? {
         color: resolveNodeTypeColor(n.type_name, idx, isDark),
-        size: 10,
+        size: 6.5,
         highlighted: false,
       };
-      const label = n.node_key ? `${n.title} (${n.node_key})` : n.title;
 
-      const nodeLabelColor = isDark ? "#fafafa" : "#09090b";
+      // Clean label: omit redundant suffix if title already contains node_key or if empty
+      const rawTitle = n.title.trim();
+      const keySuffix =
+        n.node_key && !rawTitle.includes(n.node_key) ? ` (${n.node_key})` : "";
+      const fullLabel = `${rawTitle}${keySuffix}`;
+      const label =
+        fullLabel.length > 26 && n.id !== selectedNodeId
+          ? `${fullLabel.slice(0, 24)}…`
+          : fullLabel;
+
+      const nodeLabelColor = isDark ? "#f4f4f5" : "#18181b";
+
+      const attrs = {
+        x,
+        y,
+        size: vis.size,
+        color: vis.color,
+        highlighted: vis.highlighted,
+        forceLabel: n.id === selectedNodeId || neighborIdSet.has(n.id),
+        label,
+        labelColor: nodeLabelColor,
+        nodeType: n.type_name,
+      };
 
       if (hasInGraph) {
-        graph.mergeNodeAttributes(n.id, {
-          x,
-          y,
-          size: vis.size,
-          color: vis.color,
-          highlighted: vis.highlighted,
-          label,
-          labelColor: nodeLabelColor,
-          nodeType: n.type_name,
-        });
+        graph.mergeNodeAttributes(n.id, attrs);
       } else {
-        addedNewNodes = true;
-        graph.addNode(n.id, {
-          x,
-          y,
-          size: vis.size,
-          color: vis.color,
-          highlighted: vis.highlighted,
-          label,
-          labelColor: nodeLabelColor,
-          nodeType: n.type_name,
-        });
+        graph.addNode(n.id, attrs);
       }
       positionsRef.current.set(n.id, { x, y });
     });
@@ -349,34 +436,50 @@ export function SigmaCanvas({
       }
     }
 
-    const edgeColorMuted = isDark ? "#52525b" : "#cbd5e1";
-    const edgeLabelColor = isDark ? "#a1a1aa" : "#71717a";
+    const edgeColorNormal = isDark ? "#71717a" : "#94a3b8";
+    const edgeColorDimmed = isDark ? "#3f3f46" : "#cbd5e1";
+    const edgeLabelColor = isDark ? "#a1a1aa" : "#64748b";
     const accentBlue = isDark ? "#3b82f6" : "#2563eb";
 
     edges.forEach((e, idx) => {
       if (!graph.hasNode(e.src_node_id) || !graph.hasNode(e.dst_node_id)) return;
       const inPath = pathPairSet.has(`${e.src_node_id}->${e.dst_node_id}`);
+      const touchesSelected =
+        Boolean(selectedNodeId) &&
+        (e.src_node_id === selectedNodeId || e.dst_node_id === selectedNodeId);
       const edgeKey = `${e.id}-${idx}`;
       if (!graph.hasEdge(edgeKey)) {
         graph.addDirectedEdgeWithKey(edgeKey, e.src_node_id, e.dst_node_id, {
-          size: inPath ? 3 : 1.4,
-          color: inPath ? accentBlue : edgeColorMuted,
-          label: e.link_type,
+          size: inPath ? 3 : touchesSelected ? 2.4 : 1.5,
+          color:
+            inPath || touchesSelected
+              ? accentBlue
+              : selectedNodeId
+                ? edgeColorDimmed
+                : edgeColorNormal,
+          label: translateEdgeTypeLabel(e.link_type, isZh),
           labelColor: edgeLabelColor,
         });
       }
     });
 
+    const fingerprint = `${nodes.length}:${edges.length}:${nodes[0]?.id ?? ""}`;
     if (
       nodes.length > 1 &&
       nodes.length <= 2500 &&
-      !initialLayoutDoneRef.current &&
-      addedNewNodes
+      prevFingerprintRef.current !== fingerprint
     ) {
-      initialLayoutDoneRef.current = true;
+      prevFingerprintRef.current = fingerprint;
+      const inferred = forceAtlas2.inferSettings(graph);
       forceAtlas2.assign(graph, {
-        iterations: 45,
-        settings: forceAtlas2.inferSettings(graph),
+        iterations: 100,
+        settings: {
+          ...inferred,
+          gravity: 0.55,
+          scalingRatio: 18,
+          strongGravityMode: false,
+          slowDown: 2,
+        },
       });
       graph.forEachNode((id, attrs) => {
         if (typeof attrs.x === "number" && typeof attrs.y === "number") {
@@ -389,9 +492,19 @@ export function SigmaCanvas({
       sigmaRef.current.refresh();
     }
     drawFallbackRef.current?.();
-  }, [edges, graph, highlightedPathIds, isDark, nodes, visualByNodeId]);
+  }, [
+    edges,
+    graph,
+    highlightedPathIds,
+    isDark,
+    isZh,
+    neighborIdSet,
+    nodes,
+    selectedNodeId,
+    visualByNodeId,
+  ]);
 
-  // Mount Sigma (WebGL2) once with interactive node dragging
+  // Mount Sigma (WebGL2) once with stagePadding & clean label thresholds
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -410,22 +523,26 @@ export function SigmaCanvas({
             ...DEFAULT_STYLES.nodes,
             labelColor: {
               attribute: "labelColor",
-              defaultValue: isDarkRef.current ? "#fafafa" : "#09090b",
+              defaultValue: isDarkRef.current ? "#f4f4f5" : "#18181b",
             },
           },
           edges: {
             ...DEFAULT_STYLES.edges,
             labelColor: {
               attribute: "labelColor",
-              defaultValue: isDarkRef.current ? "#a1a1aa" : "#71717a",
+              defaultValue: isDarkRef.current ? "#a1a1aa" : "#64748b",
             },
           },
         },
         settings: {
+          itemSizesReference: "screen",
+          autoRescaleContent: "labels",
           renderLabels: true,
-          renderEdgeLabels: true,
-          labelDensity: 0.7,
+          renderEdgeLabels: false,
+          labelDensity: 0.35,
+          labelGridCellSize: 96,
           labelRenderedSizeThreshold: 6,
+          stagePadding: 48,
           allowInvalidContainer: true,
         },
       });
@@ -546,8 +663,14 @@ export function SigmaCanvas({
     }
     if (fa2Running && graph.order > 1) {
       try {
+        const inferred = forceAtlas2.inferSettings(graph);
         const fa2 = new FA2Layout(graph, {
-          settings: forceAtlas2.inferSettings(graph),
+          settings: {
+            ...inferred,
+            gravity: 0.55,
+            scalingRatio: 18,
+            strongGravityMode: false,
+          },
         });
         fa2.start();
         fa2Ref.current = fa2;
@@ -567,7 +690,7 @@ export function SigmaCanvas({
     { id: string; title: string; x: number; y: number; r: number }[]
   >([]);
 
-  // 2D Canvas fallback renderer when WebGL2 is unavailable (with interactive node dragging)
+  // 2D Canvas fallback renderer with collision avoidance and safe edge padding
   useEffect(() => {
     if (webglReady) {
       drawFallbackRef.current = null;
@@ -581,7 +704,7 @@ export function SigmaCanvas({
     const draw = () => {
       const parent = canvas.parentElement;
       const w = parent ? Math.max(parent.clientWidth, 320) : 640;
-      const h = parent ? Math.max(parent.clientHeight, 320) : 540;
+      const h = parent ? Math.max(parent.clientHeight, 320) : 500;
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext("2d");
@@ -616,7 +739,7 @@ export function SigmaCanvas({
           minY = Math.min(minY, y);
           maxY = Math.max(maxY, y);
         });
-        const pad = 64;
+        const pad = 88;
         proj = {
           minX,
           spanX: Math.max(maxX - minX, 1),
@@ -629,19 +752,27 @@ export function SigmaCanvas({
       }
       projectionRef.current = proj;
 
+      const zoom = fallbackZoomRef.current;
+      const cxMid = proj.w / 2;
+      const cyMid = proj.h / 2;
+
       const project = (gx: number, gy: number): [number, number] => {
         if (nodes.length === 1 && !fallbackDragRef.current) {
-          return [proj.w / 2, proj.h / 2];
+          return [cxMid, cyMid];
         }
+        const rawX =
+          proj.pad +
+          ((gx - proj.minX) / proj.spanX) * (proj.w - proj.pad * 2);
+        const rawY =
+          proj.pad +
+          ((gy - proj.minY) / proj.spanY) * (proj.h - proj.pad * 2);
         return [
-          proj.pad +
-            ((gx - proj.minX) / proj.spanX) * (proj.w - proj.pad * 2),
-          proj.pad +
-            ((gy - proj.minY) / proj.spanY) * (proj.h - proj.pad * 2),
+          cxMid + (rawX - cxMid) * zoom,
+          cyMid + (rawY - cyMid) * zoom,
         ];
       };
 
-      // Draw edges
+      // Draw edges clearly
       graph.forEachEdge((_eid, attrs, _src, _dst, srcAttrs, dstAttrs) => {
         const [x1, y1] = project(
           Number(srcAttrs.x ?? 0),
@@ -651,15 +782,14 @@ export function SigmaCanvas({
           Number(dstAttrs.x ?? 0),
           Number(dstAttrs.y ?? 0)
         );
-        ctx.strokeStyle = String(attrs.color ?? "#cbd5e1");
-        ctx.lineWidth = Number(attrs.size ?? 1.4);
+        ctx.strokeStyle = String(attrs.color ?? "#94a3b8");
+        ctx.lineWidth = Number(attrs.size ?? 1.5);
         ctx.beginPath();
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
         ctx.stroke();
       });
 
-      // Draw nodes with outer selection/path halo while preserving palette color
       const nextProjected: {
         id: string;
         title: string;
@@ -668,13 +798,17 @@ export function SigmaCanvas({
         r: number;
       }[] = [];
 
+      const occupiedBoxes: { x1: number; y1: number; x2: number; y2: number }[] =
+        [];
+
       graph.forEachNode((id, attrs) => {
         const [px, py] = project(Number(attrs.x ?? 0), Number(attrs.y ?? 0));
-        const r = Number(attrs.size ?? 10);
+        const r = Number(attrs.size ?? 7);
         const title = String(attrs.label ?? id);
         const fillColor = String(attrs.color ?? "#2563eb");
         const isSel = id === selectedNodeId;
         const inPath = pathSet.has(id);
+        const isNeigh = neighborIdSet.has(id);
         nextProjected.push({ id, title, x: px, y: py, r });
 
         if (isSel || inPath) {
@@ -693,27 +827,43 @@ export function SigmaCanvas({
         ctx.fill();
 
         if (isSel || inPath) {
-          ctx.strokeStyle = isDark ? "#09090b" : "#ffffff";
+          ctx.strokeStyle = isDark ? "#fafafa" : "#09090b";
           ctx.lineWidth = 2;
-          ctx.stroke();
-
-          ctx.strokeStyle = isSel
-            ? isDark
-              ? "#fafafa"
-              : "#09090b"
-            : isDark
-              ? "#3b82f6"
-              : "#2563eb";
-          ctx.lineWidth = 2.5;
           ctx.beginPath();
           ctx.arc(px, py, r + 2, 0, Math.PI * 2);
           ctx.stroke();
         }
 
-        ctx.fillStyle = isDark ? "#fafafa" : "#09090b";
+        // Collision-aware label rendering with safe horizontal clamping
         ctx.font = isSel ? "600 11px sans-serif" : "11px sans-serif";
-        ctx.textAlign = "center";
-        ctx.fillText(title, px, py + r + 15);
+        const textW = ctx.measureText(title).width;
+        const clampedX = Math.max(
+          textW / 2 + 8,
+          Math.min(w - textW / 2 - 8, px)
+        );
+        const labelY = py + r + 13;
+        const box = {
+          x1: clampedX - textW / 2 - 3,
+          y1: labelY - 11,
+          x2: clampedX + textW / 2 + 3,
+          y2: labelY + 3,
+        };
+        const collides = occupiedBoxes.some(
+          (b) =>
+            !(
+              box.x2 < b.x1 ||
+              box.x1 > b.x2 ||
+              box.y2 < b.y1 ||
+              box.y1 > b.y2
+            )
+        );
+
+        if (isSel || inPath || isNeigh || !collides) {
+          occupiedBoxes.push(box);
+          ctx.fillStyle = isDark ? "#f4f4f5" : "#18181b";
+          ctx.textAlign = "center";
+          ctx.fillText(title, clampedX, labelY);
+        }
       });
       projectedNodesRef.current = nextProjected;
     };
@@ -731,11 +881,49 @@ export function SigmaCanvas({
     graph,
     highlightedPathIds,
     isDark,
+    neighborIdSet,
     nodes,
     selectedNodeId,
     visualByNodeId,
     webglReady,
   ]);
+
+  const handleZoomIn = () => {
+    if (sigmaRef.current) {
+      void sigmaRef.current.getCamera().zoomIn({ duration: 180 });
+    } else {
+      fallbackZoomRef.current = Math.min(3, fallbackZoomRef.current * 1.25);
+      drawFallbackRef.current?.();
+    }
+  };
+
+  const handleZoomOut = () => {
+    if (sigmaRef.current) {
+      void sigmaRef.current.getCamera().zoomOut({ duration: 180 });
+    } else {
+      fallbackZoomRef.current = Math.max(0.5, fallbackZoomRef.current / 1.25);
+      drawFallbackRef.current?.();
+    }
+  };
+
+  const handleFitView = () => {
+    if (sigmaRef.current) {
+      void sigmaRef.current.getCamera().reset({ duration: 220 });
+    } else {
+      fallbackZoomRef.current = 1;
+      drawFallbackRef.current?.();
+    }
+  };
+
+  const handleToggleFullscreen = () => {
+    const el = wrapperRef.current;
+    if (!el || typeof document === "undefined") return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {});
+    } else {
+      void el.requestFullscreen?.().catch(() => {});
+    }
+  };
 
   const hitTestFallbackCanvas = (
     clientX: number,
@@ -780,9 +968,11 @@ export function SigmaCanvas({
 
   return (
     <div
+      ref={wrapperRef}
       className={cn(
-        "relative w-full h-[540px] bg-background overflow-hidden",
-        cursorClass
+        "relative w-full flex-1 min-h-[360px] bg-background overflow-hidden",
+        cursorClass,
+        className
       )}
       data-testid={testId}
       onContextMenu={(e) => e.preventDefault()}
@@ -886,6 +1076,57 @@ export function SigmaCanvas({
           }}
         />
       )}
+
+      {/* Floating Viewport Controls (Zoom In / Zoom Out / Fit / Fullscreen) */}
+      <div
+        className="absolute right-3 bottom-3 z-10 inline-flex items-center rounded-md border border-border bg-card/90 backdrop-blur-xs shadow-xs p-0.5"
+        data-testid="graph-viewport-controls"
+      >
+        <button
+          type="button"
+          onClick={handleZoomIn}
+          title={tx("放大", "Zoom in")}
+          aria-label={tx("放大", "Zoom in")}
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
+        >
+          <ZoomIn className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={handleZoomOut}
+          title={tx("缩小", "Zoom out")}
+          aria-label={tx("缩小", "Zoom out")}
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
+        >
+          <ZoomOut className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={handleFitView}
+          title={tx("适应画布", "Fit view")}
+          aria-label={tx("适应画布", "Fit view")}
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
+        >
+          <RotateCcw className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={handleToggleFullscreen}
+          title={
+            isFullscreen ? tx("退出全屏", "Exit fullscreen") : tx("全屏", "Fullscreen")
+          }
+          aria-label={
+            isFullscreen ? tx("退出全屏", "Exit fullscreen") : tx("全屏", "Fullscreen")
+          }
+          className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
+        >
+          {isFullscreen ? (
+            <Minimize2 className="h-3.5 w-3.5" />
+          ) : (
+            <Maximize2 className="h-3.5 w-3.5" />
+          )}
+        </button>
+      </div>
 
       {contextMenu && (onExpandNode || onSetPathEndpoint) && (
         <div

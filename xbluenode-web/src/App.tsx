@@ -1,5 +1,12 @@
-import { type FormEvent, useEffect, useState, useSyncExternalStore } from "react";
 import {
+  type FormEvent,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import {
+  ChevronDown,
   KeyRound,
   Languages,
   LogOut,
@@ -43,7 +50,11 @@ import {
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
-import { MODULE_REGISTRY, type ModuleRouteSpec } from "@/modules/registry";
+import {
+  MODULE_REGISTRY,
+  NAV_GROUPS,
+  type ModuleRouteSpec,
+} from "@/modules/registry";
 import { LoginPage } from "@/pages/LoginPage";
 
 function matchesModulePath(spec: ModuleRouteSpec, pathname: string): boolean {
@@ -73,7 +84,11 @@ function ShellLayout() {
   const [bootRefreshDone, setBootRefreshDone] = useState(
     () => getAccessToken() !== null
   );
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [userSidebarOverride, setUserSidebarOverride] = useState<
+    boolean | null
+  >(null);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Password change modal state
   const [pwdModalOpen, setPwdModalOpen] = useState(false);
@@ -111,6 +126,35 @@ function ShellLayout() {
     };
   }, [token, bootRefreshDone, cachedMe]);
 
+  // Reset per-route auto-collapse override when navigating across modules
+  useEffect(() => {
+    setUserSidebarOverride(null);
+    setAccountMenuOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const onDown = (ev: MouseEvent) => {
+      if (
+        accountMenuRef.current &&
+        !accountMenuRef.current.contains(ev.target as Node)
+      ) {
+        setAccountMenuOpen(false);
+      }
+    };
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") {
+        setAccountMenuOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [accountMenuOpen]);
+
   if (!token && !bootRefreshDone) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background text-muted-foreground text-xs font-mono-tech">
@@ -144,6 +188,9 @@ function ShellLayout() {
   const activeModule = navItems.find((m) =>
     matchesModulePath(m, location.pathname)
   );
+  const sidebarCollapsed =
+    userSidebarOverride ?? Boolean(activeModule?.autoCollapseSidebar);
+
   const searchParams = new URLSearchParams(location.search);
   const isImmersive = Boolean(
     activeModule?.immersiveQueryParam &&
@@ -156,11 +203,13 @@ function ShellLayout() {
   }
 
   const handleLogout = async () => {
+    setAccountMenuOpen(false);
     await logout();
     void navigate("/login", { replace: true });
   };
 
   const handleLogoutAll = async () => {
+    setAccountMenuOpen(false);
     try {
       await logoutAll();
     } catch {
@@ -194,7 +243,9 @@ function ShellLayout() {
       void navigate("/login", { replace: true });
     } catch (err) {
       setPwdError(
-        err instanceof ApiError ? `[${err.errorCode}] ${err.message}` : String(err)
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
       );
     } finally {
       setPwdSaving(false);
@@ -202,80 +253,86 @@ function ShellLayout() {
   };
 
   const primaryRole = cachedMe?.roles?.[0] ?? "";
+  const isFullBleed = Boolean(activeModule?.fullBleed);
 
   return (
-    <div className="min-h-screen flex flex-col bg-background text-foreground">
+    <div
+      className={cn(
+        "flex flex-col bg-background text-foreground",
+        isFullBleed ? "h-screen overflow-hidden" : "min-h-screen"
+      )}
+    >
       {/* Global Sticky Top Header */}
       <header
         data-testid="app-top-header"
-        className="sticky top-0 z-30 h-12 border-b border-border bg-card/95 backdrop-blur-xs px-3 md:px-4 flex items-center justify-between gap-3 shrink-0"
+        className="sticky top-0 z-30 h-12 border-b border-border bg-card/95 backdrop-blur-xs flex items-center justify-between shrink-0"
       >
-        {/* Top-Left: Sidebar Toggle + Brand + Language Switcher */}
-        <div className="flex items-center gap-2 min-w-0">
-          <IconButton
-            size="sm"
-            onClick={() => setSidebarCollapsed((v) => !v)}
-            aria-label={
-              sidebarCollapsed
-                ? tx("展开导航栏", "Expand sidebar")
-                : tx("收起导航栏", "Collapse sidebar")
-            }
-            title={
-              sidebarCollapsed
-                ? tx("展开导航栏", "Expand sidebar")
-                : tx("收起导航栏", "Collapse sidebar")
-            }
-          >
-            {sidebarCollapsed ? (
-              <PanelLeftOpen className="h-4 w-4" />
-            ) : (
-              <PanelLeftClose className="h-4 w-4" />
+        {/* Top-Left Brand Zone: Strictly aligned with left sidebar width */}
+        <div className="h-full flex items-center shrink-0">
+          <div
+            className={cn(
+              "h-full flex items-center justify-between border-r border-border transition-all shrink-0",
+              sidebarCollapsed ? "w-14 px-2 justify-center" : "w-56 px-3.5"
             )}
-          </IconButton>
+          >
+            {!sidebarCollapsed && (
+              <div className="flex items-center gap-2 min-w-0 select-none">
+                <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-xblue text-white text-xs font-bold tracking-tight shrink-0">
+                  xB
+                </span>
+                <span className="text-[15px] font-semibold tracking-tight text-foreground truncate">
+                  xBlueNode
+                </span>
+              </div>
+            )}
 
-          <div className="flex items-center gap-1.5 pr-1 select-none">
-            <span className="inline-block h-2 w-2 rounded-full bg-xblue" />
-            <span className="text-sm font-semibold tracking-tight">
-              xBlueNode
-            </span>
-            <span className="hidden sm:inline text-[11px] font-mono-tech text-muted-foreground">
-              v{__APP_VERSION__}
-            </span>
+            <IconButton
+              size="sm"
+              onClick={() => setUserSidebarOverride(!sidebarCollapsed)}
+              aria-label={
+                sidebarCollapsed
+                  ? tx("展开导航栏", "Expand sidebar")
+                  : tx("收起导航栏", "Collapse sidebar")
+              }
+              title={
+                sidebarCollapsed
+                  ? tx("展开导航栏", "Expand sidebar")
+                  : tx("收起导航栏", "Collapse sidebar")
+              }
+            >
+              {sidebarCollapsed ? (
+                <PanelLeftOpen className="h-4 w-4" />
+              ) : (
+                <PanelLeftClose className="h-4 w-4" />
+              )}
+            </IconButton>
           </div>
 
+          {sidebarCollapsed && (
+            <div className="flex items-center gap-2 pl-3 select-none">
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-xblue text-white text-xs font-bold tracking-tight shrink-0">
+                xB
+              </span>
+              <span className="text-[15px] font-semibold tracking-tight text-foreground">
+                xBlueNode
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Top-Right: System Preferences (Locale + Theme) + Unified Account Dropdown */}
+        <div className="flex items-center gap-1 px-3 md:px-4 ml-auto shrink-0">
           <button
             type="button"
             data-testid="locale-toggle-btn"
             onClick={toggleLocale}
             aria-label={tx("切换语言", "Switch language")}
             title={tx("切换为 English", "Switch to 简体中文")}
-            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0 cursor-pointer"
+            className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0 cursor-pointer"
           >
             <Languages className="h-3.5 w-3.5 text-xblue" />
             <span className="font-mono-tech">{isZh ? "中文" : "EN"}</span>
           </button>
-        </div>
-
-        {/* Top-Right: User Identity + Password + Logout + Borderless Icon-Only Theme Toggle */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          {cachedMe && (
-            <div
-              data-testid="shell-user-badge"
-              className="hidden md:inline-flex items-center gap-1.5 rounded-md bg-muted/60 px-2.5 py-1 text-xs"
-            >
-              <UserCheck className="h-3.5 w-3.5 text-xblue shrink-0" />
-              <span className="font-medium">{cachedMe.username}</span>
-              <span className="text-muted-foreground">·</span>
-              <span className="text-muted-foreground font-mono-tech">
-                {cachedMe.dept_id}
-              </span>
-              {primaryRole && (
-                <Badge variant="xblue" className="ml-0.5 text-[10px]">
-                  {tEnum(primaryRole)}
-                </Badge>
-              )}
-            </div>
-          )}
 
           <IconButton
             data-testid="theme-toggle-btn"
@@ -298,84 +355,222 @@ function ShellLayout() {
             )}
           </IconButton>
 
-          <div className="h-4 w-px bg-border mx-0.5" />
+          <div className="h-4 w-px bg-border mx-1" />
 
-          <IconButton
-            data-testid="shell-change-password-btn"
-            onClick={() => {
-              setPwdError(null);
-              setPwdModalOpen(true);
-            }}
-            aria-label={tx("修改口令", "Change password")}
-            title={tx("修改口令", "Change password")}
-          >
-            <KeyRound className="h-4 w-4" />
-          </IconButton>
+          {/* Unified User Account Dropdown */}
+          <div ref={accountMenuRef} className="relative">
+            <button
+              type="button"
+              data-testid="shell-user-menu-btn"
+              aria-expanded={accountMenuOpen}
+              aria-haspopup="menu"
+              onClick={() => setAccountMenuOpen((v) => !v)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs hover:bg-muted transition-colors cursor-pointer"
+            >
+              <UserCheck className="h-3.5 w-3.5 text-xblue shrink-0" />
+              <span
+                data-testid="shell-user-badge"
+                className="inline-flex items-center gap-1.5"
+              >
+                <span className="font-medium">
+                  {cachedMe?.username ?? tx("账号", "Account")}
+                </span>
+                {cachedMe?.dept_id && (
+                  <span className="hidden sm:inline text-muted-foreground font-mono-tech">
+                    · {cachedMe.dept_id}
+                  </span>
+                )}
+                {primaryRole && (
+                  <Badge
+                    variant="xblue"
+                    className="hidden md:inline-flex ml-0.5 text-[10px]"
+                  >
+                    {tEnum(primaryRole)}
+                  </Badge>
+                )}
+              </span>
+              <ChevronDown
+                className={cn(
+                  "h-3.5 w-3.5 text-muted-foreground transition-transform",
+                  accountMenuOpen && "rotate-180"
+                )}
+              />
+            </button>
 
-          <IconButton
-            data-testid="shell-logout-all-btn"
-            onClick={() => void handleLogoutAll()}
-            aria-label={tx("退出全部设备", "Sign out all devices")}
-            title={tx("退出全部设备", "Sign out all devices")}
-          >
-            <ShieldOff className="h-4 w-4" />
-          </IconButton>
+            {accountMenuOpen && (
+              <div
+                role="menu"
+                className="absolute right-0 top-full mt-1.5 w-52 rounded-md border border-border bg-card text-card-foreground shadow-lg py-1 z-50"
+              >
+                {cachedMe && (
+                  <div className="px-3 py-2 border-b border-border space-y-0.5">
+                    <div className="text-xs font-semibold truncate">
+                      {cachedMe.username}
+                    </div>
+                    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-mono-tech">
+                      <span>{cachedMe.dept_id}</span>
+                      {primaryRole && (
+                        <>
+                          <span>·</span>
+                          <span>{tEnum(primaryRole)}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
 
-          <Button
-            variant="ghost"
-            size="sm"
-            type="button"
-            data-testid="shell-logout-btn"
-            onClick={() => void handleLogout()}
-            title={tx("退出登录", "Sign out")}
-            className="px-2 text-muted-foreground hover:text-foreground"
-          >
-            <LogOut className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">{tx("退出", "Sign out")}</span>
-          </Button>
+                <div className="p-1 space-y-0.5">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="shell-change-password-btn"
+                    onClick={() => {
+                      setAccountMenuOpen(false);
+                      setPwdError(null);
+                      setPwdModalOpen(true);
+                    }}
+                    className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-xs text-foreground hover:bg-muted transition-colors cursor-pointer"
+                  >
+                    <KeyRound className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span>{tx("修改口令", "Change password")}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="shell-logout-all-btn"
+                    onClick={() => void handleLogoutAll()}
+                    className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-xs text-foreground hover:bg-muted transition-colors cursor-pointer"
+                  >
+                    <ShieldOff className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span>{tx("退出全部设备", "Sign out all devices")}</span>
+                  </button>
+                </div>
+
+                <div className="border-t border-border p-1">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    data-testid="shell-logout-btn"
+                    onClick={() => void handleLogout()}
+                    className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-500/10 transition-colors cursor-pointer"
+                  >
+                    <LogOut className="h-3.5 w-3.5" />
+                    <span>{tx("退出登录", "Sign out")}</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </header>
 
       {/* Main Workspace Body */}
-      <div className="flex flex-1 min-h-0">
+      <div
+        className={cn(
+          "flex flex-1 min-h-0",
+          isFullBleed && "overflow-hidden"
+        )}
+      >
         <aside
           className={cn(
-            "sticky top-12 h-[calc(100vh-3rem)] border-r border-border bg-card/40 flex flex-col shrink-0 transition-all overflow-y-auto",
-            sidebarCollapsed ? "w-14 p-2" : "w-54 p-3"
+            "sticky top-12 h-[calc(100vh-3rem)] border-r border-border bg-card/30 flex flex-col justify-between shrink-0 transition-all overflow-y-auto",
+            sidebarCollapsed ? "w-14 px-2 py-2.5" : "w-56 px-2.5 py-3"
           )}
         >
-          <nav className="space-y-0.5">
-            {navItems.map((item) => {
-              const Icon = item.icon;
-              const active = matchesModulePath(item, location.pathname);
-              const navLabel = isZh ? item.label : item.enLabel;
+          <nav className="space-y-3.5">
+            {NAV_GROUPS.map((grp, groupIdx) => {
+              const items = navItems.filter((m) => m.group === grp.key);
+              if (items.length === 0) return null;
               return (
-                <NavLink
-                  key={item.key}
-                  to={item.path}
-                  end={item.path === "/"}
-                  title={navLabel}
-                  className={cn(
-                    "w-full flex items-center gap-2.5 rounded-md px-2.5 py-2 text-xs font-medium transition-colors cursor-pointer",
-                    sidebarCollapsed && "justify-center px-0",
-                    active
-                      ? "bg-xblue-soft/70 text-xblue border border-xblue/25"
-                      : "text-muted-foreground hover:text-foreground hover:bg-muted/60 border border-transparent"
+                <div key={grp.key} className="space-y-0.5">
+                  {sidebarCollapsed ? (
+                    groupIdx > 0 && (
+                      <div className="my-1.5 mx-1.5 border-t border-border/70" />
+                    )
+                  ) : (
+                    <div className="px-2.5 pb-1 text-[10px] font-semibold tracking-wider text-muted-foreground/75 select-none">
+                      {isZh ? grp.zh : grp.en}
+                    </div>
                   )}
-                >
-                  <Icon
-                    className={cn("h-4 w-4 shrink-0", active && "text-xblue")}
-                  />
-                  {!sidebarCollapsed && (
-                    <span className="truncate">{navLabel}</span>
-                  )}
-                </NavLink>
+
+                  {items.map((item) => {
+                    const Icon = item.icon;
+                    const active = matchesModulePath(item, location.pathname);
+                    const fullNavLabel = isZh ? item.label : item.enLabel;
+                    const coreLabel = isZh ? item.shortZh : item.shortEn;
+                    return (
+                      <NavLink
+                        key={item.key}
+                        to={item.path}
+                        end={item.path === "/"}
+                        aria-label={fullNavLabel}
+                        title={fullNavLabel}
+                        className={cn(
+                          "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-xs transition-colors cursor-pointer",
+                          sidebarCollapsed && "justify-center px-0 py-2",
+                          active
+                            ? "bg-xblue-soft text-xblue font-semibold before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-r before:bg-xblue"
+                            : "font-medium text-muted-foreground hover:text-foreground hover:bg-muted/70"
+                        )}
+                      >
+                        <Icon
+                          className={cn(
+                            "h-4 w-4 shrink-0",
+                            active && "text-xblue"
+                          )}
+                        />
+                        {!sidebarCollapsed && (
+                          <span className="flex-1 flex items-center justify-between gap-1.5 min-w-0">
+                            <span className="truncate">{coreLabel}</span>
+                            {item.productTag && (
+                              <span
+                                className={cn(
+                                  "text-[10px] font-mono-tech shrink-0",
+                                  active
+                                    ? "text-xblue/75"
+                                    : "text-muted-foreground/55"
+                                )}
+                              >
+                                {item.productTag}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </NavLink>
+                    );
+                  })}
+                </div>
               );
             })}
           </nav>
+
+          {/* Subtle version anchor at sidebar bottom */}
+          <div
+            className={cn(
+              "pt-2 mt-2 border-t border-border/60 text-[10px] font-mono-tech text-muted-foreground/65 select-none",
+              sidebarCollapsed ? "text-center" : "px-2.5 flex items-center justify-between"
+            )}
+          >
+            {sidebarCollapsed ? (
+              <span>v{__APP_VERSION__}</span>
+            ) : (
+              <>
+                <span>xBlueNode</span>
+                <span>v{__APP_VERSION__}</span>
+              </>
+            )}
+          </div>
         </aside>
 
-        <main className="flex-1 min-w-0 w-full max-w-[1760px] mx-auto p-4 md:p-6">
+        <main
+          className={cn(
+            "flex-1 min-w-0 w-full",
+            isFullBleed
+              ? "h-[calc(100vh-3rem)] overflow-hidden flex flex-col p-3 md:p-4"
+              : "max-w-[1760px] mx-auto p-4 md:p-6"
+          )}
+        >
           <Outlet />
         </main>
       </div>

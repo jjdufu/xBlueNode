@@ -1,7 +1,9 @@
 import { useMemo, useState } from "react";
 import {
+  Check,
   ChevronDown,
   ChevronRight,
+  Copy,
   FileCode2,
   Loader2,
   Send,
@@ -17,6 +19,13 @@ import type { StepStatus } from "@/lib/api/enums";
 import { Badge } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
 import { formatDurationMs, renderRunStatusBadge } from "./RunHistory";
+
+const UUID_REGEX =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+function formatCompactTarget(raw: string): string {
+  return raw.replace(UUID_REGEX, (m) => `#${m.slice(0, 8)}`);
+}
 
 function ganttBarColor(status: StepStatus): string {
   switch (status) {
@@ -70,6 +79,7 @@ export function RunTimeline({
   const [expandedStepIds, setExpandedStepIds] = useState<
     Record<string, boolean>
   >({});
+  const [copiedId, setCopiedId] = useState<string | null>(null);
 
   const nodeLabelMap = useMemo(() => {
     const m: Record<string, string> = {};
@@ -106,10 +116,10 @@ export function RunTimeline({
   if (!run) {
     return (
       <div
-        className="flex flex-col h-[320px] rounded-md border border-border bg-card text-card-foreground overflow-hidden"
+        className="flex flex-col h-full min-h-0 rounded-md border border-border bg-card text-card-foreground overflow-hidden"
         data-testid="axflow-run-timeline-empty"
       >
-        <div className="p-3 border-b border-border flex items-center justify-between shrink-0">
+        <div className="px-3 py-2 border-b border-border flex items-center justify-between shrink-0">
           <span className="text-xs font-semibold">
             {tx("步骤甘特时间线", "Step Gantt Timeline")}
           </span>
@@ -127,11 +137,11 @@ export function RunTimeline({
 
   return (
     <div
-      className="flex flex-col h-[320px] rounded-md border border-border bg-card text-card-foreground overflow-hidden"
+      className="flex flex-col h-full min-h-0 rounded-md border border-border bg-card text-card-foreground overflow-hidden"
       data-testid="axflow-run-timeline"
     >
       {/* Run Summary Header */}
-      <div className="p-3 border-b border-border flex flex-wrap items-center justify-between gap-2 shrink-0">
+      <div className="px-3 py-2 border-b border-border flex flex-wrap items-center justify-between gap-2 shrink-0">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs font-semibold">
             {tx("步骤甘特时间线", "Step Gantt Timeline")}
@@ -147,7 +157,7 @@ export function RunTimeline({
           </span>
         </div>
 
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground font-mono-tech">
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground font-mono-tech tabular-nums">
           {polling && (
             <span className="inline-flex items-center gap-1 text-xblue">
               <Loader2 className="h-3 w-3 animate-spin" />
@@ -164,7 +174,7 @@ export function RunTimeline({
         </div>
       </div>
 
-      {/* Scrollable Gantt Step Rows + Writeback Action Logs */}
+      {/* Wide 8-Col Gantt Step Rows + Compact Audit Logs (Zero step-name truncation) */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         <div className="divide-y divide-border">
           {steps.length === 0 ? (
@@ -204,29 +214,27 @@ export function RunTimeline({
                   key={rowKey}
                   data-testid={`timeline-step-${st.node_id}`}
                   data-step-status={st.status}
-                  className="p-2.5 space-y-2"
+                  className="px-3 py-2 space-y-2"
                 >
                   <div
                     onClick={() => toggleExpand(rowKey)}
-                    className="grid grid-cols-12 items-center gap-2 cursor-pointer text-xs"
+                    className="grid grid-cols-12 items-center gap-3 cursor-pointer text-xs"
                   >
-                    <div className="col-span-5 sm:col-span-4 flex items-center gap-1.5 min-w-0">
+                    <div className="col-span-5 flex items-center gap-1.5 min-w-0">
                       {expanded ? (
                         <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                       ) : (
                         <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                       )}
-                      <div className="min-w-0">
-                        <div className="truncate font-medium">
-                          {nodeLabelMap[st.node_id] ?? st.node_id}
-                        </div>
-                        <div className="font-mono-tech text-[10px] text-muted-foreground">
-                          {st.node_id} · #{st.attempt}
-                        </div>
-                      </div>
+                      <span className="truncate font-medium">
+                        {nodeLabelMap[st.node_id] ?? st.node_id}
+                      </span>
+                      <span className="font-mono-tech text-[10px] text-muted-foreground shrink-0">
+                        ({st.node_id} #{st.attempt})
+                      </span>
                     </div>
 
-                    <div className="col-span-4 sm:col-span-5">
+                    <div className="col-span-4">
                       <div className="relative h-2.5 w-full rounded-full bg-muted overflow-hidden">
                         <div
                           className={cn(
@@ -241,17 +249,17 @@ export function RunTimeline({
                       </div>
                     </div>
 
-                    <div className="col-span-3 flex items-center justify-end gap-1.5">
+                    <div className="col-span-3 flex items-center justify-end gap-2">
                       <span
                         data-testid={`timeline-step-status-${st.node_id}`}
                         className={cn(
-                          "rounded border px-1.5 py-0.5 font-mono-tech text-[10px] font-medium",
+                          "rounded border px-1.5 py-0.5 font-mono-tech text-[10px] font-medium shrink-0",
                           stepBadgeClass(st.status)
                         )}
                       >
                         {st.status}
                       </span>
-                      <span className="hidden md:inline font-mono-tech text-[10px] text-muted-foreground w-12 text-right">
+                      <span className="hidden md:inline font-mono-tech text-[10px] text-muted-foreground tabular-nums w-12 text-right">
                         {formatDurationMs(st.started_at, st.finished_at)}
                       </span>
                     </div>
@@ -302,22 +310,24 @@ export function RunTimeline({
           )}
         </div>
 
-        {/* Writeback Action Logs (`ax_action_log`) */}
+        {/* Writeback Action Logs (`ax_action_log` with formatted short UUIDs) */}
         {actions.length > 0 && (
           <div
-            className="border-t border-border bg-muted/20 p-3 space-y-2"
+            className="border-t border-border bg-muted/20 p-2.5 space-y-1.5"
             data-testid="timeline-action-logs"
           >
             <div className="flex items-center gap-1.5 text-xs font-semibold">
               <Send className="h-3.5 w-3.5 text-xblue" />
               {tx("动作回写审计", "Action Audit Log")} ({actions.length})
             </div>
-            <div className="space-y-1.5">
+            <div className="space-y-1">
               {actions.map((act) => {
                 const payloadEntries = Object.entries(act.payload ?? {});
+                const shortTarget = formatCompactTarget(act.target);
+                const itemKey = String(act.id || act.idempotency_key);
                 return (
                   <div
-                    key={act.id || act.idempotency_key}
+                    key={itemKey}
                     data-testid={`action-log-item-${act.id}`}
                     className="flex flex-wrap items-center justify-between gap-2 rounded border border-border bg-card px-2.5 py-1.5 text-[11px]"
                   >
@@ -328,9 +338,31 @@ export function RunTimeline({
                         {act.status}
                       </Badge>
                       <span className="font-medium">{act.action_kind}</span>
-                      <span className="text-muted-foreground">
-                        → {act.target}
-                      </span>
+                      <button
+                        type="button"
+                        title={act.target}
+                        onClick={() => {
+                          void navigator.clipboard
+                            ?.writeText(act.target)
+                            .catch(() => {});
+                          setCopiedId(itemKey);
+                          window.setTimeout(
+                            () =>
+                              setCopiedId((prev) =>
+                                prev === itemKey ? null : prev
+                              ),
+                            1500
+                          );
+                        }}
+                        className="inline-flex items-center gap-1 text-muted-foreground hover:text-foreground cursor-pointer"
+                      >
+                        <span>→ {shortTarget}</span>
+                        {copiedId === itemKey ? (
+                          <Check className="h-3 w-3 text-emerald-600" />
+                        ) : (
+                          <Copy className="h-3 w-3 opacity-60" />
+                        )}
+                      </button>
                     </div>
                     <div className="flex flex-wrap items-center gap-1">
                       {payloadEntries.map(([pk, pv]) => (
@@ -339,7 +371,7 @@ export function RunTimeline({
                           {typeof pv === "number"
                             ? fmtNum(pv, 2)
                             : typeof pv === "string"
-                              ? pv
+                              ? formatCompactTarget(pv)
                               : JSON.stringify(pv)}
                         </Badge>
                       ))}

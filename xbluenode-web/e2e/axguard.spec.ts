@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from "@playwright/test";
+import { chooseSelectOption } from "./helpers";
 
 const OPS_ADMIN_ID = "00000000-0000-0000-0000-000000001301";
 const ANALYST_EAST_ID = "00000000-0000-0000-0000-000000001302";
@@ -771,7 +772,7 @@ test("AxGuard login, single-flight silent refresh, all 8 governance tabs, Cedar 
   await page.getByRole("link", { name: "AxGuard · 安全治理" }).click();
   await expect(page).toHaveURL(/\/guard$/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxGuard · 安全治理中心" })
+    page.getByRole("heading", { level: 1, name: "AxGuard · 安全治理" })
   ).toBeVisible();
 
   // Tab 1: 用户管理 (loaded after transparent 401 -> refresh retry!)
@@ -801,7 +802,7 @@ test("AxGuard login, single-flight silent refresh, all 8 governance tabs, Cedar 
   );
   await page.getByTestId("save-cedar-btn").click();
 
-  await page.getByTestId("sim-action-select").selectOption("EXPORT_DATA");
+  await chooseSelectOption(page, "sim-action-select", "EXPORT_DATA");
   await page.getByTestId("sim-hour-input").fill("22");
   await page.getByTestId("run-cedar-simulate-btn").click();
   await expect(page.getByTestId("cedar-simulate-result")).toContainText(

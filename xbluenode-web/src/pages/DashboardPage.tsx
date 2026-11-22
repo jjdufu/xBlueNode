@@ -8,6 +8,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import { api, type HealthInfo, type SystemStats } from "@/lib/api";
 import {
   Badge,
@@ -124,7 +125,7 @@ export function DashboardPage() {
   return (
     <div className="space-y-5" data-testid="dashboard-page">
       <PageHeader
-        title={tx("系统概览", "System Overview")}
+        title={tx(MODULE_META.dashboard.label, MODULE_META.dashboard.enLabel)}
         badges={
           <>
             {serviceStatus && <StatusBadge status={serviceStatus} />}

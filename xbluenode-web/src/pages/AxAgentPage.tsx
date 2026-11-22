@@ -46,6 +46,7 @@ import {
   Tabs,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import { usePrincipal } from "@/lib/permissions";
 
 type AxAgentTabKey =
@@ -379,7 +380,7 @@ export function AxAgentPage() {
         title={
           <span className="inline-flex items-center gap-2">
             <Blocks className="h-4 w-4 text-xblue shrink-0" />
-            {tx("AxAgent 智能体与能力发布", "AxAgent · Agents & Capabilities")}
+            {tx(MODULE_META.axagent.label, MODULE_META.axagent.enLabel)}
           </span>
         }
         badges={

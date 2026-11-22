@@ -436,7 +436,7 @@ test("xBlueGraph /graph locates 华东仓 (W-1), expands 1-hop neighbors on doub
   await page.goto("/graph");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "xBlueGraph · 拓扑浏览器" })
+    page.getByRole("heading", { level: 1, name: "xBlueGraph · 图浏览" })
   ).toBeVisible();
 
   // Verify main force graph canvas is mounted and non-empty

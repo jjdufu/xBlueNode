@@ -1,4 +1,5 @@
 import { expect, type Page, type Route, test } from "@playwright/test";
+import { chooseSelectOption } from "./helpers";
 
 declare const process: {
   readonly env: Record<string, string | undefined>;
@@ -703,7 +704,7 @@ test("AxAnalytics /analytics executes SQL count(*) -> 100 and drag-and-drop Pivo
   await page.goto("/analytics");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxAnalytics · OLAP 与智能问数" })
+    page.getByRole("heading", { level: 1, name: "AxAnalytics · 分析与问数" })
   ).toBeVisible();
 
   // Verify SchemaTree loads demo_orders
@@ -723,7 +724,7 @@ test("AxAnalytics /analytics executes SQL count(*) -> 100 and drag-and-drop Pivo
   await page.getByTestId("analytics-tab-pivot").click();
   const datasetSelect = page.getByTestId("pivot-dataset-select");
   await expect(datasetSelect).toBeVisible();
-  await datasetSelect.selectOption("demo_orders");
+  await chooseSelectOption(page, "pivot-dataset-select", "demo_orders");
 
   const statusField = page.getByTestId("pivot-field-status");
   const amountField = page.getByTestId("pivot-field-amount");
@@ -803,7 +804,7 @@ test("AxQuery /query renders HYBRID & DATA intent badges, expands SQL/ResultGrid
   await page.goto("/query");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxQuery · 五路融合问答" })
+    page.getByRole("heading", { level: 1, name: "AxQuery · 智能问答" })
   ).toBeVisible();
   await expect(page.getByTestId("axquery-mode-AUTO")).toBeVisible();
   await expect(page.getByTestId("axquery-mode-DOC")).toBeVisible();

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import {
   BookOpen,
@@ -19,6 +20,7 @@ import {
   Button,
   Input,
   Select,
+  Switch,
   Textarea,
 } from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
@@ -52,7 +54,7 @@ const COLOR_SWATCHES = [
   "#0f766e",
 ] as const;
 
-function renderNodeIcon(iconKey: string) {
+export function renderNodeIcon(iconKey: string) {
   const cls = "h-3.5 w-3.5 shrink-0";
   switch (iconKey) {
     case "warehouse":
@@ -107,7 +109,7 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
         <div className="flex items-start justify-between gap-1.5">
           <div className="flex items-center gap-1.5 min-w-0">
             <span
-              className="inline-flex h-6 w-6 items-center justify-center rounded border border-border bg-muted text-foreground shrink-0"
+              className="inline-flex h-6 w-6 items-center justify-center rounded bg-muted text-foreground shrink-0"
               style={{ color: accentColor }}
             >
               {renderNodeIcon(spec.icon)}
@@ -136,25 +138,38 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
           )}
         </div>
 
-        <div className="flex flex-wrap items-center gap-1">
-          <Badge variant="neutral">
-            {tx("属性", "Attr")} {attrCount}
-          </Badge>
-          <Badge variant="xblue">
-            {tx("指标", "Metric")} {metricCount}
-          </Badge>
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+          <span>
+            {tx("属性", "Attr")}{" "}
+            <strong className="font-mono-tech text-foreground font-semibold">
+              {attrCount}
+            </strong>
+          </span>
+          <span className="text-border">·</span>
+          <span>
+            {tx("指标", "Metric")}{" "}
+            <strong className="font-mono-tech text-xblue font-semibold">
+              {metricCount}
+            </strong>
+          </span>
           {ruleCount > 0 && (
-            <Badge variant="outline">
-              {tx("规则", "Rule")} {ruleCount}
-            </Badge>
+            <>
+              <span className="text-border">·</span>
+              <span>
+                {tx("规则", "Rule")}{" "}
+                <strong className="font-mono-tech text-foreground font-semibold">
+                  {ruleCount}
+                </strong>
+              </span>
+            </>
           )}
           {spec.sync_to_knowledge && (
             <Badge
               variant="outline"
               title={tx("已开启知识超图同步", "Knowledge sync enabled")}
             >
-              <BookOpen className="h-2.5 w-2.5 mr-0.5" />
-              {tx("知识", "KG")}
+              <BookOpen className="h-2.5 w-2.5 mr-0.5 text-xblue" />
+              {tx("超图", "KG")}
             </Badge>
           )}
         </div>
@@ -206,6 +221,7 @@ export function NodeTypeCard({
   const { tx } = useI18n();
   const { can } = usePrincipal();
   const canEdit = can("STUDIO_EDIT");
+  const [confirmDelete, setConfirmDelete] = useState(false);
 
   const attrNames = nodeType.properties
     .filter((p) => p.kind === "ATTRIBUTE" && p.name.trim().length > 0)
@@ -260,14 +276,14 @@ export function NodeTypeCard({
             value={nodeType.icon || "box"}
             disabled={!canEdit}
             onChange={(e) => onChange({ ...nodeType, icon: e.target.value })}
+            options={ICON_OPTIONS.map((opt) => ({
+              value: opt.key,
+              label: tx(opt.zh, opt.en),
+              text: `${opt.zh} ${opt.en} ${opt.key}`,
+              icon: renderNodeIcon(opt.key),
+            }))}
             className="h-8 w-full"
-          >
-            {ICON_OPTIONS.map((opt) => (
-              <option key={opt.key} value={opt.key}>
-                {tx(opt.zh, opt.en)} ({opt.key})
-              </option>
-            ))}
-          </Select>
+          />
         </div>
 
         <div>
@@ -359,42 +375,70 @@ export function NodeTypeCard({
         />
       </div>
 
-      <div className="flex items-center justify-between rounded border border-border bg-muted/40 px-2.5 py-2">
-        <div>
+      <div className="flex items-center justify-between gap-3 rounded-md bg-muted/40 px-2.5 py-2">
+        <div className="min-w-0">
           <div className="font-medium">
             {tx("同步至知识超图", "Sync to Knowledge Graph")}
           </div>
           <div className="text-[11px] text-muted-foreground">
             {tx(
-              "自动生成节点知识档案供五路问答检索",
+              "生成节点知识档案供混合问答检索",
               "Generate hypergraph profile for hybrid QA"
             )}
           </div>
         </div>
-        <input
-          type="checkbox"
+        <Switch
           data-testid="node-type-sync-knowledge"
           checked={nodeType.sync_to_knowledge}
           disabled={!canEdit}
-          onChange={(e) =>
-            onChange({ ...nodeType, sync_to_knowledge: e.target.checked })
+          onCheckedChange={(checked) =>
+            onChange({ ...nodeType, sync_to_knowledge: checked })
           }
-          className="h-4 w-4 cursor-pointer"
+          aria-label={tx("同步至知识超图", "Sync to Knowledge Graph")}
         />
       </div>
 
-      <div className="flex items-center justify-between pt-2 border-t border-border">
-        <span className="font-mono-tech text-[11px] text-muted-foreground">
-          {tx("坐标", "Position")}: ({Math.round(nodeType.pos_x)},{" "}
-          {Math.round(nodeType.pos_y)})
-        </span>
-        {canEdit && (
-          <Button variant="danger" size="sm" onClick={onDelete}>
-            <Trash2 className="h-3.5 w-3.5" />
-            {tx("删除类型", "Delete")}
-          </Button>
-        )}
-      </div>
+      {canEdit && (
+        <div className="flex items-center justify-end gap-1.5 pt-2 border-t border-border">
+          {confirmDelete ? (
+            <>
+              <span className="text-[11px] text-red-600 dark:text-red-400 mr-auto">
+                {tx(
+                  "删除节点类型将同步移除关联边定义",
+                  "Deleting removes connected relation specs"
+                )}
+              </span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setConfirmDelete(false)}
+              >
+                {tx("取消", "Cancel")}
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => {
+                  setConfirmDelete(false);
+                  onDelete();
+                }}
+              >
+                {tx("删除", "Delete")}
+              </Button>
+            </>
+          ) : (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setConfirmDelete(true)}
+              className="text-red-600 hover:bg-red-500/10 hover:border-red-500/40 dark:text-red-400"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {tx("删除类型", "Delete Type")}
+            </Button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

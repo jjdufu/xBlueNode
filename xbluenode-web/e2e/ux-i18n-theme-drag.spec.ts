@@ -45,12 +45,12 @@ test.describe("UX overhaul: i18n, system theme persistence, topbar layout & canv
     await page.reload();
     await expect(page.locator("html")).not.toHaveClass(/dark/);
 
-    // 4. Top-left locale switcher toggles en-US -> zh-CN and persists across reload
+    // 4. Top-right locale switcher toggles en-US -> zh-CN and persists across reload
     const localeBtn = page.getByTestId("locale-toggle-btn");
     const localeBox = await localeBtn.boundingBox();
     expect(localeBox).not.toBeNull();
     expect(localeBox!.y).toBeLessThan(60);
-    expect(localeBox!.x).toBeLessThan(400);
+    expect(localeBox!.x).toBeGreaterThan(600);
 
     await localeBtn.click();
     await expect(
@@ -169,13 +169,17 @@ test.describe("UX overhaul: i18n, system theme persistence, topbar layout & canv
 
     await page.goto("/studio");
 
-    // Verify logout button is in the sticky top-right header
+    // Verify unified account menu & logout action in the sticky top-right header
+    const userMenuBtn = page.getByTestId("shell-user-menu-btn");
+    await expect(userMenuBtn).toBeVisible();
+    const menuBox = await userMenuBtn.boundingBox();
+    expect(menuBox).not.toBeNull();
+    expect(menuBox!.y).toBeLessThan(60);
+    expect(menuBox!.x).toBeGreaterThan(800);
+    await userMenuBtn.click();
     const logoutBtn = page.getByTestId("shell-logout-btn");
     await expect(logoutBtn).toBeVisible();
-    const logoutBox = await logoutBtn.boundingBox();
-    expect(logoutBox).not.toBeNull();
-    expect(logoutBox!.y).toBeLessThan(60);
-    expect(logoutBox!.x).toBeGreaterThan(800);
+    await page.keyboard.press("Escape");
 
     // Verify StudioCanvas node follows mouse during drag (even BEFORE mouseup!)
     const factoryCard = page.getByTestId("canvas-node-Factory");
