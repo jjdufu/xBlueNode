@@ -147,98 +147,120 @@ export function XBlueStudioPage() {
 
   const skipNextValidationRef = useRef<boolean>(true);
 
-  const loadSubgraphWorkspace = useCallback(async (slug: string) => {
-    skipNextValidationRef.current = true;
-    const [
-      sgList,
-      pubSchema,
-      verList,
-      draftList,
-      mapList,
-      mainSchemaOpt,
-    ] = await Promise.all([
-      xblueApi.listSubgraphs().catch(() => [] as SubgraphInfo[]),
-      xblueApi.getPublishedSchema(slug).catch(() => ({
-        subgraph_slug: slug,
-        version: 1,
-        node_types: [],
-        edge_types: [],
-        mappings: [],
-      })),
-      xblueApi
-        .listSchemaVersions(slug)
-        .catch(() => [] as SchemaVersionSummary[]),
-      xblueApi.listDrafts(slug).catch(() => [] as SchemaDraft[]),
-      xblueApi.listMappings(slug).catch(() => [] as MappingRecord[]),
-      slug === "main"
-        ? Promise.resolve(null)
-        : xblueApi.getPublishedSchema("main").catch(() => null),
-    ]);
+  const loadSubgraphWorkspace = useCallback(
+    async (slug: string, preferredDraftId?: string | null) => {
+      skipNextValidationRef.current = true;
+      const [
+        sgList,
+        pubSchema,
+        verList,
+        draftList,
+        mapList,
+        nodeSnap,
+        mainSchemaOpt,
+      ] = await Promise.all([
+        xblueApi.listSubgraphs().catch(() => [] as SubgraphInfo[]),
+        xblueApi.getPublishedSchema(slug).catch(() => ({
+          subgraph_slug: slug,
+          version: 1,
+          node_types: [],
+          edge_types: [],
+          mappings: [],
+        })),
+        xblueApi
+          .listSchemaVersions(slug)
+          .catch(() => [] as SchemaVersionSummary[]),
+        xblueApi.listDrafts(slug).catch(() => [] as SchemaDraft[]),
+        xblueApi.listMappings(slug).catch(() => [] as MappingRecord[]),
+        xblueApi.listNodes({ subgraph: slug }).catch(() => ({
+          nodes: [] as BlueNode[],
+          links: [],
+          items: [] as BlueNode[],
+          next_cursor: null,
+        })),
+        slug === "main"
+          ? Promise.resolve(null)
+          : xblueApi.getPublishedSchema("main").catch(() => null),
+      ]);
 
-    setSubgraphs(sgList);
-    setVersions(verList);
-    setPersistedMappings(mapList);
-    setPublishedVersion(pubSchema.version);
+      setSubgraphs(sgList);
+      setVersions(verList);
+      setPersistedMappings(mapList);
+      setPublishedVersion(pubSchema.version);
 
-    const openDrafts = draftList.filter((d) => d.status === "DRAFT");
-    setDrafts(openDrafts);
+      const resolvedNodes = Array.isArray(nodeSnap?.nodes)
+        ? nodeSnap.nodes
+        : Array.isArray(nodeSnap?.items)
+          ? nodeSnap.items
+          : [];
+      setRuntimeNodes(resolvedNodes);
 
-    const schemaDoc: SchemaDoc = {
-      node_types: pubSchema.node_types,
-      edge_types: pubSchema.edge_types,
-      mappings: pubSchema.mappings,
-    };
+      const openDrafts = draftList.filter((d) => d.status === "DRAFT");
+      setDrafts(openDrafts);
 
-    if (slug === "main") {
-      setMainDoc(schemaDoc);
-      setMainVersion(pubSchema.version);
-    } else if (mainSchemaOpt) {
-      setMainDoc({
-        node_types: mainSchemaOpt.node_types,
-        edge_types: mainSchemaOpt.edge_types,
-        mappings: mainSchemaOpt.mappings,
-      });
-      setMainVersion(mainSchemaOpt.version);
-    }
+      const schemaDoc: SchemaDoc = {
+        node_types: pubSchema.node_types,
+        edge_types: pubSchema.edge_types,
+        mappings: pubSchema.mappings,
+      };
 
-    if (openDrafts.length > 0 && openDrafts[0]) {
-      const latestDraft = openDrafts[0];
-      setActiveDraft(latestDraft);
-      setDraftTitle(latestDraft.title);
-      setBaseVersion(latestDraft.base_version);
-      setWorkingDoc(latestDraft.schema_doc);
-      setIssues(latestDraft.issues);
-      setIsDirty(false);
-      setSelectedNodeName(latestDraft.schema_doc.node_types[0]?.name ?? null);
-    } else {
-      setActiveDraft(null);
-      setDraftTitle(`${slug} 模型演进草案`);
-      setBaseVersion(pubSchema.version);
-      setWorkingDoc(schemaDoc);
-      setIssues([]);
-      setIsDirty(false);
-      setSelectedNodeName(schemaDoc.node_types[0]?.name ?? null);
-    }
+      if (slug === "main") {
+        setMainDoc(schemaDoc);
+        setMainVersion(pubSchema.version);
+      } else if (mainSchemaOpt) {
+        setMainDoc({
+          node_types: mainSchemaOpt.node_types,
+          edge_types: mainSchemaOpt.edge_types,
+          mappings: mainSchemaOpt.mappings,
+        });
+        setMainVersion(mainSchemaOpt.version);
+      }
 
-    setSelectedEdgeIndex(null);
-    setSelectedMappingIndex(null);
-    setConflictBanner(null);
-    setBreakingBanner(null);
-  }, []);
+      const matchedDraft = preferredDraftId
+        ? openDrafts.find((d) => d.id === preferredDraftId)
+        : undefined;
+      const targetDraft = matchedDraft ?? openDrafts[0];
+
+      if (targetDraft) {
+        setActiveDraft(targetDraft);
+        setDraftTitle(targetDraft.title);
+        setBaseVersion(targetDraft.base_version);
+        setWorkingDoc(targetDraft.schema_doc);
+        setIssues(targetDraft.issues);
+        setIsDirty(false);
+        setSelectedNodeName(targetDraft.schema_doc.node_types[0]?.name ?? null);
+      } else {
+        setActiveDraft(null);
+        setDraftTitle(`${slug} 模型演进草案`);
+        setBaseVersion(pubSchema.version);
+        setWorkingDoc(schemaDoc);
+        setIssues([]);
+        setIsDirty(false);
+        setSelectedNodeName(schemaDoc.node_types[0]?.name ?? null);
+      }
+
+      setSelectedEdgeIndex(null);
+      setSelectedMappingIndex(null);
+      setConflictBanner(null);
+      setBreakingBanner(null);
+    },
+    []
+  );
 
   useEffect(() => {
     let cancelled = false;
     const bootstrap = async () => {
-      await loadSubgraphWorkspace("main");
-      const [nodeSnap, dsResp, topoResp] = await Promise.all([
-        xblueApi
-          .getNodes()
-          .catch(() => ({
-            nodes: [] as BlueNode[],
-            links: [],
-            items: [] as BlueNode[],
-            next_cursor: null,
-          })),
+      const searchParams =
+        typeof window !== "undefined"
+          ? new URLSearchParams(window.location.search)
+          : new URLSearchParams();
+      const initialSlug = searchParams.get("subgraph")?.trim() || "main";
+      const initialDraftId = searchParams.get("draft")?.trim() || null;
+      if (initialSlug !== "main") {
+        setActiveSubgraph(initialSlug);
+      }
+      await loadSubgraphWorkspace(initialSlug, initialDraftId);
+      const [dsResp, topoResp] = await Promise.all([
         axhubApi
           .listDatasets({ limit: 100 })
           .catch(() => ({ items: [] as Dataset[], next_cursor: null })),
@@ -247,12 +269,6 @@ export function XBlueStudioPage() {
           .catch(() => ({ nodes: [] as TopologyNode[], edges: [] })),
       ]);
       if (cancelled) return;
-      const resolvedNodes = Array.isArray(nodeSnap?.nodes)
-        ? nodeSnap.nodes
-        : Array.isArray(nodeSnap?.items)
-          ? nodeSnap.items
-          : [];
-      setRuntimeNodes(resolvedNodes);
       setDatasets(Array.isArray(dsResp?.items) ? dsResp.items : []);
       setDocNodes(
         Array.isArray(topoResp?.nodes)
@@ -379,6 +395,99 @@ export function XBlueStudioPage() {
           ? err.message
           : tx("删除子图失败", "Failed to delete subgraph")
       );
+    }
+  };
+
+  const handleDryRunSubgraph = async () => {
+    if (!canEdit) return;
+    setBusyOp("dry-run-subgraph");
+    setStatusBanner(null);
+    try {
+      const res = await xblueApi.dryRunSubgraph(
+        activeSubgraph,
+        activeDraft?.id ? { draft_id: activeDraft.id } : undefined
+      );
+      const [nodeSnap, latestSubgraphs] = await Promise.all([
+        xblueApi.listNodes({ subgraph: activeSubgraph }).catch(() => ({
+          nodes: [] as BlueNode[],
+          links: [],
+          items: [] as BlueNode[],
+          next_cursor: null,
+        })),
+        xblueApi.listSubgraphs().catch(() => null),
+      ]);
+      const resolvedNodes = Array.isArray(nodeSnap?.nodes)
+        ? nodeSnap.nodes
+        : Array.isArray(nodeSnap?.items)
+          ? nodeSnap.items
+          : [];
+      setRuntimeNodes(
+        resolvedNodes.length > 0
+          ? resolvedNodes
+          : Array.isArray(res.sample_nodes)
+            ? res.sample_nodes
+            : []
+      );
+      if (latestSubgraphs) {
+        setSubgraphs(latestSubgraphs);
+      }
+      setDockTab("nodes");
+      setDockCollapsed(false);
+      setStatusBanner(
+        tx(
+          `试灌完成：写入 ${fmtNum(res.nodes_upserted, 0)} 节点 · ${fmtNum(res.links_upserted, 0)} 关系 · ${fmtNum(res.points_computed, 0)} 指标点`,
+          `Dry run complete: ${fmtNum(res.nodes_upserted, 0)} nodes · ${fmtNum(res.links_upserted, 0)} links · ${fmtNum(res.points_computed, 0)} points`
+        )
+      );
+    } catch (err) {
+      setStatusBanner(
+        err instanceof Error
+          ? err.message
+          : tx("试灌失败", "Dry run failed")
+      );
+    } finally {
+      setBusyOp(null);
+    }
+  };
+
+  const handleResetSubgraphNodes = async () => {
+    if (!canEdit) return;
+    setBusyOp("reset-subgraph");
+    setStatusBanner(null);
+    try {
+      const res = await xblueApi.resetSubgraphNodes(activeSubgraph);
+      const [nodeSnap, latestSubgraphs] = await Promise.all([
+        xblueApi.listNodes({ subgraph: activeSubgraph }).catch(() => ({
+          nodes: [] as BlueNode[],
+          links: [],
+          items: [] as BlueNode[],
+          next_cursor: null,
+        })),
+        xblueApi.listSubgraphs().catch(() => null),
+      ]);
+      const resolvedNodes = Array.isArray(nodeSnap?.nodes)
+        ? nodeSnap.nodes
+        : Array.isArray(nodeSnap?.items)
+          ? nodeSnap.items
+          : [];
+      setRuntimeNodes(resolvedNodes);
+      if (latestSubgraphs) {
+        setSubgraphs(latestSubgraphs);
+      }
+      setStatusBanner(
+        tx(
+          `已清空 ${fmtNum(res.nodes_deleted, 0)} 节点 · ${fmtNum(res.links_deleted, 0)} 关系 · ${fmtNum(res.series_points_deleted, 0)} 时序点`,
+          `Reset ${fmtNum(res.nodes_deleted, 0)} nodes · ${fmtNum(res.links_deleted, 0)} links · ${fmtNum(res.series_points_deleted, 0)} series points`
+        )
+      );
+    } catch (err) {
+      setStatusBanner(
+        err instanceof Error
+          ? err.message
+          : tx("清空节点失败", "Reset failed")
+      );
+    } finally {
+      setBusyOp(null);
     }
   };
 
@@ -921,6 +1030,7 @@ export function XBlueStudioPage() {
         draftTitle={draftTitle}
         baseVersion={baseVersion}
         publishedVersion={publishedVersion}
+        runtimeNodeCount={runtimeNodes.length}
         isDirty={isDirty}
         busyOp={busyOp}
         mainNodeTypes={mainDoc.node_types}
@@ -929,6 +1039,8 @@ export function XBlueStudioPage() {
         onDiscardDraft={() => void handleDiscardActiveDraft()}
         onCreateSubgraph={handleCreateSubgraph}
         onDeleteSubgraph={handleDeleteSubgraph}
+        onDryRunSubgraph={handleDryRunSubgraph}
+        onResetSubgraphNodes={handleResetSubgraphNodes}
         onOpenMergeDialog={() => void openMergeDialog()}
       />
 
@@ -1592,7 +1704,7 @@ export function XBlueStudioPage() {
             });
           }
           void xblueApi
-            .getNodes()
+            .listNodes({ subgraph: activeSubgraph })
             .then((snap) => {
               const resolved = Array.isArray(snap?.nodes)
                 ? snap.nodes
