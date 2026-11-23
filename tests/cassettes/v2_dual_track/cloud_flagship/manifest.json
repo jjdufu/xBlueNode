@@ -1,4 +1,5 @@
 {
+  "kind": "grounded_eval_manifest",
   "track": "cloud_flagship",
   "structured_mode": "JSON_SCHEMA",
   "temperature": 0.0,
