@@ -2597,8 +2597,11 @@ test.describe("Step 22 Phase 2 Grounded AI & Builder UX Full Journey", () => {
         page.getByTestId("onboarding-completion-badge")
       ).toContainText("/ 5");
 
-      // Expand 5 step pills if all 5 steps are already complete in live demo seed
+      // Wait for async onboarding-status payload (`<5/5` renders steps; `5/5` renders expand toggle)
       const expandToggle = page.getByTestId("onboarding-expand-toggle");
+      await expect(
+        page.getByTestId("onboarding-step-DATA_INGEST").or(expandToggle)
+      ).toBeVisible();
       if (await expandToggle.isVisible()) {
         await expandToggle.click();
       }
