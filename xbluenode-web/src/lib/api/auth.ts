@@ -44,7 +44,33 @@ export const DEFAULT_AUTH_CONFIG: AuthConfigResponse = {
 };
 
 const PAT_SESSION_STORAGE_KEY = "axpoint_pat_token";
+const JWT_SESSION_FLAG_KEY = "axpoint_jwt_session";
 export const AXPOINT_LOGGED_OUT_KEY = "axpoint_logged_out";
+
+function readJwtSessionFlag(): boolean {
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      return sessionStorage.getItem(JWT_SESSION_FLAG_KEY) === "1";
+    }
+  } catch {
+    // Ignore storage security errors in sandboxed/non-browser environments.
+  }
+  return false;
+}
+
+function writeJwtSessionFlag(active: boolean): void {
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      if (active) {
+        sessionStorage.setItem(JWT_SESSION_FLAG_KEY, "1");
+      } else {
+        sessionStorage.removeItem(JWT_SESSION_FLAG_KEY);
+      }
+    }
+  } catch {
+    // Ignore storage security errors in sandboxed/non-browser environments.
+  }
+}
 
 export function readLoggedOutFlag(): boolean {
   try {
@@ -146,14 +172,19 @@ export function computeProactiveRefreshDelayMs(
 
 const persistedPat = readSessionPat();
 const loggedOutAtBoot = readLoggedOutFlag();
+const jwtSessionAtBoot = readJwtSessionFlag();
 const initialDevToken = import.meta.env?.VITE_DEV_TOKEN?.trim() ?? "";
 
 let memoryToken: string | null =
   persistedPat ??
-  (loggedOutAtBoot ? null : initialDevToken.length > 0 ? initialDevToken : null);
+  (loggedOutAtBoot || jwtSessionAtBoot
+    ? null
+    : initialDevToken.length > 0
+      ? initialDevToken
+      : null);
 let tokenMode: TokenMode = persistedPat
   ? "pat"
-  : loggedOutAtBoot
+  : loggedOutAtBoot || jwtSessionAtBoot
     ? "none"
     : initialDevToken.length > 0
       ? "dev_static"
@@ -231,6 +262,7 @@ export function setSessionAccessToken(token: string): void {
   memoryToken = trimmed;
   tokenMode = "jwt";
   writeLoggedOutFlag(false);
+  writeJwtSessionFlag(true);
   writeSessionPat(null);
   scheduleProactiveRefresh(trimmed);
   notifyAuthListeners();
@@ -247,6 +279,7 @@ export function setPatAccessToken(token: string): void {
   memoryToken = trimmed;
   tokenMode = "pat";
   writeLoggedOutFlag(false);
+  writeJwtSessionFlag(false);
   writeSessionPat(trimmed);
   notifyAuthListeners();
 }
@@ -274,6 +307,7 @@ export function clearAccessToken(): void {
   memoryToken = null;
   tokenMode = "none";
   cachedMe = null;
+  writeJwtSessionFlag(false);
   writeSessionPat(null);
   notifyAuthListeners();
 }
@@ -297,6 +331,7 @@ export function refreshAccessToken(): Promise<string | null> {
         },
       });
       if (!resp.ok) {
+        writeJwtSessionFlag(false);
         if (tokenMode === "jwt") {
           clearRefreshTimer();
           memoryToken = null;
