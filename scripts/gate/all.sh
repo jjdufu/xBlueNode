@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 全平台终验门禁（Step 00～14 + 路由/溯源静态核验 + 端到端全旅程，§14.9.1）
+# 全平台终验门禁（Step 00～22 + 全套 G1 静态守卫 + Phase 1 & Phase 2 双全旅程 E2E，§22.4.2）
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 ROOT="$PWD"
@@ -32,10 +32,10 @@ python3 scripts/check_traceability.py docs/standards/A7-REQUIREMENTS-TRACEABILIT
 bash scripts/check-write-scope.sh --self-test
 
 mkdir -p .gate
-for n in $(seq -w 0 14); do
+for n in $(seq -w 0 22); do
   bash "scripts/gate/step${n}.sh" | tee ".gate/step${n}.log"
   tail -n1 ".gate/step${n}.log" | grep -qx "GATE step${n} PASS"
 done
 
-(cd xbluenode-web && AXPOINT_E2E_LIVE=1 npx playwright test e2e/full-journey.spec.ts)
+(cd xbluenode-web && AXPOINT_E2E_LIVE=1 npx playwright test e2e/full-journey.spec.ts e2e/v2-grounded-journey.spec.ts)
 echo "ALL GATES PASS"

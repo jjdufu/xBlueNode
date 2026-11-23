@@ -69,10 +69,10 @@ def verify_traceability(matrix_path: Path, gate_dir: Path) -> list[str]:
         for step_name, assertion_name in _extract_step_assertions(acceptance_cell):
             required_assertions.append((item_id, step_name, assertion_name))
 
-    if len(cap_ids) < 59 or len(set(cap_ids)) != len(cap_ids):
+    if len(cap_ids) < 75 or len(set(cap_ids)) != len(cap_ids):
         errors.append(
             f"capability count/uniqueness mismatch: total={len(cap_ids)} "
-            f"unique={len(set(cap_ids))} (expected >= 59 unique items)"
+            f"unique={len(set(cap_ids))} (expected >= 75 unique items)"
         )
     if len(ds_ids) < 26 or len(set(ds_ids)) != len(ds_ids):
         errors.append(

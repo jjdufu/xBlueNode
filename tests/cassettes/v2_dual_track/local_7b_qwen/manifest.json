@@ -1,0 +1,15 @@
+{
+  "kind": "grounded_eval_manifest",
+  "track": "local_7b_qwen",
+  "structured_mode": "JSON_SCHEMA",
+  "temperature": 0.0,
+  "total_cases": 50,
+  "categories": [
+    "G1_ARITHMETIC_DRIFT",
+    "G2_UNGROUNDED_JOIN",
+    "G3_PHANTOM_CITATION",
+    "G4_ZERO_RECALL_ABSTAIN",
+    "G5_SCHEMA_AND_PII_GUARD"
+  ],
+  "cassette_file": "cases_50.jsonl"
+}
