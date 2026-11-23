@@ -1,8 +1,8 @@
 # 07 · Step 21：AxAgent 企业 IM 出站长连接双向机器人与权限绑定
 
-在 [Step 08](../../completed/v1-foundation-step00-14/07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md) 中，`axpoint-flow::notify` 已实现面向飞书、钉钉、企业微信的单向告警推送；但企业在隔离内网部署平台时通常不具备公网固定 IP 或入站 Webhook 反向代理端口。本步在 `axpoint-agent` 构建**零入站端口的出站长连接（WebSocket / Stream）双向智能体网关**，基于 PostgreSQL 行锁租约实现无状态多副本单主接管（故障切换耗时 `< 45s`），并通过一次性私聊绑定挑战码将外部 IM 身份映射至平台 `sec_users`，使每一次 IM 对话均以提问人本人的 `AuthPrincipal` 驱动 `AgentRuntime`，全量继承 `AxGuard` Cedar ABAC、PostgreSQL RLS、行列脱敏与 PII 出域拦截策略。
+在 [Step 08](../../v1-foundation-step00-14/07-STEP07-08-AXFLOW-ORCHESTRATION-RULES-ALERTS.md) 中，`axpoint-flow::notify` 已实现面向飞书、钉钉、企业微信的单向告警推送；但企业在隔离内网部署平台时通常不具备公网固定 IP 或入站 Webhook 反向代理端口。本步在 `axpoint-agent` 构建**零入站端口的出站长连接（WebSocket / Stream）双向智能体网关**，基于 PostgreSQL 行锁租约实现无状态多副本单主接管（故障切换耗时 `< 45s`），并通过一次性私聊绑定挑战码将外部 IM 身份映射至平台 `sec_users`，使每一次 IM 对话均以提问人本人的 `AuthPrincipal` 驱动 `AgentRuntime`，全量继承 `AxGuard` Cedar ABAC、PostgreSQL RLS、行列脱敏与 PII 出域拦截策略。
 
-总览索引与工程约束见 [00-V2-MASTER-INDEX.md](../00-V2-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
+总览索引与工程约束见 [00-V2-MASTER-INDEX.md](../00-V2-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
 
 ---
 
@@ -13,15 +13,15 @@
   2. `axpoint-agent::im_gateway` 出站长连接常驻工作器（覆盖 `FEISHU`、`DINGTALK`、`WECOM` 三通道协议适配、30s 租约心跳、`< 45s` 故障切换、`watch::Receiver<bool>` 优雅停机、入站幂等去重、流式状态卡片节流更新与超长 Markdown 安全分片）；
   3. 提问人身份绑定闭环（未绑定拦截下发 10 分钟有效私聊挑战深链 → Web 登录态 `POST /api/axagent/im-bind/confirm` 原子核销并写入 `IM_ACCOUNT_BIND` 审计链 → 后续消息以绑定用户的 `AuthPrincipal` 调用 `AgentRuntime`）；
   4. `AxAgentPage.tsx` 新增 `IM 连接` 标签页与 `ImConnectorPanel.tsx` 管理界面，配套零外部依赖 WebSocket 回环测试桩与 `scripts/gate/step21.sh`。
-- **前置**：[Step 15](../grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md)（受限解码与模型路由）及 [Step 09](../../completed/v1-foundation-step00-14/08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md)、[Step 13](../../completed/v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) 基线通过。
+- **前置**：[Step 15](../grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md)（受限解码与模型路由）及 [Step 09](../../v1-foundation-step00-14/08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md)、[Step 13](../../v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) 基线通过。
 - **关联能力追踪**：
   - `C75`：`step21` `"im-bind-token"`、`"im-rls-inherited"`、`"im-leader-failover"`
 - **契约清单**：
-  - 数据库迁移：`deploy/migrations/0019_im_bot_bindings.sql`（登记至 [A2](../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)）
+  - 数据库迁移：`deploy/migrations/0019_im_bot_bindings.sql`（登记至 [A2](../../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)）
   - 领域模型与枚举：`axpoint-domain::enums::{ImPlatform, ImIdentityPolicy, ImConnectorStatus}`、`ConversationChannel::Im`、`AuditAction::ImAccountBind`、`axpoint-domain::im::*`
   - 端口接口：`axpoint-domain::ports::{ImGatewayRepository, PrincipalHydrationPort}`
   - 网关实现：`axpoint-agent::im_gateway`
-  - 接口契约：`/api/axagent/im-connectors/*` 与 `/api/axagent/im-bind/*`（登记至 [API_CONTRACT.md](../../../docs/API_CONTRACT.md) 与 [A4](../../../docs/standards/A4-API-CONTRACT-INDEX.md)）
+  - 接口契约：`/api/axagent/im-connectors/*` 与 `/api/axagent/im-bind/*`（登记至 [API_CONTRACT.md](../../../../docs/API_CONTRACT.md) 与 [A4](../../../../docs/standards/A4-API-CONTRACT-INDEX.md)）
   - 前端模块：`xbluenode-web/src/lib/api/axagent.ts`、`src/components/axagent/ImConnectorPanel.tsx`、`src/pages/AxAgentPage.tsx`
 
 ### 文件变更清单

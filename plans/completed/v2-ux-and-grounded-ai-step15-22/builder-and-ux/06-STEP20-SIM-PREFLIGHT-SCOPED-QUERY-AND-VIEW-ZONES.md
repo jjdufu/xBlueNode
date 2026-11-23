@@ -2,7 +2,7 @@
 
 本步在推演沙盘创建、多源融合问数、数字孪生驾驶舱发布与业务图谱检索四个高频交互出口建立**静态完整度预检**与**显式上下文边界锁定**：`AxSim` 在克隆生产切片前静态评估因果传导覆盖率、跨边聚合闭合度与孤立节点占比；`AxQuery` 支持会话级 `@` 提及与胶囊式范围挂载，在检索与语义编译入口硬隔离数据集、文档、子图与技能端点；`xBlueView` 提供标准 12 列五区语义驾驶舱预设骨架（`CONTROL / SCENE / KPI / INSIGHT / DECISION`）与发布/分享前全组件健康度自检；`xBlueGraph` 提供基于本体 Schema 自动补全的 `(src:NodeType)-[r:EdgeType]->(dst:NodeType)` 图模式筛选栏与可折叠底部汇总表。
 
-总览索引与工程约束见 [00-V2-MASTER-INDEX.md](../00-V2-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
+总览索引与工程约束见 [00-V2-MASTER-INDEX.md](../00-V2-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
 
 ---
 
@@ -13,7 +13,7 @@
   2. `AxQuery` 会话级显式作用域 `ChatQueryScope`（覆盖 `POST /api/chat/query` 与 `POST /api/analytics/ask`），严格约束五路超图召回与 `SchemaLinkExtras.restrict_dataset_ids` / `TenantCatalog` 白名单；
   3. `xBlueView` 五区语义驾驶舱预设生成器（`CockpitZoneLayout::StandardFiveZone`）与发布前组件级健康预检 `POST /api/xblueview/dashboards/{id}/preflight`（阻断存在缺失数据集、失效指标、越权端点或未配置动作 Schema 的看板进入 `PUBLISHED` 或外部分享态）；
   4. `xBlueGraph` Schema 感知图模式自动补全栏 `GraphPatternBar.tsx` 与底部可折叠统计汇总抽屉。
-- **前置**：[Step 16](../grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md)（本体优先问数与引用核验）、[Step 18](./04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md)（Studio 成熟度状态与血缘）通过；底层存储复用已有迁移 `0005`、`0010`、`0011`（见 [A2](../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)，**本步无新增 SQL 表**）。
+- **前置**：[Step 16](../grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md)（本体优先问数与引用核验）、[Step 18](./04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md)（Studio 成熟度状态与血缘）通过；底层存储复用已有迁移 `0005`、`0010`、`0011`（见 [A2](../../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)，**本步无新增 SQL 表**）。
 - **关联能力追踪**：
   - `C73`：`step20` `"sim-preflight-warn"`、`"sim-preflight-closed"`
   - `C74`：`step20` `"scoped-ask-isolated"`、`"view-zone-preset"`、`"view-publish-preflight"`
@@ -23,7 +23,7 @@
   - `axpoint-domain::view`：`CockpitZoneLayout`、`SemanticZoneKind`、`CockpitZoneSlot`、`DashboardPreflightReport`、`DashboardPreflightStatus`、`WidgetPreflightIssue`、`WidgetIssueCode`
   - `axpoint-domain::graph`：`SubgraphQuery` 模式过滤扩展（`src_type`、`edge_type`、`dst_type`、`subgraph`）
   - 端口扩展：`SimRepository::preview_scope_slice`、`ViewRepository::load_preflight_dependencies`
-  - 接口契约：[API_CONTRACT.md](../../../docs/API_CONTRACT.md) 与 [A4-API-CONTRACT-INDEX.md](../../../docs/standards/A4-API-CONTRACT-INDEX.md) 增量路由
+  - 接口契约：[API_CONTRACT.md](../../../../docs/API_CONTRACT.md) 与 [A4-API-CONTRACT-INDEX.md](../../../../docs/standards/A4-API-CONTRACT-INDEX.md) 增量路由
   - 前端客户端：`src/lib/api/{axsim,rag,analytics,xblueview,xblue}.ts`
 
 ### 文件变更清单
@@ -48,7 +48,7 @@
 
 ## 20.1 `AxSim` 沙盘范围静态健康预检
 
-在 [Step 10](../../completed/v1-foundation-step00-14/09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) 基线中，创建沙盘直接按 `SandboxScope` 异步克隆节点与关系。若用户筛选的 `type_names`、`link_types` 或跳数 `depth` 截断了关键上游传导边或跨边聚合邻居，稳态求解会出现“有干预无传导”或聚合基线失真。本节在不写库的前提下对候选 `SandboxScope` 执行只读静态健康诊断。
+在 [Step 10](../../v1-foundation-step00-14/09-STEP10-AXSIM-SIMULATION-AND-DECISION.md) 基线中，创建沙盘直接按 `SandboxScope` 异步克隆节点与关系。若用户筛选的 `type_names`、`link_types` 或跳数 `depth` 截断了关键上游传导边或跨边聚合邻居，稳态求解会出现“有干预无传导”或聚合基线失真。本节在不写库的前提下对候选 `SandboxScope` 执行只读静态健康诊断。
 
 ### 20.1.1 领域契约（`axpoint-domain::sim::preflight`）
 
@@ -230,7 +230,7 @@ flowchart LR
 
 ### 20.3.1 五区语义布局枚举与 12 列标准网格预设
 
-在 `axpoint-domain/src/enums.rs` 注册 `CockpitZoneLayout`（同步写入 [A1](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)）：
+在 `axpoint-domain/src/enums.rs` 注册 `CockpitZoneLayout`（同步写入 [A1](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)）：
 
 ```rust
 define_str_enum! {
@@ -401,7 +401,7 @@ pub struct SubgraphQuery {
 
 ## 20.5 路由、枚举与标准表增量汇总
 
-契约 PR 合入时同步追加至 [A1](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)、[A4](../../../docs/standards/A4-API-CONTRACT-INDEX.md) 与 [A7](../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md)：
+契约 PR 合入时同步追加至 [A1](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)、[A4](../../../../docs/standards/A4-API-CONTRACT-INDEX.md) 与 [A7](../../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md)：
 
 | 方法与路径 | 权限 | 请求 / 参数摘要 | 响应摘要 |
 | :--- | :--- | :--- | :--- |

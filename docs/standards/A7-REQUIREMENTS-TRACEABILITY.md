@@ -37,9 +37,9 @@
 | C20 | AI 从需求描述与数据生成模型草稿 | 05 | §05.5 | step05 “ai-draft”；`schema_draft_eval.rs` |
 | C21 | 模型版本与变更影响分析 | 05 | §05.4 | step05 “diff”、“breaking” |
 | C56 | 多子图部门独立建模与跨部门本体对齐融合 | 05 | §05.1、§05.4.3 | step05 “subgraph-publish”、“subgraph-isolated”、“subgraph-preview”、“subgraph-merge”、“subgraph-merged-main” |
-| C68 | `xBlueStudio` 焦点感知常驻 AI 助手与草案快照一键回退 | 18 | [04-STEP18](../../plans/v2-ux-and-grounded-ai/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.3 | step18 “copilot-readonly-diag”、“copilot-mutate-rollback” |
-| C69 | 模型要素 `PROPOSED / CONFIRMED` 成熟度状态流与完备度通过项计数 | 18 | [04-STEP18](../../plans/v2-ux-and-grounded-ai/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.2 | step18 “proposal-confirm-flow”、“pass-count-metrics” |
-| C70 | 单节点左→右全链路数据血缘管道图与自动生成模型全景规格书 | 18 | [04-STEP18](../../plans/v2-ux-and-grounded-ai/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.4 | step18 “node-lineage-graph”、“subgraph-spec-doc” |
+| C68 | `xBlueStudio` 焦点感知常驻 AI 助手与草案快照一键回退 | 18 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.3 | step18 “copilot-readonly-diag”、“copilot-mutate-rollback” |
+| C69 | 模型要素 `PROPOSED / CONFIRMED` 成熟度状态流与完备度通过项计数 | 18 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.2 | step18 “proposal-confirm-flow”、“pass-count-metrics” |
+| C70 | 单节点左→右全链路数据血缘管道图与自动生成模型全景规格书 | 18 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.4 | step18 “node-lineage-graph”、“subgraph-spec-doc” |
 
 ### C 构建
 
@@ -58,9 +58,9 @@
 | C32 | 接入主流大模型（多厂商、按任务路由、回退、计量） | 09 | §09.2 | `axpoint-llm/tests/router.rs`（回退与用量记录） |
 | C33 | 外部 MCP 与插件工具接入 | 09 | §09.4 | `axpoint-agent/tests/mcp_client.rs`（同步外部工具清单并调用） |
 | C57 | 业务对象自动生成领域 REST / 动态 GraphQL 接口与 MCP 暴露 | 05 / 09 | §05.6、[08](../../plans/completed/v1-foundation-step00-14/08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md) §09.3～§09.4 | step05 “domain-graphql”、“domain-objects”；step09 “published-object”、“mcp-tools” |
-| C66 | `AxBuilder` 构建态 MCP 工具集（拉取/校验/推送模型、流程与看板草案并回传深链） | 17 | [03-STEP17](../../plans/v2-ux-and-grounded-ai/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2～§17.3 | step17 “mcp-axbuilder-preflight”、“mcp-push-draft”、“mcp-deeplink” |
-| C67 | 细粒度构建令牌预设与隔离开发子图试灌及一键清空 | 17 | [03-STEP17](../../plans/v2-ux-and-grounded-ai/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2.2、§17.4 | step17 “builder-token-no-prod”、“dev-subgraph-reset” |
-| C72 | `xBlueStudio` 一键双态应用包装（领域智能体 + 孪生驾驶舱） | 19 | [05-STEP19](../../plans/v2-ux-and-grounded-ai/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.3 | step19 “studio-pack-agent”、“studio-pack-dashboard” |
+| C66 | `AxBuilder` 构建态 MCP 工具集（拉取/校验/推送模型、流程与看板草案并回传深链） | 17 | [03-STEP17](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2～§17.3 | step17 “mcp-axbuilder-preflight”、“mcp-push-draft”、“mcp-deeplink” |
+| C67 | 细粒度构建令牌预设与隔离开发子图试灌及一键清空 | 17 | [03-STEP17](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2.2、§17.4 | step17 “builder-token-no-prod”、“dev-subgraph-reset” |
+| C72 | `xBlueStudio` 一键双态应用包装（领域智能体 + 孪生驾驶舱） | 19 | [05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.3 | step19 “studio-pack-agent”、“studio-pack-dashboard” |
 
 ### D 智能
 
@@ -71,13 +71,13 @@
 | C36 | 可配置智能体与嵌入链接 | 09 | §09.5、§09.7 | step09 “embed-ok”、“embed-revoked” |
 | C37 | 多智能体协作 | 09 | §09.5 | step09 “multi-agent” |
 | C38 | 知识库批量上传解析 | 01 / 02 | §01.2～§01.11、§02.6 | step02 “upload-commit”；step01 全部断言 |
-| C60 | 云端与本地小模型 `json_schema` 受限解码及确定性零温采样 | 15 | [01-STEP15](../../plans/v2-ux-and-grounded-ai/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.2～§15.3 | step15 “schema-guided-ok”、“temp-zero-enforced” |
-| C62 | 本体与认证指标优先问数路由（零裸 SQL 确定性语义编译） | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.2 | step16 “ontology-metric-route”、“slot-compile-exact” |
-| C63 | 多表问数本体外键路径守卫（拦截无映射依据的自由 `JOIN`） | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.3 | step16 “ungrounded-join-rejected”、“mapped-join-ok” |
-| C64 | 知识问答段落引用角标核验与零召回确定性拒答 | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.4 | step16 “phantom-citation-stripped”、“empty-recall-abstain” |
-| C65 | 云/端双轨 50 例反幻觉对抗基准 100% 拦截 | 16 / 22 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.5、[08-STEP22](../../plans/v2-ux-and-grounded-ai/builder-and-ux/08-STEP22-V2-E2E-BENCHMARKS-AND-ACCEPTANCE.md) §22.2 | step16 “hallucination-eval-100”；step22 “dual-track-cloud_flagship-100”、“dual-track-local_7b_qwen-100” |
-| C74 | 会话级显式上下文锁定问数、五区语义驾驶舱预设与发布前全组件健康自检 | 20 | [06-STEP20](../../plans/v2-ux-and-grounded-ai/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.2～§20.4 | step20 “scoped-ask-isolated”、“view-zone-preset”、“view-publish-preflight” |
-| C75 | 企业 IM（飞书 / 钉钉 / 企业微信）零入站端口出站长连接双向智能体网关与提问人行级权限继承 | 21 | [07-STEP21](../../plans/v2-ux-and-grounded-ai/builder-and-ux/07-STEP21-IM-BIDIRECTIONAL-AGENT-CONNECTORS.md) §21.1～§21.4 | step21 “im-bind-token”、“im-rls-inherited”、“im-leader-failover” |
+| C60 | 云端与本地小模型 `json_schema` 受限解码及确定性零温采样 | 15 | [01-STEP15](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.2～§15.3 | step15 “schema-guided-ok”、“temp-zero-enforced” |
+| C62 | 本体与认证指标优先问数路由（零裸 SQL 确定性语义编译） | 16 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.2 | step16 “ontology-metric-route”、“slot-compile-exact” |
+| C63 | 多表问数本体外键路径守卫（拦截无映射依据的自由 `JOIN`） | 16 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.3 | step16 “ungrounded-join-rejected”、“mapped-join-ok” |
+| C64 | 知识问答段落引用角标核验与零召回确定性拒答 | 16 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.4 | step16 “phantom-citation-stripped”、“empty-recall-abstain” |
+| C65 | 云/端双轨 50 例反幻觉对抗基准 100% 拦截 | 16 / 22 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.5、[08-STEP22](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/08-STEP22-V2-E2E-BENCHMARKS-AND-ACCEPTANCE.md) §22.2 | step16 “hallucination-eval-100”；step22 “dual-track-cloud_flagship-100”、“dual-track-local_7b_qwen-100” |
+| C74 | 会话级显式上下文锁定问数、五区语义驾驶舱预设与发布前全组件健康自检 | 20 | [06-STEP20](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.2～§20.4 | step20 “scoped-ask-isolated”、“view-zone-preset”、“view-publish-preflight” |
+| C75 | 企业 IM（飞书 / 钉钉 / 企业微信）零入站端口出站长连接双向智能体网关与提问人行级权限继承 | 21 | [07-STEP21](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/07-STEP21-IM-BIDIRECTIONAL-AGENT-CONNECTORS.md) §21.1～§21.4 | step21 “im-bind-token”、“im-rls-inherited”、“im-leader-failover” |
 
 ### E 推演
 
@@ -89,7 +89,7 @@
 | C42 | 检查点、过程回看、推演问数 | 10 | §10.5、§10.7.3 | step10 “checkpoints”；`sim_ask_eval` |
 | C43 | AI 研判建议 | 10 | §10.7.2 | step10 “compare”（`briefing.recommended_scenario_id`） |
 | C44 | 决策落到动作（审批后执行） | 10 | §10.8 | step10 “applied”、“audit-sim-apply”、“conflict” |
-| C73 | 推演沙盘范围静态完整度预检（因果传导覆盖率、聚合闭合度与截断边诊断） | 20 | [06-STEP20](../../plans/v2-ux-and-grounded-ai/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.1 | step20 “sim-preflight-warn”、“sim-preflight-closed” |
+| C73 | 推演沙盘范围静态完整度预检（因果传导覆盖率、聚合闭合度与截断边诊断） | 20 | [06-STEP20](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.1 | step20 “sim-preflight-warn”、“sim-preflight-closed” |
 
 ### F 可视
 
@@ -113,8 +113,8 @@
 | C53 | 运营中心：实时监控与预警告警 | 08 / 14 | §08.3～§08.4、§14.4.3 | step08 “notified”、“auto-resolve”；step14 “health-deep” |
 | C54 | 行业应用模板复用 | 14 | §14.5 | step14 “template-installed”、“template-dashboard”、“template-uninstalled” |
 | C55 | 样例数据一键装载演示 | 14 | §14.6 | `POST /api/axops/demo/supply_chain/load` 后 `scripts/demo/supply_chain.md` 各步结果；`e2e/full-journey.spec.ts` |
-| C61 | 系统级只读模型与用户个人默认模型分级覆盖 | 15 | [01-STEP15](../../plans/v2-ux-and-grounded-ai/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.3.4、§15.4 | step15 “user-default-provider”、“system-provider-readonly” |
-| C71 | 系统概览 5 步实时构建向导与免运维权限演练子图模板试用 | 19 | [05-STEP19](../../plans/v2-ux-and-grounded-ai/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.1～§19.2 | step19 “onboarding-progress”、“trial-template-clone” |
+| C61 | 系统级只读模型与用户个人默认模型分级覆盖 | 15 | [01-STEP15](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.3.4、§15.4 | step15 “user-default-provider”、“system-provider-readonly” |
+| C71 | 系统概览 5 步实时构建向导与免运维权限演练子图模板试用 | 19 | [05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.1～§19.2 | step19 “onboarding-progress”、“trial-template-clone” |
 
 ---
 

@@ -76,7 +76,7 @@ git worktree add ../wt-web-step18       -b feat/web-step18-studio-copilot      m
 
 ## 3. 分步推进的四阶段标准闭环（SOP）
 
-无论是推进 `plans/v2-ux-and-grounded-ai/` 中的 Step 15～22，还是未来新增演进阶段，每个依赖层（Layer）严格执行四步闭环：
+无论是复盘已归档阶段（`plans/completed/v2-ux-and-grounded-ai-step15-22/`），还是推进未来新增演进阶段，每个依赖层（Layer）严格执行四步闭环：
 
 ```mermaid
 flowchart LR

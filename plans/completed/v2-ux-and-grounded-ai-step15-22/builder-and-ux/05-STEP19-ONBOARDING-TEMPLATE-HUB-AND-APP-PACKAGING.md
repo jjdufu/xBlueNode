@@ -6,10 +6,10 @@
 - [00-V2-MASTER-INDEX.md](../00-V2-MASTER-INDEX.md)
 - [03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md](./03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md)
 - [04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md](./04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md)
-- [IRON_RULES.md](../../../IRON_RULES.md)
-- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
-- [10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md](../../completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md)
-- [12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md](../../completed/v1-foundation-step00-14/12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md)
+- [IRON_RULES.md](../../../../IRON_RULES.md)
+- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
+- [10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md](../../v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md)
+- [12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md](../../v1-foundation-step00-14/12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md)
 
 ---
 
@@ -20,7 +20,7 @@
   2. 将只读模板目录 `GET /api/axops/templates` 与详情预览 `GET /api/axops/templates/{id}/preview` 权限设为 `DATA_READ`（生产级全量安装 `POST /api/axops/templates/{id}/install` 维持 `OPS_ADMIN` 不变）；新增 `POST /api/xblue/subgraphs/from-template`（仅需 `STUDIO_EDIT`），自动生成 `trial_<pack>_<shortid>` 开发沙盒子图（`is_dev_sandbox = true`），解析内置 CSV 样例在子图隔离命名空间内完成节点、关系与派生/聚合指标物化，并写入 `TRIAL_TEMPLATE_CLONE` 审计记录。
   3. 实现 `POST /api/xblue/subgraphs/{slug}/package-agent` 与 `GET /api/xblue/subgraphs/{slug}/consumption`：在 `xBlueStudio` 内联打包绑定该子图 `OBJECT_TYPE` 与 `METRIC` 端点的领域 `AxAgent`（支持 `expose_mcp = true`），并支持携带子图节点与指标上下文唤起 `xBlueView` 的 `AiDashboardWizard` 生成孪生驾驶舱草案，在节点卡片实时显示反向消费徽标。
 - **前置**：Step 17、Step 18 通过（所属并行层 **L14**，无新增数据库迁移，直接复用 `0014_ops_templates_delivery.sql` 与 `0017_axbuilder_scopes.sql`；可与 Step 20 并发实施）。
-- **覆盖能力项**：`C71`、`C72`（映射至 [A7-REQUIREMENTS-TRACEABILITY.md](../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md)）。
+- **覆盖能力项**：`C71`、`C72`（映射至 [A7-REQUIREMENTS-TRACEABILITY.md](../../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md)）。
 - **契约清单**：
   - 数据库迁移：无新文件（复用 `0014` 模板元数据结构与 `0017` 的 `xb_subgraphs.is_dev_sandbox`、`xb_subgraphs.source_template_id`、`xb_nodes.subgraph_slug`、`AuditAction::TrialTemplateClone`）
   - `axpoint-domain::platform`：`OnboardingStepKey`、`OnboardingStepItem`、`OnboardingStatusResponse`、`TemplatePreviewResponse`、`TemplateTopologySummary`

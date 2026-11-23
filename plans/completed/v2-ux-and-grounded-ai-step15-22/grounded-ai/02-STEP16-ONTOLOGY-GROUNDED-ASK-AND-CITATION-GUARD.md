@@ -20,11 +20,11 @@ Step 16 在 [Step 15](./01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) 受限�
   - `C65`：云/端双轨 50 例反幻觉对抗基准 100% 拦截（断言 `"hallucination-eval-100"`）。
 - **契约清单**：
   - 数据库迁移：`deploy/migrations/0016_grounded_ask_eval.sql`；
-  - 公共枚举与错误码：`axpoint-domain::enums::GroundingMode`、`AppError::bad("JOIN_PATH_UNGROUNDED", ...)`（同步写入 [A1](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md) §4、§5）；
+  - 公共枚举与错误码：`axpoint-domain::enums::GroundingMode`、`AppError::bad("JOIN_PATH_UNGROUNDED", ...)`（同步写入 [A1](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md) §4、§5）；
   - 领域核验模块：`axpoint-domain::grounding`（`CitationVerifyOutcome`、`verify_and_sanitize_citations`、`count_grounded_numbers`、`should_abstain_zero_evidence`、`ABSTAIN_NO_DOC_EVIDENCE_ZH`、`ABSTAIN_NO_DATA_OR_DOC_ZH`）；
   - 分析与问答模型：`axpoint-domain::analytics`（`AllowedDatasetJoinEdge`、`OntologySlotDraft`、`GroundingEvalTrack`、`GroundingEvalRunRecord`；扩展 `AskResponse`、`AskTurnRecord`、`NewAskTurnInput`、`QueryRequest`、`ChatQueryResponse`）；
   - 端口接口：`axpoint-domain::ports::AnalyticsRepository`（扩展 `insert_grounding_eval_run`、`list_grounding_eval_runs`）；
-  - 接口与标准文档：`docs/API_CONTRACT.md`、[A2](../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)、[A4](../../../docs/standards/A4-API-CONTRACT-INDEX.md)、[A7](../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md) 增量条目；
+  - 接口与标准文档：`docs/API_CONTRACT.md`、[A2](../../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)、[A4](../../../../docs/standards/A4-API-CONTRACT-INDEX.md)、[A7](../../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md) 增量条目；
   - 前端类型定义：`xbluenode-web/src/lib/api/{enums.ts, analytics.ts, rag.ts}`。
 
 ### 文件变更清单
@@ -271,7 +271,7 @@ pub struct GuardOptions {
 
 ### 16.4.1 纯领域接地核验模块（`axpoint-domain/src/grounding.rs`）
 
-严格遵循 [IRON_RULES](../../../IRON_RULES.md) §二.1 纯领域零外部依赖原则，在 `axpoint-domain` 实现确定性核验算法：
+严格遵循 [IRON_RULES](../../../../IRON_RULES.md) §二.1 纯领域零外部依赖原则，在 `axpoint-domain` 实现确定性核验算法：
 
 ```rust
 //! Pure citation-bounds verification, grounded numeric counting, and zero-recall abstention rules (`Step 16`).
