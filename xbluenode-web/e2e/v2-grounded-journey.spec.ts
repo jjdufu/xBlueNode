@@ -624,7 +624,7 @@ async function installV2JourneyMocks(
     if (matchedPat && matchedPat.token_profile === "BUILDER") {
       if (
         pathname.startsWith("/api/axops/templates/") ||
-        pathname.includes("/decisions/") ||
+        pathname.endsWith("/publish") ||
         (pathname === "/api/xblue/schema" && method === "POST")
       ) {
         await route.fulfill({
@@ -2872,11 +2872,11 @@ test.describe("Step 22 Phase 2 Grounded AI & Builder UX Full Journey", () => {
         );
       };
 
-      const simApplyStatus = await probeProdStatus(
-        "/api/axsim/decisions/00000000-0000-0000-0000-000000000001/apply",
-        {}
+      const prodPublishStatus = await probeProdStatus(
+        "/api/xblue/drafts/00000000-0000-0000-0000-000000000001/publish",
+        { change_summary: "probe" }
       );
-      expect(simApplyStatus).toBe(403);
+      expect(prodPublishStatus).toBe(403);
 
       const prodInstallStatus = await probeProdStatus(
         "/api/axops/templates/supply_chain/install",
