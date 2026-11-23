@@ -39,7 +39,8 @@ expect_eq "retention-jobs" "$(sql_owner "SELECT count(*) FROM ax_jobs WHERE crea
 AXPOINT_AUDIT_FORCE_KEEP_DAYS=1 bash "$ROOT/scripts/ops/retention-audit.sh" >/dev/null
 expect_json "audit-anchor" "$(api GET /api/axguard/audit/verify)" '.ok == true'
 
-# 备份与恢复演练
+# 备份与恢复演练（先刷平后台增量时序脏桶，避免恢复对账期间周期汇总搬移行数）
+wait_job "$(api POST /api/axops/jobs/rollup-now | jq -r .job_id)"
 export AXPOINT_BACKUP_DIR="$ROOT/.gate/backups"
 bash "$ROOT/scripts/ops/backup.sh" FULL
 bash "$ROOT/scripts/ops/restore-drill.sh" "$AXPOINT_BACKUP_DIR/latest"
