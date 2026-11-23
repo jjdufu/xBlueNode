@@ -523,7 +523,7 @@ dependencies = [
 
 [[package]]
 name = "axpoint-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axpoint-domain",
  "axpoint-llm",
@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "axpoint-analytics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arrow",
  "axpoint-domain",
@@ -576,7 +576,7 @@ dependencies = [
 
 [[package]]
 name = "axpoint-db"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axpoint-domain",
  "axpoint-security",
@@ -596,7 +596,7 @@ dependencies = [
 
 [[package]]
 name = "axpoint-domain"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "hex",
@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "axpoint-flow"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axpoint-domain",
  "base64 0.22.1",
@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "axpoint-llm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "axpoint-domain",
  "axpoint-security",
@@ -661,7 +661,7 @@ dependencies = [
 
 [[package]]
 name = "axpoint-security"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "axpoint-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "async-graphql",
