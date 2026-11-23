@@ -386,7 +386,7 @@ async fn handshake_initialize(
             "capabilities": {},
             "clientInfo": {
                 "name": "axpoint-mcp-client",
-                "version": "0.1.0"
+                "version": env!("CARGO_PKG_VERSION")
             }
         }
     });

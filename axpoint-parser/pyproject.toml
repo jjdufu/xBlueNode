@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "axpoint-parser"
-version = "0.1.0"
+version = "0.2.0"
 description = "Stateless PDF/OCR/Office document parsing and connector sidecar for xBlueNode / AxPoint"
 requires-python = ">=3.11"
 dependencies = [
