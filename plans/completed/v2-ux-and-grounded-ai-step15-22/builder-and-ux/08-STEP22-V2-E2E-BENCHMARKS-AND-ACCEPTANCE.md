@@ -2,7 +2,7 @@
 
 本步是 Phase 2（Step 15～22）的收官终验节点：通过端到端浏览器自动化测试 `xbluenode-web/e2e/v2-grounded-journey.spec.ts` 串联「5 步引导与演练模板克隆 → `xBlueStudio` 侧栏助手微调、快照回退、单节点横向血缘与全景规格书 → `AxBuilder` 构建态 MCP 令牌与配置片段 → `AxSim` 范围预检推演 → `xBlueView` 五区驾驶舱发布预检 → `AxQuery` 会话作用域零幻觉问数」完整闭环；通过 `cloud_flagship` 与 `local_7b_qwen` 双轨 50 例对抗录制夹具验证 100% 幻觉拦截率与 `< 50ms` 守卫开销；升级 `scripts/gate/all.sh` 覆盖 `Step 00～22` 与全套 G1 静态守卫，并定义终验通过后的方案归档规程。
 
-总览索引与门禁准则见 [00-V2-MASTER-INDEX.md](../00-V2-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md) 与 [QUALITY_GATES_AND_VERIFICATION.md](../../../docs/QUALITY_GATES_AND_VERIFICATION.md)。
+总览索引与门禁准则见 [00-V2-MASTER-INDEX.md](../00-V2-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md) 与 [QUALITY_GATES_AND_VERIFICATION.md](../../../../docs/QUALITY_GATES_AND_VERIFICATION.md)。
 
 ---
 
@@ -11,7 +11,7 @@
 - **目标**：
   1. `xbluenode-web/e2e/v2-grounded-journey.spec.ts` 在独立模拟桩模式与 `AXPOINT_E2E_LIVE=1` 全栈实连模式下均一次通过；
   2. `cloud_flagship` 与 `local_7b_qwen` 双轨录制回放基准（各 50 例对抗样本，共 100 次回放断言）达到 **100% 幻觉拦截率**（复核 `C65`），且纯守卫链路 P95 耗时 `< 50ms`；
-  3. `check_routes.py` 确认全部后端 Axum 路由与 [A4-API-CONTRACT-INDEX.md](../../../docs/standards/A4-API-CONTRACT-INDEX.md) 双向零漂移；`check_traceability.py` 确认 [A7-REQUIREMENTS-TRACEABILITY.md](../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md) 完整登记 `C01`～`C75`（75 项能力）与 `D01`～`D26`（26 类数据源）且全部门禁断言真实存在；
+  3. `check_routes.py` 确认全部后端 Axum 路由与 [A4-API-CONTRACT-INDEX.md](../../../../docs/standards/A4-API-CONTRACT-INDEX.md) 双向零漂移；`check_traceability.py` 确认 [A7-REQUIREMENTS-TRACEABILITY.md](../../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md) 完整登记 `C01`～`C75`（75 项能力）与 `D01`～`D26`（26 类数据源）且全部门禁断言真实存在；
   4. `scripts/gate/all.sh` 从零拉起干净测试环境，顺序跑通 `step00`～`step22`、`full-journey.spec.ts` 与 `v2-grounded-journey.spec.ts`，末行输出 `ALL GATES PASS`。
 - **前置**：[Step 16](../grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md)、[Step 19](./05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md)、[Step 20](./06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md)、[Step 21](./07-STEP21-IM-BIDIRECTIONAL-AGENT-CONNECTORS.md) 全部通过（无新增数据库迁移）。
 
@@ -31,7 +31,7 @@
 
 ## 22.1 Phase 2 全旅程 Playwright E2E（`xbluenode-web/e2e/v2-grounded-journey.spec.ts`）
 
-与 Phase 1 的 `e2e/full-journey.spec.ts`（见 [Step 14](../../completed/v1-foundation-step00-14/12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.9.1）保持统一双模架构：默认在前端 PR CI 中挂载状态化路由桩毫秒级确定性执行；当环境变量 `AXPOINT_E2E_LIVE=1` 启用时直连真实 Core + Sidecar + PostgreSQL + DuckLake 全栈服务。
+与 Phase 1 的 `e2e/full-journey.spec.ts`（见 [Step 14](../../v1-foundation-step00-14/12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) §14.9.1）保持统一双模架构：默认在前端 PR CI 中挂载状态化路由桩毫秒级确定性执行；当环境变量 `AXPOINT_E2E_LIVE=1` 启用时直连真实 Core + Sidecar + PostgreSQL + DuckLake 全栈服务。
 
 ```mermaid
 flowchart LR

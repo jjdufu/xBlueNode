@@ -4,11 +4,11 @@
 
 关联总览与工程约束：
 - [00-V2-MASTER-INDEX.md](../00-V2-MASTER-INDEX.md)
-- [IRON_RULES.md](../../../IRON_RULES.md)
-- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
-- [A2-DATABASE-MIGRATIONS-INDEX.md](../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)
-- [06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md](../../completed/v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md)
-- [08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md](../../completed/v1-foundation-step00-14/08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md)
+- [IRON_RULES.md](../../../../IRON_RULES.md)
+- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
+- [A2-DATABASE-MIGRATIONS-INDEX.md](../../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)
+- [06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md](../../v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md)
+- [08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md](../../v1-foundation-step00-14/08-STEP09-AXAGENT-PUBLISHING-MCP-AGENTS.md)
 
 ---
 
@@ -20,7 +20,7 @@
   3. 在 `axpoint-agent::mcp_server` 扩展 9 个 `axbuilder_*` 构建态工具与 `axpoint://templates/{id}`、`axpoint://subgraphs/{slug}` 资源，所有检视与变更工具统一回传结构化前端深链 `deep_links`（`studio_url`、`flow_url`、`view_url`）。
   4. 在 `AxAgentPage.tsx`（`MCP` 页签）提供面向 `Antigravity`、`Cursor`、`Claude Code`、`Codex` 四类客户端的配置片段生成器与复制控件。
 - **前置**：Step 14 通过（所属并行层 **L12**，可与 Step 15 并发实施；契约迁移按 `0015 → 0017` 顺序合入）。
-- **覆盖能力项**：`C66`、`C67`（映射至 [A7-REQUIREMENTS-TRACEABILITY.md](../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md)）。
+- **覆盖能力项**：`C66`、`C67`（映射至 [A7-REQUIREMENTS-TRACEABILITY.md](../../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md)）。
 - **契约清单**：
   - `deploy/migrations/0017_axbuilder_scopes.sql`
   - `axpoint-domain::enums`：`TokenProfile`（`GENERAL | BUILDER`），`AuditAction` 追加 `BuilderMcpMutate`、`TrialTemplateClone`

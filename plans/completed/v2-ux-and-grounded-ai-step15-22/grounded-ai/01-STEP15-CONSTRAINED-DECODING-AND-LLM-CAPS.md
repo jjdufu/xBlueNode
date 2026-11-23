@@ -11,14 +11,14 @@ Step 15 为 `AxPoint` 多模型路由层（`axpoint-llm`）建立面向云端 AP
   2. 在 `axpoint-domain::json_schema` 提供兼容 JSON Schema Draft 2020-12 严格子集（`strict: true`、`additionalProperties: false`、全量 `required`）的动态 `JsonSchemaSpec` 构造器，实时注入当前租户已发布的 `NodeTypeSpec`、`EdgeTypeSpec`、`MetricDef` 与 `RollupGrain` 枚举集合。
   3. 在 `axpoint-llm` 扩展 `WireChatCompletionRequest`（`response_format`、`seed`），对 `NL2SQL`、`EXTRACT`、`SUMMARIZE` 三类确定性用途以及所有携带 `response_schema` 的请求物理锁死 `temperature = 0.0`；在返回侧统一执行 `jsonschema` 强校验，并为 `is_local_model = true` 提供浅层语法裁剪与单轮降级修复闭环。
   4. 新增 `ax_user_llm_preferences` 表与 `/api/axagent/llm-preferences` 接口，实现「管理员维护只读系统模型（`owner_user_id IS NULL`）+ 普通用户登记个人模型并按用途指定个人默认模型」的分级覆盖机制。
-- **前置**：[Step 14](../../completed/v1-foundation-step00-14/12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) 通过（迁移 `0001`～`0014` 与 Phase 1 门禁全绿）。
+- **前置**：[Step 14](../../v1-foundation-step00-14/12-STEP14-OPERATIONS-TEMPLATES-ACCEPTANCE.md) 通过（迁移 `0001`～`0014` 与 Phase 1 门禁全绿）。
 - **覆盖能力项**：`C60`（受限解码与确定性零温采样，断言 `"schema-guided-ok"`、`"temp-zero-enforced"`）、`C61`（系统只读模型与个人默认模型覆盖，断言 `"user-default-provider"`、`"system-provider-readonly"`）。
 - **契约清单**：
   - 数据库迁移：`deploy/migrations/0015_llm_structured_grounding.sql`；
-  - 公共枚举：`axpoint-domain::enums::StructuredOutputMode`（同步写入 [A1](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md) §4 与 `xbluenode-web/src/lib/api/enums.ts`）；
+  - 公共枚举：`axpoint-domain::enums::StructuredOutputMode`（同步写入 [A1](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md) §4 与 `xbluenode-web/src/lib/api/enums.ts`）；
   - 领域模型与 Schema 构造器：`axpoint-domain::json_schema::{JsonSchemaSpec, TenantOntologyEnums}`、`axpoint-domain::agent::{LlmProviderRecord, SaveLlmProviderRequest, SaveLlmProviderInput, ProviderScope, UserLlmPreferenceRecord, PutUserLlmPreferencesRequest}`；
   - 端口接口：`axpoint-domain::ports::{LlmProviderStore, AgentRepository, AiPort}`（新增 `AiPort::chat_structured` 默认方法及个人模型偏好读写端口）；
-  - 接口与标准文档：`docs/API_CONTRACT.md`、[A2](../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)、[A4](../../../docs/standards/A4-API-CONTRACT-INDEX.md)、[A7](../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md) 增量条目；
+  - 接口与标准文档：`docs/API_CONTRACT.md`、[A2](../../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)、[A4](../../../../docs/standards/A4-API-CONTRACT-INDEX.md)、[A7](../../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md) 增量条目；
   - 前端 API 契约：`xbluenode-web/src/lib/api/axagent.ts`。
 
 ### 文件变更清单
@@ -48,7 +48,7 @@ Step 15 为 `AxPoint` 多模型路由层（`axpoint-llm`）建立面向云端 AP
 
 ## 15.1 迁移 `deploy/migrations/0015_llm_structured_grounding.sql`
 
-> 遵循 [IRON_RULES](../../../IRON_RULES.md) §二.2 幂等迁移规范：`ax_llm_providers` 原 `UNIQUE (tenant_id, name)` 拆分为系统级与个人级两条部分唯一索引，使不同用户的个人提供方名称互不冲突且不覆盖系统提供方；`ax_user_llm_preferences` 启用强制租户级 RLS。
+> 遵循 [IRON_RULES](../../../../IRON_RULES.md) §二.2 幂等迁移规范：`ax_llm_providers` 原 `UNIQUE (tenant_id, name)` 拆分为系统级与个人级两条部分唯一索引，使不同用户的个人提供方名称互不冲突且不覆盖系统提供方；`ax_user_llm_preferences` 启用强制租户级 RLS。
 
 ```sql
 -- 0015_llm_structured_grounding.sql：受限解码能力分级、确定性种子、本地小模型标识、个人模型归属与默认模型偏好

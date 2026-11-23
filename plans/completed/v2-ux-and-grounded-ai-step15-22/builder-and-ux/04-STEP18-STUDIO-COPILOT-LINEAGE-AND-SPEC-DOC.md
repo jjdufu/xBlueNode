@@ -5,10 +5,10 @@
 关联总览与工程约束：
 - [00-V2-MASTER-INDEX.md](../00-V2-MASTER-INDEX.md)
 - [03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md](./03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md)
-- [IRON_RULES.md](../../../IRON_RULES.md)
-- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
-- [A2-DATABASE-MIGRATIONS-INDEX.md](../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)
-- [06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md](../../completed/v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md)
+- [IRON_RULES.md](../../../../IRON_RULES.md)
+- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
+- [A2-DATABASE-MIGRATIONS-INDEX.md](../../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)
+- [06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md](../../v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md)
 
 ---
 
@@ -21,7 +21,7 @@
   4. 实现纯确定性计算的单节点横向血缘接口 `GET /api/xblue/subgraphs/{slug}/lineage/{node_type}` 与 7 章节模型全景规格书接口 `GET /api/xblue/subgraphs/{slug}/spec-doc`。
   5. 在前端 `components/xbluestudio/` 交付 `StudioCopilotPanel.tsx`、`NodeLineageCanvas.tsx`、`ModelSpecOverview.tsx`，并升级 `NodeTypeCard.tsx`（紧凑 `Np·Nm·Nr` 统计徽标）与 `IssueList.tsx`（`pass_count` 通过项徽标 + 完备度警告）。
 - **前置**：Step 15、Step 17 通过（所属并行层 **L13**，可与 Step 16、Step 21 并发实施；契约迁移按 `0016 → 0018 → 0019` 顺序合入）。
-- **覆盖能力项**：`C68`、`C69`、`C70`（映射至 [A7-REQUIREMENTS-TRACEABILITY.md](../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md)）。
+- **覆盖能力项**：`C68`、`C69`、`C70`（映射至 [A7-REQUIREMENTS-TRACEABILITY.md](../../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md)）。
 - **契约清单**：
   - `deploy/migrations/0018_studio_proposal_status.sql`
   - `axpoint-domain::enums`：`DesignMaturity`（`PROPOSED | CONFIRMED`）、`SemanticLayerTier`（`STATIC_FACT | EVENT_DYNAMIC | CUBE_ROLLUP`）、`CopilotActionMode`（`DIAGNOSE_ONLY | PATCH_DRAFT`）、`AuditAction::StudioSnapshotRestore`

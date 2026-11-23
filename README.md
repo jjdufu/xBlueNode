@@ -4,7 +4,7 @@
 
 技术栈：Rust `1.100.0`（`edition = "2024"`）+ PostgreSQL 16（`pgvector`）+ DuckDB / DuckLake + Python 3.11 FastAPI Sidecar（AxParser / AxHub）+ Vite / React 19。
 
-完整的阶段实施方案归档与演进路线见 **[plans/README.md](./plans/README.md)**（第一阶段 Step 00～14 已完成归档于 [plans/completed/v1-foundation-step00-14/00-MASTER-INDEX.md](./plans/completed/v1-foundation-step00-14/00-MASTER-INDEX.md)，第二阶段智能体验与本体无幻觉演进见 [plans/v2-ux-and-grounded-ai/00-V2-MASTER-INDEX.md](./plans/v2-ux-and-grounded-ai/00-V2-MASTER-INDEX.md)）。常驻工程标准、门禁与多团队/多代理协作规范见 **[docs/QUALITY_GATES_AND_VERIFICATION.md](./docs/QUALITY_GATES_AND_VERIFICATION.md)** 与 **[docs/MULTI_AGENT_TEAM_WORKFLOW.md](./docs/MULTI_AGENT_TEAM_WORKFLOW.md)**。
+完整的阶段实施方案归档与演进路线见 **[plans/README.md](./plans/README.md)**（第一阶段 Step 00～14 归档于 [plans/completed/v1-foundation-step00-14/00-MASTER-INDEX.md](./plans/completed/v1-foundation-step00-14/00-MASTER-INDEX.md)，第二阶段 Step 15～22 智能体验与本体无幻觉演进归档于 [plans/completed/v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md](./plans/completed/v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md)）。常驻工程标准、门禁与多团队/多代理协作规范见 **[docs/QUALITY_GATES_AND_VERIFICATION.md](./docs/QUALITY_GATES_AND_VERIFICATION.md)** 与 **[docs/MULTI_AGENT_TEAM_WORKFLOW.md](./docs/MULTI_AGENT_TEAM_WORKFLOW.md)**。
 
 ---
 
@@ -41,7 +41,7 @@ xBlueNode/
 ├── deploy/                # docker-compose、k8s/、migrations/（sqlx 格式 NNNN_<module>.sql）
 ├── scripts/               # 静态守卫、环境启停、种子数据、分步门禁（gate/）、运维演练脚本
 ├── docs/                  # 常驻门禁规范、多团队/多代理协作宪章、API_CONTRACT.md、standards/
-└── plans/                 # 分阶段实施方案仓（completed/ 历史归档 + v2-ux-and-grounded-ai/ 演进蓝图）
+└── plans/                 # 分阶段实施方案仓（completed/ 已验收归档阶段 + 后续演进蓝图）
 ```
 
 ---

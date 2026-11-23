@@ -12,7 +12,7 @@
 | 阶段标识 | 状态 | 目录入口 | Step 范围 | 数据库迁移范围 | 核心交付能力 |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Phase 1 (`v1`)** | 已完成归档 | [completed/v1-foundation-step00-14/00-MASTER-INDEX.md](./completed/v1-foundation-step00-14/00-MASTER-INDEX.md) | Step 00 ～ Step 14 | `0001` ～ `0014` | 全源双轨解析、DuckLake 数据湖、超图与时序节点底座、OLAP 与受控问数、多子图建模、DAG 编排与规则告警、发布/MCP/智能体、CoW 因果推演、3D 孪生驾驶舱、全格式出品、Cedar ABAC 安全治理、运维备份与行业模板 |
-| **Phase 2 (`v2`)** | 待按层推进 | [v2-ux-and-grounded-ai/00-V2-MASTER-INDEX.md](./v2-ux-and-grounded-ai/00-V2-MASTER-INDEX.md) | Step 15 ～ Step 22 | `0015` ～ `0019` | **专项一（本体级无幻觉 AI）**：云端/本地小模型受限解码（`json_schema`）、本体优先问数编译、法定连接路径守卫、文档引用角标核验与零依据拒答、50 例对抗评测基准；<br>**专项二（构建协同与全链路易用性）**：`AxBuilder` 构建态 MCP 与开发子图闭环、`xBlueStudio` 焦点感知助手 + 单节点横向血缘画布 + 模型全景规格书、5 步引导式概览与演练子图模板试用、Studio 一键双态包装（AI + BI）、`AxSim` 克隆前范围预检、`AxQuery` 显式作用域选择、`xBlueView` 五区骨架与发布自检、`AxAgent` 企业 IM 长连接双向接入 |
+| **Phase 2 (`v2`)** | 已完成归档 | [completed/v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md](./completed/v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md) | Step 15 ～ Step 22 | `0015` ～ `0019` | **专项一（本体级无幻觉 AI）**：云端/本地小模型受限解码（`json_schema`）、本体优先问数编译、法定连接路径守卫、文档引用角标核验与零依据拒答、50 例对抗评测基准；<br>**专项二（构建协同与全链路易用性）**：`AxBuilder` 构建态 MCP 与开发子图闭环、`xBlueStudio` 焦点感知助手 + 单节点横向血缘画布 + 模型全景规格书、5 步引导式概览与演练子图模板试用、Studio 一键双态包装（AI + BI）、`AxSim` 克隆前范围预检、`AxQuery` 显式作用域选择、`xBlueView` 五区骨架与发布自检、`AxAgent` 企业 IM 长连接双向接入 |
 
 ---
 

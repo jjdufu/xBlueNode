@@ -1,12 +1,12 @@
 # xBlueNode / AxPoint Phase 2 实施总蓝图：本体级无幻觉 AI 与全链路构建易用性（Step 15～22）
 
-本文件是 `plans/v2-ux-and-grounded-ai/` 的**唯一总入口**，承接已完成归档的第一阶段基线（[Step 00～14](../completed/v1-foundation-step00-14/00-MASTER-INDEX.md)，对应迁移 `0001`～`0014`、能力项 `C01`～`C59`）。本蓝图围绕**本体级无幻觉 AI（兼容云端 API 与本地 7B～32B 模型）**与**构建态 MCP 协同及工作室端到端易用性**两大主线，按可并行依赖层（L12～L16）定义 Step 15～22 的契约、数据模型、接口、前端交互与可执行门禁。
+本文件是 `plans/v2-ux-and-grounded-ai/` 的**唯一总入口**，承接已完成归档的第一阶段基线（[Step 00～14](../v1-foundation-step00-14/00-MASTER-INDEX.md)，对应迁移 `0001`～`0014`、能力项 `C01`～`C59`）。本蓝图围绕**本体级无幻觉 AI（兼容云端 API 与本地 7B～32B 模型）**与**构建态 MCP 协同及工作室端到端易用性**两大主线，按可并行依赖层（L12～L16）定义 Step 15～22 的契约、数据模型、接口、前端交互与可执行门禁。
 
 常驻工程约束、三级门禁与多团队/多代理并发规约见：
-- [IRON_RULES.md](../../IRON_RULES.md)
-- [QUALITY_GATES_AND_VERIFICATION.md](../../docs/QUALITY_GATES_AND_VERIFICATION.md)
-- [MULTI_AGENT_TEAM_WORKFLOW.md](../../docs/MULTI_AGENT_TEAM_WORKFLOW.md)
-- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
+- [IRON_RULES.md](../../../IRON_RULES.md)
+- [QUALITY_GATES_AND_VERIFICATION.md](../../../docs/QUALITY_GATES_AND_VERIFICATION.md)
+- [MULTI_AGENT_TEAM_WORKFLOW.md](../../../docs/MULTI_AGENT_TEAM_WORKFLOW.md)
+- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
 
 ---
 

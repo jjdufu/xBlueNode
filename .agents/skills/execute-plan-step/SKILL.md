@@ -8,11 +8,11 @@ description: >-
 
 # Execute Plan Step Workflow (`xBlueNode / AxPoint`)
 
-Activate this skill whenever implementing or reviewing a Step defined under `plans/` (e.g., `plans/v2-ux-and-grounded-ai/`).
+Activate this skill whenever implementing or reviewing a Step defined under `plans/`.
 
 ## 1. Pre-Flight Context Check
 
-1. Read [IRON_RULES.md](../../../IRON_RULES.md), [AGENTS.md](../../../AGENTS.md), and [00-V2-MASTER-INDEX.md](../../../plans/v2-ux-and-grounded-ai/00-V2-MASTER-INDEX.md).
+1. Read [IRON_RULES.md](../../../IRON_RULES.md), [AGENTS.md](../../../AGENTS.md), and the active phase master index (see [00-V2-MASTER-INDEX.md](../../../plans/completed/v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md) for the Phase 2 reference baseline).
 2. Read the target Step blueprint file completely (objectives, prerequisites, file-change manifest, migration DDL, Rust/Python/Web contracts, and gate assertions).
 3. Verify prerequisite Steps are already merged into `main`.
 
