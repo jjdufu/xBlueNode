@@ -1,6 +1,6 @@
 # A7 · 需求追踪矩阵
 
-本附录把全部能力项（59 项，按 A 底座、B 设计、C 构建、D 智能、E 推演、F 可视、G 系统分组，能力范围参照对标产品官网公开的功能说明整理）与全部数据源类别（26 类）映射到负责的 Step、实现小节与可执行的验收用例。“验收”列中带引号的名称是该 Step 门禁脚本 `scripts/gate/stepNN.sh` 中的断言名；其余为测试文件或端到端用例。每一项都有唯一负责的 Step。
+本附录把全部能力项（75 项，按 A 底座、B 设计、C 构建、D 智能、E 推演、F 可视、G 系统分组，能力范围参照对标产品官网公开的功能说明整理）与全部数据源类别（26 类）映射到负责的 Step、实现小节与可执行的验收用例。“验收”列中带引号的名称是该 Step 门禁脚本 `scripts/gate/stepNN.sh` 中的断言名；其余为测试文件或端到端用例。每一项都有唯一负责的 Step。
 
 ---
 
@@ -75,7 +75,7 @@
 | C62 | 本体与认证指标优先问数路由（零裸 SQL 确定性语义编译） | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.2 | step16 “ontology-metric-route”、“slot-compile-exact” |
 | C63 | 多表问数本体外键路径守卫（拦截无映射依据的自由 `JOIN`） | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.3 | step16 “ungrounded-join-rejected”、“mapped-join-ok” |
 | C64 | 知识问答段落引用角标核验与零召回确定性拒答 | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.4 | step16 “phantom-citation-stripped”、“empty-recall-abstain” |
-| C65 | 云/端双轨 50 例反幻觉对抗基准 100% 拦截 | 16 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.5 | step16 “hallucination-eval-100” |
+| C65 | 云/端双轨 50 例反幻觉对抗基准 100% 拦截 | 16 / 22 | [02-STEP16](../../plans/v2-ux-and-grounded-ai/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.5、[08-STEP22](../../plans/v2-ux-and-grounded-ai/builder-and-ux/08-STEP22-V2-E2E-BENCHMARKS-AND-ACCEPTANCE.md) §22.2 | step16 “hallucination-eval-100”；step22 “dual-track-cloud_flagship-100”、“dual-track-local_7b_qwen-100” |
 | C74 | 会话级显式上下文锁定问数、五区语义驾驶舱预设与发布前全组件健康自检 | 20 | [06-STEP20](../../plans/v2-ux-and-grounded-ai/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.2～§20.4 | step20 “scoped-ask-isolated”、“view-zone-preset”、“view-publish-preflight” |
 | C75 | 企业 IM（飞书 / 钉钉 / 企业微信）零入站端口出站长连接双向智能体网关与提问人行级权限继承 | 21 | [07-STEP21](../../plans/v2-ux-and-grounded-ai/builder-and-ux/07-STEP21-IM-BIDIRECTIONAL-AGENT-CONNECTORS.md) §21.1～§21.4 | step21 “im-bind-token”、“im-rls-inherited”、“im-leader-failover” |
 
@@ -155,7 +155,7 @@
 
 ```bash
 # 每个能力项与数据源类别都在本表出现且只出现一次
-grep -cE '^\| C[0-9]{2} ' docs/standards/A7-REQUIREMENTS-TRACEABILITY.md   # 59
+grep -cE '^\| C[0-9]{2} ' docs/standards/A7-REQUIREMENTS-TRACEABILITY.md   # 75
 grep -cE '^\| D[0-9]{2} ' docs/standards/A7-REQUIREMENTS-TRACEABILITY.md   # 26
 
 # 表中引用的门禁断言名都存在于对应门禁脚本（输出缺失项，期望为空）
