@@ -225,21 +225,35 @@ export function LineageGraphG6Surface({
       }
     });
 
-    void graph.render();
+    const renderPromise = graph.render().catch(() => {
+      // Ignore if unmounted mid-render
+    });
 
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry || !graphRef.current) return;
       const nextW = Math.max(240, Math.round(entry.contentRect.width));
       const nextH = Math.max(200, Math.round(entry.contentRect.height));
-      graphRef.current.resize(nextW, nextH);
+      try {
+        graphRef.current.resize(nextW, nextH);
+      } catch {
+        // Ignore resize during teardown
+      }
     });
     ro.observe(el);
 
     return () => {
       ro.disconnect();
-      graph.destroy();
-      graphRef.current = null;
+      if (graphRef.current === graph) {
+        graphRef.current = null;
+      }
+      void renderPromise.finally(() => {
+        try {
+          graph.destroy();
+        } catch {
+          // Guard against @antv/g6 v5 partial extension teardown
+        }
+      });
     };
   }, [closure, edges, focusedNodeId, isDark, nodeMap, nodes]);
 

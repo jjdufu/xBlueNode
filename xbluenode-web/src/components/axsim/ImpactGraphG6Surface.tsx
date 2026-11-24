@@ -126,6 +126,8 @@ export const ImpactGraphG6Surface = forwardRef<
     () => new Map(cardModels.map((m) => [m.nodeId, m])),
     [cardModels]
   );
+  const cardByIdRef = useRef(cardById);
+  cardByIdRef.current = cardById;
 
   useImperativeHandle(
     ref,
@@ -278,7 +280,7 @@ export const ImpactGraphG6Surface = forwardRef<
           dx: -114,
           dy: -48,
           component: (datum: NodeData) => {
-            const vm = cardById.get(String(datum.id));
+            const vm = cardByIdRef.current.get(String(datum.id));
             if (!vm) {
               return <div />;
             }
@@ -354,28 +356,39 @@ export const ImpactGraphG6Surface = forwardRef<
       onComboChangeRef.current(cid, !isCol);
     });
 
-    renderReadyRef.current = graph.render().catch(() => {
+    const renderPromise = graph.render().catch(() => {
       // Ignore if unmounted mid-render
     });
+    renderReadyRef.current = renderPromise;
 
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (!entry || disposed || !graphRef.current) return;
       const nextW = Math.max(320, Math.round(entry.contentRect.width));
       const nextH = Math.max(300, Math.round(entry.contentRect.height));
-      graphRef.current.resize(nextW, nextH);
+      try {
+        graphRef.current.resize(nextW, nextH);
+      } catch {
+        // Ignore resize during teardown
+      }
     });
     ro.observe(el);
 
     return () => {
       disposed = true;
       ro.disconnect();
-      graph.destroy();
       if (graphRef.current === graph) {
         graphRef.current = null;
       }
+      void renderPromise.finally(() => {
+        try {
+          graph.destroy();
+        } catch {
+          // Guard against @antv/g6 v5 Hull/Plugin partial-shape teardown
+        }
+      });
     };
-  }, [baseG6Data, cardById, isDark]);
+  }, [baseG6Data, isDark]);
 
   // Synchronize Combo collapse/expand & Hull plugins sequentially AFTER `graph.render()` completes
   useEffect(() => {
@@ -385,8 +398,12 @@ export const ImpactGraphG6Surface = forwardRef<
       const g = graphRef.current;
       if (cancelled || !g) return;
 
-      // Update hull plugins first so no hull references a node about to be collapsed
-      g.setPlugins(hullPlugins);
+      // Update hull plugins safely when member visibility changes
+      try {
+        g.setPlugins(hullPlugins);
+      } catch {
+        // Ignore transient G6 extension update errors during rapid toggles
+      }
 
       for (const cg of comboGroups) {
         if (cancelled || graphRef.current !== g) return;
