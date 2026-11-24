@@ -15,7 +15,7 @@ pub(crate) use knowledge_worker::KnowledgeSyncHandler;
 pub(crate) use mapping_worker::MapMaterializeHandler;
 pub(crate) use partition_worker::run_partition_worker;
 pub(crate) use rollup_worker::{RollupJobHandler, run_rollup_scheduler};
-pub(crate) use scheduler::run_cron_scheduler;
+pub(crate) use scheduler::{run_continuous_stream_coordinator, run_cron_scheduler};
 pub(crate) use sync_worker::{
     CredentialRotateHandler, LakeMaintenanceHandler, ParseFileHandler, SyncDatasetHandler,
 };

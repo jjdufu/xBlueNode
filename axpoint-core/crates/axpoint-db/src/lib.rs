@@ -9,6 +9,7 @@ pub mod audit;
 pub mod axhub_repo;
 pub mod entity_link;
 pub mod flow_repo;
+pub mod graph_algo_duckdb;
 pub mod graph_query;
 pub mod guard_repo;
 pub mod im_repo;

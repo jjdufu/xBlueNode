@@ -13,6 +13,7 @@ axpoint-domain = { path = "../axpoint-domain" }
 axpoint-security = { path = "../axpoint-security" }
 base64 = { workspace = true }
 chrono = { workspace = true }
+duckdb = { workspace = true }
 hex = { workspace = true }
 petgraph = { workspace = true }
 pgvector = { workspace = true }

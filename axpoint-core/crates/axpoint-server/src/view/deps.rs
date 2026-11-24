@@ -585,6 +585,8 @@ mod tests {
             schema_policy: SchemaPolicy::Evolve,
             lake_schema: String::from("tenant_default"),
             schedule_cron: None,
+            continuous_stream: false,
+            cdc_slot_meta: serde_json::json!({}),
             lake_table: lake_table.to_owned(),
             schema_version: 1,
             schema_json: Vec::new(),

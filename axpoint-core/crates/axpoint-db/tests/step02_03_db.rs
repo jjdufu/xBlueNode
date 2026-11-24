@@ -178,6 +178,8 @@ async fn setup_axhub_conn_and_dataset(
                 delete_column: None,
                 schema_policy: SchemaPolicy::Additive,
                 schedule_cron: None,
+                continuous_stream: false,
+                cdc_slot_meta: serde_json::json!({}),
                 tags: Vec::new(),
             },
         )
@@ -201,6 +203,8 @@ async fn setup_axhub_conn_and_dataset(
                 delete_column: None,
                 schema_policy: SchemaPolicy::Additive,
                 schedule_cron: None,
+                continuous_stream: false,
+                cdc_slot_meta: serde_json::json!({}),
                 tags: vec![String::from("supply_chain")],
             },
         )
@@ -235,6 +239,8 @@ async fn verify_axhub_sync_and_catalog(store: &PgStore, t1: &str, ds_id: Uuid) -
         total_rows: None,
         cursor_to: Some(String::from("2026-01-01T00:00:00Z")),
         stream_offsets: BTreeMap::new(),
+        cdc_slot_meta: serde_json::json!({}),
+        deleted_primary_keys: Vec::new(),
         snapshot_id: 1,
         schema: vec![ColumnProfile {
             name: String::from("customer_phone"),

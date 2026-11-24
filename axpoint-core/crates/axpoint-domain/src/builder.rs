@@ -7,11 +7,17 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppError;
-use crate::enums::{Permission, StructuredOutputMode, TokenProfile, WidgetKind};
+use crate::analytics::AxqlCompilePlan;
+use crate::enums::{
+    GroundingMode, HarnessGapKind, HarnessRunStatus, Permission, Sensitivity, StructuredOutputMode,
+    TokenProfile, WidgetKind,
+};
 use crate::ops::TemplateManifest;
-use crate::studio::{MappingRejectSample, SchemaDoc, SchemaDraft, SubgraphInfo, ValidationIssue};
-use crate::topology::BlueNode;
-use crate::view::{FilterDef, WidgetDataSource, WidgetPosition};
+use crate::studio::{
+    MappingRejectSample, RuntimeCertReport, SchemaDoc, SchemaDraft, SubgraphInfo, ValidationIssue,
+};
+use crate::topology::{AxSimAction, AxSimResult, BlueNode};
+use crate::view::{DashboardPreflightReport, FilterDef, WidgetDataSource, WidgetPosition};
 
 /// Default permissions granted to a `TokenProfile::Builder` personal access token when `scopes` is omitted.
 pub const BUILDER_DEFAULT_SCOPES: &[Permission] = &[
@@ -463,6 +469,238 @@ pub struct TemplateResourcePayload {
     /// Raw mappings array (`mappings.json`).
     pub mappings: serde_json::Value,
 }
+
+/// Golden competency question specification stored in `xb_competency_suites.questions` (`07-STEP29` §29.1 & §29.4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompetencyQuestionSpec {
+    /// Stable question identifier within the suite (e.g., `"cq_east_inv"`).
+    pub id: String,
+    /// Natural-language business competency question to verify against the subgraph.
+    pub question: String,
+    /// Optional expected `GroundingMode` (`SEMANTIC_METRIC`, `DOMAIN_OBJECT`, `GUARDED_SQL`, `GROUNDED_DOC`, or `ABSTAINED`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_grounding_mode: Option<GroundingMode>,
+    /// Expected `NodeTypeSpec` names referenced by the grounded query/slot plan.
+    #[serde(default)]
+    pub expected_node_types: Vec<String>,
+    /// Expected metric or property names referenced by the grounded query/slot plan.
+    #[serde(default)]
+    pub expected_metrics: Vec<String>,
+    /// Optional expected numeric scalar answer verified within `tolerance`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_number: Option<f64>,
+    /// Relative/absolute tolerance for `expected_number` matching (default `1e-3`).
+    #[serde(default = "default_competency_tolerance")]
+    pub tolerance: f64,
+    /// When `true` (default), `ABSTAINED` is treated as a coverage gap unless `expected_grounding_mode == Some(Abstained)`.
+    #[serde(default = "default_must_not_abstain")]
+    pub must_not_abstain: bool,
+}
+
+const fn default_competency_tolerance() -> f64 {
+    1e-3
+}
+
+const fn default_must_not_abstain() -> bool {
+    true
+}
+
+/// Persisted competency question suite for a subgraph (`xb_competency_suites`, `07-STEP29` §29.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompetencySuiteRecord {
+    /// Target subgraph slug.
+    pub subgraph_slug: String,
+    /// Ordered competency question specifications.
+    pub questions: Vec<CompetencyQuestionSpec>,
+    /// Last editor user UUID.
+    pub updated_by: Option<Uuid>,
+    /// Last update timestamp.
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Request payload for `PUT /api/xblue/subgraphs/{slug}/competency-suite` and `axbuilder_upsert_competency_suite`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpsertCompetencySuiteRequest {
+    /// Competency questions replacing the suite for `subgraph_slug`.
+    #[serde(default)]
+    pub questions: Vec<CompetencyQuestionSpec>,
+}
+
+/// Request payload for `POST /api/xblue/subgraphs/{slug}/competency-verify` and `axbuilder_verify_competency_suite` (`07-STEP29` §29.4).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyCompetencySuiteRequest {
+    /// Optional active `SchemaDraft` UUID to materialize/verify before publication.
+    #[serde(default)]
+    pub draft_id: Option<Uuid>,
+    /// When `true` on a dev sandbox subgraph, materializes mapped rows and evaluates 4-path rules before running questions.
+    #[serde(default = "default_run_dev_materialize")]
+    pub run_dev_materialize: bool,
+    /// Optional row cap when `run_dev_materialize == true` (`1..=5_000`, default `500`).
+    #[serde(default)]
+    pub limit_rows: Option<u32>,
+    /// Optional ad-hoc question list overriding persisted `xb_competency_suites` for this run.
+    #[serde(default)]
+    pub questions_override: Option<Vec<CompetencyQuestionSpec>>,
+}
+
+const fn default_run_dev_materialize() -> bool {
+    true
+}
+
+/// Structured ontology, mapping, metric, or data gap diagnostic emitted for a failed competency question (`07-STEP29` §29.4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HarnessGapDiagnostic {
+    /// Failed `CompetencyQuestionSpec.id`.
+    pub question_id: String,
+    /// Gap classification (`MISSING_METRIC`, `UNMAPPED_JOIN_EDGE`, `EMPTY_DEV_DATA`, ...).
+    pub gap_kind: HarnessGapKind,
+    /// Missing or problematic symbol/entity/edge identifier.
+    pub target_ref: String,
+    /// Actionable remediation guidance for the builder agent or human modeler.
+    pub message: String,
+    /// Recommended `axbuilder_*` MCP tool to remediate this gap.
+    pub suggested_tool: String,
+}
+
+/// Per-question verification outcome stored in `xb_harness_runs.results_json` (`07-STEP29` §29.1 & §29.4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompetencyQuestionOutcome {
+    /// `CompetencyQuestionSpec.id`.
+    pub question_id: String,
+    /// Question text.
+    pub question: String,
+    /// Whether all grounding, reference, and numeric tolerance assertions passed.
+    pub passed: bool,
+    /// Observed `GroundingMode`.
+    pub grounding_mode: GroundingMode,
+    /// Whether the grounded pipeline abstained.
+    pub abstained: bool,
+    /// Synthesized grounded answer text.
+    pub answer: String,
+    /// Verified numeric scalars extracted from deterministic execution results.
+    #[serde(default)]
+    pub observed_numbers: Vec<f64>,
+    /// Compiled SQL or `AxQL` plan executed, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sql: Option<String>,
+    /// Concise failure explanation when `passed == false`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_reason: Option<String>,
+}
+
+/// Persisted competency harness run record (`xb_harness_runs`, `07-STEP29` §29.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HarnessRunRecord {
+    /// Harness run UUID.
+    pub id: Uuid,
+    /// Evaluated subgraph slug.
+    pub subgraph_slug: String,
+    /// Total evaluated competency questions.
+    pub total_questions: i32,
+    /// Count of questions with `passed == true`.
+    pub passed_count: i32,
+    /// Overall status (`PASS`, `GAP_DETECTED`, or `FAILED`).
+    pub status: HarnessRunStatus,
+    /// Actionable gap diagnostics for failed questions.
+    #[serde(default)]
+    pub gap_diagnostics: Vec<HarnessGapDiagnostic>,
+    /// Detailed per-question outcomes.
+    #[serde(default)]
+    pub results: Vec<CompetencyQuestionOutcome>,
+    /// Initiating user UUID.
+    pub triggered_by: Option<Uuid>,
+    /// Execution timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Input payload for `axbuilder_upsert_chart_draft` (`07-STEP29` §29.4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuilderUpsertChartDraftInput {
+    /// Optional existing `xv_charts.id` to update; `None` creates a new reusable chart asset.
+    #[serde(default)]
+    pub chart_id: Option<Uuid>,
+    /// Chart title.
+    pub name: String,
+    /// Optional description.
+    #[serde(default)]
+    pub description: String,
+    /// Visualization kind (`BAR_CHART`, `LINE_CHART`, `PIVOT_TABLE`, etc.).
+    pub widget_kind: WidgetKind,
+    /// Bound `WidgetDataSource` (`SQL`, `METRIC`, `PIVOT`, etc.).
+    pub data_source: WidgetDataSource,
+    /// Field encoding map.
+    #[serde(default)]
+    pub encoding: serde_json::Value,
+    /// Chart visual options.
+    #[serde(default)]
+    pub options: serde_json::Value,
+    /// Resource sensitivity (defaults to `INTERNAL`).
+    #[serde(default)]
+    pub sensitivity: Option<Sensitivity>,
+}
+
+/// Response payload for `axbuilder_upsert_chart_draft` (`07-STEP29` §29.4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuilderUpsertChartDraftResponse {
+    /// Created or updated `xv_charts.id`.
+    pub chart_id: Uuid,
+    /// Chart display name.
+    pub name: String,
+    /// Chart widget kind.
+    pub widget_kind: WidgetKind,
+    /// Frontend deep links.
+    pub deep_links: DeepLinks,
+}
+
+/// Response payload for `axbuilder_sample_dataset_rows` with mandatory PII masking (`07-STEP29` §29.4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuilderDatasetSampleResponse {
+    /// Dataset UUID.
+    pub dataset_id: Uuid,
+    /// Dataset machine name.
+    pub dataset_name: String,
+    /// Column descriptors (`name`, `data_type`, `pii_category`).
+    pub columns: Vec<serde_json::Value>,
+    /// Masked sample rows (strictly capped at `<= 20` rows, `PII_RAW_READ` never bypassed).
+    pub rows: Vec<serde_json::Value>,
+    /// Frontend deep links.
+    pub deep_links: DeepLinks,
+}
+
+/// Input payload for `axbuilder_sim_trial_run` (`07-STEP29` §29.4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BuilderSimTrialRunInput {
+    /// Target dev sandbox subgraph slug (must be `is_dev_sandbox == true` or non-`main` trial subgraph).
+    pub subgraph_slug: String,
+    /// Interventions to apply in the ephemeral trial simulation.
+    pub actions: Vec<AxSimAction>,
+    /// Optional simulation parameters (`STEADY` or `STEPPED`).
+    #[serde(default)]
+    pub params: Option<crate::sim::SimParams>,
+}
+
+/// Response payload for `axbuilder_sim_trial_run` (`07-STEP29` §29.4).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BuilderSimTrialRunResponse {
+    /// Evaluated dev subgraph slug.
+    pub subgraph_slug: String,
+    /// Ephemeral simulation result (`impacts`, `kpis`, `fired_events`, `deadline_report`).
+    pub sim_result: AxSimResult,
+    /// Frontend deep links.
+    pub deep_links: DeepLinks,
+}
+
+/// Unused-import anchor helper keeping `AxqlCompilePlan`, `RuntimeCertReport`, and `DashboardPreflightReport` re-exported for `BuilderHarnessPort` consumers.
+pub type BuilderAxqlPlan = AxqlCompilePlan;
+/// Re-exported runtime certification report type for `axbuilder_certify_subgraph`.
+pub type BuilderCertReport = RuntimeCertReport;
+/// Re-exported dashboard preflight report type for `axbuilder_preflight_dashboard`.
+pub type BuilderDashboardPreflight = DashboardPreflightReport;
 
 #[cfg(test)]
 mod tests {

@@ -13,8 +13,8 @@ use axpoint_domain::graph::{NeighborQuery, NodeListQuery, TraversalDirection};
 use axpoint_domain::platform::AuditRecord;
 use axpoint_domain::ports::{
     AgentCapabilityPort, AgentRepository, AnalyticsRepository, BuilderDashboardPort,
-    DatasetRepository, FlowRepository, GraphQueryPort, GraphStorePort, StudioRepository,
-    TemplateSandboxPort,
+    BuilderHarnessPort, DatasetRepository, FlowRepository, GraphQueryPort, GraphStorePort,
+    StudioRepository, TemplateSandboxPort,
 };
 use axpoint_domain::studio::{
     ActionSpec, InvokeObjectActionRequest, PropertyKind, PublishedObjectActionDescriptor,
@@ -106,6 +106,7 @@ pub struct McpServerHub<R> {
     pub(crate) audit: Option<AuditWriter>,
     pub(crate) builder_dashboard: Option<Arc<dyn BuilderDashboardPort>>,
     pub(crate) template_sandbox: Option<Arc<dyn TemplateSandboxPort>>,
+    pub(crate) builder_harness: Option<Arc<dyn BuilderHarnessPort>>,
     pub(crate) public_host: Option<String>,
     pub(crate) mask_keys: MaskKeyRing,
     sessions: Cache<String, Arc<McpSession>>,
@@ -132,6 +133,7 @@ impl<R> McpServerHub<R> {
             audit,
             builder_dashboard: None,
             template_sandbox: None,
+            builder_harness: None,
             public_host: None,
             mask_keys,
             sessions,
@@ -150,6 +152,16 @@ impl<R> McpServerHub<R> {
         self.builder_dashboard = builder_dashboard;
         self.template_sandbox = template_sandbox;
         self.public_host = public_host;
+        self
+    }
+
+    /// Attaches Step 29 [`BuilderHarnessPort`] backing the 22-tool `AxBuilder` suite and Competency QA harness.
+    #[must_use]
+    pub fn with_harness_port(
+        mut self,
+        builder_harness: Option<Arc<dyn BuilderHarnessPort>>,
+    ) -> Self {
+        self.builder_harness = builder_harness;
         self
     }
 

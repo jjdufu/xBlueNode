@@ -1624,6 +1624,8 @@ mod tests {
             schema_policy: axpoint_domain::axhub::SchemaPolicy::Evolve,
             lake_schema: String::from("tenant_default"),
             schedule_cron: None,
+            continuous_stream: false,
+            cdc_slot_meta: serde_json::json!({}),
             lake_table: String::from(name),
             schema_version: 1,
             schema_json: Vec::new(),

@@ -26,9 +26,10 @@ use axpoint_domain::graph::{GeoPoint, NodeListQuery};
 use axpoint_domain::ops::TemplateManifest;
 use axpoint_domain::platform::BoxFuture;
 use axpoint_domain::ports::{
-    AgentCapabilityPort, AnalyticsQueryPort as _, BuilderDashboardPort, ConnectionRepository as _,
-    DatasetRepository as _, FlowCredentialUnsealPort, GraphStorePort as _, LlmProviderStore,
-    SimExecutionPort, StudioRepository as _, TemplateSandboxPort, ViewRepository as _,
+    AgentCapabilityPort, AnalyticsQueryPort as _, AnalyticsRepository as _, BuilderDashboardPort,
+    BuilderHarnessPort, ConnectionRepository as _, DatasetRepository as _,
+    FlowCredentialUnsealPort, GraphStorePort as _, LlmProviderStore, SimExecutionPort,
+    StudioRepository as _, TemplateSandboxPort, ViewRepository as _,
 };
 use axpoint_domain::rollup::{MetricDependencyPlan, MetricRuleStep};
 use axpoint_domain::rules::SimplePageQuery;
@@ -146,6 +147,8 @@ pub(crate) fn build_axagent_services(
     let dash_port: Arc<dyn BuilderDashboardPort> = dash_concrete;
     let sandbox_concrete = Arc::clone(&capability);
     let sandbox_port: Arc<dyn TemplateSandboxPort> = sandbox_concrete;
+    let harness_concrete = Arc::clone(&capability);
+    let harness_port: Arc<dyn BuilderHarnessPort> = harness_concrete;
     let public_host = std::env::var("AXPOINT_PUBLIC_HOST")
         .ok()
         .map(|s| s.trim().to_owned())
@@ -188,7 +191,8 @@ pub(crate) fn build_axagent_services(
             Arc::clone(&publisher),
             Some(audit.clone()),
         )
-        .with_builder_ports(Some(dash_port), Some(sandbox_port), public_host.clone()),
+        .with_builder_ports(Some(dash_port), Some(sandbox_port), public_host.clone())
+        .with_harness_port(Some(harness_port)),
     );
     let embed = Arc::new(EmbedService::new(
         Arc::clone(&store_arc),
@@ -2175,4 +2179,872 @@ fn eval_sandbox_agg_for_parent(
         AggFn::Last => vals.last().map(|&(v, _)| v),
         _ => None,
     }
+}
+
+impl BuilderHarnessPort for ServerAgentCapability {
+    fn sample_masked_dataset_rows<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        dataset_id: Uuid,
+        limit: u32,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, axpoint_domain::builder::BuilderDatasetSampleResponse> {
+        Box::pin(async move {
+            let state = self.require_state()?;
+            let ds = state
+                .store
+                .get_dataset(tenant_id, dataset_id)
+                .await?
+                .ok_or(AppError::NotFound("DATASET_NOT_FOUND"))?;
+            let clamped = usize::try_from(limit.clamp(1, 20)).unwrap_or(20);
+            let mut pii_masks: BTreeMap<String, MaskRule> = BTreeMap::new();
+            for col in &ds.schema_json {
+                let rule = default_builder_mask_for_pii(col.pii_category);
+                if rule != MaskRule::None {
+                    pii_masks.insert(col.name.clone(), rule);
+                }
+            }
+            if let Ok(metas) = state.store.list_columns(tenant_id, ds.id).await {
+                for m in metas {
+                    let rule = default_builder_mask_for_pii(m.pii_category);
+                    if rule != MaskRule::None {
+                        pii_masks.insert(m.column_name, rule);
+                    }
+                }
+            }
+            let columns: Vec<serde_json::Value> = ds
+                .schema_json
+                .iter()
+                .map(|c| {
+                    serde_json::json!({
+                        "name": c.name,
+                        "data_type": c.data_type,
+                        "pii_category": c.pii_category,
+                    })
+                })
+                .collect();
+
+            let mut masked_rows = Vec::new();
+            if let Ok((session, _)) = acquire_tenant_session(state, tenant_id, false).await {
+                let escaped = ds.lake_table.replace('"', "\"\"");
+                let sql = format!("SELECT * FROM \"{escaped}\" LIMIT {clamped}");
+                if let Ok(Ok(qr)) =
+                    tokio::task::spawn_blocking(move || session.run_internal(&sql, clamped)).await
+                {
+                    let tenant_hmac_key = state.mask_keys.tenant_key(tenant_id);
+                    for mut row in qr.rows {
+                        if !pii_masks.is_empty() {
+                            mask_json_properties(&mut row, &pii_masks, &tenant_hmac_key);
+                        }
+                        masked_rows.push(serde_json::Value::Object(row));
+                    }
+                }
+            }
+            let deep_links = resolve_deep_links(
+                web_base_url,
+                state.axagent.public_host.as_deref(),
+                "main",
+                None,
+                None,
+                None,
+            );
+            Ok(axpoint_domain::builder::BuilderDatasetSampleResponse {
+                dataset_id: ds.id,
+                dataset_name: ds.name,
+                columns,
+                rows: masked_rows,
+                deep_links,
+            })
+        })
+    }
+
+    fn dryrun_dev_action_spec<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        actor_user_id: Option<Uuid>,
+        subgraph_slug: &'a str,
+        (type_name, node_key, action_name): (&'a str, &'a str, &'a str),
+        inputs: serde_json::Value,
+    ) -> BoxFuture<'a, axpoint_domain::studio::InvokeObjectActionResponse> {
+        Box::pin(async move {
+            let state = self.require_state()?;
+            let clean_slug = subgraph_slug.trim();
+            if clean_slug.is_empty() || clean_slug == "main" {
+                return Err(AppError::bad(
+                    "DEV_SANDBOX_REQUIRED",
+                    "axbuilder_dryrun_action_spec requires a non-main dev/trial subgraph",
+                ));
+            }
+            let normalized_inputs = match inputs {
+                serde_json::Value::Object(m) => serde_json::Value::Object(m),
+                serde_json::Value::Null => serde_json::Value::Object(serde_json::Map::new()),
+                _ => {
+                    return Err(AppError::bad(
+                        "INVALID_ARGUMENT",
+                        "inputs must be a JSON object",
+                    ));
+                }
+            };
+            state
+                .store
+                .invoke_object_action(
+                    tenant_id,
+                    actor_user_id,
+                    type_name,
+                    node_key,
+                    action_name,
+                    axpoint_domain::studio::InvokeObjectActionRequest {
+                        inputs: normalized_inputs,
+                        idempotency_key: format!("dryrun-{}", Uuid::new_v4().simple()),
+                        expected_version: None,
+                        dry_run: true,
+                    },
+                )
+                .await
+        })
+    }
+
+    fn certify_builder_subgraph<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        actor_user_id: Option<Uuid>,
+        subgraph_slug: &'a str,
+        req: axpoint_domain::studio::CertifySubgraphRequest,
+    ) -> BoxFuture<'a, axpoint_domain::builder::BuilderCertReport> {
+        Box::pin(async move {
+            let state = self.require_state()?;
+            state
+                .store
+                .certify_subgraph_runtime(tenant_id, subgraph_slug.trim(), actor_user_id, req)
+                .await
+        })
+    }
+
+    fn compile_builder_axql<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        subgraph_slug: &'a str,
+        axql: &'a str,
+    ) -> BoxFuture<'a, axpoint_domain::builder::BuilderAxqlPlan> {
+        Box::pin(async move {
+            let state = self.require_state()?;
+            let clean_slug = {
+                let s = subgraph_slug.trim();
+                if s.is_empty() { "main" } else { s }
+            };
+            let drafts = state
+                .store
+                .list_drafts(tenant_id, clean_slug, Some(DraftStatus::Draft))
+                .await?;
+            let schema_doc = if let Some(latest_draft) = drafts.first() {
+                latest_draft.schema_doc.clone()
+            } else {
+                state
+                    .store
+                    .get_published_schema(tenant_id, clean_slug)
+                    .await?
+                    .doc
+            };
+            let (catalog, _, _, _) = load_tenant_catalog_and_live(state, tenant_id, false).await?;
+            let req = axpoint_domain::analytics::AxqlQueryRequest {
+                axql: String::from(axql),
+                params: BTreeMap::new(),
+                max_rows: None,
+                timeout_ms: None,
+                reveal_pii: false,
+                subgraph_slug: Some(String::from(clean_slug)),
+            };
+            let artifact = axpoint_analytics::axql::compile_axql_query(
+                &req,
+                &schema_doc,
+                &catalog,
+                None,
+                false,
+                &BTreeMap::new(),
+            )?;
+            Ok(artifact.plan)
+        })
+    }
+
+    fn sim_trial_dev_subgraph<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        input: axpoint_domain::builder::BuilderSimTrialRunInput,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, axpoint_domain::builder::BuilderSimTrialRunResponse> {
+        Box::pin(async move {
+            let state = self.require_state()?;
+            let clean_slug = input.subgraph_slug.trim();
+            if clean_slug.is_empty() || clean_slug == "main" {
+                return Err(AppError::bad(
+                    "DEV_SANDBOX_REQUIRED",
+                    "axbuilder_sim_trial_run requires a non-main dev/trial subgraph",
+                ));
+            }
+            let (_sg, schema_doc, draft_id) =
+                resolve_sandbox_schema(state, tenant_id, clean_slug, None).await?;
+            let page = state
+                .store
+                .list_nodes(
+                    tenant_id,
+                    NodeListQuery {
+                        subgraph: Some(String::from(clean_slug)),
+                        limit: Some(500),
+                        ..NodeListQuery::default()
+                    },
+                )
+                .await?;
+            let sim_graph = build_ephemeral_sim_graph(&page.nodes, &page.links, &schema_doc);
+            let params = input.params.unwrap_or_default();
+            let solved =
+                axpoint_domain::sim::uncertainty::solve(&sim_graph, &input.actions, &params)?;
+            let impacts = solved
+                .impacts
+                .into_iter()
+                .map(|r| axpoint_domain::topology::AxSimImpactRow {
+                    node_id: r.node_id,
+                    type_name: r.type_name,
+                    title: r.title,
+                    metric_key: r.metric,
+                    before_val: r.before_val.unwrap_or(0.0),
+                    after_val: r.after_val,
+                    delta: r.delta.unwrap_or(0.0),
+                    delta_ratio: r.delta_ratio,
+                    hop_distance: r.hop_distance,
+                    top_path: r.top_path,
+                })
+                .collect();
+            let deep_links = resolve_deep_links(
+                web_base_url,
+                state.axagent.public_host.as_deref(),
+                clean_slug,
+                draft_id,
+                None,
+                None,
+            );
+            Ok(axpoint_domain::builder::BuilderSimTrialRunResponse {
+                subgraph_slug: String::from(clean_slug),
+                sim_result: axpoint_domain::topology::AxSimResult {
+                    impacts,
+                    affected_count: solved.affected_count,
+                    kpis: solved.kpis,
+                    warnings: solved.warnings,
+                    converged: solved.converged,
+                    fired_events: solved.fired_events,
+                    deadline_report: solved.deadline_report,
+                },
+                deep_links,
+            })
+        })
+    }
+
+    fn upsert_chart_draft<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        actor_user_id: Option<Uuid>,
+        actor_dept: &'a str,
+        input: axpoint_domain::builder::BuilderUpsertChartDraftInput,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, axpoint_domain::builder::BuilderUpsertChartDraftResponse> {
+        Box::pin(async move {
+            let state = self.require_state()?;
+            if input.name.trim().is_empty() {
+                return Err(AppError::bad(
+                    "INVALID_ARGUMENT",
+                    "chart name must not be empty",
+                ));
+            }
+            let record = if let Some(cid) = input.chart_id {
+                state
+                    .store
+                    .update_saved_chart(
+                        tenant_id,
+                        cid,
+                        axpoint_domain::view::UpdateSavedChartRequest {
+                            name: Some(input.name),
+                            description: Some(input.description),
+                            widget_kind: Some(input.widget_kind),
+                            data_source: Some(input.data_source),
+                            encoding: Some(input.encoding),
+                            options: Some(input.options),
+                            sensitivity: input.sensitivity,
+                            shared: None,
+                        },
+                    )
+                    .await?
+                    .ok_or(AppError::NotFound("CHART_NOT_FOUND"))?
+            } else {
+                state
+                    .store
+                    .create_saved_chart(
+                        tenant_id,
+                        actor_user_id,
+                        actor_dept,
+                        axpoint_domain::view::SaveChartRequest {
+                            name: input.name,
+                            description: input.description,
+                            widget_kind: input.widget_kind,
+                            data_source: input.data_source,
+                            encoding: input.encoding,
+                            options: input.options,
+                            sensitivity: input
+                                .sensitivity
+                                .unwrap_or(axpoint_domain::enums::Sensitivity::Internal),
+                            shared: false,
+                        },
+                    )
+                    .await?
+            };
+            let deep_links = resolve_deep_links(
+                web_base_url,
+                state.axagent.public_host.as_deref(),
+                "main",
+                None,
+                None,
+                None,
+            );
+            Ok(axpoint_domain::builder::BuilderUpsertChartDraftResponse {
+                chart_id: record.id,
+                name: record.name,
+                widget_kind: record.widget_kind,
+                deep_links,
+            })
+        })
+    }
+
+    fn preflight_dashboard_draft<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        dashboard_id: Uuid,
+    ) -> BoxFuture<'a, axpoint_domain::builder::BuilderDashboardPreflight> {
+        Box::pin(async move {
+            let state = self.require_state()?;
+            let detail = state
+                .store
+                .get_dashboard(tenant_id, dashboard_id, true)
+                .await?
+                .ok_or(AppError::NotFound("DASHBOARD_NOT_FOUND"))?;
+            let synthetic_principal = AuthPrincipal {
+                user_id: detail.dashboard.created_by.unwrap_or_else(Uuid::nil),
+                tenant_id: String::from(tenant_id),
+                username: String::from("builder"),
+                dept_id: String::from("default"),
+                roles: vec![String::from("ANALYST")],
+                permissions: BTreeSet::from([
+                    Permission::DataRead,
+                    Permission::ViewEdit,
+                    Permission::FlowRun,
+                ]),
+                token_kind: TokenKind::ApiToken,
+                token_profile: axpoint_domain::enums::TokenProfile::Builder,
+                web_base_url: None,
+            };
+            axpoint_server::view::preflight::preflight_dashboard(
+                &state.store,
+                &state.cedar,
+                &synthetic_principal,
+                &detail,
+                "127.0.0.1",
+            )
+            .await
+        })
+    }
+
+    fn verify_competency_suite<'a>(
+        &'a self,
+        principal: &'a AnalyticsPrincipal,
+        actor_user_id: Option<Uuid>,
+        actor_username: &'a str,
+        subgraph_slug: &'a str,
+        req: axpoint_domain::builder::VerifyCompetencySuiteRequest,
+    ) -> BoxFuture<'a, axpoint_domain::builder::HarnessRunRecord> {
+        Box::pin(async move {
+            let state = self.require_state()?;
+            run_competency_harness_impl(
+                state,
+                principal,
+                actor_user_id,
+                actor_username,
+                subgraph_slug.trim(),
+                req,
+            )
+            .await
+        })
+    }
+}
+
+const fn default_builder_mask_for_pii(cat: PiiCategory) -> MaskRule {
+    match cat {
+        PiiCategory::None => MaskRule::None,
+        PiiCategory::Phone => MaskRule::MaskPhone,
+        PiiCategory::IdCard => MaskRule::MaskIdCard,
+        PiiCategory::Email => MaskRule::MaskEmail,
+        PiiCategory::BankCard => MaskRule::MaskBankCard,
+        PiiCategory::Name => MaskRule::MaskName,
+        PiiCategory::Address => MaskRule::MaskAddress,
+        PiiCategory::Secret => MaskRule::Redact,
+    }
+}
+
+fn build_ephemeral_sim_graph(
+    nodes: &[BlueNode],
+    links: &[axpoint_domain::topology::BlueLink],
+    schema_doc: &SchemaDoc,
+) -> axpoint_domain::sim::SimGraph {
+    let sim_nodes = nodes
+        .iter()
+        .map(|n| axpoint_domain::sim::SimNode {
+            id: n.id,
+            type_name: n.type_name.clone(),
+            node_key: n.node_key.clone(),
+            title: n.title.clone(),
+            metrics: n.metrics.clone(),
+            properties: n.properties.clone(),
+            geo: n.geo,
+            geo_shape: n.geo_shape.clone(),
+            row_version: n.row_version,
+        })
+        .collect();
+    let sim_links = links
+        .iter()
+        .map(|l| axpoint_domain::sim::SimLink {
+            id: l.id,
+            link_type: l.link_type.clone(),
+            src_node_id: l.src_node_id,
+            dst_node_id: l.dst_node_id,
+            weight: l.weight,
+        })
+        .collect();
+    let mut edge_specs = BTreeMap::new();
+    for et in &schema_doc.edge_types {
+        if let Ok(spec) =
+            serde_json::from_value::<axpoint_domain::sim::PropagationSpec>(et.propagation.clone())
+        {
+            edge_specs.insert(et.name.clone(), spec);
+        }
+    }
+    axpoint_domain::sim::SimGraph {
+        nodes: sim_nodes,
+        links: sim_links,
+        edge_specs,
+    }
+}
+
+async fn run_competency_harness_impl(
+    state: &AppState,
+    principal: &AnalyticsPrincipal,
+    actor_user_id: Option<Uuid>,
+    actor_username: &str,
+    subgraph_slug: &str,
+    req: axpoint_domain::builder::VerifyCompetencySuiteRequest,
+) -> Result<axpoint_domain::builder::HarnessRunRecord, AppError> {
+    let clean_slug = if subgraph_slug.is_empty() {
+        "main"
+    } else {
+        subgraph_slug
+    };
+    let questions = if let Some(override_qs) = req.questions_override {
+        override_qs
+    } else {
+        state
+            .store
+            .get_competency_suite(&principal.tenant_id, clean_slug)
+            .await?
+            .questions
+    };
+
+    if req.run_dev_materialize && clean_slug != "main" {
+        maybe_materialize_dev_sandbox(
+            state,
+            &principal.tenant_id,
+            clean_slug,
+            req.draft_id,
+            req.limit_rows,
+        )
+        .await;
+    }
+
+    let schema_doc =
+        load_harness_schema_doc(state, &principal.tenant_id, clean_slug, req.draft_id).await?;
+    let known_symbols =
+        collect_known_schema_and_metric_symbols(state, &principal.tenant_id, &schema_doc).await;
+    let node_count = state
+        .store
+        .list_nodes(
+            &principal.tenant_id,
+            NodeListQuery {
+                subgraph: Some(String::from(clean_slug)),
+                limit: Some(10),
+                ..NodeListQuery::default()
+            },
+        )
+        .await
+        .map_or(0, |p| p.nodes.len());
+
+    let mut results = Vec::with_capacity(questions.len());
+    let mut gaps = Vec::new();
+    let mut passed_count = 0_i32;
+
+    for q in &questions {
+        let (outcome, maybe_gap) = evaluate_single_competency_question(
+            state,
+            principal,
+            clean_slug,
+            q,
+            &known_symbols,
+            node_count,
+        )
+        .await;
+        if outcome.passed {
+            passed_count = passed_count.saturating_add(1);
+        }
+        if let Some(gap) = maybe_gap {
+            gaps.push(gap);
+        }
+        results.push(outcome);
+    }
+
+    let total_questions = i32::try_from(questions.len()).unwrap_or(0);
+    let status = if passed_count == total_questions {
+        axpoint_domain::enums::HarnessRunStatus::Pass
+    } else {
+        axpoint_domain::enums::HarnessRunStatus::GapDetected
+    };
+    let run = axpoint_domain::builder::HarnessRunRecord {
+        id: Uuid::new_v4(),
+        subgraph_slug: String::from(clean_slug),
+        total_questions,
+        passed_count,
+        status,
+        gap_diagnostics: gaps,
+        results,
+        triggered_by: actor_user_id,
+        created_at: Utc::now(),
+    };
+
+    let persisted = state
+        .store
+        .record_harness_run(&principal.tenant_id, &run)
+        .await
+        .unwrap_or(run);
+
+    record_harness_audit(
+        state,
+        &principal.tenant_id,
+        actor_user_id,
+        actor_username,
+        clean_slug,
+        &persisted,
+    )
+    .await;
+
+    Ok(persisted)
+}
+
+async fn maybe_materialize_dev_sandbox(
+    state: &AppState,
+    tenant_id: &str,
+    clean_slug: &str,
+    draft_id: Option<Uuid>,
+    limit_rows: Option<u32>,
+) {
+    if let Ok(subgraphs) = state.store.list_subgraphs(tenant_id).await
+        && subgraphs
+            .iter()
+            .any(|s| s.slug == clean_slug && s.is_dev_sandbox)
+    {
+        drop(
+            dry_run_dev_subgraph_impl(
+                state,
+                tenant_id,
+                clean_slug,
+                DevSubgraphRunRequest {
+                    draft_id,
+                    limit_rows: limit_rows.unwrap_or(500),
+                },
+                None,
+            )
+            .await,
+        );
+    }
+}
+
+async fn record_harness_audit(
+    state: &AppState,
+    tenant_id: &str,
+    actor_user_id: Option<Uuid>,
+    actor_username: &str,
+    clean_slug: &str,
+    persisted: &axpoint_domain::builder::HarnessRunRecord,
+) {
+    state.audit.record(axpoint_domain::platform::AuditRecord {
+        tenant_id: String::from(tenant_id),
+        user_id: actor_user_id,
+        username: String::from(actor_username),
+        action: axpoint_domain::enums::AuditAction::HarnessVerifyRun,
+        resource_ref: format!("subgraph:{clean_slug}"),
+        status_code: 200,
+        client_ip: String::from("127.0.0.1"),
+        trace_id: String::new(),
+        detail_json: serde_json::json!({
+            "harness_run_id": persisted.id,
+            "subgraph_slug": clean_slug,
+            "total_questions": persisted.total_questions,
+            "passed_count": persisted.passed_count,
+            "status": persisted.status,
+            "gap_count": persisted.gap_diagnostics.len(),
+        }),
+        created_at: Utc::now(),
+    });
+    let _flushed = state.audit.flush().await.is_ok();
+}
+
+async fn load_harness_schema_doc(
+    state: &AppState,
+    tenant_id: &str,
+    subgraph_slug: &str,
+    draft_id: Option<Uuid>,
+) -> Result<SchemaDoc, AppError> {
+    if let Some(did) = draft_id
+        && let Some(d) = state.store.get_draft(tenant_id, did).await?
+    {
+        return Ok(d.schema_doc);
+    }
+    let drafts = state
+        .store
+        .list_drafts(tenant_id, subgraph_slug, Some(DraftStatus::Draft))
+        .await?;
+    if let Some(first) = drafts.first() {
+        return Ok(first.schema_doc.clone());
+    }
+    Ok(state
+        .store
+        .get_published_schema(tenant_id, subgraph_slug)
+        .await?
+        .doc)
+}
+
+async fn collect_known_schema_and_metric_symbols(
+    state: &AppState,
+    tenant_id: &str,
+    schema_doc: &SchemaDoc,
+) -> BTreeSet<String> {
+    let mut symbols = BTreeSet::new();
+    for nt in &schema_doc.node_types {
+        symbols.insert(nt.name.clone());
+        for p in &nt.properties {
+            symbols.insert(p.name.clone());
+        }
+        for r in &nt.agg_rules {
+            symbols.insert(r.target_metric.clone());
+        }
+        for d in &nt.derived_rules {
+            symbols.insert(d.target_metric.clone());
+        }
+    }
+    if let Ok(metrics) = state.store.list_metrics(tenant_id).await {
+        for m in metrics {
+            if !m.broken {
+                symbols.insert(m.name);
+            }
+        }
+    }
+    symbols
+}
+
+fn abstained_gap_outcome(
+    q: &axpoint_domain::builder::CompetencyQuestionSpec,
+    gap_kind: axpoint_domain::enums::HarnessGapKind,
+    target_ref: String,
+    message: String,
+    suggested_tool: &'static str,
+) -> (
+    axpoint_domain::builder::CompetencyQuestionOutcome,
+    Option<axpoint_domain::builder::HarnessGapDiagnostic>,
+) {
+    (
+        axpoint_domain::builder::CompetencyQuestionOutcome {
+            question_id: q.id.clone(),
+            question: q.question.clone(),
+            passed: false,
+            grounding_mode: axpoint_domain::enums::GroundingMode::Abstained,
+            abstained: true,
+            answer: String::new(),
+            observed_numbers: Vec::new(),
+            sql: None,
+            failure_reason: Some(message.clone()),
+        },
+        Some(axpoint_domain::builder::HarnessGapDiagnostic {
+            question_id: q.id.clone(),
+            gap_kind,
+            target_ref,
+            message,
+            suggested_tool: String::from(suggested_tool),
+        }),
+    )
+}
+
+async fn evaluate_single_competency_question(
+    state: &AppState,
+    principal: &AnalyticsPrincipal,
+    subgraph_slug: &str,
+    q: &axpoint_domain::builder::CompetencyQuestionSpec,
+    known_symbols: &BTreeSet<String>,
+    dev_node_count: usize,
+) -> (
+    axpoint_domain::builder::CompetencyQuestionOutcome,
+    Option<axpoint_domain::builder::HarnessGapDiagnostic>,
+) {
+    for expected_m in &q.expected_metrics {
+        if !known_symbols.contains(expected_m.trim()) {
+            let msg = format!("缺失指标或属性符号 '{}'", expected_m.trim());
+            return abstained_gap_outcome(
+                q,
+                axpoint_domain::enums::HarnessGapKind::MissingMetric,
+                expected_m.trim().to_owned(),
+                msg,
+                "axbuilder_push_schema_draft",
+            );
+        }
+    }
+
+    if !q.expected_node_types.is_empty() && dev_node_count == 0 {
+        let target = q.expected_node_types.join(",");
+        let msg = format!("子图 '{subgraph_slug}' 当前运行态节点数为 0，无法验证对象问数");
+        return abstained_gap_outcome(
+            q,
+            axpoint_domain::enums::HarnessGapKind::EmptyDevData,
+            target,
+            msg,
+            "axbuilder_run_dev_subgraph",
+        );
+    }
+
+    let ask_req = AskRequest {
+        question: q.question.clone(),
+        session_id: None,
+        context: Some(AskContext {
+            subgraph_slug: Some(String::from(subgraph_slug)),
+            ..AskContext::default()
+        }),
+    };
+
+    let mut perms = principal.permissions.clone();
+    perms.remove(&Permission::PiiRawRead);
+    let auth_principal = AuthPrincipal {
+        user_id: principal.user_id,
+        tenant_id: principal.tenant_id.clone(),
+        username: principal.username.clone(),
+        dept_id: String::from("default"),
+        roles: vec![String::from("ANALYST")],
+        permissions: perms,
+        token_kind: TokenKind::ApiToken,
+        token_profile: axpoint_domain::enums::TokenProfile::Builder,
+        web_base_url: None,
+    };
+
+    match execute_ask_for_principal(state, &auth_principal, ask_req, None, false).await {
+        Ok(resp) => evaluate_ask_outcome(q, resp),
+        Err(err) => {
+            let code = err.error_code();
+            let (gap_kind, suggested_tool) = if code == "JOIN_PATH_UNGROUNDED" {
+                (
+                    axpoint_domain::enums::HarnessGapKind::UnmappedJoinEdge,
+                    "axbuilder_push_schema_draft",
+                )
+            } else {
+                (
+                    axpoint_domain::enums::HarnessGapKind::ExecutionError,
+                    "axbuilder_validate_schema",
+                )
+            };
+            abstained_gap_outcome(
+                q,
+                gap_kind,
+                String::from(code),
+                err.client_message(),
+                suggested_tool,
+            )
+        }
+    }
+}
+
+fn evaluate_ask_outcome(
+    q: &axpoint_domain::builder::CompetencyQuestionSpec,
+    resp: axpoint_domain::analytics::AskResponse,
+) -> (
+    axpoint_domain::builder::CompetencyQuestionOutcome,
+    Option<axpoint_domain::builder::HarnessGapDiagnostic>,
+) {
+    let mut observed = Vec::new();
+    for row in &resp.rows {
+        for val in row.values() {
+            if let Some(num) = cell_to_f64(val) {
+                observed.push(num);
+            }
+        }
+    }
+
+    let mut failure: Option<(axpoint_domain::enums::HarnessGapKind, String, &'static str)> = None;
+    if q.must_not_abstain
+        && resp.abstained
+        && q.expected_grounding_mode != Some(axpoint_domain::enums::GroundingMode::Abstained)
+    {
+        failure = Some((
+            axpoint_domain::enums::HarnessGapKind::GroundingMismatch,
+            String::from("问数管线因证据不足触发拒答 (ABSTAINED)"),
+            "axbuilder_run_dev_subgraph",
+        ));
+    } else if let Some(exp_mode) = q.expected_grounding_mode
+        && resp.grounding_mode != exp_mode
+    {
+        failure = Some((
+            axpoint_domain::enums::HarnessGapKind::GroundingMismatch,
+            format!(
+                "接地模式不匹配：期望 {}，实测 {}",
+                exp_mode.as_str(),
+                resp.grounding_mode.as_str()
+            ),
+            "axbuilder_push_schema_draft",
+        ));
+    } else if let Some(exp_num) = q.expected_number {
+        let tol = q.tolerance.abs().max(1e-9);
+        let matched = observed.iter().any(|&v| {
+            (v - exp_num).abs() <= tol || ((v - exp_num).abs() / exp_num.abs().max(1.0)) <= tol
+        });
+        if !matched {
+            failure = Some((
+                axpoint_domain::enums::HarnessGapKind::ValueOutOfTolerance,
+                format!("结果数值未命中期望值 {exp_num}（容差 {tol}），实测 {observed:?}"),
+                "axbuilder_eval_expression",
+            ));
+        }
+    }
+
+    let passed = failure.is_none();
+    let failure_reason = failure.as_ref().map(|(_, m, _)| m.clone());
+    let gap = failure.map(
+        |(kind, message, tool)| axpoint_domain::builder::HarnessGapDiagnostic {
+            question_id: q.id.clone(),
+            gap_kind: kind,
+            target_ref: q.id.clone(),
+            message,
+            suggested_tool: String::from(tool),
+        },
+    );
+
+    (
+        axpoint_domain::builder::CompetencyQuestionOutcome {
+            question_id: q.id.clone(),
+            question: q.question.clone(),
+            passed,
+            grounding_mode: resp.grounding_mode,
+            abstained: resp.abstained,
+            answer: resp.answer,
+            observed_numbers: observed,
+            sql: (!resp.sql.is_empty()).then_some(resp.sql),
+            failure_reason,
+        },
+        gap,
+    )
 }

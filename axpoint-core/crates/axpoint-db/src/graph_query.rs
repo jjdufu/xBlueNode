@@ -448,6 +448,7 @@ impl GraphQueryPort for PgStore {
 
         Ok(AlgoRunResponse {
             algo,
+            backend: axpoint_domain::enums::GraphAlgoBackend::PetgraphMemory,
             params_hash,
             node_count: metas.len(),
             edge_count: edge_rows.len(),

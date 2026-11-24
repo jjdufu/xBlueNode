@@ -238,6 +238,8 @@ define_str_enum! {
         Append => "APPEND",
         /// Primary-key merge/upsert ingestion.
         Upsert => "UPSERT",
+        /// Log-based change data capture (`pgoutput` / MySQL `ROW` binlog) capturing physical deletes (`07-STEP29` §29.1).
+        LogCdc => "LOG_CDC",
     }
 }
 
@@ -853,6 +855,8 @@ define_str_enum! {
         ObjectActionInvoke => "OBJECT_ACTION_INVOKE",
         /// Dev sandbox subgraph `Trial Tick` runtime readiness certification (`04-STEP26`).
         TrialTickCertify => "TRIAL_TICK_CERTIFY",
+        /// Competency question harness regression verification run (`07-STEP29`).
+        HarnessVerifyRun => "HARNESS_VERIFY_RUN",
     }
 }
 
@@ -1239,6 +1243,50 @@ define_str_enum! {
         ActionableWindow => "ACTIONABLE_WINDOW",
         /// Breach occurs before upstream lag can arrive (`deadline_step < 0` or no controllable path).
         ImmediateBreachUnavoidableByLag => "IMMEDIATE_BREACH_UNAVOIDABLE_BY_LAG",
+    }
+}
+
+define_str_enum! {
+    /// Execution backend selected for `POST /api/xblue/graph/algorithms/{algo}` (`07-STEP29` §29.0 & §29.3).
+    #[derive(Default)]
+    pub enum GraphAlgoBackend {
+        /// In-memory `petgraph` exact solver (`<= 500,000` edges).
+        #[default]
+        PetgraphMemory => "PETGRAPH_MEMORY",
+        /// Bounded `DuckDB` vectorized relational-algebra iteration solver (`(500_000, 10_000_000]` edges).
+        DuckdbPushdown => "DUCKDB_PUSHDOWN",
+    }
+}
+
+define_str_enum! {
+    /// Execution outcome status of a competency-question harness run (`xb_harness_runs.status`, `07-STEP29` §29.1).
+    #[derive(Default)]
+    pub enum HarnessRunStatus {
+        /// Every competency question in the suite passed grounding and value assertions.
+        #[default]
+        Pass => "PASS",
+        /// One or more competency questions failed with structured ontology/metric/data gap diagnostics.
+        GapDetected => "GAP_DETECTED",
+        /// Harness execution aborted due to an unexpected infrastructure error.
+        Failed => "FAILED",
+    }
+}
+
+define_str_enum! {
+    /// Structured ontology/data gap category emitted by `axbuilder_verify_competency_suite` (`07-STEP29` §29.4).
+    pub enum HarnessGapKind {
+        /// Referenced certified metric or property does not exist in the subgraph schema/catalog.
+        MissingMetric => "MISSING_METRIC",
+        /// Query requires joining datasets/node types lacking a declared `MappingLinkSpec` / `EdgeTypeSpec`.
+        UnmappedJoinEdge => "UNMAPPED_JOIN_EDGE",
+        /// Dev sandbox subgraph or backing dataset has 0 materialized rows to answer the question.
+        EmptyDevData => "EMPTY_DEV_DATA",
+        /// Actual `GroundingMode` differed from `expected_grounding_mode` or unexpectedly abstained.
+        GroundingMismatch => "GROUNDING_MISMATCH",
+        /// Verified numeric answer deviated from `expected_number` beyond `tolerance`.
+        ValueOutOfTolerance => "VALUE_OUT_OF_TOLERANCE",
+        /// Underlying query or sandbox evaluation returned an error.
+        ExecutionError => "EXECUTION_ERROR",
     }
 }
 

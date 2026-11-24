@@ -26,6 +26,8 @@
 | C13 | 跨部门共享访问 | 13 | §13.9.1 | step13 “cedar-deny”、“grant-active” |
 | C14 | 第三方库全量 + 增量同步（含 Schema 演进） | 02 | [03](../../plans/completed/v1-foundation-step00-14/03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md) §02.4、§02.9 | step02 “orders-rows”、“single-flight”；`tests/test_connectors_sql.py` |
 | C15 | 流式数据与消息队列接入 | 02 | §02.8 | `tests/test_streams.py`（去重与位点） |
+| C89 | 常驻秒级微批流消费协程与可选日志级 `LOG_CDC` 物理硬删除同步 | 29 | [07-STEP29](../../plans/v3-craft-and-world-runtime/world-runtime/07-STEP29-STREAM-WORKERS-LOG-CDC-AND-AUTONOMOUS-HARNESS.md) §29.2 | step29 “stream-daemon-subsecond”、“cdc-hard-delete-captured” |
+| C90 | 超 50 万边大规模子图的 DuckDB 迭代关系代数下推求解 | 29 | [07-STEP29](../../plans/v3-craft-and-world-runtime/world-runtime/07-STEP29-STREAM-WORKERS-LOG-CDC-AND-AUTONOMOUS-HARNESS.md) §29.3 | step29 “duckdb-graph-algo-pushdown” |
 | C16 | 私有化部署、轻量起步、规模扩展 | 00 / 14 | §00.9、§14.2 | step14 “health-deep”；`all.sh` |
 | C17 | 备份恢复 | 14 | §14.3 | `restore-drill.sh` 输出 `restore-drill: OK` |
 
@@ -68,6 +70,7 @@
 | C82 | 一等公民 `ActionSpec` 动作契约（前置断言、派生锁、多对象 CAS 原子回写、动态 GraphQL `Mutation` 与 MCP 暴露） | 26 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.2 | step26 “action-spec-precondition”、“graphql-action-mutation” |
 | C83 | 关系边时序指标与 `V→V / V→E / E→V / E→E` 四路径动力学拓扑传播及三轨溯源 | 26 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.3 | step26 “edge-metric-ingest”、“four-path-propagation” |
 | C79 | `AxFlow` 边中点快捷插算子与 `@antv/g6` v5 嵌套折叠因果传导及全站血缘画布 | 24 | [02-STEP24](../../plans/v3-craft-and-world-runtime/craft-ux/02-STEP24-ADVANCED-MODELING-FLOW-AND-CAUSAL-CANVASES.md) §24.2～§24.3 | step24 “flow-edge-insert”、“g6-causal-combo-hull” |
+| C91 | `AxBuilder` 22 工具工程集与黄金能力问答集（Competency QA）自治回归验收闭环 | 29 | [07-STEP29](../../plans/v3-craft-and-world-runtime/world-runtime/07-STEP29-STREAM-WORKERS-LOG-CDC-AND-AUTONOMOUS-HARNESS.md) §29.4 | step29 “axbuilder-22-tools”、“competency-qa-harness” |
 
 ### D 智能
 

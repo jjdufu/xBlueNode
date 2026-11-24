@@ -612,6 +612,7 @@ dependencies = [
  "axpoint-security",
  "base64 0.22.1",
  "chrono",
+ "duckdb",
  "hex",
  "petgraph 0.8.3",
  "pgvector",

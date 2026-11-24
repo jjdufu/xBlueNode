@@ -90,7 +90,7 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `MaskRule` | `NONE` `MASK_PHONE` `MASK_ID_CARD` `MASK_EMAIL` `MASK_BANK_CARD` `MASK_NAME` `MASK_ADDRESS` `HMAC_HASH` `REDACT` | 脱敏策略 |
 | `ConnectorType` | 文件类：`FILE_UPLOAD` `S3` `SFTP`；关系库：`POSTGRES` `MYSQL` `MSSQL` `ORACLE` `SQLITE` `CLICKHOUSE` `DAMENG` `KINGBASE` `OPENGAUSS` `OCEANBASE` `TIDB` `DORIS` `STARROCKS` `HIVE`；NoSQL：`MONGODB` `REDIS` `ELASTICSEARCH` `CASSANDRA` `HBASE` `NEO4J`；时序：`INFLUXDB` `TDENGINE` `IOTDB`；消息：`KAFKA` `MQTT` `PULSAR`；接口：`REST_API` `GRAPHQL` `WEBHOOK` | `ds_connections.connector_type` |
 | `SourceKind` | `FILE_TABLE` `SQL_TABLE` `NOSQL_COLLECTION` `TIMESERIES` `STREAM` `API_RESOURCE` `WEBHOOK_STREAM` `DERIVED_VIEW` | `ds_datasets.source_kind` |
-| `SyncMode` | `SNAPSHOT` `APPEND` `UPSERT` | `ds_datasets.sync_mode` |
+| `SyncMode` | `SNAPSHOT` `APPEND` `UPSERT` `LOG_CDC` | `ds_datasets.sync_mode` |
 | `QualityRuleKind` | `NOT_NULL` `UNIQUE` `RANGE` `REGEX` `ENUM_SET` `FRESHNESS_MINUTES` `ROW_COUNT_MIN` | `ds_quality_rules.rule_kind` |
 | `JobStatus` | `PENDING` `RUNNING` `SUCCEEDED` `FAILED` `CANCELED` `EXPIRED` | `ax_jobs`、`ds_sync_jobs`、`xv_export_jobs` |
 | `JobKind` | `SYNC_DATASET` `PARSE_FILE` `FLOW_STEP` `EXPORT` `RULE_EVAL` `ROLLUP` `LAKE_MAINTENANCE` `RETENTION` `CREDENTIAL_ROTATE` `BACKUP` `EMBED_NODES` `MAP_MATERIALIZE` `GRAPH_AGGREGATE` `KNOWLEDGE_SYNC` | `ax_jobs.kind` |
@@ -118,7 +118,7 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `Sensitivity` | `PUBLIC` `INTERNAL` `CONFIDENTIAL` `SECRET` | 资源 `sensitivity`、用户 `clearance` |
 | `Permission` | `DATA_READ` `DATA_SYNC` `DATA_ADMIN` `STUDIO_EDIT` `STUDIO_PUBLISH` `FLOW_EDIT` `FLOW_RUN` `FLOW_PUBLISH` `APPROVAL_DECIDE` `RULE_EDIT` `ALERT_ACK` `AGENT_EDIT` `AGENT_RUN` `SIM_RUN` `SIM_APPLY` `VIEW_EDIT` `VIEW_SHARE` `EXPORT_DATA` `PII_RAW_READ` `GUARD_ADMIN` `OPS_ADMIN` | `sec_roles.permissions` |
 | `BuiltinRole` | `ADMIN`（全部权限）`ANALYST` `OPERATOR` `VIEWER` | `sec_roles.name` |
-| `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` `BUILDER_MCP_MUTATE` `TRIAL_TEMPLATE_CLONE` `STUDIO_SNAPSHOT_RESTORE` `IM_ACCOUNT_BIND` `CHART_PUBLISH` `OBJECT_ACTION_INVOKE` `TRIAL_TICK_CERTIFY` | `sec_audit_logs.action` |
+| `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` `BUILDER_MCP_MUTATE` `TRIAL_TEMPLATE_CLONE` `STUDIO_SNAPSHOT_RESTORE` `IM_ACCOUNT_BIND` `CHART_PUBLISH` `OBJECT_ACTION_INVOKE` `TRIAL_TICK_CERTIFY` `HARNESS_VERIFY_RUN` | `sec_audit_logs.action` |
 | `StructuredOutputMode` | `NONE` `JSON_OBJECT` `JSON_SCHEMA` | `ax_llm_providers.structured_mode`（Step 15） |
 | `GroundingMode` | `SEMANTIC_METRIC` `DOMAIN_OBJECT` `GUARDED_SQL` `GROUNDED_DOC` `ABSTAINED` `CLARIFICATION` | `an_ask_turns.grounding_mode`（Step 16） |
 | `TokenProfile` | `GENERAL` `BUILDER` | `sec_api_tokens.token_profile`（Step 17） |
@@ -140,6 +140,9 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `SimThresholdOp` | `LT` `LTE` `GT` `GTE` | `SimEventSpec.op`、`SimGoalConstraint.op`（Step 28） |
 | `GeoPredicateOp` | `BBOX` `GEO_WITHIN_POLYGON` `GEO_DWITHIN_METERS` | `GET /api/xblue/nodes`、`SpatialFilterSpec.op`（Step 28） |
 | `DeadlineWindowStatus` | `SATISFIED` `ACTIONABLE_WINDOW` `IMMEDIATE_BREACH_UNAVOIDABLE_BY_LAG` | `DeadlineDiagnostic.status`、`DeadlineReport.status`（Step 28） |
+| `GraphAlgoBackend` | `PETGRAPH_MEMORY` `DUCKDB_PUSHDOWN` | `AlgoRunResponse.backend`（Step 29） |
+| `HarnessRunStatus` | `PASS` `GAP_DETECTED` `FAILED` | `xb_harness_runs.status`（Step 29） |
+| `HarnessGapKind` | `MISSING_METRIC` `UNMAPPED_JOIN_EDGE` `EMPTY_DEV_DATA` `GROUNDING_MISMATCH` `VALUE_OUT_OF_TOLERANCE` `EXECUTION_ERROR` | `HarnessGapDiagnostic.gap_kind`（Step 29） |
 
 ---
 

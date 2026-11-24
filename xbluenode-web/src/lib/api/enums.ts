@@ -82,7 +82,7 @@ export type SourceKind =
   | "WEBHOOK_STREAM"
   | "DERIVED_VIEW";
 
-export type SyncMode = "SNAPSHOT" | "APPEND" | "UPSERT";
+export type SyncMode = "SNAPSHOT" | "APPEND" | "UPSERT" | "LOG_CDC";
 
 export type QualityRuleKind =
   | "NOT_NULL"
@@ -337,7 +337,8 @@ export type AuditAction =
   | "IM_ACCOUNT_BIND"
   | "CHART_PUBLISH"
   | "OBJECT_ACTION_INVOKE"
-  | "TRIAL_TICK_CERTIFY";
+  | "TRIAL_TICK_CERTIFY"
+  | "HARNESS_VERIFY_RUN";
 
 export type TokenKind =
   | "ACCESS"
@@ -424,3 +425,15 @@ export type DeadlineWindowStatus =
   | "SATISFIED"
   | "ACTIONABLE_WINDOW"
   | "IMMEDIATE_BREACH_UNAVOIDABLE_BY_LAG";
+
+export type GraphAlgoBackend = "PETGRAPH_MEMORY" | "DUCKDB_PUSHDOWN";
+
+export type HarnessRunStatus = "PASS" | "GAP_DETECTED" | "FAILED";
+
+export type HarnessGapKind =
+  | "MISSING_METRIC"
+  | "UNMAPPED_JOIN_EDGE"
+  | "EMPTY_DEV_DATA"
+  | "GROUNDING_MISMATCH"
+  | "VALUE_OUT_OF_TOLERANCE"
+  | "EXECUTION_ERROR";
