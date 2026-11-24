@@ -380,15 +380,40 @@ fn step27_state_predicates_roles_double_eq_and_ttl_compile_dual_dialect() -> Res
     assert!(
         compiled
             .pg_sql
-            .contains("((metrics->>'inventory')::double precision) < 100")
+            .contains("THEN (metrics->>'inventory')::double precision END) < 100")
     );
     assert!(
         compiled
             .pg_sql
             .contains("updated_at >= (NOW() - INTERVAL '72 hours')")
     );
+    Ok(())
+}
 
-    let alt_pred = "node.prop.severity >= 3 AND 'ANALYST' IN {{user.roles}}";
+#[test]
+fn step27_safe_pg_casts_for_custom_property_ttl() -> Result<(), AppError> {
+    let profile = make_south_analyst();
+    let allowed = BTreeSet::from([String::from("inventory"), String::from("opened_at")]);
+    let prop_ttl = compile_predicate_with_ttl(
+        "metrics.inventory < 100",
+        PolicyTargetKind::NodeType,
+        Some(&allowed),
+        &profile,
+        Some("opened_at"),
+        Some(24),
+    )?;
+    assert!(
+        prop_ttl
+            .pg_sql
+            .contains("(0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])")
+    );
+    assert!(
+        prop_ttl
+            .pg_sql
+            .contains("THEN (properties->>'opened_at')::timestamptz END")
+    );
+
+    let alt_pred = "node.prop.opened_at == '2026-01-01'";
     let alt = compile_predicate(
         alt_pred,
         PolicyTargetKind::NodeType,
@@ -397,7 +422,7 @@ fn step27_state_predicates_roles_double_eq_and_ttl_compile_dual_dialect() -> Res
     )?;
     assert!(
         alt.pg_sql
-            .contains("(properties->>'severity')::double precision")
+            .contains("(properties->>'opened_at') = '2026-01-01'")
     );
 
     assert!(

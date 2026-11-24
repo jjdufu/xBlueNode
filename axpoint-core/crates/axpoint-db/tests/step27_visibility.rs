@@ -4,9 +4,10 @@
 use std::collections::BTreeMap;
 
 use axpoint_db::PgStore;
-use axpoint_domain::enums::{MaskRule, RowPolicyMode};
+use axpoint_domain::enums::{MaskRule, RowPolicyMode, Sensitivity};
 use axpoint_domain::guard::{
-    NodeTypePolicySpec, PolicyContext, PolicyTargetKind, SaveRowPolicyRequest, SubjectSelector,
+    GuardPrincipalProfile, NodeTypePolicySpec, PolicyContext, PolicyTargetKind,
+    SaveRowPolicyRequest, SubjectSelector, UserAccountStatus,
 };
 use axpoint_domain::ports::{GraphStorePort as _, GuardRepository as _, SimVisibilityPort as _};
 use axpoint_domain::sim::SandboxScope;
@@ -271,6 +272,166 @@ async fn step27_governed_sim_visibility_filters_and_masks() -> TestResult {
             .and_then(serde_json::Value::as_str),
         Some("[REDACTED]")
     );
+
+    cleanup_tenant(&owner_pool, &tenant_id).await?;
+    Ok(())
+}
+
+async fn seed_corrupted_and_boundary_fixtures(
+    owner_pool: &PgPool,
+    store: &PgStore,
+    tenant_id: &str,
+) -> Result<(Uuid, Uuid), Box<dyn std::error::Error>> {
+    sqlx::query(
+        "INSERT INTO xb_node_types (tenant_id, subgraph_slug, name, display_name)
+         VALUES ($1, 'main', 'Step27Supplier', 'Step27Supplier')
+         ON CONFLICT (tenant_id, subgraph_slug, name) DO NOTHING",
+    )
+    .bind(tenant_id)
+    .execute(owner_pool)
+    .await?;
+
+    let w_low = store
+        .upsert_node(
+            tenant_id,
+            UpsertBlueNodeRequest {
+                type_name: String::from("Step27Warehouse"),
+                node_key: String::from("W-LOW"),
+                title: String::from("Low Warehouse"),
+                metrics: BTreeMap::from([(String::from("inventory"), 40.0)]),
+                ..UpsertBlueNodeRequest::default()
+            },
+        )
+        .await?;
+    let sup_hidden = store
+        .upsert_node(
+            tenant_id,
+            UpsertBlueNodeRequest {
+                type_name: String::from("Step27Supplier"),
+                node_key: String::from("SUP-HIDDEN"),
+                title: String::from("Hidden Supplier"),
+                metrics: BTreeMap::from([(String::from("inventory"), 900.0)]),
+                ..UpsertBlueNodeRequest::default()
+            },
+        )
+        .await?;
+
+    sqlx::query(
+        "INSERT INTO xb_nodes (id, tenant_id, subgraph_slug, type_name, node_key, title, metrics, properties)
+         VALUES ($1, $2, 'main', 'Step27Warehouse', 'W-BAD-JSON', 'Corrupted Metric', '{\"inventory\":\"corrupted\"}'::jsonb, '{}'::jsonb)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(tenant_id)
+    .execute(owner_pool)
+    .await?;
+
+    sqlx::query(
+        "INSERT INTO xb_links (id, tenant_id, subgraph_slug, link_type, src_node_id, dst_node_id, weight)
+         VALUES ($1, $2, 'main', 'SUPPLIES_TO', $3, $4, 1.0)",
+    )
+    .bind(Uuid::new_v4())
+    .bind(tenant_id)
+    .bind(sup_hidden.id)
+    .bind(w_low.id)
+    .execute(owner_pool)
+    .await?;
+
+    Ok((w_low.id, sup_hidden.id))
+}
+
+fn sample_guard_profile(tenant_id: &str) -> GuardPrincipalProfile {
+    GuardPrincipalProfile {
+        user_id: Uuid::new_v4(),
+        tenant_id: String::from(tenant_id),
+        username: String::from("analyst"),
+        display_name: String::from("Analyst"),
+        email: String::new(),
+        dept_id: String::new(),
+        clearance: Sensitivity::Internal,
+        status: UserAccountStatus::Active,
+        tokens_valid_after: chrono::DateTime::UNIX_EPOCH,
+        roles: Vec::new(),
+        permissions: std::collections::BTreeSet::new(),
+        attributes: BTreeMap::new(),
+    }
+}
+
+#[tokio::test]
+async fn step27_corrupted_metrics_safe_cast_and_live_revocation() -> TestResult {
+    let Some((app_pool, owner_pool)) = test_pools().await? else {
+        return Ok(());
+    };
+    let tenant_id = unique_tenant();
+    setup_tenant(&owner_pool, &tenant_id).await?;
+    let store = PgStore::new(app_pool);
+    let (w_low_id, _) =
+        seed_corrupted_and_boundary_fixtures(&owner_pool, &store, &tenant_id).await?;
+
+    let compiled = axpoint_security::row_policy::compile_predicate(
+        "metrics.inventory < 100",
+        PolicyTargetKind::NodeType,
+        None,
+        &sample_guard_profile(&tenant_id),
+    )?;
+    let mut policy = PolicyContext::default();
+    for tname in ["step27warehouse", "step27supplier"] {
+        policy.node_types.insert(
+            String::from(tname),
+            NodeTypePolicySpec {
+                duckdb_row_filter: None,
+                pg_row_filter: Some(compiled.pg_sql.clone()),
+                property_masks: BTreeMap::new(),
+            },
+        );
+    }
+
+    let scope = SandboxScope {
+        type_names: vec![String::from("Step27Warehouse")],
+        ..SandboxScope::default()
+    };
+    let preflight = store
+        .preview_scope_slice_governed(&tenant_id, "main", &scope, &policy)
+        .await?;
+    assert_eq!(
+        preflight
+            .node_counts_by_type
+            .get("Step27Warehouse")
+            .copied(),
+        Some(1)
+    );
+    assert_eq!(preflight.boundary_edges.len(), 0);
+
+    let sb = store
+        .create_sandbox_governed(
+            &tenant_id,
+            None,
+            CreateAxSandboxRequest {
+                name: String::from("s27-live-revoke"),
+                scope: Some(scope),
+            },
+            &policy,
+        )
+        .await?;
+    assert_eq!(sb.node_count, 1);
+
+    sqlx::query("UPDATE xb_nodes SET metrics = '{\"inventory\": 500}'::jsonb WHERE id = $1")
+        .bind(w_low_id)
+        .execute(&owner_pool)
+        .await?;
+
+    let graph_after = store
+        .get_sandbox_graph_governed(&tenant_id, sb.id, &policy)
+        .await?;
+    assert_eq!(graph_after.nodes.len(), 0);
+    let vis_ids = store
+        .filter_sandbox_visible_node_ids(&tenant_id, sb.id, &policy)
+        .await?;
+    assert!(!vis_ids.contains(&w_low_id));
+
+    let refreshed = store
+        .refresh_sandbox_base_governed(&tenant_id, sb.id, &policy)
+        .await?;
+    assert_eq!(refreshed.sandbox.node_count, 0);
 
     cleanup_tenant(&owner_pool, &tenant_id).await?;
     Ok(())

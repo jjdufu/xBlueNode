@@ -349,11 +349,16 @@ fn axql_mapped_ducklake_datasets_fold_1_to_n_child_metrics_without_inflation()
     let catalog = TenantCatalog::new("default")
         .with_dataset(wh_ds)
         .with_dataset(ord_ds);
-    let schema = step27_schema_doc(true);
+    let mut schema = step27_schema_doc(true);
+    for nt in &mut schema.node_types {
+        for prop in &mut nt.properties {
+            prop.pii_category = PiiCategory::None;
+        }
+    }
 
     let req = AxqlQueryRequest {
         axql: String::from(
-            "SELECT w.node_key, w.inventory, w.amount FROM OBJECT(Step27Warehouse) w WHERE w.region = $reg",
+            "SELECT w.node_key, w.phone, w.inventory, w.amount FROM OBJECT(Step27Warehouse) w WHERE w.region = $reg",
         ),
         params: BTreeMap::from([(String::from("reg"), json!("east"))]),
         ..AxqlQueryRequest::default()
@@ -369,11 +374,18 @@ fn axql_mapped_ducklake_datasets_fold_1_to_n_child_metrics_without_inflation()
     )?;
     assert_eq!(resp.result.row_count, 1);
     assert!(resp.plan.fanout_protected);
+    assert!(resp.plan.compiled_sql.contains("tenant_default"));
     let r0 = resp
         .result
         .rows
         .first()
         .ok_or_else(|| AppError::Config(String::from("missing row")))?;
+    assert!(
+        r0.get("phone")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .contains('*')
+    );
     assert_eq!(
         r0.get("inventory").and_then(serde_json::Value::as_f64),
         Some(500.0)
@@ -471,5 +483,160 @@ fn axql_match_knowledge_pushdown_and_state_row_policy_filtering() -> Result<(), 
     );
 
     let _: AxqlCompilePlan = gov_resp.plan;
+    Ok(())
+}
+
+#[test]
+fn axql_blocks_self_alias_bypass_bad_aliases_and_subqueries() -> Result<(), AppError> {
+    let schema = step27_schema_doc(false);
+    let catalog = TenantCatalog::new("default");
+
+    for bad_select in [
+        "SELECT hallucinated AS hallucinated FROM OBJECT(Step27Warehouse) w",
+        "SELECT UPPER(hallucinated) AS hallucinated FROM OBJECT(Step27Warehouse) w",
+    ] {
+        let req = AxqlQueryRequest {
+            axql: String::from(bad_select),
+            ..AxqlQueryRequest::default()
+        };
+        let res = compile_axql_query(&req, &schema, &catalog, None, false, &BTreeMap::new());
+        assert!(matches!(res, Err(ref e) if e.error_code() == "AXQL_UNMAPPED_SYMBOL"));
+    }
+
+    let valid_group_alias = AxqlQueryRequest {
+        axql: String::from(
+            "SELECT w.region AS reg_alias, COUNT(w.node_key) AS cnt \
+             FROM OBJECT(Step27Warehouse) w GROUP BY reg_alias ORDER BY reg_alias",
+        ),
+        ..AxqlQueryRequest::default()
+    };
+    let plan = compile_axql_query(
+        &valid_group_alias,
+        &schema,
+        &catalog,
+        None,
+        false,
+        &BTreeMap::new(),
+    )?;
+    assert!(plan.plan.compiled_sql.contains("GROUP BY"));
+
+    for bad_alias in [
+        "SELECT w.node_key FROM OBJECT(Step27Warehouse) AS \"bad;alias\"",
+        "SELECT x.node_key FROM Step27Warehouse AS \"bad;alias\"",
+        "SELECT w.node_key FROM MATCH (\"bad;w\":Step27Warehouse)-[:STEP27_FULFILLS]->(o:Step27Order)",
+    ] {
+        let req = AxqlQueryRequest {
+            axql: String::from(bad_alias),
+            ..AxqlQueryRequest::default()
+        };
+        let res = compile_axql_query(&req, &schema, &catalog, None, false, &BTreeMap::new());
+        assert!(res.is_err());
+    }
+
+    for subq in [
+        "SELECT w.node_key FROM OBJECT(Step27Warehouse) w WHERE w.id IN (SELECT id FROM ax.nodes)",
+        "SELECT w.node_key FROM OBJECT(Step27Warehouse) w WHERE EXISTS (SELECT 1 FROM ax.nodes)",
+        "SELECT (SELECT COUNT(*) FROM ax.nodes) AS c FROM OBJECT(Step27Warehouse) w",
+    ] {
+        let req = AxqlQueryRequest {
+            axql: String::from(subq),
+            ..AxqlQueryRequest::default()
+        };
+        let res = compile_axql_query(&req, &schema, &catalog, None, false, &BTreeMap::new());
+        assert!(matches!(res, Err(ref e) if e.error_code() == "JOIN_PATH_UNGROUNDED"));
+    }
+    Ok(())
+}
+
+#[test]
+fn axql_mapped_node_governance_and_edge_metric_masking() -> Result<(), AppError> {
+    let (conn, w1_id, _) = setup_ax_views_duckdb()?;
+    conn.execute(
+        &format!(
+            "UPDATE ax.links SET properties = '{{\"contact_phone\":\"13700009999\"}}' WHERE src_node_id = '{w1_id}'"
+        ),
+        [],
+    )
+    .map_err(|e| AppError::Database(format!("update link props: {e}")))?;
+
+    let mut schema = step27_schema_doc(true);
+    if let Some(edge) = schema.edge_types.first_mut() {
+        edge.properties.push(make_prop(
+            "contact_phone",
+            DataType::String,
+            PropertyKind::Attribute,
+            PiiCategory::Phone,
+        ));
+    }
+    let catalog = TenantCatalog::new("default")
+        .with_dataset(CatalogDatasetEntry::simple(
+            Uuid::new_v4(),
+            "warehouses",
+            "warehouses",
+        ))
+        .with_dataset(CatalogDatasetEntry::simple(
+            Uuid::new_v4(),
+            "orders",
+            "orders",
+        ));
+
+    let mut pol = PolicyContext::default();
+    pol.node_types.insert(
+        String::from("Step27Warehouse"),
+        NodeTypePolicySpec {
+            duckdb_row_filter: Some(String::from("node_key = 'W-27-1'")),
+            pg_row_filter: None,
+            property_masks: BTreeMap::from([(String::from("inventory"), MaskRule::Redact)]),
+        },
+    );
+
+    let obj_req = AxqlQueryRequest {
+        axql: String::from("SELECT w.node_key, w.inventory FROM OBJECT(Step27Warehouse) w"),
+        ..AxqlQueryRequest::default()
+    };
+    let obj_resp = execute_axql_conn(
+        &conn,
+        &obj_req,
+        &schema,
+        &catalog,
+        Some(&pol),
+        false,
+        &BTreeMap::new(),
+    )?;
+    assert!(obj_resp.plan.compiled_sql.contains("ax.nodes"));
+    assert_eq!(obj_resp.result.row_count, 1);
+    let r0 = obj_resp
+        .result
+        .rows
+        .first()
+        .ok_or_else(|| AppError::Config(String::from("missing governed mapped row")))?;
+    assert_eq!(
+        r0.get("inventory").and_then(serde_json::Value::as_str),
+        Some("[REDACTED]")
+    );
+
+    let match_req = AxqlQueryRequest {
+        axql: String::from(
+            "SELECT e.contact_phone FROM MATCH (w:Step27Warehouse)-[e:STEP27_FULFILLS]->(o:Step27Order)",
+        ),
+        ..AxqlQueryRequest::default()
+    };
+    let match_resp = execute_axql_conn(
+        &conn,
+        &match_req,
+        &schema,
+        &catalog,
+        Some(&pol),
+        false,
+        &BTreeMap::new(),
+    )?;
+    let ep = match_resp
+        .result
+        .rows
+        .first()
+        .and_then(|r| r.get("contact_phone"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    assert!(ep.contains('*'));
     Ok(())
 }

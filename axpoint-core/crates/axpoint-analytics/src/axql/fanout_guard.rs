@@ -231,16 +231,18 @@ pub fn build_ranked_cte(
     let group_partition_exprs = extract_partition_group_sql(select, ranked_table_alias, "__f");
     let mut window_cols = Vec::with_capacity(dedup_entities.len());
     for alias in dedup_entities {
-        let entity_id_col = format!("\"__f\".\"{alias}____entity_id\"");
+        let esc_alias = crate::axql::object_plan::escape_ident(alias);
+        let entity_id_col = format!("\"__f\".\"{esc_alias}____entity_id\"");
         let mut part_items = group_partition_exprs.clone();
         part_items.push(entity_id_col.clone());
         let part_clause = part_items.join(", ");
         window_cols.push(format!(
-            "ROW_NUMBER() OVER (PARTITION BY {part_clause} ORDER BY {entity_id_col}) AS \"__rn_{alias}\""
+            "ROW_NUMBER() OVER (PARTITION BY {part_clause} ORDER BY {entity_id_col}) AS \"__rn_{esc_alias}\""
         ));
     }
+    let esc_input = crate::axql::object_plan::escape_ident(input_cte);
     let cte_sql = format!(
-        "SELECT \"__f\".*, {} FROM \"{input_cte}\" AS \"__f\"",
+        "SELECT \"__f\".*, {} FROM \"{esc_input}\" AS \"__f\"",
         window_cols.join(", ")
     );
     parse_cte(cte_name, &cte_sql)

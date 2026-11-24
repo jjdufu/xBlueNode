@@ -14,6 +14,18 @@ use crate::row_policy_ast::{
 
 const MAX_TTL_HOURS: i32 = 87_600;
 
+/// Anchored IEEE-754 decimal/scientific literal pattern guarding PostgreSQL `::double precision` casts.
+const SAFE_NUM_REGEX: &str = r"^-?[0-9]+(\.[0-9]+)?([eE][+-]?[0-9]+)?$";
+
+/// Anchored calendar-valid ISO-8601 timestamp pattern guarding PostgreSQL `::timestamptz` casts.
+const SAFE_ISO_TS_REGEX: &str = concat!(
+    r"^(",
+    r"[0-9]{4}-((0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])|(0[469]|11)-(0[1-9]|[12][0-9]|30)|02-(0[1-9]|1[0-9]|2[0-8]))",
+    r"|(([0-9]{2}(0[48]|[2468][048]|[13579][26])|([02468][048]|[13579][26])00)-02-29)",
+    r")",
+    r"([T ]([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9](\.[0-9]{1,9})?)?(Z|[+-](0[0-9]|1[0-4])(:?[0-5][0-9])?)?)?$"
+);
+
 pub(crate) fn compile_scalar_operand(
     expr: &Expr,
     target_kind: PolicyTargetKind,
@@ -143,6 +155,7 @@ fn check_whitelist(
 
 fn compile_node_property_access(field: &str, ctx: ScalarContext) -> CompiledPredicate {
     let escaped = field.replace('\'', "''");
+    let escaped_re = SAFE_NUM_REGEX.replace('\'', "''");
     match ctx {
         ScalarContext::General => CompiledPredicate {
             duckdb_sql: format!("json_extract_string(properties, '$.{escaped}')"),
@@ -153,7 +166,7 @@ fn compile_node_property_access(field: &str, ctx: ScalarContext) -> CompiledPred
                 "TRY_CAST(json_extract_string(properties, '$.{escaped}') AS DOUBLE)"
             ),
             pg_sql: format!(
-                "(CASE WHEN (properties->>'{escaped}') ~ '^-?[0-9]+(\\.[0-9]+)?$' THEN (properties->>'{escaped}')::double precision END)"
+                "(CASE WHEN (properties->>'{escaped}') ~ '{escaped_re}' THEN (properties->>'{escaped}')::double precision END)"
             ),
         },
     }
@@ -161,9 +174,12 @@ fn compile_node_property_access(field: &str, ctx: ScalarContext) -> CompiledPred
 
 fn compile_node_metric_access(field: &str) -> CompiledPredicate {
     let escaped = field.replace('\'', "''");
+    let escaped_re = SAFE_NUM_REGEX.replace('\'', "''");
     CompiledPredicate {
         duckdb_sql: format!("TRY_CAST(json_extract_string(metrics, '$.{escaped}') AS DOUBLE)"),
-        pg_sql: format!("((metrics->>'{escaped}')::double precision)"),
+        pg_sql: format!(
+            "(CASE WHEN (metrics->>'{escaped}') ~ '{escaped_re}' THEN (metrics->>'{escaped}')::double precision END)"
+        ),
     }
 }
 
@@ -333,11 +349,14 @@ pub(crate) fn compile_ttl_clause(
             let col = ensure_valid_ident_chars(raw_col)?;
             check_whitelist(col, false, allowed_columns)?;
             let quoted = format!("\"{}\"", col.replace('"', "\"\""));
+            let ts_re = SAFE_ISO_TS_REGEX.replace('\'', "''");
             Ok(Some(CompiledPredicate {
                 duckdb_sql: format!(
                     "TRY_CAST({quoted} AS TIMESTAMPTZ) >= (CURRENT_TIMESTAMP - INTERVAL '{hours} hours')"
                 ),
-                pg_sql: format!("{quoted}::timestamptz >= (NOW() - INTERVAL '{hours} hours')"),
+                pg_sql: format!(
+                    "(CASE WHEN ({quoted}::text) ~ '{ts_re}' THEN ({quoted}::text)::timestamptz END) >= (NOW() - INTERVAL '{hours} hours')"
+                ),
             }))
         }
         PolicyTargetKind::NodeType => {
@@ -374,12 +393,13 @@ fn compile_node_ttl_clause(
     let prop_key = ensure_valid_ident_chars(stripped)?;
     check_whitelist(prop_key, false, allowed_columns)?;
     let escaped = prop_key.replace('\'', "''");
+    let ts_re = SAFE_ISO_TS_REGEX.replace('\'', "''");
     Ok(CompiledPredicate {
         duckdb_sql: format!(
             "TRY_CAST(json_extract_string(properties, '$.{escaped}') AS TIMESTAMPTZ) >= (CURRENT_TIMESTAMP - INTERVAL '{hours} hours')"
         ),
         pg_sql: format!(
-            "(CASE WHEN (properties->>'{escaped}') ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}' THEN (properties->>'{escaped}')::timestamptz END) >= (NOW() - INTERVAL '{hours} hours')"
+            "(CASE WHEN (properties->>'{escaped}') ~ '{ts_re}' THEN (properties->>'{escaped}')::timestamptz END) >= (NOW() - INTERVAL '{hours} hours')"
         ),
     })
 }

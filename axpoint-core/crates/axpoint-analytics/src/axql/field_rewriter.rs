@@ -44,6 +44,7 @@ pub(crate) struct FieldRewriter<'a> {
     pub(crate) default_knowledge_alias: &'a str,
     pub(crate) recalled_nodes: &'a mut BTreeSet<Uuid>,
     pub(crate) in_by_entity_second_arg: bool,
+    pub(crate) in_projection: bool,
 }
 
 pub(crate) fn rewrite_outer_clauses(
@@ -51,11 +52,13 @@ pub(crate) fn rewrite_outer_clauses(
     order_by_exprs: &mut [OrderByExpr],
     vis: &mut FieldRewriter<'_>,
 ) -> Result<(), AppError> {
+    vis.in_projection = true;
     for item in &mut select.projection {
         match item {
             SelectItem::UnnamedExpr(expr) => {
                 let direct_name = extract_direct_field_output_name(expr);
                 if let ControlFlow::Break(err) = VisitMut::visit(expr, vis) {
+                    vis.in_projection = false;
                     return Err(err);
                 }
                 if let Some(col_alias) = direct_name {
@@ -67,10 +70,12 @@ pub(crate) fn rewrite_outer_clauses(
             }
             SelectItem::ExprWithAlias { expr, .. } | SelectItem::ExprWithAliases { expr, .. } => {
                 if let ControlFlow::Break(err) = VisitMut::visit(expr, vis) {
+                    vis.in_projection = false;
                     return Err(err);
                 }
             }
             SelectItem::Wildcard(_) | SelectItem::QualifiedWildcard(_, _) => {
+                vis.in_projection = false;
                 return Err(bad_axql(
                     "AXQL_UNMAPPED_SYMBOL",
                     "AXQL_UNMAPPED_SYMBOL: wildcard SELECT * is forbidden in AxQL; list explicit ontology fields",
@@ -78,6 +83,7 @@ pub(crate) fn rewrite_outer_clauses(
             }
         }
     }
+    vis.in_projection = false;
     if let GroupByExpr::Expressions(ref mut g_exprs, _) = select.group_by {
         for ge in g_exprs {
             if let ControlFlow::Break(err) = VisitMut::visit(ge, vis) {
@@ -109,7 +115,28 @@ fn extract_direct_field_output_name(expr: &Expr) -> Option<String> {
 impl VisitorMut for FieldRewriter<'_> {
     type Break = AppError;
 
+    fn pre_visit_query(&mut self, _query: &mut sqlparser::ast::Query) -> ControlFlow<Self::Break> {
+        ControlFlow::Break(bad_axql(
+            "JOIN_PATH_UNGROUNDED",
+            "JOIN_PATH_UNGROUNDED: subqueries are forbidden in AxQL; use FROM OBJECT(...) or FROM MATCH (...)",
+        ))
+    }
+
     fn pre_visit_expr(&mut self, expr: &mut Expr) -> ControlFlow<Self::Break> {
+        if matches!(
+            expr,
+            Expr::Subquery(_)
+                | Expr::Exists { .. }
+                | Expr::In {
+                    target: InTarget::Subquery(_) | InTarget::Table { .. },
+                    ..
+                }
+        ) {
+            return ControlFlow::Break(bad_axql(
+                "JOIN_PATH_UNGROUNDED",
+                "JOIN_PATH_UNGROUNDED: subqueries are forbidden in AxQL; use FROM OBJECT(...) or FROM MATCH (...)",
+            ));
+        }
         if let Expr::Function(func) = expr {
             let fn_name = func.name.to_string();
             let clean = fn_name.trim_matches('"');
@@ -229,9 +256,10 @@ impl FieldRewriter<'_> {
     }
 
     fn rewrite_bare_ident(&mut self, ident: &Ident) -> Result<Option<Expr>, AppError> {
-        if self
-            .select_aliases
-            .contains(&ident.value.to_ascii_lowercase())
+        if !self.in_projection
+            && self
+                .select_aliases
+                .contains(&ident.value.to_ascii_lowercase())
         {
             return Ok(None);
         }

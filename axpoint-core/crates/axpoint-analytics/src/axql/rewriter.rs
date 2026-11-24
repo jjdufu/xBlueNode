@@ -152,6 +152,7 @@ fn rewrite_object_query(
             default_knowledge_alias: inp.alias,
             recalled_nodes: &mut recalled_set,
             in_by_entity_second_arg: false,
+            in_projection: false,
         };
         if let ControlFlow::Break(err) = VisitMut::visit(&mut w_expr, &mut vis) {
             return Err(err);
@@ -177,6 +178,7 @@ fn rewrite_object_query(
             default_knowledge_alias: inp.alias,
             recalled_nodes: &mut recalled_set,
             in_by_entity_second_arg: false,
+            in_projection: false,
         };
         rewrite_outer_clauses(select, &mut order_by_exprs, &mut vis)?;
     }
@@ -257,6 +259,7 @@ fn rewrite_match_query(
             default_knowledge_alias: head_alias,
             recalled_nodes: &mut recalled_set,
             in_by_entity_second_arg: false,
+            in_projection: false,
         };
         if let ControlFlow::Break(err) = VisitMut::visit(&mut w_expr, &mut vis) {
             return Err(err);
@@ -280,6 +283,7 @@ fn rewrite_match_query(
             default_knowledge_alias: head_alias,
             recalled_nodes: &mut recalled_set,
             in_by_entity_second_arg: false,
+            in_projection: false,
         };
         rewrite_outer_clauses(select, order_by_exprs, &mut vis)?;
     }

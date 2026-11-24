@@ -226,10 +226,32 @@ fn infer_bare_from_source(query: &Query) -> Result<AxqlFromSource, AppError> {
             "AxQL FROM clause must use OBJECT(<Type>) or MATCH (...)",
         ));
     };
-    let type_name = name.to_string().trim_matches('"').to_owned();
+    if name.0.len() != 1 {
+        return Err(bad_axql(
+            "AXQL_UNMAPPED_SYMBOL",
+            format!("AXQL_UNMAPPED_SYMBOL: qualified relation '{name}' is forbidden in AxQL"),
+        ));
+    }
+    let type_name = name
+        .0
+        .first()
+        .and_then(|p| p.as_ident())
+        .map_or_default(|i| i.value.clone());
+    if !is_valid_ident(&type_name) {
+        return Err(bad_axql(
+            "AXQL_UNMAPPED_SYMBOL",
+            format!("AXQL_UNMAPPED_SYMBOL: invalid object type identifier '{type_name}'"),
+        ));
+    }
     let eff_alias = alias
         .as_ref()
         .map_or_else(|| type_name.to_ascii_lowercase(), |a| a.name.value.clone());
+    if !is_valid_ident(&eff_alias) {
+        return Err(bad_axql(
+            "AXQL_UNMAPPED_SYMBOL",
+            format!("AXQL_UNMAPPED_SYMBOL: invalid object alias '{eff_alias}'"),
+        ));
+    }
     Ok(AxqlFromSource::Object {
         type_name,
         alias: eff_alias,
@@ -474,6 +496,9 @@ fn parse_optional_alias(
     default_type: &str,
 ) -> Result<(String, usize), AppError> {
     let ws_pos = skip_ws(chars, pos);
+    if chars.get(ws_pos) == Some(&'"') {
+        return parse_double_quoted_ident_alias(chars, ws_pos);
+    }
     let (w1, after_w1) = read_word(chars, ws_pos);
     if w1.is_empty() {
         return Ok((default_type.to_ascii_lowercase(), pos));
@@ -487,11 +512,42 @@ fn parse_optional_alias(
     }
     if u1 == "AS" {
         let alias_pos = skip_ws(chars, after_w1);
+        if chars.get(alias_pos) == Some(&'"') {
+            return parse_double_quoted_ident_alias(chars, alias_pos);
+        }
         let (alias_word, after_alias) = read_word(chars, alias_pos);
         if !is_valid_ident(&alias_word) {
-            return Err(bad_axql("SQL_REJECTED", "expected valid alias after AS"));
+            return Err(bad_axql(
+                "AXQL_UNMAPPED_SYMBOL",
+                format!("AXQL_UNMAPPED_SYMBOL: invalid object alias '{alias_word}'"),
+            ));
         }
         return Ok((alias_word, after_alias));
     }
+    if !is_valid_ident(&w1) {
+        return Err(bad_axql(
+            "AXQL_UNMAPPED_SYMBOL",
+            format!("AXQL_UNMAPPED_SYMBOL: invalid object alias '{w1}'"),
+        ));
+    }
     Ok((w1, after_w1))
+}
+
+fn parse_double_quoted_ident_alias(
+    chars: &[char],
+    quote_pos: usize,
+) -> Result<(String, usize), AppError> {
+    let mut raw_quoted = String::new();
+    let end_idx = copy_quoted(chars, quote_pos, '"', &mut raw_quoted)?;
+    let inner = raw_quoted
+        .get(1..raw_quoted.len().saturating_sub(1))
+        .unwrap_or("")
+        .replace("\"\"", "\"");
+    if !is_valid_ident(&inner) {
+        return Err(bad_axql(
+            "AXQL_UNMAPPED_SYMBOL",
+            format!("AXQL_UNMAPPED_SYMBOL: invalid quoted alias '{inner}'"),
+        ));
+    }
+    Ok((inner, end_idx))
 }

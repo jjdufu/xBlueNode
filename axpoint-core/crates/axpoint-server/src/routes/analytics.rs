@@ -2435,11 +2435,50 @@ fn normalize_axql_subgraph(raw: Option<&str>) -> &str {
         .unwrap_or("main")
 }
 
+async fn authorize_caller_subgraph(
+    state: &AppState,
+    caller: &CallerCtx<'_>,
+    subgraph_slug: &str,
+) -> Result<(), AppError> {
+    if subgraph_slug == "main" {
+        return Ok(());
+    }
+    if let Some(auth) = caller.auth {
+        let _res = axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            auth,
+            Permission::DataRead,
+            GrantResourceKind::Subgraph,
+            subgraph_slug,
+            &caller.client_ip,
+        )
+        .await?;
+        return Ok(());
+    }
+    if let Some(ap) = caller.analytics {
+        let resolved = crate::agent_bridge::resolve_auth_principal(state, ap).await?;
+        let _res = axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            &resolved,
+            Permission::DataRead,
+            GrantResourceKind::Subgraph,
+            subgraph_slug,
+            &caller.client_ip,
+        )
+        .await?;
+        return Ok(());
+    }
+    Err(AppError::Unauthorized("TOKEN_INVALID"))
+}
+
 async fn resolve_axql_knowledge_map(
     state: &AppState,
     tenant_id: &str,
     subgraph_slug: &str,
     calls: &[axpoint_analytics::ResolvedKnowledgeCall],
+    policy: &axpoint_domain::guard::PolicyContext,
 ) -> Result<BTreeMap<usize, Vec<Uuid>>, AppError> {
     let mut map = BTreeMap::new();
     for call in calls {
@@ -2472,7 +2511,14 @@ async fn resolve_axql_knowledge_map(
             .store
             .list_related_nodes_in_subgraph(tenant_id, &para_ids, &[], subgraph_slug)
             .await?;
-        let node_ids: Vec<Uuid> = related.into_iter().map(|n| n.id).collect();
+        let mut node_ids: Vec<Uuid> = related.into_iter().map(|n| n.id).collect();
+        if !node_ids.is_empty() {
+            let visible = state
+                .store
+                .filter_visible_subgraph_node_ids(tenant_id, subgraph_slug, &node_ids, policy)
+                .await?;
+            node_ids.retain(|id| visible.contains(id));
+        }
         map.insert(call.call_id, node_ids);
     }
     Ok(map)
@@ -2487,13 +2533,21 @@ async fn compile_axql_artifact_for_caller(
     Box::pin(async move {
         let (parsed, knowledge_calls) = axpoint_analytics::extract_axql_knowledge_requests(req)?;
         let subgraph_slug = normalize_axql_subgraph(req.subgraph_slug.as_deref());
-        let (published, policy, knowledge_map) = tokio::try_join!(
+        authorize_caller_subgraph(state, caller, subgraph_slug).await?;
+        let (published, policy) = tokio::try_join!(
             state
                 .store
                 .get_published_schema(caller.tenant_id, subgraph_slug),
             build_caller_policy_for_subgraph(state, caller, subgraph_slug, req.reveal_pii),
-            resolve_axql_knowledge_map(state, caller.tenant_id, subgraph_slug, &knowledge_calls),
         )?;
+        let knowledge_map = resolve_axql_knowledge_map(
+            state,
+            caller.tenant_id,
+            subgraph_slug,
+            &knowledge_calls,
+            &policy,
+        )
+        .await?;
         let raw_pii = policy.reveal_pii_authorized;
         let artifact = axpoint_analytics::compile_parsed_axql(
             &parsed,

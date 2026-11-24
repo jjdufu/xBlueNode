@@ -231,16 +231,76 @@ pub fn build_object_ctes(
     alias: &str,
     bindings: &BTreeMap<String, ObjectFieldBinding>,
 ) -> Result<ObjectCtePlan, AppError> {
-    if let Some(mapped_plan) = try_build_mapped_dataset_object_ctes(
-        ctx.schema_doc,
-        ctx.catalog,
-        main_spec,
-        alias,
-        bindings,
-    )? {
+    let has_gov = object_requires_ax_nodes_governance(ctx, main_spec, bindings);
+    if !has_gov
+        && let Some(mapped_plan) = try_build_mapped_dataset_object_ctes(
+            ctx.schema_doc,
+            ctx.catalog,
+            main_spec,
+            alias,
+            bindings,
+        )?
+    {
         return Ok(mapped_plan);
     }
     build_ax_nodes_object_ctes(main_spec, alias, bindings, ctx.policy, ctx.reveal_pii)
+}
+
+fn object_requires_ax_nodes_governance(
+    ctx: ObjectBuildCtx<'_>,
+    main_spec: &NodeTypeSpec,
+    bindings: &BTreeMap<String, ObjectFieldBinding>,
+) -> bool {
+    if node_type_has_active_governance(&main_spec.name, Some(main_spec), ctx.policy, ctx.reveal_pii)
+    {
+        return true;
+    }
+    for b in bindings.values() {
+        if let ObjectFieldBinding::FoldedChildMetric { child_type, .. } = b {
+            let child_spec = ctx
+                .schema_doc
+                .node_types
+                .iter()
+                .find(|nt| nt.name.eq_ignore_ascii_case(child_type));
+            if node_type_has_active_governance(child_type, child_spec, ctx.policy, ctx.reveal_pii) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn node_type_has_active_governance(
+    type_name: &str,
+    node_spec: Option<&NodeTypeSpec>,
+    policy: Option<&PolicyContext>,
+    reveal_pii: bool,
+) -> bool {
+    if let Some(pol) = policy
+        && let Some(nt_pol) = pol.node_types.get(type_name).or_else(|| {
+            pol.node_types
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(type_name))
+                .map(|(_, v)| v)
+        })
+    {
+        if !pol.bypass_row_policies && nt_pol.duckdb_row_filter.is_some() {
+            return true;
+        }
+        if !reveal_pii && nt_pol.property_masks.values().any(|&r| r != MaskRule::None) {
+            return true;
+        }
+    }
+    if !reveal_pii
+        && let Some(spec) = node_spec
+        && spec
+            .properties
+            .iter()
+            .any(|p| p.pii_category != PiiCategory::None)
+    {
+        return true;
+    }
+    false
 }
 
 fn try_build_mapped_dataset_object_ctes(
@@ -253,22 +313,24 @@ fn try_build_mapped_dataset_object_ctes(
     let Some(main_map) = find_active_mapping(schema_doc, catalog, &main_spec.name) else {
         return Ok(None);
     };
+    let esc_alias = escape_ident(alias);
     let mut ctes = Vec::new();
     let mut ref_nodes = vec![main_spec.name.clone()];
     let mut ref_edges = Vec::new();
     let mut ref_rels = vec![main_map.dataset.clone()];
     let mut join_clauses = Vec::new();
     let mut proj_cols = vec![format!(
-        "CAST(\"__m\".\"{}\" AS VARCHAR) AS \"{alias}____entity_id\"",
+        "CAST(\"__m\".\"{}\" AS VARCHAR) AS \"{esc_alias}____entity_id\"",
         escape_ident(&main_map.key_column)
     )];
     let mut fold_idx = 0_usize;
 
     for (field_key, binding) in bindings {
+        let esc_field = escape_ident(field_key);
         match binding {
             ObjectFieldBinding::Builtin(b) => {
                 let expr = mapped_builtin_expr(b, main_map, &main_spec.name);
-                proj_cols.push(format!("{expr} AS \"{alias}__{field_key}\""));
+                proj_cols.push(format!("{expr} AS \"{esc_alias}__{esc_field}\""));
             }
             ObjectFieldBinding::DirectProperty(prop) => {
                 let Some(col_name) = main_map
@@ -279,7 +341,7 @@ fn try_build_mapped_dataset_object_ctes(
                     return Ok(None);
                 };
                 proj_cols.push(format!(
-                    "\"__m\".\"{}\" AS \"{alias}__{field_key}\"",
+                    "\"__m\".\"{}\" AS \"{esc_alias}__{esc_field}\"",
                     escape_ident(col_name)
                 ));
             }
@@ -308,7 +370,7 @@ fn try_build_mapped_dataset_object_ctes(
                 ctes.push(fold_cte);
                 join_clauses.push(join_sql);
                 proj_cols.push(format!(
-                    "\"{fold_alias}\".\"__val\" AS \"{alias}__{field_key}\""
+                    "\"{fold_alias}\".\"__val\" AS \"{esc_alias}__{esc_field}\""
                 ));
                 push_unique(&mut ref_nodes, child_type);
                 push_unique(&mut ref_edges, edge_type);
@@ -417,22 +479,27 @@ fn build_ax_nodes_object_ctes(
     policy: Option<&PolicyContext>,
     reveal_pii: bool,
 ) -> Result<ObjectCtePlan, AppError> {
+    let esc_alias = escape_ident(alias);
     let mut ctes = Vec::new();
     let mut ref_nodes = vec![main_spec.name.clone()];
     let mut ref_edges = Vec::new();
     let mut ref_rels = vec![String::from("ax.nodes")];
     let mut join_clauses = Vec::new();
-    let mut proj_cols = vec![format!("\"__n\".\"id\" AS \"{alias}____entity_id\"")];
+    let mut proj_cols = vec![format!("\"__n\".\"id\" AS \"{esc_alias}____entity_id\"")];
     let mut fold_idx = 0_usize;
 
     for (field_key, binding) in bindings {
+        let esc_field = escape_ident(field_key);
         match binding {
             ObjectFieldBinding::Builtin(b) => {
-                proj_cols.push(format!("\"__n\".\"{b}\" AS \"{alias}__{field_key}\""));
+                let esc_b = escape_ident(b);
+                proj_cols.push(format!(
+                    "\"__n\".\"{esc_b}\" AS \"{esc_alias}__{esc_field}\""
+                ));
             }
             ObjectFieldBinding::DirectProperty(prop) => {
                 let expr = ax_node_property_sql("__n", &main_spec.name, prop, policy, reveal_pii);
-                proj_cols.push(format!("{expr} AS \"{alias}__{field_key}\""));
+                proj_cols.push(format!("{expr} AS \"{esc_alias}__{esc_field}\""));
             }
             ObjectFieldBinding::FoldedChildMetric {
                 agg_op,
@@ -455,7 +522,7 @@ fn build_ax_nodes_object_ctes(
                 ctes.push(fold_cte);
                 join_clauses.push(join_sql);
                 proj_cols.push(format!(
-                    "\"{fold_alias}\".\"__val\" AS \"{alias}__{field_key}\""
+                    "\"{fold_alias}\".\"__val\" AS \"{esc_alias}__{esc_field}\""
                 ));
                 push_unique(&mut ref_nodes, child_type);
                 push_unique(&mut ref_edges, edge_type);
@@ -531,14 +598,38 @@ pub(crate) fn ax_node_property_sql(
     reveal_pii: bool,
 ) -> String {
     let escaped_p = prop.name.replace('\'', "''");
-    if prop.kind == PropertyKind::Metric {
-        return format!(
-            "TRY_CAST(json_extract_string(\"{table_alias}\".\"metrics\", '$.{escaped_p}') AS DOUBLE)"
-        );
-    }
-    let raw_str = format!("json_extract_string(\"{table_alias}\".\"properties\", '$.{escaped_p}')");
+    let esc_tbl = escape_ident(table_alias);
     let mask_rule = resolve_effective_property_mask(type_name, prop, policy, reveal_pii);
+    if prop.kind == PropertyKind::Metric {
+        let raw_metric = format!("json_extract_string(\"{esc_tbl}\".\"metrics\", '$.{escaped_p}')");
+        if let Some(udf) = mask_rule_udf(mask_rule) {
+            return format!("{udf}({raw_metric})");
+        }
+        return format!("TRY_CAST({raw_metric} AS DOUBLE)");
+    }
+    let raw_str = format!("json_extract_string(\"{esc_tbl}\".\"properties\", '$.{escaped_p}')");
     if let Some(udf) = mask_rule_udf(mask_rule) {
+        return format!("{udf}({raw_str})");
+    }
+    match prop.data_type {
+        DataType::Int64 => format!("TRY_CAST({raw_str} AS BIGINT)"),
+        DataType::Float64 | DataType::Decimal => format!("TRY_CAST({raw_str} AS DOUBLE)"),
+        DataType::Boolean => format!("TRY_CAST({raw_str} AS BOOLEAN)"),
+        DataType::Date => format!("TRY_CAST({raw_str} AS DATE)"),
+        DataType::Timestamp => format!("TRY_CAST({raw_str} AS TIMESTAMPTZ)"),
+        _ => raw_str,
+    }
+}
+
+pub(crate) fn ax_edge_property_sql(
+    table_alias: &str,
+    prop: &PropertySpec,
+    reveal_pii: bool,
+) -> String {
+    let escaped_p = prop.name.replace('\'', "''");
+    let esc_tbl = escape_ident(table_alias);
+    let raw_str = format!("json_extract_string(\"{esc_tbl}\".\"properties\", '$.{escaped_p}')");
+    if !reveal_pii && let Some(udf) = mask_rule_udf(default_mask_for_pii(prop.pii_category)) {
         return format!("{udf}({raw_str})");
     }
     match prop.data_type {

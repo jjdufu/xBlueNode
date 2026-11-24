@@ -12,8 +12,8 @@ use sqlparser::ast::Cte;
 
 use crate::axql::fanout_guard::parse_cte;
 use crate::axql::object_plan::{
-    BUILTIN_NODE_FIELDS, ax_node_property_sql, escape_ident, find_active_mapping, lookup_node_type,
-    push_unique,
+    BUILTIN_NODE_FIELDS, ax_edge_property_sql, ax_node_property_sql, escape_ident,
+    find_active_mapping, lookup_node_type, node_type_has_active_governance, push_unique,
 };
 use crate::axql::parser::{MatchPathSpec, bad_axql};
 use crate::sql_guard::TenantCatalog;
@@ -258,7 +258,16 @@ pub fn build_match_base_cte(
     reveal_pii: bool,
     has_knowledge_recall: bool,
 ) -> Result<MatchCtePlan, AppError> {
+    let requires_gov = validated.vertices.iter().any(|(_, v_spec)| {
+        node_type_has_active_governance(&v_spec.name, Some(v_spec), policy, reveal_pii)
+    }) || (!reveal_pii
+        && validated.edges.iter().any(|(_, _, _, es)| {
+            es.properties
+                .iter()
+                .any(|p| p.pii_category != axpoint_domain::enums::PiiCategory::None)
+        }));
     if !has_knowledge_recall
+        && !requires_gov
         && let Some(mapped) =
             try_build_mapped_match_cte(schema_doc, catalog, validated, field_bindings)?
     {
@@ -314,10 +323,11 @@ fn try_build_mapped_match_cte(
         let Some(&m) = v_maps.get(idx) else {
             return Ok(None);
         };
+        let esc_v_alias = escape_ident(v_alias);
         push_unique(&mut ref_nodes, &v_spec.name);
         push_unique(&mut ref_rels, &m.dataset);
         select_cols.push(format!(
-            "CAST(\"__v{idx}\".\"{}\" AS VARCHAR) AS \"{v_alias}____entity_id\"",
+            "CAST(\"__v{idx}\".\"{}\" AS VARCHAR) AS \"{esc_v_alias}____entity_id\"",
             escape_ident(&m.key_column)
         ));
         if let Some(f) = m.filter.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
@@ -394,7 +404,9 @@ fn append_mapped_match_projections(
             }
             _ => return false,
         };
-        select_cols.push(format!("{sql_expr} AS \"{alias}__{field_key}\""));
+        let esc_alias = escape_ident(alias);
+        let esc_field = escape_ident(field_key);
+        select_cols.push(format!("{sql_expr} AS \"{esc_alias}__{esc_field}\""));
     }
     true
 }
@@ -435,8 +447,11 @@ fn build_ax_nodes_match_cte(
     let mut ref_edges = Vec::new();
 
     for (idx, (v_alias, v_spec)) in validated.vertices.iter().enumerate() {
+        let esc_v_alias = escape_ident(v_alias);
         push_unique(&mut ref_nodes, &v_spec.name);
-        select_cols.push(format!("\"__v{idx}\".\"id\" AS \"{v_alias}____entity_id\""));
+        select_cols.push(format!(
+            "\"__v{idx}\".\"id\" AS \"{esc_v_alias}____entity_id\""
+        ));
         wheres.push(format!(
             "\"__v{idx}\".\"type_name\" = '{}'",
             v_spec.name.replace('\'', "''")
@@ -461,6 +476,8 @@ fn build_ax_nodes_match_cte(
     }
 
     for ((alias, field_key), binding) in field_bindings {
+        let esc_alias = escape_ident(alias);
+        let esc_field = escape_ident(field_key);
         if let Some((v_idx, (_, v_spec))) = validated
             .vertices
             .iter()
@@ -469,13 +486,16 @@ fn build_ax_nodes_match_cte(
         {
             let tbl = format!("__v{v_idx}");
             let expr = match binding {
-                MatchFieldBinding::NodeBuiltin(b) => format!("\"{tbl}\".\"{b}\""),
+                MatchFieldBinding::NodeBuiltin(b) => {
+                    let esc_b = escape_ident(b);
+                    format!("\"{tbl}\".\"{esc_b}\"")
+                }
                 MatchFieldBinding::NodeProperty(prop_spec) => {
                     ax_node_property_sql(&tbl, &v_spec.name, prop_spec, policy, reveal_pii)
                 }
                 _ => continue,
             };
-            select_cols.push(format!("{expr} AS \"{alias}__{field_key}\""));
+            select_cols.push(format!("{expr} AS \"{esc_alias}__{esc_field}\""));
         } else if let Some((e_idx, _, _, _)) = validated
             .edges
             .iter()
@@ -483,14 +503,16 @@ fn build_ax_nodes_match_cte(
         {
             let tbl = format!("__e{e_idx}");
             let expr = match binding {
-                MatchFieldBinding::EdgeBuiltin(b) => format!("\"{tbl}\".\"{b}\""),
+                MatchFieldBinding::EdgeBuiltin(b) => {
+                    let esc_b = escape_ident(b);
+                    format!("\"{tbl}\".\"{esc_b}\"")
+                }
                 MatchFieldBinding::EdgeProperty(prop_spec) => {
-                    let escaped = prop_spec.name.replace('\'', "''");
-                    format!("json_extract_string(\"{tbl}\".\"properties\", '$.{escaped}')")
+                    ax_edge_property_sql(&tbl, prop_spec, reveal_pii)
                 }
                 _ => continue,
             };
-            select_cols.push(format!("{expr} AS \"{alias}__{field_key}\""));
+            select_cols.push(format!("{expr} AS \"{esc_alias}__{esc_field}\""));
         }
     }
 
