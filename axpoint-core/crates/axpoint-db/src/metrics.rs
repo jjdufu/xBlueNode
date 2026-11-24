@@ -179,11 +179,7 @@ impl MetricStorePort for PgStore {
 
         sync_latest_node_snapshots_tx(&mut tx, tenant_id, &deduped).await?;
         let dirty_minutes = mark_dirty_minutes_tx(&mut tx, tenant_id, &deduped).await?;
-
-        let minute_key = format!("{tenant_id}:{}", Utc::now().format("%Y-%m-%dT%H:%MZ"));
-        let rollup_job =
-            NewJob::new(JobKind::Rollup, serde_json::json!({})).with_idempotency_key(minute_key);
-        let rollup_job_id = enqueue_job_tx(&mut tx, tenant_id, &rollup_job).await?;
+        let rollup_job_id = enqueue_coalesced_rollup_job_tx(&mut tx, tenant_id).await?;
 
         tx.commit()
             .await
@@ -695,6 +691,52 @@ async fn sync_latest_node_snapshots_tx(
     }
 
     Ok(())
+}
+
+async fn enqueue_coalesced_rollup_job_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+) -> Result<Uuid, AppError> {
+    let base_key = format!("{tenant_id}:{}", Utc::now().format("%Y-%m-%dT%H:%MZ"));
+    let pending_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM ax_jobs
+          WHERE tenant_id = $1
+            AND kind = 'ROLLUP'
+            AND status = 'PENDING'
+            AND (idempotency_key = $2 OR idempotency_key LIKE ($2 || ':%'))
+          ORDER BY created_at DESC
+          LIMIT 1",
+    )
+    .bind(tenant_id)
+    .bind(&base_key)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("check pending rollup job: {err}")))?;
+
+    if let Some(existing_id) = pending_id {
+        return Ok(existing_id);
+    }
+
+    let key_taken: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM ax_jobs
+              WHERE tenant_id = $1 AND kind = 'ROLLUP' AND idempotency_key = $2
+         )",
+    )
+    .bind(tenant_id)
+    .bind(&base_key)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("check historical rollup key: {err}")))?;
+
+    let final_key = if key_taken {
+        format!("{base_key}:{}", Uuid::new_v4())
+    } else {
+        base_key
+    };
+    let rollup_job =
+        NewJob::new(JobKind::Rollup, serde_json::json!({})).with_idempotency_key(final_key);
+    enqueue_job_tx(tx, tenant_id, &rollup_job).await
 }
 
 async fn mark_dirty_minutes_tx(
