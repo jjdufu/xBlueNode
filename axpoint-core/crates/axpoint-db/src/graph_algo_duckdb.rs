@@ -375,19 +375,19 @@ fn solve_label_propagation_pushdown(
              CREATE TABLE _next_labels AS
              WITH ranked AS (
                  SELECT e.v AS dst_idx,
-                        l.label AS cand_label,
-                        ROW_NUMBER() OVER (
-                            PARTITION BY e.v
-                            ORDER BY SUM(e.weight) DESC, l.label ASC
-                        ) AS rn
+                        l.label AS cand_label
                    FROM _w_edges e
                    JOIN _labels l ON l.idx = e.u
                   GROUP BY e.v, l.label
+                QUALIFY ROW_NUMBER() OVER (
+                    PARTITION BY e.v
+                    ORDER BY SUM(e.weight) DESC, l.label ASC
+                ) = 1
              )
              SELECT cur.idx,
                     COALESCE(r.cand_label, cur.label) AS label
                FROM _labels cur
-               LEFT JOIN ranked r ON r.dst_idx = cur.idx AND r.rn = 1;",
+               LEFT JOIN ranked r ON r.dst_idx = cur.idx;",
         )
         .map_err(|err| AppError::Database(format!("iterate LPA pushdown step failed: {err}")))?;
 
