@@ -2,7 +2,7 @@
 //! `DEAD_KNOWLEDGE` closure scanning, and L0–L4 runtime readiness certification.
 
 use axpoint_domain::enums::{
-    ActionSideEffectTier, AggFn, Cardinality, DataType, DesignMaturity, PiiCategory,
+    ActionSideEffectTier, AggFn, Cardinality, DataType, DesignMaturity, Permission, PiiCategory,
     PropagationPathKind, RuntimeCertLevel,
 };
 use axpoint_domain::rollup::{FourPathDependencyPlan, PropagationVertex};
@@ -10,7 +10,8 @@ use axpoint_domain::studio::{
     ActionParamSpec, ActionSpec, AggRuleSpec, DerivedRuleSpec, EdgeAggRuleSpec,
     EdgeDerivedRuleSpec, EdgeTypeSpec, IssueSeverity, LinkDirection, MutationStepSpec,
     NodeTypeSpec, PropertyKind, PropertySpec, SchemaDoc, ValidationContext,
-    evaluate_cert_tier_and_score, scan_dead_knowledge, validate, validate_with_metrics,
+    evaluate_cert_tier_and_score, resolve_action_permission, scan_dead_knowledge, validate,
+    validate_with_metrics,
 };
 
 fn metric_prop(name: &str) -> PropertySpec {
@@ -276,5 +277,129 @@ fn four_path_plan_orders_v2e_e2e_e2v_and_v2v_and_evaluates_cert_tiers() {
     assert_eq!(
         evaluate_cert_tier_and_score(&[], false, false, 0, 0, false).0,
         RuntimeCertLevel::L0Invalid
+    );
+}
+
+fn polymorphic_supply_doc() -> SchemaDoc {
+    SchemaDoc {
+        node_types: vec![
+            NodeTypeSpec {
+                name: String::from("Hub"),
+                display_name: String::from("枢纽"),
+                properties: vec![metric_prop("output")],
+                actions: vec![
+                    ActionSpec {
+                        name: String::from("tamper_poly_edge"),
+                        display_name: String::from("多态边篡改"),
+                        side_effect_tier: ActionSideEffectTier::RelatedNodes,
+                        mutations: vec![MutationStepSpec {
+                            target: String::from("edge(SUPPLY, OUT).flux"),
+                            expression: String::from("42"),
+                            filter: None,
+                        }],
+                        ..ActionSpec::default()
+                    },
+                    ActionSpec {
+                        name: String::from("tamper_poly_neighbor"),
+                        display_name: String::from("多态邻居篡改"),
+                        side_effect_tier: ActionSideEffectTier::RelatedNodes,
+                        mutations: vec![MutationStepSpec {
+                            target: String::from("via(SUPPLY, OUT).inbound_stock"),
+                            expression: String::from("99"),
+                            filter: None,
+                        }],
+                        ..ActionSpec::default()
+                    },
+                    ActionSpec {
+                        name: String::from("bad_perm_action"),
+                        display_name: String::from("非法权限动作"),
+                        required_permission: String::from("NOT_A_REAL_PERM"),
+                        side_effect_tier: ActionSideEffectTier::SelfOnly,
+                        mutations: vec![MutationStepSpec {
+                            target: String::from("self.output"),
+                            expression: String::from("10"),
+                            filter: None,
+                        }],
+                        ..ActionSpec::default()
+                    },
+                ],
+                ..NodeTypeSpec::default()
+            },
+            NodeTypeSpec {
+                name: String::from("Store"),
+                display_name: String::from("门店"),
+                properties: vec![metric_prop("inbound_stock")],
+                ..NodeTypeSpec::default()
+            },
+            NodeTypeSpec {
+                name: String::from("Depot"),
+                display_name: String::from("大仓"),
+                properties: vec![metric_prop("inbound_stock")],
+                derived_rules: vec![DerivedRuleSpec {
+                    target_metric: String::from("inbound_stock"),
+                    expression: String::from("100"),
+                    enabled: true,
+                    maturity: DesignMaturity::Confirmed,
+                }],
+                ..NodeTypeSpec::default()
+            },
+        ],
+        edge_types: vec![
+            EdgeTypeSpec {
+                name: String::from("SUPPLY"),
+                src_type_name: String::from("Hub"),
+                dst_type_name: String::from("Store"),
+                properties: vec![metric_prop("flux")],
+                ..EdgeTypeSpec::default()
+            },
+            EdgeTypeSpec {
+                name: String::from("SUPPLY"),
+                src_type_name: String::from("Hub"),
+                dst_type_name: String::from("Depot"),
+                properties: vec![metric_prop("flux")],
+                derived_rules: vec![EdgeDerivedRuleSpec {
+                    target_metric: String::from("flux"),
+                    expression: String::from("src.output * 0.5"),
+                    path_kind: PropagationPathKind::VertexToEdge,
+                    enabled: true,
+                    maturity: DesignMaturity::Confirmed,
+                }],
+                ..EdgeTypeSpec::default()
+            },
+        ],
+        mappings: Vec::new(),
+    }
+}
+
+#[test]
+fn redteam_polymorphic_edge_derived_write_and_permission_validation() {
+    assert_eq!(
+        resolve_action_permission("ACTION_EXECUTE"),
+        Ok(Permission::FlowRun)
+    );
+    assert_eq!(
+        resolve_action_permission("STUDIO_PUBLISH"),
+        Ok(Permission::StudioPublish)
+    );
+    assert!(resolve_action_permission("UNKNOWN_PRIVILEGE").is_err());
+    assert!(resolve_action_permission("").is_err());
+
+    let doc = polymorphic_supply_doc();
+    let issues = validate(&doc, &ValidationContext::default());
+    let derived_errs = issues
+        .iter()
+        .filter(|i| {
+            i.severity == IssueSeverity::Error && i.code == "DERIVED_METRIC_WRITE_FORBIDDEN"
+        })
+        .count();
+    assert_eq!(
+        derived_errs, 2,
+        "expected both polymorphic edge and neighbor mutations rejected: {issues:?}"
+    );
+    assert!(
+        issues
+            .iter()
+            .any(|i| i.severity == IssueSeverity::Error && i.code == "ACTION_PERMISSION_INVALID"),
+        "expected ACTION_PERMISSION_INVALID: {issues:?}"
     );
 }

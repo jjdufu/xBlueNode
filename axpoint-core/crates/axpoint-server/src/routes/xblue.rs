@@ -3136,6 +3136,7 @@ async fn invoke_object_action_handler(
         &client_ip,
         type_name.trim(),
         node_key.trim(),
+        action_name.trim(),
     )
     .await?;
 
@@ -3198,7 +3199,29 @@ async fn authorize_object_action_target(
     client_ip: &str,
     type_name: &str,
     node_key: &str,
+    action_name: &str,
 ) -> Result<axpoint_domain::guard::PolicyContext, AppError> {
+    let published = state
+        .store
+        .get_published_schema(&principal.tenant_id, "main")
+        .await?;
+    let nt = published
+        .doc
+        .node_types
+        .iter()
+        .find(|n| n.name == type_name)
+        .ok_or(AppError::NotFound("TYPE_NOT_FOUND"))?;
+    let action = nt
+        .actions
+        .iter()
+        .find(|a| {
+            a.name == action_name && a.maturity == axpoint_domain::enums::DesignMaturity::Confirmed
+        })
+        .ok_or(AppError::NotFound("ACTION_NOT_FOUND"))?;
+    let req_perm = axpoint_domain::studio::resolve_action_permission(&action.required_permission)
+        .map_err(|_| AppError::Forbidden("PERMISSION_DENIED"))?;
+    principal.require(req_perm)?;
+
     let _ = axpoint_server::policy::authorize_resource_for_store(
         &state.store,
         &state.cedar,
@@ -3270,6 +3293,19 @@ async fn certify_subgraph_handler(
 ) -> Result<Json<RuntimeCertReport>, HttpError> {
     principal.require(Permission::StudioEdit)?;
     let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let clean_slug = slug.trim();
+    if clean_slug != "main" {
+        let _ = axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            &principal,
+            Permission::StudioEdit,
+            axpoint_domain::guard::GrantResourceKind::Subgraph,
+            clean_slug,
+            &client_ip,
+        )
+        .await?;
+    }
     let req: CertifySubgraphRequest = if body.is_empty() || body.iter().all(u8::is_ascii_whitespace)
     {
         CertifySubgraphRequest::default()
@@ -3282,7 +3318,7 @@ async fn certify_subgraph_handler(
         .store
         .certify_subgraph_runtime(
             &principal.tenant_id,
-            slug.trim(),
+            clean_slug,
             actor_uuid(&principal),
             req,
         )
@@ -3313,10 +3349,53 @@ async fn certify_subgraph_handler(
 
 async fn explain_link_metric_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath((link_id, metric)): ApiPath<(Uuid, String)>,
 ) -> Result<Json<LinkMetricExplainResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
+    let (subgraph_slug, src_id, src_type_opt, dst_id, dst_type_opt) = state
+        .store
+        .get_link_authz_meta(&principal.tenant_id, link_id)
+        .await?
+        .ok_or(AppError::NotFound("LINK_NOT_FOUND"))?;
+    authorize_subgraph_read(&state, &headers, &principal, &subgraph_slug).await?;
+
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    for nt_name in [src_type_opt.as_deref(), dst_type_opt.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        let _ = axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            &principal,
+            Permission::DataRead,
+            axpoint_domain::guard::GrantResourceKind::NodeType,
+            nt_name,
+            &client_ip,
+        )
+        .await?;
+    }
+
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
+    if !policy.bypass_row_policies {
+        let visible = state
+            .store
+            .filter_visible_node_ids(&principal.tenant_id, &[src_id, dst_id], &policy.node_types)
+            .await?;
+        if !visible.contains(&src_id) || !visible.contains(&dst_id) {
+            return Err(AppError::NotFound("LINK_NOT_FOUND").into());
+        }
+    }
+
     let resp = state
         .store
         .explain_link_metric(&principal.tenant_id, link_id, &metric)

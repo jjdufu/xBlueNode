@@ -2370,7 +2370,48 @@ async fn persist_dirty_mem_links_tx(
     Ok(())
 }
 
+/// Link subgraph and endpoint metadata `(subgraph_slug, src_id, src_type, dst_id, dst_type)`
+/// used by HTTP routes for ABAC and row-policy checks before returning link provenance.
+pub type LinkAuthzMeta = (String, Uuid, Option<String>, Uuid, Option<String>);
+
 impl PgStore {
+    /// Loads `(subgraph_slug, src_node_id, src_type_name, dst_node_id, dst_type_name)` for `link_id`.
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if querying `xb_links` / `xb_nodes` fails.
+    pub async fn get_link_authz_meta(
+        &self,
+        tenant_id: &str,
+        link_id: Uuid,
+    ) -> Result<Option<LinkAuthzMeta>, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let row_opt = sqlx::query(
+            "SELECT l.subgraph_slug, l.src_node_id, s.type_name AS src_type,
+                    l.dst_node_id, d.type_name AS dst_type
+               FROM xb_links l
+               LEFT JOIN xb_nodes s ON s.tenant_id = l.tenant_id AND s.id = l.src_node_id
+               LEFT JOIN xb_nodes d ON d.tenant_id = l.tenant_id AND d.id = l.dst_node_id
+              WHERE l.tenant_id = $1 AND l.id = $2",
+        )
+        .bind(tenant_id)
+        .bind(link_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("load xb_links authz meta: {err}")))?;
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit get_link_authz_meta tx: {err}")))?;
+        Ok(row_opt.map(|r| {
+            (
+                r.get("subgraph_slug"),
+                r.get("src_node_id"),
+                r.get("src_type"),
+                r.get("dst_node_id"),
+                r.get("dst_type"),
+            )
+        }))
+    }
+
     /// Explains how edge `metric` on `link_id` was produced with 3-track provenance (`WHY`, `DELTA`, `INPUTS`, `04-STEP26` §26.3).
     ///
     /// # Errors
@@ -2456,7 +2497,18 @@ async fn build_link_explain_tx(
         .or_else(|| series.get(1).and_then(|r| r.get("val_num")));
     let latest_tag: Option<String> = series.first().map(|r| r.get("source_tag"));
 
-    let et_opt = doc.edge_types.iter().find(|e| e.name == link_type);
+    let et_opt = match (src_mem.as_ref(), dst_mem.as_ref()) {
+        (Some(sm), Some(dm)) => doc
+            .edge_types
+            .iter()
+            .find(|e| {
+                e.name == link_type
+                    && e.src_type_name == sm.type_name
+                    && e.dst_type_name == dm.type_name
+            })
+            .or_else(|| doc.edge_types.iter().find(|e| e.name == link_type)),
+        _ => doc.edge_types.iter().find(|e| e.name == link_type),
+    };
     let mem_link = MemLink {
         id: link_id,
         link_type: link_type.clone(),

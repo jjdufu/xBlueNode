@@ -126,6 +126,17 @@ fn metric_prop(name: &str) -> PropertySpec {
     }
 }
 
+fn num_param(name: &str) -> ActionParamSpec {
+    ActionParamSpec {
+        name: String::from(name),
+        display_name: String::from(name),
+        data_type: DataType::Float64,
+        required: true,
+        default_value: None,
+        description: String::new(),
+    }
+}
+
 fn step26_hub_depot_doc() -> SchemaDoc {
     SchemaDoc {
         node_types: vec![
@@ -137,14 +148,7 @@ fn step26_hub_depot_doc() -> SchemaDoc {
                     ActionSpec {
                         name: String::from("dispatch_reserve"),
                         display_name: String::from("紧急调拨"),
-                        parameters: vec![ActionParamSpec {
-                            name: String::from("qty"),
-                            display_name: String::from("调拨量"),
-                            data_type: DataType::Float64,
-                            required: true,
-                            default_value: None,
-                            description: String::new(),
-                        }],
+                        parameters: vec![num_param("qty")],
                         precondition_expr: Some(String::from(
                             "reserve_qty >= param.qty and param.qty > 0",
                         )),
@@ -166,14 +170,7 @@ fn step26_hub_depot_doc() -> SchemaDoc {
                     ActionSpec {
                         name: String::from("emergency_boost_lane"),
                         display_name: String::from("审批增补在途"),
-                        parameters: vec![ActionParamSpec {
-                            name: String::from("boost"),
-                            display_name: String::from("增量"),
-                            data_type: DataType::Float64,
-                            required: true,
-                            default_value: None,
-                            description: String::new(),
-                        }],
+                        parameters: vec![num_param("boost")],
                         side_effect_tier: ActionSideEffectTier::RelatedNodes,
                         require_approval: true,
                         mutations: vec![MutationStepSpec {
@@ -293,6 +290,19 @@ async fn seed_hub_and_depot(
     Ok((hub.row_version, depot.id, lane.id))
 }
 
+fn invoke_req(
+    inputs: serde_json::Value,
+    idem: &str,
+    expected_version: Option<i64>,
+) -> InvokeObjectActionRequest {
+    InvokeObjectActionRequest {
+        inputs,
+        idempotency_key: String::from(idem),
+        expected_version,
+        dry_run: false,
+    }
+}
+
 #[tokio::test]
 async fn step26_action_cas_precondition_idempotency_and_4path() -> TestResult {
     let Some((app_pool, owner_pool)) = test_pools().await? else {
@@ -310,12 +320,7 @@ async fn step26_action_cas_precondition_idempotency_and_4path() -> TestResult {
             "Step26Hub",
             "H-1",
             "dispatch_reserve",
-            InvokeObjectActionRequest {
-                inputs: serde_json::json!({ "qty": 999.0 }),
-                idempotency_key: String::from("idem-pre-fail"),
-                expected_version: None,
-                dry_run: false,
-            },
+            invoke_req(serde_json::json!({ "qty": 999.0 }), "idem-pre-fail", None),
         )
         .await;
     assert!(matches!(
@@ -333,12 +338,11 @@ async fn step26_action_cas_precondition_idempotency_and_4path() -> TestResult {
             "Step26Hub",
             "H-1",
             "dispatch_reserve",
-            InvokeObjectActionRequest {
-                inputs: serde_json::json!({ "qty": 10.0 }),
-                idempotency_key: String::from("idem-cas-fail"),
-                expected_version: Some(999),
-                dry_run: false,
-            },
+            invoke_req(
+                serde_json::json!({ "qty": 10.0 }),
+                "idem-cas-fail",
+                Some(999),
+            ),
         )
         .await;
     assert!(matches!(
@@ -353,12 +357,11 @@ async fn step26_action_cas_precondition_idempotency_and_4path() -> TestResult {
             "Step26Hub",
             "H-1",
             "dispatch_reserve",
-            InvokeObjectActionRequest {
-                inputs: serde_json::json!({ "qty": 20.0 }),
-                idempotency_key: String::from("idem-ok-1"),
-                expected_version: Some(hub_ver),
-                dry_run: false,
-            },
+            invoke_req(
+                serde_json::json!({ "qty": 20.0 }),
+                "idem-ok-1",
+                Some(hub_ver),
+            ),
         )
         .await?;
     assert_eq!(ok1.status, "APPLIED");
@@ -377,12 +380,7 @@ async fn step26_action_cas_precondition_idempotency_and_4path() -> TestResult {
             "Step26Hub",
             "H-1",
             "dispatch_reserve",
-            InvokeObjectActionRequest {
-                inputs: serde_json::json!({ "qty": 20.0 }),
-                idempotency_key: String::from("idem-ok-1"),
-                expected_version: None,
-                dry_run: false,
-            },
+            invoke_req(serde_json::json!({ "qty": 20.0 }), "idem-ok-1", None),
         )
         .await?;
     assert!(replay.idempotency_replay);
@@ -406,12 +404,7 @@ async fn verify_approval_and_four_path_explain(
             "Step26Hub",
             "H-1",
             "emergency_boost_lane",
-            InvokeObjectActionRequest {
-                inputs: serde_json::json!({ "boost": 5.0 }),
-                idempotency_key: String::from("idem-approval-1"),
-                expected_version: None,
-                dry_run: false,
-            },
+            invoke_req(serde_json::json!({ "boost": 5.0 }), "idem-approval-1", None),
         )
         .await?;
     assert_eq!(pending.status, "WAITING_APPROVAL");
@@ -445,6 +438,67 @@ async fn verify_approval_and_four_path_explain(
         .await?;
     assert_eq!(node_exp.value, Some(112.0));
     assert!(node_exp.rule_chain.len() >= 2);
+    verify_redteam_db_guards(store, tenant_a, lane_id).await?;
+    Ok(())
+}
+
+async fn verify_redteam_db_guards(store: &PgStore, tenant_a: &str, lane_id: Uuid) -> TestResult {
+    let idem_mismatch_log = store
+        .invoke_object_action(
+            tenant_a,
+            None,
+            "Step26Hub",
+            "H-1",
+            "dispatch_reserve",
+            invoke_req(serde_json::json!({ "qty": 5.0 }), "idem-ok-1", None),
+        )
+        .await;
+    assert!(matches!(
+        idem_mismatch_log,
+        Err(AppError::Conflict("IDEMPOTENCY_KEY_CONFLICT"))
+    ));
+
+    let idem_mismatch_approval = store
+        .invoke_object_action(
+            tenant_a,
+            None,
+            "Step26Hub",
+            "H-1",
+            "emergency_boost_lane",
+            invoke_req(
+                serde_json::json!({ "boost": 99.0 }),
+                "idem-approval-1",
+                None,
+            ),
+        )
+        .await;
+    assert!(matches!(
+        idem_mismatch_approval,
+        Err(AppError::Conflict("IDEMPOTENCY_KEY_CONFLICT"))
+    ));
+
+    let derived_edge_write = store
+        .write_link_metrics(
+            tenant_a,
+            WriteLinkMetricsRequest {
+                points: vec![LinkMetricPointInput {
+                    link_id: lane_id,
+                    metric: String::from("effective_flux"),
+                    ts: Utc::now(),
+                    value: Some(999.0),
+                    value_text: None,
+                }],
+                source_tag: None,
+            },
+        )
+        .await;
+    assert!(matches!(
+        derived_edge_write,
+        Err(AppError::BadRequest {
+            code: "DERIVED_METRIC_WRITE_FORBIDDEN",
+            ..
+        })
+    ));
     Ok(())
 }
 
@@ -464,14 +518,7 @@ fn clean_sub_doc() -> SchemaDoc {
             actions: vec![ActionSpec {
                 name: String::from("add_load"),
                 display_name: String::from("加载"),
-                parameters: vec![ActionParamSpec {
-                    name: String::from("delta"),
-                    display_name: String::from("增量"),
-                    data_type: DataType::Float64,
-                    required: true,
-                    default_value: None,
-                    description: String::new(),
-                }],
+                parameters: vec![num_param("delta")],
                 precondition_expr: Some(String::from("headroom >= param.delta")),
                 side_effect_tier: ActionSideEffectTier::SelfOnly,
                 mutations: vec![MutationStepSpec {

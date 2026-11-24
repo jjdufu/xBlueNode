@@ -2,11 +2,25 @@
 //! and L0–L4 runtime readiness level evaluation (`04-STEP26` §26.2 & §26.4).
 
 use std::collections::BTreeSet;
+use std::str::FromStr;
 
-use crate::enums::{Cardinality, DataType, RuntimeCertLevel};
+use crate::enums::{Cardinality, DataType, Permission, RuntimeCertLevel};
 use crate::expr::{collect_references, parse as parse_expr};
 use crate::studio::cert::{ActionParamSpec, ActionSpec, DeadKnowledgeIssue};
 use crate::studio::doc::{IssueSeverity, LinkDirection, SchemaDoc, ValidationIssue};
+
+/// Resolves `ActionSpec.required_permission` fail-closed (`"ACTION_EXECUTE"` aliases [`Permission::FlowRun`]).
+///
+/// # Errors
+/// Returns the trimmed invalid permission string when `raw` does not match `"ACTION_EXECUTE"`
+/// or a canonical [`Permission`] variant.
+pub fn resolve_action_permission(raw: &str) -> Result<Permission, String> {
+    let trimmed = raw.trim();
+    if trimmed == "ACTION_EXECUTE" {
+        return Ok(Permission::FlowRun);
+    }
+    Permission::from_str(trimmed).map_err(|_| String::from(trimmed))
+}
 
 /// Parsed destination of a [`crate::studio::MutationStepSpec::target`] string (`04-STEP26` §26.2.1).
 #[derive(Debug, Clone, PartialEq, Eq)]

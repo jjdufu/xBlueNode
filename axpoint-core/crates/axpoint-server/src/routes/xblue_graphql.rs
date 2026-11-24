@@ -28,7 +28,6 @@ use axum::extract::State;
 use chrono::Utc;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
-use std::str::FromStr;
 
 use crate::state::{ApiJson, AppState, HttpError};
 use crate::telemetry::current_trace_id;
@@ -1092,11 +1091,9 @@ async fn execute_gql_object_action(
 ) -> Result<InvokeObjectActionResponse, AppError> {
     req_ctx.principal.enforce_no_prod_mutation()?;
     req_ctx.principal.require(Permission::FlowRun)?;
-    if action.required_permission != "ACTION_EXECUTE"
-        && let Ok(extra_perm) = Permission::from_str(action.required_permission.trim())
-    {
-        req_ctx.principal.require(extra_perm)?;
-    }
+    let req_perm = axpoint_domain::studio::resolve_action_permission(&action.required_permission)
+        .map_err(|_| AppError::Forbidden("PERMISSION_DENIED"))?;
+    req_ctx.principal.require(req_perm)?;
 
     let _ = axpoint_server::policy::authorize_resource_for_store(
         &req_ctx.store,

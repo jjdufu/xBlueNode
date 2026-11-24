@@ -1081,16 +1081,15 @@ async fn write_link_metrics_impl(
         .into_iter()
         .collect();
 
-    let (updated_links, affected_subgraphs) =
+    let (updated_links, docs_by_slug) =
         upsert_link_series_and_snapshots_tx(&mut tx, tenant_id, source_tag, &deduped, &link_ids)
             .await?;
 
     let mut recomputed_metrics = 0_usize;
     let mut changed_nodes: BTreeSet<Uuid> = BTreeSet::new();
-    for slug in affected_subgraphs {
-        let doc = crate::studio_repo::load_schema_doc_tx(&mut tx, tenant_id, &slug).await?;
+    for (slug, doc) in &docs_by_slug {
         let stats =
-            crate::aggregate_exec::propagate_subgraph_4path_tx(&mut tx, tenant_id, &slug, &doc)
+            crate::aggregate_exec::propagate_subgraph_4path_tx(&mut tx, tenant_id, slug, doc)
                 .await?;
         recomputed_metrics = recomputed_metrics.saturating_add(stats.recomputed_metrics);
         changed_nodes.extend(stats.changed_nodes);
@@ -1166,12 +1165,16 @@ async fn upsert_link_series_and_snapshots_tx(
     source_tag: &str,
     deduped: &[LinkMetricPointInput],
     link_ids: &[Uuid],
-) -> Result<(usize, BTreeSet<String>), AppError> {
+) -> Result<(usize, BTreeMap<String, axpoint_domain::studio::SchemaDoc>), AppError> {
     let rows = sqlx::query(
-        "SELECT id, subgraph_slug, properties, metrics
-           FROM xb_links
-          WHERE tenant_id = $1 AND id = ANY($2)
-          FOR UPDATE",
+        "SELECT l.id, l.subgraph_slug, l.link_type,
+                s.type_name AS src_type, d.type_name AS dst_type,
+                l.properties, l.metrics
+           FROM xb_links l
+           LEFT JOIN xb_nodes s ON s.tenant_id = l.tenant_id AND s.id = l.src_node_id
+           LEFT JOIN xb_nodes d ON d.tenant_id = l.tenant_id AND d.id = l.dst_node_id
+          WHERE l.tenant_id = $1 AND l.id = ANY($2)
+          FOR UPDATE OF l",
     )
     .bind(tenant_id)
     .bind(link_ids)
@@ -1183,6 +1186,102 @@ async fn upsert_link_series_and_snapshots_tx(
         return Err(AppError::NotFound("LINK_NOT_FOUND"));
     }
 
+    let mut docs_by_slug = BTreeMap::new();
+    for r in &rows {
+        let slug: String = r.get("subgraph_slug");
+        if let std::collections::btree_map::Entry::Vacant(e) = docs_by_slug.entry(slug) {
+            let doc = crate::studio_repo::load_schema_doc_tx(tx, tenant_id, e.key()).await?;
+            e.insert(doc);
+        }
+    }
+    reject_protected_link_metrics(&rows, deduped, &docs_by_slug)?;
+
+    let latest_by_link =
+        insert_link_metric_series_batch_tx(tx, tenant_id, source_tag, deduped).await?;
+
+    let mut updated_links = 0_usize;
+    for r in rows {
+        let lid: Uuid = r.get("id");
+        let Some(incoming) = latest_by_link.get(&lid) else {
+            continue;
+        };
+        apply_single_link_snapshot_tx(tx, tenant_id, lid, &r, incoming).await?;
+        updated_links = updated_links.saturating_add(1);
+    }
+
+    Ok((updated_links, docs_by_slug))
+}
+
+fn reject_protected_link_metrics(
+    rows: &[sqlx::postgres::PgRow],
+    deduped: &[LinkMetricPointInput],
+    docs_by_slug: &BTreeMap<String, axpoint_domain::studio::SchemaDoc>,
+) -> Result<(), AppError> {
+    let mut meta_by_id: BTreeMap<Uuid, (String, String, Option<String>, Option<String>)> =
+        BTreeMap::new();
+    for r in rows {
+        meta_by_id.insert(
+            r.get("id"),
+            (
+                r.get("subgraph_slug"),
+                r.get("link_type"),
+                r.get("src_type"),
+                r.get("dst_type"),
+            ),
+        );
+    }
+
+    for pt in deduped {
+        let Some((slug, link_type, src_opt, dst_opt)) = meta_by_id.get(&pt.link_id) else {
+            continue;
+        };
+        let Some(doc) = docs_by_slug.get(slug) else {
+            continue;
+        };
+        let exact: Vec<&axpoint_domain::studio::EdgeTypeSpec> = match (src_opt, dst_opt) {
+            (Some(st), Some(dt)) => doc
+                .edge_types
+                .iter()
+                .filter(|e| {
+                    e.name == *link_type && e.src_type_name == *st && e.dst_type_name == *dt
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        let candidates: Vec<&axpoint_domain::studio::EdgeTypeSpec> = if exact.is_empty() {
+            doc.edge_types
+                .iter()
+                .filter(|e| e.name == *link_type)
+                .collect()
+        } else {
+            exact
+        };
+        let is_protected = candidates.iter().any(|et| {
+            et.agg_rules.iter().any(|r| r.target_metric == pt.metric)
+                || et
+                    .derived_rules
+                    .iter()
+                    .any(|d| d.enabled && d.target_metric == pt.metric)
+        });
+        if is_protected {
+            return Err(AppError::bad(
+                "DERIVED_METRIC_WRITE_FORBIDDEN",
+                format!(
+                    "edge metric '{link_type}.{}' is produced by a derived or aggregation rule and cannot be written directly",
+                    pt.metric
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+async fn insert_link_metric_series_batch_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    source_tag: &str,
+    deduped: &[LinkMetricPointInput],
+) -> Result<BTreeMap<Uuid, BTreeMap<String, (DateTime<Utc>, f64)>>, AppError> {
     let cap = deduped.len();
     let mut lids = Vec::with_capacity(cap);
     let mut mkeys = Vec::with_capacity(cap);
@@ -1232,20 +1331,7 @@ async fn upsert_link_series_and_snapshots_tx(
     .await
     .map_err(|err| AppError::Database(format!("insert xb_link_metric_series failed: {err}")))?;
 
-    let mut subgraphs = BTreeSet::new();
-    let mut updated_links = 0_usize;
-    for r in rows {
-        let lid: Uuid = r.get("id");
-        let slug: String = r.get("subgraph_slug");
-        subgraphs.insert(slug);
-        let Some(incoming) = latest_by_link.get(&lid) else {
-            continue;
-        };
-        apply_single_link_snapshot_tx(tx, tenant_id, lid, &r, incoming).await?;
-        updated_links = updated_links.saturating_add(1);
-    }
-
-    Ok((updated_links, subgraphs))
+    Ok(latest_by_link)
 }
 
 async fn apply_single_link_snapshot_tx(

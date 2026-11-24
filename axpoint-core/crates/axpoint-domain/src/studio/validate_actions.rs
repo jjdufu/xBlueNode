@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::enums::{ActionSideEffectTier, DataType};
 use crate::expr::{ExprType, ExprTypeEnv, parse as parse_expr, typecheck_detailed};
 use crate::studio::cert::{ActionParamSpec, ActionSpec};
-use crate::studio::cert_eval::{ParsedMutationTarget, parse_mutation_target, scan_dead_knowledge};
+use crate::studio::cert_eval::{
+    ParsedMutationTarget, parse_mutation_target, resolve_action_permission, scan_dead_knowledge,
+};
 use crate::studio::doc::{
     EdgeTypeSpec, IssueSeverity, LinkDirection, NodeTypeSpec, PropertyKind, PropertySpec,
     SchemaDoc, ValidationIssue,
@@ -84,6 +86,18 @@ fn validate_single_action(
     let mut base_env = ExprTypeEnv::default();
     add_scoped_props(&mut base_env, &nt.properties, "self", true);
     validate_action_params(&action.parameters, a_path, &mut base_env, issues);
+
+    if let Err(bad_perm) = resolve_action_permission(&action.required_permission) {
+        push_err(
+            issues,
+            format!("{a_path}.required_permission"),
+            "ACTION_PERMISSION_INVALID",
+            format!(
+                "action '{}' declares unknown required_permission '{bad_perm}'",
+                action.name
+            ),
+        );
+    }
 
     if action
         .trigger_flow_slug
@@ -277,13 +291,19 @@ fn validate_neighbor_mutation(
     issues: &mut Vec<ValidationIssue>,
 ) {
     let (link_type, direction, field) = target_spec;
-    let Some(edge) = ctx.doc.edge_types.iter().find(|e| {
-        e.name == link_type
-            && match direction {
-                LinkDirection::Out => e.src_type_name == ctx.nt.name,
-                LinkDirection::In => e.dst_type_name == ctx.nt.name,
-            }
-    }) else {
+    let matched_edges: Vec<&EdgeTypeSpec> = ctx
+        .doc
+        .edge_types
+        .iter()
+        .filter(|e| {
+            e.name == link_type
+                && match direction {
+                    LinkDirection::Out => e.src_type_name == ctx.nt.name,
+                    LinkDirection::In => e.dst_type_name == ctx.nt.name,
+                }
+        })
+        .collect();
+    if matched_edges.is_empty() {
         push_err(
             issues,
             format!("{m_path}.target"),
@@ -296,36 +316,42 @@ fn validate_neighbor_mutation(
             ),
         );
         return;
-    };
+    }
 
-    let nb_type_name = match direction {
-        LinkDirection::Out => &edge.dst_type_name,
-        LinkDirection::In => &edge.src_type_name,
-    };
-    let Some(&nb_nt) = ctx.effective_types.get(nb_type_name) else {
-        push_err(
+    let mut seen_nb_types = BTreeSet::new();
+    for edge in matched_edges {
+        let nb_type_name = match direction {
+            LinkDirection::Out => &edge.dst_type_name,
+            LinkDirection::In => &edge.src_type_name,
+        };
+        if !seen_nb_types.insert(nb_type_name.as_str()) {
+            continue;
+        }
+        let Some(&nb_nt) = ctx.effective_types.get(nb_type_name) else {
+            push_err(
+                issues,
+                format!("{m_path}.target"),
+                "ACTION_TARGET_INVALID",
+                format!("neighbor node type '{nb_type_name}' not found"),
+            );
+            continue;
+        };
+
+        let mut step_env = ctx.base_env.clone();
+        add_scoped_props(&mut step_env, &nb_nt.properties, "target", true);
+        check_target_field_and_expr(
+            (
+                &nb_nt.name,
+                &nb_nt.properties,
+                &protected_node_metrics(nb_nt),
+            ),
+            field,
+            mstep,
+            m_path,
+            &step_env,
             issues,
-            format!("{m_path}.target"),
-            "ACTION_TARGET_INVALID",
-            format!("neighbor node type '{nb_type_name}' not found"),
         );
-        return;
-    };
-
-    let mut step_env = ctx.base_env.clone();
-    add_scoped_props(&mut step_env, &nb_nt.properties, "target", true);
-    check_target_field_and_expr(
-        (
-            &nb_nt.name,
-            &nb_nt.properties,
-            &protected_node_metrics(nb_nt),
-        ),
-        field,
-        mstep,
-        m_path,
-        &step_env,
-        issues,
-    );
+    }
 }
 
 fn validate_edge_mutation(
@@ -336,13 +362,19 @@ fn validate_edge_mutation(
     issues: &mut Vec<ValidationIssue>,
 ) {
     let (link_type, direction, field) = target_spec;
-    let Some(edge) = ctx.doc.edge_types.iter().find(|e| {
-        e.name == link_type
-            && match direction {
-                LinkDirection::Out => e.src_type_name == ctx.nt.name,
-                LinkDirection::In => e.dst_type_name == ctx.nt.name,
-            }
-    }) else {
+    let matched_edges: Vec<&EdgeTypeSpec> = ctx
+        .doc
+        .edge_types
+        .iter()
+        .filter(|e| {
+            e.name == link_type
+                && match direction {
+                    LinkDirection::Out => e.src_type_name == ctx.nt.name,
+                    LinkDirection::In => e.dst_type_name == ctx.nt.name,
+                }
+        })
+        .collect();
+    if matched_edges.is_empty() {
         push_err(
             issues,
             format!("{m_path}.target"),
@@ -355,28 +387,29 @@ fn validate_edge_mutation(
             ),
         );
         return;
-    };
-
-    let mut step_env = ctx.base_env.clone();
-    step_env.metrics.insert(String::from("weight"));
-    step_env
-        .properties
-        .insert(String::from("edge.weight"), Some(ExprType::Number));
-    add_scoped_props(&mut step_env, &edge.properties, "edge", true);
-
-    if field == "weight" {
-        check_step_expr_and_filter(ExprType::Number, mstep, m_path, &step_env, issues);
-        return;
     }
 
-    check_target_field_and_expr(
-        (&edge.name, &edge.properties, &protected_edge_metrics(edge)),
-        field,
-        mstep,
-        m_path,
-        &step_env,
-        issues,
-    );
+    for edge in matched_edges {
+        let mut step_env = ctx.base_env.clone();
+        step_env.metrics.insert(String::from("weight"));
+        step_env
+            .properties
+            .insert(String::from("edge.weight"), Some(ExprType::Number));
+        add_scoped_props(&mut step_env, &edge.properties, "edge", true);
+
+        if field == "weight" {
+            check_step_expr_and_filter(ExprType::Number, mstep, m_path, &step_env, issues);
+        } else {
+            check_target_field_and_expr(
+                (&edge.name, &edge.properties, &protected_edge_metrics(edge)),
+                field,
+                mstep,
+                m_path,
+                &step_env,
+                issues,
+            );
+        }
+    }
 }
 
 fn check_target_field_and_expr(

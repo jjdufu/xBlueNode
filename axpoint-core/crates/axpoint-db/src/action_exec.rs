@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use axpoint_domain::AppError;
-use axpoint_domain::enums::{DataType, DesignMaturity, OutboxTopic};
+use axpoint_domain::enums::{ActionSideEffectTier, DataType, DesignMaturity, OutboxTopic};
 use axpoint_domain::expr::{EvalEnv, ExprValue, eval as eval_expr, parse as parse_expr};
 use axpoint_domain::json_schema::validate_json_against_schema;
 use axpoint_domain::platform::NewOutboxEvent;
@@ -63,20 +63,15 @@ pub async fn invoke_object_action_impl(
     let target_ref = format!("{type_name}:{node_key}:{action_name}");
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
 
-    if !req.dry_run
-        && let Some(replayed) = check_action_idempotency_tx(
-            &mut tx,
-            tenant_id,
-            idem_key,
-            &target_ref,
-            (type_name, node_key),
-        )
-        .await?
-    {
-        tx.commit().await.map_err(|e| {
-            AppError::Database(format!("commit replayed invoke_object_action: {e}"))
-        })?;
-        return Ok(replayed);
+    if !req.dry_run {
+        let lock_key = format!("{tenant_id}:act_idem:{idem_key}");
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+            .bind(&lock_key)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| {
+                AppError::Database(format!("acquire action idempotency advisory lock: {e}"))
+            })?;
     }
 
     let _ = require_subgraph_exists_tx(&mut tx, tenant_id, "main").await?;
@@ -93,6 +88,24 @@ pub async fn invoke_object_action_impl(
         .ok_or(AppError::NotFound("ACTION_NOT_FOUND"))?;
 
     let (norm_inputs, param_env) = normalize_and_validate_inputs(action, &req.inputs)?;
+
+    if !req.dry_run
+        && let Some(replayed) = check_action_idempotency_tx(
+            &mut tx,
+            tenant_id,
+            idem_key,
+            &target_ref,
+            &norm_inputs,
+            (type_name, node_key),
+        )
+        .await?
+    {
+        tx.commit().await.map_err(|e| {
+            AppError::Database(format!("commit replayed invoke_object_action: {e}"))
+        })?;
+        return Ok(replayed);
+    }
+
     let node = lock_target_node_tx(&mut tx, tenant_id, type_name, node_key).await?;
     if let Some(expected_ver) = req.expected_version
         && expected_ver != node.row_version
@@ -133,6 +146,7 @@ async fn check_action_idempotency_tx(
     tenant_id: &str,
     idem_key: &str,
     target_ref: &str,
+    norm_inputs: &serde_json::Value,
     node_lookup: (&str, &str),
 ) -> Result<Option<InvokeObjectActionResponse>, AppError> {
     let row_opt = sqlx::query(
@@ -149,11 +163,14 @@ async fn check_action_idempotency_tx(
     if let Some(r) = row_opt {
         let stored_target: String = r.get("target");
         let status: String = r.get("status");
-        if stored_target != target_ref || status == "FAILED" {
+        let payload: serde_json::Value = r.get("payload");
+        if stored_target != target_ref
+            || status == "FAILED"
+            || payload.get("inputs") != Some(norm_inputs)
+        {
             return Err(AppError::Conflict("IDEMPOTENCY_KEY_CONFLICT"));
         }
         let log_id: i64 = r.get("id");
-        let payload: serde_json::Value = r.get("payload");
         let cached_node: Option<BlueNode> = payload
             .get("node")
             .cloned()
@@ -189,22 +206,26 @@ async fn check_action_idempotency_tx(
         }));
     }
 
-    let pending_app: Option<Uuid> = sqlx::query_scalar(
-        "SELECT id FROM ax_approvals
+    let pending_row = sqlx::query(
+        "SELECT id, source_ref, detail FROM ax_approvals
           WHERE tenant_id = $1
             AND source_kind = 'OBJECT_ACTION'
-            AND source_ref = $2
-            AND detail->>'idempotency_key' = $3
+            AND detail->>'idempotency_key' = $2
           LIMIT 1",
     )
     .bind(tenant_id)
-    .bind(target_ref)
     .bind(idem_key)
     .fetch_optional(&mut **tx)
     .await
     .map_err(|err| AppError::Database(format!("lookup ax_approvals idempotency: {err}")))?;
 
-    if let Some(app_id) = pending_app {
+    if let Some(arow) = pending_row {
+        let app_id: Uuid = arow.get("id");
+        let stored_ref: String = arow.get("source_ref");
+        let detail: serde_json::Value = arow.get("detail");
+        if stored_ref != target_ref || detail.get("inputs") != Some(norm_inputs) {
+            return Err(AppError::Conflict("IDEMPOTENCY_KEY_CONFLICT"));
+        }
         let fresh_node =
             fetch_node_optional_tx(tx, tenant_id, node_lookup.0, node_lookup.1).await?;
         return Ok(Some(InvokeObjectActionResponse {
@@ -452,6 +473,17 @@ async fn execute_action_mutations_and_commit_tx(
     for mstep in &action.mutations {
         let parsed = parse_mutation_target(&mstep.target, &nt.name, doc)
             .map_err(|msg| AppError::bad("ACTION_TARGET_INVALID", msg))?;
+        if action.side_effect_tier == ActionSideEffectTier::SelfOnly
+            && !matches!(parsed, ParsedMutationTarget::SelfField { .. })
+        {
+            return Err(AppError::bad(
+                "SIDE_EFFECT_TIER_VIOLATION",
+                format!(
+                    "SELF_ONLY action '{}' cannot mutate traversal target '{}'",
+                    action.name, mstep.target
+                ),
+            ));
+        }
         match parsed {
             ParsedMutationTarget::SelfField { field } => {
                 apply_self_mutation_tx(&mut tx, tenant_id, nt, self_node, param_env, mstep, &field)
@@ -664,6 +696,54 @@ async fn apply_self_mutation_tx(
     Ok(())
 }
 
+fn resolve_neighbor_props_map<'a>(
+    doc: &'a SchemaDoc,
+    owner_type: &str,
+    link_type: &str,
+    dir: LinkDirection,
+    field: &str,
+) -> Result<BTreeMap<String, &'a PropertySpec>, AppError> {
+    let matched_edges: Vec<&EdgeTypeSpec> = doc
+        .edge_types
+        .iter()
+        .filter(|e| {
+            e.name == link_type
+                && match dir {
+                    LinkDirection::Out => e.src_type_name == owner_type,
+                    LinkDirection::In => e.dst_type_name == owner_type,
+                }
+        })
+        .collect();
+    if matched_edges.is_empty() {
+        return Err(AppError::bad(
+            "ACTION_TARGET_INVALID",
+            "edge traversal not found",
+        ));
+    }
+
+    let mut props_by_type: BTreeMap<String, &'a PropertySpec> = BTreeMap::new();
+    for edge in matched_edges {
+        let nb_type_name = match dir {
+            LinkDirection::Out => &edge.dst_type_name,
+            LinkDirection::In => &edge.src_type_name,
+        };
+        if let std::collections::btree_map::Entry::Vacant(e) =
+            props_by_type.entry(nb_type_name.clone())
+        {
+            let nb_nt = doc
+                .node_types
+                .iter()
+                .find(|n| n.name == *nb_type_name)
+                .ok_or_else(|| {
+                    AppError::bad("ACTION_TARGET_INVALID", "neighbor node type not found")
+                })?;
+            let prop = ensure_writable_node_field(nb_nt, field)?;
+            e.insert(prop);
+        }
+    }
+    Ok(props_by_type)
+}
+
 async fn apply_neighbor_mutation_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
@@ -674,41 +754,22 @@ async fn apply_neighbor_mutation_tx(
 ) -> Result<Vec<Uuid>, AppError> {
     let (self_node, param_env) = self_ctx;
     let (link_type, dir, field) = traversal;
-    let edge = doc
-        .edge_types
-        .iter()
-        .find(|e| {
-            e.name == link_type
-                && match dir {
-                    LinkDirection::Out => e.src_type_name == self_node.type_name,
-                    LinkDirection::In => e.dst_type_name == self_node.type_name,
-                }
-        })
-        .ok_or_else(|| AppError::bad("ACTION_TARGET_INVALID", "edge traversal not found"))?;
-    let nb_type_name = match dir {
-        LinkDirection::Out => &edge.dst_type_name,
-        LinkDirection::In => &edge.src_type_name,
-    };
-    let nb_nt = doc
-        .node_types
-        .iter()
-        .find(|n| n.name == *nb_type_name)
-        .ok_or_else(|| AppError::bad("ACTION_TARGET_INVALID", "neighbor node type not found"))?;
-    let prop = ensure_writable_node_field(nb_nt, field)?;
-
+    let props_by_type =
+        resolve_neighbor_props_map(doc, &self_node.type_name, link_type, dir, field)?;
+    let nb_types: Vec<String> = props_by_type.keys().cloned().collect();
     let sql = match dir {
         LinkDirection::Out => {
-            "SELECT n.id, n.properties, n.metrics FROM xb_links l
+            "SELECT n.id, n.type_name, n.properties, n.metrics FROM xb_links l
                JOIN xb_nodes n ON n.tenant_id = l.tenant_id AND n.id = l.dst_node_id
               WHERE l.tenant_id = $1 AND l.subgraph_slug = 'main'
-                AND l.link_type = $2 AND l.src_node_id = $3 AND n.type_name = $4
+                AND l.link_type = $2 AND l.src_node_id = $3 AND n.type_name = ANY($4)
               FOR UPDATE OF n"
         }
         LinkDirection::In => {
-            "SELECT n.id, n.properties, n.metrics FROM xb_links l
+            "SELECT n.id, n.type_name, n.properties, n.metrics FROM xb_links l
                JOIN xb_nodes n ON n.tenant_id = l.tenant_id AND n.id = l.src_node_id
               WHERE l.tenant_id = $1 AND l.subgraph_slug = 'main'
-                AND l.link_type = $2 AND l.dst_node_id = $3 AND n.type_name = $4
+                AND l.link_type = $2 AND l.dst_node_id = $3 AND n.type_name = ANY($4)
               FOR UPDATE OF n"
         }
     };
@@ -716,7 +777,7 @@ async fn apply_neighbor_mutation_tx(
         .bind(tenant_id)
         .bind(link_type)
         .bind(self_node.id)
-        .bind(nb_type_name)
+        .bind(&nb_types)
         .fetch_all(&mut **tx)
         .await
         .map_err(|e| AppError::Database(format!("lock neighbor nodes for action: {e}")))?;
@@ -727,6 +788,10 @@ async fn apply_neighbor_mutation_tx(
     let mut mutated = Vec::new();
     for r in rows {
         let nid: Uuid = r.get("id");
+        let ntype: String = r.get("type_name");
+        let Some(&prop) = props_by_type.get(&ntype) else {
+            continue;
+        };
         let mut props = match r.get::<serde_json::Value, _>("properties") {
             serde_json::Value::Object(m) => m,
             _ => serde_json::Map::new(),
@@ -747,6 +812,71 @@ async fn apply_neighbor_mutation_tx(
     Ok(mutated)
 }
 
+fn ensure_writable_edge_spec_field(edge_spec: &EdgeTypeSpec, field: &str) -> Result<(), AppError> {
+    let is_protected = edge_spec.agg_rules.iter().any(|r| r.target_metric == field)
+        || edge_spec
+            .derived_rules
+            .iter()
+            .any(|d| d.enabled && d.target_metric == field);
+    if is_protected {
+        return Err(AppError::bad(
+            "DERIVED_METRIC_WRITE_FORBIDDEN",
+            format!(
+                "edge metric '{}.{field}' is produced by a rule",
+                edge_spec.name
+            ),
+        ));
+    }
+    if field != "weight" && !edge_spec.properties.iter().any(|p| p.name == field) {
+        return Err(AppError::bad(
+            "ACTION_TARGET_INVALID",
+            format!(
+                "field '{field}' is not declared on edge '{}'",
+                edge_spec.name
+            ),
+        ));
+    }
+    Ok(())
+}
+
+async fn lock_incident_links_for_action_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    link_type: &str,
+    dir: LinkDirection,
+    self_node_id: Uuid,
+) -> Result<Vec<sqlx::postgres::PgRow>, AppError> {
+    let sql = match dir {
+        LinkDirection::Out => {
+            "SELECT l.id, s.type_name AS src_type, d.type_name AS dst_type,
+                    COALESCE(l.weight, 1.0) AS weight, l.properties, l.metrics
+               FROM xb_links l
+               LEFT JOIN xb_nodes s ON s.tenant_id = l.tenant_id AND s.id = l.src_node_id
+               LEFT JOIN xb_nodes d ON d.tenant_id = l.tenant_id AND d.id = l.dst_node_id
+              WHERE l.tenant_id = $1 AND l.subgraph_slug = 'main'
+                AND l.link_type = $2 AND l.src_node_id = $3
+              FOR UPDATE OF l"
+        }
+        LinkDirection::In => {
+            "SELECT l.id, s.type_name AS src_type, d.type_name AS dst_type,
+                    COALESCE(l.weight, 1.0) AS weight, l.properties, l.metrics
+               FROM xb_links l
+               LEFT JOIN xb_nodes s ON s.tenant_id = l.tenant_id AND s.id = l.src_node_id
+               LEFT JOIN xb_nodes d ON d.tenant_id = l.tenant_id AND d.id = l.dst_node_id
+              WHERE l.tenant_id = $1 AND l.subgraph_slug = 'main'
+                AND l.link_type = $2 AND l.dst_node_id = $3
+              FOR UPDATE OF l"
+        }
+    };
+    sqlx::query(sql)
+        .bind(tenant_id)
+        .bind(link_type)
+        .bind(self_node_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|e| AppError::Database(format!("lock incident links for action: {e}")))
+}
+
 async fn apply_edge_mutation_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
@@ -757,49 +887,46 @@ async fn apply_edge_mutation_tx(
 ) -> Result<Vec<Uuid>, AppError> {
     let (self_node, param_env) = self_ctx;
     let (link_type, dir, field) = traversal;
-    let edge_spec = doc
+    let matched_edges: Vec<&EdgeTypeSpec> = doc
         .edge_types
         .iter()
-        .find(|e| e.name == link_type)
-        .ok_or_else(|| AppError::bad("ACTION_TARGET_INVALID", "edge type not found"))?;
-    let is_protected = edge_spec.agg_rules.iter().any(|r| r.target_metric == field)
-        || edge_spec
-            .derived_rules
-            .iter()
-            .any(|d| d.enabled && d.target_metric == field);
-    if is_protected {
+        .filter(|e| {
+            e.name == link_type
+                && match dir {
+                    LinkDirection::Out => e.src_type_name == self_node.type_name,
+                    LinkDirection::In => e.dst_type_name == self_node.type_name,
+                }
+        })
+        .collect();
+    let Some(&fallback_spec) = matched_edges.first() else {
         return Err(AppError::bad(
-            "DERIVED_METRIC_WRITE_FORBIDDEN",
-            format!("edge metric '{link_type}.{field}' is produced by a rule"),
+            "ACTION_TARGET_INVALID",
+            "edge type not found",
         ));
+    };
+    for es in &matched_edges {
+        ensure_writable_edge_spec_field(es, field)?;
     }
 
-    let sql = match dir {
-        LinkDirection::Out => {
-            "SELECT id, COALESCE(weight, 1.0) AS weight, properties, metrics FROM xb_links
-              WHERE tenant_id = $1 AND subgraph_slug = 'main' AND link_type = $2 AND src_node_id = $3
-              FOR UPDATE"
-        }
-        LinkDirection::In => {
-            "SELECT id, COALESCE(weight, 1.0) AS weight, properties, metrics FROM xb_links
-              WHERE tenant_id = $1 AND subgraph_slug = 'main' AND link_type = $2 AND dst_node_id = $3
-              FOR UPDATE"
-        }
-    };
-    let rows = sqlx::query(sql)
-        .bind(tenant_id)
-        .bind(link_type)
-        .bind(self_node.id)
-        .fetch_all(&mut **tx)
-        .await
-        .map_err(|e| AppError::Database(format!("lock incident links for action: {e}")))?;
-
+    let rows =
+        lock_incident_links_for_action_tx(tx, tenant_id, link_type, dir, self_node.id).await?;
     let expr_ast =
         parse_expr(&mstep.expression).map_err(|e| AppError::bad("EXPR_INVALID", e.message))?;
     let filter_ast = parse_optional_filter(mstep.filter.as_deref())?;
     let mut mutated = Vec::new();
     for r in rows {
         let lid: Uuid = r.get("id");
+        let src_type: Option<String> = r.get("src_type");
+        let dst_type: Option<String> = r.get("dst_type");
+        let exact_spec = match (&src_type, &dst_type) {
+            (Some(st), Some(dt)) => matched_edges
+                .iter()
+                .copied()
+                .find(|e| e.src_type_name == *st && e.dst_type_name == *dt)
+                .unwrap_or(fallback_spec),
+            _ => fallback_spec,
+        };
+        ensure_writable_edge_spec_field(exact_spec, field)?;
         let mut weight: f64 = r.get("weight");
         let mut props = match r.get::<serde_json::Value, _>("properties") {
             serde_json::Value::Object(m) => m,
@@ -822,7 +949,7 @@ async fn apply_edge_mutation_tx(
             tx,
             tenant_id,
             lid,
-            edge_spec,
+            exact_spec,
             field,
             (&mut weight, &mut props, &mut metrics),
             val,

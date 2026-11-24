@@ -377,6 +377,14 @@ where
                 .list_published_object_actions(&principal.tenant_id)
                 .await?;
             for desc in obj_actions {
+                let Ok(req_perm) = axpoint_domain::studio::resolve_action_permission(
+                    &desc.action.required_permission,
+                ) else {
+                    continue;
+                };
+                if !principal.has(req_perm) {
+                    continue;
+                }
                 let tname = mcp_object_action_tool_name(&desc);
                 if tools.iter().any(|t| t.name == tname) {
                     continue;
@@ -969,6 +977,10 @@ where
 
         principal.enforce_no_prod_mutation()?;
         principal.require(Permission::FlowRun)?;
+        let req_perm =
+            axpoint_domain::studio::resolve_action_permission(&desc.action.required_permission)
+                .map_err(|_| AppError::Forbidden("PERMISSION_DENIED"))?;
+        principal.require(req_perm)?;
         let schema = build_mcp_object_action_schema(&desc.action);
         validate_instance_against_schema(args, &schema)?;
 
