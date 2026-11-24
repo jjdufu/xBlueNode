@@ -369,6 +369,94 @@ impl NodeListQuery {
         }
         Ok(Some([min_lng, min_lat, max_lng, max_lat]))
     }
+
+    /// Parses spatial query parameters (`geo_op`, `polygon`, `center_lng`, `center_lat`, `radius_meters`, `bbox`)
+    /// into an optional validated [`crate::geo_ops::SpatialFilterSpec`] (`06-STEP28` §28.3).
+    ///
+    /// # Errors
+    /// Returns [`AppError::BadRequest`] (`INVALID_GEOMETRY` or `INVALID_ARGUMENT`) if geometry or coordinates are malformed.
+    pub fn parse_spatial_filter(
+        &self,
+    ) -> Result<Option<crate::geo_ops::SpatialFilterSpec>, AppError> {
+        let inferred_op = match self.geo_op {
+            Some(op) => Some(op),
+            None if self
+                .polygon
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty()) =>
+            {
+                Some(GeoPredicateOp::GeoWithinPolygon)
+            }
+            None if self.center_lng.is_some()
+                || self.center_lat.is_some()
+                || self.radius_meters.is_some() =>
+            {
+                Some(GeoPredicateOp::GeoDwithinMeters)
+            }
+            None if self.bbox.as_deref().is_some_and(|s| !s.trim().is_empty()) => {
+                Some(GeoPredicateOp::Bbox)
+            }
+            None => None,
+        };
+
+        let Some(op) = inferred_op else {
+            return Ok(None);
+        };
+
+        let spec = match op {
+            GeoPredicateOp::Bbox => {
+                let bbox = self.parse_bbox()?.ok_or_else(|| {
+                    AppError::bad("INVALID_GEOMETRY", "bbox is required when geo_op is BBOX")
+                })?;
+                crate::geo_ops::SpatialFilterSpec {
+                    op: GeoPredicateOp::Bbox,
+                    bbox: Some(bbox),
+                    polygon: None,
+                    center: None,
+                    radius_meters: None,
+                }
+            }
+            GeoPredicateOp::GeoWithinPolygon => {
+                let raw_poly = self.polygon.as_deref().ok_or_else(|| {
+                    AppError::bad(
+                        "INVALID_GEOMETRY",
+                        "polygon is required when geo_op is GEO_WITHIN_POLYGON",
+                    )
+                })?;
+                let poly = crate::geo_ops::parse_polygon_param(raw_poly)?;
+                crate::geo_ops::SpatialFilterSpec {
+                    op: GeoPredicateOp::GeoWithinPolygon,
+                    bbox: None,
+                    polygon: Some(poly),
+                    center: None,
+                    radius_meters: None,
+                }
+            }
+            GeoPredicateOp::GeoDwithinMeters => {
+                let (Some(lng), Some(lat), Some(radius_meters)) =
+                    (self.center_lng, self.center_lat, self.radius_meters)
+                else {
+                    return Err(AppError::bad(
+                        "INVALID_GEOMETRY",
+                        "center_lng, center_lat, and radius_meters are required for GEO_DWITHIN_METERS",
+                    ));
+                };
+                let center = GeoPoint { lng, lat };
+                crate::geo_ops::validate_geo_point(center)?;
+                let spec = crate::geo_ops::SpatialFilterSpec {
+                    op: GeoPredicateOp::GeoDwithinMeters,
+                    bbox: None,
+                    polygon: None,
+                    center: Some(center),
+                    radius_meters: Some(radius_meters),
+                };
+                let _bbox = crate::geo_ops::spatial_filter_bbox(&spec)?;
+                spec
+            }
+        };
+
+        Ok(Some(spec))
+    }
 }
 
 /// Response payload for `GET /api/xblue/nodes`, supporting both `A1` pagination (`items`, `next_cursor`)

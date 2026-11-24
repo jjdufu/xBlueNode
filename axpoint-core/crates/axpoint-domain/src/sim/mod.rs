@@ -1,6 +1,7 @@
 //! `AxSim` Copy-on-Write causal simulation kernel, scenarios, checkpoints, and decision contracts (`09-STEP10`).
 
 pub mod action;
+pub mod deadline;
 pub mod explain;
 pub mod graph;
 pub mod preflight;
@@ -473,9 +474,10 @@ pub struct SimGoalConstraint {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target_node_id: Option<Uuid>,
     /// Optional node `type_name` selector (monitors all matching in-scope nodes when `target_node_id` is `None`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "type_name", skip_serializing_if = "Option::is_none")]
     pub target_type_name: Option<String>,
     /// Required metric key that must satisfy `value <op> threshold` across `t = 0..=horizon_steps`.
+    #[serde(alias = "metric")]
     pub metric_key: String,
     /// Required invariant comparison operator (e.g., `Gte` with `threshold = 0.90` requires `x(t) >= 0.90`).
     #[serde(default = "default_goal_gte_op")]

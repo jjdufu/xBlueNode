@@ -6,10 +6,18 @@ import {
   type AxSimQuickResult,
   type SandboxGraphNode,
   type ScenarioRecord,
+  type SimEventSpec,
+  type SimGoalConstraint,
   type SimMode,
   type SimParams,
 } from "@/lib/api/axsim";
 import type { InterventionMode } from "@/lib/api/enums";
+import {
+  EventQueueEditor,
+  compileEventsAndGoals,
+  type EventDraft,
+  type GoalDraft,
+} from "@/components/axsim/EventQueueEditor";
 import { Badge, Button, Card, Input, Select } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
@@ -63,6 +71,8 @@ export function ActionList({
   const [actions, setActions] = useState<ActionDraft[]>(() => [
     createEmptyAction(nodes),
   ]);
+  const [eventDrafts, setEventDrafts] = useState<EventDraft[]>([]);
+  const [goalDrafts, setGoalDrafts] = useState<GoalDraft[]>([]);
   const [scenarioName, setScenarioName] = useState("");
   const [scenarioDesc, setScenarioDesc] = useState("");
 
@@ -132,30 +142,47 @@ export function ActionList({
 
   const removeActionRow = (id: string) => {
     setActions((prev) =>
-      prev.length > 1 ? prev.filter((r) => r.id !== id) : prev
+      prev.length > 1 || eventDrafts.length > 0 || goalDrafts.length > 0
+        ? prev.filter((r) => r.id !== id)
+        : prev
     );
+  };
+
+  const handleEventsChanged = (next: EventDraft[]) => {
+    setEventDrafts(next);
+    if (next.length > 0 && simMode !== "STEPPED") {
+      setSimMode("STEPPED");
+    }
   };
 
   const buildPayload = (): {
     wireActions: AxSimAction[];
+    scheduledEvents: SimEventSpec[];
+    goalConstraints: SimGoalConstraint[];
     params: SimParams;
   } | null => {
+    const compiled = compileEventsAndGoals(eventDrafts, goalDrafts, tx);
+    if (!compiled.ok) {
+      setErrorMsg(compiled.error);
+      return null;
+    }
+
     const wireActions: AxSimAction[] = [];
     for (const draft of actions) {
       if (!draft.target_node_id) {
         setErrorMsg(
-          tx("请为每条干预指定目标节点", "Select a target node for every intervention")
+          tx("干预行需指定目标节点", "Target node is required for each action")
         );
         return null;
       }
       if (!draft.metric_key.trim()) {
-        setErrorMsg(tx("请填写干预指标键", "Metric key is required"));
+        setErrorMsg(tx("干预指标键不能为空", "Metric key is required"));
         return null;
       }
       const numVal = Number.parseFloat(draft.value);
       if (!Number.isFinite(numVal)) {
         setErrorMsg(
-          tx("干预数值必须是有效数字", "Intervention value must be a valid number")
+          tx("干预数值必须是有效数字", "Intervention value must be numeric")
         );
         return null;
       }
@@ -163,7 +190,7 @@ export function ActionList({
         setErrorMsg(
           tx(
             "比例变动值必须大于 -1（-0.3 表示下调 30%）",
-            "Ratio delta must be greater than -1 (e.g. -0.3 for -30%)"
+            "Ratio delta must exceed -1 (-0.3 means -30%)"
           )
         );
         return null;
@@ -178,13 +205,29 @@ export function ActionList({
       });
     }
 
+    if (
+      wireActions.length === 0 &&
+      compiled.scheduledEvents.length === 0 &&
+      compiled.goalConstraints.length === 0
+    ) {
+      setErrorMsg(
+        tx(
+          "至少配置一条干预、事件或红线约束",
+          "At least one action, event, or goal constraint is required"
+        )
+      );
+      return null;
+    }
+
     const parsedHorizon = Number.parseInt(horizonSteps, 10);
     const parsedCkptEvery = Number.parseInt(checkpointEvery, 10);
     const parsedDamping = Number.parseFloat(damping);
     const parsedMaxHops = maxHops.trim() ? Number.parseInt(maxHops, 10) : null;
+    const effectiveMode: SimMode =
+      compiled.scheduledEvents.length > 0 ? "STEPPED" : simMode;
 
     const params: SimParams = {
-      mode: simMode,
+      mode: effectiveMode,
       damping:
         Number.isFinite(parsedDamping) &&
         parsedDamping > 0 &&
@@ -220,7 +263,12 @@ export function ActionList({
         : null,
     };
 
-    return { wireActions, params };
+    return {
+      wireActions,
+      scheduledEvents: compiled.scheduledEvents,
+      goalConstraints: compiled.goalConstraints,
+      params,
+    };
   };
 
   const handleRunScenario = async (e: React.FormEvent) => {
@@ -232,7 +280,7 @@ export function ActionList({
 
     const effectiveName =
       scenarioName.trim() ||
-      `sim-${simMode.toLowerCase()}-${new Date()
+      `sim-${(built.params.mode ?? simMode).toLowerCase()}-${new Date()
         .toISOString()
         .slice(11, 19)
         .replace(/:/g, "")}`;
@@ -243,6 +291,10 @@ export function ActionList({
         name: effectiveName,
         description: scenarioDesc.trim() || undefined,
         actions: built.wireActions,
+        scheduled_events:
+          built.scheduledEvents.length > 0 ? built.scheduledEvents : undefined,
+        goal_constraints:
+          built.goalConstraints.length > 0 ? built.goalConstraints : undefined,
         params: built.params,
       });
       setScenarioName("");
@@ -264,7 +316,17 @@ export function ActionList({
       const res = await axsimApi.quickSimulate(
         sandboxId,
         built.wireActions,
-        built.params
+        built.params,
+        {
+          scheduled_events:
+            built.scheduledEvents.length > 0
+              ? built.scheduledEvents
+              : undefined,
+          goal_constraints:
+            built.goalConstraints.length > 0
+              ? built.goalConstraints
+              : undefined,
+        }
       );
       onQuickSimulated?.(res, built.wireActions);
     } catch (err) {
@@ -435,7 +497,12 @@ export function ActionList({
                       variant="ghost"
                       className="h-8 px-2 text-muted-foreground hover:text-red-600"
                       onClick={() => removeActionRow(row.id)}
-                      disabled={!canSimRun || actions.length <= 1}
+                      disabled={
+                        !canSimRun ||
+                        (actions.length <= 1 &&
+                          eventDrafts.length === 0 &&
+                          goalDrafts.length === 0)
+                      }
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </Button>
@@ -469,6 +536,15 @@ export function ActionList({
             );
           })}
         </div>
+
+        <EventQueueEditor
+          nodes={nodes}
+          events={eventDrafts}
+          goals={goalDrafts}
+          disabled={!canSimRun}
+          onChangeEvents={handleEventsChanged}
+          onChangeGoals={setGoalDrafts}
+        />
 
         {/* Simulation Params */}
         <div className="rounded-md border border-border p-3 space-y-3 bg-muted/10">

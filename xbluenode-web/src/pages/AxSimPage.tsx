@@ -27,6 +27,7 @@ import {
 import { axopsApi } from "@/lib/api/axops";
 import { ActionList } from "@/components/axsim/ActionList";
 import { DecisionPanel } from "@/components/axsim/DecisionPanel";
+import { GoalDeadlineBanner } from "@/components/axsim/GoalDeadlineBanner";
 import { ImpactGraph } from "@/components/axsim/ImpactGraph";
 import { ImpactTable } from "@/components/axsim/ImpactTable";
 import { OverlayEditor } from "@/components/axsim/OverlayEditor";
@@ -399,6 +400,24 @@ export function AxSimPage() {
     return activeSandbox?.actions ?? [];
   }, [activeSandbox?.actions, activeScenario?.actions, quickActions]);
 
+  const effectiveDeadlineReport = useMemo(
+    () =>
+      activeScenario?.deadline_report ??
+      activeScenario?.result?.deadline_report ??
+      effectiveQuickResult?.deadline_report ??
+      null,
+    [activeScenario, effectiveQuickResult]
+  );
+
+  const effectiveFiredEvents = useMemo(
+    () =>
+      activeScenario?.fired_events ??
+      activeScenario?.result?.fired_events ??
+      effectiveQuickResult?.fired_events ??
+      [],
+    [activeScenario, effectiveQuickResult]
+  );
+
   const handleSandboxCreated = (created: AxSandboxRecord) => {
     const normalized = normalizeSandbox(created);
     setSandboxes((prev) => [normalized, ...prev]);
@@ -676,7 +695,12 @@ export function AxSimPage() {
           )}
 
           {activeTab === "simulate" && (
-            <div className="min-h-[680px]">
+            <div className="min-h-[680px] space-y-4">
+              <GoalDeadlineBanner
+                deadlineReport={effectiveDeadlineReport}
+                firedEvents={effectiveFiredEvents}
+                nodes={graphNodes}
+              />
               <ResizableWorkspace
                 storageKey="axpoint.layout.sim"
                 panes={[

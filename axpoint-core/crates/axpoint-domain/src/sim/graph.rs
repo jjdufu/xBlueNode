@@ -42,8 +42,10 @@ impl NodeIdx {
 #[serde(deny_unknown_fields)]
 pub struct PropagationRule {
     /// Upstream metric key on source node.
+    #[serde(alias = "from_metric")]
     pub src_metric: String,
     /// Downstream metric key on target node.
+    #[serde(alias = "to_metric")]
     pub dst_metric: String,
     /// Propagation channel mode (`RATIO` or `ADD`).
     #[serde(default = "default_ratio_mode")]

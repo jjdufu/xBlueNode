@@ -3,13 +3,14 @@ import * as echarts from "echarts";
 import maplibregl from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { useI18n } from "@/i18n";
+import { xblueApi, type GeoShapeDto } from "@/lib/api/xblue";
 import {
   xblueviewApi,
   type WidgetDataResponse,
   type WidgetRecord,
 } from "@/lib/api/xblueview";
 import { useTheme } from "@/lib/theme";
-import { parseNodesGeoData, type GeoNodePoint } from "./logic";
+import { buildColMap, parseNodesGeoData, readCellByName, type GeoNodePoint } from "./logic";
 import {
   parseThresholds,
   readString,
@@ -25,6 +26,13 @@ export interface MapWidgetProps {
   onCrossFilter?: (field: string, value: unknown) => void;
 }
 
+interface PolygonOverlayItem {
+  id: string;
+  label: string;
+  kind: "geofence" | "hull";
+  ring: Array<[number, number]>;
+}
+
 function isWebGlSupported(): boolean {
   if (typeof document === "undefined") return false;
   try {
@@ -33,6 +41,128 @@ function isWebGlSupported(): boolean {
   } catch {
     return false;
   }
+}
+
+function parseRingFromShape(raw: unknown): Array<[number, number]> | null {
+  let obj: unknown = raw;
+  if (typeof raw === "string" && raw.trim().startsWith("{")) {
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (
+    typeof obj !== "object" ||
+    obj === null ||
+    (obj as { type?: unknown }).type !== "Polygon"
+  ) {
+    return null;
+  }
+  const coords = (obj as { coordinates?: unknown }).coordinates;
+  if (!Array.isArray(coords) || !Array.isArray(coords[0])) return null;
+  const ring: Array<[number, number]> = [];
+  for (const pair of coords[0]) {
+    if (
+      Array.isArray(pair) &&
+      pair.length >= 2 &&
+      typeof pair[0] === "number" &&
+      typeof pair[1] === "number" &&
+      Number.isFinite(pair[0]) &&
+      Number.isFinite(pair[1])
+    ) {
+      ring.push([pair[0], pair[1]]);
+    }
+  }
+  return ring.length >= 4 ? ring : null;
+}
+
+function extractGeofencePolygons(
+  options: Record<string, unknown> | undefined,
+  data: WidgetDataResponse | null
+): PolygonOverlayItem[] {
+  const overlays: PolygonOverlayItem[] = [];
+  if (options?.geofence_polygon) {
+    const ring = parseRingFromShape(options.geofence_polygon);
+    if (ring) {
+      overlays.push({ id: "opt-geofence", label: "Geofence", kind: "geofence", ring });
+    }
+  }
+  if (Array.isArray(options?.polygons)) {
+    options.polygons.forEach((item, idx) => {
+      const ring = parseRingFromShape(item);
+      if (ring) {
+        overlays.push({
+          id: `opt-poly-${idx}`,
+          label: `Polygon ${idx + 1}`,
+          kind: "geofence",
+          ring,
+        });
+      }
+    });
+  }
+  if (data && data.columns.length > 0) {
+    const colMap = buildColMap(data);
+    if (colMap.has("geo_shape")) {
+      data.rows.forEach((row, idx) => {
+        const shapeCell = readCellByName(row, colMap, "geo_shape");
+        const ring = parseRingFromShape(shapeCell);
+        if (ring) {
+          const titleCell = readCellByName(row, colMap, "title");
+          overlays.push({
+            id: `row-poly-${idx}`,
+            label: typeof titleCell === "string" ? titleCell : `Zone ${idx + 1}`,
+            kind: "geofence",
+            ring,
+          });
+        }
+      });
+    }
+  }
+  return overlays;
+}
+
+function fallbackPlanarConvexHull(
+  pts: ReadonlyArray<{ lng: number; lat: number }>
+): Array<[number, number]> | null {
+  if (pts.length < 3) return null;
+  const sorted = [...pts].sort((a, b) =>
+    a.lng !== b.lng ? a.lng - b.lng : a.lat - b.lat
+  );
+  const cross = (
+    o: { lng: number; lat: number },
+    a: { lng: number; lat: number },
+    b: { lng: number; lat: number }
+  ) => (a.lng - o.lng) * (b.lat - o.lat) - (a.lat - o.lat) * (b.lng - o.lng);
+
+  const lower: Array<{ lng: number; lat: number }> = [];
+  for (const p of sorted) {
+    while (
+      lower.length >= 2 &&
+      cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0
+    ) {
+      lower.pop();
+    }
+    lower.push(p);
+  }
+  const upper: Array<{ lng: number; lat: number }> = [];
+  for (let i = sorted.length - 1; i >= 0; i -= 1) {
+    const p = sorted[i];
+    while (
+      upper.length >= 2 &&
+      cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0
+    ) {
+      upper.pop();
+    }
+    upper.push(p);
+  }
+  lower.pop();
+  upper.pop();
+  const hull = [...lower, ...upper];
+  if (hull.length < 3) return null;
+  const ring: Array<[number, number]> = hull.map((p) => [p.lng, p.lat]);
+  ring.push([hull[0].lng, hull[0].lat]);
+  return ring;
 }
 
 export function MapWidget({
@@ -52,6 +182,10 @@ export function MapWidget({
   const maplibreRef = useRef<maplibregl.Map | null>(null);
 
   const [geoJsonReady, setGeoJsonReady] = useState<string | null>(null);
+  const [showConvexHull, setShowConvexHull] = useState<boolean>(() =>
+    Boolean(widget.options?.show_convex_hull)
+  );
+  const [hullShape, setHullShape] = useState<GeoShapeDto | null>(null);
 
   const envTileUrl =
     import.meta.env.AXPOINT_MAP_TILE_URL || import.meta.env.VITE_MAP_TILE_URL;
@@ -70,6 +204,55 @@ export function MapWidget({
     () => parseNodesGeoData(data),
     [data]
   );
+
+  const geofences = useMemo(
+    () => extractGeofencePolygons(widget.options, data),
+    [data, widget.options]
+  );
+
+  useEffect(() => {
+    if (!showConvexHull || points.length < 3) {
+      setHullShape(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const resp = await xblueApi.computeConvexHull({
+          points: points.map((p) => ({ lng: p.lng, lat: p.lat })),
+        });
+        if (!cancelled && resp.hull?.type === "Polygon") {
+          setHullShape(resp.hull);
+          return;
+        }
+      } catch {
+        // Fallback to deterministic local planar convex hull when offline
+      }
+      if (!cancelled) {
+        const ring = fallbackPlanarConvexHull(points);
+        setHullShape(ring ? { type: "Polygon", coordinates: [ring] } : null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [points, showConvexHull]);
+
+  const polygonOverlays = useMemo<PolygonOverlayItem[]>(() => {
+    const merged = [...geofences];
+    if (hullShape?.type === "Polygon") {
+      const ring = parseRingFromShape(hullShape);
+      if (ring) {
+        merged.push({
+          id: "cluster-convex-hull",
+          label: tx("凸包", "Hull"),
+          kind: "hull",
+          ring,
+        });
+      }
+    }
+    return merged;
+  }, [geofences, hullShape, tx]);
 
   useEffect(() => {
     if (!geojsonAssetId || useMaplibre) {
@@ -126,6 +309,45 @@ export function MapWidget({
     const layers: maplibregl.LayerSpecification[] = [
       { id: "osm", type: "raster", source: "osm" },
     ];
+
+    if (polygonOverlays.length > 0) {
+      sources["xv-polygons"] = {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: polygonOverlays.map((poly, idx) => ({
+            type: "Feature" as const,
+            id: idx,
+            properties: { label: poly.label, kind: poly.kind },
+            geometry: {
+              type: "Polygon" as const,
+              coordinates: [poly.ring],
+            },
+          })),
+        },
+      };
+      layers.push(
+        {
+          id: "xv-polygons-fill",
+          type: "fill",
+          source: "xv-polygons",
+          paint: {
+            "fill-color": effectiveDark ? "#10b981" : "#059669",
+            "fill-opacity": 0.14,
+          },
+        },
+        {
+          id: "xv-polygons-outline",
+          type: "line",
+          source: "xv-polygons",
+          paint: {
+            "line-color": effectiveDark ? "#34d399" : "#059669",
+            "line-width": 1.8,
+            "line-dasharray": [3, 2],
+          },
+        }
+      );
+    }
 
     if (flyLines.length > 0) {
       sources["xv-fly-lines"] = {
@@ -208,7 +430,15 @@ export function MapWidget({
       map.remove();
       maplibreRef.current = null;
     };
-  }, [effectiveDark, flyLines, points, thresholds, tileUrl, useMaplibre]);
+  }, [
+    effectiveDark,
+    flyLines,
+    points,
+    polygonOverlays,
+    thresholds,
+    tileUrl,
+    useMaplibre,
+  ]);
 
   // ECharts Geo / Cartesian mode
   useEffect(() => {
@@ -267,6 +497,7 @@ export function MapWidget({
     const gridLine = effectiveDark ? "#27272a" : "#e4e4e7";
     const cardBg = effectiveDark ? "#18181b" : "#ffffff";
     const lineAccent = effectiveDark ? "#3b82f6" : "#2563eb";
+    const polyStroke = effectiveDark ? "#34d399" : "#059669";
 
     const seriesData = points.map((pt) => ({
       name: pt.title,
@@ -308,6 +539,23 @@ export function MapWidget({
           },
         },
       ];
+      if (polygonOverlays.length > 0) {
+        geoSeries.push({
+          type: "lines",
+          coordinateSystem: "geo",
+          polyline: true,
+          lineStyle: {
+            color: polyStroke,
+            width: 1.8,
+            type: "dashed",
+            opacity: 0.85,
+          },
+          data: polygonOverlays.map((poly) => ({
+            name: poly.label,
+            coords: poly.ring,
+          })),
+        });
+      }
       if (linesSeriesData.length > 0) {
         geoSeries.push({
           type: "lines",
@@ -352,13 +600,16 @@ export function MapWidget({
       return;
     }
 
+    const polyCoords = polygonOverlays.flatMap((p) => p.ring);
     const lngs = [
       ...points.map((p) => p.lng),
       ...flyLines.flatMap((lk) => [lk.srcLng, lk.dstLng]),
+      ...polyCoords.map((c) => c[0]),
     ];
     const lats = [
       ...points.map((p) => p.lat),
       ...flyLines.flatMap((lk) => [lk.srcLat, lk.dstLat]),
+      ...polyCoords.map((c) => c[1]),
     ];
     const rawMinLng = lngs.length > 0 ? Math.min(...lngs) : 100;
     const rawMaxLng = lngs.length > 0 ? Math.max(...lngs) : 130;
@@ -371,25 +622,43 @@ export function MapWidget({
     const minLat = Number((rawMinLat - latSpan * 0.18).toFixed(2));
     const maxLat = Number((rawMaxLat + latSpan * 0.18).toFixed(2));
 
-    const cartesianSeries: echarts.SeriesOption[] = [
-      {
-        type: "effectScatter",
-        symbolSize: 13,
-        data: seriesData,
-        label: {
-          show: seriesData.length <= 30,
-          formatter: "{b}",
-          position: "right",
-          distance: 5,
-          color: fg,
-          fontSize: 10.5,
+    const cartesianSeries: echarts.SeriesOption[] = [];
+    for (const poly of polygonOverlays) {
+      cartesianSeries.push({
+        type: "line",
+        name: poly.label,
+        data: poly.ring,
+        showSymbol: false,
+        lineStyle: {
+          color: poly.kind === "hull" ? lineAccent : polyStroke,
+          width: 1.6,
+          type: poly.kind === "hull" ? "dashed" : "solid",
         },
-        labelLayout: {
-          hideOverlap: true,
-          moveOverlap: "shiftY",
+        areaStyle: {
+          color: poly.kind === "hull" ? lineAccent : polyStroke,
+          opacity: 0.1,
         },
+      });
+    }
+
+    cartesianSeries.push({
+      type: "effectScatter",
+      symbolSize: 13,
+      data: seriesData,
+      label: {
+        show: seriesData.length <= 30,
+        formatter: "{b}",
+        position: "right",
+        distance: 5,
+        color: fg,
+        fontSize: 10.5,
       },
-    ];
+      labelLayout: {
+        hideOverlap: true,
+        moveOverlap: "shiftY",
+      },
+    });
+
     if (linesSeriesData.length > 0) {
       cartesianSeries.push({
         type: "lines",
@@ -466,10 +735,36 @@ export function MapWidget({
       },
       true
     );
-  }, [effectiveDark, flyLines, fmtNum, geoJsonReady, points, thresholds, tx, useMaplibre]);
+  }, [
+    effectiveDark,
+    flyLines,
+    fmtNum,
+    geoJsonReady,
+    points,
+    polygonOverlays,
+    thresholds,
+    tx,
+    useMaplibre,
+  ]);
 
   return (
     <div className="h-full relative" data-testid={`widget-map-${widget.id}`}>
+      {points.length >= 3 && (
+        <div className="absolute top-1.5 right-2 z-10">
+          <button
+            type="button"
+            onClick={() => setShowConvexHull((prev) => !prev)}
+            className={`rounded border px-2 py-0.5 text-[11px] cursor-pointer ${
+              showConvexHull
+                ? "border-xblue bg-xblue-soft text-xblue font-medium"
+                : "border-border bg-background/90 text-muted-foreground hover:text-foreground"
+            }`}
+            data-testid="map-convex-hull-toggle"
+          >
+            {tx("凸包", "Hull")}
+          </button>
+        </div>
+      )}
       {useMaplibre ? (
         <div
           ref={maplibreContainerRef}
@@ -478,7 +773,7 @@ export function MapWidget({
       ) : (
         <div ref={echartsContainerRef} className="h-full w-full min-h-[160px]" />
       )}
-      {points.length === 0 && flyLines.length === 0 && (
+      {points.length === 0 && flyLines.length === 0 && polygonOverlays.length === 0 && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs text-muted-foreground">
           {tx("暂无地理坐标节点", "No geo-located nodes")}
         </div>
