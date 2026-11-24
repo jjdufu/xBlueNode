@@ -811,9 +811,52 @@ export function buildEChartsOption(
   };
   const isCartesianAxisChart =
     kind === "LINE_CHART" || kind === "BAR_CHART" || kind === "AREA_CHART";
-  const isLineLike = kind === "LINE_CHART" || kind === "AREA_CHART";
+  const chartVariant = (readLogicStr(options, "chart_variant") ?? "").toUpperCase();
+  const isAreaVariant = kind === "AREA_CHART" || chartVariant === "AREA";
+  const isLineLike =
+    kind === "LINE_CHART" || kind === "AREA_CHART" || chartVariant === "AREA";
+  const isStackedBar = chartVariant === "STACKED_BAR";
+  const isHorizontalBar = chartVariant === "HORIZONTAL_BAR";
+  const isDualAxis = chartVariant === "DUAL_AXIS";
+  const secondaryYField = readLogicStr(encoding, "secondary_y");
+  const markLineVal = readLogicNum(options, "mark_line_value");
+  const showMarkLine = options?.show_mark_line === true;
+
+  const buildPureMarkLine = (): Record<string, unknown> | undefined => {
+    if (markLineVal !== undefined) {
+      return {
+        silent: true,
+        symbol: ["none", "none"],
+        lineStyle: {
+          color: isDark ? "#fb7185" : "#e11d48",
+          type: "dashed",
+          width: 1.5,
+        },
+        data: [isHorizontalBar ? { xAxis: markLineVal } : { yAxis: markLineVal }],
+      };
+    }
+    if (showMarkLine) {
+      return {
+        silent: true,
+        symbol: ["none", "none"],
+        lineStyle: {
+          color: isDark ? "#fb7185" : "#e11d48",
+          type: "dashed",
+          width: 1.5,
+        },
+        data: [{ type: "average" }],
+      };
+    }
+    return undefined;
+  };
+
   const baseTooltip: Record<string, unknown> = {
-    trigger: isCartesianAxisChart ? "axis" : "item",
+    trigger:
+      isCartesianAxisChart &&
+      chartVariant !== "FUNNEL" &&
+      chartVariant !== "TREEMAP"
+        ? "axis"
+        : "item",
     backgroundColor: tokens.tooltipBg,
     borderColor: tokens.tooltipBorder,
     textStyle: {
@@ -985,35 +1028,35 @@ export function buildEChartsOption(
     );
     const categories = rawCategories.map(formatAxisTimestampLabel);
     const defaultNumericIdx = findFirstNumericColIdx(data, new Set([xIdx]));
-    const baseOption: Record<string, unknown> = {
-      animation: false,
-      color: palette,
-      textStyle: rootTextStyle,
-      tooltip: baseTooltip,
-      grid: baseGrid,
-      xAxis: {
-        type: "category",
-        data: categories,
-        axisLabel: {
-          color: tokens.subtext,
-          fontFamily,
-          fontSize: 11,
-          hideOverlap: true,
-        },
-        axisLine: { lineStyle: { color: tokens.axisLine } },
+    const pureMarkLine = buildPureMarkLine();
+
+    const categoryAxisDef: Record<string, unknown> = {
+      type: "category",
+      data: categories,
+      ...(isHorizontalBar ? { inverse: true } : {}),
+      axisLabel: {
+        color: tokens.subtext,
+        fontFamily,
+        fontSize: 11,
+        hideOverlap: true,
       },
-      yAxis: {
-        type: "value",
-        splitNumber: 4,
-        axisLabel: {
-          color: tokens.subtext,
-          fontFamily,
-          fontSize: 11,
-          hideOverlap: true,
-        },
-        splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
+      axisLine: { lineStyle: { color: tokens.axisLine } },
+    };
+
+    const valueAxisDef: Record<string, unknown> = {
+      type: "value",
+      splitNumber: 4,
+      axisLabel: {
+        color: tokens.subtext,
+        fontFamily,
+        fontSize: 11,
+        hideOverlap: true,
       },
-      series: yFields.map((yf, seriesIdx) => {
+      splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
+    };
+
+    const builtSeries: Record<string, unknown>[] = yFields.map(
+      (yf, seriesIdx) => {
         const seriesColor = palette[seriesIdx % palette.length] ?? "#2563eb";
         const displaySeriesName = rows[0]
           ? resolveReadableSeriesName(yf, rows[0], colMap, nodeLabelMap)
@@ -1021,13 +1064,20 @@ export function buildEChartsOption(
         return {
           name: displaySeriesName,
           type: isLineLike ? "line" : "bar",
-          smooth: isLineLike,
-          barMaxWidth: 40,
-          itemStyle: { color: seriesColor },
-          ...(isLineLike
-            ? { lineStyle: { color: seriesColor, width: 2 } }
-            : {}),
-          ...(kind === "AREA_CHART" ? { areaStyle: { opacity: 0.18 } } : {}),
+          smooth: isLineLike ? 0.25 : false,
+          barMaxWidth: 28,
+          ...(isStackedBar && !isLineLike ? { stack: "total" } : {}),
+          itemStyle: {
+            color: seriesColor,
+            ...(!isLineLike && !isStackedBar
+              ? {
+                  borderRadius: isHorizontalBar ? [0, 4, 4, 0] : [4, 4, 0, 0],
+                }
+              : {}),
+          },
+          ...(isLineLike ? { lineStyle: { color: seriesColor, width: 2 } } : {}),
+          ...(isAreaVariant ? { areaStyle: { opacity: 0.18 } } : {}),
+          ...(seriesIdx === 0 && pureMarkLine ? { markLine: pureMarkLine } : {}),
           data: rows.map(
             (r) =>
               toFiniteNumber(
@@ -1035,9 +1085,48 @@ export function buildEChartsOption(
               ) ?? 0
           ),
         };
-      }),
+      }
+    );
+
+    if (isDualAxis && secondaryYField) {
+      const secColor = palette[builtSeries.length % palette.length] ?? "#0d9488";
+      builtSeries.push({
+        name: secondaryYField,
+        type: "line",
+        yAxisIndex: 1,
+        smooth: 0.25,
+        itemStyle: { color: secColor },
+        lineStyle: { color: secColor, width: 2 },
+        data: rows.map(
+          (r) =>
+            toFiniteNumber(
+              readCellByName(r, colMap, secondaryYField, defaultNumericIdx)
+            ) ?? 0
+        ),
+      });
+    }
+
+    const baseOption: Record<string, unknown> = {
+      animation: false,
+      color: palette,
+      textStyle: rootTextStyle,
+      tooltip: baseTooltip,
+      grid: baseGrid,
+      xAxis: isHorizontalBar ? valueAxisDef : categoryAxisDef,
+      yAxis: isHorizontalBar
+        ? categoryAxisDef
+        : isDualAxis && secondaryYField
+          ? [
+              valueAxisDef,
+              {
+                ...valueAxisDef,
+                splitLine: { show: false },
+              },
+            ]
+          : valueAxisDef,
+      series: builtSeries,
     };
-    if (yFields.length > 1) {
+    if (builtSeries.length > 1) {
       baseOption.legend = {
         top: 0,
         type: "scroll",
@@ -1058,9 +1147,10 @@ export function buildEChartsOption(
       data.columns[0]?.name ??
       "category";
     const catIdx = colMap.get(catField) ?? colMap.get(catField.toLowerCase()) ?? 0;
+    const yArr = readLogicStrArray(encoding, "y");
     const valField =
       readLogicStr(encoding, "value") ??
-      readLogicStr(encoding, "y") ??
+      yArr[0] ??
       matchCandidateColumn(
         data,
         colMap,
@@ -1075,6 +1165,59 @@ export function buildEChartsOption(
       value: toFiniteNumber(readCellByName(r, colMap, valField, 1)) ?? 0,
     }));
 
+    if (chartVariant === "FUNNEL") {
+      return {
+        clickField: catField,
+        option: {
+          animation: false,
+          color: palette,
+          textStyle: rootTextStyle,
+          tooltip: baseTooltip,
+          legend: {
+            bottom: 0,
+            type: "scroll",
+            textStyle: { color: tokens.subtext, fontFamily, fontSize: 11 },
+          },
+          series: [
+            {
+              type: "funnel",
+              top: 24,
+              bottom: 32,
+              left: "12%",
+              width: "76%",
+              sort: "descending",
+              gap: 3,
+              label: { color: tokens.text, fontFamily, fontSize: 11 },
+              data: pieData,
+            },
+          ],
+        },
+      };
+    }
+
+    if (chartVariant === "TREEMAP") {
+      return {
+        clickField: catField,
+        option: {
+          animation: false,
+          color: palette,
+          textStyle: rootTextStyle,
+          tooltip: baseTooltip,
+          series: [
+            {
+              type: "treemap",
+              roam: false,
+              breadcrumb: { show: false },
+              label: { color: "#ffffff", fontFamily, fontSize: 11 },
+              itemStyle: { borderColor: tokens.tooltipBg, borderWidth: 2, gapWidth: 2 },
+              data: pieData,
+            },
+          ],
+        },
+      };
+    }
+
+    const isRose = chartVariant === "ROSE";
     return {
       clickField: catField,
       option: {
@@ -1090,7 +1233,9 @@ export function buildEChartsOption(
         series: [
           {
             type: "pie",
-            radius: [chartSpec.pie.innerRadius, chartSpec.pie.outerRadius],
+            ...(isRose
+              ? { roseType: "area", radius: ["20%", "70%"] }
+              : { radius: [chartSpec.pie.innerRadius, chartSpec.pie.outerRadius] }),
             center: ["50%", "45%"],
             label: { color: tokens.text, fontFamily, fontSize: 11 },
             data: pieData,
@@ -1560,5 +1705,270 @@ export function mergeLockedShareFilters(
   return {
     ...baseValues,
     ...lockedFilters,
+  };
+}
+
+export interface GridLayoutBox {
+  i: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export interface GridPositionEntry {
+  id: string;
+  position: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+  };
+}
+
+export interface MagneticSnapGuides {
+  verticalCols: number[];
+  horizontalRows: number[];
+}
+
+function boxesOverlap(a: GridLayoutBox, b: GridLayoutBox): boolean {
+  return (
+    a.x < b.x + b.w &&
+    a.x + a.w > b.x &&
+    a.y < b.y + b.h &&
+    a.y + a.h > b.y
+  );
+}
+
+/**
+ * Resolves `FREE_FLOAT` (`锁定位置`) layout coordinates without vertical upward compaction
+ * and without pushing unrelated stationary items out of their `(x, y)` slots (`03-STEP25` §25.4).
+ */
+export function resolveFreeFloatLayout<T extends GridLayoutBox>(
+  layout: readonly T[],
+  cols: number,
+  activeItemId?: string | null,
+  lockedSnapshot?: ReadonlyMap<string, GridLayoutBox>
+): T[] {
+  const safeCols = Math.max(2, cols);
+  const clamped = layout.map((item) => {
+    const frozen =
+      activeItemId && item.i !== activeItemId
+        ? lockedSnapshot?.get(item.i)
+        : undefined;
+    const src = frozen ?? item;
+    const w = Math.max(2, Math.min(safeCols, Math.round(src.w)));
+    const h = Math.max(2, Math.round(src.h));
+    const x = Math.max(0, Math.min(safeCols - w, Math.round(src.x)));
+    const y = Math.max(0, Math.round(src.y));
+    return {
+      ...item,
+      x,
+      y,
+      w,
+      h,
+    };
+  });
+
+  if (!activeItemId) {
+    return clamped;
+  }
+
+  const activeIdx = clamped.findIndex((it) => it.i === activeItemId);
+  if (activeIdx < 0) {
+    return clamped;
+  }
+  const active = clamped[activeIdx]!;
+  const others = clamped.filter((_, idx) => idx !== activeIdx);
+  if (!others.some((other) => boxesOverlap(active, other))) {
+    return clamped;
+  }
+
+  // Search nearest non-overlapping slot for the active item while keeping every other item strictly locked.
+  const prevActive = lockedSnapshot?.get(activeItemId);
+  if (prevActive && !others.some((other) => boxesOverlap(prevActive, other))) {
+    clamped[activeIdx] = {
+      ...active,
+      x: prevActive.x,
+      y: prevActive.y,
+      w: prevActive.w,
+      h: prevActive.h,
+    };
+    return clamped;
+  }
+
+  const maxBottom = others.reduce((acc, o) => Math.max(acc, o.y + o.h), 0);
+  for (let y = Math.max(0, active.y); y <= maxBottom + active.h; y += 1) {
+    for (let x = 0; x <= safeCols - active.w; x += 1) {
+      const candidate: GridLayoutBox = {
+        i: active.i,
+        x,
+        y,
+        w: active.w,
+        h: active.h,
+      };
+      if (!others.some((other) => boxesOverlap(candidate, other))) {
+        clamped[activeIdx] = { ...active, x, y };
+        return clamped;
+      }
+    }
+  }
+  return clamped;
+}
+
+/**
+ * Pure one-click layout tidying algorithm (`03-STEP25` §25.4 #3):
+ * - Groups near-row cards (`|Δy| <= 1`) into clean horizontal bands with uniform top `y` and uniform `h`;
+ * - When a row's total width is in `[cols - 2, cols)` (or exceeds `cols`), proportionally scales card widths
+ *   to fill `cols` exactly and packs `x` left-to-right with zero ragged gaps.
+ */
+export function tidyDashboardLayout(
+  items: readonly GridPositionEntry[],
+  cols: number
+): GridPositionEntry[] {
+  if (items.length === 0) return [];
+  const safeCols = Math.max(2, cols);
+
+  const normalized = items.map((entry, idx) => ({
+    id: entry.id,
+    order: idx,
+    x: Math.max(0, Math.min(safeCols - 2, Math.round(entry.position.x))),
+    y: Math.max(0, Math.round(entry.position.y)),
+    w: Math.max(2, Math.min(safeCols, Math.round(entry.position.w))),
+    h: Math.max(2, Math.round(entry.position.h)),
+  }));
+
+  const sorted = [...normalized].sort(
+    (a, b) => a.y - b.y || a.x - b.x || a.order - b.order
+  );
+
+  const bands: Array<typeof sorted> = [];
+  for (const card of sorted) {
+    let placed = false;
+    for (const band of bands) {
+      const anchorY = band[0]!.y;
+      const horizConflict = band.some(
+        (m) => card.x < m.x + m.w && card.x + card.w > m.x
+      );
+      const totalWidthIfAdded =
+        band.reduce((sum, m) => sum + m.w, 0) + card.w;
+      if (
+        Math.abs(card.y - anchorY) <= 1 &&
+        !horizConflict &&
+        totalWidthIfAdded <= safeCols + 2
+      ) {
+        band.push(card);
+        placed = true;
+        break;
+      }
+    }
+    if (!placed) {
+      bands.push([card]);
+    }
+  }
+
+  const tidiedById = new Map<string, GridPositionEntry["position"]>();
+  let minAllowedY = 0;
+
+  for (const band of bands) {
+    band.sort((a, b) => a.x - b.x || a.order - b.order);
+    const minBandY = band.reduce((acc, m) => Math.min(acc, m.y), band[0]!.y);
+    const uniformY = Math.max(minAllowedY, minBandY);
+    const uniformH = band.reduce((acc, m) => Math.max(acc, m.h), 2);
+    const totalW = band.reduce((sum, m) => sum + m.w, 0);
+
+    const shouldFillFullRow =
+      (totalW >= safeCols - 2 && totalW < safeCols) || totalW > safeCols;
+
+    if (shouldFillFullRow) {
+      const scaledWidths = band.map((m) =>
+        Math.max(2, Math.floor((m.w / totalW) * safeCols))
+      );
+      let diff = safeCols - scaledWidths.reduce((s, w) => s + w, 0);
+      let cursorIdx = 0;
+      while (diff !== 0 && scaledWidths.length > 0) {
+        const idx = cursorIdx % scaledWidths.length;
+        if (diff > 0) {
+          scaledWidths[idx] = (scaledWidths[idx] ?? 2) + 1;
+          diff -= 1;
+        } else if ((scaledWidths[idx] ?? 2) > 2) {
+          scaledWidths[idx] = (scaledWidths[idx] ?? 2) - 1;
+          diff += 1;
+        } else if (scaledWidths.every((w) => w <= 2)) {
+          break;
+        }
+        cursorIdx += 1;
+      }
+
+      let curX = 0;
+      band.forEach((m, idx) => {
+        const w = Math.min(safeCols - curX, scaledWidths[idx] ?? m.w);
+        tidiedById.set(m.id, {
+          x: curX,
+          y: uniformY,
+          w: Math.max(2, w),
+          h: uniformH,
+        });
+        curX += Math.max(2, w);
+      });
+    } else {
+      let curX = 0;
+      for (const m of band) {
+        const nextX = Math.max(curX, Math.min(safeCols - m.w, m.x));
+        tidiedById.set(m.id, {
+          x: nextX,
+          y: uniformY,
+          w: m.w,
+          h: uniformH,
+        });
+        curX = nextX + m.w;
+      }
+    }
+
+    minAllowedY = uniformY + uniformH;
+  }
+
+  return items.map((orig) => ({
+    id: orig.id,
+    position: tidiedById.get(orig.id) ?? orig.position,
+  }));
+}
+
+/**
+ * Computes active magnetic alignment snap lines (`verticalCols`, `horizontalRows`) when the dragged
+ * or resized card's edges align with any neighbor card edge (`03-STEP25` §25.4 #2).
+ */
+export function computeMagneticSnapGuides(
+  active: GridLayoutBox | null,
+  layout: readonly GridLayoutBox[]
+): MagneticSnapGuides {
+  if (!active) {
+    return { verticalCols: [], horizontalRows: [] };
+  }
+  const vSet = new Set<number>();
+  const hSet = new Set<number>();
+  const activeEdgesX = [active.x, active.x + active.w];
+  const activeEdgesY = [active.y, active.y + active.h];
+
+  for (const item of layout) {
+    if (item.i === active.i) continue;
+    const itemEdgesX = [item.x, item.x + item.w];
+    const itemEdgesY = [item.y, item.y + item.h];
+
+    for (const ax of activeEdgesX) {
+      if (itemEdgesX.includes(ax)) {
+        vSet.add(ax);
+      }
+    }
+    for (const ay of activeEdgesY) {
+      if (itemEdgesY.includes(ay)) {
+        hSet.add(ay);
+      }
+    }
+  }
+
+  return {
+    verticalCols: Array.from(vSet).sort((a, b) => a - b),
+    horizontalRows: Array.from(hSet).sort((a, b) => a - b),
   };
 }

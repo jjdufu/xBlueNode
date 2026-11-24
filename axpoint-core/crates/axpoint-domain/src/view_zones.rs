@@ -13,8 +13,8 @@ use crate::enums::{
 use crate::sim::ScenarioStatus;
 use crate::studio::{PropertyKind, SchemaDoc};
 use crate::view::{
-    DashboardDetail, RefreshMode, WidgetActionType, WidgetDataSource, WidgetPosition, WidgetRecord,
-    WriteNodeTargetKind,
+    CanvasConfig, DashboardDetail, RefreshMode, WidgetActionType, WidgetDataSource, WidgetPosition,
+    WidgetRecord, WriteNodeTargetKind,
 };
 
 /// Request payload for `POST /api/xblueview/dashboards/{id}/apply-zone-preset` (`06-STEP20` §20.3.1, §20.5).
@@ -1298,6 +1298,333 @@ pub fn evaluate_dashboard_preflight(
     }
 }
 
+/// Input parameters for [`allocate_pinned_widget_slot`] (`03-STEP25` §25.2.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PinnedSlotRequest {
+    /// Visual widget kind being pinned.
+    pub widget_kind: WidgetKind,
+    /// Optional explicit semantic zone requested by caller.
+    pub target_zone: Option<SemanticZoneKind>,
+    /// Optional explicit width (`2..=24`).
+    pub width: Option<i32>,
+    /// Optional explicit height (`2..=16`).
+    pub height: Option<i32>,
+}
+
+/// Non-overlapping dashboard placement computed by [`allocate_pinned_widget_slot`] (`03-STEP25` §25.2.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PinnedSlotAllocation {
+    /// Allocated `{x, y, w, h}` coordinates for the new widget.
+    pub position: WidgetPosition,
+    /// Assigned semantic cockpit zone when `STANDARD_FIVE_ZONE` or `target_zone` is active.
+    pub semantic_zone: Option<SemanticZoneKind>,
+    /// Row threshold (`y >= shift_from_y`) from which existing lower widgets must shift downward.
+    pub shift_from_y: i32,
+    /// Vertical row offset (`>= 0`) added to existing widgets with `position.y >= shift_from_y`.
+    pub shift_delta: i32,
+}
+
+fn rects_overlap(a: &WidgetPosition, b: &WidgetPosition) -> bool {
+    let a_right = a.x.saturating_add(a.w);
+    let b_right = b.x.saturating_add(b.w);
+    let a_bottom = a.y.saturating_add(a.h);
+    let b_bottom = b.y.saturating_add(b.h);
+    a.x < b_right && a_right > b.x && a.y < b_bottom && a_bottom > b.y
+}
+
+const fn default_semantic_zone_for_kind(kind: WidgetKind) -> SemanticZoneKind {
+    match kind {
+        WidgetKind::KpiCard => SemanticZoneKind::Kpi,
+        WidgetKind::MarkdownNote => SemanticZoneKind::Control,
+        WidgetKind::GraphTopology
+        | WidgetKind::Map
+        | WidgetKind::FloorPlan
+        | WidgetKind::Scene3d => SemanticZoneKind::Scene,
+        WidgetKind::AlertList
+        | WidgetKind::SimCompare
+        | WidgetKind::ActionButton
+        | WidgetKind::ActionForm => SemanticZoneKind::Decision,
+        WidgetKind::Table
+        | WidgetKind::PivotTable
+        | WidgetKind::LineChart
+        | WidgetKind::BarChart
+        | WidgetKind::PieChart
+        | WidgetKind::Scatter
+        | WidgetKind::Sankey
+        | WidgetKind::Heatmap
+        | WidgetKind::Gauge
+        | WidgetKind::Radar => SemanticZoneKind::Insight,
+    }
+}
+
+fn default_slot_dimensions(
+    kind: WidgetKind,
+    cols: i32,
+    zone_bounds: Option<&WidgetPosition>,
+) -> (i32, i32) {
+    let base_w = match kind {
+        WidgetKind::KpiCard => {
+            if cols <= 12 {
+                3
+            } else {
+                6
+            }
+        }
+        _ => {
+            if cols <= 12 {
+                6
+            } else {
+                12
+            }
+        }
+    };
+    let base_h = match kind {
+        WidgetKind::MarkdownNote => 2,
+        WidgetKind::KpiCard => {
+            if cols <= 12 {
+                3
+            } else {
+                4
+            }
+        }
+        WidgetKind::Table | WidgetKind::PivotTable => 5,
+        _ => 4,
+    };
+    if let Some(zb) = zone_bounds {
+        (base_w.min(zb.w).max(2), base_h.min(zb.h.max(2)).max(2))
+    } else {
+        (base_w.min(cols).max(2), base_h)
+    }
+}
+
+fn resolve_zone_bounds(zone: SemanticZoneKind, cols: i32) -> WidgetPosition {
+    let base = standard_five_zone_slots()
+        .into_iter()
+        .find(|s| s.zone == zone)
+        .map_or(
+            WidgetPosition {
+                x: 7,
+                y: 5,
+                w: 5,
+                h: 9,
+            },
+            |s| s.position,
+        );
+    if cols > 12 {
+        let scale_num = cols;
+        WidgetPosition {
+            x: base.x.saturating_mul(scale_num) / 12,
+            y: base.y,
+            w: (base.w.saturating_mul(scale_num) / 12).max(2),
+            h: base.h,
+        }
+    } else {
+        WidgetPosition {
+            x: base.x.min(cols.saturating_sub(2)).max(0),
+            y: base.y,
+            w: base.w.min(cols).max(2),
+            h: base.h,
+        }
+    }
+}
+
+fn find_open_rect_in_bounds(
+    bounds: &WidgetPosition,
+    w: i32,
+    h: i32,
+    occupied: &[WidgetPosition],
+) -> Option<WidgetPosition> {
+    let max_y = bounds.y.saturating_add(bounds.h).saturating_sub(h);
+    let max_x = bounds.x.saturating_add(bounds.w).saturating_sub(w);
+    if max_y < bounds.y || max_x < bounds.x {
+        return None;
+    }
+    let mut y = bounds.y;
+    while y <= max_y {
+        let mut x = bounds.x;
+        while x <= max_x {
+            let candidate = WidgetPosition { x, y, w, h };
+            if !occupied.iter().any(|occ| rects_overlap(&candidate, occ)) {
+                return Some(candidate);
+            }
+            x = x.saturating_add(1);
+        }
+        y = y.saturating_add(1);
+    }
+    None
+}
+
+fn allocate_in_semantic_zone(
+    zone: SemanticZoneKind,
+    cols: i32,
+    existing_widgets: &[WidgetRecord],
+    occupied: &[WidgetPosition],
+    req: PinnedSlotRequest,
+) -> PinnedSlotAllocation {
+    let base_bounds = resolve_zone_bounds(zone, cols);
+    let zone_max_bottom = existing_widgets
+        .iter()
+        .filter(|w| {
+            extract_semantic_zone(&w.options) == Some(zone)
+                || (w.position.x >= base_bounds.x
+                    && w.position.x.saturating_add(w.position.w)
+                        <= base_bounds.x.saturating_add(base_bounds.w)
+                    && w.position.y >= base_bounds.y
+                    && w.position.y < base_bounds.y.saturating_add(base_bounds.h))
+        })
+        .map(|w| w.position.y.saturating_add(w.position.h))
+        .max()
+        .unwrap_or(base_bounds.y);
+    let search_bottom = zone_max_bottom.max(base_bounds.y.saturating_add(base_bounds.h));
+    let search_bounds = WidgetPosition {
+        x: base_bounds.x,
+        y: base_bounds.y,
+        w: base_bounds.w,
+        h: search_bottom.saturating_sub(base_bounds.y).max(2),
+    };
+
+    let (def_w, def_h) = default_slot_dimensions(req.widget_kind, cols, Some(&search_bounds));
+    let w = req
+        .width
+        .map_or(def_w, |rw| rw.min(search_bounds.w).min(cols).max(2));
+    let h = req.height.unwrap_or(def_h);
+
+    if let Some(open_pos) = find_open_rect_in_bounds(&search_bounds, w, h, occupied) {
+        return PinnedSlotAllocation {
+            position: open_pos,
+            semantic_zone: Some(zone),
+            shift_from_y: 0,
+            shift_delta: 0,
+        };
+    }
+
+    let insert_y = occupied
+        .iter()
+        .filter(|p| {
+            p.y < search_bottom
+                && p.y.saturating_add(p.h) > search_bottom
+                && p.x < search_bounds.x.saturating_add(w)
+                && p.x.saturating_add(p.w) > search_bounds.x
+        })
+        .map(|p| p.y.saturating_add(p.h))
+        .max()
+        .unwrap_or(search_bottom);
+    let candidate = WidgetPosition {
+        x: search_bounds.x,
+        y: insert_y,
+        w,
+        h,
+    };
+    let needs_shift = occupied
+        .iter()
+        .any(|occ| occ.y >= insert_y && rects_overlap(&candidate, occ));
+    PinnedSlotAllocation {
+        position: candidate,
+        semantic_zone: Some(zone),
+        shift_from_y: insert_y,
+        shift_delta: if needs_shift { h } else { 0 },
+    }
+}
+
+/// Computes a non-overlapping `(x, y, w, h)` slot when pinning a saved chart onto a dashboard (`03-STEP25` §25.2.2).
+///
+/// When the dashboard uses [`CockpitZoneLayout::StandardFiveZone`] (or `req.target_zone` is specified),
+/// scans top-to-bottom, left-to-right within the semantic zone's horizontal span; if the zone's current
+/// rows are full, expands the zone downward by `h` rows and returns `shift_from_y` / `shift_delta` so
+/// widgets below the zone shift cleanly without overlapping.
+///
+/// # Errors
+/// Returns `400 INVALID_ARGUMENT` when `req.width` is outside `2..=24` or `req.height` is outside `2..=16`.
+pub fn allocate_pinned_widget_slot(
+    canvas: &CanvasConfig,
+    existing_widgets: &[WidgetRecord],
+    req: PinnedSlotRequest,
+) -> Result<PinnedSlotAllocation, AppError> {
+    if let Some(rw) = req.width
+        && !(2..=24).contains(&rw)
+    {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            format!("pinned widget width must be in 2..=24, got {rw}"),
+        ));
+    }
+    if let Some(rh) = req.height
+        && !(2..=16).contains(&rh)
+    {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            format!("pinned widget height must be in 2..=16, got {rh}"),
+        ));
+    }
+
+    let cols = if canvas.zone_layout == CockpitZoneLayout::StandardFiveZone {
+        if (2..=12).contains(&canvas.cols) {
+            canvas.cols
+        } else {
+            12
+        }
+    } else if (2..=24).contains(&canvas.cols) {
+        canvas.cols
+    } else {
+        24
+    };
+
+    let semantic_zone = req.target_zone.or_else(|| {
+        (canvas.zone_layout == CockpitZoneLayout::StandardFiveZone)
+            .then(|| default_semantic_zone_for_kind(req.widget_kind))
+    });
+    let occupied: Vec<WidgetPosition> = existing_widgets
+        .iter()
+        .map(|w| w.position.clone())
+        .collect();
+
+    if let Some(zone) = semantic_zone {
+        return Ok(allocate_in_semantic_zone(
+            zone,
+            cols,
+            existing_widgets,
+            &occupied,
+            req,
+        ));
+    }
+
+    let (def_w, def_h) = default_slot_dimensions(req.widget_kind, cols, None);
+    let w = req.width.map_or(def_w, |rw| rw.min(cols).max(2));
+    let h = req.height.unwrap_or(def_h);
+    let max_bottom = occupied
+        .iter()
+        .map(|p| p.y.saturating_add(p.h))
+        .max()
+        .unwrap_or(0);
+
+    let scan_bounds = WidgetPosition {
+        x: 0,
+        y: 0,
+        w: cols,
+        h: max_bottom,
+    };
+    if let Some(open_pos) = find_open_rect_in_bounds(&scan_bounds, w, h, &occupied) {
+        return Ok(PinnedSlotAllocation {
+            position: open_pos,
+            semantic_zone: None,
+            shift_from_y: 0,
+            shift_delta: 0,
+        });
+    }
+
+    Ok(PinnedSlotAllocation {
+        position: WidgetPosition {
+            x: 0,
+            y: max_bottom,
+            w,
+            h,
+        },
+        semantic_zone: None,
+        shift_from_y: 0,
+        shift_delta: 0,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1668,5 +1995,81 @@ mod tests {
         if let Ok(WidgetDataSource::Action { input_schema, .. }) = parsed {
             assert!(!is_valid_action_object_schema(&input_schema));
         }
+    }
+
+    #[test]
+    fn allocate_pinned_widget_slot_fills_open_insight_space_and_expands_cleanly_when_full()
+    -> Result<(), AppError> {
+        let dash_id = Uuid::new_v4();
+        let canvas = CanvasConfig::standard_five_zone();
+        let mut widgets: Vec<WidgetRecord> =
+            generate_five_zone_preset(&FiveZonePresetContext::default())
+                .into_iter()
+                .map(|s| slot_to_widget(dash_id, s))
+                .collect();
+
+        // Remove the second INSIGHT slot (y=9..14) so (7, 9, 5, 4) is free inside INSIGHT.
+        widgets.retain(|w| !(w.position.x == 7 && w.position.y == 9));
+
+        let open_alloc = allocate_pinned_widget_slot(
+            &canvas,
+            &widgets,
+            PinnedSlotRequest {
+                widget_kind: WidgetKind::BarChart,
+                target_zone: Some(SemanticZoneKind::Insight),
+                width: None,
+                height: None,
+            },
+        )?;
+        assert_eq!(open_alloc.semantic_zone, Some(SemanticZoneKind::Insight));
+        assert_eq!(
+            open_alloc.position,
+            WidgetPosition {
+                x: 7,
+                y: 9,
+                w: 5,
+                h: 4,
+            }
+        );
+        assert_eq!(open_alloc.shift_delta, 0);
+        for existing in &widgets {
+            assert!(!rects_overlap(&open_alloc.position, &existing.position));
+        }
+
+        // Now fill INSIGHT completely (add a widget at (7, 9, 5, 5)) and pin another chart.
+        let full_widgets: Vec<WidgetRecord> =
+            generate_five_zone_preset(&FiveZonePresetContext::default())
+                .into_iter()
+                .map(|s| slot_to_widget(dash_id, s))
+                .collect();
+        let expanded_alloc = allocate_pinned_widget_slot(
+            &canvas,
+            &full_widgets,
+            PinnedSlotRequest {
+                widget_kind: WidgetKind::LineChart,
+                target_zone: None,
+                width: None,
+                height: None,
+            },
+        )?;
+        assert_eq!(
+            expanded_alloc.semantic_zone,
+            Some(SemanticZoneKind::Insight)
+        );
+        assert_eq!(expanded_alloc.position.x, 7);
+        assert_eq!(expanded_alloc.position.y, 14);
+        assert_eq!(expanded_alloc.position.w, 5);
+        assert_eq!(expanded_alloc.position.h, 4);
+        assert_eq!(expanded_alloc.shift_from_y, 14);
+        assert_eq!(expanded_alloc.shift_delta, 4);
+
+        for existing in &full_widgets {
+            let mut shifted = existing.position.clone();
+            if shifted.y >= expanded_alloc.shift_from_y {
+                shifted.y = shifted.y.saturating_add(expanded_alloc.shift_delta);
+            }
+            assert!(!rects_overlap(&expanded_alloc.position, &shifted));
+        }
+        Ok(())
     }
 }

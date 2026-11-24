@@ -6,6 +6,7 @@ import {
   buildWidgetFilters,
   chartSpec,
   classifyPivotRow,
+  computeMagneticSnapGuides,
   containsFunctionValue,
   detectImplicitNodeMetricGrouping,
   formatAxisTimestampLabel,
@@ -13,9 +14,12 @@ import {
   parseGraphTopologyData,
   parseNodesGeoData,
   resolveActionTargetNodeId,
+  resolveFreeFloatLayout,
   resolveLeafDrillNodeKey,
   sanitizeExportFilters,
   sanitizeOptionalUuid,
+  tidyDashboardLayout,
+  type GridLayoutBox,
   type LogicFilterDef,
 } from "./logic.ts";
 
@@ -567,5 +571,122 @@ describe("xBlueView contract logic", () => {
       (series[1]?.itemStyle as Record<string, unknown>)?.color
     );
     assert.equal(containsFunctionValue(lineRes.option), false);
+  });
+
+  it("tidyDashboardLayout aligns near-row |Δy|<=1 cards, normalizes heights, and expands [cols-2, cols) rows to full cols", () => {
+    const ragged = [
+      { id: "w1", position: { x: 0, y: 0, w: 5, h: 4 } },
+      { id: "w2", position: { x: 6, y: 1, w: 6, h: 5 } }, // |Δy| = 1, totalW = 11 in [10, 12)
+      { id: "w3", position: { x: 0, y: 7, w: 12, h: 4 } },
+    ];
+    const tidied = tidyDashboardLayout(ragged, 12);
+    assert.equal(tidied.length, 3);
+    // w1 and w2 aligned to y=0, h=5, and widths expanded from 5+6=11 to 6+6=12
+    assert.equal(tidied[0]?.position.y, 0);
+    assert.equal(tidied[1]?.position.y, 0);
+    assert.equal(tidied[0]?.position.h, 5);
+    assert.equal(tidied[1]?.position.h, 5);
+    assert.equal(
+      (tidied[0]?.position.w ?? 0) + (tidied[1]?.position.w ?? 0),
+      12
+    );
+    assert.equal(tidied[0]?.position.x, 0);
+    assert.equal(tidied[1]?.position.x, tidied[0]?.position.w);
+    // Lower card w3 preserved without overlap
+    assert.equal(tidied[2]?.position.y, 7);
+    assert.equal(tidied[2]?.position.w, 12);
+  });
+
+  it("resolveFreeFloatLayout never compacts lower cards upward or pushes locked neighbors on collision", () => {
+    const baseline = new Map<string, GridLayoutBox>([
+      ["top", { i: "top", x: 0, y: 0, w: 6, h: 4 }],
+      ["lower", { i: "lower", x: 0, y: 6, w: 6, h: 4 }],
+    ]);
+
+    // Moving upper card horizontally to (6, 0) leaves lower card untouched at (0, 6)
+    const movedCleanly = resolveFreeFloatLayout(
+      [
+        { i: "top", x: 6, y: 0, w: 6, h: 4 },
+        { i: "lower", x: 0, y: 6, w: 6, h: 4 },
+      ],
+      12,
+      "top",
+      baseline
+    );
+    assert.deepEqual(movedCleanly[0], { i: "top", x: 6, y: 0, w: 6, h: 4 });
+    assert.deepEqual(movedCleanly[1], { i: "lower", x: 0, y: 6, w: 6, h: 4 });
+
+    // Even if RGL proposes pushing `lower` down to y=10 when `top` collides at (0, 6),
+    // resolveFreeFloatLayout locks `lower` at (0, 6) and snaps `top` back to (0, 0).
+    const collisionAttempt = resolveFreeFloatLayout(
+      [
+        { i: "top", x: 0, y: 6, w: 6, h: 4 },
+        { i: "lower", x: 0, y: 10, w: 6, h: 4 },
+      ],
+      12,
+      "top",
+      baseline
+    );
+    assert.deepEqual(collisionAttempt[1], {
+      i: "lower",
+      x: 0,
+      y: 6,
+      w: 6,
+      h: 4,
+    });
+    assert.deepEqual(collisionAttempt[0], {
+      i: "top",
+      x: 0,
+      y: 0,
+      w: 6,
+      h: 4,
+    });
+  });
+
+  it("computeMagneticSnapGuides and Step 25 chart variants produce pure JSON options", () => {
+    const guides = computeMagneticSnapGuides(
+      { i: "a", x: 6, y: 4, w: 6, h: 4 },
+      [
+        { i: "a", x: 6, y: 4, w: 6, h: 4 },
+        { i: "b", x: 0, y: 4, w: 6, h: 4 },
+      ]
+    );
+    assert.deepEqual(guides.verticalCols, [6]);
+    assert.deepEqual(guides.horizontalRows, [4, 8]);
+
+    for (const variant of [
+      "STACKED_BAR",
+      "HORIZONTAL_BAR",
+      "AREA",
+      "DUAL_AXIS",
+      "ROSE",
+      "FUNNEL",
+      "TREEMAP",
+    ]) {
+      const kind =
+        variant === "ROSE" || variant === "FUNNEL" || variant === "TREEMAP"
+          ? "PIE_CHART"
+          : variant === "AREA"
+            ? "LINE_CHART"
+            : "BAR_CHART";
+      const res = buildEChartsOption({
+        kind,
+        encoding: { x: "status", y: ["amt"], secondary_y: "cnt" },
+        options: { chart_variant: variant, mark_line_value: 100 },
+        data: {
+          columns: [
+            { name: "status", data_type: "STRING" },
+            { name: "amt", data_type: "DECIMAL" },
+            { name: "cnt", data_type: "INT64" },
+          ],
+          rows: [
+            ["PAID", 1200, 15],
+            ["PENDING", 300, 4],
+          ],
+        },
+        isDark: false,
+      });
+      assert.equal(containsFunctionValue(res.option), false);
+    }
   });
 });

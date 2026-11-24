@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import { useNavigate, useSearchParams } from "react-router";
 import {
+  BarChart3,
   ChevronDown,
   ChevronUp,
   Code2,
@@ -13,6 +14,7 @@ import {
   Network,
   PanelLeftClose,
   PanelLeftOpen,
+  Pin,
   Send,
   Sparkles,
   ThumbsDown,
@@ -44,8 +46,17 @@ import {
   stripAtMention,
 } from "@/components/axquery/logic";
 import { ChartPanel } from "@/components/analytics/ChartPanel";
+import {
+  CHART_STUDIO_SEED_STORAGE_KEY,
+  type ChartStudioSeed,
+} from "@/components/analytics/ChartStudioPanel";
 import { GroundingBadge } from "@/components/analytics/GroundingBadge";
+import {
+  PinToDashboardModal,
+  type PinChartDraftSpec,
+} from "@/components/analytics/PinToDashboardModal";
 import { ResultGrid } from "@/components/analytics/ResultGrid";
+import type { WidgetKind } from "@/lib/api/enums";
 import {
   Badge,
   Button,
@@ -146,8 +157,12 @@ function cleanCitationSnippet(raw: string): string {
 
 export function AxQueryPage({
   embedded = false,
+  onOpenChartStudio,
+  onPinToDashboard,
 }: {
   readonly embedded?: boolean;
+  readonly onOpenChartStudio?: (seed: ChartStudioSeed) => void;
+  readonly onPinToDashboard?: (draft: PinChartDraftSpec) => void;
 } = {}) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -174,6 +189,76 @@ export function AxQueryPage({
   const [loading, setLoading] = useState(false);
   const [pendingQuestion, setPendingQuestion] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  const [pinDraft, setPinDraft] = useState<PinChartDraftSpec | null>(null);
+
+  const openTurnChartStudio = (turn: ConversationTurn) => {
+    const sqlStr = turn.resp.sql?.trim() ?? "";
+    if (!sqlStr) return;
+    const rawKind = turn.resp.chart?.kind?.toUpperCase() ?? "";
+    const suggestedKind: WidgetKind =
+      rawKind === "LINE"
+        ? "LINE_CHART"
+        : rawKind === "PIE"
+          ? "PIE_CHART"
+          : rawKind === "KPI"
+            ? "KPI_CARD"
+            : "BAR_CHART";
+    const seed: ChartStudioSeed = {
+      title: turn.question.slice(0, 60),
+      dataSource: { kind: "SQL", sql: sqlStr },
+      columns: Array.isArray(turn.resp.columns) ? turn.resp.columns : [],
+      rows: Array.isArray(turn.resp.rows) ? turn.resp.rows : [],
+      suggestedKind,
+      ...(turn.resp.chart?.x_field ? { suggestedX: turn.resp.chart.x_field } : {}),
+      ...(turn.resp.chart?.y_fields && turn.resp.chart.y_fields.length > 0
+        ? { suggestedY: turn.resp.chart.y_fields }
+        : {}),
+    };
+    if (onOpenChartStudio) {
+      onOpenChartStudio(seed);
+      return;
+    }
+    try {
+      sessionStorage.setItem(
+        CHART_STUDIO_SEED_STORAGE_KEY,
+        JSON.stringify(seed)
+      );
+    } catch {
+      // Ignore storage error
+    }
+    void navigate("/analytics?tab=chart");
+  };
+
+  const openTurnPinModal = (turn: ConversationTurn) => {
+    const sqlStr = turn.resp.sql?.trim() ?? "";
+    if (!sqlStr) return;
+    const rawKind = turn.resp.chart?.kind?.toUpperCase() ?? "";
+    const widgetKind: WidgetKind =
+      rawKind === "LINE"
+        ? "LINE_CHART"
+        : rawKind === "PIE"
+          ? "PIE_CHART"
+          : rawKind === "KPI"
+            ? "KPI_CARD"
+            : "BAR_CHART";
+    const draft: PinChartDraftSpec = {
+      name: turn.question.slice(0, 60) || tx("智能问数图表", "Ask Chart"),
+      widgetKind,
+      dataSource: { kind: "SQL", sql: sqlStr },
+      encoding: {
+        ...(turn.resp.chart?.x_field ? { x: turn.resp.chart.x_field } : {}),
+        ...(turn.resp.chart?.y_fields && turn.resp.chart.y_fields.length > 0
+          ? { y: turn.resp.chart.y_fields }
+          : {}),
+      },
+      options: {},
+    };
+    if (onPinToDashboard) {
+      onPinToDashboard(draft);
+      return;
+    }
+    setPinDraft(draft);
+  };
 
   const streamEndRef = useRef<HTMLDivElement | null>(null);
   const scopeBarRef = useRef<QueryScopeBarHandle | null>(null);
@@ -1275,6 +1360,33 @@ export function AxQueryPage({
                                     </Button>
                                   )}
 
+                                  {Boolean(sqlText.trim()) && (
+                                    <>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() =>
+                                          openTurnChartStudio(turn)
+                                        }
+                                        data-testid="axquery-open-chart-studio-btn"
+                                      >
+                                        <BarChart3 className="h-3 w-3 text-xblue" />
+                                        {tx("制图", "Chart")}
+                                      </Button>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => openTurnPinModal(turn)}
+                                        data-testid="axquery-pin-dashboard-btn"
+                                      >
+                                        <Pin className="h-3 w-3 text-xblue" />
+                                        {tx("钉入看板", "Pin")}
+                                      </Button>
+                                    </>
+                                  )}
+
                                   {hasDataPayload && (
                                     <Button
                                       type="button"
@@ -1411,6 +1523,16 @@ export function AxQueryPage({
                                 rowCount={dataRows.length}
                                 maxHeight={240}
                                 testId="axquery-result-grid"
+                                onOpenChartStudio={
+                                  sqlText.trim()
+                                    ? () => openTurnChartStudio(turn)
+                                    : undefined
+                                }
+                                onPinToDashboard={
+                                  sqlText.trim()
+                                    ? () => openTurnPinModal(turn)
+                                    : undefined
+                                }
                               />
 
                               <ChartPanel
@@ -1594,6 +1716,12 @@ export function AxQueryPage({
           )}
         </div>
       </div>
+
+      <PinToDashboardModal
+        open={Boolean(pinDraft)}
+        draft={pinDraft}
+        onClose={() => setPinDraft(null)}
+      />
     </div>
   );
 }

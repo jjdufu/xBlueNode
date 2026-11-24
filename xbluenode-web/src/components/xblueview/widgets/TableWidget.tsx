@@ -96,6 +96,30 @@ export function TableWidget({ widget, data, onRowClick }: TableWidgetProps) {
     return copied;
   }, [data?.rows, sortAsc, sortColIdx]);
 
+  const conditionalColorEnabled =
+    widget.options?.conditional_color === true ||
+    readString(widget.options, "chart_variant") === "CONDITIONAL_TABLE";
+
+  const colRanges = useMemo(() => {
+    const ranges = new Map<number, { min: number; max: number }>();
+    if (!conditionalColorEnabled || !data) return ranges;
+    data.columns.forEach((_, cIdx) => {
+      let min = Infinity;
+      let max = -Infinity;
+      for (const r of data.rows) {
+        const n = toNumericValue(r[cIdx]);
+        if (n !== null) {
+          min = Math.min(min, n);
+          max = Math.max(max, n);
+        }
+      }
+      if (Number.isFinite(min) && Number.isFinite(max) && max > min) {
+        ranges.set(cIdx, { min, max });
+      }
+    });
+    return ranges;
+  }, [conditionalColorEnabled, data]);
+
   if (!data || data.columns.length === 0) {
     return (
       <div className="h-full flex items-center justify-center text-xs text-muted-foreground">
@@ -214,10 +238,25 @@ export function TableWidget({ widget, data, onRowClick }: TableWidgetProps) {
                       {data.columns.map((col, cIdx) => {
                         const fmt = columnFormats.get(col.name);
                         const val = row[cIdx];
-                        const isNum = toNumericValue(val) !== null;
+                        const numVal = toNumericValue(val);
+                        const isNum = numVal !== null;
+                        const range = colRanges.get(cIdx);
+                        const heatAlpha =
+                          range && numVal !== null
+                            ? 0.05 +
+                              ((numVal - range.min) / (range.max - range.min)) *
+                                0.2
+                            : 0;
                         return (
                           <td
                             key={`${rIdx}-${col.name}`}
+                            style={
+                              heatAlpha > 0
+                                ? {
+                                    backgroundColor: `rgba(37, 99, 235, ${heatAlpha.toFixed(3)})`,
+                                  }
+                                : undefined
+                            }
                             className={`px-2.5 py-1 whitespace-nowrap ${
                               isNum || fmt?.align === "right"
                                 ? "text-right font-mono-tech tabular-nums"

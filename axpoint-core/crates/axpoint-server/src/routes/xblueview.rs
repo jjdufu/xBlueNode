@@ -3121,6 +3121,45 @@ async fn shared_download_handler(
 // Saved Chart Assets (`xv_charts`, Step 25)
 // ============================================================================
 
+fn chart_resource_ref(chart: &SavedChartRecord) -> axpoint_domain::guard::ResourceRef {
+    axpoint_domain::guard::ResourceRef {
+        kind: axpoint_domain::guard::GrantResourceKind::Dashboard,
+        id: chart.id.to_string(),
+        owner_dept: chart.owner_dept.clone(),
+        sensitivity: chart.sensitivity,
+    }
+}
+
+async fn emit_chart_publish_audit(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    chart: &SavedChartRecord,
+    status_code: i32,
+    client_ip: &str,
+) {
+    state.audit.record(AuditRecord {
+        tenant_id: principal.tenant_id.clone(),
+        user_id: actor_uuid(principal),
+        username: principal.username.clone(),
+        action: AuditAction::ChartPublish,
+        resource_ref: format!("chart:{}", chart.id),
+        status_code,
+        client_ip: String::from(client_ip),
+        trace_id: current_trace_id(),
+        detail_json: serde_json::json!({
+            "chart_id": chart.id,
+            "name": chart.name,
+            "widget_kind": chart.widget_kind.as_str(),
+            "sensitivity": chart.sensitivity.as_str(),
+            "shared": chart.shared,
+        }),
+        created_at: Utc::now(),
+    });
+    if let Err(err) = state.audit.flush().await {
+        tracing::warn!(error = %err, "chart_publish audit flush failed");
+    }
+}
+
 async fn list_saved_charts_handler(
     State(state): State<AppState>,
     principal: AuthPrincipal,
@@ -3128,8 +3167,10 @@ async fn list_saved_charts_handler(
 ) -> Result<Json<PaginatedList<SavedChartRecord>>, HttpError> {
     principal.require(Permission::DataRead)?;
     validate_page_limit(query.limit)?;
+    let profile =
+        axpoint_server::policy::load_effective_guard_profile(&state.store, &principal).await?;
     let include_all = principal.has(Permission::ViewEdit);
-    let page = state
+    let mut page = state
         .store
         .list_saved_charts(
             &principal.tenant_id,
@@ -3141,29 +3182,41 @@ async fn list_saved_charts_handler(
             },
         )
         .await?;
+    page.items.retain(|chart| {
+        chart.sensitivity <= profile.clearance || chart.created_by == actor_uuid(&principal)
+    });
     Ok(Json(page))
 }
 
 async fn create_saved_chart_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<SaveChartRequest>,
 ) -> Result<(StatusCode, Json<SavedChartRecord>), HttpError> {
     principal.require(Permission::ViewEdit)?;
+    let profile =
+        axpoint_server::policy::load_effective_guard_profile(&state.store, &principal).await?;
+    if req.sensitivity > profile.clearance {
+        return Err(HttpError(AppError::Forbidden("POLICY_DENIED")));
+    }
     let saved = state
         .store
         .create_saved_chart(
             &principal.tenant_id,
             actor_uuid(&principal),
-            &principal.dept_id,
+            &profile.dept_id,
             req,
         )
         .await?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    emit_chart_publish_audit(&state, &principal, &saved, 201, &client_ip).await;
     Ok((StatusCode::CREATED, Json(saved)))
 }
 
 async fn get_saved_chart_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiPath(chart_id): ApiPath<Uuid>,
 ) -> Result<Json<SavedChartRecord>, HttpError> {
@@ -3173,30 +3226,86 @@ async fn get_saved_chart_handler(
         .get_saved_chart(&principal.tenant_id, chart_id)
         .await?
         .ok_or(AppError::NotFound("CHART_NOT_FOUND"))?;
+    if !chart.shared
+        && chart.created_by != actor_uuid(&principal)
+        && !principal.has(Permission::ViewEdit)
+    {
+        return Err(HttpError(AppError::NotFound("CHART_NOT_FOUND")));
+    }
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    axpoint_server::policy::authorize_explicit_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::DataRead,
+        &chart_resource_ref(&chart),
+        &client_ip,
+    )
+    .await?;
     Ok(Json(chart))
 }
 
 async fn update_saved_chart_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiPath(chart_id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<UpdateSavedChartRequest>,
 ) -> Result<Json<SavedChartRecord>, HttpError> {
     principal.require(Permission::ViewEdit)?;
+    let existing = state
+        .store
+        .get_saved_chart(&principal.tenant_id, chart_id)
+        .await?
+        .ok_or(AppError::NotFound("CHART_NOT_FOUND"))?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    axpoint_server::policy::authorize_explicit_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::ViewEdit,
+        &chart_resource_ref(&existing),
+        &client_ip,
+    )
+    .await?;
+    if let Some(target_sens) = req.sensitivity {
+        let profile =
+            axpoint_server::policy::load_effective_guard_profile(&state.store, &principal).await?;
+        if target_sens > profile.clearance {
+            return Err(HttpError(AppError::Forbidden("POLICY_DENIED")));
+        }
+    }
     let updated = state
         .store
         .update_saved_chart(&principal.tenant_id, chart_id, req)
         .await?
         .ok_or(AppError::NotFound("CHART_NOT_FOUND"))?;
+    emit_chart_publish_audit(&state, &principal, &updated, 200, &client_ip).await;
     Ok(Json(updated))
 }
 
 async fn delete_saved_chart_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiPath(chart_id): ApiPath<Uuid>,
 ) -> Result<Json<DeleteStatus>, HttpError> {
     principal.require(Permission::ViewEdit)?;
+    let existing = state
+        .store
+        .get_saved_chart(&principal.tenant_id, chart_id)
+        .await?
+        .ok_or(AppError::NotFound("CHART_NOT_FOUND"))?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    axpoint_server::policy::authorize_explicit_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::ViewEdit,
+        &chart_resource_ref(&existing),
+        &client_ip,
+    )
+    .await?;
     let deleted = state
         .store
         .delete_saved_chart(&principal.tenant_id, chart_id)
@@ -3209,21 +3318,69 @@ async fn delete_saved_chart_handler(
 
 async fn pin_saved_chart_handler(
     State(state): State<AppState>,
+    headers: HeaderMap,
     principal: AuthPrincipal,
     ApiPath(chart_id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<PinChartToDashboardRequest>,
 ) -> Result<(StatusCode, Json<PinChartToDashboardResponse>), HttpError> {
     principal.require(Permission::ViewEdit)?;
+    principal.require(Permission::DataRead)?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+
+    let detail = state
+        .store
+        .get_dashboard(&principal.tenant_id, req.dashboard_id, false)
+        .await?
+        .ok_or(AppError::NotFound("DASHBOARD_NOT_FOUND"))?;
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::ViewEdit,
+        axpoint_domain::guard::GrantResourceKind::Dashboard,
+        &detail.dashboard.id.to_string(),
+        &client_ip,
+    )
+    .await?;
+
     let chart = state
         .store
         .get_saved_chart(&principal.tenant_id, chart_id)
         .await?
         .ok_or(AppError::NotFound("CHART_NOT_FOUND"))?;
+    axpoint_server::policy::authorize_explicit_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::DataRead,
+        &chart_resource_ref(&chart),
+        &client_ip,
+    )
+    .await?;
+
     let deps = compute_widget_deps(&state.store, &principal.tenant_id, &chart.data_source).await?;
+    for ds_id in &deps.dataset_ids {
+        let _ = axpoint_server::policy::authorize_resource_for_store(
+            &state.store,
+            &state.cedar,
+            &principal,
+            Permission::DataRead,
+            axpoint_domain::guard::GrantResourceKind::Dataset,
+            &ds_id.to_string(),
+            &client_ip,
+        )
+        .await?;
+    }
+
     let res = state
         .store
         .pin_saved_chart_to_dashboard(&principal.tenant_id, chart_id, req, deps)
         .await?;
+    state
+        .view
+        .cache
+        .invalidate_dashboards(&principal.tenant_id, &[res.dashboard_id])
+        .await;
     Ok((StatusCode::CREATED, Json(res)))
 }
 
