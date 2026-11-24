@@ -62,9 +62,9 @@ AXQL_OBJ=$(api POST /api/analytics/axql/run '{
   "axql": "SELECT w.node_key, w.region, w.inventory FROM OBJECT(Step27Warehouse) w WHERE w.node_key = '\''W-27-1'\''"
 }')
 expect_json "axql-cross-tier-compile" "$(jq -n --argjson p "$AXQL_PLAN" --argjson r "$AXQL_OBJ" '{p:$p, r:$r}')" '
-  ($p.compiled_sql | length > 0)
-  and ($r.row_count == 1)
-  and (($r.rows[0].inventory | tonumber) == 500)
+  (.p.compiled_sql | length > 0)
+  and (.r.row_count == 1)
+  and ((.r.rows[0].inventory | tonumber) == 500)
 '
 
 # 2. C85（下）：1 个仓库 (inventory=500) 关联 2 笔订单，SUM_BY_ENTITY 精确返回 500（消除 2 倍扇出膨胀）
@@ -111,8 +111,8 @@ SB_BEFORE_GRAPH=$(curl -fsS -H "Authorization: Bearer ${OBS_TOKEN}" "${CORE_BASE
 api PATCH "/api/xblue/nodes/${W_ID}" '{"metrics":{"inventory":60},"metrics_merge":"MERGE"}' >/dev/null
 AFTER_NODES=$(curl -fsS -H "Authorization: Bearer ${OBS_TOKEN}" "${CORE_BASE_URL}/api/xblue/nodes?type_name=Step27Warehouse")
 expect_json "state-visibility-escalate" "$(jq -n --argjson b "$BEFORE_NODES" --argjson a "$AFTER_NODES" '{b:$b, a:$a}')" '
-  (($b.items | map(select(.node_key == "W-27-1")) | length) == 0)
-  and (($a.items | map(select(.node_key == "W-27-1")) | length) == 1)
+  ((.b.items | map(select(.node_key == "W-27-1")) | length) == 0)
+  and ((.a.items | map(select(.node_key == "W-27-1")) | length) == 1)
 '
 
 SB_AFTER=$(curl -fsS -X POST -H "Authorization: Bearer ${OBS_TOKEN}" -H 'Content-Type: application/json' \
@@ -120,8 +120,8 @@ SB_AFTER=$(curl -fsS -X POST -H "Authorization: Bearer ${OBS_TOKEN}" -H 'Content
 SB_AFTER_ID=$(echo "$SB_AFTER" | jq -r '.id')
 SB_AFTER_GRAPH=$(curl -fsS -H "Authorization: Bearer ${OBS_TOKEN}" "${CORE_BASE_URL}/api/axsim/sandboxes/${SB_AFTER_ID}/graph")
 expect_json "sim-inherits-state-visibility" "$(jq -n --argjson gb "$SB_BEFORE_GRAPH" --argjson ga "$SB_AFTER_GRAPH" '{gb:$gb, ga:$ga}')" '
-  (($gb.nodes | map(select(.node_key == "W-27-1")) | length) == 0)
-  and (($ga.nodes | map(select(.node_key == "W-27-1")) | length) == 1)
+  ((.gb.nodes | map(select(.node_key == "W-27-1")) | length) == 0)
+  and ((.ga.nodes | map(select(.node_key == "W-27-1")) | length) == 1)
 '
 
 # 清理测试策略以免影响后续默认查询

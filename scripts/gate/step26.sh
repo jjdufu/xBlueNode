@@ -170,9 +170,9 @@ expect_json "edge-metric-ingest" "$EDGE_INGEST" '.written == 1'
 LINK_EXP=$(api GET "/api/xblue/links/${LANE_ID}/explain/effective_flux")
 DEPOT_AFTER=$(api GET "/api/xblue/nodes/${DEPOT_ID}")
 expect_json "four-path-propagation" "$(jq -n --argjson le "$LINK_EXP" --argjson dn "$DEPOT_AFTER" '{le:$le, dn:$dn}')" '
-  ($le.value != null)
-  and (($le.rule_chain | length) >= 1)
-  and ($dn.metrics.inbound_flux > 100)
+  (.le.value != null)
+  and ((.le.rule_chain | length) >= 1)
+  and (.dn.metrics.inbound_flux > 100)
 '
 
 # C84（下）：在演练子图推送无死指标闭合模型并执行 /certify 达成 L4_CERTIFIED
