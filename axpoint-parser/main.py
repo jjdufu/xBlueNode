@@ -91,7 +91,7 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="AxPoint Document & Data Parser Sidecar",
-    version="0.2.0",
+    version="0.3.0",
     lifespan=_lifespan,
 )
 app.add_middleware(InternalTokenMiddleware)
