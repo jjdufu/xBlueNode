@@ -2581,7 +2581,7 @@ test.describe("Step 22 Phase 2 Grounded AI & Builder UX Full Journey", () => {
       await page.goto("/login");
 
       await expect(
-        page.getByRole("heading", { level: 1, name: "AxGuard · 统一身份认证" })
+        page.getByRole("heading", { level: 1, name: "登录" })
       ).toBeVisible();
       await page.getByTestId("login-tenant-input").fill("default");
       await page.getByTestId("login-username-input").fill("ops_admin");

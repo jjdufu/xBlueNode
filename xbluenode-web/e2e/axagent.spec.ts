@@ -956,7 +956,7 @@ test("AxAgent 6-tab workbench, SSE tool-calling stream, Query-as-App, Endpoint p
 
     await page.goto("/agents");
     await expect(
-      page.getByRole("heading", { level: 1, name: "AxAgent · 智能体与发布" })
+      page.getByRole("heading", { level: 1, name: "智能体中心" })
     ).toBeVisible();
 
     if (targetAgentId) {
@@ -1016,7 +1016,7 @@ test("AxAgent 6-tab workbench, SSE tool-calling stream, Query-as-App, Endpoint p
 
   await page.goto("/agents");
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxAgent · 智能体与发布" })
+    page.getByRole("heading", { level: 1, name: "智能体中心" })
   ).toBeVisible();
 
   // Verify all 6 tabs render cleanly

@@ -704,7 +704,7 @@ test("AxAnalytics /analytics executes SQL count(*) -> 100 and drag-and-drop Pivo
   await page.goto("/analytics");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxAnalytics · 分析与问数" })
+    page.getByRole("heading", { level: 1, name: "探索与制图" })
   ).toBeVisible();
 
   // Verify SchemaTree loads demo_orders
@@ -804,7 +804,7 @@ test("AxQuery /query renders HYBRID & DATA intent badges, expands SQL/ResultGrid
   await page.goto("/query");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxQuery · 智能问答" })
+    page.getByRole("heading", { level: 1, name: "探索与制图" })
   ).toBeVisible();
   await expect(page.getByTestId("axquery-mode-AUTO")).toBeVisible();
   await expect(page.getByTestId("axquery-mode-DOC")).toBeVisible();
