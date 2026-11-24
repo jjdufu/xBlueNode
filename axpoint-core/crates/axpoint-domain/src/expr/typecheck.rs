@@ -122,11 +122,21 @@ fn check_node(
         }
         Expr::PropRef(attr) => {
             let Some(mapped_opt) = env.properties.get(attr) else {
-                return Err(tc_err(format!("unknown attribute 'prop.{attr}'")));
+                let label = if attr.contains('.') {
+                    attr.clone()
+                } else {
+                    format!("prop.{attr}")
+                };
+                return Err(tc_err(format!("unknown attribute '{label}'")));
             };
             let Some(prop_type) = *mapped_opt else {
+                let label = if attr.contains('.') {
+                    attr.clone()
+                } else {
+                    format!("prop.{attr}")
+                };
                 return Err(tc_err(format!(
-                    "attribute 'prop.{attr}' has a non-primitive type and cannot be referenced in expressions"
+                    "attribute '{label}' has a non-primitive type and cannot be referenced in expressions"
                 )));
             };
             props.insert(attr.clone());

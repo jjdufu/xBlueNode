@@ -9,6 +9,10 @@ use crate::studio::doc::{
     AggRuleSpec, DatasetValidationMeta, IssueSeverity, LinkDirection, MappingSpec, NodeTypeSpec,
     PropertyKind, PropertySpec, SchemaDoc, ValidationContext, ValidationIssue,
 };
+use crate::studio::validate_actions::{append_dead_knowledge_warnings, validate_all_actions};
+use crate::studio::validate_edge_rules::{
+    is_edge_to_vertex_agg, validate_edge_rules_and_deps, validate_edge_to_vertex_agg,
+};
 
 const RESERVED_PROPERTY_NAMES: &[&str] = &[
     "id",
@@ -53,9 +57,11 @@ pub fn validate(doc: &SchemaDoc, ctx: &ValidationContext) -> Vec<ValidationIssue
 
     validate_node_type_names_and_props(doc, &mut issues);
     validate_edge_types(doc, ctx, &effective_types, &mut issues);
-    let dep_graph = validate_rules_and_build_deps(doc, &effective_types, &mut issues);
+    let mut dep_graph = validate_rules_and_build_deps(doc, &effective_types, &mut issues);
+    validate_edge_rules_and_deps(doc, &effective_types, &mut dep_graph, &mut issues);
     detect_metric_cycles(&dep_graph, &mut issues);
     validate_single_producer(doc, &mut issues);
+    validate_all_actions(doc, &effective_types, &mut issues);
     validate_mappings(doc, ctx, &effective_types, &mut issues);
     validate_breaking_changes(doc, ctx, &mut issues);
 
@@ -486,6 +492,11 @@ fn validate_agg_rule(
                 rule.target_metric, nt.name
             ),
         );
+    }
+
+    if is_edge_to_vertex_agg(doc, rule) {
+        validate_edge_to_vertex_agg(doc, nt, rule, rule_path, dep_graph, issues);
+        return;
     }
 
     let edge_matches = !rule.via_link_type.trim().is_empty()
@@ -1259,6 +1270,8 @@ fn compute_pass_count_and_advisories(
             ),
         });
     }
+
+    append_dead_knowledge_warnings(doc, issues);
 
     pass_count
 }

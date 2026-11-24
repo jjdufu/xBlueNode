@@ -3121,12 +3121,30 @@ async fn accept_knowledge_node_candidate_handler(
 
 async fn invoke_object_action_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath((type_name, node_key, action_name)): ApiPath<(String, String, String)>,
     ApiJson(req): ApiJson<InvokeObjectActionRequest>,
 ) -> Result<(StatusCode, Json<InvokeObjectActionResponse>), HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::FlowRun)?;
-    let resp = state
+
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let policy = authorize_object_action_target(
+        &state,
+        &principal,
+        &client_ip,
+        type_name.trim(),
+        node_key.trim(),
+    )
+    .await?;
+
+    let payload_sha256 = {
+        use sha2::{Digest as _, Sha256};
+        hex::encode(Sha256::digest(req.inputs.to_string().as_bytes()))
+    };
+    let idem_key = req.idempotency_key.clone();
+    let mut resp = state
         .store
         .invoke_object_action(
             &principal.tenant_id,
@@ -3137,21 +3155,121 @@ async fn invoke_object_action_handler(
             req,
         )
         .await?;
+
+    mask_action_response_node(&state, &principal, &policy, &mut resp).await;
+
     let status = if resp.status == "WAITING_APPROVAL" {
         StatusCode::ACCEPTED
     } else {
         StatusCode::OK
     };
+    state.audit.record(AuditRecord {
+        tenant_id: principal.tenant_id.clone(),
+        user_id: actor_uuid(&principal),
+        username: principal.username.clone(),
+        action: AuditAction::ObjectActionInvoke,
+        resource_ref: format!(
+            "{}:{}:{}",
+            type_name.trim(),
+            node_key.trim(),
+            action_name.trim()
+        ),
+        status_code: i32::from(status.as_u16()),
+        client_ip,
+        trace_id: current_trace_id(),
+        detail_json: serde_json::json!({
+            "channel": "REST",
+            "status": &resp.status,
+            "idempotency_key": idem_key,
+            "idempotency_replay": resp.idempotency_replay,
+            "payload_sha256": payload_sha256,
+        }),
+        created_at: Utc::now(),
+    });
+    if let Err(err) = state.audit.flush().await {
+        tracing::warn!(error = %err, "rest object action audit flush failed");
+    }
     Ok((status, Json(resp)))
+}
+
+async fn authorize_object_action_target(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    client_ip: &str,
+    type_name: &str,
+    node_key: &str,
+) -> Result<axpoint_domain::guard::PolicyContext, AppError> {
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        principal,
+        Permission::FlowRun,
+        axpoint_domain::guard::GrantResourceKind::NodeType,
+        type_name,
+        client_ip,
+    )
+    .await?;
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        principal,
+        false,
+        client_ip,
+    )
+    .await?;
+    if !policy.bypass_row_policies
+        && let Some(target_node) = state
+            .store
+            .get_domain_object_by_key(&principal.tenant_id, type_name, node_key)
+            .await?
+    {
+        let visible = state
+            .store
+            .filter_visible_node_ids(&principal.tenant_id, &[target_node.id], &policy.node_types)
+            .await?;
+        if !visible.contains(&target_node.id) {
+            return Err(AppError::Forbidden("PERMISSION_DENIED"));
+        }
+    }
+    Ok(policy)
+}
+
+async fn mask_action_response_node(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    policy: &axpoint_domain::guard::PolicyContext,
+    resp: &mut InvokeObjectActionResponse,
+) {
+    let Some(ref mut n) = resp.node else {
+        return;
+    };
+    let published = state
+        .store
+        .get_published_schema(&principal.tenant_id, "main")
+        .await
+        .ok();
+    let nt_opt = published
+        .as_ref()
+        .and_then(|p| p.doc.node_types.iter().find(|t| t.name == n.type_name));
+    let hmac_key = state.mask_keys.tenant_key(&principal.tenant_id);
+    n.properties = xblue_graphql::mask_node_attributes_with_policy(
+        n,
+        nt_opt,
+        Some(policy),
+        principal.has(Permission::PiiRawRead),
+        &hmac_key,
+    );
 }
 
 async fn certify_subgraph_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(slug): ApiPath<String>,
     body: Bytes,
 ) -> Result<Json<RuntimeCertReport>, HttpError> {
     principal.require(Permission::StudioEdit)?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
     let req: CertifySubgraphRequest = if body.is_empty() || body.iter().all(u8::is_ascii_whitespace)
     {
         CertifySubgraphRequest::default()
@@ -3162,8 +3280,34 @@ async fn certify_subgraph_handler(
     };
     let report = state
         .store
-        .certify_subgraph_runtime(&principal.tenant_id, &slug, actor_uuid(&principal), req)
+        .certify_subgraph_runtime(
+            &principal.tenant_id,
+            slug.trim(),
+            actor_uuid(&principal),
+            req,
+        )
         .await?;
+    state.audit.record(AuditRecord {
+        tenant_id: principal.tenant_id.clone(),
+        user_id: actor_uuid(&principal),
+        username: principal.username.clone(),
+        action: AuditAction::TrialTickCertify,
+        resource_ref: report.subgraph_slug.clone(),
+        status_code: 200,
+        client_ip,
+        trace_id: current_trace_id(),
+        detail_json: serde_json::json!({
+            "cert_id": report.id,
+            "cert_level": report.cert_level,
+            "readiness_score": report.readiness_score,
+            "trial_tick_passed": report.trial_tick_passed,
+            "dead_knowledge_cnt": report.dead_knowledge_cnt,
+        }),
+        created_at: Utc::now(),
+    });
+    if let Err(err) = state.audit.flush().await {
+        tracing::warn!(error = %err, "certify_subgraph audit flush failed");
+    }
     Ok(Json(report))
 }
 
@@ -3185,6 +3329,7 @@ async fn write_link_metrics_handler(
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<WriteLinkMetricsRequest>,
 ) -> Result<Json<WriteLinkMetricsResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
     principal.require(Permission::DataSync)?;
     let resp = state
         .store

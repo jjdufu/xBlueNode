@@ -249,7 +249,13 @@ impl fmt::Display for Expr {
             Self::Literal(ExprValue::Bool(b)) => write!(f, "{b}"),
             Self::Literal(ExprValue::Null) => f.write_str("null"),
             Self::MetricRef(name) => f.write_str(name),
-            Self::PropRef(name) => write!(f, "prop.{name}"),
+            Self::PropRef(name) => {
+                if name.contains('.') {
+                    f.write_str(name)
+                } else {
+                    write!(f, "prop.{name}")
+                }
+            }
             Self::Unary {
                 op: UnaryOp::Not,
                 expr,

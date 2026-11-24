@@ -4,18 +4,20 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::num::FpCategory;
 
 use axpoint_domain::AppError;
-use axpoint_domain::enums::{AggFn, JobKind, OutboxTopic};
+use axpoint_domain::enums::{AggFn, JobKind, OutboxTopic, PropagationPathKind};
 use axpoint_domain::expr::{
     BinaryOp, EvalEnv, EvalWarningCode, Expr, ExprValue, UnaryOp, collect_references,
     eval as eval_expr, parse as parse_expr,
 };
 use axpoint_domain::platform::{NewJob, NewOutboxEvent};
 use axpoint_domain::rollup::{
-    DirtyInstance, ExplainInputItem, GraphAggregateJobPayload, MetricDependencyPlan,
-    MetricExplainResponse, MetricProducer, MetricRuleStep, MetricVertex,
+    DirtyInstance, ExplainInputItem, FourPathDependencyPlan, FourPathRuleStep,
+    GraphAggregateJobPayload, LinkMetricExplainResponse, MetricDependencyPlan,
+    MetricExplainResponse, MetricProducer, MetricRuleStep, MetricVertex, PropagationVertex,
 };
 use axpoint_domain::studio::{
-    AggRuleSpec, DerivedRuleSpec, LinkDirection, NodeTypeSpec, PropertyKind, SchemaDoc,
+    AggRuleSpec, DerivedRuleSpec, EdgeAggRuleSpec, EdgeDerivedRuleSpec, LinkDirection,
+    PropertyKind, SchemaDoc,
 };
 use axpoint_domain::topology::BlueNode;
 use chrono::{DateTime, Timelike, Utc};
@@ -176,6 +178,9 @@ async fn run_graph_aggregate_locked(
     payload: &GraphAggregateJobPayload,
 ) -> Result<serde_json::Value, AppError> {
     let doc = load_main_schema_doc(store, tenant_id).await?;
+    if has_four_path_edge_rules(&doc) {
+        return run_four_path_aggregate_locked(store, tenant_id, &doc).await;
+    }
     let plan = MetricDependencyPlan::from_schema(&doc);
     let layers = plan.layers();
     if layers.is_empty() {
@@ -1034,11 +1039,11 @@ pub async fn explain_node_metric_impl(
 
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
     let nrow = sqlx::query(
-        "SELECT id, type_name, node_key, title, properties, metrics,
+        "SELECT id, subgraph_slug, type_name, node_key, title, properties, metrics,
                 geo_lng, geo_lat, source_dataset_id, source_row_key, row_version,
                 created_at, updated_at
            FROM xb_nodes
-          WHERE tenant_id = $1 AND subgraph_slug = 'main' AND id = $2",
+          WHERE tenant_id = $1 AND id = $2",
     )
     .bind(tenant_id)
     .bind(node_id)
@@ -1047,31 +1052,42 @@ pub async fn explain_node_metric_impl(
     .map_err(|err| AppError::Database(format!("load node for metric explain: {err}")))?
     .ok_or(AppError::NotFound("NODE_NOT_FOUND"))?;
 
+    let subgraph_slug: String = nrow.get("subgraph_slug");
     let node = decode_blue_node(&nrow);
     let value = node.metrics.get(metric_name).copied();
-    let nt_opt = load_single_main_node_type_tx(&mut tx, tenant_id, &node.type_name).await?;
+    let doc = crate::studio_repo::load_schema_doc_tx(&mut tx, tenant_id, &subgraph_slug).await?;
+    let nt_opt = doc
+        .node_types
+        .iter()
+        .find(|nt| nt.name == node.type_name)
+        .cloned();
+    let plan = FourPathDependencyPlan::from_schema(&doc);
+    let chain = plan.build_rule_chain(&PropagationVertex::node(&node.type_name, metric_name));
 
-    let latest_series = sqlx::query(
-        "SELECT ts, source_tag
+    let series_rows = sqlx::query(
+        "SELECT ts, value, source_tag
            FROM xb_metric_series
           WHERE tenant_id = $1 AND node_id = $2 AND metric = $3
           ORDER BY ts DESC
-          LIMIT 1",
+          LIMIT 2",
     )
     .bind(tenant_id)
     .bind(node_id)
     .bind(metric_name)
-    .fetch_optional(&mut *tx)
+    .fetch_all(&mut *tx)
     .await
     .map_err(|err| {
         AppError::Database(format!("load latest xb_metric_series for explain: {err}"))
     })?;
 
+    let latest_series = series_rows.first();
     let computed_at = extract_metric_ts(&node.properties, metric_name)
-        .or_else(|| latest_series.as_ref().map(|r| r.get("ts")));
+        .or_else(|| latest_series.map(|r| r.get("ts")));
     let latest_tag: Option<String> = latest_series.map(|r| r.get("source_tag"));
+    let prev_val = extract_metric_prev(&node.properties, metric_name)
+        .or_else(|| series_rows.get(1).and_then(|r| r.get("value")));
 
-    let response = if let Some(drule) = nt_opt.as_ref().and_then(|nt| {
+    let mut response = if let Some(drule) = nt_opt.as_ref().and_then(|nt| {
         nt.derived_rules
             .iter()
             .find(|r| r.enabled && r.target_metric == metric_name)
@@ -1084,10 +1100,10 @@ pub async fn explain_node_metric_impl(
         build_agg_explain_tx(
             &mut tx,
             tenant_id,
+            &subgraph_slug,
+            &doc,
             &node,
-            metric_name,
-            value,
-            computed_at,
+            (metric_name, value, computed_at),
             arule,
         )
         .await?
@@ -1103,6 +1119,13 @@ pub async fn explain_node_metric_impl(
         )
         .await?
     };
+
+    if !chain.is_empty() {
+        response.rule_chain = chain;
+    }
+    response.previous_value = prev_val;
+    response.current_value = value;
+    response.delta = prev_val.zip(value).map(|(p, c)| normalize_zero(c - p));
 
     tx.commit()
         .await
@@ -1124,7 +1147,8 @@ fn build_derived_explain(
     let mut warnings: Vec<EvalWarningCode> = Vec::new();
 
     if let Ok(ast) = parse_expr(&drule.expression) {
-        let env = EvalEnv::from_node(&node.metrics, &node.properties);
+        let mut env = EvalEnv::default();
+        add_runtime_scope(&mut env, "self", &node.metrics, &node.properties, true);
         let rep = eval_expr(&ast, &env);
         warnings = rep.warnings;
 
@@ -1141,22 +1165,42 @@ fn build_derived_explain(
             });
         }
         for rp in ref_props {
+            let clean_key = rp
+                .strip_prefix("self.prop.")
+                .or_else(|| rp.strip_prefix("self.metric."))
+                .or_else(|| rp.strip_prefix("self."))
+                .unwrap_or(&rp);
             let num_val = node
-                .properties
-                .get(&rp)
-                .and_then(serde_json::Value::as_f64)
+                .metrics
+                .get(clean_key)
+                .copied()
+                .or_else(|| {
+                    node.properties
+                        .get(clean_key)
+                        .and_then(serde_json::Value::as_f64)
+                })
                 .filter(|v| v.is_finite());
             inputs.push(ExplainInputItem {
                 node_id: node.id,
                 node_key: node.node_key.clone(),
                 type_name: node.type_name.clone(),
                 title: node.title.clone(),
-                metric: format!("prop.{rp}"),
+                metric: if rp.contains('.') {
+                    rp
+                } else {
+                    format!("prop.{rp}")
+                },
                 value: num_val,
                 weight: None,
             });
         }
     }
+
+    let snapshot = serde_json::json!({
+        "node_id": node.id,
+        "node_key": node.node_key,
+        "metrics": node.metrics,
+    });
 
     Ok(MetricExplainResponse {
         node_id: node.id,
@@ -1174,21 +1218,40 @@ fn build_derived_explain(
         previous_value: None,
         current_value: value,
         delta: None,
-        input_snapshot: serde_json::json!({}),
+        input_snapshot: snapshot,
     })
 }
 
 async fn build_agg_explain_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
+    subgraph_slug: &str,
+    doc: &SchemaDoc,
     node: &BlueNode,
-    metric_name: &str,
-    value: Option<f64>,
-    computed_at: Option<DateTime<Utc>>,
+    meta: (&str, Option<f64>, Option<DateTime<Utc>>),
     arule: &AggRuleSpec,
 ) -> Result<MetricExplainResponse, AppError> {
+    let (metric_name, value, computed_at) = meta;
     let rule_json = serde_json::to_value(arule)
         .map_err(|err| AppError::Database(format!("serialize agg rule explain: {err}")))?;
+
+    let is_e2v = !arule.via_link_type.trim().is_empty()
+        && (arule.source_type_name == arule.via_link_type
+            || (arule.source_type_name.trim().is_empty()
+                && doc.edge_types.iter().any(|e| e.name == arule.via_link_type)));
+
+    if is_e2v {
+        return build_edge_to_vertex_explain_tx(
+            tx,
+            tenant_id,
+            subgraph_slug,
+            node,
+            meta,
+            arule,
+            rule_json,
+        )
+        .await;
+    }
 
     let filter_ast = arule
         .filter
@@ -1229,6 +1292,8 @@ async fn build_agg_explain_tx(
         }
     }
 
+    let snapshot = serde_json::json!({ "neighbors": &inputs });
+
     Ok(MetricExplainResponse {
         node_id: node.id,
         metric: String::from(metric_name),
@@ -1249,7 +1314,87 @@ async fn build_agg_explain_tx(
         previous_value: None,
         current_value: value,
         delta: None,
-        input_snapshot: serde_json::json!({}),
+        input_snapshot: snapshot,
+    })
+}
+
+async fn build_edge_to_vertex_explain_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    subgraph_slug: &str,
+    node: &BlueNode,
+    meta: (&str, Option<f64>, Option<DateTime<Utc>>),
+    arule: &AggRuleSpec,
+    rule_json: serde_json::Value,
+) -> Result<MetricExplainResponse, AppError> {
+    let (metric_name, value, computed_at) = meta;
+    let sql = match arule.direction {
+        LinkDirection::Out => {
+            "SELECT l.id AS link_id, l.metrics AS link_metrics, COALESCE(l.weight, 1.0) AS weight,
+                    c.id AS peer_id, c.node_key, c.type_name, c.title
+               FROM xb_links l
+               JOIN xb_nodes c ON c.tenant_id = l.tenant_id AND c.id = l.dst_node_id
+              WHERE l.tenant_id = $1 AND l.subgraph_slug = $2
+                AND l.link_type = $3 AND l.src_node_id = $4
+              ORDER BY c.node_key ASC LIMIT $5"
+        }
+        LinkDirection::In => {
+            "SELECT l.id AS link_id, l.metrics AS link_metrics, COALESCE(l.weight, 1.0) AS weight,
+                    c.id AS peer_id, c.node_key, c.type_name, c.title
+               FROM xb_links l
+               JOIN xb_nodes c ON c.tenant_id = l.tenant_id AND c.id = l.src_node_id
+              WHERE l.tenant_id = $1 AND l.subgraph_slug = $2
+                AND l.link_type = $3 AND l.dst_node_id = $4
+              ORDER BY c.node_key ASC LIMIT $5"
+        }
+    };
+    let rows = sqlx::query(sql)
+        .bind(tenant_id)
+        .bind(subgraph_slug)
+        .bind(&arule.via_link_type)
+        .bind(node.id)
+        .bind(MAX_EXPLAIN_INPUTS)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("fetch E->V explain links: {err}")))?;
+
+    let mut inputs = Vec::new();
+    let mut snap_links = Vec::new();
+    for r in rows {
+        let link_id: Uuid = r.get("link_id");
+        let lm: BTreeMap<String, f64> =
+            serde_json::from_value(r.get("link_metrics")).unwrap_or_default();
+        let w: f64 = r.get("weight");
+        let val = lm.get(&arule.source_metric).copied();
+        inputs.push(ExplainInputItem {
+            node_id: r.get("peer_id"),
+            node_key: r.get("node_key"),
+            type_name: arule.via_link_type.clone(),
+            title: r.get("title"),
+            metric: arule.source_metric.clone(),
+            value: val,
+            weight: arule.weight_by_link.then_some(w),
+        });
+        snap_links.push(serde_json::json!({ "link_id": link_id, "value": val, "weight": w }));
+    }
+
+    Ok(MetricExplainResponse {
+        node_id: node.id,
+        metric: String::from(metric_name),
+        value,
+        producer: MetricProducer::Agg,
+        rule: Some(rule_json),
+        inputs,
+        computed_at,
+        warnings: Vec::new(),
+        rule_chain: vec![format!(
+            "EDGE_TO_VERTEX: {}.{metric_name} = {}({}.{})",
+            node.type_name, arule.op, arule.via_link_type, arule.source_metric
+        )],
+        previous_value: None,
+        current_value: value,
+        delta: None,
+        input_snapshot: serde_json::json!({ "incident_links": snap_links }),
     })
 }
 
@@ -1336,86 +1481,50 @@ async fn build_non_rule_explain_tx(
 
 async fn load_main_schema_doc(store: &PgStore, tenant_id: &str) -> Result<SchemaDoc, AppError> {
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
-    let nt_rows = sqlx::query(
-        "SELECT id, name, display_name, description, icon, color, title_template,
-                properties, agg_rules, derived_rules, sync_to_knowledge, pos_x, pos_y
-           FROM xb_node_types
-          WHERE tenant_id = $1 AND subgraph_slug = 'main'
-          ORDER BY name ASC",
-    )
-    .bind(tenant_id)
-    .fetch_all(&mut *tx)
-    .await
-    .map_err(|err| AppError::Database(format!("load main node_types for aggregate: {err}")))?;
-
-    let node_types = nt_rows
-        .into_iter()
-        .map(|r| NodeTypeSpec {
-            id: Some(r.get("id")),
-            name: r.get("name"),
-            display_name: r.get("display_name"),
-            description: r.get("description"),
-            icon: r.get("icon"),
-            color: r.get("color"),
-            title_template: r.get("title_template"),
-            properties: serde_json::from_value(r.get("properties")).unwrap_or_default(),
-            agg_rules: serde_json::from_value(r.get("agg_rules")).unwrap_or_default(),
-            derived_rules: serde_json::from_value(r.get("derived_rules")).unwrap_or_default(),
-            sync_to_knowledge: r.get("sync_to_knowledge"),
-            pos_x: r.get("pos_x"),
-            pos_y: r.get("pos_y"),
-            maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
-            semantic_layer_tier: None,
-            domain_group: None,
-            actions: Vec::new(),
-        })
-        .collect();
-
+    let doc = crate::studio_repo::load_schema_doc_tx(&mut tx, tenant_id, "main").await?;
     tx.commit()
         .await
         .map_err(|err| AppError::Database(format!("commit load_main_schema_doc: {err}")))?;
-    Ok(SchemaDoc {
-        node_types,
-        edge_types: Vec::new(),
-        mappings: Vec::new(),
-    })
+    Ok(doc)
 }
 
-async fn load_single_main_node_type_tx(
-    tx: &mut Transaction<'_, Postgres>,
-    tenant_id: &str,
-    type_name: &str,
-) -> Result<Option<NodeTypeSpec>, AppError> {
-    let row_opt = sqlx::query(
-        "SELECT id, name, display_name, description, icon, color, title_template,
-                properties, agg_rules, derived_rules, sync_to_knowledge, pos_x, pos_y
-           FROM xb_node_types
-          WHERE tenant_id = $1 AND subgraph_slug = 'main' AND name = $2",
-    )
-    .bind(tenant_id)
-    .bind(type_name)
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(|err| AppError::Database(format!("load node type for explain: {err}")))?;
+fn has_four_path_edge_rules(doc: &SchemaDoc) -> bool {
+    doc.edge_types
+        .iter()
+        .any(|e| !e.derived_rules.is_empty() || !e.agg_rules.is_empty())
+        || doc.node_types.iter().any(|nt| {
+            nt.agg_rules.iter().any(|r| {
+                !r.via_link_type.trim().is_empty()
+                    && (r.source_type_name == r.via_link_type
+                        || r.source_type_name.trim().is_empty())
+            })
+        })
+}
 
-    Ok(row_opt.map(|r| NodeTypeSpec {
-        id: Some(r.get("id")),
-        name: r.get("name"),
-        display_name: r.get("display_name"),
-        description: r.get("description"),
-        icon: r.get("icon"),
-        color: r.get("color"),
-        title_template: r.get("title_template"),
-        properties: serde_json::from_value(r.get("properties")).unwrap_or_default(),
-        agg_rules: serde_json::from_value(r.get("agg_rules")).unwrap_or_default(),
-        derived_rules: serde_json::from_value(r.get("derived_rules")).unwrap_or_default(),
-        sync_to_knowledge: r.get("sync_to_knowledge"),
-        pos_x: r.get("pos_x"),
-        pos_y: r.get("pos_y"),
-        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
-        semantic_layer_tier: None,
-        domain_group: None,
-        actions: Vec::new(),
+async fn run_four_path_aggregate_locked(
+    store: &PgStore,
+    tenant_id: &str,
+    doc: &SchemaDoc,
+) -> Result<serde_json::Value, AppError> {
+    let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
+    let stats = propagate_subgraph_4path_tx(&mut tx, tenant_id, "main", doc).await?;
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Database(format!("commit run_four_path_aggregate: {err}")))?;
+
+    if !stats.changed_nodes.is_empty() {
+        let legacy_stats = RollupExecStats {
+            changed_nodes: stats.changed_nodes.clone(),
+            changed_metrics: stats.changed_node_metrics.clone(),
+            points_written: stats.points_written,
+        };
+        emit_aggregate_outbox_and_rollup(store, tenant_id, &legacy_stats).await?;
+    }
+
+    Ok(serde_json::json!({
+        "nodes_changed": stats.changed_nodes.len(),
+        "links_changed": stats.changed_links.len(),
+        "points_written": stats.points_written,
     }))
 }
 
@@ -1513,6 +1622,983 @@ fn extract_metric_ts(
         .and_then(serde_json::Value::as_str)
         .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
         .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn extract_metric_prev(
+    props: &serde_json::Map<String, serde_json::Value>,
+    metric: &str,
+) -> Option<f64> {
+    props
+        .get("__metric_prev")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|m| m.get(metric))
+        .and_then(serde_json::Value::as_f64)
+        .filter(|v| v.is_finite())
+}
+
+pub(crate) fn record_metric_snapshot_delta(
+    props: &mut serde_json::Map<String, serde_json::Value>,
+    metric: &str,
+    old_val: Option<f64>,
+    ts_rfc: &str,
+) {
+    let mut ts_obj = match props.remove("__metric_ts") {
+        Some(serde_json::Value::Object(m)) => m,
+        _ => serde_json::Map::new(),
+    };
+    ts_obj.insert(
+        String::from(metric),
+        serde_json::Value::String(String::from(ts_rfc)),
+    );
+    props.insert(
+        String::from("__metric_ts"),
+        serde_json::Value::Object(ts_obj),
+    );
+
+    if let Some(prev) = old_val.filter(|v| v.is_finite()) {
+        let mut prev_obj = match props.remove("__metric_prev") {
+            Some(serde_json::Value::Object(m)) => m,
+            _ => serde_json::Map::new(),
+        };
+        if let Some(num) = serde_json::Number::from_f64(prev) {
+            prev_obj.insert(String::from(metric), serde_json::Value::Number(num));
+        }
+        props.insert(
+            String::from("__metric_prev"),
+            serde_json::Value::Object(prev_obj),
+        );
+    }
+}
+
+pub(crate) fn add_runtime_scope(
+    env: &mut EvalEnv,
+    prefix: &str,
+    metrics: &BTreeMap<String, f64>,
+    props: &serde_json::Map<String, serde_json::Value>,
+    include_bare: bool,
+) {
+    for (k, &v) in metrics {
+        if !v.is_finite() {
+            continue;
+        }
+        let nv = normalize_zero(v);
+        if include_bare {
+            env.metrics.insert(k.clone(), nv);
+        }
+        env.properties
+            .insert(format!("{prefix}.{k}"), ExprValue::Number(nv));
+        env.properties
+            .insert(format!("{prefix}.metric.{k}"), ExprValue::Number(nv));
+    }
+    for (k, v) in props {
+        if k.starts_with("__") {
+            continue;
+        }
+        let ev = match v {
+            serde_json::Value::Number(n) => n
+                .as_f64()
+                .filter(|f| f.is_finite())
+                .map_or(ExprValue::Null, |f| ExprValue::Number(normalize_zero(f))),
+            serde_json::Value::String(s) => ExprValue::Text(s.clone()),
+            serde_json::Value::Bool(b) => ExprValue::Bool(*b),
+            serde_json::Value::Null
+            | serde_json::Value::Array(_)
+            | serde_json::Value::Object(_) => ExprValue::Null,
+        };
+        if include_bare {
+            env.properties.insert(k.clone(), ev.clone());
+        }
+        env.properties.insert(format!("{prefix}.{k}"), ev.clone());
+        env.properties.insert(format!("{prefix}.prop.{k}"), ev);
+    }
+}
+
+#[derive(Debug, Default)]
+pub(crate) struct FourPathExecStats {
+    pub recomputed_metrics: usize,
+    pub triggered_rules: usize,
+    pub changed_nodes: BTreeSet<Uuid>,
+    pub changed_links: BTreeSet<Uuid>,
+    pub changed_node_metrics: BTreeSet<String>,
+    pub points_written: usize,
+}
+
+struct MemNode {
+    id: Uuid,
+    type_name: String,
+    node_key: String,
+    properties: serde_json::Map<String, serde_json::Value>,
+    metrics: BTreeMap<String, f64>,
+    updated_at: DateTime<Utc>,
+    dirty_metrics: BTreeMap<String, (f64, &'static str)>,
+}
+
+struct MemLink {
+    id: Uuid,
+    link_type: String,
+    src_node_id: Uuid,
+    dst_node_id: Uuid,
+    weight: f64,
+    properties: serde_json::Map<String, serde_json::Value>,
+    metrics: BTreeMap<String, f64>,
+    updated_at: DateTime<Utc>,
+    dirty_metrics: BTreeMap<String, (f64, &'static str)>,
+}
+
+/// Evaluates all 4 propagation paths (`V->V`, `V->E`, `E->V`, `E->E`) synchronously inside `tx`.
+pub(crate) async fn propagate_subgraph_4path_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    subgraph_slug: &str,
+    doc: &SchemaDoc,
+) -> Result<FourPathExecStats, AppError> {
+    let plan = FourPathDependencyPlan::from_schema(doc);
+    if plan.steps.is_empty() {
+        return Ok(FourPathExecStats::default());
+    }
+
+    let mut nodes = load_subgraph_mem_nodes_tx(tx, tenant_id, subgraph_slug).await?;
+    let mut links = load_subgraph_mem_links_tx(tx, tenant_id, subgraph_slug).await?;
+    let mut stats = FourPathExecStats::default();
+    let now = Utc::now();
+    let now_rfc = now.to_rfc3339();
+
+    for step in &plan.steps {
+        stats.triggered_rules = stats.triggered_rules.saturating_add(1);
+        apply_four_path_step(step, &mut nodes, &mut links, &now_rfc, &mut stats);
+    }
+
+    persist_dirty_mem_nodes_tx(tx, tenant_id, now, &nodes, &mut stats).await?;
+    persist_dirty_mem_links_tx(tx, tenant_id, now, &links, &mut stats).await?;
+    Ok(stats)
+}
+
+async fn load_subgraph_mem_nodes_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    subgraph_slug: &str,
+) -> Result<BTreeMap<Uuid, MemNode>, AppError> {
+    let rows = sqlx::query(
+        "SELECT id, type_name, node_key, properties, metrics, updated_at
+           FROM xb_nodes
+          WHERE tenant_id = $1 AND subgraph_slug = $2
+          FOR UPDATE",
+    )
+    .bind(tenant_id)
+    .bind(subgraph_slug)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("load subgraph nodes for 4-path: {err}")))?;
+
+    let mut map = BTreeMap::new();
+    for r in rows {
+        let id: Uuid = r.get("id");
+        let props = match r.get::<serde_json::Value, _>("properties") {
+            serde_json::Value::Object(m) => m,
+            _ => serde_json::Map::new(),
+        };
+        let metrics: BTreeMap<String, f64> =
+            serde_json::from_value(r.get("metrics")).unwrap_or_default();
+        map.insert(
+            id,
+            MemNode {
+                id,
+                type_name: r.get("type_name"),
+                node_key: r.get("node_key"),
+                properties: props,
+                metrics,
+                updated_at: r.get("updated_at"),
+                dirty_metrics: BTreeMap::new(),
+            },
+        );
+    }
+    Ok(map)
+}
+
+async fn load_subgraph_mem_links_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    subgraph_slug: &str,
+) -> Result<BTreeMap<Uuid, MemLink>, AppError> {
+    let rows = sqlx::query(
+        "SELECT id, link_type, src_node_id, dst_node_id, COALESCE(weight, 1.0) AS weight,
+                properties, metrics, updated_at
+           FROM xb_links
+          WHERE tenant_id = $1 AND subgraph_slug = $2
+          FOR UPDATE",
+    )
+    .bind(tenant_id)
+    .bind(subgraph_slug)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("load subgraph links for 4-path: {err}")))?;
+
+    let mut map = BTreeMap::new();
+    for r in rows {
+        let id: Uuid = r.get("id");
+        let props = match r.get::<serde_json::Value, _>("properties") {
+            serde_json::Value::Object(m) => m,
+            _ => serde_json::Map::new(),
+        };
+        let metrics: BTreeMap<String, f64> =
+            serde_json::from_value(r.get("metrics")).unwrap_or_default();
+        map.insert(
+            id,
+            MemLink {
+                id,
+                link_type: r.get("link_type"),
+                src_node_id: r.get("src_node_id"),
+                dst_node_id: r.get("dst_node_id"),
+                weight: r.get("weight"),
+                properties: props,
+                metrics,
+                updated_at: r.get("updated_at"),
+                dirty_metrics: BTreeMap::new(),
+            },
+        );
+    }
+    Ok(map)
+}
+
+fn apply_four_path_step(
+    step: &FourPathRuleStep,
+    nodes: &mut BTreeMap<Uuid, MemNode>,
+    links: &mut BTreeMap<Uuid, MemLink>,
+    now_rfc: &str,
+    stats: &mut FourPathExecStats,
+) {
+    match step {
+        FourPathRuleStep::NodeDerived {
+            type_name,
+            target_metric,
+            expression,
+            ..
+        } => {
+            let Ok(ast) = parse_expr(expression) else {
+                return;
+            };
+            let target_ids: Vec<Uuid> = nodes
+                .values()
+                .filter(|n| n.type_name == *type_name)
+                .map(|n| n.id)
+                .collect();
+            for nid in target_ids {
+                if let Some(n) = nodes.get_mut(&nid) {
+                    let mut env = EvalEnv::default();
+                    add_runtime_scope(&mut env, "self", &n.metrics, &n.properties, true);
+                    if let ExprValue::Number(v) = eval_expr(&ast, &env).value
+                        && v.is_finite()
+                    {
+                        update_mem_node_metric(n, target_metric, v, "DERIVED", now_rfc, stats);
+                    }
+                }
+            }
+        }
+        FourPathRuleStep::NodeAgg {
+            parent_type,
+            rule,
+            path_kind,
+        } => apply_node_agg_step(parent_type, rule, *path_kind, nodes, links, now_rfc, stats),
+        FourPathRuleStep::EdgeDerived {
+            link_type, rule, ..
+        } => apply_edge_derived_step(link_type, rule, nodes, links, now_rfc, stats),
+        FourPathRuleStep::EdgeAgg {
+            link_type, rule, ..
+        } => apply_edge_agg_step(link_type, rule, links, now_rfc, stats),
+    }
+}
+
+fn apply_node_agg_step(
+    parent_type: &str,
+    rule: &AggRuleSpec,
+    path_kind: PropagationPathKind,
+    nodes: &mut BTreeMap<Uuid, MemNode>,
+    links: &BTreeMap<Uuid, MemLink>,
+    now_rfc: &str,
+    stats: &mut FourPathExecStats,
+) {
+    let filter_ast = rule
+        .filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|f| parse_expr(f).ok());
+    let parent_ids: Vec<Uuid> = nodes
+        .values()
+        .filter(|n| n.type_name == parent_type)
+        .map(|n| n.id)
+        .collect();
+
+    let mut computed: Vec<(Uuid, Option<f64>)> = Vec::with_capacity(parent_ids.len());
+    for &pid in &parent_ids {
+        let val = if path_kind == PropagationPathKind::EdgeToVertex {
+            eval_e2v_for_node(pid, rule, filter_ast.as_ref(), links)
+        } else {
+            eval_v2v_for_node(pid, rule, filter_ast.as_ref(), nodes, links)
+        };
+        computed.push((pid, val));
+    }
+
+    for (pid, new_opt) in computed {
+        if let (Some(n), Some(v)) = (nodes.get_mut(&pid), new_opt) {
+            update_mem_node_metric(n, &rule.target_metric, v, "AGGREGATION", now_rfc, stats);
+        }
+    }
+}
+
+fn eval_v2v_for_node(
+    pid: Uuid,
+    rule: &AggRuleSpec,
+    filter_ast: Option<&Expr>,
+    nodes: &BTreeMap<Uuid, MemNode>,
+    links: &BTreeMap<Uuid, MemLink>,
+) -> Option<f64> {
+    let mut owned_samples: Vec<ChildMetricSample> = Vec::new();
+    for l in links.values() {
+        if l.link_type != rule.via_link_type {
+            continue;
+        }
+        let child_id = match rule.direction {
+            LinkDirection::Out if l.src_node_id == pid => l.dst_node_id,
+            LinkDirection::In if l.dst_node_id == pid => l.src_node_id,
+            _ => continue,
+        };
+        let Some(c) = nodes.get(&child_id) else {
+            continue;
+        };
+        if c.type_name != rule.source_type_name {
+            continue;
+        }
+        if let Some(ast) = filter_ast {
+            let mut env = EvalEnv::default();
+            add_runtime_scope(&mut env, "self", &c.metrics, &c.properties, true);
+            if !matches!(eval_expr(ast, &env).value, ExprValue::Bool(true)) {
+                continue;
+            }
+        }
+        owned_samples.push(ChildMetricSample {
+            node_id: c.id,
+            node_key: c.node_key.clone(),
+            type_name: c.type_name.clone(),
+            title: String::new(),
+            properties: c.properties.clone(),
+            metrics: c.metrics.clone(),
+            link_weight: l.weight,
+            updated_at: c.updated_at,
+        });
+    }
+    let refs: Vec<&ChildMetricSample> = owned_samples.iter().collect();
+    eval_agg_samples(&refs, rule)
+}
+
+fn eval_e2v_for_node(
+    pid: Uuid,
+    rule: &AggRuleSpec,
+    filter_ast: Option<&Expr>,
+    links: &BTreeMap<Uuid, MemLink>,
+) -> Option<f64> {
+    let mut owned_samples: Vec<ChildMetricSample> = Vec::new();
+    for l in links.values() {
+        if l.link_type != rule.via_link_type {
+            continue;
+        }
+        let matches_dir = match rule.direction {
+            LinkDirection::Out => l.src_node_id == pid,
+            LinkDirection::In => l.dst_node_id == pid,
+        };
+        if !matches_dir {
+            continue;
+        }
+        if let Some(ast) = filter_ast {
+            let env = build_link_eval_env(l, None, None, PropagationPathKind::EdgeToEdge);
+            if !matches!(eval_expr(ast, &env).value, ExprValue::Bool(true)) {
+                continue;
+            }
+        }
+        owned_samples.push(ChildMetricSample {
+            node_id: l.id,
+            node_key: l.id.to_string(),
+            type_name: l.link_type.clone(),
+            title: String::new(),
+            properties: l.properties.clone(),
+            metrics: l.metrics.clone(),
+            link_weight: l.weight,
+            updated_at: l.updated_at,
+        });
+    }
+    let refs: Vec<&ChildMetricSample> = owned_samples.iter().collect();
+    eval_agg_samples(&refs, rule)
+}
+
+fn build_link_eval_env(
+    link: &MemLink,
+    src: Option<&MemNode>,
+    dst: Option<&MemNode>,
+    path_kind: PropagationPathKind,
+) -> EvalEnv {
+    let mut env = EvalEnv::default();
+    env.metrics.insert(String::from("weight"), link.weight);
+    env.properties
+        .insert(String::from("self.weight"), ExprValue::Number(link.weight));
+    add_runtime_scope(&mut env, "self", &link.metrics, &link.properties, true);
+    if path_kind == PropagationPathKind::VertexToEdge {
+        if let Some(s) = src {
+            add_runtime_scope(&mut env, "src", &s.metrics, &s.properties, false);
+        }
+        if let Some(d) = dst {
+            add_runtime_scope(&mut env, "dst", &d.metrics, &d.properties, false);
+        }
+    }
+    env
+}
+
+fn apply_edge_derived_step(
+    link_type: &str,
+    rule: &EdgeDerivedRuleSpec,
+    nodes: &BTreeMap<Uuid, MemNode>,
+    links: &mut BTreeMap<Uuid, MemLink>,
+    now_rfc: &str,
+    stats: &mut FourPathExecStats,
+) {
+    let Ok(ast) = parse_expr(&rule.expression) else {
+        return;
+    };
+    let target_ids: Vec<Uuid> = links
+        .values()
+        .filter(|l| l.link_type == link_type)
+        .map(|l| l.id)
+        .collect();
+
+    let mut computed = Vec::with_capacity(target_ids.len());
+    for lid in target_ids {
+        if let Some(l) = links.get(&lid) {
+            let src = nodes.get(&l.src_node_id);
+            let dst = nodes.get(&l.dst_node_id);
+            let env = build_link_eval_env(l, src, dst, rule.path_kind);
+            if let ExprValue::Number(v) = eval_expr(&ast, &env).value
+                && v.is_finite()
+            {
+                computed.push((lid, v));
+            }
+        }
+    }
+
+    for (lid, val) in computed {
+        if let Some(l) = links.get_mut(&lid) {
+            update_mem_link_metric(l, &rule.target_metric, val, "DERIVED", now_rfc, stats);
+        }
+    }
+}
+
+fn apply_edge_agg_step(
+    link_type: &str,
+    rule: &EdgeAggRuleSpec,
+    links: &mut BTreeMap<Uuid, MemLink>,
+    now_rfc: &str,
+    stats: &mut FourPathExecStats,
+) {
+    let filter_ast = rule
+        .filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|f| parse_expr(f).ok());
+    let as_node_agg = AggRuleSpec {
+        target_metric: rule.target_metric.clone(),
+        op: rule.op,
+        via_link_type: rule.via_link_type.clone(),
+        direction: rule.direction,
+        source_type_name: rule.via_link_type.clone(),
+        source_metric: rule.source_metric.clone(),
+        filter: rule.filter.clone(),
+        weight_by_link: false,
+        maturity: rule.maturity,
+    };
+
+    let target_ids: Vec<Uuid> = links
+        .values()
+        .filter(|l| l.link_type == link_type)
+        .map(|l| l.id)
+        .collect();
+    let mut computed = Vec::with_capacity(target_ids.len());
+    for lid in target_ids {
+        let Some(target_l) = links.get(&lid) else {
+            continue;
+        };
+        let mut owned_samples = Vec::new();
+        for cand in links.values() {
+            if cand.id == lid || cand.link_type != rule.via_link_type {
+                continue;
+            }
+            let pivot_ok = match rule.direction {
+                LinkDirection::In => cand.dst_node_id == target_l.src_node_id,
+                LinkDirection::Out => cand.src_node_id == target_l.dst_node_id,
+            };
+            if !pivot_ok {
+                continue;
+            }
+            if let Some(ast) = &filter_ast {
+                let env = build_link_eval_env(cand, None, None, PropagationPathKind::EdgeToEdge);
+                if !matches!(eval_expr(ast, &env).value, ExprValue::Bool(true)) {
+                    continue;
+                }
+            }
+            owned_samples.push(ChildMetricSample {
+                node_id: cand.id,
+                node_key: cand.id.to_string(),
+                type_name: cand.link_type.clone(),
+                title: String::new(),
+                properties: cand.properties.clone(),
+                metrics: cand.metrics.clone(),
+                link_weight: cand.weight,
+                updated_at: cand.updated_at,
+            });
+        }
+        let refs: Vec<&ChildMetricSample> = owned_samples.iter().collect();
+        if let Some(v) = eval_agg_samples(&refs, &as_node_agg) {
+            computed.push((lid, v));
+        }
+    }
+
+    for (lid, val) in computed {
+        if let Some(l) = links.get_mut(&lid) {
+            update_mem_link_metric(l, &rule.target_metric, val, "AGGREGATION", now_rfc, stats);
+        }
+    }
+}
+
+fn update_mem_node_metric(
+    node: &mut MemNode,
+    metric: &str,
+    raw_val: f64,
+    tag: &'static str,
+    now_rfc: &str,
+    stats: &mut FourPathExecStats,
+) {
+    let val = normalize_zero(raw_val);
+    let old = node.metrics.get(metric).copied();
+    if values_effectively_equal(old, Some(val)) {
+        return;
+    }
+    record_metric_snapshot_delta(&mut node.properties, metric, old, now_rfc);
+    node.metrics.insert(String::from(metric), val);
+    node.dirty_metrics.insert(String::from(metric), (val, tag));
+    stats.recomputed_metrics = stats.recomputed_metrics.saturating_add(1);
+    stats.changed_nodes.insert(node.id);
+    stats.changed_node_metrics.insert(String::from(metric));
+}
+
+fn update_mem_link_metric(
+    link: &mut MemLink,
+    metric: &str,
+    raw_val: f64,
+    tag: &'static str,
+    now_rfc: &str,
+    stats: &mut FourPathExecStats,
+) {
+    let val = normalize_zero(raw_val);
+    let old = link.metrics.get(metric).copied();
+    if values_effectively_equal(old, Some(val)) {
+        return;
+    }
+    record_metric_snapshot_delta(&mut link.properties, metric, old, now_rfc);
+    link.metrics.insert(String::from(metric), val);
+    link.dirty_metrics.insert(String::from(metric), (val, tag));
+    stats.recomputed_metrics = stats.recomputed_metrics.saturating_add(1);
+    stats.changed_links.insert(link.id);
+}
+
+async fn persist_dirty_mem_nodes_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    now: DateTime<Utc>,
+    nodes: &BTreeMap<Uuid, MemNode>,
+    stats: &mut FourPathExecStats,
+) -> Result<(), AppError> {
+    let dirty: Vec<&MemNode> = nodes
+        .values()
+        .filter(|n| !n.dirty_metrics.is_empty())
+        .collect();
+    if dirty.is_empty() {
+        return Ok(());
+    }
+
+    let mut ids = Vec::with_capacity(dirty.len());
+    let mut props = Vec::with_capacity(dirty.len());
+    let mut metrics = Vec::with_capacity(dirty.len());
+    let mut s_ids = Vec::new();
+    let mut s_metrics = Vec::new();
+    let mut s_vals = Vec::new();
+    let mut s_tags = Vec::new();
+
+    for n in dirty {
+        ids.push(n.id);
+        props.push(serde_json::Value::Object(n.properties.clone()));
+        metrics.push(
+            serde_json::to_value(&n.metrics)
+                .map_err(|e| AppError::Database(format!("serialize 4-path node metrics: {e}")))?,
+        );
+        for (m, &(v, tag)) in &n.dirty_metrics {
+            if is_valid_series_metric_name(m) {
+                s_ids.push(n.id);
+                s_metrics.push(m.clone());
+                s_vals.push(v);
+                s_tags.push(String::from(tag));
+            }
+        }
+    }
+
+    sqlx::query(
+        "UPDATE xb_nodes AS n
+            SET properties = u.properties,
+                metrics = u.metrics,
+                row_version = n.row_version + 1,
+                updated_at = NOW()
+           FROM UNNEST($2::uuid[], $3::jsonb[], $4::jsonb[]) AS u(id, properties, metrics)
+          WHERE n.tenant_id = $1 AND n.id = u.id",
+    )
+    .bind(tenant_id)
+    .bind(&ids)
+    .bind(&props)
+    .bind(&metrics)
+    .execute(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("update 4-path xb_nodes failed: {err}")))?;
+
+    if !s_ids.is_empty() {
+        let batch_id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO xb_metric_series (tenant_id, node_id, metric, ts, value, source_tag, batch_id)
+             SELECT $1, u.node_id, u.metric, $2, u.val, u.tag, $3
+               FROM UNNEST($4::uuid[], $5::text[], $6::float8[], $7::text[])
+                    AS u(node_id, metric, val, tag)
+             ON CONFLICT (tenant_id, node_id, metric, ts, source_tag) DO UPDATE SET
+                 value = EXCLUDED.value, batch_id = EXCLUDED.batch_id",
+        )
+        .bind(tenant_id)
+        .bind(now)
+        .bind(batch_id)
+        .bind(&s_ids)
+        .bind(&s_metrics)
+        .bind(&s_vals)
+        .bind(&s_tags)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("insert 4-path xb_metric_series: {err}")))?;
+        stats.points_written = stats.points_written.saturating_add(s_ids.len());
+    }
+    Ok(())
+}
+
+async fn persist_dirty_mem_links_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    now: DateTime<Utc>,
+    links: &BTreeMap<Uuid, MemLink>,
+    stats: &mut FourPathExecStats,
+) -> Result<(), AppError> {
+    let dirty: Vec<&MemLink> = links
+        .values()
+        .filter(|l| !l.dirty_metrics.is_empty())
+        .collect();
+    if dirty.is_empty() {
+        return Ok(());
+    }
+
+    let mut ids = Vec::with_capacity(dirty.len());
+    let mut props = Vec::with_capacity(dirty.len());
+    let mut metrics = Vec::with_capacity(dirty.len());
+    let mut s_ids = Vec::new();
+    let mut s_metrics = Vec::new();
+    let mut s_vals = Vec::new();
+    let mut s_tags = Vec::new();
+
+    for l in dirty {
+        ids.push(l.id);
+        props.push(serde_json::Value::Object(l.properties.clone()));
+        metrics.push(
+            serde_json::to_value(&l.metrics)
+                .map_err(|e| AppError::Database(format!("serialize 4-path link metrics: {e}")))?,
+        );
+        for (m, &(v, tag)) in &l.dirty_metrics {
+            if is_valid_series_metric_name(m) {
+                s_ids.push(l.id);
+                s_metrics.push(m.clone());
+                s_vals.push(v);
+                s_tags.push(String::from(tag));
+            }
+        }
+    }
+
+    sqlx::query(
+        "UPDATE xb_links AS l
+            SET properties = u.properties,
+                metrics = u.metrics,
+                row_version = l.row_version + 1,
+                updated_at = NOW()
+           FROM UNNEST($2::uuid[], $3::jsonb[], $4::jsonb[]) AS u(id, properties, metrics)
+          WHERE l.tenant_id = $1 AND l.id = u.id",
+    )
+    .bind(tenant_id)
+    .bind(&ids)
+    .bind(&props)
+    .bind(&metrics)
+    .execute(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("update 4-path xb_links failed: {err}")))?;
+
+    if !s_ids.is_empty() {
+        sqlx::query(
+            "INSERT INTO xb_link_metric_series (tenant_id, link_id, metric_key, ts, val_num, source_tag)
+             SELECT $1, u.link_id, u.metric_key, $2, u.val_num, u.tag
+               FROM UNNEST($3::uuid[], $4::text[], $5::float8[], $6::text[])
+                    AS u(link_id, metric_key, val_num, tag)
+             ON CONFLICT (tenant_id, link_id, metric_key, ts) DO UPDATE SET
+                 val_num = EXCLUDED.val_num, source_tag = EXCLUDED.source_tag",
+        )
+        .bind(tenant_id)
+        .bind(now)
+        .bind(&s_ids)
+        .bind(&s_metrics)
+        .bind(&s_vals)
+        .bind(&s_tags)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("insert 4-path xb_link_metric_series: {err}")))?;
+        stats.points_written = stats.points_written.saturating_add(s_ids.len());
+    }
+    Ok(())
+}
+
+impl PgStore {
+    /// Explains how edge `metric` on `link_id` was produced with 3-track provenance (`WHY`, `DELTA`, `INPUTS`, `04-STEP26` §26.3).
+    ///
+    /// # Errors
+    /// Returns [`AppError::NotFound`] (`LINK_NOT_FOUND`) when `link_id` does not exist in `tenant_id`,
+    /// [`AppError::BadRequest`] when `metric` is empty, or [`AppError::Database`] on SQL failure.
+    pub async fn explain_link_metric(
+        &self,
+        tenant_id: &str,
+        link_id: Uuid,
+        metric: &str,
+    ) -> Result<LinkMetricExplainResponse, AppError> {
+        let metric_name = metric.trim();
+        if metric_name.is_empty() {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                "metric name must not be empty",
+            ));
+        }
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let lrow = sqlx::query(
+            "SELECT id, subgraph_slug, link_type, src_node_id, dst_node_id,
+                    COALESCE(weight, 1.0) AS weight, properties, metrics, updated_at
+               FROM xb_links
+              WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(tenant_id)
+        .bind(link_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("load xb_links for explain: {err}")))?
+        .ok_or(AppError::NotFound("LINK_NOT_FOUND"))?;
+
+        let resp = build_link_explain_tx(&mut tx, tenant_id, &lrow, metric_name).await?;
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit explain_link_metric tx: {err}")))?;
+        Ok(resp)
+    }
+}
+
+async fn build_link_explain_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    lrow: &sqlx::postgres::PgRow,
+    metric_name: &str,
+) -> Result<LinkMetricExplainResponse, AppError> {
+    let link_id: Uuid = lrow.get("id");
+    let subgraph_slug: String = lrow.get("subgraph_slug");
+    let link_type: String = lrow.get("link_type");
+    let src_id: Uuid = lrow.get("src_node_id");
+    let dst_id: Uuid = lrow.get("dst_node_id");
+    let weight: f64 = lrow.get("weight");
+    let props = match lrow.get::<serde_json::Value, _>("properties") {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    let metrics: BTreeMap<String, f64> =
+        serde_json::from_value(lrow.get("metrics")).unwrap_or_default();
+    let value = metrics.get(metric_name).copied();
+
+    let (src_snap, src_mem) = fetch_endpoint_mem_tx(tx, tenant_id, src_id).await?;
+    let (dst_snap, dst_mem) = fetch_endpoint_mem_tx(tx, tenant_id, dst_id).await?;
+    let doc = crate::studio_repo::load_schema_doc_tx(tx, tenant_id, &subgraph_slug).await?;
+    let plan = FourPathDependencyPlan::from_schema(&doc);
+    let mut chain = plan.build_rule_chain(&PropagationVertex::edge(&link_type, metric_name));
+
+    let series = sqlx::query(
+        "SELECT ts, val_num, source_tag FROM xb_link_metric_series
+          WHERE tenant_id = $1 AND link_id = $2 AND metric_key = $3
+          ORDER BY ts DESC LIMIT 2",
+    )
+    .bind(tenant_id)
+    .bind(link_id)
+    .bind(metric_name)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("load xb_link_metric_series explain: {err}")))?;
+
+    let computed_at =
+        extract_metric_ts(&props, metric_name).or_else(|| series.first().map(|r| r.get("ts")));
+    let prev_val = extract_metric_prev(&props, metric_name)
+        .or_else(|| series.get(1).and_then(|r| r.get("val_num")));
+    let latest_tag: Option<String> = series.first().map(|r| r.get("source_tag"));
+
+    let et_opt = doc.edge_types.iter().find(|e| e.name == link_type);
+    let mem_link = MemLink {
+        id: link_id,
+        link_type: link_type.clone(),
+        src_node_id: src_id,
+        dst_node_id: dst_id,
+        weight,
+        properties: props,
+        metrics: metrics.clone(),
+        updated_at: lrow.get("updated_at"),
+        dirty_metrics: BTreeMap::new(),
+    };
+
+    let (producer, path_kind, rule_val, warnings) = resolve_link_rule_meta(
+        et_opt,
+        metric_name,
+        latest_tag.as_deref(),
+        &mem_link,
+        src_mem.as_ref(),
+        dst_mem.as_ref(),
+    )?;
+    if chain.is_empty() {
+        chain.push(format!("{link_type}.{metric_name} <- {producer:?}"));
+    }
+
+    Ok(LinkMetricExplainResponse {
+        link_id,
+        link_type,
+        metric: String::from(metric_name),
+        value,
+        producer,
+        path_kind,
+        rule: rule_val,
+        rule_chain: chain,
+        previous_value: prev_val,
+        current_value: value,
+        delta: prev_val.zip(value).map(|(p, c)| normalize_zero(c - p)),
+        input_snapshot: serde_json::json!({
+            "src": src_snap,
+            "dst": dst_snap,
+            "edge": { "weight": weight, "metrics": metrics },
+        }),
+        computed_at,
+        warnings,
+    })
+}
+
+async fn fetch_endpoint_mem_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    node_id: Uuid,
+) -> Result<(serde_json::Value, Option<MemNode>), AppError> {
+    let row_opt = sqlx::query(
+        "SELECT id, type_name, node_key, properties, metrics, updated_at
+           FROM xb_nodes WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(tenant_id)
+    .bind(node_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("fetch endpoint node for link explain: {err}")))?;
+
+    let Some(r) = row_opt else {
+        return Ok((serde_json::Value::Null, None));
+    };
+    let props = match r.get::<serde_json::Value, _>("properties") {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    let metrics: BTreeMap<String, f64> =
+        serde_json::from_value(r.get("metrics")).unwrap_or_default();
+    let type_name: String = r.get("type_name");
+    let node_key: String = r.get("node_key");
+    let snap = serde_json::json!({
+        "node_id": node_id,
+        "type_name": type_name,
+        "node_key": node_key,
+        "metrics": metrics,
+    });
+    Ok((
+        snap,
+        Some(MemNode {
+            id: node_id,
+            type_name,
+            node_key,
+            properties: props,
+            metrics,
+            updated_at: r.get("updated_at"),
+            dirty_metrics: BTreeMap::new(),
+        }),
+    ))
+}
+
+fn resolve_link_rule_meta(
+    et_opt: Option<&axpoint_domain::studio::EdgeTypeSpec>,
+    metric_name: &str,
+    latest_tag: Option<&str>,
+    mem_link: &MemLink,
+    src: Option<&MemNode>,
+    dst: Option<&MemNode>,
+) -> Result<
+    (
+        MetricProducer,
+        PropagationPathKind,
+        Option<serde_json::Value>,
+        Vec<EvalWarningCode>,
+    ),
+    AppError,
+> {
+    if let Some(drule) = et_opt.and_then(|et| {
+        et.derived_rules
+            .iter()
+            .find(|r| r.enabled && r.target_metric == metric_name)
+    }) {
+        let mut warnings = Vec::new();
+        if let Ok(ast) = parse_expr(&drule.expression) {
+            let env = build_link_eval_env(mem_link, src, dst, drule.path_kind);
+            warnings = eval_expr(&ast, &env).warnings;
+        }
+        let rv = serde_json::to_value(drule)
+            .map_err(|e| AppError::Database(format!("serialize edge derived rule: {e}")))?;
+        return Ok((MetricProducer::Derived, drule.path_kind, Some(rv), warnings));
+    }
+    if let Some(arule) =
+        et_opt.and_then(|et| et.agg_rules.iter().find(|r| r.target_metric == metric_name))
+    {
+        let rv = serde_json::to_value(arule)
+            .map_err(|e| AppError::Database(format!("serialize edge agg rule: {e}")))?;
+        return Ok((
+            MetricProducer::Agg,
+            PropagationPathKind::EdgeToEdge,
+            Some(rv),
+            Vec::new(),
+        ));
+    }
+    let prod = match latest_tag {
+        Some("ACTION") => MetricProducer::Action,
+        Some("SYNC") => MetricProducer::Sync,
+        Some("DERIVED") => MetricProducer::Derived,
+        Some("AGGREGATION") => MetricProducer::Agg,
+        _ => MetricProducer::Manual,
+    };
+    Ok((prod, PropagationPathKind::VertexToEdge, None, Vec::new()))
 }
 
 const fn normalize_zero(v: f64) -> f64 {

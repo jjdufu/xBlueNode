@@ -6,10 +6,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use axpoint_domain::AppError;
 use axpoint_domain::enums::{AggFn, JobKind, OutboxTopic, RollupGrain};
 use axpoint_domain::graph::{
-    MetricCatalogEntry, MetricPointInput, MetricQueryGrain, MetricSeriesPoint,
-    NodeMetricSeriesQuery, NodeRef, RollupRow, WindowBucketItem, WindowGroupBy, WindowKind,
-    WindowQuery, WindowQueryResponse, WindowSpec, WriteMetricsRequest, WriteMetricsResponse,
-    estimate_hll,
+    LinkMetricPointInput, MetricCatalogEntry, MetricPointInput, MetricQueryGrain,
+    MetricSeriesPoint, NodeMetricSeriesQuery, NodeRef, RollupRow, WindowBucketItem, WindowGroupBy,
+    WindowKind, WindowQuery, WindowQueryResponse, WindowSpec, WriteLinkMetricsRequest,
+    WriteLinkMetricsResponse, WriteMetricsRequest, WriteMetricsResponse, estimate_hll,
 };
 use axpoint_domain::platform::{NewJob, NewOutboxEvent};
 use axpoint_domain::ports::MetricStorePort;
@@ -426,6 +426,14 @@ impl MetricStorePort for PgStore {
 
     async fn run_rollup_for_tenant(&self, tenant_id: &str) -> Result<u64, AppError> {
         crate::rollup::run_rollup_for_tenant_impl(self, tenant_id).await
+    }
+
+    async fn write_link_metrics(
+        &self,
+        tenant_id: &str,
+        req: WriteLinkMetricsRequest,
+    ) -> Result<WriteLinkMetricsResponse, AppError> {
+        write_link_metrics_impl(self, tenant_id, req).await
     }
 }
 
@@ -1032,6 +1040,256 @@ fn evaluate_windows(
     }
 
     Ok(out)
+}
+
+async fn write_link_metrics_impl(
+    store: &PgStore,
+    tenant_id: &str,
+    req: WriteLinkMetricsRequest,
+) -> Result<WriteLinkMetricsResponse, AppError> {
+    if req.points.len() > 10_000 {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            format!(
+                "write_link_metrics accepts at most 10,000 points per call, got {}",
+                req.points.len()
+            ),
+        ));
+    }
+    if req.points.is_empty() {
+        return Ok(WriteLinkMetricsResponse {
+            written: 0,
+            updated_links: 0,
+            recomputed_metrics: 0,
+        });
+    }
+    validate_link_metric_inputs(&req.points)?;
+
+    let source_tag = req
+        .source_tag
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("INGEST");
+
+    let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
+    let deduped = dedup_link_points(&req.points);
+    let link_ids: Vec<Uuid> = deduped
+        .iter()
+        .map(|p| p.link_id)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+
+    let (updated_links, affected_subgraphs) =
+        upsert_link_series_and_snapshots_tx(&mut tx, tenant_id, source_tag, &deduped, &link_ids)
+            .await?;
+
+    let mut recomputed_metrics = 0_usize;
+    let mut changed_nodes: BTreeSet<Uuid> = BTreeSet::new();
+    for slug in affected_subgraphs {
+        let doc = crate::studio_repo::load_schema_doc_tx(&mut tx, tenant_id, &slug).await?;
+        let stats =
+            crate::aggregate_exec::propagate_subgraph_4path_tx(&mut tx, tenant_id, &slug, &doc)
+                .await?;
+        recomputed_metrics = recomputed_metrics.saturating_add(stats.recomputed_metrics);
+        changed_nodes.extend(stats.changed_nodes);
+    }
+
+    let changed_vec: Vec<Uuid> = changed_nodes.into_iter().collect();
+    for chunk in changed_vec.chunks(1_000) {
+        insert_outbox_tx(
+            &mut tx,
+            tenant_id,
+            &NewOutboxEvent {
+                topic: OutboxTopic::NodeMetricsChanged,
+                payload: serde_json::json!({ "node_ids": chunk }),
+            },
+        )
+        .await?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|err| AppError::Database(format!("commit write_link_metrics tx failed: {err}")))?;
+
+    Ok(WriteLinkMetricsResponse {
+        written: deduped.len(),
+        updated_links,
+        recomputed_metrics,
+    })
+}
+
+fn validate_link_metric_inputs(points: &[LinkMetricPointInput]) -> Result<(), AppError> {
+    for pt in points {
+        if !is_valid_metric_name(pt.metric.trim()) {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                format!(
+                    "edge metric '{}' must match ^[a-z][a-z0-9_]{{0,62}}$",
+                    pt.metric
+                ),
+            ));
+        }
+        let has_txt = pt.value_text.as_deref().is_some_and(|s| !s.is_empty());
+        if pt.value.is_none() && !has_txt {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                "edge metric point must specify `value` or non-empty `value_text`",
+            ));
+        }
+        if let Some(v) = pt.value
+            && !v.is_finite()
+        {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                "edge metric numeric value must be finite",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn dedup_link_points(points: &[LinkMetricPointInput]) -> Vec<LinkMetricPointInput> {
+    let mut map: BTreeMap<(Uuid, String, DateTime<Utc>), LinkMetricPointInput> = BTreeMap::new();
+    for pt in points {
+        let mut clean = pt.clone();
+        clean.metric = String::from(pt.metric.trim());
+        map.insert((clean.link_id, clean.metric.clone(), clean.ts), clean);
+    }
+    map.into_values().collect()
+}
+
+async fn upsert_link_series_and_snapshots_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    source_tag: &str,
+    deduped: &[LinkMetricPointInput],
+    link_ids: &[Uuid],
+) -> Result<(usize, BTreeSet<String>), AppError> {
+    let rows = sqlx::query(
+        "SELECT id, subgraph_slug, properties, metrics
+           FROM xb_links
+          WHERE tenant_id = $1 AND id = ANY($2)
+          FOR UPDATE",
+    )
+    .bind(tenant_id)
+    .bind(link_ids)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("lock xb_links for write_link_metrics: {err}")))?;
+
+    if rows.len() != link_ids.len() {
+        return Err(AppError::NotFound("LINK_NOT_FOUND"));
+    }
+
+    let cap = deduped.len();
+    let mut lids = Vec::with_capacity(cap);
+    let mut mkeys = Vec::with_capacity(cap);
+    let mut tss = Vec::with_capacity(cap);
+    let mut vnums: Vec<Option<f64>> = Vec::with_capacity(cap);
+    let mut vtxts: Vec<Option<String>> = Vec::with_capacity(cap);
+    let mut latest_by_link: BTreeMap<Uuid, BTreeMap<String, (DateTime<Utc>, f64)>> =
+        BTreeMap::new();
+
+    for p in deduped {
+        lids.push(p.link_id);
+        mkeys.push(p.metric.clone());
+        tss.push(p.ts);
+        vnums.push(p.value);
+        vtxts.push(p.value_text.clone());
+        if let Some(v) = p.value {
+            let entry = latest_by_link.entry(p.link_id).or_default();
+            if entry
+                .get(&p.metric)
+                .is_none_or(|(prev_ts, _)| p.ts >= *prev_ts)
+            {
+                entry.insert(p.metric.clone(), (p.ts, v));
+            }
+        }
+    }
+
+    sqlx::query(
+        "INSERT INTO xb_link_metric_series (
+             tenant_id, link_id, metric_key, ts, val_num, val_text, source_tag
+         )
+         SELECT $1, u.link_id, u.metric_key, u.ts, u.val_num, u.val_text, $7
+           FROM UNNEST($2::uuid[], $3::text[], $4::timestamptz[], $5::float8[], $6::text[])
+                AS u(link_id, metric_key, ts, val_num, val_text)
+         ON CONFLICT (tenant_id, link_id, metric_key, ts) DO UPDATE SET
+             val_num = EXCLUDED.val_num,
+             val_text = EXCLUDED.val_text,
+             source_tag = EXCLUDED.source_tag",
+    )
+    .bind(tenant_id)
+    .bind(&lids)
+    .bind(&mkeys)
+    .bind(&tss)
+    .bind(&vnums)
+    .bind(&vtxts)
+    .bind(source_tag)
+    .execute(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("insert xb_link_metric_series failed: {err}")))?;
+
+    let mut subgraphs = BTreeSet::new();
+    let mut updated_links = 0_usize;
+    for r in rows {
+        let lid: Uuid = r.get("id");
+        let slug: String = r.get("subgraph_slug");
+        subgraphs.insert(slug);
+        let Some(incoming) = latest_by_link.get(&lid) else {
+            continue;
+        };
+        apply_single_link_snapshot_tx(tx, tenant_id, lid, &r, incoming).await?;
+        updated_links = updated_links.saturating_add(1);
+    }
+
+    Ok((updated_links, subgraphs))
+}
+
+async fn apply_single_link_snapshot_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    lid: Uuid,
+    row: &sqlx::postgres::PgRow,
+    incoming: &BTreeMap<String, (DateTime<Utc>, f64)>,
+) -> Result<(), AppError> {
+    let mut props = match row.get::<serde_json::Value, _>("properties") {
+        serde_json::Value::Object(m) => m,
+        _ => serde_json::Map::new(),
+    };
+    let mut metrics: BTreeMap<String, f64> =
+        serde_json::from_value(row.get("metrics")).unwrap_or_default();
+
+    for (m_name, &(pt_ts, pt_val)) in incoming {
+        let old_val = metrics.get(m_name).copied();
+        metrics.insert(m_name.clone(), pt_val);
+        crate::aggregate_exec::record_metric_snapshot_delta(
+            &mut props,
+            m_name,
+            old_val,
+            &pt_ts.to_rfc3339(),
+        );
+    }
+    let m_json = serde_json::to_value(&metrics)
+        .map_err(|e| AppError::Database(format!("serialize xb_links.metrics: {e}")))?;
+    sqlx::query(
+        "UPDATE xb_links
+            SET properties = $2,
+                metrics = $3,
+                row_version = row_version + 1,
+                updated_at = NOW()
+          WHERE tenant_id = $1 AND id = $4",
+    )
+    .bind(tenant_id)
+    .bind(serde_json::Value::Object(props))
+    .bind(m_json)
+    .bind(lid)
+    .execute(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("update xb_links snapshot failed: {err}")))?;
+    Ok(())
 }
 
 #[cfg(test)]

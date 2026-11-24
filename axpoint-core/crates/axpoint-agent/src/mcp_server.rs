@@ -16,7 +16,10 @@ use axpoint_domain::ports::{
     DatasetRepository, FlowRepository, GraphQueryPort, GraphStorePort, StudioRepository,
     TemplateSandboxPort,
 };
-use axpoint_domain::studio::PropertyKind;
+use axpoint_domain::studio::{
+    ActionSpec, InvokeObjectActionRequest, PropertyKind, PublishedObjectActionDescriptor,
+    build_action_input_json_schema,
+};
 use axpoint_security::masking::MaskKeyRing;
 use axpoint_security::{AuditWriter, AuthPrincipal};
 use chrono::Utc;
@@ -368,6 +371,34 @@ where
         }
         tools.extend(crate::mcp_builder::visible_axbuilder_tools(principal));
 
+        if principal.has(Permission::FlowRun) && principal.enforce_no_prod_mutation().is_ok() {
+            let obj_actions = self
+                .capability
+                .list_published_object_actions(&principal.tenant_id)
+                .await?;
+            for desc in obj_actions {
+                let tname = mcp_object_action_tool_name(&desc);
+                if tools.iter().any(|t| t.name == tname) {
+                    continue;
+                }
+                let description = if desc.action.description.trim().is_empty() {
+                    format!(
+                        "{} · {} ({})",
+                        desc.type_display_name,
+                        desc.action.display_name,
+                        desc.action.side_effect_tier
+                    )
+                } else {
+                    desc.action.description.clone()
+                };
+                tools.push(McpToolDescriptor {
+                    name: tname,
+                    description,
+                    input_schema: build_mcp_object_action_schema(&desc.action),
+                });
+            }
+        }
+
         let endpoints = self
             .store
             .list_endpoints(
@@ -505,6 +536,14 @@ where
             let out = self
                 .execute_axbuilder_tool(principal, tool_name, &arguments, meta)
                 .await?;
+            return Ok(Some(out));
+        }
+
+        if tool_name.starts_with("action_")
+            && let Some(out) = self
+                .try_execute_object_action_mcp(principal, tool_name, &arguments, meta)
+                .await?
+        {
             return Ok(Some(out));
         }
 
@@ -909,6 +948,217 @@ where
             created_at: Utc::now(),
         });
     }
+
+    async fn try_execute_object_action_mcp(
+        &self,
+        principal: &AuthPrincipal,
+        tool_name: &str,
+        args: &serde_json::Value,
+        meta: McpCallMeta<'_>,
+    ) -> Result<Option<serde_json::Value>, AppError> {
+        let obj_actions = self
+            .capability
+            .list_published_object_actions(&principal.tenant_id)
+            .await?;
+        let Some(desc) = obj_actions
+            .into_iter()
+            .find(|d| mcp_object_action_tool_name(d) == tool_name)
+        else {
+            return Ok(None);
+        };
+
+        principal.enforce_no_prod_mutation()?;
+        principal.require(Permission::FlowRun)?;
+        let schema = build_mcp_object_action_schema(&desc.action);
+        validate_instance_against_schema(args, &schema)?;
+
+        let node_key = required_str_arg(args, "node_key")?;
+        let idempotency_key = required_str_arg(args, "idempotency_key")?;
+        let expected_version = args
+            .get("expected_version")
+            .and_then(serde_json::Value::as_i64);
+        let dry_run = args
+            .get("dry_run")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
+        let mut inputs = serde_json::Map::new();
+        for p in &desc.action.parameters {
+            if let Some(v) = args.get(&p.name) {
+                inputs.insert(p.name.clone(), v.clone());
+            }
+        }
+
+        let an_principal = to_analytics_principal(principal);
+        let mut resp = self
+            .capability
+            .invoke_published_object_action(
+                &an_principal,
+                &desc.type_name,
+                node_key,
+                &desc.action.name,
+                InvokeObjectActionRequest {
+                    inputs: serde_json::Value::Object(inputs),
+                    idempotency_key: String::from(idempotency_key),
+                    expected_version,
+                    dry_run,
+                },
+            )
+            .await?;
+
+        if !principal.has(Permission::PiiRawRead)
+            && let Some(ref mut node) = resp.node
+            && let Ok(pub_schema) = self
+                .store
+                .get_published_schema(&principal.tenant_id, "main")
+                .await
+            && let Some(nt) = pub_schema
+                .doc
+                .node_types
+                .iter()
+                .find(|n| n.name == node.type_name)
+        {
+            mask_pii_node_props_in_place(node, &nt.properties);
+        }
+
+        self.emit_object_action_audit(
+            principal,
+            tool_name,
+            &format!("{}:{}:{}", desc.type_name, node_key, desc.action.name),
+            &resp.status,
+            resp.idempotency_replay,
+            meta,
+        );
+
+        serde_json::to_value(resp)
+            .map(Some)
+            .map_err(|e| AppError::Config(format!("serialize InvokeObjectActionResponse: {e}")))
+    }
+
+    fn emit_object_action_audit(
+        &self,
+        principal: &AuthPrincipal,
+        tool_name: &str,
+        resource_ref: &str,
+        status: &str,
+        idempotency_replay: bool,
+        meta: McpCallMeta<'_>,
+    ) {
+        let Some(ref writer) = self.audit else {
+            return;
+        };
+        writer.record(AuditRecord {
+            tenant_id: principal.tenant_id.clone(),
+            user_id: (!principal.user_id.is_nil()).then_some(principal.user_id),
+            username: principal.username.clone(),
+            action: AuditAction::ObjectActionInvoke,
+            resource_ref: String::from(resource_ref),
+            status_code: if status == "WAITING_APPROVAL" {
+                202
+            } else {
+                200
+            },
+            client_ip: if meta.client_ip.is_empty() {
+                String::from("127.0.0.1")
+            } else {
+                String::from(meta.client_ip)
+            },
+            trace_id: String::from(meta.trace_id),
+            detail_json: serde_json::json!({
+                "channel": "MCP",
+                "tool_name": tool_name,
+                "status": status,
+                "idempotency_replay": idempotency_replay,
+            }),
+            created_at: Utc::now(),
+        });
+    }
+}
+
+fn mask_pii_node_props_in_place(
+    node: &mut axpoint_domain::topology::BlueNode,
+    props: &[axpoint_domain::studio::PropertySpec],
+) {
+    for prop in props {
+        if prop.kind == PropertyKind::Attribute
+            && prop.pii_category != PiiCategory::None
+            && node.properties.contains_key(&prop.name)
+        {
+            node.properties.insert(
+                prop.name.clone(),
+                serde_json::Value::String(String::from("***")),
+            );
+        }
+    }
+}
+
+fn mcp_object_action_tool_name(desc: &PublishedObjectActionDescriptor) -> String {
+    format!(
+        "action_{}_{}",
+        ident_to_snake(&desc.type_name),
+        ident_to_snake(&desc.action.name)
+    )
+}
+
+fn ident_to_snake(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().saturating_add(4));
+    let mut prev_lower = false;
+    for ch in raw.chars() {
+        if ch == '-' || ch == '_' {
+            if !out.ends_with('_') && !out.is_empty() {
+                out.push('_');
+            }
+            prev_lower = false;
+        } else if ch.is_ascii_uppercase() {
+            if prev_lower && !out.ends_with('_') {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+            prev_lower = false;
+        } else {
+            out.push(ch.to_ascii_lowercase());
+            prev_lower = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        }
+    }
+    out
+}
+
+fn build_mcp_object_action_schema(action: &ActionSpec) -> serde_json::Value {
+    let mut base = build_action_input_json_schema(action);
+    if let Some(obj) = base.as_object_mut() {
+        if let Some(props) = obj
+            .get_mut("properties")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            props.insert(
+                String::from("node_key"),
+                serde_json::json!({ "type": "string", "description": "Target object business key" }),
+            );
+            props.insert(
+                String::from("idempotency_key"),
+                serde_json::json!({ "type": "string", "description": "Unique caller idempotency key" }),
+            );
+            props.insert(
+                String::from("expected_version"),
+                serde_json::json!({ "type": "integer", "description": "Optional CAS row_version guard" }),
+            );
+            props.insert(
+                String::from("dry_run"),
+                serde_json::json!({ "type": "boolean", "description": "Evaluate without committing" }),
+            );
+        }
+        if let Some(req_arr) = obj
+            .get_mut("required")
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            req_arr.insert(
+                0,
+                serde_json::Value::String(String::from("idempotency_key")),
+            );
+            req_arr.insert(0, serde_json::Value::String(String::from("node_key")));
+        }
+    }
+    base
 }
 
 fn ensure_pat_principal(principal: &AuthPrincipal) -> Result<(), AppError> {
