@@ -1,6 +1,6 @@
 # A7 · 需求追踪矩阵
 
-本附录把全部能力项（75 项，按 A 底座、B 设计、C 构建、D 智能、E 推演、F 可视、G 系统分组，能力范围参照对标产品官网公开的功能说明整理）与全部数据源类别（26 类）映射到负责的 Step、实现小节与可执行的验收用例。“验收”列中带引号的名称是该 Step 门禁脚本 `scripts/gate/stepNN.sh` 中的断言名；其余为测试文件或端到端用例。每一项都有唯一负责的 Step。
+本附录把全部能力项（92 项，按 A 底座、B 设计、C 构建、D 智能、E 推演、F 可视、G 系统分组，能力范围参照对标产品官网公开的功能说明整理）与全部数据源类别（26 类）映射到负责的 Step、实现小节与可执行的验收用例。“验收”列中带引号的名称是该 Step 门禁脚本 `scripts/gate/stepNN.sh` 中的断言名；其余为测试文件或端到端用例。每一项都有唯一负责的 Step。
 
 ---
 
@@ -131,6 +131,7 @@
 | C71 | 系统概览 5 步实时构建向导与免运维权限演练子图模板试用 | 19 | [05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.1～§19.2 | step19 “onboarding-progress”、“trial-template-clone” |
 | C76 | 8 域任务流导航收敛、历史路由无感兼容与全局 `⌘K` 命令直达 | 23 | [01-STEP23](../../plans/v3-craft-and-world-runtime/craft-ux/01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) §23.1～§23.2 | step23 “ia-8-domains”、“legacy-route-redirect”、“cmdk-jump-ok” |
 | C77 | 严格中英单语纯净度（零内部代号尾缀/零裸枚举）与可拖拽弹性分栏 | 23 | [01-STEP23](../../plans/v3-craft-and-world-runtime/craft-ux/01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) §23.3～§23.4 | step23 “zh-zero-codename”、“i18n-guard-ok”、“resizable-pane-persist” |
+| C92 | Phase 3 双轨全旅程端到端验收、画布/大图性能基准与 92 项能力溯源总门禁 | 30 | [08-STEP30](../../plans/v3-craft-and-world-runtime/world-runtime/08-STEP30-V3-E2E-CRAFT-BENCHMARKS-AND-ACCEPTANCE.md) §30.1～§30.2 | step30 “v3-journey-pass”、“traceability-92-ok” |
 
 ---
 
@@ -171,7 +172,7 @@
 
 ```bash
 # 每个能力项与数据源类别都在本表出现且只出现一次
-grep -cE '^\| C[0-9]{2} ' docs/standards/A7-REQUIREMENTS-TRACEABILITY.md   # 75
+grep -cE '^\| C[0-9]{2} ' docs/standards/A7-REQUIREMENTS-TRACEABILITY.md   # 92
 grep -cE '^\| D[0-9]{2} ' docs/standards/A7-REQUIREMENTS-TRACEABILITY.md   # 26
 
 # 表中引用的门禁断言名都存在于对应门禁脚本（输出缺失项，期望为空）
