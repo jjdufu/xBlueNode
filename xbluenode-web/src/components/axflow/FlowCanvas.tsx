@@ -1,19 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
-  BaseEdge,
   Controls,
-  EdgeLabelRenderer,
   Handle,
   MarkerType,
   MiniMap,
   Position,
   ReactFlow,
   applyNodeChanges,
-  getSmoothStepPath,
   type Connection,
-  type Edge,
-  type EdgeProps,
   type EdgeTypes,
   type Node,
   type NodeProps,
@@ -31,31 +26,57 @@ import {
   Link2,
   Loader2,
   PauseCircle,
+  Redo2,
   Slash,
   Trash2,
+  Undo2,
   XCircle,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 import { useTheme } from "@/lib/theme";
 import type { FlowOperator, StepStatus } from "@/lib/api/enums";
-import type {
-  FlowEdgeDef,
-  FlowIssue,
-  FlowNodeDef,
+import {
+  FALLBACK_OPERATOR_SPECS,
+  type FlowEdgeDef,
+  type FlowIssue,
+  type FlowNodeDef,
+  type OperatorSpecDto,
 } from "@/lib/api/axflow";
-import { Badge, Button, Input, Select } from "@/components/ui/primitives";
+import { HelperLinesOverlay } from "@/components/canvas/HelperLinesOverlay";
+import {
+  computeAlignmentGuides,
+  type HorizontalGuideLine,
+  type MeasuredBox,
+  type VerticalGuideLine,
+} from "@/components/canvas/alignmentGuides";
+import { useAnimatedNodes } from "@/components/canvas/useAnimatedNodes";
+import {
+  Badge,
+  Button,
+  IconButton,
+  Input,
+  Select,
+} from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
+import {
+  InsertableEdge,
+  type AxFlowRfEdge,
+} from "./InsertableEdge";
 import {
   OPERATOR_I18N,
   clearActiveDraggedOperator,
   getActiveDraggedOperator,
   renderOperatorIcon,
 } from "./OperatorPalette";
+import { QuickOperatorPopover } from "./QuickOperatorPopover";
+import { findClosestEdgeWithinThreshold } from "./edgeSplice";
 
 export interface NodeStepRuntimeBadge {
   status: StepStatus;
   attempt: number;
+  durationMs?: number | null;
+  outputCount?: number | null;
 }
 
 export interface AxFlowCanvasNodeData extends Record<string, unknown> {
@@ -67,17 +88,6 @@ export interface AxFlowCanvasNodeData extends Record<string, unknown> {
 }
 
 export type AxFlowRfNode = Node<AxFlowCanvasNodeData, "axflowNode">;
-
-export interface AxFlowCanvasEdgeData extends Record<string, unknown> {
-  edgeDef: FlowEdgeDef;
-  edgeIndex: number;
-  selected: boolean;
-  isDark: boolean;
-  unconditionalLabel: string;
-  onSelectEdge: (index: number) => void;
-}
-
-export type AxFlowRfEdge = Edge<AxFlowCanvasEdgeData, "axflowEdge">;
 
 function renderStepStatusBadge(
   nodeId: string,
@@ -221,19 +231,30 @@ function AxFlowCanvasNodeCard({ data }: NodeProps<AxFlowRfNode>) {
             </div>
           </div>
 
-          {issueCount > 0 && (
-            <span
-              className={cn(
-                "inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-mono-tech text-[10px] font-semibold shrink-0",
-                hasError
-                  ? "bg-red-500/15 text-red-600 dark:text-red-400"
-                  : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+          <div className="flex items-center gap-1 shrink-0">
+            {runtime?.status === "SUCCEEDED" &&
+              typeof runtime.durationMs === "number" && (
+                <span
+                  data-testid={`canvas-node-duration-${node.id}`}
+                  className="rounded-full border border-emerald-500/30 bg-emerald-500/12 px-1.5 py-0.5 font-mono-tech text-[10px] font-medium text-emerald-700 dark:text-emerald-400 tabular-nums"
+                >
+                  {Math.max(1, Math.round(runtime.durationMs))}ms
+                </span>
               )}
-            >
-              <AlertCircle className="h-2.5 w-2.5" />
-              {issueCount}
-            </span>
-          )}
+            {issueCount > 0 && (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 font-mono-tech text-[10px] font-semibold",
+                  hasError
+                    ? "bg-red-500/15 text-red-600 dark:text-red-400"
+                    : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+                )}
+              >
+                <AlertCircle className="h-2.5 w-2.5" />
+                {issueCount}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap items-center gap-1">
@@ -256,8 +277,13 @@ function AxFlowCanvasNodeCard({ data }: NodeProps<AxFlowRfNode>) {
         </div>
 
         {runtime && (
-          <div className="pt-1 border-t border-border flex items-center justify-between">
+          <div className="pt-1 border-t border-border flex items-center justify-between gap-1.5">
             {renderStepStatusBadge(node.id, runtime, tEnum)}
+            {typeof runtime.outputCount === "number" && (
+              <span className="rounded bg-muted px-1.5 py-0.5 font-mono-tech text-[10px] text-muted-foreground tabular-nums">
+                {tx(`${runtime.outputCount} 条`, `${runtime.outputCount} rows`)}
+              </span>
+            )}
           </div>
         )}
       </div>
@@ -271,108 +297,44 @@ function AxFlowCanvasNodeCard({ data }: NodeProps<AxFlowRfNode>) {
   );
 }
 
-function AxFlowConditionEdge({
-  id,
-  sourceX,
-  sourceY,
-  targetX,
-  targetY,
-  sourcePosition,
-  targetPosition,
-  markerEnd,
-  data,
-}: EdgeProps<AxFlowRfEdge>) {
-  const [edgePath, labelX, labelY] = getSmoothStepPath({
-    sourceX,
-    sourceY,
-    sourcePosition,
-    targetX,
-    targetY,
-    targetPosition,
-    borderRadius: 8,
-  });
-
-  const edgeDef = data?.edgeDef;
-  const selected = Boolean(data?.selected);
-  const isDark = Boolean(data?.isDark);
-  const whenExpr = edgeDef?.when?.trim() ?? "";
-
-  const strokeColor = selected
-    ? isDark
-      ? "#3b82f6"
-      : "#2563eb"
-    : whenExpr
-      ? isDark
-        ? "#60a5fa"
-        : "#1d4ed8"
-      : isDark
-        ? "#a1a1aa"
-        : "#71717a";
-
-  return (
-    <>
-      <BaseEdge
-        id={id}
-        path={edgePath}
-        markerEnd={markerEnd}
-        style={{
-          stroke: strokeColor,
-          strokeWidth: selected ? 2.4 : 1.6,
-          strokeDasharray: whenExpr ? "5 3" : undefined,
-        }}
-      />
-      {edgeDef && (
-        <EdgeLabelRenderer>
-          <div
-            style={{
-              position: "absolute",
-              transform: `translate(-50%, -50%) translate(${labelX}px,${labelY}px)`,
-              pointerEvents: "all",
-            }}
-            className="nodrag nopan"
-          >
-            <button
-              type="button"
-              data-testid={`flow-edge-${edgeDef.from}-${edgeDef.to}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                data?.onSelectEdge(data.edgeIndex);
-              }}
-              className={cn(
-                "inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[10px] font-mono-tech shadow-xs transition-colors cursor-pointer",
-                selected
-                  ? "border-xblue bg-xblue text-white"
-                  : whenExpr
-                    ? "border-xblue/40 bg-xblue-soft text-xblue hover:border-xblue"
-                    : "border-border bg-card/90 text-muted-foreground hover:text-foreground hover:border-xblue"
-              )}
-            >
-              {whenExpr
-                ? `when: ${whenExpr}`
-                : (data?.unconditionalLabel ?? "Always")}
-            </button>
-          </div>
-        </EdgeLabelRenderer>
-      )}
-    </>
-  );
-}
-
 const NODE_TYPES: NodeTypes = {
   axflowNode: AxFlowCanvasNodeCard,
 };
 
 const EDGE_TYPES: EdgeTypes = {
-  axflowEdge: AxFlowConditionEdge,
+  axflowEdge: InsertableEdge,
 };
+
+type PopoverContext =
+  | {
+      readonly mode: "splice-edge";
+      readonly edgeIndex: number;
+      readonly screenX: number;
+      readonly screenY: number;
+      readonly flowX: number;
+      readonly flowY: number;
+    }
+  | {
+      readonly mode: "connect-from-node";
+      readonly fromNodeId: string;
+      readonly screenX: number;
+      readonly screenY: number;
+      readonly flowX: number;
+      readonly flowY: number;
+    };
 
 export interface FlowCanvasProps {
   nodes: FlowNodeDef[];
   edges: FlowEdgeDef[];
+  operators?: readonly OperatorSpecDto[];
   issues: FlowIssue[];
   stepStatusByNodeId: Record<string, NodeStepRuntimeBadge>;
   selectedNodeId: string | null;
   selectedEdgeIndex: number | null;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
   onSelectNode: (nodeId: string | null) => void;
   onSelectEdge: (edgeIndex: number | null) => void;
   onUpdateNodePos: (nodeId: string, pos: { x: number; y: number }) => void;
@@ -381,15 +343,30 @@ export interface FlowCanvasProps {
   onUpdateEdge: (edgeIndex: number, updated: FlowEdgeDef) => void;
   onDeleteEdge: (edgeIndex: number) => void;
   onDropOperator: (kind: FlowOperator, pos: { x: number; y: number }) => void;
+  onSpliceOperatorOnEdge?: (
+    edgeIndex: number,
+    kind: FlowOperator,
+    pos?: { x: number; y: number }
+  ) => void;
+  onCreateAndConnectOperator?: (
+    fromNodeId: string,
+    kind: FlowOperator,
+    pos: { x: number; y: number }
+  ) => void;
 }
 
 export function FlowCanvas({
   nodes,
   edges,
+  operators = FALLBACK_OPERATOR_SPECS,
   issues,
   stepStatusByNodeId,
   selectedNodeId,
   selectedEdgeIndex,
+  canUndo = false,
+  canRedo = false,
+  onUndo,
+  onRedo,
   onSelectNode,
   onSelectEdge,
   onUpdateNodePos,
@@ -398,14 +375,19 @@ export function FlowCanvas({
   onUpdateEdge,
   onDeleteEdge,
   onDropOperator,
+  onSpliceOperatorOnEdge,
+  onCreateAndConnectOperator,
 }: FlowCanvasProps) {
   const { isZh, tx } = useI18n();
   const { isDark } = useTheme();
   const { can } = usePrincipal();
   const canEdit = can("FLOW_EDIT");
+  const { animatePositions } = useAnimatedNodes(240);
 
   const canvasContainerRef = useRef<HTMLDivElement | null>(null);
   const draggingNodeIdRef = useRef<string | null>(null);
+  const connectStartNodeRef = useRef<string | null>(null);
+  const connectedDuringDragRef = useRef<boolean>(false);
 
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance<
     AxFlowRfNode,
@@ -419,6 +401,14 @@ export function FlowCanvas({
     screenX: number;
     screenY: number;
   } | null>(null);
+  const [hoveredDropEdgeIndex, setHoveredDropEdgeIndex] = useState<
+    number | null
+  >(null);
+  const [popoverCtx, setPopoverCtx] = useState<PopoverContext | null>(null);
+  const [helperGuides, setHelperGuides] = useState<{
+    verticalLines: readonly VerticalGuideLine[];
+    horizontalLines: readonly HorizontalGuideLine[];
+  }>({ verticalLines: [], horizontalLines: [] });
 
   const [quickConnectOpen, setQuickConnectOpen] = useState(false);
   const [connectFrom, setConnectFrom] = useState("");
@@ -501,6 +491,56 @@ export function FlowCanvas({
 
   const nodeIdSet = useMemo(() => new Set(nodes.map((n) => n.id)), [nodes]);
   const unconditionalLabel = tx("无条件", "Always");
+  const dropInsertLabel = tx("松手插入此处", "Drop to insert");
+  const insertAriaLabel = tx("插入算子", "Insert operator");
+
+  const edgeGeometries = useMemo(() => {
+    const nodePosMap = new Map(
+      liveNodes.map((n) => [
+        n.id,
+        {
+          x: n.position.x,
+          y: n.position.y,
+          w: n.measured?.width ?? 224,
+          h: n.measured?.height ?? 116,
+        },
+      ])
+    );
+    return edges
+      .map((edgeDef, idx) => {
+        const s = nodePosMap.get(edgeDef.from);
+        const t = nodePosMap.get(edgeDef.to);
+        if (!s || !t) return null;
+        return {
+          edgeIndex: idx,
+          sourceX: s.x + s.w,
+          sourceY: s.y + s.h / 2,
+          targetX: t.x,
+          targetY: t.y + t.h / 2,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+  }, [edges, liveNodes]);
+
+  const handleOpenInsertPopover = useCallback(
+    (
+      edgeIndex: number,
+      anchor: { clientX: number; clientY: number; flowX: number; flowY: number }
+    ) => {
+      const rect = canvasContainerRef.current?.getBoundingClientRect();
+      const screenX = rect ? anchor.clientX - rect.left : anchor.clientX;
+      const screenY = rect ? anchor.clientY - rect.top : anchor.clientY;
+      setPopoverCtx({
+        mode: "splice-edge",
+        edgeIndex,
+        screenX,
+        screenY,
+        flowX: anchor.flowX,
+        flowY: anchor.flowY,
+      });
+    },
+    []
+  );
 
   const rfEdges: AxFlowRfEdge[] = useMemo(() => {
     const activeStroke = isDark ? "#3b82f6" : "#2563eb";
@@ -511,39 +551,59 @@ export function FlowCanvas({
         ({ edgeDef }) =>
           nodeIdSet.has(edgeDef.from) && nodeIdSet.has(edgeDef.to)
       )
-      .map(({ edgeDef, idx }) => ({
-        id: `axflow-edge-${idx}-${edgeDef.from}-${edgeDef.to}`,
-        source: edgeDef.from,
-        target: edgeDef.to,
-        type: "axflowEdge",
-        markerEnd: {
-          type: MarkerType.ArrowClosed,
-          color: selectedEdgeIndex === idx ? activeStroke : idleStroke,
-        },
-        data: {
-          edgeDef,
-          edgeIndex: idx,
-          selected: selectedEdgeIndex === idx,
-          isDark,
-          unconditionalLabel,
-          onSelectEdge: (edgeIdx: number) => {
-            onSelectNode(null);
-            onSelectEdge(edgeIdx);
+      .map(({ edgeDef, idx }) => {
+        const dstStatus = stepStatusByNodeId[edgeDef.to]?.status;
+        const isRunningFlow = dstStatus === "RUNNING";
+        return {
+          id: `axflow-edge-${idx}-${edgeDef.from}-${edgeDef.to}`,
+          source: edgeDef.from,
+          target: edgeDef.to,
+          type: "axflowEdge",
+          markerEnd: {
+            type: MarkerType.ArrowClosed,
+            color:
+              selectedEdgeIndex === idx || isRunningFlow
+                ? activeStroke
+                : idleStroke,
           },
-        },
-      }));
+          data: {
+            edgeDef,
+            edgeIndex: idx,
+            selected: selectedEdgeIndex === idx,
+            isDark,
+            canEdit,
+            isRunningFlow,
+            isDropTarget: hoveredDropEdgeIndex === idx,
+            dropInsertLabel,
+            unconditionalLabel,
+            insertAriaLabel,
+            onSelectEdge: (edgeIdx: number) => {
+              onSelectNode(null);
+              onSelectEdge(edgeIdx);
+            },
+            onOpenInsertPopover: handleOpenInsertPopover,
+          },
+        };
+      });
   }, [
+    canEdit,
+    dropInsertLabel,
     edges,
+    handleOpenInsertPopover,
+    hoveredDropEdgeIndex,
+    insertAriaLabel,
     isDark,
     nodeIdSet,
-    selectedEdgeIndex,
-    unconditionalLabel,
     onSelectEdge,
     onSelectNode,
+    selectedEdgeIndex,
+    stepStatusByNodeId,
+    unconditionalLabel,
   ]);
 
   const handleConnect = useCallback(
     (conn: Connection) => {
+      connectedDuringDragRef.current = true;
       if (
         !canEdit ||
         !conn.source ||
@@ -561,14 +621,20 @@ export function FlowCanvas({
     if (nodes.length === 0 || layoutRunning) return;
     setLayoutRunning(true);
     try {
+      const originPositions: Record<string, { x: number; y: number }> = {};
+      for (const n of liveNodes) {
+        originPositions[n.id] = { x: n.position.x, y: n.position.y };
+      }
+
       const elk = new ELK();
       const laidOut = await elk.layout({
         id: "axflow-root",
         layoutOptions: {
           "elk.algorithm": "layered",
           "elk.direction": "RIGHT",
-          "elk.layered.spacing.nodeNodeBetweenLayers": "136",
-          "elk.spacing.nodeNode": "72",
+          "elk.edgeRouting": "ORTHOGONAL",
+          "elk.layered.spacing.nodeNodeBetweenLayers": "168",
+          "elk.spacing.nodeNode": "80",
           "elk.padding": "[top=56,left=48,bottom=48,right=48]",
         },
         children: nodes.map((n) => ({
@@ -598,7 +664,18 @@ export function FlowCanvas({
           };
         }
       }
-      onApplyLayout(positions);
+      animatePositions(
+        originPositions,
+        positions,
+        (frame) => {
+          setLiveNodes((prev) =>
+            prev.map((n) =>
+              frame[n.id] ? { ...n, position: frame[n.id] } : n
+            )
+          );
+        },
+        () => onApplyLayout(positions)
+      );
     } catch {
       const fallback: Record<string, { x: number; y: number }> = {};
       nodes.forEach((n, idx) => {
@@ -642,6 +719,13 @@ export function FlowCanvas({
         const flowX = Math.round((rawFlow.x - 104) / 16) * 16;
         const flowY = Math.round((rawFlow.y - 48) / 16) * 16;
 
+        const nearEdgeIdx = findClosestEdgeWithinThreshold(
+          rawFlow,
+          edgeGeometries,
+          18
+        );
+        setHoveredDropEdgeIndex(nearEdgeIdx);
+
         const kind: FlowOperator = activeMeta?.kind ?? "SQL_TRANSFORM";
         const i18nMeta = OPERATOR_I18N[kind];
         const label =
@@ -666,6 +750,7 @@ export function FlowCanvas({
         const nextTarget = e.relatedTarget as globalThis.Node | null;
         if (!nextTarget || !e.currentTarget.contains(nextTarget)) {
           setDragGhost(null);
+          setHoveredDropEdgeIndex(null);
         }
       }}
       onDrop={(e) => {
@@ -675,7 +760,9 @@ export function FlowCanvas({
           e.dataTransfer.getData("application/axflow-operator") ||
           activeMeta?.kind ||
           "";
+        const targetEdgeIdx = hoveredDropEdgeIndex;
         setDragGhost(null);
+        setHoveredDropEdgeIndex(null);
         clearActiveDraggedOperator();
         if (!canEdit || !rawKind) return;
 
@@ -684,6 +771,14 @@ export function FlowCanvas({
           : { x: 144 + nodes.length * 64, y: 144 };
         const flowX = Math.round((rawPos.x - 104) / 16) * 16;
         const flowY = Math.round((rawPos.y - 48) / 16) * 16;
+
+        if (targetEdgeIdx !== null && onSpliceOperatorOnEdge) {
+          onSpliceOperatorOnEdge(targetEdgeIdx, rawKind as FlowOperator, {
+            x: flowX,
+            y: flowY,
+          });
+          return;
+        }
 
         onDropOperator(rawKind as FlowOperator, {
           x: flowX,
@@ -694,6 +789,31 @@ export function FlowCanvas({
       {/* Top Canvas Toolbar */}
       <div className="absolute top-2.5 left-2.5 right-2.5 z-10 flex flex-wrap items-center justify-between gap-2 pointer-events-none">
         <div className="flex flex-wrap items-center gap-1.5 pointer-events-auto rounded-md border border-border bg-card/95 px-2 py-1.5 shadow-xs">
+          {canEdit && (onUndo || onRedo) && (
+            <div className="inline-flex items-center gap-0.5 border-r border-border pr-1.5">
+              <IconButton
+                size="sm"
+                data-testid="axflow-undo-btn"
+                disabled={!canUndo}
+                onClick={onUndo}
+                title={tx("撤销", "Undo")}
+                aria-label={tx("撤销", "Undo")}
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+              </IconButton>
+              <IconButton
+                size="sm"
+                data-testid="axflow-redo-btn"
+                disabled={!canRedo}
+                onClick={onRedo}
+                title={tx("重做", "Redo")}
+                aria-label={tx("重做", "Redo")}
+              >
+                <Redo2 className="h-3.5 w-3.5" />
+              </IconButton>
+            </div>
+          )}
+
           {canEdit && (
             <Button
               type="button"
@@ -732,6 +852,35 @@ export function FlowCanvas({
           {edges.length}
         </div>
       </div>
+
+      {/* Quick Operator Popover (`+` on edge midpoint or output port dragged to blank canvas) */}
+      {popoverCtx && canEdit && (
+        <QuickOperatorPopover
+          operators={operators}
+          screenX={popoverCtx.screenX}
+          screenY={popoverCtx.screenY}
+          onClose={() => setPopoverCtx(null)}
+          onSelectOperator={(kind) => {
+            const ctx = popoverCtx;
+            setPopoverCtx(null);
+            if (ctx.mode === "splice-edge") {
+              onSpliceOperatorOnEdge?.(ctx.edgeIndex, kind, {
+                x: ctx.flowX,
+                y: ctx.flowY,
+              });
+            } else if (ctx.mode === "connect-from-node") {
+              if (onCreateAndConnectOperator) {
+                onCreateAndConnectOperator(ctx.fromNodeId, kind, {
+                  x: ctx.flowX,
+                  y: ctx.flowY,
+                });
+              } else {
+                onDropOperator(kind, { x: ctx.flowX, y: ctx.flowY });
+              }
+            }
+          }}
+        />
+      )}
 
       {/* Dashed Ghost Drop Preview Box */}
       {dragGhost && (
@@ -878,14 +1027,54 @@ export function FlowCanvas({
         onNodesChange={handleNodesChange}
         nodesDraggable={canEdit}
         nodesConnectable={canEdit}
-        snapToGrid
-        snapGrid={[16, 16]}
+        onConnectStart={(_event, params) => {
+          connectStartNodeRef.current = params.nodeId ?? null;
+          connectedDuringDragRef.current = false;
+        }}
         onConnect={handleConnect}
+        onConnectEnd={(event) => {
+          const fromNodeId = connectStartNodeRef.current;
+          const didConnect = connectedDuringDragRef.current;
+          connectStartNodeRef.current = null;
+          connectedDuringDragRef.current = false;
+          if (!canEdit || !fromNodeId || didConnect) return;
+          const targetEl = event.target;
+          if (
+            targetEl instanceof Element &&
+            targetEl.closest(".react-flow__handle")
+          ) {
+            return;
+          }
+          const clientX =
+            "changedTouches" in event
+              ? (event.changedTouches[0]?.clientX ?? 240)
+              : event.clientX;
+          const clientY =
+            "changedTouches" in event
+              ? (event.changedTouches[0]?.clientY ?? 180)
+              : event.clientY;
+          const rect = canvasContainerRef.current?.getBoundingClientRect();
+          const screenX = rect ? clientX - rect.left : clientX;
+          const screenY = rect ? clientY - rect.top : clientY;
+          const rawFlow = rfInstance
+            ? rfInstance.screenToFlowPosition({ x: clientX, y: clientY })
+            : { x: screenX, y: screenY };
+          setPopoverCtx({
+            mode: "connect-from-node",
+            fromNodeId,
+            screenX,
+            screenY,
+            flowX: Math.round((rawFlow.x - 104) / 16) * 16,
+            flowY: Math.round((rawFlow.y - 48) / 16) * 16,
+          });
+        }}
         onNodeClick={(_, node) => {
+          setPopoverCtx(null);
           onSelectEdge(null);
           onSelectNode(node.id);
         }}
         onEdgeClick={(_, edge) => {
+          setPopoverCtx(null);
           if (typeof edge.data?.edgeIndex === "number") {
             onSelectNode(null);
             onSelectEdge(edge.data.edgeIndex);
@@ -894,15 +1083,60 @@ export function FlowCanvas({
         onNodeDragStart={(_, node) => {
           draggingNodeIdRef.current = node.id;
         }}
+        onNodeDrag={(_, node) => {
+          const others: MeasuredBox[] = liveNodes
+            .filter((n) => n.id !== node.id)
+            .map((n) => ({
+              id: n.id,
+              x: n.position.x,
+              y: n.position.y,
+              width: n.measured?.width ?? 224,
+              height: n.measured?.height ?? 116,
+            }));
+          const snap = computeAlignmentGuides(
+            {
+              id: node.id,
+              x: node.position.x,
+              y: node.position.y,
+              width: node.measured?.width ?? 224,
+              height: node.measured?.height ?? 116,
+            },
+            others,
+            6
+          );
+          setHelperGuides({
+            verticalLines: snap.verticalLines,
+            horizontalLines: snap.horizontalLines,
+          });
+          if (snap.snappedX !== null || snap.snappedY !== null) {
+            setLiveNodes((prev) =>
+              prev.map((n) =>
+                n.id === node.id
+                  ? {
+                      ...n,
+                      position: {
+                        x: snap.snappedX ?? node.position.x,
+                        y: snap.snappedY ?? node.position.y,
+                      },
+                    }
+                  : n
+              )
+            );
+          }
+        }}
         onNodeDragStop={(_, node) => {
           draggingNodeIdRef.current = null;
+          setHelperGuides({ verticalLines: [], horizontalLines: [] });
           if (!canEdit) return;
+          const live = liveNodes.find((n) => n.id === node.id);
+          const pos = live ? live.position : node.position;
           onUpdateNodePos(node.id, {
-            x: Math.round(node.position.x),
-            y: Math.round(node.position.y),
+            x: Math.round(pos.x),
+            y: Math.round(pos.y),
           });
         }}
         onPaneClick={() => {
+          setPopoverCtx(null);
           onSelectNode(null);
           onSelectEdge(null);
         }}
@@ -914,6 +1148,10 @@ export function FlowCanvas({
           color={isDark ? "#27272a" : "#d4d4d8"}
           gap={16}
           size={1}
+        />
+        <HelperLinesOverlay
+          verticalLines={helperGuides.verticalLines}
+          horizontalLines={helperGuides.horizontalLines}
         />
         <Controls showInteractive={false} />
         {nodes.length > 6 && (

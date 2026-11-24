@@ -3,7 +3,10 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use axpoint_domain::AppError;
-use axpoint_domain::enums::{JobKind, OutboxTopic};
+use axpoint_domain::enums::{GeoPredicateOp, JobKind, OutboxTopic};
+use axpoint_domain::geo_ops::{
+    GeoShapeDto, matches_spatial_filter, shape_vertices, spatial_filter_bbox, validate_geo_shape,
+};
 use axpoint_domain::graph::{
     BulkLinkInput, BulkNodeInput, BulkNodesRequest, BulkNodesResponse, EntityCandidatesResponse,
     EntityLink, GeoPoint, LinkEndpointRef, LinkListQuery, LinkRecord, MetricsMerge,
@@ -267,8 +270,15 @@ impl PgStore {
         query: NodeListQuery,
         node_type_policies: Option<&BTreeMap<String, NodeTypePolicySpec>>,
     ) -> Result<NodeListResponse, AppError> {
-        let bbox = query.parse_bbox()?;
-        let default_limit: u32 = if bbox.is_some() { 10_000 } else { 200 };
+        let spatial_filter = query.parse_spatial_filter()?;
+        let stage1_bbox = match &spatial_filter {
+            Some(sf) => Some(spatial_filter_bbox(sf)?),
+            None => None,
+        };
+        let needs_stage2 = spatial_filter
+            .as_ref()
+            .is_some_and(|sf| sf.op != GeoPredicateOp::Bbox);
+        let default_limit: u32 = if stage1_bbox.is_some() { 10_000 } else { 200 };
         let limit = query.limit.unwrap_or(default_limit);
         if !(1..=10_000).contains(&limit) {
             return Err(AppError::bad(
@@ -278,7 +288,11 @@ impl PgStore {
         }
 
         let limit_usize = usize::try_from(limit).unwrap_or(200);
-        let fetch_limit = i64::from(limit).saturating_add(1);
+        let fetch_limit = if needs_stage2 {
+            10_001_i64
+        } else {
+            i64::from(limit).saturating_add(1)
+        };
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         let cursor_pair = match query.cursor.as_deref().filter(|s| !s.trim().is_empty()) {
@@ -286,7 +300,13 @@ impl PgStore {
             None => None,
         };
 
-        let mut qb = build_list_nodes_query(&query, bbox, cursor_pair, node_type_policies);
+        let mut qb = build_list_nodes_query(
+            &query,
+            stage1_bbox,
+            needs_stage2,
+            cursor_pair,
+            node_type_policies,
+        );
         qb.push(" ORDER BY updated_at DESC, id DESC LIMIT ");
         qb.push_bind(fetch_limit);
 
@@ -297,6 +317,15 @@ impl PgStore {
             .map_err(|err| AppError::Database(format!("list xb_nodes failed: {err}")))?;
 
         let mut nodes: Vec<BlueNode> = rows.iter().map(decode_blue_node).collect();
+        if let Some(ref sf) = spatial_filter {
+            let mut refined = Vec::with_capacity(nodes.len());
+            for node in nodes {
+                if matches_spatial_filter(node.geo, node.geo_shape.as_ref(), sf)? {
+                    refined.push(node);
+                }
+            }
+            nodes = refined;
+        }
         let next_cursor = if nodes.len() > limit_usize {
             nodes.truncate(limit_usize);
             nodes
@@ -325,6 +354,71 @@ impl PgStore {
             links,
             next_cursor,
         })
+    }
+
+    /// Collects governed WGS-84 coordinates from `xb_nodes` for `POST /api/xblue/geo/convex-hull` (`06-STEP28` §28.3).
+    ///
+    /// # Errors
+    /// Returns [`AppError::Database`] if querying `xb_nodes` fails.
+    pub async fn collect_governed_geo_points(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        type_name: Option<&str>,
+        node_ids: &[Uuid],
+        node_type_policies: Option<&BTreeMap<String, NodeTypePolicySpec>>,
+    ) -> Result<Vec<GeoPoint>, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
+            "SELECT geo_lng, geo_lat, geo_shape
+               FROM xb_nodes
+              WHERE subgraph_slug = ",
+        );
+        qb.push_bind(String::from(subgraph_slug));
+        qb.push(" AND (geo_lng IS NOT NULL OR geo_shape IS NOT NULL)");
+        if let Some(tf) = type_name.map(str::trim).filter(|s| !s.is_empty()) {
+            qb.push(" AND type_name = ");
+            qb.push_bind(String::from(tf));
+        }
+        if !node_ids.is_empty() {
+            qb.push(" AND id = ANY(");
+            qb.push_bind(node_ids.to_vec());
+            qb.push(")");
+        }
+        if let Some(policies) = node_type_policies {
+            append_pg_row_policy_case(&mut qb, policies);
+        }
+        qb.push(" ORDER BY id ASC LIMIT 50000");
+
+        let rows = qb
+            .build()
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(|err| AppError::Database(format!("collect geo points failed: {err}")))?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit collect_governed_geo_points tx: {err}"))
+        })?;
+
+        let mut pts = Vec::with_capacity(rows.len());
+        for row in rows {
+            if let (Some(lng), Some(lat)) = (
+                row.get::<Option<f64>, _>("geo_lng"),
+                row.get::<Option<f64>, _>("geo_lat"),
+            ) {
+                pts.push(GeoPoint { lng, lat });
+            }
+            if let Some(shape_val) = row.get::<Option<serde_json::Value>, _>("geo_shape")
+                && let Ok(shape) = serde_json::from_value::<GeoShapeDto>(shape_val)
+            {
+                for [lng, lat] in shape_vertices(&shape) {
+                    let pt = GeoPoint { lng, lat };
+                    if !matches!(shape, GeoShapeDto::Point(_)) || !pts.contains(&pt) {
+                        pts.push(pt);
+                    }
+                }
+            }
+        }
+        Ok(pts)
     }
 
     /// Evaluates compiled PostgreSQL row-policy predicates against a candidate `node_ids` slice,
@@ -370,12 +464,13 @@ impl PgStore {
 fn build_list_nodes_query(
     query: &NodeListQuery,
     bbox: Option<[f64; 4]>,
+    include_shape_without_point: bool,
     cursor_pair: Option<(DateTime<Utc>, Uuid)>,
     node_type_policies: Option<&BTreeMap<String, NodeTypePolicySpec>>,
 ) -> QueryBuilder<Postgres> {
     let mut qb: QueryBuilder<Postgres> = QueryBuilder::new(
         "SELECT id, type_name, node_key, title, properties, metrics,
-                geo_lng, geo_lat, source_dataset_id, source_row_key,
+                geo_lng, geo_lat, geo_shape, source_dataset_id, source_row_key,
                 row_version, created_at, updated_at
            FROM xb_nodes
           WHERE subgraph_slug = ",
@@ -408,14 +503,26 @@ fn build_list_nodes_query(
         qb.push(")");
     }
     if let Some([min_lng, min_lat, max_lng, max_lat]) = bbox {
-        qb.push(" AND geo_lng IS NOT NULL AND geo_lat IS NOT NULL AND geo_lng BETWEEN ");
-        qb.push_bind(min_lng);
-        qb.push(" AND ");
-        qb.push_bind(max_lng);
-        qb.push(" AND geo_lat BETWEEN ");
-        qb.push_bind(min_lat);
-        qb.push(" AND ");
-        qb.push_bind(max_lat);
+        if include_shape_without_point {
+            qb.push(" AND ((geo_lng IS NOT NULL AND geo_lat IS NOT NULL AND geo_lng BETWEEN ");
+            qb.push_bind(min_lng);
+            qb.push(" AND ");
+            qb.push_bind(max_lng);
+            qb.push(" AND geo_lat BETWEEN ");
+            qb.push_bind(min_lat);
+            qb.push(" AND ");
+            qb.push_bind(max_lat);
+            qb.push(") OR (geo_lng IS NULL AND geo_shape IS NOT NULL))");
+        } else {
+            qb.push(" AND geo_lng IS NOT NULL AND geo_lat IS NOT NULL AND geo_lng BETWEEN ");
+            qb.push_bind(min_lng);
+            qb.push(" AND ");
+            qb.push_bind(max_lng);
+            qb.push(" AND geo_lat BETWEEN ");
+            qb.push_bind(min_lat);
+            qb.push(" AND ");
+            qb.push_bind(max_lat);
+        }
     }
     if let Some((cursor_ts, cursor_id)) = cursor_pair {
         qb.push(" AND (updated_at, id) < (");
@@ -466,7 +573,7 @@ impl GraphStorePort for PgStore {
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         let maybe_row = sqlx::query(
             "SELECT id, type_name, node_key, title, properties, metrics,
-                    geo_lng, geo_lat, source_dataset_id, source_row_key,
+                    geo_lng, geo_lat, geo_shape, source_dataset_id, source_row_key,
                     row_version, created_at, updated_at
                FROM xb_nodes
               WHERE id = $1 AND subgraph_slug = 'main'",
@@ -499,6 +606,7 @@ impl GraphStorePort for PgStore {
         if let Some(geo) = req.geo {
             geo.validate()?;
         }
+        let shape_json = serialize_validated_geo_shape(req.geo_shape.as_ref())?;
         validate_finite_metrics(&req.metrics)?;
 
         let link_spec = validate_upsert_link_spec(&req)?;
@@ -517,19 +625,21 @@ impl GraphStorePort for PgStore {
 
         let row = sqlx::query(
             "INSERT INTO xb_nodes (
-                 tenant_id, type_name, node_key, title, properties, metrics, geo_lng, geo_lat
+                 tenant_id, type_name, node_key, title, properties, metrics,
+                 geo_lng, geo_lat, geo_shape
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (tenant_id, subgraph_slug, type_name, node_key) DO UPDATE SET
                  title = EXCLUDED.title,
                  properties = EXCLUDED.properties,
                  metrics = EXCLUDED.metrics,
                  geo_lng = COALESCE(EXCLUDED.geo_lng, xb_nodes.geo_lng),
                  geo_lat = COALESCE(EXCLUDED.geo_lat, xb_nodes.geo_lat),
+                 geo_shape = COALESCE(EXCLUDED.geo_shape, xb_nodes.geo_shape),
                  row_version = xb_nodes.row_version + 1,
                  updated_at = NOW()
              RETURNING id, type_name, node_key, title, properties, metrics,
-                       geo_lng, geo_lat, source_dataset_id, source_row_key,
+                       geo_lng, geo_lat, geo_shape, source_dataset_id, source_row_key,
                        row_version, created_at, updated_at",
         )
         .bind(tenant_id)
@@ -540,6 +650,7 @@ impl GraphStorePort for PgStore {
         .bind(metrics_json)
         .bind(geo_lng)
         .bind(geo_lat)
+        .bind(shape_json)
         .fetch_one(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("upsert xb_nodes failed: {err}")))?;
@@ -579,22 +690,12 @@ impl GraphStorePort for PgStore {
         node_id: Uuid,
         req: PatchNodeRequest,
     ) -> Result<BlueNode, AppError> {
-        if let Some(ref title) = req.title
-            && title.trim().is_empty()
-        {
-            return Err(AppError::bad("INVALID_ARGUMENT", "title cannot be empty"));
-        }
-        if let Some(geo) = req.geo {
-            geo.validate()?;
-        }
-        if let Some(ref m) = req.metrics {
-            validate_finite_metrics(m)?;
-        }
+        validate_patch_node_request(&req)?;
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         let existing_row = sqlx::query(
             "SELECT id, type_name, node_key, title, properties, metrics,
-                    geo_lng, geo_lat, source_dataset_id, source_row_key,
+                    geo_lng, geo_lat, geo_shape, source_dataset_id, source_row_key,
                     row_version, created_at, updated_at
                FROM xb_nodes
               WHERE id = $1 AND subgraph_slug = 'main'
@@ -613,47 +714,8 @@ impl GraphStorePort for PgStore {
             return Err(AppError::Conflict("VERSION_CONFLICT"));
         }
 
-        let new_title = req
-            .title
-            .as_deref()
-            .map(str::trim)
-            .map(String::from)
-            .unwrap_or(current.title);
-
-        let new_props = match req.properties {
-            Some(mut p) => {
-                if let Some(ts_meta) = current.properties.get("__metric_ts")
-                    && !p.contains_key("__metric_ts")
-                {
-                    p.insert(String::from("__metric_ts"), ts_meta.clone());
-                }
-                p
-            }
-            None => current.properties,
-        };
-
-        let (new_metrics, metrics_changed) = match req.metrics {
-            Some(incoming) => {
-                let merged = match req.metrics_merge {
-                    MetricsMerge::Merge => {
-                        let mut m = current.metrics.clone();
-                        for (k, v) in incoming {
-                            m.insert(k, v);
-                        }
-                        m
-                    }
-                    MetricsMerge::Replace => incoming,
-                };
-                let changed = merged != current.metrics;
-                (merged, changed)
-            }
-            None => (current.metrics, false),
-        };
-
-        let new_geo = req.geo.or(current.geo);
-        let props_json = serde_json::Value::Object(new_props);
-        let metrics_json = serde_json::to_value(&new_metrics)
-            .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid metrics: {err}")))?;
+        let (new_title, props_json, metrics_json, new_geo, shape_json, metrics_changed) =
+            prepare_patched_node_fields(current, req)?;
 
         let updated_row = sqlx::query(
             "UPDATE xb_nodes
@@ -662,11 +724,12 @@ impl GraphStorePort for PgStore {
                     metrics = $4,
                     geo_lng = $5,
                     geo_lat = $6,
+                    geo_shape = $7,
                     row_version = row_version + 1,
                     updated_at = NOW()
               WHERE id = $1 AND subgraph_slug = 'main'
               RETURNING id, type_name, node_key, title, properties, metrics,
-                        geo_lng, geo_lat, source_dataset_id, source_row_key,
+                        geo_lng, geo_lat, geo_shape, source_dataset_id, source_row_key,
                         row_version, created_at, updated_at",
         )
         .bind(node_id)
@@ -675,6 +738,7 @@ impl GraphStorePort for PgStore {
         .bind(metrics_json)
         .bind(new_geo.map(|g| g.lng))
         .bind(new_geo.map(|g| g.lat))
+        .bind(shape_json)
         .fetch_one(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("patch xb_nodes failed: {err}")))?;
@@ -1282,6 +1346,103 @@ async fn merge_single_upsert_node_tx(
     }
 }
 
+fn serialize_validated_geo_shape(
+    shape: Option<&GeoShapeDto>,
+) -> Result<Option<serde_json::Value>, AppError> {
+    let Some(s) = shape else {
+        return Ok(None);
+    };
+    validate_geo_shape(s)?;
+    let val = serde_json::to_value(s)
+        .map_err(|err| AppError::bad("INVALID_GEOMETRY", format!("serialize geo_shape: {err}")))?;
+    Ok(Some(val))
+}
+
+fn validate_patch_node_request(req: &PatchNodeRequest) -> Result<(), AppError> {
+    if let Some(ref title) = req.title
+        && title.trim().is_empty()
+    {
+        return Err(AppError::bad("INVALID_ARGUMENT", "title cannot be empty"));
+    }
+    if let Some(geo) = req.geo {
+        geo.validate()?;
+    }
+    if let Some(ref shape) = req.geo_shape {
+        validate_geo_shape(shape)?;
+    }
+    if let Some(ref m) = req.metrics {
+        validate_finite_metrics(m)?;
+    }
+    Ok(())
+}
+
+type PatchedNodeFields = (
+    String,
+    serde_json::Value,
+    serde_json::Value,
+    Option<GeoPoint>,
+    Option<serde_json::Value>,
+    bool,
+);
+
+fn prepare_patched_node_fields(
+    current: BlueNode,
+    req: PatchNodeRequest,
+) -> Result<PatchedNodeFields, AppError> {
+    let new_title = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .map(String::from)
+        .unwrap_or(current.title);
+
+    let new_props = match req.properties {
+        Some(mut p) => {
+            if let Some(ts_meta) = current.properties.get("__metric_ts")
+                && !p.contains_key("__metric_ts")
+            {
+                p.insert(String::from("__metric_ts"), ts_meta.clone());
+            }
+            p
+        }
+        None => current.properties,
+    };
+
+    let (new_metrics, metrics_changed) = match req.metrics {
+        Some(incoming) => {
+            let merged = match req.metrics_merge {
+                MetricsMerge::Merge => {
+                    let mut m = current.metrics.clone();
+                    for (k, v) in incoming {
+                        m.insert(k, v);
+                    }
+                    m
+                }
+                MetricsMerge::Replace => incoming,
+            };
+            let changed = merged != current.metrics;
+            (merged, changed)
+        }
+        None => (current.metrics, false),
+    };
+
+    let new_geo = req.geo.or(current.geo);
+    let new_shape = req.geo_shape.or(current.geo_shape);
+    let shape_json = serialize_validated_geo_shape(new_shape.as_ref())?;
+    let props_json = serde_json::Value::Object(new_props);
+    let metrics_json = serde_json::to_value(&new_metrics)
+        .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid metrics: {err}")))?;
+
+    Ok((
+        new_title,
+        props_json,
+        metrics_json,
+        new_geo,
+        shape_json,
+        metrics_changed,
+    ))
+}
+
 type DedupedBulkNodesMap = BTreeMap<(String, String), BulkNodeInput>;
 
 fn dedup_and_validate_bulk_nodes(
@@ -1303,6 +1464,9 @@ fn dedup_and_validate_bulk_nodes(
         if let Some(geo) = raw.geo {
             geo.validate()?;
         }
+        if let Some(ref shape) = raw.geo_shape {
+            validate_geo_shape(shape)?;
+        }
         validate_finite_metrics(&raw.metrics)?;
         distinct_types.insert(String::from(tname));
 
@@ -1311,6 +1475,7 @@ fn dedup_and_validate_bulk_nodes(
             prev.title = String::from(title);
             prev.properties.clone_from(&raw.properties);
             prev.geo = raw.geo.or(prev.geo);
+            prev.geo_shape = raw.geo_shape.clone().or_else(|| prev.geo_shape.clone());
             prev.source_dataset_id = raw.source_dataset_id.or(prev.source_dataset_id);
             prev.source_row_key = raw
                 .source_row_key
@@ -1413,11 +1578,13 @@ async fn bulk_upsert_nodes_tx(
     let mut col_metrics = Vec::with_capacity(cap);
     let mut col_lngs: Vec<Option<f64>> = Vec::with_capacity(cap);
     let mut col_lats: Vec<Option<f64>> = Vec::with_capacity(cap);
+    let mut col_shapes: Vec<Option<serde_json::Value>> = Vec::with_capacity(cap);
     let mut col_ds_ids: Vec<Option<Uuid>> = Vec::with_capacity(cap);
     let mut col_row_keys: Vec<Option<String>> = Vec::with_capacity(cap);
     let mut changed_keys: BTreeSet<(String, String)> = BTreeSet::new();
 
     for ((tname, nkey), item) in deduped {
+        let shape_json = serialize_validated_geo_shape(item.geo_shape.as_ref())?;
         let (final_m, final_p, changed) =
             merge_bulk_node_item(item, prev_map.get(&(tname.clone(), nkey.clone())));
         if changed {
@@ -1434,6 +1601,7 @@ async fn bulk_upsert_nodes_tx(
         );
         col_lngs.push(final_p.2.map(|g| g.lng));
         col_lats.push(final_p.2.map(|g| g.lat));
+        col_shapes.push(shape_json);
         col_ds_ids.push(final_p.3);
         col_row_keys.push(final_p.4);
     }
@@ -1441,21 +1609,22 @@ async fn bulk_upsert_nodes_tx(
     let returned = sqlx::query(
         "INSERT INTO xb_nodes (
              tenant_id, type_name, node_key, title, properties, metrics,
-             geo_lng, geo_lat, source_dataset_id, source_row_key
+             geo_lng, geo_lat, geo_shape, source_dataset_id, source_row_key
          )
          SELECT $1, u.type_name, u.node_key, u.title, u.properties, u.metrics,
-                u.geo_lng, u.geo_lat, u.source_dataset_id, u.source_row_key
+                u.geo_lng, u.geo_lat, u.geo_shape, u.source_dataset_id, u.source_row_key
            FROM UNNEST(
-               $2::text[], $3::text[], $4::text[], $5::jsonb[],
-               $6::jsonb[], $7::float8[], $8::float8[], $9::uuid[], $10::text[]
+               $2::text[], $3::text[], $4::text[], $5::jsonb[], $6::jsonb[],
+               $7::float8[], $8::float8[], $9::jsonb[], $10::uuid[], $11::text[]
            ) AS u(
                type_name, node_key, title, properties, metrics,
-               geo_lng, geo_lat, source_dataset_id, source_row_key
+               geo_lng, geo_lat, geo_shape, source_dataset_id, source_row_key
            )
          ON CONFLICT (tenant_id, subgraph_slug, type_name, node_key) DO UPDATE SET
              title = EXCLUDED.title, properties = EXCLUDED.properties, metrics = EXCLUDED.metrics,
              geo_lng = COALESCE(EXCLUDED.geo_lng, xb_nodes.geo_lng),
              geo_lat = COALESCE(EXCLUDED.geo_lat, xb_nodes.geo_lat),
+             geo_shape = COALESCE(EXCLUDED.geo_shape, xb_nodes.geo_shape),
              source_dataset_id = COALESCE(EXCLUDED.source_dataset_id, xb_nodes.source_dataset_id),
              source_row_key = COALESCE(EXCLUDED.source_row_key, xb_nodes.source_row_key),
              row_version = xb_nodes.row_version + 1, updated_at = NOW()
@@ -1469,6 +1638,7 @@ async fn bulk_upsert_nodes_tx(
     .bind(&col_metrics)
     .bind(&col_lngs)
     .bind(&col_lats)
+    .bind(&col_shapes)
     .bind(&col_ds_ids)
     .bind(&col_row_keys)
     .fetch_all(&mut **tx)
@@ -1831,7 +2001,7 @@ async fn query_fts_nodes_tx(
     let like_pattern = format!("%{q}%");
     let rows = sqlx::query(
         "SELECT id, type_name, node_key, title, properties, metrics,
-                geo_lng, geo_lat, source_dataset_id, source_row_key,
+                geo_lng, geo_lat, geo_shape, source_dataset_id, source_row_key,
                 row_version, created_at, updated_at,
                 (
                     CASE WHEN lower(node_key) = lower($1) OR lower(title) = lower($1) THEN 10.0 ELSE 0.0 END
@@ -1868,7 +2038,7 @@ async fn query_vector_nodes_tx(
 
     let rows = sqlx::query(
         "SELECT n.id, n.type_name, n.node_key, n.title, n.properties, n.metrics,
-                n.geo_lng, n.geo_lat, n.source_dataset_id, n.source_row_key,
+                n.geo_lng, n.geo_lat, n.geo_shape, n.source_dataset_id, n.source_row_key,
                 n.row_version, n.created_at, n.updated_at
            FROM hg_embeddings e
            JOIN xb_nodes n ON n.id = e.node_id

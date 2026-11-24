@@ -1,35 +1,85 @@
-//! Stepped temporal causal propagation solver with lag and checkpoints (`09-STEP10` §10.5).
+//! Stepped temporal causal propagation solver with lag, scheduled/conditional events,
+//! checkpoints, and `deadline_step` goal evaluation (`09-STEP10` §10.5 & `06-STEP28` §28.2).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 
 use uuid::Uuid;
 
 use crate::AppError;
+use crate::enums::{InterventionMode, SimEventTriggerKind, SimThresholdOp};
 use crate::sim::action::normalize_actions_indexed;
-use crate::sim::graph::{IndexedSimGraph, aggregate_kpis};
+use crate::sim::deadline::{
+    eval_threshold_op, evaluate_goal_constraints, validate_goal_constraints,
+};
+use crate::sim::graph::{IndexedSimGraph, aggregate_kpis, apply_clamp};
 use crate::sim::scc::{SccGraph, is_cyclic_component, tarjan_scc_topo};
 use crate::sim::steady::{
-    ChannelSystem, accumulate_single_edge, build_channel_system, collect_impacts_and_warnings,
-    combine_channel_deltas, compute_system_top_paths, compute_vertex_after_val, empty_sim_result,
-    evaluate_fixed_actions, insert_checkpoint_metric, set_pair, sort_impacts_desc,
-    validate_common_params,
+    ChannelFixedAction, ChannelSystem, ChannelVertex, accumulate_single_edge,
+    build_channel_system_with_extra_seeds, collect_impacts_and_warnings, combine_channel_deltas,
+    compute_system_top_paths, compute_vertex_after_val, empty_sim_result, insert_checkpoint_metric,
+    set_pair, sort_impacts_desc, validate_common_params,
 };
 use crate::sim::{
-    Checkpoint, ImpactRow, SimGraph, SimParams, SimResult, SimWarning, StepSeriesPoint,
+    Checkpoint, DeadlineReport, FiredEventRecord, ImpactRow, NormalizedAction, SimEventSpec,
+    SimGoalConstraint, SimGraph, SimParams, SimResult, SimWarning, StepSeriesPoint,
 };
 use crate::topology::AxSimAction;
 
 /// Maximum `horizon_steps` permitted in `STEPPED` mode (`§10.3.3`).
 pub const MAX_HORIZON_STEPS: u32 = 104;
 
+/// Validated event ready for discrete-step evaluation.
+#[derive(Debug, Clone)]
+pub(crate) struct CompiledSimEvent {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) trigger_kind: SimEventTriggerKind,
+    pub(crate) at_step: Option<u32>,
+    pub(crate) watch_node_idx: Option<usize>,
+    pub(crate) watch_metric: Option<String>,
+    pub(crate) op: Option<SimThresholdOp>,
+    pub(crate) threshold: Option<f64>,
+    pub(crate) cooldown_steps: u32,
+    pub(crate) max_fires: u32,
+    pub(crate) actions: Vec<NormalizedAction>,
+}
+
 /// Numerical output from solving a [`ChannelSystem`] across `0..=horizon_steps`.
 #[derive(Debug, Clone)]
 pub(crate) struct SteppedSolveOutput {
     pub(crate) final_after_vals: Vec<f64>,
     pub(crate) step_after_vals: Vec<Vec<f64>>,
+    pub(crate) fired_events: Vec<FiredEventRecord>,
+    pub(crate) event_abs_channels: BTreeSet<(usize, u32)>,
     pub(crate) converged: bool,
     pub(crate) reason: Option<String>,
     pub(crate) max_iter_warning_nodes: Vec<Uuid>,
+}
+
+/// Bundle of numerical configuration passed into [`solve_stepped_numeric_with_events`].
+pub(crate) struct SteppedNumericInput<'a> {
+    pub(crate) indexed: &'a IndexedSimGraph,
+    pub(crate) system: &'a ChannelSystem,
+    pub(crate) chan_lookup: &'a HashMap<(usize, String), usize>,
+    pub(crate) params: &'a SimParams,
+    pub(crate) edge_scales: &'a [f64],
+    pub(crate) events: &'a [CompiledSimEvent],
+    pub(crate) record_series: bool,
+}
+
+/// Validates scheduled/conditional events and redline goal constraints against `graph` (`06-STEP28` §28.2).
+///
+/// # Errors
+/// Returns [`AppError::BadRequest`] (`INVALID_ARGUMENT` or `INVALID_GEOMETRY`) if any event or
+/// constraint is malformed.
+pub fn validate_events_and_goals(
+    graph: &SimGraph,
+    scheduled_events: &[SimEventSpec],
+    goal_constraints: &[SimGoalConstraint],
+) -> Result<(), AppError> {
+    let indexed = IndexedSimGraph::from_sim_graph(graph)?;
+    let _compiled = compile_scheduled_events(&indexed, scheduled_events)?;
+    validate_goal_constraints(&indexed, goal_constraints)
 }
 
 /// Solves stepped temporal causal propagation across `t = 0..=horizon_steps` (`§10.5`).
@@ -42,8 +92,7 @@ pub fn solve(
     actions: &[AxSimAction],
     params: &SimParams,
 ) -> Result<SimResult, AppError> {
-    let indexed = IndexedSimGraph::from_sim_graph(graph)?;
-    solve_indexed(&indexed, actions, params)
+    solve_with_events(graph, actions, params, &[], &[])
 }
 
 /// Solves stepped temporal causal propagation on a pre-compiled [`IndexedSimGraph`] (`§10.5`).
@@ -56,17 +105,86 @@ pub fn solve_indexed(
     actions: &[AxSimAction],
     params: &SimParams,
 ) -> Result<SimResult, AppError> {
+    solve_indexed_with_events(indexed, actions, params, &[], &[])
+}
+
+/// Solves stepped causal propagation with scheduled/conditional events and `deadline_step` goal constraints (`06-STEP28` §28.2).
+///
+/// # Errors
+/// Returns [`AppError::BadRequest`] (`INVALID_ARGUMENT`, `INVALID_GEOMETRY`, or `SIM_DIVERGENT`)
+/// if validation fails or same-step cyclic propagation diverges.
+pub fn solve_with_events(
+    graph: &SimGraph,
+    actions: &[AxSimAction],
+    params: &SimParams,
+    scheduled_events: &[SimEventSpec],
+    goal_constraints: &[SimGoalConstraint],
+) -> Result<SimResult, AppError> {
+    let indexed = IndexedSimGraph::from_sim_graph(graph)?;
+    solve_indexed_with_events(
+        &indexed,
+        actions,
+        params,
+        scheduled_events,
+        goal_constraints,
+    )
+}
+
+/// Solves stepped causal propagation with events and goal constraints on a pre-compiled [`IndexedSimGraph`] (`06-STEP28` §28.2).
+///
+/// # Errors
+/// Returns [`AppError::BadRequest`] (`INVALID_ARGUMENT`, `INVALID_GEOMETRY`, or `SIM_DIVERGENT`)
+/// if validation fails or same-step cyclic propagation diverges.
+pub fn solve_indexed_with_events(
+    indexed: &IndexedSimGraph,
+    actions: &[AxSimAction],
+    params: &SimParams,
+    scheduled_events: &[SimEventSpec],
+    goal_constraints: &[SimGoalConstraint],
+) -> Result<SimResult, AppError> {
     validate_stepped_params(params)?;
     let normalized = normalize_actions_indexed(indexed, actions)?;
-    if normalized.is_empty() {
+    let compiled_events = compile_scheduled_events(indexed, scheduled_events)?;
+    validate_goal_constraints(indexed, goal_constraints)?;
+
+    if normalized.is_empty() && compiled_events.is_empty() && goal_constraints.is_empty() {
         return Ok(empty_sim_result());
     }
 
-    let system = build_channel_system(indexed, &normalized, params.max_hops);
+    let extra_seeds = collect_event_seed_channels(indexed, &compiled_events);
+    let mut system =
+        build_channel_system_with_extra_seeds(indexed, &normalized, &extra_seeds, params.max_hops);
+    let chan_lookup = build_chan_lookup(&system);
     let edge_scales = vec![1.0_f64; system.edges.len()];
-    let numeric = solve_stepped_numeric(indexed, &system, params, &edge_scales, true)?;
+    let numeric = solve_stepped_numeric_with_events(&SteppedNumericInput {
+        indexed,
+        system: &system,
+        chan_lookup: &chan_lookup,
+        params,
+        edge_scales: &edge_scales,
+        events: &compiled_events,
+        record_series: true,
+    })?;
 
-    assemble_stepped_result(indexed, &system, &numeric, params)
+    for &(chan_idx, at_step) in &numeric.event_abs_channels {
+        if let Some(vert) = system.vertices.get_mut(chan_idx) {
+            vert.fixed_actions.push(ChannelFixedAction {
+                mode: InterventionMode::Absolute,
+                value: 0.0,
+                at_step,
+            });
+        }
+    }
+
+    let deadline_report = evaluate_goal_constraints(
+        indexed,
+        &system,
+        &numeric.step_after_vals,
+        params.horizon_steps,
+        goal_constraints,
+    )?;
+
+    assemble_stepped_result(indexed, &system, &numeric, params, deadline_report)
 }
 
 pub(crate) fn validate_stepped_params(params: &SimParams) -> Result<(), AppError> {
@@ -80,46 +198,188 @@ pub(crate) fn validate_stepped_params(params: &SimParams) -> Result<(), AppError
     Ok(())
 }
 
-pub(crate) fn solve_stepped_numeric(
+pub(crate) fn compile_scheduled_events(
     indexed: &IndexedSimGraph,
-    system: &ChannelSystem,
-    params: &SimParams,
-    edge_scales: &[f64],
-    record_series: bool,
+    events: &[SimEventSpec],
+) -> Result<Vec<CompiledSimEvent>, AppError> {
+    let mut out = Vec::with_capacity(events.len());
+    for ev in events {
+        if ev.id.trim().is_empty() {
+            return Err(AppError::bad(
+                "INVALID_ARGUMENT",
+                "scheduled_event.id must not be empty",
+            ));
+        }
+        let actions = normalize_actions_indexed(indexed, &ev.actions)?;
+        let (watch_node_idx, watch_metric, op, threshold) = match ev.trigger_kind {
+            SimEventTriggerKind::AtStep => {
+                if ev.at_step.is_none() {
+                    return Err(AppError::bad(
+                        "INVALID_ARGUMENT",
+                        format!(
+                            "event '{}' requires at_step when trigger_kind=AT_STEP",
+                            ev.id
+                        ),
+                    ));
+                }
+                (None, None, None, None)
+            }
+            SimEventTriggerKind::MetricThreshold => {
+                let wnid = ev.watch_node_id.ok_or_else(|| {
+                    AppError::bad(
+                        "INVALID_ARGUMENT",
+                        format!("event '{}' requires watch_node_id", ev.id),
+                    )
+                })?;
+                let Some(&w_idx) = indexed.node_index.get(&wnid) else {
+                    return Err(AppError::bad(
+                        "INVALID_ARGUMENT",
+                        format!(
+                            "event '{}' watch_node_id {wnid} not found in sandbox",
+                            ev.id
+                        ),
+                    ));
+                };
+                let wm = ev
+                    .watch_metric
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| {
+                        AppError::bad(
+                            "INVALID_ARGUMENT",
+                            format!("event '{}' requires non-empty watch_metric", ev.id),
+                        )
+                    })?
+                    .to_string();
+                let op_val = ev.op.ok_or_else(|| {
+                    AppError::bad("INVALID_ARGUMENT", format!("event '{}' requires op", ev.id))
+                })?;
+                let thresh = ev.threshold.ok_or_else(|| {
+                    AppError::bad(
+                        "INVALID_ARGUMENT",
+                        format!("event '{}' requires threshold", ev.id),
+                    )
+                })?;
+                if !thresh.is_finite() {
+                    return Err(AppError::bad(
+                        "INVALID_ARGUMENT",
+                        format!("event '{}' threshold must be finite", ev.id),
+                    ));
+                }
+                (Some(w_idx), Some(wm), Some(op_val), Some(thresh))
+            }
+        };
+
+        out.push(CompiledSimEvent {
+            id: ev.id.trim().to_string(),
+            name: ev.name.trim().to_string(),
+            trigger_kind: ev.trigger_kind,
+            at_step: ev.at_step,
+            watch_node_idx,
+            watch_metric,
+            op,
+            threshold,
+            cooldown_steps: ev.cooldown_steps,
+            max_fires: if ev.max_fires == 0 { 1 } else { ev.max_fires },
+            actions,
+        });
+    }
+    Ok(out)
+}
+
+pub(crate) fn collect_event_seed_channels(
+    indexed: &IndexedSimGraph,
+    events: &[CompiledSimEvent],
+) -> Vec<(usize, String)> {
+    let mut seeds = Vec::new();
+    for ev in events {
+        for act in &ev.actions {
+            if let Some(&n_idx) = indexed.node_index.get(&act.target_node_id) {
+                let key = (n_idx, act.metric_key.clone());
+                if !seeds.contains(&key) {
+                    seeds.push(key);
+                }
+            }
+        }
+    }
+    seeds
+}
+
+pub(crate) fn build_chan_lookup(system: &ChannelSystem) -> HashMap<(usize, String), usize> {
+    system
+        .vertices
+        .iter()
+        .enumerate()
+        .map(|(u, v)| ((v.node_idx, v.metric.clone()), u))
+        .collect()
+}
+
+#[derive(Default)]
+struct EventRuntimeState {
+    fire_count: u32,
+    last_fired_step: Option<u32>,
+}
+
+pub(crate) fn solve_stepped_numeric_with_events(
+    inp: &SteppedNumericInput<'_>,
 ) -> Result<SteppedSolveOutput, AppError> {
-    let n = system.vertices.len();
-    let total_steps = usize::try_from(params.horizon_steps)
+    let n = inp.system.vertices.len();
+    let total_steps = usize::try_from(inp.params.horizon_steps)
         .unwrap_or(0)
         .saturating_add(1);
     let mut rel_hist: Vec<Vec<f64>> = Vec::with_capacity(total_steps);
     let mut abs_hist: Vec<Vec<f64>> = Vec::with_capacity(total_steps);
-    let mut step_after_vals: Vec<Vec<f64>> = if record_series {
+    let mut step_after_vals: Vec<Vec<f64>> = if inp.record_series {
         Vec::with_capacity(total_steps)
     } else {
         Vec::new()
     };
+    let mut prev_step_vals = vec![0.0_f64; n];
+    let mut event_states: Vec<EventRuntimeState> = (0..inp.events.len())
+        .map(|_| EventRuntimeState::default())
+        .collect();
+    let mut active_event_actions: Vec<Vec<NormalizedAction>> = vec![Vec::new(); n];
+    let mut fired_events: Vec<FiredEventRecord> = Vec::new();
+    let mut event_abs_channels: BTreeSet<(usize, u32)> = BTreeSet::new();
 
-    let activation_steps: BTreeSet<u32> = system
+    let activation_steps: BTreeSet<u32> = inp
+        .system
         .vertices
         .iter()
         .flat_map(|v| v.fixed_actions.iter().map(|a| a.at_step))
         .collect();
 
-    let mut cur_adj = build_zero_lag_adj_at(system, 0);
+    let mut cur_adj = build_zero_lag_adj_at(inp.system, &active_event_actions, 0);
     let mut cur_scc = tarjan_scc_topo(n, &cur_adj);
     let mut converged = true;
     let mut reason: Option<String> = None;
     let mut warn_nodes: Vec<Uuid> = Vec::new();
     let mut final_after_vals = vec![0.0_f64; n];
 
-    for t in 0..=params.horizon_steps {
-        if t > 0 && activation_steps.contains(&t) {
-            cur_adj = build_zero_lag_adj_at(system, t);
+    for t in 0..=inp.params.horizon_steps {
+        let abs_dirty = activate_due_events(
+            inp,
+            t,
+            &prev_step_vals,
+            &mut event_states,
+            &mut active_event_actions,
+            &mut fired_events,
+            &mut event_abs_channels,
+        );
+        if (t > 0 && activation_steps.contains(&t)) || abs_dirty {
+            cur_adj = build_zero_lag_adj_at(inp.system, &active_event_actions, t);
             cur_scc = tarjan_scc_topo(n, &cur_adj);
         }
 
-        let (lag_rel, lag_abs) =
-            compute_lagged_inputs(system, t, edge_scales, &rel_hist, &abs_hist);
+        let (lag_rel, lag_abs) = compute_lagged_inputs(
+            inp.system,
+            &active_event_actions,
+            t,
+            inp.edge_scales,
+            &rel_hist,
+            &abs_hist,
+        );
         let mut rel_t = vec![0.0_f64; n];
         let mut abs_t = vec![0.0_f64; n];
 
@@ -127,12 +387,14 @@ pub(crate) fn solve_stepped_numeric(
             step: t,
             adj: &cur_adj,
             scc_graph: &cur_scc,
-            params,
-            edge_scales,
+            params: inp.params,
+            edge_scales: inp.edge_scales,
             lag_rel: &lag_rel,
             lag_abs: &lag_abs,
+            event_actions: &active_event_actions,
         };
-        let outcome = solve_single_step(indexed, system, &step_ctx, &mut rel_t, &mut abs_t)?;
+        let outcome =
+            solve_single_step(inp.indexed, inp.system, &step_ctx, &mut rel_t, &mut abs_t)?;
         if !outcome.converged {
             converged = false;
             reason = Some(String::from("MAX_ITER"));
@@ -143,12 +405,15 @@ pub(crate) fn solve_stepped_numeric(
             }
         }
 
-        if record_series || t == params.horizon_steps {
-            let after_t = compute_step_after_vals(system, &rel_t, &abs_t);
-            if t == params.horizon_steps {
+        let need_vals =
+            inp.record_series || !inp.events.is_empty() || t == inp.params.horizon_steps;
+        if need_vals {
+            let after_t = compute_step_after_vals(inp.system, &rel_t, &abs_t);
+            if t == inp.params.horizon_steps {
                 final_after_vals.clone_from(&after_t);
             }
-            if record_series {
+            prev_step_vals.clone_from(&after_t);
+            if inp.record_series {
                 step_after_vals.push(after_t);
             }
         }
@@ -159,10 +424,103 @@ pub(crate) fn solve_stepped_numeric(
     Ok(SteppedSolveOutput {
         final_after_vals,
         step_after_vals,
+        fired_events,
+        event_abs_channels,
         converged,
         reason,
         max_iter_warning_nodes: warn_nodes,
     })
+}
+
+fn activate_due_events(
+    inp: &SteppedNumericInput<'_>,
+    step: u32,
+    prev_step_vals: &[f64],
+    states: &mut [EventRuntimeState],
+    active_event_actions: &mut [Vec<NormalizedAction>],
+    fired_events: &mut Vec<FiredEventRecord>,
+    event_abs_channels: &mut BTreeSet<(usize, u32)>,
+) -> bool {
+    let mut abs_dirty = false;
+    for (idx, ev) in inp.events.iter().enumerate() {
+        let (fired, trigger_value) = match ev.trigger_kind {
+            SimEventTriggerKind::AtStep => (ev.at_step == Some(step), None),
+            SimEventTriggerKind::MetricThreshold => {
+                let tv = eval_conditional_trigger(inp, ev, step, prev_step_vals, states.get(idx));
+                (tv.is_some(), tv)
+            }
+        };
+
+        if !fired {
+            continue;
+        }
+        if let Some(st) = states.get_mut(idx) {
+            st.fire_count = st.fire_count.saturating_add(1);
+            st.last_fired_step = Some(step);
+        }
+        for act in &ev.actions {
+            if let Some(&n_idx) = inp.indexed.node_index.get(&act.target_node_id)
+                && let Some(&chan_idx) = inp.chan_lookup.get(&(n_idx, act.metric_key.clone()))
+                && let Some(slot) = active_event_actions.get_mut(chan_idx)
+            {
+                if act.mode == InterventionMode::Absolute {
+                    abs_dirty = true;
+                    event_abs_channels.insert((chan_idx, step));
+                }
+                slot.push(NormalizedAction {
+                    at_step: step,
+                    ..act.clone()
+                });
+            }
+        }
+        fired_events.push(FiredEventRecord {
+            event_id: ev.id.clone(),
+            event_name: ev.name.clone(),
+            trigger_kind: ev.trigger_kind,
+            step,
+            trigger_value,
+            applied_actions: ev.actions.len(),
+        });
+    }
+    abs_dirty
+}
+
+fn eval_conditional_trigger(
+    inp: &SteppedNumericInput<'_>,
+    ev: &CompiledSimEvent,
+    step: u32,
+    prev_step_vals: &[f64],
+    state: Option<&EventRuntimeState>,
+) -> Option<f64> {
+    if step == 0 {
+        return None;
+    }
+    let st = state?;
+    if st.fire_count >= ev.max_fires {
+        return None;
+    }
+    if st
+        .last_fired_step
+        .is_some_and(|prev| step.saturating_sub(prev) < ev.cooldown_steps.max(1))
+    {
+        return None;
+    }
+    let w_node_idx = ev.watch_node_idx?;
+    let w_metric = ev.watch_metric.as_ref()?;
+    let op = ev.op?;
+    let threshold = ev.threshold?;
+
+    let prev_val = match inp.chan_lookup.get(&(w_node_idx, w_metric.clone())) {
+        Some(&chan_idx) => prev_step_vals.get(chan_idx).copied(),
+        None => inp
+            .indexed
+            .nodes
+            .get(w_node_idx)
+            .and_then(|n| n.metrics.get(w_metric))
+            .copied(),
+    }?;
+
+    eval_threshold_op(prev_val, op, threshold).then_some(prev_val)
 }
 
 struct StepSolveCtx<'a> {
@@ -173,6 +531,7 @@ struct StepSolveCtx<'a> {
     edge_scales: &'a [f64],
     lag_rel: &'a [f64],
     lag_abs: &'a [f64],
+    event_actions: &'a [Vec<NormalizedAction>],
 }
 
 struct StepOutcome {
@@ -193,10 +552,29 @@ fn is_fixed_at(system: &ChannelSystem, u: usize, step: u32) -> bool {
         .is_some_and(|v| v.fixed_actions.iter().any(|a| a.at_step <= step))
 }
 
-fn build_zero_lag_adj_at(system: &ChannelSystem, step: u32) -> Vec<Vec<usize>> {
+fn has_event_absolute(event_actions: &[Vec<NormalizedAction>], u: usize) -> bool {
+    event_actions
+        .get(u)
+        .is_some_and(|acts| acts.iter().any(|a| a.mode == InterventionMode::Absolute))
+}
+
+fn is_masked_at(
+    system: &ChannelSystem,
+    event_actions: &[Vec<NormalizedAction>],
+    u: usize,
+    step: u32,
+) -> bool {
+    is_fixed_at(system, u, step) || has_event_absolute(event_actions, u)
+}
+
+fn build_zero_lag_adj_at(
+    system: &ChannelSystem,
+    event_actions: &[Vec<NormalizedAction>],
+    step: u32,
+) -> Vec<Vec<usize>> {
     let mut adj = vec![Vec::new(); system.vertices.len()];
     for e in &system.edges {
-        if e.delay_steps != 0 || is_fixed_at(system, e.dst_chan, step) {
+        if e.delay_steps != 0 || is_masked_at(system, event_actions, e.dst_chan, step) {
             continue;
         }
         if let Some(list) = adj.get_mut(e.src_chan) {
@@ -208,6 +586,7 @@ fn build_zero_lag_adj_at(system: &ChannelSystem, step: u32) -> Vec<Vec<usize>> {
 
 fn compute_lagged_inputs(
     system: &ChannelSystem,
+    event_actions: &[Vec<NormalizedAction>],
     step: u32,
     edge_scales: &[f64],
     rel_hist: &[Vec<f64>],
@@ -218,7 +597,7 @@ fn compute_lagged_inputs(
     let mut lag_abs = vec![0.0_f64; n];
 
     for (u, in_list) in system.in_edges.iter().enumerate() {
-        if is_fixed_at(system, u, step) {
+        if is_masked_at(system, event_actions, u, step) {
             continue;
         }
         let mut r_sum = 0.0_f64;
@@ -251,6 +630,103 @@ fn compute_lagged_inputs(
     }
 
     (lag_rel, lag_abs)
+}
+
+fn eval_event_exogenous_delta(acts: &[NormalizedAction]) -> (f64, f64) {
+    let mut rel_mult = 1.0_f64;
+    let mut abs_sum = 0.0_f64;
+    for act in acts {
+        match act.mode {
+            InterventionMode::Ratio => {
+                rel_mult *= 1.0 + act.value;
+            }
+            InterventionMode::Add => {
+                abs_sum += act.value;
+            }
+            InterventionMode::Absolute => {}
+        }
+    }
+    (rel_mult - 1.0, abs_sum)
+}
+
+#[derive(Clone, Copy)]
+struct OrderedChannelAction {
+    at_step: u32,
+    source_rank: u8,
+    seq: usize,
+    mode: InterventionMode,
+    value: f64,
+}
+
+fn evaluate_masked_actions(
+    vert: &ChannelVertex,
+    ev_acts: &[NormalizedAction],
+    step: u32,
+) -> (f64, f64) {
+    let mut ordered = Vec::with_capacity(vert.fixed_actions.len() + ev_acts.len());
+    for (idx, act) in vert.fixed_actions.iter().enumerate() {
+        if act.at_step <= step {
+            ordered.push(OrderedChannelAction {
+                at_step: act.at_step,
+                source_rank: 0,
+                seq: idx,
+                mode: act.mode,
+                value: act.value,
+            });
+        }
+    }
+    for (idx, act) in ev_acts.iter().enumerate() {
+        if act.at_step <= step {
+            ordered.push(OrderedChannelAction {
+                at_step: act.at_step,
+                source_rank: 1,
+                seq: idx,
+                mode: act.mode,
+                value: act.value,
+            });
+        }
+    }
+    if ordered.is_empty() {
+        return (0.0, 0.0);
+    }
+    ordered.sort_by_key(|a| (a.at_step, a.source_rank, a.seq));
+
+    let mut after_val = vert.before_val.unwrap_or(0.0);
+    for act in ordered {
+        match act.mode {
+            InterventionMode::Ratio => after_val *= 1.0 + act.value,
+            InterventionMode::Add => after_val += act.value,
+            InterventionMode::Absolute => after_val = act.value,
+        }
+    }
+    let clamped = apply_clamp(after_val, &vert.clamp);
+    match vert.before_val {
+        Some(before) => {
+            let abs_d = clamped - before;
+            let rel_d = if before.abs() > 1e-12 {
+                abs_d / before
+            } else {
+                0.0
+            };
+            (rel_d, abs_d)
+        }
+        None => (0.0, clamped),
+    }
+}
+
+fn combine_with_vertex_clamp(vert: &ChannelVertex, r_sum: f64, a_sum: f64) -> (f64, f64) {
+    let (rx, ax) = combine_channel_deltas(vert.before_val, r_sum, a_sum);
+    let Some(before) = vert.before_val else {
+        return (rx, apply_clamp(ax, &vert.clamp));
+    };
+    let clamped = apply_clamp(before + ax, &vert.clamp);
+    let clamped_abs = clamped - before;
+    let clamped_rel = if before.abs() > 1e-12 {
+        clamped_abs / before
+    } else {
+        rx
+    };
+    (clamped_rel, clamped_abs)
 }
 
 fn solve_single_step(
@@ -300,8 +776,9 @@ fn solve_step_acyclic_vertex(
     let Some(vert) = system.vertices.get(u) else {
         return;
     };
-    if is_fixed_at(system, u, ctx.step) {
-        let (rx, ax) = evaluate_fixed_actions(vert, Some(ctx.step));
+    if is_masked_at(system, ctx.event_actions, u, ctx.step) {
+        let ev_acts = ctx.event_actions.get(u).map_or(&[][..], Vec::as_slice);
+        let (rx, ax) = evaluate_masked_actions(vert, ev_acts, ctx.step);
         set_pair(rel_t, abs_t, u, rx, ax);
         return;
     }
@@ -319,7 +796,14 @@ fn solve_step_acyclic_vertex(
         }
     }
 
-    let (rx, ax) = combine_channel_deltas(vert.before_val, r_sum, a_sum);
+    let (rx, ax) = if let Some(ev_acts) = ctx.event_actions.get(u)
+        && !ev_acts.is_empty()
+    {
+        let (ev_r, ev_a) = eval_event_exogenous_delta(ev_acts);
+        combine_with_vertex_clamp(vert, r_sum + ev_r, a_sum + ev_a)
+    } else {
+        combine_channel_deltas(vert.before_val, r_sum, a_sum)
+    };
     set_pair(rel_t, abs_t, u, rx, ax);
 }
 
@@ -382,8 +866,15 @@ fn prepare_step_cyclic(
     let mut int_edges: Vec<Vec<usize>> = vec![Vec::new(); m];
 
     for (local_i, &u) in comp.iter().enumerate() {
-        let lr = ctx.lag_rel.get(u).copied().unwrap_or(0.0);
-        let la = ctx.lag_abs.get(u).copied().unwrap_or(0.0);
+        let mut lr = ctx.lag_rel.get(u).copied().unwrap_or(0.0);
+        let mut la = ctx.lag_abs.get(u).copied().unwrap_or(0.0);
+        if let Some(ev_acts) = ctx.event_actions.get(u)
+            && !ev_acts.is_empty()
+        {
+            let (ev_r, ev_a) = eval_event_exogenous_delta(ev_acts);
+            lr += ev_r;
+            la += ev_a;
+        }
         set_pair(&mut ext_rel, &mut ext_abs, local_i, lr, la);
         if let Some(in_list) = system.in_edges.get(u) {
             for &ei in in_list {
@@ -440,30 +931,14 @@ fn jacobi_step_for_t(
     let mut max_diff = 0.0_f64;
 
     for (local_i, &u) in comp.iter().enumerate() {
-        let mut r_sum = prep.ext_rel.get(local_i).copied().unwrap_or(0.0);
-        let mut a_sum = prep.ext_abs.get(local_i).copied().unwrap_or(0.0);
-        if let Some(e_list) = prep.int_edges.get(local_i) {
-            for &ei in e_list {
-                if let Some(e) = system.edges.get(ei) {
-                    let scale = ctx.edge_scales.get(ei).copied().unwrap_or(1.0);
-                    accumulate_single_edge(
-                        e,
-                        scale,
-                        state.rel_t,
-                        state.abs_t,
-                        Some(&mut r_sum),
-                        Some(&mut a_sum),
-                    );
-                }
-            }
-        }
-
-        let before = system.vertices.get(u).and_then(|v| v.before_val);
-        let (target_r, target_a) = combine_channel_deltas(before, r_sum, a_sum);
-        let old_r = state.cur_rel.get(local_i).copied().unwrap_or(0.0);
-        let old_a = state.cur_abs.get(local_i).copied().unwrap_or(0.0);
-        let nr = (1.0 - alpha) * old_r + alpha * target_r;
-        let na = (1.0 - alpha) * old_a + alpha * target_a;
+        let (nr, na) = if is_masked_at(system, ctx.event_actions, u, ctx.step)
+            && let Some(vert) = system.vertices.get(u)
+        {
+            let ev_acts = ctx.event_actions.get(u).map_or(&[][..], Vec::as_slice);
+            evaluate_masked_actions(vert, ev_acts, ctx.step)
+        } else {
+            eval_jacobi_unmasked_vertex(system, ctx, prep, state, local_i, u, alpha)
+        };
 
         if !nr.is_finite() || !na.is_finite() {
             return Err(AppError::bad(
@@ -472,6 +947,8 @@ fn jacobi_step_for_t(
             ));
         }
 
+        let old_r = state.cur_rel.get(local_i).copied().unwrap_or(0.0);
+        let old_a = state.cur_abs.get(local_i).copied().unwrap_or(0.0);
         max_diff = max_diff.max((nr - old_r).abs().max((na - old_a).abs()));
         if let Some(slot) = next_rel.get_mut(local_i) {
             *slot = nr;
@@ -491,6 +968,42 @@ fn jacobi_step_for_t(
     Ok(max_diff)
 }
 
+fn eval_jacobi_unmasked_vertex(
+    system: &ChannelSystem,
+    ctx: &StepSolveCtx<'_>,
+    prep: &StepCyclicPrep,
+    state: &StepJacobiState<'_>,
+    local_i: usize,
+    u: usize,
+    alpha: f64,
+) -> (f64, f64) {
+    let mut r_sum = prep.ext_rel.get(local_i).copied().unwrap_or(0.0);
+    let mut a_sum = prep.ext_abs.get(local_i).copied().unwrap_or(0.0);
+    if let Some(e_list) = prep.int_edges.get(local_i) {
+        for &ei in e_list {
+            if let Some(e) = system.edges.get(ei) {
+                let scale = ctx.edge_scales.get(ei).copied().unwrap_or(1.0);
+                accumulate_single_edge(
+                    e,
+                    scale,
+                    state.rel_t,
+                    state.abs_t,
+                    Some(&mut r_sum),
+                    Some(&mut a_sum),
+                );
+            }
+        }
+    }
+    let before = system.vertices.get(u).and_then(|v| v.before_val);
+    let (target_r, target_a) = combine_channel_deltas(before, r_sum, a_sum);
+    let old_r = state.cur_rel.get(local_i).copied().unwrap_or(0.0);
+    let old_a = state.cur_abs.get(local_i).copied().unwrap_or(0.0);
+    (
+        (1.0 - alpha) * old_r + alpha * target_r,
+        (1.0 - alpha) * old_a + alpha * target_a,
+    )
+}
+
 fn compute_step_after_vals(system: &ChannelSystem, rel_t: &[f64], abs_t: &[f64]) -> Vec<f64> {
     let mut out = vec![0.0_f64; system.vertices.len()];
     for (u, vert) in system.vertices.iter().enumerate() {
@@ -508,6 +1021,7 @@ fn assemble_stepped_result(
     system: &ChannelSystem,
     numeric: &SteppedSolveOutput,
     params: &SimParams,
+    deadline_report: Option<DeadlineReport>,
 ) -> Result<SimResult, AppError> {
     let chan_paths = compute_system_top_paths(system);
     let mut warnings = Vec::new();
@@ -567,8 +1081,8 @@ fn assemble_stepped_result(
         reason: numeric.reason.clone(),
         iterations: params.horizon_steps,
         checkpoints,
-        fired_events: Vec::new(),
-        deadline_report: None,
+        fired_events: numeric.fired_events.clone(),
+        deadline_report,
     })
 }
 
@@ -596,7 +1110,7 @@ fn build_stepped_checkpoints(
                 && !vert
                     .fixed_actions
                     .iter()
-                    .any(|a| a.mode == crate::enums::InterventionMode::Absolute && a.at_step <= t);
+                    .any(|a| a.mode == InterventionMode::Absolute && a.at_step <= t);
             if is_active_missing {
                 continue;
             }

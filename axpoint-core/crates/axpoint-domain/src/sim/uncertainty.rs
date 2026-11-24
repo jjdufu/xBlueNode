@@ -1,4 +1,4 @@
-//! Monte-Carlo edge-weight uncertainty sampling with reproducible `ChaCha8Rng` and `rayon` (`09-STEP10` §10.6).
+//! Monte-Carlo edge-weight uncertainty sampling with reproducible `ChaCha8Rng` and `rayon` (`09-STEP10` §10.6 & `06-STEP28` §28.2).
 
 use std::collections::HashMap;
 
@@ -9,11 +9,19 @@ use uuid::Uuid;
 
 use crate::AppError;
 use crate::sim::action::normalize_actions_indexed;
+use crate::sim::deadline::evaluate_goal_constraints;
 use crate::sim::graph::IndexedSimGraph;
 use crate::sim::scc::tarjan_scc_topo;
-use crate::sim::steady::{build_channel_adj, build_channel_system, solve_steady_numeric};
-use crate::sim::stepped::solve_stepped_numeric;
-use crate::sim::{SimGraph, SimMode, SimParams, SimResult, UncertaintyConfig};
+use crate::sim::steady::{
+    build_channel_adj, build_channel_system_with_extra_seeds, solve_steady_numeric,
+};
+use crate::sim::stepped::{
+    SteppedNumericInput, build_chan_lookup, collect_event_seed_channels, compile_scheduled_events,
+    solve_stepped_numeric_with_events,
+};
+use crate::sim::{
+    SimEventSpec, SimGoalConstraint, SimGraph, SimMode, SimParams, SimResult, UncertaintyConfig,
+};
 use crate::topology::AxSimAction;
 
 /// Maximum Monte-Carlo sample count permitted per simulation (`§10.3.3`).
@@ -30,8 +38,7 @@ pub fn solve(
     actions: &[AxSimAction],
     params: &SimParams,
 ) -> Result<SimResult, AppError> {
-    let indexed = IndexedSimGraph::from_sim_graph(graph)?;
-    solve_indexed(&indexed, actions, params)
+    solve_with_events(graph, actions, params, &[], &[])
 }
 
 /// Runs deterministic solve plus optional Monte-Carlo `P10` / `P90` on a pre-compiled [`IndexedSimGraph`].
@@ -44,9 +51,58 @@ pub fn solve_indexed(
     actions: &[AxSimAction],
     params: &SimParams,
 ) -> Result<SimResult, AppError> {
-    let mut det_result = match params.mode {
-        SimMode::Steady => crate::sim::steady::solve_indexed(indexed, actions, params)?,
-        SimMode::Stepped => crate::sim::stepped::solve_indexed(indexed, actions, params)?,
+    solve_indexed_with_events(indexed, actions, params, &[], &[])
+}
+
+/// Runs deterministic solve with scheduled/conditional events and `deadline_step` goal constraints,
+/// plus optional Monte-Carlo `P10` / `P90` uncertainty quantification (`06-STEP28` §28.2).
+///
+/// # Errors
+/// Propagates any validation, geometry, or divergence error from the underlying solver.
+pub fn solve_with_events(
+    graph: &SimGraph,
+    actions: &[AxSimAction],
+    params: &SimParams,
+    scheduled_events: &[SimEventSpec],
+    goal_constraints: &[SimGoalConstraint],
+) -> Result<SimResult, AppError> {
+    let indexed = IndexedSimGraph::from_sim_graph(graph)?;
+    solve_indexed_with_events(
+        &indexed,
+        actions,
+        params,
+        scheduled_events,
+        goal_constraints,
+    )
+}
+
+/// Runs deterministic solve with events and goal constraints plus optional Monte-Carlo sampling on [`IndexedSimGraph`].
+///
+/// # Errors
+/// Propagates any validation, geometry, or divergence error from the underlying solver.
+pub fn solve_indexed_with_events(
+    indexed: &IndexedSimGraph,
+    actions: &[AxSimAction],
+    params: &SimParams,
+    scheduled_events: &[SimEventSpec],
+    goal_constraints: &[SimGoalConstraint],
+) -> Result<SimResult, AppError> {
+    let use_stepped = params.mode == SimMode::Stepped || !scheduled_events.is_empty();
+    let mut det_result = if use_stepped {
+        crate::sim::stepped::solve_indexed_with_events(
+            indexed,
+            actions,
+            params,
+            scheduled_events,
+            goal_constraints,
+        )?
+    } else {
+        let mut res = crate::sim::steady::solve_indexed(indexed, actions, params)?;
+        if !goal_constraints.is_empty() {
+            res.deadline_report =
+                evaluate_steady_goals(indexed, actions, params, goal_constraints)?;
+        }
+        res
     };
 
     let Some(uc) = &params.uncertainty else {
@@ -58,13 +114,52 @@ pub fn solve_indexed(
         return Ok(det_result);
     }
 
+    run_monte_carlo_band(
+        indexed,
+        actions,
+        params,
+        scheduled_events,
+        use_stepped,
+        uc,
+        &mut det_result,
+    )?;
+    Ok(det_result)
+}
+
+fn evaluate_steady_goals(
+    indexed: &IndexedSimGraph,
+    actions: &[AxSimAction],
+    params: &SimParams,
+    goal_constraints: &[SimGoalConstraint],
+) -> Result<Option<crate::sim::DeadlineReport>, AppError> {
     let normalized = normalize_actions_indexed(indexed, actions)?;
-    let system = build_channel_system(indexed, &normalized, params.max_hops);
-    let steady_adj = if params.mode == SimMode::Steady {
-        Some(build_channel_adj(&system, false))
-    } else {
-        None
-    };
+    let system = build_channel_system_with_extra_seeds(indexed, &normalized, &[], params.max_hops);
+    if system.vertices.is_empty() {
+        return evaluate_goal_constraints(indexed, &system, &[Vec::new()], 0, goal_constraints);
+    }
+    let adj = build_channel_adj(&system, false);
+    let scc = tarjan_scc_topo(system.vertices.len(), &adj);
+    let edge_scales = vec![1.0_f64; system.edges.len()];
+    let out = solve_steady_numeric(indexed, &system, &adj, &scc, params, &edge_scales, false)?;
+    evaluate_goal_constraints(indexed, &system, &[out.after_vals], 0, goal_constraints)
+}
+
+fn run_monte_carlo_band(
+    indexed: &IndexedSimGraph,
+    actions: &[AxSimAction],
+    params: &SimParams,
+    scheduled_events: &[SimEventSpec],
+    use_stepped: bool,
+    uc: &UncertaintyConfig,
+    det_result: &mut SimResult,
+) -> Result<(), AppError> {
+    let normalized = normalize_actions_indexed(indexed, actions)?;
+    let compiled_events = compile_scheduled_events(indexed, scheduled_events)?;
+    let extra_seeds = collect_event_seed_channels(indexed, &compiled_events);
+    let system =
+        build_channel_system_with_extra_seeds(indexed, &normalized, &extra_seeds, params.max_hops);
+    let chan_lookup = build_chan_lookup(&system);
+    let steady_adj = (!use_stepped).then(|| build_channel_adj(&system, false));
     let steady_scc = steady_adj
         .as_ref()
         .map(|adj| tarjan_scc_topo(system.vertices.len(), adj));
@@ -76,35 +171,29 @@ pub fn solve_indexed(
         .into_par_iter()
         .map(|seed| {
             let edge_scales = sample_edge_scales(seed, system.edges.len(), uc.coefficient_cv);
-            match params.mode {
-                SimMode::Steady => {
-                    let Some(adj) = steady_adj.as_ref() else {
-                        return Ok(Vec::new());
-                    };
-                    let Some(scc) = steady_scc.as_ref() else {
-                        return Ok(Vec::new());
-                    };
-                    let out = solve_steady_numeric(
-                        indexed,
-                        &system,
-                        adj,
-                        scc,
-                        params,
-                        &edge_scales,
-                        false,
-                    )?;
-                    Ok(out.after_vals)
-                }
-                SimMode::Stepped => {
-                    let out = solve_stepped_numeric(indexed, &system, params, &edge_scales, false)?;
-                    Ok(out.final_after_vals)
-                }
+            if use_stepped {
+                let out = solve_stepped_numeric_with_events(&SteppedNumericInput {
+                    indexed,
+                    system: &system,
+                    chan_lookup: &chan_lookup,
+                    params,
+                    edge_scales: &edge_scales,
+                    events: &compiled_events,
+                    record_series: false,
+                })?;
+                Ok(out.final_after_vals)
+            } else {
+                let (Some(adj), Some(scc)) = (steady_adj.as_ref(), steady_scc.as_ref()) else {
+                    return Ok(Vec::new());
+                };
+                let out =
+                    solve_steady_numeric(indexed, &system, adj, scc, params, &edge_scales, false)?;
+                Ok(out.after_vals)
             }
         })
         .collect::<Result<Vec<Vec<f64>>, AppError>>()?;
 
-    annotate_percentiles(indexed, &system, &draws, &mut det_result)?;
-    Ok(det_result)
+    annotate_percentiles(indexed, &system, &draws, det_result)
 }
 
 fn validate_uncertainty_config(uc: &UncertaintyConfig) -> Result<(), AppError> {
