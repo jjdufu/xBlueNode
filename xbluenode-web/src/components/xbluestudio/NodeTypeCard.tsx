@@ -4,15 +4,19 @@ import {
   BookOpen,
   Box,
   Check,
+  ChevronDown,
+  ChevronUp,
   Cpu,
   Database,
   Factory,
   GitBranch,
+  Layers,
   ShoppingCart,
   Trash2,
   Truck,
   Users,
   Warehouse,
+  Zap,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
@@ -38,6 +42,12 @@ export interface StudioNodeCardData extends Record<string, unknown> {
   selected: boolean;
   issueCount: number;
   hasError: boolean;
+  inPorts?: readonly string[];
+  outPorts?: readonly string[];
+  dependentSpecs?: readonly NodeTypeSpec[];
+  tierFolded?: boolean;
+  onToggleTierFold?: (masterName: string) => void;
+  onSelectFoldedSpec?: (specName: string) => void;
   consumption?: NodeConsumptionCounts | null;
   onConfirmNode?: (nodeName: string) => void;
   onDoubleClickNode?: (nodeName: string) => void;
@@ -166,28 +176,42 @@ function formatFieldTypeCompact(
   return baseLabel;
 }
 
-/** Custom `@xyflow/react` canvas card renderer for a `NodeTypeSpec`. */
+/** Custom `@xyflow/react` canvas card renderer for a `NodeTypeSpec` with multi-port handles and 3-tier folding. */
 export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
   const { isZh, tx, tEnum } = useI18n();
   const { can } = usePrincipal();
   const canEdit = can("STUDIO_EDIT");
+  const [propsExpanded, setPropsExpanded] = useState(false);
+
   const {
     spec,
     selected,
     issueCount,
     hasError,
+    inPorts = ["in-0"],
+    outPorts = ["out-0"],
+    dependentSpecs = [],
+    tierFolded = false,
+    onToggleTierFold,
+    onSelectFoldedSpec,
     consumption,
     onConfirmNode,
     onDoubleClickNode,
     onOpenAppPackaging,
   } = data;
+
   const counts = computeNodeBadgeCounts(spec);
   const isProposed = hasProposedElements(spec);
   const accentColor = spec.color || "#2563eb";
+  const actionCount = Array.isArray(spec.actions) ? spec.actions.length : 0;
   const totalDownstream =
     (consumption?.endpoint_count ?? 0) +
     (consumption?.agent_count ?? 0) +
     (consumption?.dashboard_count ?? 0);
+
+  const visibleProps = propsExpanded
+    ? spec.properties
+    : spec.properties.slice(0, 3);
 
   return (
     <div
@@ -199,7 +223,7 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
         }
       }}
       className={cn(
-        "w-60 rounded-md border bg-card text-card-foreground shadow-sm transition-shadow select-none overflow-hidden",
+        "relative w-60 rounded-md border bg-card text-card-foreground shadow-sm transition-shadow select-none overflow-visible",
         selected
           ? "border-xblue ring-2 ring-xblue/30 shadow-md"
           : "border-border hover:border-foreground/40",
@@ -207,12 +231,24 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
         hasError && "border-red-500"
       )}
     >
-      <div className="h-1.5 w-full" style={{ backgroundColor: accentColor }} />
-      <Handle
-        type="target"
-        position={Position.Left}
-        className="!h-2.5 !w-2.5 !border-2 !border-background !bg-foreground"
+      <div
+        className="h-1.5 w-full rounded-t-[5px]"
+        style={{ backgroundColor: accentColor }}
       />
+
+      {/* Multi-port target handles on WEST side */}
+      {inPorts.map((portId, idx) => (
+        <Handle
+          key={portId}
+          id={portId}
+          type="target"
+          position={Position.Left}
+          style={{
+            top: `${Math.round(((idx + 1) / (inPorts.length + 1)) * 100)}%`,
+          }}
+          className="!h-2.5 !w-2.5 !border-2 !border-background !bg-foreground"
+        />
+      ))}
 
       <div className="p-2.5 space-y-2">
         <div className="flex items-start justify-between gap-1.5">
@@ -259,7 +295,9 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
         {(spec.semantic_layer_tier ||
           spec.domain_group ||
           isProposed ||
-          spec.sync_to_knowledge) && (
+          spec.sync_to_knowledge ||
+          actionCount > 0 ||
+          dependentSpecs.length > 0) && (
           <div className="flex flex-wrap items-center justify-between gap-1">
             <div className="flex flex-wrap items-center gap-1 min-w-0">
               {spec.semantic_layer_tier && (
@@ -274,6 +312,12 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
               {spec.domain_group && (
                 <Badge variant="outline" className="text-[10px]">
                   {spec.domain_group}
+                </Badge>
+              )}
+              {actionCount > 0 && (
+                <Badge variant="outline" className="text-[10px] gap-0.5">
+                  <Zap className="h-2.5 w-2.5 text-xblue" />
+                  {tx(`${actionCount} 动作`, `${actionCount} Act`)}
                 </Badge>
               )}
               {isProposed && (
@@ -296,27 +340,46 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
               )}
             </div>
 
-            {isProposed && canEdit && onConfirmNode && (
-              <button
-                type="button"
-                data-testid={`confirm-node-btn-${spec.name}`}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onConfirmNode(spec.name);
-                }}
-                onDoubleClick={(e) => e.stopPropagation()}
-                className="nodrag nopan inline-flex items-center gap-0.5 rounded border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 cursor-pointer shrink-0"
-              >
-                <Check className="h-2.5 w-2.5" />
-                {tx("确认", "Confirm")}
-              </button>
-            )}
+            <div className="flex items-center gap-1 shrink-0">
+              {dependentSpecs.length > 0 && onToggleTierFold && (
+                <button
+                  type="button"
+                  data-testid={`fold-tier-btn-${spec.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onToggleTierFold(spec.name);
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                  className="nodrag nopan inline-flex items-center gap-0.5 rounded border border-xblue/40 bg-xblue-soft/60 px-1.5 py-0.5 text-[10px] font-medium text-xblue hover:bg-xblue-soft cursor-pointer"
+                >
+                  <Layers className="h-2.5 w-2.5" />
+                  {tierFolded
+                    ? tx("展开从属层", "Expand Tiers")
+                    : tx("收纳从属层", "Fold Tiers")}
+                </button>
+              )}
+              {isProposed && canEdit && onConfirmNode && (
+                <button
+                  type="button"
+                  data-testid={`confirm-node-btn-${spec.name}`}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onConfirmNode(spec.name);
+                  }}
+                  onDoubleClick={(e) => e.stopPropagation()}
+                  className="nodrag nopan inline-flex items-center gap-0.5 rounded border border-amber-500/50 bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-300 hover:bg-amber-500/25 cursor-pointer"
+                >
+                  <Check className="h-2.5 w-2.5" />
+                  {tx("确认", "Confirm")}
+                </button>
+              )}
+            </div>
           </div>
         )}
 
         {spec.properties.length > 0 && (
           <div className="border-t border-border pt-1.5 space-y-0.5">
-            {spec.properties.slice(0, 3).map((prop) => (
+            {visibleProps.map((prop) => (
               <div
                 key={prop.name}
                 className="flex items-center justify-between gap-1 text-[10px] font-mono-tech"
@@ -336,10 +399,58 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
               </div>
             ))}
             {spec.properties.length > 3 && (
-              <div className="text-[10px] text-muted-foreground">
-                +{spec.properties.length - 3} {tx("项字段", "fields")}
-              </div>
+              <button
+                type="button"
+                data-testid={`toggle-props-btn-${spec.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setPropsExpanded((v) => !v);
+                }}
+                onDoubleClick={(e) => e.stopPropagation()}
+                className="nodrag nopan inline-flex items-center gap-0.5 text-[10px] text-xblue hover:underline cursor-pointer pt-0.5"
+              >
+                {propsExpanded ? (
+                  <>
+                    <ChevronUp className="h-2.5 w-2.5" />
+                    {tx("收起字段", "Collapse")}
+                  </>
+                ) : (
+                  <>
+                    <ChevronDown className="h-2.5 w-2.5" />
+                    +{spec.properties.length - 3} {tx("项字段", "fields")}
+                  </>
+                )}
+              </button>
             )}
+          </div>
+        )}
+
+        {/* Folded 3-tier subordinate drawer slots (`EVENT_DYNAMIC` + `CUBE_ROLLUP`) */}
+        {tierFolded && dependentSpecs.length > 0 && (
+          <div
+            data-testid={`folded-tier-drawer-${spec.name}`}
+            className="border-t border-xblue/25 bg-muted/45 -mx-2.5 -mb-2.5 px-2.5 py-1.5 space-y-1 rounded-b-[5px]"
+          >
+            {dependentSpecs.map((dep) => (
+              <button
+                key={dep.name}
+                type="button"
+                data-testid={`folded-tier-slot-${dep.name}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectFoldedSpec?.(dep.name);
+                }}
+                onDoubleClick={(e) => e.stopPropagation()}
+                className="nodrag nopan w-full flex items-center justify-between gap-1.5 rounded border border-border bg-card px-2 py-1 text-[10px] hover:border-xblue cursor-pointer"
+              >
+                <span className="truncate font-medium text-foreground">
+                  {dep.display_name || dep.name}
+                </span>
+                <Badge variant="outline" className="text-[9px] px-1 py-0">
+                  {tEnum(dep.semantic_layer_tier ?? "EVENT_DYNAMIC")}
+                </Badge>
+              </button>
+            ))}
           </div>
         )}
 
@@ -364,11 +475,19 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
         )}
       </div>
 
-      <Handle
-        type="source"
-        position={Position.Right}
-        className="!h-2.5 !w-2.5 !border-2 !border-background !bg-xblue"
-      />
+      {/* Multi-port source handles on EAST side */}
+      {outPorts.map((portId, idx) => (
+        <Handle
+          key={portId}
+          id={portId}
+          type="source"
+          position={Position.Right}
+          style={{
+            top: `${Math.round(((idx + 1) / (outPorts.length + 1)) * 100)}%`,
+          }}
+          className="!h-2.5 !w-2.5 !border-2 !border-background !bg-xblue"
+        />
+      ))}
     </div>
   );
 }

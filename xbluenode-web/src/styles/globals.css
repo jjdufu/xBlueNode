@@ -137,3 +137,16 @@ input[type="number"] {
 .react-flow__minimap {
   background-color: var(--card) !important;
 }
+
+@keyframes axflow-dash-flow {
+  from {
+    stroke-dashoffset: 20;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.axflow-running-edge {
+  animation: axflow-dash-flow 0.75s linear infinite;
+}

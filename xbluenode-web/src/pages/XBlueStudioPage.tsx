@@ -66,6 +66,7 @@ import {
   Textarea,
 } from "@/components/ui/primitives";
 import { ResizableWorkspace } from "@/components/ui/ResizableWorkspace";
+import { useCanvasHistory } from "@/components/canvas/useCanvasHistory";
 import { XBlueGraphPage } from "@/pages/XBlueGraphPage";
 import { cn } from "@/lib/utils";
 import { AiDraftWizard } from "@/components/xbluestudio/AiDraftWizard";
@@ -119,6 +120,21 @@ export function XBlueStudioPage() {
   const [baseVersion, setBaseVersion] = useState<number>(1);
   const [workingDoc, setWorkingDoc] = useState<SchemaDoc>(EMPTY_DOC);
   const [isDirty, setIsDirty] = useState<boolean>(false);
+
+  const canvasHistory = useCanvasHistory<SchemaDoc>({
+    currentDoc: workingDoc,
+    enabled: studioMode === "model" && canEdit,
+    limit: 50,
+    onApplySnapshot: (snapshotDoc) => {
+      setWorkingDoc(snapshotDoc);
+      setServerPassCount(null);
+      setIsDirty(true);
+    },
+  });
+  const resetHistoryRef = useRef(canvasHistory.resetHistory);
+  resetHistoryRef.current = canvasHistory.resetHistory;
+  const recordDocRef = useRef(canvasHistory.recordDoc);
+  recordDocRef.current = canvasHistory.recordDoc;
 
   const [drafts, setDrafts] = useState<SchemaDraft[]>([]);
   const [activeDraft, setActiveDraft] = useState<SchemaDraft | null>(null);
@@ -287,6 +303,7 @@ export function XBlueStudioPage() {
         setDraftTitle(targetDraft.title);
         setBaseVersion(targetDraft.base_version);
         setWorkingDoc(targetDraft.schema_doc);
+        resetHistoryRef.current(targetDraft.schema_doc);
         setIssues(targetDraft.issues);
         setServerPassCount(targetDraft.pass_count ?? null);
         setIsDirty(false);
@@ -296,6 +313,7 @@ export function XBlueStudioPage() {
         setDraftTitle(`${slug} 模型演进草案`);
         setBaseVersion(pubSchema.version);
         setWorkingDoc(schemaDoc);
+        resetHistoryRef.current(schemaDoc);
         setIssues([]);
         setServerPassCount(null);
         setIsDirty(false);
@@ -383,7 +401,11 @@ export function XBlueStudioPage() {
   }, [workingDoc, activeSubgraph]);
 
   const mutateDoc = useCallback((updater: (prev: SchemaDoc) => SchemaDoc) => {
-    setWorkingDoc((prev) => updater(prev));
+    setWorkingDoc((prev) => {
+      const next = updater(prev);
+      recordDocRef.current(next);
+      return next;
+    });
     setServerPassCount(null);
     setIsDirty(true);
   }, []);
@@ -764,6 +786,7 @@ export function XBlueStudioPage() {
       setDraftTitle(draft.title);
       setBaseVersion(draft.base_version);
       setWorkingDoc(draft.schema_doc);
+      resetHistoryRef.current(draft.schema_doc);
       setIssues(draft.issues);
       setServerPassCount(draft.pass_count ?? null);
       setIsDirty(false);
@@ -872,6 +895,7 @@ export function XBlueStudioPage() {
     setDraftTitle(draft.title);
     setBaseVersion(draft.base_version);
     setWorkingDoc(draft.schema_doc);
+    resetHistoryRef.current(draft.schema_doc);
     setIssues(draft.issues);
     setServerPassCount(draft.pass_count ?? null);
     setIsDirty(false);
@@ -1042,6 +1066,7 @@ export function XBlueStudioPage() {
     setDraftTitle(restored.title);
     setBaseVersion(restored.base_version);
     setWorkingDoc(restored.schema_doc);
+    resetHistoryRef.current(restored.schema_doc);
     setIssues(restored.issues);
     setServerPassCount(restored.pass_count ?? null);
     setIsDirty(false);
@@ -1060,6 +1085,7 @@ export function XBlueStudioPage() {
     setDraftTitle(generated.title);
     setBaseVersion(generated.base_version);
     setWorkingDoc(generated.schema_doc);
+    resetHistoryRef.current(generated.schema_doc);
     setIssues(generated.issues);
     setServerPassCount(generated.pass_count ?? null);
     setIsDirty(false);
@@ -1579,6 +1605,8 @@ export function XBlueStudioPage() {
                   <StudioCanvas
                     nodeTypes={workingDoc.node_types}
                     edgeTypes={workingDoc.edge_types}
+                    workingDoc={workingDoc}
+                    datasetNames={datasets.map((d) => d.name)}
                     issues={issues}
                     consumptionByNodeType={consumptionByNodeType}
                     selectedNodeName={
@@ -1591,6 +1619,15 @@ export function XBlueStudioPage() {
                         ? effectiveEdgeIndex
                         : selectedEdgeIndex
                     }
+                    selectedMappingIndex={selectedMappingIndex}
+                    canUndo={canvasHistory.canUndo}
+                    canRedo={canvasHistory.canRedo}
+                    onUndo={() => {
+                      canvasHistory.undo();
+                    }}
+                    onRedo={() => {
+                      canvasHistory.redo();
+                    }}
                     onSelectNode={(name) => {
                       if (name) {
                         setSelectedNodeName(name);
@@ -1608,6 +1645,19 @@ export function XBlueStudioPage() {
                       if (edgeIdx !== null) {
                         setInspectorTab("edge");
                       }
+                    }}
+                    onSelectMapping={(mIdx) => {
+                      setSelectedMappingIndex(mIdx);
+                      setInspectorTab("mappings");
+                    }}
+                    onCreateMapping={(mapping) => {
+                      const nextIdx = workingDoc.mappings.length;
+                      mutateDoc((prev) => ({
+                        ...prev,
+                        mappings: [...prev.mappings, mapping],
+                      }));
+                      setSelectedMappingIndex(nextIdx);
+                      setInspectorTab("mappings");
                     }}
                     onUpdateNodePosition={(name, posX, posY) => {
                       mutateDoc((prev) => ({
