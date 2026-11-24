@@ -196,7 +196,7 @@ export function AlertDetail({
   onResolve,
   onConvertWorkItem,
 }: AlertDetailProps) {
-  const { tx, tEnum, fmtNum, fmtTime } = useI18n();
+  const { isZh, tx, tEnum, fmtNum, fmtTime } = useI18n();
   const [comment, setComment] = useState("");
 
   const detailQuery = useQuery({
@@ -393,13 +393,13 @@ export function AlertDetail({
           </span>
           <span
             data-testid="alert-detail-status"
-            title={tEnum(currentAlert.status)}
+            title={currentAlert.status}
             className={cn(
-              "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-mono-tech font-semibold shrink-0",
+              "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-sans font-semibold shrink-0",
               getStatusBadgeClass(currentAlert.status)
             )}
           >
-            {currentAlert.status}
+            {tEnum(currentAlert.status)}
           </span>
           <span className="truncate">{currentAlert.title}</span>
         </div>
@@ -463,7 +463,7 @@ export function AlertDetail({
                 {tx("恢复原因：", "Resolved: ")}
               </span>
               <span className="font-mono-tech text-[11px]">
-                {currentAlert.resolve_reason ?? "MANUAL"} (
+                {tEnum(currentAlert.resolve_reason ?? "MANUAL")} (
                 {fmtTime(currentAlert.resolved_at)})
               </span>
             </div>
@@ -474,7 +474,7 @@ export function AlertDetail({
           <div className="pt-1 border-t border-border/70 text-[11px] text-muted-foreground">
             {tx("判定条件：", "Condition: ")}{" "}
             <span className="font-mono-tech text-foreground">
-              {formatConditionSummary(rule.condition)}
+              {formatConditionSummary(rule.condition, isZh)}
             </span>
           </div>
         )}
@@ -556,16 +556,18 @@ export function AlertDetail({
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="neutral">
-                      {ch ? `${ch.name} (${ch.kind})` : del.channel_id.slice(0, 8)}
+                      {ch
+                        ? `${ch.name} (${tEnum(ch.kind)})`
+                        : del.channel_id.slice(0, 8)}
                     </Badge>
-                    <Badge variant="outline">{del.event}</Badge>
+                    <Badge variant="outline">{tEnum(del.event)}</Badge>
                     <span
                       className={cn(
-                        "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-mono-tech font-medium",
+                        "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-sans font-medium",
                         getDeliveryBadgeClass(del.status)
                       )}
                     >
-                      {del.status}
+                      {tEnum(del.status)}
                     </span>
                   </div>
                   <div className="text-[11px] font-mono-tech text-muted-foreground">

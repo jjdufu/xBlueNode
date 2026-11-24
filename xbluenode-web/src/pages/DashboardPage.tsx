@@ -65,9 +65,14 @@ export function DashboardPage() {
     : undefined;
 
   const detectedDims = stats?.embedding_dims?.length
-    ? stats.embedding_dims.map((d) => `${fmtNum(d, 0)}d`).join(", ")
+    ? stats.embedding_dims
+        .map((d) => tx(`${fmtNum(d, 0)} 维`, `${fmtNum(d, 0)}-dim`))
+        .join(", ")
     : health?.embedding_dim
-      ? `${fmtNum(health.embedding_dim, 0)}d`
+      ? tx(
+          `${fmtNum(health.embedding_dim, 0)} 维`,
+          `${fmtNum(health.embedding_dim, 0)}-dim`
+        )
       : tx("待探测", "Pending");
 
   const metrics = [
@@ -241,7 +246,7 @@ export function DashboardPage() {
             <h2 className="text-sm font-semibold">
               {tx("五路融合召回架构", "5-Way Recall Channels")}
             </h2>
-            <Badge variant="xblue">5 + RRF</Badge>
+            <Badge variant="xblue">{tx("五路融合重排", "5-Way RRF")}</Badge>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">

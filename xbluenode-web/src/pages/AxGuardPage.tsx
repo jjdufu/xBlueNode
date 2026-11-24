@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
 import {
   Code2,
   EyeOff,
@@ -37,7 +38,7 @@ import { PolicyEditor } from "@/components/axguard/PolicyEditor";
 import { RolesPanel } from "@/components/axguard/RolesPanel";
 import { RowPolicyEditor } from "@/components/axguard/RowPolicyEditor";
 import { UsersPanel } from "@/components/axguard/UsersPanel";
-import { Badge, Card, PageHeader, Tabs } from "@/components/ui/primitives";
+import { Card, PageHeader, Tabs } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { MODULE_META } from "@/modules/meta";
 
@@ -108,13 +109,33 @@ const AXGUARD_TABS: readonly AxGuardTabSpec[] = [
   },
 ];
 
-export function AxGuardPage() {
+function mapRequestedGuardTab(raw: string | null): AxGuardTabKey | null {
+  const val = (raw ?? "").trim().toLowerCase();
+  if (val === "access" || val === "users") return "users";
+  if (val === "roles") return "roles";
+  if (val === "depts") return "depts";
+  if (val === "policies") return "policies";
+  if (val === "row_policies") return "row_policies";
+  if (val === "column_policies" || val === "masking") return "column_policies";
+  if (val === "grants") return "grants";
+  if (val === "audit") return "audit";
+  return null;
+}
+
+export function AxGuardPage({
+  embedded = false,
+}: {
+  readonly embedded?: boolean;
+} = {}) {
   const { isZh, tx } = useI18n();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = mapRequestedGuardTab(searchParams.get("tab"));
   const [me, setMe] = useState<MeResponse | null>(() => getCachedMe());
   const [meResolved, setMeResolved] = useState<boolean>(
     () => getCachedMe() !== null
   );
   const [activeTab, setActiveTab] = useState<AxGuardTabKey>(() => {
+    if (requestedTab) return requestedTab;
     const cached = getCachedMe();
     if (cached && Array.isArray(cached.permissions)) {
       return resolveDefaultAxGuardTab(
@@ -124,6 +145,19 @@ export function AxGuardPage() {
     }
     return "users";
   });
+
+  useEffect(() => {
+    if (requestedTab) {
+      setActiveTab(requestedTab);
+    }
+  }, [requestedTab]);
+
+  const handleTabChange = (next: AxGuardTabKey) => {
+    setActiveTab(next);
+    const updated = new URLSearchParams(searchParams);
+    updated.set("tab", next);
+    setSearchParams(updated, { replace: true });
+  };
 
   const [users, setUsers] = useState<GuardUserRecord[]>([]);
   const [roles, setRoles] = useState<GuardRoleRecord[]>([]);
@@ -281,14 +315,16 @@ export function AxGuardPage() {
   if (!hasGuardAdmin && !hasAuditRead && !hasGrantsAccess) {
     return (
       <div className="space-y-4">
-        <PageHeader
-          title={
-            <span className="inline-flex items-center gap-2">
-              <ShieldCheck className="h-4 w-4 text-xblue shrink-0" />
-              {tx(MODULE_META.axguard.label, MODULE_META.axguard.enLabel)}
-            </span>
-          }
-        />
+        {!embedded && (
+          <PageHeader
+            title={
+              <span className="inline-flex items-center gap-2">
+                <ShieldCheck className="h-4 w-4 text-xblue shrink-0" />
+                {tx(MODULE_META.axguard.label, MODULE_META.axguard.enLabel)}
+              </span>
+            }
+          />
+        )}
         <Card className="p-8 text-center space-y-2">
           <Lock className="h-6 w-6 text-muted-foreground mx-auto" />
           <div className="text-sm font-semibold">
@@ -297,7 +333,7 @@ export function AxGuardPage() {
           <p className="text-xs text-muted-foreground">
             {tx(
               "需要安全治理或审计查阅权限。",
-              "Requires GUARD_ADMIN or AUDIT_READ permission."
+              "Requires security admin or audit read permission."
             )}
           </p>
         </Card>
@@ -307,20 +343,19 @@ export function AxGuardPage() {
 
   return (
     <div className="space-y-5" data-testid="axguard-page">
-      <PageHeader
-        title={
-          <span className="inline-flex items-center gap-2">
-            <ShieldCheck className="h-4 w-4 text-xblue shrink-0" />
-            {tx(MODULE_META.axguard.label, MODULE_META.axguard.enLabel)}
-          </span>
-        }
-        badges={
-          <Badge variant="xblue">Cedar ABAC · RLS · SHA-256 Chain</Badge>
-        }
-      />
+      {!embedded && (
+        <PageHeader
+          title={
+            <span className="inline-flex items-center gap-2">
+              <ShieldCheck className="h-4 w-4 text-xblue shrink-0" />
+              {tx(MODULE_META.axguard.label, MODULE_META.axguard.enLabel)}
+            </span>
+          }
+        />
+      )}
 
       {/* 8-Panel Tab Bar */}
-      <Tabs items={tabItems} value={activeTab} onChange={setActiveTab} />
+      <Tabs items={tabItems} value={activeTab} onChange={handleTabChange} />
 
       {/* Active Sub-Panel */}
       <section>

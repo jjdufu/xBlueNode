@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Cable, FileUp, Search } from "lucide-react";
+import { useSearchParams } from "react-router";
+import { BookOpen, Cable, FileUp, Search } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { MODULE_META } from "@/modules/meta";
 import {
@@ -23,13 +24,33 @@ import {
 import { LineageGraph } from "@/components/axhub/LineageGraph";
 import { SyncHistory } from "@/components/axhub/SyncHistory";
 import { UploadDropzone } from "@/components/axhub/UploadDropzone";
+import { AxIngestPage } from "@/pages/AxIngestPage";
 
-type HubWorkspaceView = "workspace" | "uploads" | "catalog";
+type HubWorkspaceView = "workspace" | "uploads" | "knowledge" | "catalog";
+
+function resolveHubViewFromTab(rawTab: string | null): HubWorkspaceView {
+  const normalized = (rawTab ?? "").trim().toLowerCase();
+  if (normalized === "knowledge" || normalized === "docs" || normalized === "ingest") {
+    return "knowledge";
+  }
+  if (normalized === "uploads" || normalized === "files") {
+    return "uploads";
+  }
+  if (normalized === "catalog") {
+    return "catalog";
+  }
+  return "workspace";
+}
 
 export function AxHubPage() {
   const { tx, fmtNum } = useI18n();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const datasetParam = searchParams.get("dataset");
 
-  const [activeView, setActiveView] = useState<HubWorkspaceView>("workspace");
+  const [activeView, setActiveView] = useState<HubWorkspaceView>(() =>
+    resolveHubViewFromTab(tabParam)
+  );
   const [connectorSpecs, setConnectorSpecs] = useState<ConnectorSpec[]>([]);
   const [connections, setConnections] = useState<Connection[]>([]);
   const [datasets, setDatasets] = useState<Dataset[]>([]);
@@ -43,6 +64,21 @@ export function AxHubPage() {
     tag?: string;
     source_kind?: SourceKind;
   }>({});
+
+  useEffect(() => {
+    setActiveView(resolveHubViewFromTab(tabParam));
+  }, [tabParam]);
+
+  const handleChangeView = (next: HubWorkspaceView) => {
+    setActiveView(next);
+    const updated = new URLSearchParams(searchParams);
+    if (next === "workspace") {
+      updated.delete("tab");
+    } else {
+      updated.set("tab", next);
+    }
+    setSearchParams(updated, { replace: true });
+  };
 
   const loadConnectionsAndSpecs = useCallback(async () => {
     const [specsRes, connsRes] = await Promise.all([
@@ -82,6 +118,18 @@ export function AxHubPage() {
     void loadDatasets();
   }, [loadConnectionsAndSpecs, loadDatasets]);
 
+  useEffect(() => {
+    if (!datasetParam || datasets.length === 0) return;
+    const found = datasets.find(
+      (item) => item.id === datasetParam || item.name === datasetParam
+    );
+    if (found) {
+      setSelectedDatasetId(found.id);
+      setDetailTab("preview");
+      setDetailDrawerOpen(true);
+    }
+  }, [datasetParam, datasets]);
+
   const connectionNamesMap = useMemo(() => {
     const map: Record<string, string> = {};
     for (const c of connections) {
@@ -109,7 +157,7 @@ export function AxHubPage() {
   };
 
   const handleJumpToDataset = (datasetId: string) => {
-    setActiveView("workspace");
+    handleChangeView("workspace");
     handleOpenDatasetDetail(datasetId, "preview");
   };
 
@@ -131,13 +179,13 @@ export function AxHubPage() {
           </div>
         }
         actions={
-          <SegmentedControl
+          <SegmentedControl<HubWorkspaceView>
             value={activeView}
-            onChange={(next) => setActiveView(next)}
+            onChange={handleChangeView}
             items={[
               {
                 key: "workspace",
-                label: tx("连接与数据集", "Workspace"),
+                label: tx("连接与数据集", "Datasets"),
                 icon: <Cable className="h-3.5 w-3.5" />,
                 testId: "axhub-nav-workspace",
               },
@@ -146,6 +194,12 @@ export function AxHubPage() {
                 label: tx("文件入湖", "File Upload"),
                 icon: <FileUp className="h-3.5 w-3.5" />,
                 testId: "axhub-nav-uploads",
+              },
+              {
+                key: "knowledge",
+                label: tx("知识文档", "Knowledge"),
+                icon: <BookOpen className="h-3.5 w-3.5" />,
+                testId: "axhub-nav-knowledge",
               },
               {
                 key: "catalog",
@@ -199,6 +253,8 @@ export function AxHubPage() {
           onSelectDatasetId={(dsId) => handleJumpToDataset(dsId)}
         />
       )}
+
+      {activeView === "knowledge" && <AxIngestPage embedded />}
 
       {activeView === "catalog" && (
         <CatalogSearch onSelectDataset={(dsId) => handleJumpToDataset(dsId)} />

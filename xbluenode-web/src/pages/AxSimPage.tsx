@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import {
   ExternalLink,
   GitBranch,
@@ -45,6 +45,7 @@ import {
   Tabs,
   type TabOption,
 } from "@/components/ui/primitives";
+import { ResizableWorkspace } from "@/components/ui/ResizableWorkspace";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 import { MODULE_META } from "@/modules/meta";
@@ -69,16 +70,54 @@ function normalizeSandbox(raw: AxSandboxRecord): AxSandboxRecord {
   };
 }
 
+function resolveSimTab(raw: string | null): WorkbenchTab {
+  const val = (raw ?? "").trim().toLowerCase();
+  if (val === "topology" || val === "overlay") return "topology";
+  if (val === "compare" || val === "ask") return "compare";
+  if (val === "decisions") return "decisions";
+  return "simulate";
+}
+
 export function AxSimPage() {
   const { tx, tEnum, fmtNum } = useI18n();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const sandboxParam = searchParams.get("sandbox");
   const { can } = usePrincipal();
   const canSimRun = can("SIM_RUN");
   const canSimApply = can("SIM_APPLY");
 
   const [sandboxes, setSandboxes] = useState<AxSandboxRecord[]>([]);
-  const [selectedSandboxId, setSelectedSandboxId] = useState<string>("");
+  const [selectedSandboxId, setSelectedSandboxId] = useState<string>(
+    () => sandboxParam ?? ""
+  );
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<WorkbenchTab>("simulate");
+  const [activeTab, setActiveTab] = useState<WorkbenchTab>(() =>
+    resolveSimTab(tabParam)
+  );
+
+  useEffect(() => {
+    if (tabParam) {
+      setActiveTab(resolveSimTab(tabParam));
+    }
+  }, [tabParam]);
+
+  useEffect(() => {
+    if (sandboxParam) {
+      setSelectedSandboxId(sandboxParam);
+    }
+  }, [sandboxParam]);
+
+  const handleChangeTab = (next: WorkbenchTab) => {
+    setActiveTab(next);
+    const updated = new URLSearchParams(searchParams);
+    if (next === "simulate") {
+      updated.delete("tab");
+    } else {
+      updated.set("tab", next);
+    }
+    setSearchParams(updated, { replace: true });
+  };
 
   // Merged sandbox graph state
   const [graphNodes, setGraphNodes] = useState<SandboxGraphNode[]>([]);
@@ -128,7 +167,7 @@ export function AxSimPage() {
         parts.push(tx(`深度 ${sb.scope.depth}`, `Depth ${sb.scope.depth}`));
       }
       if (sb.scope.direction) {
-        parts.push(sb.scope.direction);
+        parts.push(tEnum(sb.scope.direction));
       }
       if (
         Array.isArray(sb.scope.type_names) &&
@@ -140,7 +179,7 @@ export function AxSimPage() {
         ? parts.join(" · ")
         : tx("全量图谱", "Full Graph");
     },
-    [tx]
+    [tEnum, tx]
   );
 
   const handleDecisionTracked = useCallback(
@@ -593,7 +632,7 @@ export function AxSimPage() {
               data-testid="axsim-workitem-ops-link"
               className="inline-flex items-center gap-1 underline font-semibold"
             >
-              {tx("查看交付看板", "Open AxOps Board")}
+              {tx("查看交付看板", "Open Work Items")}
               <ExternalLink className="h-3 w-3" />
             </Link>
           </div>
@@ -608,7 +647,7 @@ export function AxSimPage() {
       )}
 
       {/* 4-Tab Workbench Navigation */}
-      <Tabs items={tabItems} value={activeTab} onChange={setActiveTab} />
+      <Tabs items={tabItems} value={activeTab} onChange={handleChangeTab} />
 
       {/* Tab Content */}
       {!selectedSandboxId ? (
@@ -637,176 +676,210 @@ export function AxSimPage() {
           )}
 
           {activeTab === "simulate" && (
-            <div className="space-y-4">
-              <ActionList
-                sandboxId={selectedSandboxId}
-                nodes={graphNodes}
-                onScenarioCreated={handleScenarioCreated}
-                onQuickSimulated={(res, acts) => {
-                  setQuickResult(res);
-                  setQuickActions(acts);
-                  setSelectedScenarioId("");
-                }}
-              />
+            <div className="min-h-[680px]">
+              <ResizableWorkspace
+                storageKey="axpoint.layout.sim"
+                panes={[
+                  {
+                    id: "controls",
+                    defaultSize: 38,
+                    minSize: 24,
+                    maxSize: 55,
+                    collapsible: true,
+                    handleTestId: "resizable-handle-left",
+                    className: "pr-1.5 overflow-y-auto",
+                    children: (
+                      <div className="space-y-4">
+                        <ActionList
+                          sandboxId={selectedSandboxId}
+                          nodes={graphNodes}
+                          onScenarioCreated={handleScenarioCreated}
+                          onQuickSimulated={(res, acts) => {
+                            setQuickResult(res);
+                            setQuickActions(acts);
+                            setSelectedScenarioId("");
+                          }}
+                        />
 
-              {/* Saved Scenarios Strip */}
-              <Card
-                className="p-3.5 space-y-2.5"
-                data-testid="scenarios-list-card"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs font-semibold">
-                    {tx(
-                      `已保存推演场景 (${scenarios.length})`,
-                      `Saved Scenarios (${scenarios.length})`
-                    )}
-                  </span>
-                  {activeScenario?.result && (
-                    <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono-tech text-muted-foreground">
-                      <span>
-                        {tx("受影响: ", "Affected: ")}
-                        {activeScenario.result.affected_count}
-                      </span>
-                      <span>
-                        {tx("迭代: ", "Iterations: ")}
-                        {activeScenario.result.iterations}
-                      </span>
-                      <Badge
-                        variant={
-                          activeScenario.result.converged ? "success" : "warning"
-                        }
-                      >
-                        {activeScenario.result.converged
-                          ? tx("已收敛", "Converged")
-                          : tx("未收敛", "Unconverged")}
-                      </Badge>
-                    </div>
-                  )}
-                </div>
-
-                {scenarios.length === 0 ? (
-                  <div className="text-xs text-muted-foreground">
-                    {tx("暂无已保存场景", "No saved scenarios")}
-                  </div>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {scenarios.map((sc) => {
-                      const active = sc.id === selectedScenarioId;
-                      const linkedDecision = trackedDecisions.find(
-                        (d) => d.scenarioId === sc.id
-                      );
-                      const refId = linkedDecision?.id ?? sc.id;
-                      const nodeIds = Array.from(
-                        new Set(
-                          (sc.actions ?? [])
-                            .map((a) => a.target_node_id)
-                            .filter((nid) => Boolean(nid))
-                        )
-                      );
-                      return (
-                        <div
-                          key={sc.id}
-                          data-testid={`scenario-chip-${sc.name}`}
-                          className={`inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs ${
-                            active
-                              ? "border-xblue bg-xblue-soft/50"
-                              : "border-border bg-background"
-                          }`}
+                        {/* Saved Scenarios Strip */}
+                        <Card
+                          className="p-3.5 space-y-2.5"
+                          data-testid="scenarios-list-card"
                         >
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedScenarioId(sc.id);
-                              setQuickResult(null);
-                            }}
-                            className="font-medium hover:text-xblue cursor-pointer"
-                          >
-                            {sc.name}
-                          </button>
-                          <Badge variant="outline">
-                            {tEnum(sc.params?.mode ?? "STEADY")} ·{" "}
-                            {tEnum(sc.status)}
-                          </Badge>
-                          {canSimApply && (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="h-6 px-2 text-[10px] border-xblue/40 text-xblue hover:bg-xblue-soft"
-                              data-testid={`scenario-to-workitem-btn-${sc.id}`}
-                              disabled={convertingRef === refId}
-                              onClick={() =>
-                                void handleConvertSimToWorkItem({
-                                  sourceRef: refId,
-                                  title: linkedDecision?.title ?? sc.name,
-                                  nodeIds,
-                                })
-                              }
-                            >
-                              <Kanban className="h-2.5 w-2.5" />
-                              {tx("转工作项", "To Work Item")}
-                            </Button>
-                          )}
-                          {sc.is_stale && canSimRun && (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="h-6 px-1.5 text-[10px] border-amber-500/60 text-amber-600 dark:text-amber-400"
-                              onClick={() => void handleRerunScenario(sc.id)}
-                              title={tx("重算场景", "Rerun scenario")}
-                            >
-                              <RefreshCw className="h-2.5 w-2.5" />
-                              {tx("重算", "Rerun")}
-                            </Button>
-                          )}
-                          {canSimRun && (
-                            <button
-                              type="button"
-                              onClick={() => void handleDeleteScenario(sc.id)}
-                              className="text-muted-foreground hover:text-red-600 cursor-pointer"
-                              aria-label={tx(
-                                `删除场景 ${sc.name}`,
-                                `Delete scenario ${sc.name}`
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <span className="text-xs font-semibold">
+                              {tx(
+                                `已保存推演场景 (${scenarios.length})`,
+                                `Saved Scenarios (${scenarios.length})`
                               )}
-                            >
-                              <Trash2 className="h-3 w-3" />
-                            </button>
+                            </span>
+                            {activeScenario?.result && (
+                              <div className="flex flex-wrap items-center gap-2 text-[11px] font-mono-tech text-muted-foreground tabular-nums">
+                                <span>
+                                  {tx("受影响: ", "Affected: ")}
+                                  {activeScenario.result.affected_count}
+                                </span>
+                                <span>
+                                  {tx("迭代: ", "Iterations: ")}
+                                  {activeScenario.result.iterations}
+                                </span>
+                                <Badge
+                                  variant={
+                                    activeScenario.result.converged
+                                      ? "success"
+                                      : "warning"
+                                  }
+                                >
+                                  {activeScenario.result.converged
+                                    ? tx("已收敛", "Converged")
+                                    : tx("未收敛", "Unconverged")}
+                                </Badge>
+                              </div>
+                            )}
+                          </div>
+
+                          {scenarios.length === 0 ? (
+                            <div className="text-xs text-muted-foreground">
+                              {tx("暂无已保存场景", "No saved scenarios")}
+                            </div>
+                          ) : (
+                            <div className="flex flex-wrap gap-2">
+                              {scenarios.map((sc) => {
+                                const active = sc.id === selectedScenarioId;
+                                const linkedDecision = trackedDecisions.find(
+                                  (d) => d.scenarioId === sc.id
+                                );
+                                const refId = linkedDecision?.id ?? sc.id;
+                                const nodeIds = Array.from(
+                                  new Set(
+                                    (sc.actions ?? [])
+                                      .map((a) => a.target_node_id)
+                                      .filter((nid) => Boolean(nid))
+                                  )
+                                );
+                                return (
+                                  <div
+                                    key={sc.id}
+                                    data-testid={`scenario-chip-${sc.name}`}
+                                    className={`inline-flex items-center gap-2 rounded-md border px-2.5 py-1.5 text-xs ${
+                                      active
+                                        ? "border-xblue bg-xblue-soft/50"
+                                        : "border-border bg-background"
+                                    }`}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setSelectedScenarioId(sc.id);
+                                        setQuickResult(null);
+                                      }}
+                                      className="font-medium hover:text-xblue cursor-pointer"
+                                    >
+                                      {sc.name}
+                                    </button>
+                                    <Badge variant="outline">
+                                      {tEnum(sc.params?.mode ?? "STEADY")} ·{" "}
+                                      {tEnum(sc.status)}
+                                    </Badge>
+                                    {canSimApply && (
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-6 px-2 text-[10px] border-xblue/40 text-xblue hover:bg-xblue-soft"
+                                        data-testid={`scenario-to-workitem-btn-${sc.id}`}
+                                        disabled={convertingRef === refId}
+                                        onClick={() =>
+                                          void handleConvertSimToWorkItem({
+                                            sourceRef: refId,
+                                            title:
+                                              linkedDecision?.title ?? sc.name,
+                                            nodeIds,
+                                          })
+                                        }
+                                      >
+                                        <Kanban className="h-2.5 w-2.5" />
+                                        {tx("转工作项", "To Work Item")}
+                                      </Button>
+                                    )}
+                                    {sc.is_stale && canSimRun && (
+                                      <Button
+                                        type="button"
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-6 px-1.5 text-[10px] border-amber-500/60 text-amber-600 dark:text-amber-400"
+                                        onClick={() =>
+                                          void handleRerunScenario(sc.id)
+                                        }
+                                        title={tx("重算场景", "Rerun scenario")}
+                                      >
+                                        <RefreshCw className="h-2.5 w-2.5" />
+                                        {tx("重算", "Rerun")}
+                                      </Button>
+                                    )}
+                                    {canSimRun && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          void handleDeleteScenario(sc.id)
+                                        }
+                                        className="text-muted-foreground hover:text-red-600 cursor-pointer"
+                                        aria-label={tx(
+                                          `删除场景 ${sc.name}`,
+                                          `Delete scenario ${sc.name}`
+                                        )}
+                                      >
+                                        <Trash2 className="h-3 w-3" />
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
                           )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </Card>
+                        </Card>
+                      </div>
+                    ),
+                  },
+                  {
+                    id: "canvas",
+                    defaultSize: 62,
+                    minSize: 38,
+                    className: "pl-1.5 overflow-y-auto",
+                    children: (
+                      <div className="space-y-4">
+                        <ReplayTimeline
+                          scenario={activeScenario}
+                          nodes={graphNodes}
+                          onCheckpointChange={setActiveCheckpoint}
+                        />
 
-              <ReplayTimeline
-                scenario={activeScenario}
-                nodes={graphNodes}
-                onCheckpointChange={setActiveCheckpoint}
-              />
+                        <ImpactGraph
+                          nodes={graphNodes}
+                          links={graphLinks}
+                          impacts={effectiveImpacts}
+                          actions={effectiveActions}
+                          highlightedPath={highlightedPath}
+                          checkpointChanges={activeCheckpoint?.changes ?? null}
+                          activeStepLabel={activeCheckpoint?.label ?? null}
+                          selectedNodeId={selectedNodeId}
+                          onSelectNode={setSelectedNodeId}
+                          onClearPath={() => setHighlightedPath([])}
+                        />
 
-              <ImpactGraph
-                nodes={graphNodes}
-                links={graphLinks}
-                impacts={effectiveImpacts}
-                actions={effectiveActions}
-                highlightedPath={highlightedPath}
-                checkpointChanges={activeCheckpoint?.changes ?? null}
-                activeStepLabel={activeCheckpoint?.label ?? null}
-                selectedNodeId={selectedNodeId}
-                onSelectNode={setSelectedNodeId}
-                onClearPath={() => setHighlightedPath([])}
-              />
-
-              <ImpactTable
-                scenario={activeScenario}
-                quickResult={effectiveQuickResult}
-                nodes={graphNodes}
-                highlightedPath={highlightedPath}
-                onHighlightPath={(path) => setHighlightedPath(path)}
-                onSelectNode={(id) => setSelectedNodeId(id)}
-                onImpactsLoaded={setLoadedImpacts}
+                        <ImpactTable
+                          scenario={activeScenario}
+                          quickResult={effectiveQuickResult}
+                          nodes={graphNodes}
+                          highlightedPath={highlightedPath}
+                          onHighlightPath={(path) => setHighlightedPath(path)}
+                          onSelectNode={(id) => setSelectedNodeId(id)}
+                          onImpactsLoaded={setLoadedImpacts}
+                        />
+                      </div>
+                    ),
+                  },
+                ]}
               />
             </div>
           )}

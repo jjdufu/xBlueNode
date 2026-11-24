@@ -132,7 +132,7 @@ export function RuleEditor({
   onDryRunSaved,
   onDryRunAdhoc,
 }: RuleEditorProps) {
-  const { tx, tEnum, fmtNum } = useI18n();
+  const { isZh, tx, tEnum, fmtNum } = useI18n();
   const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -475,7 +475,7 @@ export function RuleEditor({
                     <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
                       <Badge variant="neutral">{tEnum(rule.scope_kind)}</Badge>
                       <span className="font-mono-tech text-muted-foreground">
-                        {formatConditionSummary(rule.condition)}
+                        {formatConditionSummary(rule.condition, isZh)}
                       </span>
                     </div>
 

@@ -859,7 +859,7 @@ export function ImpactGraph({
                   variant="outline"
                   className="border-dashed border-xblue text-xblue"
                 >
-                  OVERLAY
+                  {tx("覆盖层", "Overlay")}
                 </Badge>
               )}
             </div>
@@ -894,7 +894,9 @@ export function ImpactGraph({
                     >
                       <div className="flex items-center justify-between font-mono-tech">
                         <span className="font-semibold">{imp.metric}</span>
-                        <span>{imp.hop_distance} hop</span>
+                        <span>
+                          {tx(`${imp.hop_distance} 跳`, `${imp.hop_distance} hop`)}
+                        </span>
                       </div>
                       <div className="flex items-center justify-between font-mono-tech text-muted-foreground">
                         <span>

@@ -143,8 +143,8 @@ export function DashboardGrid({
             <span className="font-medium text-xblue">
               {formatSemanticZoneLabel(zone, isZh)}
             </span>
-            <span className="font-mono-tech text-[10px] text-muted-foreground">
-              {zone} · {coords}
+            <span className="font-mono-tech text-[10px] text-muted-foreground tabular-nums">
+              {coords}
             </span>
           </div>
         ))}

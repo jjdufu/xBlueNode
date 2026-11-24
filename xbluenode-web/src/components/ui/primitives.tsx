@@ -23,7 +23,7 @@ export function Card({
   return (
     <div
       className={cn(
-        "rounded-md border border-border bg-card text-card-foreground",
+        "rounded-lg border border-border bg-card text-card-foreground",
         className
       )}
       {...props}
@@ -103,7 +103,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium font-mono-tech whitespace-nowrap shrink-0",
+        "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-sans font-medium whitespace-nowrap shrink-0",
         variant === "neutral" && "bg-muted/80 text-muted-foreground",
         variant === "xblue" && "bg-xblue-soft text-xblue border border-xblue/25",
         variant === "outline" && "border border-border/80 text-muted-foreground",
@@ -1144,7 +1144,7 @@ export function Modal({
     >
       <Card
         className={cn(
-          "w-full max-h-[88vh] flex flex-col overflow-hidden shadow-xl",
+          "w-full max-h-[88vh] rounded-xl flex flex-col overflow-hidden shadow-xl",
           maxWidthClass
         )}
       >

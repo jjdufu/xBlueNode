@@ -144,7 +144,11 @@ function cleanCitationSnippet(raw: string): string {
   return lines.join(" ").replace(/\s{2,}/g, " ").trim();
 }
 
-export function AxQueryPage() {
+export function AxQueryPage({
+  embedded = false,
+}: {
+  readonly embedded?: boolean;
+} = {}) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const initialQueryParam = searchParams.get("q")?.trim() ?? "";
@@ -637,21 +641,19 @@ export function AxQueryPage() {
       className="flex flex-1 min-h-0 flex-col gap-3 overflow-hidden"
       data-testid="axquery-page"
     >
-      <PageHeader
-        className="shrink-0 pb-2.5"
-        title={tx(MODULE_META.axquery.label, MODULE_META.axquery.enLabel)}
-        badges={
-          sessionId ? (
-            <Badge
-              variant="outline"
-              data-testid="axquery-session-badge"
-              title={sessionId}
-            >
-              {tx("会话", "Session")} {sessionId.slice(0, 8)}
-            </Badge>
-          ) : undefined
-        }
-        actions={
+      {embedded ? (
+        <div className="shrink-0 flex items-center justify-between gap-2">
+          <div>
+            {sessionId && (
+              <Badge
+                variant="outline"
+                data-testid="axquery-session-badge"
+                title={sessionId}
+              >
+                {tx("会话", "Session")} {sessionId.slice(0, 8)}
+              </Badge>
+            )}
+          </div>
           <div className="flex items-center gap-1.5">
             <Button
               type="button"
@@ -689,8 +691,63 @@ export function AxQueryPage() {
               </Button>
             )}
           </div>
-        }
-      />
+        </div>
+      ) : (
+        <PageHeader
+          className="shrink-0 pb-2.5"
+          title={tx(MODULE_META.axquery.label, MODULE_META.axquery.enLabel)}
+          badges={
+            sessionId ? (
+              <Badge
+                variant="outline"
+                data-testid="axquery-session-badge"
+                title={sessionId}
+              >
+                {tx("会话", "Session")} {sessionId.slice(0, 8)}
+              </Badge>
+            ) : undefined
+          }
+          actions={
+            <div className="flex items-center gap-1.5">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => setHistorySidebarOpen((v) => !v)}
+                className={
+                  historySidebarOpen ? "bg-xblue-soft text-xblue" : undefined
+                }
+                data-testid="axquery-history-toggle-btn"
+              >
+                {historySidebarOpen ? (
+                  <PanelLeftClose className="h-3.5 w-3.5" />
+                ) : (
+                  <History className="h-3.5 w-3.5 text-xblue" />
+                )}
+                <span>{tx("历史会话", "Sessions")}</span>
+                {sessions.length > 0 && (
+                  <span className="font-mono-tech text-[11px] tabular-nums opacity-75">
+                    {sessions.length}
+                  </span>
+                )}
+              </Button>
+
+              {turns.length > 0 && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleResetSession}
+                  data-testid="axquery-new-session-btn"
+                >
+                  <MessageSquarePlus className="h-3.5 w-3.5 text-xblue" />
+                  {tx("新对话", "New Chat")}
+                </Button>
+              )}
+            </div>
+          }
+        />
+      )}
 
       {/* Main Conversational Body: Optional Collapsible Session Sidebar + Chat Canvas */}
       <div className="flex flex-1 min-h-0 gap-3 overflow-hidden">

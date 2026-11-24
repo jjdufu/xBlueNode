@@ -425,8 +425,11 @@ export function ColumnPolicyEditor({
                         <div className="font-mono-tech font-semibold">
                           {col.name}
                         </div>
-                        <div className="text-[11px] font-mono-tech text-muted-foreground">
-                          {col.dataType}
+                        <div
+                          className="text-[11px] text-muted-foreground"
+                          title={col.dataType}
+                        >
+                          {tEnum(col.dataType)}
                         </div>
                       </td>
 

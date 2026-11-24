@@ -96,6 +96,23 @@ export function translateEnum(
   return code;
 }
 
+export function enumLabel(
+  domainOrCode: string,
+  codeOrLoc?: string | null,
+  maybeLoc?: Locale
+): string {
+  if (maybeLoc !== undefined) {
+    return translateEnum(codeOrLoc, maybeLoc);
+  }
+  if (codeOrLoc === "zh-CN" || codeOrLoc === "en-US") {
+    return translateEnum(domainOrCode, codeOrLoc);
+  }
+  if (codeOrLoc !== undefined) {
+    return translateEnum(codeOrLoc, currentLocale);
+  }
+  return translateEnum(domainOrCode, currentLocale);
+}
+
 export function formatNumber(
   val: number | null | undefined,
   maxDecimals = 2,

@@ -117,8 +117,12 @@ export function WidgetFrame({
             {widget.title || getWidgetKindLabel(widget.widget_kind, isZh)}
           </h4>
           {isEditing && (
-            <Badge variant="outline" className="text-[10px]">
-              {widget.widget_kind}
+            <Badge
+              variant="outline"
+              className="text-[10px]"
+              title={widget.widget_kind}
+            >
+              {getWidgetKindLabel(widget.widget_kind, isZh)}
             </Badge>
           )}
         </div>

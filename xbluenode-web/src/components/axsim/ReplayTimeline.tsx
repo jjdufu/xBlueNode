@@ -154,6 +154,10 @@ export function ReplayTimeline({
 
   const modeCode = scenario.params?.mode ?? "STEADY";
   const isSingleOrEmpty = checkpoints.length <= 1;
+  const formatStepLabel = (raw: string) =>
+    raw.trim().toLowerCase() === "steady"
+      ? tx("稳态", "Steady")
+      : raw;
 
   // Compact steady-state summary bar when STEADY or single checkpoint (t=0)
   if (!loading && isSingleOrEmpty) {
@@ -169,7 +173,7 @@ export function ReplayTimeline({
           <Badge variant="outline">{tEnum(modeCode)}</Badge>
           {activeCheckpoint && (
             <Badge variant="xblue" data-testid="replay-current-step-badge">
-              t = {activeCheckpoint.seq} · {activeCheckpoint.label}
+              t = {activeCheckpoint.seq} · {formatStepLabel(activeCheckpoint.label)}
             </Badge>
           )}
           {scenario.result && (
@@ -201,7 +205,7 @@ export function ReplayTimeline({
           <Badge variant="outline">{tEnum(modeCode)}</Badge>
           {activeCheckpoint && (
             <Badge variant="xblue" data-testid="replay-current-step-badge">
-              t = {activeCheckpoint.seq} · {activeCheckpoint.label}
+              t = {activeCheckpoint.seq} · {formatStepLabel(activeCheckpoint.label)}
             </Badge>
           )}
         </div>

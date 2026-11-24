@@ -551,7 +551,10 @@ export function SandboxWizard({
             </span>
             {activeSandbox.schema_version != null && (
               <Badge variant="outline">
-                Schema v{activeSandbox.schema_version}
+                {tx(
+                  `模型 v${activeSandbox.schema_version}`,
+                  `Schema v${activeSandbox.schema_version}`
+                )}
               </Badge>
             )}
           </div>

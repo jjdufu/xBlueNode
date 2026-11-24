@@ -165,13 +165,13 @@ export const MASK_RULE_OPTIONS: ReadonlyArray<{
 
 export const PII_CATEGORY_LABELS: Record<PiiCategory, string> = {
   NONE: "无敏感特征",
-  PHONE: "手机号 (PHONE)",
-  ID_CARD: "身份证 (ID_CARD)",
-  EMAIL: "电子邮箱 (EMAIL)",
-  BANK_CARD: "银行卡 (BANK_CARD)",
-  NAME: "个人姓名 (NAME)",
-  ADDRESS: "详细地址 (ADDRESS)",
-  SECRET: "密钥凭据 (SECRET)",
+  PHONE: "手机号码",
+  ID_CARD: "身份证号",
+  EMAIL: "电子邮箱",
+  BANK_CARD: "银行卡号",
+  NAME: "个人姓名",
+  ADDRESS: "详细地址",
+  SECRET: "密钥凭据",
 };
 
 export const GRANT_RESOURCE_KINDS: ReadonlyArray<{

@@ -556,7 +556,7 @@ export function SharePage() {
         <div className="flex flex-wrap items-center gap-2 min-w-0">
           <div className="flex items-center gap-1.5 text-sm font-semibold tracking-tight select-none">
             <span className="inline-block h-2 w-2 rounded-full bg-xblue" />
-            <span>{tx("xBlueView 安全分享", "xBlueView Share")}</span>
+            <span>{tx("安全分享", "Secure Share")}</span>
           </div>
 
           <Badge variant="xblue" className="gap-1">
