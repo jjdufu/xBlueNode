@@ -359,7 +359,12 @@ impl AgentCapabilityPort for ServerAgentCapability {
             let mut out = Vec::new();
             for nt in published.doc.node_types {
                 for action in nt.actions {
-                    if action.maturity == axpoint_domain::enums::DesignMaturity::Confirmed {
+                    if action.maturity == axpoint_domain::enums::DesignMaturity::Confirmed
+                        && axpoint_domain::studio::resolve_action_permission(
+                            &action.required_permission,
+                        )
+                        .is_ok()
+                    {
                         out.push(axpoint_domain::studio::PublishedObjectActionDescriptor {
                             type_name: nt.name.clone(),
                             type_display_name: nt.display_name.clone(),
@@ -381,24 +386,129 @@ impl AgentCapabilityPort for ServerAgentCapability {
         req: axpoint_domain::studio::InvokeObjectActionRequest,
     ) -> BoxFuture<'a, axpoint_domain::studio::InvokeObjectActionResponse> {
         Box::pin(async move {
-            if !principal.has_permission(Permission::FlowRun) {
-                return Err(AppError::Forbidden("PERMISSION_DENIED"));
-            }
             let state = self.require_state()?;
-            let actor = (!principal.user_id.is_nil()).then_some(principal.user_id);
-            state
-                .store
-                .invoke_object_action(
-                    &principal.tenant_id,
-                    actor,
-                    type_name,
-                    node_key,
-                    action_name,
-                    req,
-                )
+            execute_governed_object_action(state, principal, type_name, node_key, action_name, req)
                 .await
         })
     }
+}
+
+async fn execute_governed_object_action(
+    state: &AppState,
+    principal: &AnalyticsPrincipal,
+    type_name: &str,
+    node_key: &str,
+    action_name: &str,
+    req: axpoint_domain::studio::InvokeObjectActionRequest,
+) -> Result<axpoint_domain::studio::InvokeObjectActionResponse, AppError> {
+    let (nt, clean_action, req_perm) =
+        resolve_published_action_spec(state, principal, type_name, action_name).await?;
+    let policy =
+        authorize_and_verify_action_target(state, principal, &nt.name, node_key, req_perm).await?;
+
+    let actor = (!principal.user_id.is_nil()).then_some(principal.user_id);
+    let mut resp = state
+        .store
+        .invoke_object_action(
+            &principal.tenant_id,
+            actor,
+            &nt.name,
+            node_key.trim(),
+            &clean_action,
+            req,
+        )
+        .await?;
+    if let Some(ref mut node) = resp.node {
+        let tenant_key = state.mask_keys.tenant_key(&principal.tenant_id);
+        node.properties = mask_node_attributes_with_policy(
+            node,
+            Some(&nt),
+            Some(&policy),
+            principal.has_permission(Permission::PiiRawRead),
+            &tenant_key,
+        );
+    }
+    Ok(resp)
+}
+
+async fn resolve_published_action_spec(
+    state: &AppState,
+    principal: &AnalyticsPrincipal,
+    type_name: &str,
+    action_name: &str,
+) -> Result<(NodeTypeSpec, String, Permission), AppError> {
+    if !principal.has_permission(Permission::FlowRun) {
+        return Err(AppError::Forbidden("PERMISSION_DENIED"));
+    }
+    let published = state
+        .store
+        .get_published_schema(&principal.tenant_id, "main")
+        .await?;
+    let clean_type = type_name.trim();
+    let clean_action = String::from(action_name.trim());
+    let nt = published
+        .doc
+        .node_types
+        .into_iter()
+        .find(|n| n.name == clean_type)
+        .ok_or(AppError::NotFound("TYPE_NOT_FOUND"))?;
+    let action_spec = nt
+        .actions
+        .iter()
+        .find(|a| {
+            a.name == clean_action && a.maturity == axpoint_domain::enums::DesignMaturity::Confirmed
+        })
+        .ok_or(AppError::NotFound("ACTION_NOT_FOUND"))?;
+    let req_perm =
+        axpoint_domain::studio::resolve_action_permission(&action_spec.required_permission)
+            .map_err(|_| AppError::Forbidden("PERMISSION_DENIED"))?;
+    if !principal.has_permission(req_perm) {
+        return Err(AppError::Forbidden("PERMISSION_DENIED"));
+    }
+    Ok((nt, clean_action, req_perm))
+}
+
+async fn authorize_and_verify_action_target(
+    state: &AppState,
+    principal: &AnalyticsPrincipal,
+    type_name: &str,
+    node_key: &str,
+    req_perm: Permission,
+) -> Result<axpoint_domain::guard::PolicyContext, AppError> {
+    let auth_principal = resolve_auth_principal(state, principal).await?;
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &auth_principal,
+        req_perm,
+        axpoint_domain::guard::GrantResourceKind::NodeType,
+        type_name,
+        "127.0.0.1",
+    )
+    .await?;
+    let policy = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &auth_principal,
+        false,
+        "127.0.0.1",
+    )
+    .await?;
+    let target_node = state
+        .store
+        .get_domain_object_by_key(&principal.tenant_id, type_name, node_key.trim())
+        .await?
+        .ok_or(AppError::NotFound("NODE_NOT_FOUND"))?;
+    if !policy.bypass_row_policies {
+        let visible = state
+            .store
+            .filter_visible_node_ids(&principal.tenant_id, &[target_node.id], &policy.node_types)
+            .await?;
+        if !visible.contains(&target_node.id) {
+            return Err(AppError::Forbidden("PERMISSION_DENIED"));
+        }
+    }
+    Ok(policy)
 }
 
 async fn resolve_ask_dataset_context(

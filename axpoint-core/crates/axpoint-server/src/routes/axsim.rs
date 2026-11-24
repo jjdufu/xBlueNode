@@ -1,19 +1,21 @@
 //! `AxSim` sandbox cloning, `CoW` overlay editing, causal simulation, Ask, compare, and decision routes (`/api/axsim/*`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use axpoint_db::PgStore;
 use axpoint_domain::AppError;
 use axpoint_domain::agent::{SimRunToolInput, SimRunToolOutput};
 use axpoint_domain::axhub::PaginatedList;
 use axpoint_domain::enums::{
-    AuditAction, Environment, InterventionMode, OutboxTopic, Permission, TriggerType,
+    AuditAction, Environment, InterventionMode, OutboxTopic, Permission, TokenKind, TriggerType,
 };
 use axpoint_domain::flow::{ApprovalSourceKind, ApprovalStatus, StartRunParams};
 use axpoint_domain::graph::NodeSearchQuery;
+use axpoint_domain::guard::PolicyContext;
 use axpoint_domain::platform::{AuditRecord, BoxFuture, OutboxEvent, OutboxSubscriber};
 use axpoint_domain::ports::{
-    FlowRepository, GraphStorePort, SimExecutionPort, SimRepository, SimVisibilityPort as _,
+    CredentialStore as _, FlowRepository, GraphStorePort, SimExecutionPort, SimRepository,
+    SimVisibilityPort as _,
 };
 use axpoint_domain::sim::{
     CheckpointsResponse, CompareKpiCell, CompareKpiRow, CompareNodeCell, CompareNodeRow,
@@ -22,10 +24,11 @@ use axpoint_domain::sim::{
     DecisionStatus, ImpactListQuery, ImpactRow, PatchOverlayLinkRequest, PatchOverlayNodeRequest,
     RefreshBaseResponse, SandboxGraphLink, SandboxGraphNode, SandboxGraphResponse, SandboxScope,
     ScenarioRecord, ScenarioStatus, ScopePreflightReport, ScopePreflightRequest, SimAskIntent,
-    SimAskRequest, SimAskResponse, SimGraph, SimParams, evaluate_scope_preflight,
+    SimAskRequest, SimAskResponse, SimGraph, SimMode, SimParams, evaluate_scope_preflight,
 };
 use axpoint_domain::topology::{
-    AxSandboxRecord, AxSimAction, AxSimResult, CreateAxSandboxRequest, SimulateAxSandboxRequest,
+    AxSandboxRecord, AxSimAction, AxSimImpactRow, AxSimResult, CreateAxSandboxRequest,
+    SimulateAxSandboxRequest,
 };
 use axpoint_security::AuthPrincipal;
 use axpoint_server::sim_ask::{
@@ -127,10 +130,15 @@ struct ResetStatus {
 
 async fn list_sandboxes_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
 ) -> Result<Json<Vec<AxSandboxRecord>>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let items = state.store.list_sandboxes(&principal.tenant_id).await?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    let mut items = state.store.list_sandboxes(&principal.tenant_id).await?;
+    for sb in &mut items {
+        redact_sandbox_record_governed(&state.store, &principal.tenant_id, sb, &policy_ctx).await?;
+    }
     Ok(Json(items))
 }
 
@@ -209,15 +217,24 @@ async fn create_sandbox_handler(
 
 async fn get_sandbox_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<AxSandboxRecord>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let sandbox = state
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    let mut sandbox = state
         .store
         .get_sandbox(&principal.tenant_id, id)
         .await?
         .ok_or(AppError::NotFound("SANDBOX_NOT_FOUND"))?;
+    redact_sandbox_record_governed(
+        &state.store,
+        &principal.tenant_id,
+        &mut sandbox,
+        &policy_ctx,
+    )
+    .await?;
     Ok(Json(sandbox))
 }
 
@@ -257,13 +274,255 @@ async fn get_sandbox_graph_handler(
     Ok(Json(graph))
 }
 
+async fn build_sim_policy_ctx(
+    state: &AppState,
+    principal: &AuthPrincipal,
+    headers: Option<&axum::http::HeaderMap>,
+) -> Result<PolicyContext, AppError> {
+    let ip = headers.map_or_else(
+        || String::from("127.0.0.1"),
+        crate::routes::auth::extract_client_ip,
+    );
+    axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        principal,
+        false,
+        &ip,
+    )
+    .await
+}
+
+async fn load_governed_sim_graph(
+    store: &PgStore,
+    tenant_id: &str,
+    sandbox_id: Uuid,
+    policy_ctx: &PolicyContext,
+) -> Result<(SimGraph, Option<HashSet<Uuid>>), AppError> {
+    let mut graph = store.load_graph(tenant_id, sandbox_id).await?;
+    if policy_ctx.bypass_row_policies || policy_ctx.node_types.is_empty() {
+        return Ok((graph, None));
+    }
+    let visible = store
+        .filter_sandbox_visible_node_ids(tenant_id, sandbox_id, policy_ctx)
+        .await?;
+    graph.nodes.retain(|n| visible.contains(&n.id));
+    graph
+        .links
+        .retain(|l| visible.contains(&l.src_node_id) && visible.contains(&l.dst_node_id));
+    Ok((graph, Some(visible)))
+}
+
+async fn ensure_governed_sandbox_node(
+    store: &PgStore,
+    tenant_id: &str,
+    sandbox_id: Uuid,
+    node_id: Uuid,
+    policy_ctx: &PolicyContext,
+) -> Result<(), AppError> {
+    if policy_ctx.bypass_row_policies || policy_ctx.node_types.is_empty() {
+        return Ok(());
+    }
+    let visible = store
+        .filter_sandbox_visible_node_ids(tenant_id, sandbox_id, policy_ctx)
+        .await?;
+    if !visible.contains(&node_id) {
+        return Err(AppError::NotFound("NODE_NOT_FOUND"));
+    }
+    Ok(())
+}
+
+fn ensure_actions_target_visible(
+    actions: &[AxSimAction],
+    visible: Option<&HashSet<Uuid>>,
+) -> Result<(), AppError> {
+    if let Some(vis) = visible
+        && actions.iter().any(|a| !vis.contains(&a.target_node_id))
+    {
+        return Err(AppError::NotFound("NODE_NOT_FOUND"));
+    }
+    Ok(())
+}
+
+fn mask_sandbox_graph_node(
+    state: &AppState,
+    tenant_id: &str,
+    node: &mut SandboxGraphNode,
+    policy_ctx: &PolicyContext,
+) {
+    if let Some((_, spec)) = policy_ctx
+        .node_types
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(&node.type_name))
+        && !spec.property_masks.is_empty()
+    {
+        let key = state.mask_keys.tenant_key(tenant_id);
+        axpoint_security::mask_json_properties(&mut node.properties, &spec.property_masks, &key);
+    }
+}
+
+async fn filter_and_mask_sim_search_hits(
+    state: &AppState,
+    tenant_id: &str,
+    hits: &mut Vec<axpoint_domain::graph::NodeSearchHit>,
+    policy_ctx: &PolicyContext,
+) -> Result<(), AppError> {
+    if !policy_ctx.bypass_row_policies && !hits.is_empty() {
+        let ids: Vec<Uuid> = hits.iter().map(|h| h.id).collect();
+        let visible = state
+            .store
+            .filter_visible_node_ids(tenant_id, &ids, &policy_ctx.node_types)
+            .await?;
+        hits.retain(|h| visible.contains(&h.id));
+    }
+    let key = state.mask_keys.tenant_key(tenant_id);
+    for hit in hits {
+        axpoint_server::policy::apply_search_hit_property_masks(hit, policy_ctx, &key);
+    }
+    Ok(())
+}
+
+async fn redact_sandbox_record_governed(
+    store: &PgStore,
+    tenant_id: &str,
+    sb: &mut AxSandboxRecord,
+    policy_ctx: &PolicyContext,
+) -> Result<(), AppError> {
+    if policy_ctx.bypass_row_policies
+        || policy_ctx.node_types.is_empty()
+        || (sb.actions.is_empty() && sb.sim_result.is_none())
+    {
+        return Ok(());
+    }
+    let visible = store
+        .filter_sandbox_visible_node_ids(tenant_id, sb.id, policy_ctx)
+        .await?;
+    let pre_act = sb.actions.len();
+    sb.actions.retain(|a| visible.contains(&a.target_node_id));
+    let act_removed = sb.actions.len() < pre_act;
+    if let Some(ref mut res) = sb.sim_result {
+        let pre_imp = res.impacts.len();
+        res.impacts.retain(|r| visible.contains(&r.node_id));
+        if res.impacts.len() < pre_imp || act_removed {
+            res.affected_count = res.impacts.len();
+            res.kpis.clear();
+        }
+    }
+    Ok(())
+}
+
+fn redact_scenario_with_visible(sc: &mut ScenarioRecord, visible: &HashSet<Uuid>) {
+    let pre_act = sc.actions.len();
+    sc.actions.retain(|a| visible.contains(&a.target_node_id));
+    let act_removed = sc.actions.len() < pre_act;
+    if let Some(ref mut sum) = sc.result {
+        let pre_imp = sum.top_impacts.len();
+        sum.top_impacts.retain(|r| visible.contains(&r.node_id));
+        if sum.top_impacts.len() < pre_imp || act_removed {
+            sum.affected_count = sum.top_impacts.len();
+            sum.kpis.clear();
+        }
+    }
+}
+
+async fn ensure_governed_sandbox_link(
+    store: &PgStore,
+    tenant_id: &str,
+    sandbox_id: Uuid,
+    link_id: Uuid,
+    policy_ctx: &PolicyContext,
+) -> Result<(), AppError> {
+    if policy_ctx.bypass_row_policies || policy_ctx.node_types.is_empty() {
+        return Ok(());
+    }
+    let graph = store
+        .get_sandbox_graph_governed(tenant_id, sandbox_id, policy_ctx)
+        .await?;
+    if !graph.links.iter().any(|l| l.id == link_id) {
+        return Err(AppError::NotFound("LINK_NOT_FOUND"));
+    }
+    Ok(())
+}
+
+async fn ensure_decision_nodes_visible(
+    store: &PgStore,
+    tenant_id: &str,
+    decision: &DecisionRecord,
+    policy_ctx: &PolicyContext,
+) -> Result<(), AppError> {
+    if policy_ctx.bypass_row_policies || policy_ctx.node_types.is_empty() {
+        return Ok(());
+    }
+    let mut ids: Vec<Uuid> = decision.changes.iter().map(|c| c.node_id).collect();
+    for item in &decision.conflict_report {
+        if !ids.contains(&item.node_id) {
+            ids.push(item.node_id);
+        }
+    }
+    if ids.is_empty() {
+        return Ok(());
+    }
+    let visible = store
+        .filter_visible_node_ids(tenant_id, &ids, &policy_ctx.node_types)
+        .await?;
+    if ids.iter().any(|id| !visible.contains(id)) {
+        return Err(AppError::Forbidden("PERMISSION_DENIED"));
+    }
+    Ok(())
+}
+
+fn solve_governed_sandbox_quick(
+    graph: &SimGraph,
+    req: &SimulateAxSandboxRequest,
+) -> Result<AxSimResult, AppError> {
+    let params = req.params.clone().unwrap_or_default();
+    let sim_res = if params.uncertainty.is_some() {
+        axpoint_domain::sim::uncertainty::solve(graph, &req.actions, &params)?
+    } else if params.mode == SimMode::Stepped {
+        axpoint_domain::sim::stepped::solve(graph, &req.actions, &params)?
+    } else {
+        axpoint_domain::sim::steady::solve(graph, &req.actions, &params)?
+    };
+    let impacts = sim_res
+        .impacts
+        .into_iter()
+        .map(|r| AxSimImpactRow {
+            node_id: r.node_id,
+            type_name: r.type_name,
+            title: r.title,
+            metric_key: r.metric,
+            before_val: r.before_val.unwrap_or(0.0),
+            after_val: r.after_val,
+            delta: r.delta.unwrap_or(0.0),
+            delta_ratio: r.delta_ratio,
+            hop_distance: r.hop_distance,
+            top_path: r.top_path,
+        })
+        .collect();
+    Ok(AxSimResult {
+        impacts,
+        affected_count: sim_res.affected_count,
+        kpis: sim_res.kpis,
+        warnings: sim_res.warnings,
+        converged: sim_res.converged,
+    })
+}
+
 async fn simulate_sandbox_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<SimulateAxSandboxRequest>,
 ) -> Result<Json<AxSimResult>, HttpError> {
     principal.require(Permission::SimRun)?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    if !policy_ctx.bypass_row_policies && !policy_ctx.node_types.is_empty() {
+        let (graph, visible) =
+            load_governed_sim_graph(&state.store, &principal.tenant_id, id, &policy_ctx).await?;
+        ensure_actions_target_visible(&req.actions, visible.as_ref())?;
+        return Ok(Json(solve_governed_sandbox_quick(&graph, &req)?));
+    }
     let res = state
         .store
         .quick_simulate_sandbox(&principal.tenant_id, id, req)
@@ -283,51 +542,84 @@ async fn reset_overlay_handler(
 
 async fn refresh_base_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<RefreshBaseResponse>, HttpError> {
     principal.require(Permission::SimRun)?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
     let refreshed = state
         .store
-        .refresh_sandbox_base(&principal.tenant_id, id)
+        .refresh_sandbox_base_governed(&principal.tenant_id, id, &policy_ctx)
         .await?;
     Ok(Json(refreshed))
 }
 
 async fn create_overlay_node_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<CreateOverlayNodeRequest>,
 ) -> Result<Json<SandboxGraphNode>, HttpError> {
     principal.require(Permission::SimRun)?;
-    let node = state
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        Permission::SimRun,
+        axpoint_domain::guard::GrantResourceKind::NodeType,
+        req.type_name.trim(),
+        &client_ip,
+    )
+    .await?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    let mut node = state
         .store
         .create_overlay_node(&principal.tenant_id, id, req)
         .await?;
+    if ensure_governed_sandbox_node(&state.store, &principal.tenant_id, id, node.id, &policy_ctx)
+        .await
+        .is_err()
+    {
+        let _deleted = state
+            .store
+            .delete_overlay_node(&principal.tenant_id, id, node.id)
+            .await?;
+        return Err(HttpError::from(AppError::Forbidden("PERMISSION_DENIED")));
+    }
+    mask_sandbox_graph_node(&state, &principal.tenant_id, &mut node, &policy_ctx);
     Ok(Json(node))
 }
 
 async fn patch_overlay_node_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath((id, nid)): ApiPath<(Uuid, Uuid)>,
     ApiJson(req): ApiJson<PatchOverlayNodeRequest>,
 ) -> Result<Json<SandboxGraphNode>, HttpError> {
     principal.require(Permission::SimRun)?;
-    let node = state
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    ensure_governed_sandbox_node(&state.store, &principal.tenant_id, id, nid, &policy_ctx).await?;
+    let mut node = state
         .store
         .patch_overlay_node(&principal.tenant_id, id, nid, req)
         .await?;
+    mask_sandbox_graph_node(&state, &principal.tenant_id, &mut node, &policy_ctx);
     Ok(Json(node))
 }
 
 async fn delete_overlay_node_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath((id, nid)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<DeleteStatus>, HttpError> {
     principal.require(Permission::SimRun)?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    ensure_governed_sandbox_node(&state.store, &principal.tenant_id, id, nid, &policy_ctx).await?;
     let deleted = state
         .store
         .delete_overlay_node(&principal.tenant_id, id, nid)
@@ -340,11 +632,29 @@ async fn delete_overlay_node_handler(
 
 async fn create_overlay_link_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<CreateOverlayLinkRequest>,
 ) -> Result<Json<SandboxGraphLink>, HttpError> {
     principal.require(Permission::SimRun)?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    ensure_governed_sandbox_node(
+        &state.store,
+        &principal.tenant_id,
+        id,
+        req.src_node_id,
+        &policy_ctx,
+    )
+    .await?;
+    ensure_governed_sandbox_node(
+        &state.store,
+        &principal.tenant_id,
+        id,
+        req.dst_node_id,
+        &policy_ctx,
+    )
+    .await?;
     let link = state
         .store
         .create_overlay_link(&principal.tenant_id, id, req)
@@ -354,11 +664,14 @@ async fn create_overlay_link_handler(
 
 async fn patch_overlay_link_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath((id, lid)): ApiPath<(Uuid, Uuid)>,
     ApiJson(req): ApiJson<PatchOverlayLinkRequest>,
 ) -> Result<Json<SandboxGraphLink>, HttpError> {
     principal.require(Permission::SimRun)?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    ensure_governed_sandbox_link(&state.store, &principal.tenant_id, id, lid, &policy_ctx).await?;
     let link = state
         .store
         .patch_overlay_link(&principal.tenant_id, id, lid, req)
@@ -368,10 +681,13 @@ async fn patch_overlay_link_handler(
 
 async fn delete_overlay_link_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath((id, lid)): ApiPath<(Uuid, Uuid)>,
 ) -> Result<Json<DeleteStatus>, HttpError> {
     principal.require(Permission::SimRun)?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    ensure_governed_sandbox_link(&state.store, &principal.tenant_id, id, lid, &policy_ctx).await?;
     let deleted = state
         .store
         .delete_overlay_link(&principal.tenant_id, id, lid)
@@ -384,16 +700,28 @@ async fn delete_overlay_link_handler(
 
 async fn list_scenarios_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<Vec<ScenarioRecord>>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let items = state.store.list_scenarios(&principal.tenant_id, id).await?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    let mut items = state.store.list_scenarios(&principal.tenant_id, id).await?;
+    if !policy_ctx.bypass_row_policies && !policy_ctx.node_types.is_empty() && !items.is_empty() {
+        let visible = state
+            .store
+            .filter_sandbox_visible_node_ids(&principal.tenant_id, id, &policy_ctx)
+            .await?;
+        for sc in &mut items {
+            redact_scenario_with_visible(sc, &visible);
+        }
+    }
     Ok(Json(items))
 }
 
 async fn create_scenario_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<CreateScenarioRequest>,
@@ -412,11 +740,14 @@ async fn create_scenario_handler(
         )));
     }
 
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
     let overlay_hash = state
         .store
         .compute_overlay_hash(&principal.tenant_id, id)
         .await?;
-    let graph = state.store.load_graph(&principal.tenant_id, id).await?;
+    let (graph, visible) =
+        load_governed_sim_graph(&state.store, &principal.tenant_id, id, &policy_ctx).await?;
+    ensure_actions_target_visible(&req.actions, visible.as_ref())?;
 
     // Validate actions synchronously before creating scenario row so bad requests fail immediately.
     axpoint_domain::sim::action::normalize_actions(&graph, &req.actions)?;
@@ -510,15 +841,24 @@ async fn execute_and_persist_scenario(
 
 async fn get_scenario_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<ScenarioRecord>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let scenario = state
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    let mut scenario = state
         .store
         .get_scenario(&principal.tenant_id, id)
         .await?
         .ok_or(AppError::NotFound("SCENARIO_NOT_FOUND"))?;
+    if !policy_ctx.bypass_row_policies && !policy_ctx.node_types.is_empty() {
+        let visible = state
+            .store
+            .filter_sandbox_visible_node_ids(&principal.tenant_id, scenario.sandbox_id, &policy_ctx)
+            .await?;
+        redact_scenario_with_visible(&mut scenario, &visible);
+    }
     Ok(Json(scenario))
 }
 
@@ -540,10 +880,12 @@ async fn delete_scenario_handler(
 
 async fn rerun_scenario_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<ScenarioRecord>, HttpError> {
     principal.require(Permission::SimRun)?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
     let existing = state
         .store
         .get_scenario(&principal.tenant_id, id)
@@ -553,10 +895,14 @@ async fn rerun_scenario_handler(
         .store
         .compute_overlay_hash(&principal.tenant_id, existing.sandbox_id)
         .await?;
-    let graph = state
-        .store
-        .load_graph(&principal.tenant_id, existing.sandbox_id)
-        .await?;
+    let (graph, visible) = load_governed_sim_graph(
+        &state.store,
+        &principal.tenant_id,
+        existing.sandbox_id,
+        &policy_ctx,
+    )
+    .await?;
+    ensure_actions_target_visible(&existing.actions, visible.as_ref())?;
     let finished = execute_and_persist_scenario(
         &state.store,
         &principal.tenant_id,
@@ -572,28 +918,60 @@ async fn rerun_scenario_handler(
 
 async fn list_scenario_impacts_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
     ApiQuery(query): ApiQuery<ImpactListQuery>,
 ) -> Result<Json<PaginatedList<ImpactRow>>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let page = state
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    let mut page = state
         .store
         .list_scenario_impacts(&principal.tenant_id, id, query)
         .await?;
+    if !policy_ctx.bypass_row_policies && !policy_ctx.node_types.is_empty() {
+        let sc = state
+            .store
+            .get_scenario(&principal.tenant_id, id)
+            .await?
+            .ok_or(AppError::NotFound("SCENARIO_NOT_FOUND"))?;
+        let visible = state
+            .store
+            .filter_sandbox_visible_node_ids(&principal.tenant_id, sc.sandbox_id, &policy_ctx)
+            .await?;
+        page.items.retain(|r| visible.contains(&r.node_id));
+    }
     Ok(Json(page))
 }
 
 async fn list_scenario_checkpoints_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<CheckpointsResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let items = state
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    let mut items = state
         .store
         .list_scenario_checkpoints(&principal.tenant_id, id)
         .await?;
+    if !policy_ctx.bypass_row_policies && !policy_ctx.node_types.is_empty() && !items.is_empty() {
+        let sc = state
+            .store
+            .get_scenario(&principal.tenant_id, id)
+            .await?
+            .ok_or(AppError::NotFound("SCENARIO_NOT_FOUND"))?;
+        let visible = state
+            .store
+            .filter_sandbox_visible_node_ids(&principal.tenant_id, sc.sandbox_id, &policy_ctx)
+            .await?;
+        for cp in &mut items {
+            if let serde_json::Value::Object(ref mut map) = cp.changes {
+                map.retain(|k, _| Uuid::parse_str(k).is_ok_and(|nid| visible.contains(&nid)));
+            }
+        }
+    }
     Ok(Json(CheckpointsResponse { items }))
 }
 
@@ -626,10 +1004,12 @@ fn parse_compare_ids(raw_ids: &str) -> Result<Vec<Uuid>, AppError> {
 
 async fn compare_scenarios_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiQuery(query): ApiQuery<CompareScenariosQuery>,
 ) -> Result<Json<CompareScenariosResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
     let ids = parse_compare_ids(&query.ids)?;
 
     let mut scenarios = Vec::with_capacity(ids.len());
@@ -667,19 +1047,24 @@ async fn compare_scenarios_handler(
         .filter(|s| !s.is_empty())
         .map(String::from);
 
+    let (graph, visible) = load_governed_sim_graph(
+        &state.store,
+        &principal.tenant_id,
+        first_sandbox,
+        &policy_ctx,
+    )
+    .await?;
     let mut impacts_by_scenario: Vec<(Uuid, Vec<ImpactRow>)> = Vec::with_capacity(scenarios.len());
     for sc in &scenarios {
-        let rows = state
+        let mut rows = state
             .store
             .list_all_scenario_impacts(&principal.tenant_id, sc.id)
             .await?;
+        if let Some(ref vis) = visible {
+            rows.retain(|r| vis.contains(&r.node_id));
+        }
         impacts_by_scenario.push((sc.id, rows));
     }
-
-    let graph = state
-        .store
-        .load_graph(&principal.tenant_id, first_sandbox)
-        .await?;
     let (kpis, nodes) = build_comparison_matrices(
         &graph,
         &impacts_by_scenario,
@@ -893,6 +1278,7 @@ fn finalize_node_rows(
 
 async fn sim_ask_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<SimAskRequest>,
 ) -> Result<Json<SimAskResponse>, HttpError> {
@@ -910,15 +1296,18 @@ async fn sim_ask_handler(
         .get_sandbox(&principal.tenant_id, req.sandbox_id)
         .await?
         .ok_or(AppError::NotFound("SANDBOX_NOT_FOUND"))?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
 
     let intent =
         classify_sim_ask_intent(&state.ai, question, req.scenario_id.is_some(), true).await?;
 
     match intent {
         SimAskIntent::QueryResult => {
-            handle_sim_ask_query_result(&state, &principal, &req, question).await
+            handle_sim_ask_query_result(&state, &principal, &req, question, &policy_ctx).await
         }
-        SimAskIntent::WhatIf => handle_sim_ask_what_if(&state, &principal, &req, question).await,
+        SimAskIntent::WhatIf => {
+            handle_sim_ask_what_if(&state, &principal, &req, question, &policy_ctx).await
+        }
     }
 }
 
@@ -927,6 +1316,7 @@ async fn handle_sim_ask_query_result(
     principal: &AuthPrincipal,
     req: &SimAskRequest,
     question: &str,
+    policy_ctx: &PolicyContext,
 ) -> Result<Json<SimAskResponse>, HttpError> {
     let scenario_id = if let Some(id) = req.scenario_id {
         id
@@ -945,10 +1335,17 @@ async fn handle_sim_ask_query_result(
                 )
             })?
     };
-    let impacts = state
+    let mut impacts = state
         .store
         .list_all_scenario_impacts(&principal.tenant_id, scenario_id)
         .await?;
+    if !policy_ctx.bypass_row_policies && !policy_ctx.node_types.is_empty() {
+        let visible = state
+            .store
+            .filter_sandbox_visible_node_ids(&principal.tenant_id, req.sandbox_id, policy_ctx)
+            .await?;
+        impacts.retain(|r| visible.contains(&r.node_id));
+    }
     let ask_resp =
         query_impacts_with_nl2sql(&state.ai, &principal.tenant_id, &impacts, question).await?;
 
@@ -973,11 +1370,15 @@ async fn handle_sim_ask_what_if(
     principal: &AuthPrincipal,
     req: &SimAskRequest,
     question: &str,
+    policy_ctx: &PolicyContext,
 ) -> Result<Json<SimAskResponse>, HttpError> {
-    let graph = state
-        .store
-        .load_graph(&principal.tenant_id, req.sandbox_id)
-        .await?;
+    let (graph, _) = load_governed_sim_graph(
+        &state.store,
+        &principal.tenant_id,
+        req.sandbox_id,
+        policy_ctx,
+    )
+    .await?;
     let hints = graph_hint_nodes(&graph);
     let extracted = extract_what_if_interventions(&state.ai, question, &hints).await?;
 
@@ -1008,6 +1409,8 @@ async fn handle_sim_ask_what_if(
             extra_hits.extend(resp.items);
         }
     }
+    filter_and_mask_sim_search_hits(state, &principal.tenant_id, &mut extra_hits, policy_ctx)
+        .await?;
 
     let actions =
         match disambiguate_what_if_actions(&extracted.interventions, &graph.nodes, &extra_hits) {
@@ -1141,11 +1544,34 @@ async fn record_sim_ask_audit(
 
 async fn create_decision_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(scenario_id): ApiPath<Uuid>,
     ApiJson(req): ApiJson<CreateDecisionRequest>,
 ) -> Result<Json<DecisionRecord>, HttpError> {
     principal.require(Permission::SimRun)?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    if !policy_ctx.bypass_row_policies && !policy_ctx.node_types.is_empty() {
+        let sc = state
+            .store
+            .get_scenario(&principal.tenant_id, scenario_id)
+            .await?
+            .ok_or(AppError::NotFound("SCENARIO_NOT_FOUND"))?;
+        let visible = state
+            .store
+            .filter_sandbox_visible_node_ids(&principal.tenant_id, sc.sandbox_id, &policy_ctx)
+            .await?;
+        let hidden = match req.changes {
+            Some(ref ch) => ch.iter().any(|c| !visible.contains(&c.node_id)),
+            None => sc
+                .actions
+                .iter()
+                .any(|a| !visible.contains(&a.target_node_id)),
+        };
+        if hidden {
+            return Err(HttpError::from(AppError::NotFound("NODE_NOT_FOUND")));
+        }
+    }
     let decision = state
         .store
         .create_decision(
@@ -1160,24 +1586,39 @@ async fn create_decision_handler(
 
 async fn get_decision_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(decision_id): ApiPath<Uuid>,
 ) -> Result<Json<DecisionRecord>, HttpError> {
     principal.require(Permission::DataRead)?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
     let decision = state
         .store
         .get_decision(&principal.tenant_id, decision_id)
         .await?
         .ok_or(AppError::NotFound("DECISION_NOT_FOUND"))?;
+    ensure_decision_nodes_visible(&state.store, &principal.tenant_id, &decision, &policy_ctx)
+        .await?;
     Ok(Json(decision))
 }
 
 async fn rebase_decision_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(decision_id): ApiPath<Uuid>,
 ) -> Result<Json<DecisionRecord>, HttpError> {
     principal.require(Permission::SimRun)?;
+    let policy_ctx = build_sim_policy_ctx(&state, &principal, Some(&headers)).await?;
+    if !policy_ctx.bypass_row_policies && !policy_ctx.node_types.is_empty() {
+        let existing = state
+            .store
+            .get_decision(&principal.tenant_id, decision_id)
+            .await?
+            .ok_or(AppError::NotFound("DECISION_NOT_FOUND"))?;
+        ensure_decision_nodes_visible(&state.store, &principal.tenant_id, &existing, &policy_ctx)
+            .await?;
+    }
     let rebased = state
         .store
         .rebase_decision(&principal.tenant_id, decision_id, Some(principal.user_id))
@@ -1191,6 +1632,43 @@ pub(crate) struct ServerSimPort {
     pub(crate) store: PgStore,
 }
 
+async fn build_tool_sim_policy_ctx(
+    store: &PgStore,
+    tenant_id: &str,
+    user_id: Uuid,
+) -> Result<PolicyContext, AppError> {
+    if user_id.is_nil() {
+        return Ok(PolicyContext {
+            bypass_row_policies: true,
+            ..PolicyContext::default()
+        });
+    }
+    let rec = store
+        .load_principal(tenant_id, user_id)
+        .await?
+        .ok_or(AppError::Unauthorized("TOKEN_INVALID"))?;
+    let auth_principal = AuthPrincipal {
+        user_id,
+        tenant_id: String::from(tenant_id),
+        username: rec.username,
+        dept_id: rec.dept_id,
+        roles: rec.roles,
+        permissions: rec.permissions,
+        token_kind: TokenKind::Access,
+        token_profile: axpoint_domain::enums::TokenProfile::General,
+        web_base_url: None,
+    };
+    let cedar = axpoint_security::cedar_authz::CedarAuthorizer::new()?;
+    axpoint_server::policy::build_policy_context_for_store(
+        store,
+        &cedar,
+        &auth_principal,
+        false,
+        "127.0.0.1",
+    )
+    .await
+}
+
 async fn resolve_or_create_tool_sandbox(
     store: &PgStore,
     tenant_id: &str,
@@ -1198,6 +1676,7 @@ async fn resolve_or_create_tool_sandbox(
     requested_id: Option<Uuid>,
     scenario_name: Option<&str>,
     actions: &[AxSimAction],
+    policy_ctx: &PolicyContext,
 ) -> Result<Uuid, AppError> {
     if let Some(id) = requested_id {
         return Ok(id);
@@ -1208,7 +1687,7 @@ async fn resolve_or_create_tool_sandbox(
     }
     let root_ids: Vec<Uuid> = actions.iter().map(|a| a.target_node_id).collect();
     let created = store
-        .create_sandbox(
+        .create_sandbox_governed(
             tenant_id,
             Some(user_id),
             CreateAxSandboxRequest {
@@ -1219,6 +1698,7 @@ async fn resolve_or_create_tool_sandbox(
                     ..SandboxScope::default()
                 }),
             },
+            policy_ctx,
         )
         .await?;
     Ok(created.id)
@@ -1243,6 +1723,7 @@ impl SimExecutionPort for ServerSimPort {
                 ));
             }
 
+            let policy_ctx = build_tool_sim_policy_ctx(&self.store, tenant_id, user_id).await?;
             let sandbox_id = resolve_or_create_tool_sandbox(
                 &self.store,
                 tenant_id,
@@ -1250,10 +1731,13 @@ impl SimExecutionPort for ServerSimPort {
                 input.sandbox_id,
                 input.scenario_name.as_deref(),
                 &actions,
+                &policy_ctx,
             )
             .await?;
 
-            let graph = self.store.load_graph(tenant_id, sandbox_id).await?;
+            let (graph, visible) =
+                load_governed_sim_graph(&self.store, tenant_id, sandbox_id, &policy_ctx).await?;
+            ensure_actions_target_visible(&actions, visible.as_ref())?;
             let overlay_hash = self
                 .store
                 .compute_overlay_hash(tenant_id, sandbox_id)
@@ -1289,7 +1773,7 @@ impl SimExecutionPort for ServerSimPort {
             )
             .await?;
 
-            let top_page = self
+            let mut top_page = self
                 .store
                 .list_scenario_impacts(
                     tenant_id,
@@ -1300,6 +1784,9 @@ impl SimExecutionPort for ServerSimPort {
                     },
                 )
                 .await?;
+            if let Some(ref vis) = visible {
+                top_page.items.retain(|r| vis.contains(&r.node_id));
+            }
 
             let max_abs_delta = top_page
                 .items
