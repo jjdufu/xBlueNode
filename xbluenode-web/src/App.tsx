@@ -7,12 +7,14 @@ import {
 } from "react";
 import {
   ChevronDown,
+  ChevronRight,
   KeyRound,
   Languages,
   LogOut,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  Search,
   ShieldOff,
   Sun,
   UserCheck,
@@ -40,6 +42,7 @@ import {
   subscribeAuthChange,
 } from "@/lib/api";
 import { validateLocalPassword } from "@/components/axguard/logic";
+import { CommandPalette } from "@/components/ui/CommandPalette";
 import {
   Badge,
   Button,
@@ -51,8 +54,9 @@ import { useI18n } from "@/i18n";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import {
+  LEGACY_ROUTE_REDIRECTS,
   MODULE_REGISTRY,
-  NAV_GROUPS,
+  type LegacyRedirectSpec,
   type ModuleRouteSpec,
 } from "@/modules/registry";
 import { LoginPage } from "@/pages/LoginPage";
@@ -61,7 +65,28 @@ function matchesModulePath(spec: ModuleRouteSpec, pathname: string): boolean {
   if (spec.path === "/") {
     return pathname === "/";
   }
-  return pathname === spec.path || pathname.startsWith(`${spec.path}/`);
+  if (pathname === spec.path || pathname.startsWith(`${spec.path}/`)) {
+    return true;
+  }
+  if (spec.activeMatchPrefixes) {
+    return spec.activeMatchPrefixes.some(
+      (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`)
+    );
+  }
+  return false;
+}
+
+function LegacyRouteRedirect({ spec }: { readonly spec: LegacyRedirectSpec }) {
+  const location = useLocation();
+  const merged = new URLSearchParams(location.search);
+  for (const [k, v] of Object.entries(spec.defaultQuery)) {
+    if (!merged.has(k)) {
+      merged.set(k, v);
+    }
+  }
+  const qs = merged.toString();
+  const target = qs ? `${spec.toPathname}?${qs}` : spec.toPathname;
+  return <Navigate to={target} replace />;
 }
 
 function ShellLayout() {
@@ -87,6 +112,8 @@ function ShellLayout() {
   const [userSidebarOverride, setUserSidebarOverride] = useState<
     boolean | null
   >(null);
+  const [governanceOpen, setGovernanceOpen] = useState(true);
+  const [cmdkOpen, setCmdkOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -126,7 +153,6 @@ function ShellLayout() {
     };
   }, [token, bootRefreshDone, cachedMe]);
 
-  // Reset per-route auto-collapse override when navigating across modules
   useEffect(() => {
     setUserSidebarOverride(null);
     setAccountMenuOpen(false);
@@ -157,7 +183,7 @@ function ShellLayout() {
 
   if (!token && !bootRefreshDone) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background text-muted-foreground text-xs font-mono-tech">
+      <div className="min-h-screen flex items-center justify-center bg-background text-muted-foreground text-[13px]">
         {tx("会话恢复中…", "Restoring session…")}
       </div>
     );
@@ -167,7 +193,7 @@ function ShellLayout() {
     return <Navigate to="/login" replace />;
   }
 
-  const navItems = MODULE_REGISTRY.filter((m) => {
+  const permittedModules = MODULE_REGISTRY.filter((m) => {
     if (m.public) {
       return false;
     }
@@ -185,9 +211,14 @@ function ShellLayout() {
     return true;
   });
 
-  const activeModule = navItems.find((m) =>
-    matchesModulePath(m, location.pathname)
-  );
+  const navItems = permittedModules.filter((m) => !m.sidebarHidden);
+  const primaryNavItems = navItems.filter((m) => m.group !== "governance");
+  const governanceNavItems = navItems.filter((m) => m.group === "governance");
+
+  const activeModule = permittedModules.find(
+    (m) => !m.sidebarHidden && matchesModulePath(m, location.pathname)
+  ) ?? permittedModules.find((m) => matchesModulePath(m, location.pathname));
+
   const sidebarCollapsed =
     userSidebarOverride ?? Boolean(activeModule?.autoCollapseSidebar);
 
@@ -255,6 +286,33 @@ function ShellLayout() {
   const primaryRole = cachedMe?.roles?.[0] ?? "";
   const isFullBleed = Boolean(activeModule?.fullBleed);
 
+  const renderSidebarLink = (item: ModuleRouteSpec) => {
+    const Icon = item.icon;
+    const active = matchesModulePath(item, location.pathname);
+    const fullNavLabel = isZh ? item.label : item.enLabel;
+    const coreLabel = isZh ? item.shortZh : item.shortEn;
+    return (
+      <NavLink
+        key={item.key}
+        to={item.path}
+        end={item.path === "/"}
+        aria-label={fullNavLabel}
+        title={fullNavLabel}
+        data-testid={`sidebar-nav-${item.key}`}
+        className={cn(
+          "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors cursor-pointer",
+          sidebarCollapsed && "justify-center px-0 py-2",
+          active
+            ? "bg-xblue-soft text-xblue font-semibold before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-r before:bg-xblue"
+            : "font-medium text-muted-foreground hover:text-foreground hover:bg-muted/70"
+        )}
+      >
+        <Icon className={cn("h-4 w-4 shrink-0", active && "text-xblue")} />
+        {!sidebarCollapsed && <span className="truncate">{coreLabel}</span>}
+      </NavLink>
+    );
+  };
+
   return (
     <div
       className={cn(
@@ -272,7 +330,7 @@ function ShellLayout() {
           <div
             className={cn(
               "h-full flex items-center justify-between border-r border-border transition-all shrink-0",
-              sidebarCollapsed ? "w-14 px-2 justify-center" : "w-56 px-3.5"
+              sidebarCollapsed ? "w-14 px-2 justify-center" : "w-52 px-3.5"
             )}
           >
             {!sidebarCollapsed && (
@@ -320,8 +378,24 @@ function ShellLayout() {
           )}
         </div>
 
-        {/* Top-Right: System Preferences (Locale + Theme) + Unified Account Dropdown */}
-        <div className="flex items-center gap-1 px-3 md:px-4 ml-auto shrink-0">
+        {/* Top-Right: Command Palette Trigger + Preferences + Unified Account Dropdown */}
+        <div className="flex items-center gap-1.5 px-3 md:px-4 ml-auto shrink-0">
+          <button
+            type="button"
+            data-testid="global-cmdk-trigger"
+            onClick={() => setCmdkOpen(true)}
+            aria-label={tx("打开命令面板", "Open command palette")}
+            className="inline-flex h-8 items-center gap-2 rounded-lg border border-border/80 bg-muted/40 px-2.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+          >
+            <Search className="h-3.5 w-3.5 text-xblue shrink-0" />
+            <span className="hidden sm:inline">
+              {tx("搜索视图、模型与图表…", "Search views, models, charts…")}
+            </span>
+            <kbd className="rounded border border-border bg-card px-1.5 py-0.5 text-[10px] font-mono-tech text-muted-foreground">
+              ⌘K
+            </kbd>
+          </button>
+
           <button
             type="button"
             data-testid="locale-toggle-btn"
@@ -331,7 +405,7 @@ function ShellLayout() {
             className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0 cursor-pointer"
           >
             <Languages className="h-3.5 w-3.5 text-xblue" />
-            <span className="font-mono-tech">{isZh ? "中文" : "EN"}</span>
+            <span>{isZh ? "中文" : "EN"}</span>
           </button>
 
           <IconButton
@@ -355,7 +429,7 @@ function ShellLayout() {
             )}
           </IconButton>
 
-          <div className="h-4 w-px bg-border mx-1" />
+          <div className="h-4 w-px bg-border mx-0.5" />
 
           {/* Unified User Account Dropdown */}
           <div ref={accountMenuRef} className="relative">
@@ -376,14 +450,14 @@ function ShellLayout() {
                   {cachedMe?.username ?? tx("账号", "Account")}
                 </span>
                 {cachedMe?.dept_id && (
-                  <span className="hidden sm:inline text-muted-foreground font-mono-tech">
+                  <span className="hidden sm:inline text-muted-foreground">
                     · {cachedMe.dept_id}
                   </span>
                 )}
                 {primaryRole && (
                   <Badge
                     variant="xblue"
-                    className="hidden md:inline-flex ml-0.5 text-[10px]"
+                    className="hidden md:inline-flex ml-0.5 text-[11px]"
                   >
                     {tEnum(primaryRole)}
                   </Badge>
@@ -400,14 +474,14 @@ function ShellLayout() {
             {accountMenuOpen && (
               <div
                 role="menu"
-                className="absolute right-0 top-full mt-1.5 w-52 rounded-md border border-border bg-card text-card-foreground shadow-lg py-1 z-50"
+                className="absolute right-0 top-full mt-1.5 w-52 rounded-lg border border-border bg-card text-card-foreground shadow-lg py-1 z-50"
               >
                 {cachedMe && (
                   <div className="px-3 py-2 border-b border-border space-y-0.5">
                     <div className="text-xs font-semibold truncate">
                       {cachedMe.username}
                     </div>
-                    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground font-mono-tech">
+                    <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
                       <span>{cachedMe.dept_id}</span>
                       {primaryRole && (
                         <>
@@ -473,93 +547,64 @@ function ShellLayout() {
         )}
       >
         <aside
+          data-testid="app-sidebar"
           className={cn(
-            "sticky top-12 h-[calc(100vh-3rem)] border-r border-border bg-card/30 flex flex-col justify-between shrink-0 transition-all overflow-y-auto",
-            sidebarCollapsed ? "w-14 px-2 py-2.5" : "w-56 px-2.5 py-3"
+            "sticky top-12 h-[calc(100vh-3rem)] border-r border-border bg-card/35 flex flex-col justify-between shrink-0 transition-all overflow-y-auto",
+            sidebarCollapsed ? "w-14 px-2 py-2.5" : "w-52 px-2.5 py-3"
           )}
         >
-          <nav className="space-y-3.5">
-            {NAV_GROUPS.map((grp, groupIdx) => {
-              const items = navItems.filter((m) => m.group === grp.key);
-              if (items.length === 0) return null;
-              return (
-                <div key={grp.key} className="space-y-0.5">
-                  {sidebarCollapsed ? (
-                    groupIdx > 0 && (
-                      <div className="my-1.5 mx-1.5 border-t border-border/70" />
-                    )
-                  ) : (
-                    <div className="px-2.5 pb-1 text-[10px] font-semibold tracking-wider text-muted-foreground/75 select-none">
-                      {isZh ? grp.zh : grp.en}
-                    </div>
-                  )}
-
-                  {items.map((item) => {
-                    const Icon = item.icon;
-                    const active = matchesModulePath(item, location.pathname);
-                    const fullNavLabel = isZh ? item.label : item.enLabel;
-                    const coreLabel = isZh ? item.shortZh : item.shortEn;
-                    return (
-                      <NavLink
-                        key={item.key}
-                        to={item.path}
-                        end={item.path === "/"}
-                        aria-label={fullNavLabel}
-                        title={fullNavLabel}
-                        className={cn(
-                          "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-xs transition-colors cursor-pointer",
-                          sidebarCollapsed && "justify-center px-0 py-2",
-                          active
-                            ? "bg-xblue-soft text-xblue font-semibold before:absolute before:left-0 before:top-1.5 before:bottom-1.5 before:w-[3px] before:rounded-r before:bg-xblue"
-                            : "font-medium text-muted-foreground hover:text-foreground hover:bg-muted/70"
-                        )}
-                      >
-                        <Icon
-                          className={cn(
-                            "h-4 w-4 shrink-0",
-                            active && "text-xblue"
-                          )}
-                        />
-                        {!sidebarCollapsed && (
-                          <span className="flex-1 flex items-center justify-between gap-1.5 min-w-0">
-                            <span className="truncate">{coreLabel}</span>
-                            {item.productTag && (
-                              <span
-                                className={cn(
-                                  "text-[10px] font-mono-tech shrink-0",
-                                  active
-                                    ? "text-xblue/75"
-                                    : "text-muted-foreground/55"
-                                )}
-                              >
-                                {item.productTag}
-                              </span>
-                            )}
-                          </span>
-                        )}
-                      </NavLink>
-                    );
-                  })}
-                </div>
-              );
-            })}
+          <nav
+            data-testid="primary-domain-nav"
+            className="space-y-0.5"
+          >
+            {primaryNavItems.map((item) => renderSidebarLink(item))}
           </nav>
 
-          {/* Subtle version anchor at sidebar bottom */}
-          <div
-            className={cn(
-              "pt-2 mt-2 border-t border-border/60 text-[10px] font-mono-tech text-muted-foreground/65 select-none",
-              sidebarCollapsed ? "text-center" : "px-2.5 flex items-center justify-between"
+          <div className="mt-3 space-y-2">
+            {governanceNavItems.length > 0 && (
+              <div
+                data-testid="governance-domain-section"
+                className="pt-2 border-t border-border/60 space-y-0.5"
+              >
+                {!sidebarCollapsed && (
+                  <button
+                    type="button"
+                    data-testid="governance-section-toggle"
+                    onClick={() => setGovernanceOpen((v) => !v)}
+                    className="w-full flex items-center justify-between px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground cursor-pointer"
+                  >
+                    <span>{tx("系统治理", "Governance")}</span>
+                    <ChevronRight
+                      className={cn(
+                        "h-3.5 w-3.5 transition-transform",
+                        governanceOpen && "rotate-90"
+                      )}
+                    />
+                  </button>
+                )}
+                {(sidebarCollapsed || governanceOpen) &&
+                  governanceNavItems.map((item) => renderSidebarLink(item))}
+              </div>
             )}
-          >
-            {sidebarCollapsed ? (
-              <span>v{__APP_VERSION__}</span>
-            ) : (
-              <>
-                <span>xBlueNode</span>
+
+            {/* Subtle version anchor at sidebar bottom */}
+            <div
+              className={cn(
+                "pt-2 border-t border-border/60 text-[11px] text-muted-foreground/70 select-none",
+                sidebarCollapsed
+                  ? "text-center font-mono-tech"
+                  : "px-2.5 flex items-center justify-between"
+              )}
+            >
+              {sidebarCollapsed ? (
                 <span>v{__APP_VERSION__}</span>
-              </>
-            )}
+              ) : (
+                <>
+                  <span>xBlueNode</span>
+                  <span className="font-mono-tech">v{__APP_VERSION__}</span>
+                </>
+              )}
+            </div>
           </div>
         </aside>
 
@@ -567,13 +612,15 @@ function ShellLayout() {
           className={cn(
             "flex-1 min-w-0 w-full",
             isFullBleed
-              ? "h-[calc(100vh-3rem)] overflow-hidden flex flex-col p-3 md:p-4"
+              ? "h-[calc(100vh-3rem)] overflow-hidden flex flex-col p-2.5 md:p-3"
               : "max-w-[1760px] mx-auto p-4 md:p-6"
           )}
         >
           <Outlet />
         </main>
       </div>
+
+      <CommandPalette open={cmdkOpen} onOpenChange={setCmdkOpen} />
 
       {/* Password Change Modal */}
       <Modal
@@ -673,6 +720,10 @@ const router = createBrowserRouter([
   {
     element: <ShellLayout />,
     children: [
+      ...LEGACY_ROUTE_REDIRECTS.map((spec) => ({
+        path: spec.from,
+        element: <LegacyRouteRedirect spec={spec} />,
+      })),
       ...MODULE_REGISTRY.filter((m) => !m.public).flatMap((m) => {
         const PageComponent = m.component;
         const allPaths = [m.path, ...(m.subPaths ?? [])];

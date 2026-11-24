@@ -115,6 +115,8 @@
 | C55 | 样例数据一键装载演示 | 14 | §14.6 | `POST /api/axops/demo/supply_chain/load` 后 `scripts/demo/supply_chain.md` 各步结果；`e2e/full-journey.spec.ts` |
 | C61 | 系统级只读模型与用户个人默认模型分级覆盖 | 15 | [01-STEP15](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.3.4、§15.4 | step15 “user-default-provider”、“system-provider-readonly” |
 | C71 | 系统概览 5 步实时构建向导与免运维权限演练子图模板试用 | 19 | [05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.1～§19.2 | step19 “onboarding-progress”、“trial-template-clone” |
+| C76 | 8 域任务流导航收敛、历史路由无感兼容与全局 `⌘K` 命令直达 | 23 | [01-STEP23](../../plans/v3-craft-and-world-runtime/craft-ux/01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) §23.1～§23.2 | step23 “ia-8-domains”、“legacy-route-redirect”、“cmdk-jump-ok” |
+| C77 | 严格中英单语纯净度（零内部代号尾缀/零裸枚举）与可拖拽弹性分栏 | 23 | [01-STEP23](../../plans/v3-craft-and-world-runtime/craft-ux/01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) §23.3～§23.4 | step23 “zh-zero-codename”、“i18n-guard-ok”、“resizable-pane-persist” |
 
 ---
 

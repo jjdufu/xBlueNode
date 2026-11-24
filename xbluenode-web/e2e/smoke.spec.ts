@@ -28,52 +28,21 @@ function makeSmokeJwt(): string {
 }
 
 const SHELL_SMOKE_ROUTES: readonly SmokeRouteAssertion[] = [
-  { path: "/", sidebarLabel: "系统概览", heading: "系统概览" },
-  {
-    path: "/ingest",
-    sidebarLabel: "AxIngest · 知识入库",
-    heading: "AxIngest · 知识入库",
-  },
-  {
-    path: "/query",
-    sidebarLabel: "AxQuery · 智能问答",
-    heading: "AxQuery · 智能问答",
-  },
-  {
-    path: "/graph",
-    sidebarLabel: "xBlueGraph · 图浏览",
-    heading: "xBlueGraph · 图浏览",
-  },
-  {
-    path: "/studio",
-    sidebarLabel: "xBlueStudio · 节点建模",
-    heading: "xBlueStudio · 节点建模",
-  },
-  {
-    path: "/flow",
-    sidebarLabel: "AxFlow · 编排",
-    heading: "AxFlow · 编排",
-  },
-  {
-    path: "/sim",
-    sidebarLabel: "AxSim · 因果推演",
-    heading: "AxSim · 因果推演",
-  },
-  {
-    path: "/view",
-    sidebarLabel: "xBlueView · 孪生驾驶舱",
-    heading: "xBlueView · 孪生驾驶舱",
-  },
-  {
-    path: "/guard",
-    sidebarLabel: "AxGuard · 安全治理",
-    heading: "AxGuard · 安全治理",
-  },
-  {
-    path: "/ops",
-    sidebarLabel: "AxOps · 运维与交付",
-    heading: "AxOps · 运维与交付",
-  },
+  { path: "/", sidebarLabel: "概览", heading: "概览" },
+  { path: "/hub", sidebarLabel: "数据与知识", heading: "数据与知识" },
+  { path: "/analytics", sidebarLabel: "探索与制图", heading: "探索与制图" },
+  { path: "/studio", sidebarLabel: "本体工作室", heading: "本体工作室" },
+  { path: "/flow", sidebarLabel: "编排与告警", heading: "编排与告警" },
+  { path: "/agents", sidebarLabel: "智能体中心", heading: "智能体中心" },
+  { path: "/sim", sidebarLabel: "推演沙盘", heading: "推演沙盘" },
+  { path: "/view", sidebarLabel: "孪生看板", heading: "孪生看板" },
+  { path: "/governance", sidebarLabel: "系统治理", heading: "系统治理" },
+  { path: "/ingest", sidebarLabel: "数据与知识", heading: "数据与知识" },
+  { path: "/query", sidebarLabel: "探索与制图", heading: "探索与制图" },
+  { path: "/graph", sidebarLabel: "本体工作室", heading: "本体工作室" },
+  { path: "/alerts", sidebarLabel: "编排与告警", heading: "编排与告警" },
+  { path: "/guard", sidebarLabel: "系统治理", heading: "权限与安全" },
+  { path: "/ops", sidebarLabel: "系统治理", heading: "运维与备份" },
 ];
 
 async function installDeterministicApiMocks(
@@ -530,14 +499,14 @@ test("all registered routes and /login (password + OIDC + PAT accordion) render 
       page.getByRole("link", { name: routeSpec.sidebarLabel })
     ).toBeVisible();
     await expect(
-      page.getByRole("heading", { level: 1, name: routeSpec.heading })
+      page.getByRole("heading", { level: 1, name: routeSpec.heading }).first()
     ).toBeVisible();
   }
 
   // 1. Primary Username + Password login flow & dynamic OIDC button
   await page.goto("/login");
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxGuard · 统一身份认证" })
+    page.getByRole("heading", { level: 1, name: "登录" })
   ).toBeVisible();
   await expect(page.getByTestId("oidc-login-btn")).toContainText(
     "企业单点登录 (OIDC)"
@@ -548,7 +517,7 @@ test("all registered routes and /login (password + OIDC + PAT accordion) render 
   await page.getByTestId("login-submit-btn").click();
   await expect(page).toHaveURL(/\/$/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "系统概览" })
+    page.getByRole("heading", { level: 1, name: "概览" })
   ).toBeVisible();
 
   // 2. Collapsible PAT login flow
@@ -558,7 +527,7 @@ test("all registered routes and /login (password + OIDC + PAT accordion) render 
   await page.getByTestId("pat-submit-btn").click();
   await expect(page).toHaveURL(/\/$/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "系统概览" })
+    page.getByRole("heading", { level: 1, name: "概览" })
   ).toBeVisible();
 
   expect(leakedTenantUrls).toEqual([]);

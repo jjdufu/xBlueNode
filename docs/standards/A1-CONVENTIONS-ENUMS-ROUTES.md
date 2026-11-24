@@ -60,27 +60,22 @@ Sidecar（`axpoint-parser`，端口 `8001`，只在内部网络暴露）：`/hea
 
 ## 3. 页面注册表（前端唯一来源）
 
-`xbluenode-web/src/modules/registry.ts` 按本表生成侧栏与路由；`App.tsx` 使用 `react-router` 的 `createBrowserRouter` 生成路由树。
+`xbluenode-web/src/modules/registry.ts` 按本表生成 8 个高频业务工作域侧栏 + 底部折叠系统治理入口、兼容重定向与公开路由；`App.tsx` 使用 `react-router` 的 `createBrowserRouter` 生成路由树并挂载全局 `⌘K / Ctrl+K` 命令直达面板（Step 23）。侧栏与内页一级标题遵循无品牌前缀单语纯净规范。
 
-| key | 页面文件 | 路由 | 侧栏标签 | 所属 Step |
-| :--- | :--- | :--- | :--- | :--- |
-| `dashboard` | `DashboardPage.tsx` | `/` | 系统概览 | 仓库已有 |
-| `axhub` | `AxHubPage.tsx` | `/hub` | AxHub · 数据接入 | Step 02 |
-| `axingest` | `AxIngestPage.tsx` | `/ingest` | AxIngest · 知识入库 | 仓库已有 |
-| `analytics` | `AnalyticsStudioPage.tsx` | `/analytics` | AxAnalytics · 分析制表 | Step 04 |
-| `axquery` | `AxQueryPage.tsx` | `/query` | AxQuery · 智能问答 | 仓库已有，Step 04 / 09 扩展 |
-| `xbluegraph` | `XBlueGraphPage.tsx` | `/graph` | xBlueGraph · 图浏览 | 仓库已有，Step 03 / 11 扩展 |
-| `xbluestudio` | `XBlueStudioPage.tsx` | `/studio` | xBlueStudio · 节点建模 | 仓库已有，Step 05 扩展 |
-| `axflow` | `AxFlowPage.tsx` | `/flow` | AxFlow · 编排 | 仓库已有，Step 07 扩展 |
-| `axalerts` | `AxAlertsPage.tsx` | `/alerts` | AxFlow · 运营告警 | Step 08 |
-| `axagent` | `AxAgentPage.tsx` | `/agents` | AxAgent · 智能体 | Step 09 |
-| `axsim` | `AxSimPage.tsx` | `/sim` | AxSim · 因果推演 | 仓库已有，Step 10 扩展 |
-| `xblueview` | `XBlueViewPage.tsx` | `/view` | xBlueView · 孪生驾驶舱 | Step 11 |
-| `axguard` | `AxGuardPage.tsx` | `/guard` | AxGuard · 权限与审计 | Step 13 |
-| `axops` | `AxOpsPage.tsx` | `/ops` | AxOps · 运维与模板 | Step 14 |
-| —（公开，无侧栏） | `LoginPage.tsx` | `/login` | — | Step 00 |
-| —（公开，无侧栏） | `SharePage.tsx` | `/share/:token` | — | Step 12 |
-| —（公开，无侧栏） | `AgentEmbedPage.tsx` | `/share/agent/:token` | — | Step 09 |
+| key | 页面文件 | 主路由 | 兼容旧路由映射 | 中文侧栏与 H1 | 英文侧栏与 H1 | 所属 Step |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `dashboard` | `DashboardPage.tsx` | `/` | — | 概览 | Overview | 仓库已有 / Step 19 / Step 23 |
+| `axhub` | `AxHubPage.tsx` | `/hub` | `/ingest` → `/hub?tab=knowledge` | 数据与知识 | Data & Knowledge | Step 02 / Step 23 |
+| `axanalytics` | `AnalyticsStudioPage.tsx` | `/analytics` | `/query` → `/analytics?tab=ask` | 探索与制图 | Explore & Charts | Step 04 / Step 23 / Step 25 |
+| `xbluestudio` | `XBlueStudioPage.tsx` | `/studio` | `/graph` → `/studio?tab=explorer` | 本体工作室 | Ontology Studio | Step 05 / Step 18 / Step 23 |
+| `axflow` | `AxFlowPage.tsx` | `/flow` | `/alerts` → `/flow?tab=alerts` | 编排与告警 | Automation & Alerts | Step 07 / Step 08 / Step 23 |
+| `axagent` | `AxAgentPage.tsx` | `/agents` | — | 智能体中心 | Agents & APIs | Step 09 / Step 21 / Step 23 |
+| `axsim` | `AxSimPage.tsx` | `/sim` | — | 推演沙盘 | Simulation | Step 10 / Step 20 / Step 23 |
+| `xblueview` | `XBlueViewPage.tsx` | `/view`（`/view/:slug`） | — | 孪生看板 | Twin Cockpits | Step 11 / Step 20 / Step 23 |
+| `governance` | `GovernancePage.tsx`（含 `AxGuardPage` / `AxOpsPage`） | `/governance` | 保留 `/guard`、`/ops` 直接渲染 | 系统治理 | Governance & Ops | Step 13 / Step 14 / Step 23 |
+| —（公开，无侧栏） | `LoginPage.tsx` | `/login` | — | 登录 | Sign In | Step 00 / Step 13 / Step 23 |
+| —（公开，无侧栏） | `SharePage.tsx` | `/share/:token` | — | 安全分享 | Secure Share | Step 12 |
+| —（公开，无侧栏） | `AgentEmbedPage.tsx` | `/share/agent/:token` | — | 智能对话 | Assistant | Step 09 |
 
 ---
 

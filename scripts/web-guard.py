@@ -55,6 +55,31 @@ MICROCOPY_ANTI_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ),
 ]
 
+TX_CALL_FIRST_ARG_RE = re.compile(
+    r"""\btx\(\s*([`"'])((?:\\.|(?!\1).)*)\1""",
+    re.DOTALL,
+)
+TEMPLATE_INTERPOLATION_RE = re.compile(r"\$\{[^}]*\}")
+
+I18N_PURITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (
+        "zh-module-codename-prefix",
+        re.compile(
+            r"\b(AxHub|AxIngest|AxParser|AxGraph|AxAnalytics|AxQuery|xBlueStudio|"
+            r"xBlueGraph|AxFlow|AxAgent|AxBuilder|AxSim|xBlueView|AxGuard|AxOps|AxAlerts)\s*·"
+        ),
+    ),
+    (
+        "zh-raw-screaming-enum",
+        re.compile(r"\b[A-Z]{2,}_[A-Z0-9_]+\b"),
+    ),
+]
+META_CODENAME_PREFIX_RE = re.compile(
+    r"\b(?:label|shortZh)\s*:\s*\"[^\"]*"
+    r"\b(AxHub|AxIngest|AxParser|AxGraph|AxAnalytics|AxQuery|xBlueStudio|"
+    r"xBlueGraph|AxFlow|AxAgent|AxBuilder|AxSim|xBlueView|AxGuard|AxOps|AxAlerts)\b"
+)
+
 
 def rel(path: Path) -> str:
     return str(path.relative_to(REPO_ROOT)) if path.is_relative_to(REPO_ROOT) else str(path)
@@ -123,6 +148,34 @@ def check_tsconfig(errors: list[str]) -> None:
         errors.append(f"{rel(tsconfig_path)}: compilerOptions.strict 必须为 true")
 
 
+def check_i18n_purity(path: Path, raw: str, errors: list[str]) -> None:
+    """扫描 tx() 中文分支与 meta.ts，阻断内部模块代号前缀、productTag 与裸大写枚举外泄（Step 23 §23.3.2）。"""
+    for match in TX_CALL_FIRST_ARG_RE.finditer(raw):
+        quote = match.group(1)
+        zh_literal = match.group(2)
+        if quote == "`":
+            zh_literal = TEMPLATE_INTERPOLATION_RE.sub("", zh_literal)
+        lineno = raw.count("\n", 0, match.start()) + 1
+        for rule_id, pat in I18N_PURITY_PATTERNS:
+            hit = pat.search(zh_literal)
+            if hit:
+                errors.append(
+                    f"{rel(path)}:{lineno}: 违反双语单态纯净度 [{rule_id}] 命中 {hit.group(0)!r}"
+                )
+
+    if path == SRC_ROOT / "modules" / "meta.ts":
+        for lineno, line in enumerate(raw.splitlines(), 1):
+            if re.search(r"\bproductTag\b", line):
+                errors.append(
+                    f"{rel(path)}:{lineno}: 禁止在 meta.ts 定义或保留 productTag 属性 [meta-product-tag]"
+                )
+            hit = META_CODENAME_PREFIX_RE.search(line)
+            if hit:
+                errors.append(
+                    f"{rel(path)}:{lineno}: meta.ts 中文标题禁止包含模块代号 {hit.group(1)!r} [meta-codename-prefix]"
+                )
+
+
 def scan_source_file(path: Path, errors: list[str]) -> None:
     raw = path.read_text(encoding="utf-8")
     raw_lines = raw.splitlines()
@@ -136,6 +189,8 @@ def scan_source_file(path: Path, errors: list[str]) -> None:
                 errors.append(
                     f"{rel(path)}:{lineno}: 违反产品微文案规范 [{rule_id}] 命中 {m.group(0)!r}"
                 )
+
+    check_i18n_purity(path, raw, errors)
 
     stripped = strip_ts_comments_and_strings(raw)
     for lineno, line in enumerate(stripped.splitlines(), 1):

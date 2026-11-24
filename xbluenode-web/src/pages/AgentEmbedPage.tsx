@@ -394,7 +394,7 @@ export function AgentEmbedPage() {
               <span className="inline-block h-2 w-2 rounded-full bg-xblue shrink-0" />
               <Bot className="h-4 w-4 text-xblue shrink-0" />
               <h1 className="text-sm font-semibold tracking-tight truncate">
-                {tx("AxAgent · 智能对话", "AxAgent · Assistant")}
+                {tx("智能对话", "Assistant")}
               </h1>
               {conversationId ? (
                 <Badge variant="xblue" data-testid="embed-conv-badge">
