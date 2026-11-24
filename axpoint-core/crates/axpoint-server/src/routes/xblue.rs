@@ -3431,12 +3431,72 @@ async fn write_link_metrics_handler(
 }
 
 async fn compute_convex_hull_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
-    ApiJson(_req): ApiJson<axpoint_domain::geo_ops::ConvexHullRequest>,
+    ApiJson(req): ApiJson<axpoint_domain::geo_ops::ConvexHullRequest>,
 ) -> Result<Json<axpoint_domain::geo_ops::ConvexHullResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
-    Err(HttpError(AppError::Unsupported("GEO_OPS_UNSUPPORTED")))
+    for pt in &req.points {
+        axpoint_domain::geo_ops::validate_geo_point(*pt)?;
+    }
+
+    let mut all_points = req.points.clone();
+    let should_query_nodes = req.points.is_empty()
+        || req.type_name.is_some()
+        || !req.node_ids.is_empty()
+        || req.subgraph.is_some();
+
+    if should_query_nodes {
+        let target_slug = req
+            .subgraph
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("main");
+        authorize_subgraph_read(&state, &headers, &principal, target_slug).await?;
+        let client_ip = crate::routes::auth::extract_client_ip(&headers);
+        if let Some(tn) = req
+            .type_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let _ = axpoint_server::policy::authorize_resource_for_store(
+                &state.store,
+                &state.cedar,
+                &principal,
+                Permission::DataRead,
+                axpoint_domain::guard::GrantResourceKind::NodeType,
+                tn,
+                &client_ip,
+            )
+            .await?;
+        }
+        let policy = axpoint_server::policy::build_policy_context_for_subgraph(
+            &state.store,
+            &state.cedar,
+            &principal,
+            target_slug,
+            false,
+            &client_ip,
+        )
+        .await?;
+        let db_points = state
+            .store
+            .collect_governed_geo_points(
+                &principal.tenant_id,
+                target_slug,
+                req.type_name.as_deref(),
+                &req.node_ids,
+                (!policy.bypass_row_policies).then_some(&policy.node_types),
+            )
+            .await?;
+        all_points.extend(db_points);
+    }
+
+    let resp = axpoint_domain::geo_ops::compute_convex_hull(&all_points)?;
+    Ok(Json(resp))
 }
 
 async fn get_competency_suite_handler(

@@ -7,44 +7,94 @@ import {
   MarkerType,
   MiniMap,
   ReactFlow,
+  ReactFlowProvider,
+  SelectionMode,
   applyNodeChanges,
   getSmoothStepPath,
+  useNodesInitialized,
   type Connection,
   type Edge,
   type EdgeProps,
   type EdgeTypes,
   type NodeTypes,
+  type OnNodeDrag,
   type OnNodesChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import ELK from "elkjs/lib/elk.bundled.js";
-import { GitBranch, LayoutGrid, Link2, Plus } from "lucide-react";
+import {
+  Blocks,
+  GitBranch,
+  GitMerge,
+  Layers,
+  LayoutGrid,
+  Link2,
+  MousePointerSquareDashed,
+  Plus,
+  Redo2,
+  Undo2,
+} from "lucide-react";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 import { useTheme } from "@/lib/theme";
-import type { Cardinality } from "@/lib/api/enums";
+import type { Cardinality, StudioCanvasViewMode } from "@/lib/api/enums";
 import type {
   EdgeTypeSpec,
+  MappingSpec,
   NodeConsumptionCounts,
   NodeTypeSpec,
+  SchemaDoc,
   ValidationIssue,
 } from "@/lib/api/xblue";
-import { Button, Input, Select } from "@/components/ui/primitives";
+import {
+  HelperLinesOverlay,
+} from "@/components/canvas/HelperLinesOverlay";
+import {
+  SelectionAlignToolbar,
+} from "@/components/canvas/SelectionAlignToolbar";
+import {
+  computeAlignmentGuides,
+  computeSelectionAlignment,
+  type AlignAction,
+  type HorizontalGuideLine,
+  type MeasuredBox,
+  type VerticalGuideLine,
+} from "@/components/canvas/alignmentGuides";
+import {
+  allocateMultiPorts,
+  computeCollisionFreeEdgeLabels,
+  computeElkOrthogonalLayout,
+} from "@/components/canvas/elkOrthogonalLayout";
+import { useAnimatedNodes } from "@/components/canvas/useAnimatedNodes";
+import {
+  Button,
+  IconButton,
+  Input,
+  SegmentedControl,
+  Select,
+} from "@/components/ui/primitives";
 import { cn } from "@/lib/utils";
+import {
+  DomainGroupNode,
+  type StudioDomainGroupNode,
+} from "./DomainGroupNode";
 import {
   StudioCanvasNodeCard,
   type StudioFlowNode,
 } from "./NodeTypeCard";
+import { PipelineViewCanvas } from "./PipelineViewCanvas";
+import { computeSubordinateTierMap } from "./tierFolding";
 
 export interface StudioEdgeData extends Record<string, unknown> {
   spec: EdgeTypeSpec;
   edgeIndex: number;
   selected: boolean;
   isDark: boolean;
+  labelCenter?: { x: number; y: number };
   onSelectEdge: (index: number) => void;
 }
 
 export type StudioFlowEdge = Edge<StudioEdgeData, "studioEdge">;
+type AnyStudioRfNode = StudioFlowNode | StudioDomainGroupNode;
 
 const CARDINALITY_SHORT: Record<Cardinality, string> = {
   ONE_TO_ONE: "1:1",
@@ -64,22 +114,22 @@ function StudioRelationshipEdge({
   markerEnd,
   data,
 }: EdgeProps<StudioFlowEdge>) {
-  const [edgePath, labelX, labelY] = getSmoothStepPath({
+  const [edgePath, defaultLabelX, defaultLabelY] = getSmoothStepPath({
     sourceX,
     sourceY,
     sourcePosition,
     targetX,
     targetY,
     targetPosition,
-    borderRadius: 10,
-    offset: 24,
+    borderRadius: 8,
+    offset: 28,
   });
 
   const spec = data?.spec;
   const selected = Boolean(data?.selected);
   const isDark = Boolean(data?.isDark);
-  const edgeIndex = data?.edgeIndex ?? 0;
-  const staggerY = edgeIndex % 3 === 0 ? -10 : edgeIndex % 3 === 1 ? 10 : 0;
+  const resolvedX = data?.labelCenter?.x ?? defaultLabelX;
+  const resolvedY = data?.labelCenter?.y ?? defaultLabelY;
   const badgeText = spec
     ? CARDINALITY_SHORT[spec.cardinality] ?? "M:N"
     : "M:N";
@@ -107,7 +157,7 @@ function StudioRelationshipEdge({
           <div
             style={{
               position: "absolute",
-              transform: `translate(-50%, -50%) translate(${labelX}px,${labelY + staggerY}px)`,
+              transform: `translate(-50%, -50%) translate(${resolvedX}px,${resolvedY}px)`,
               pointerEvents: "all",
             }}
             className="nodrag nopan"
@@ -120,7 +170,7 @@ function StudioRelationshipEdge({
                 data?.onSelectEdge(data.edgeIndex);
               }}
               className={cn(
-                "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-mono-tech shadow-xs backdrop-blur-xs transition-colors cursor-pointer",
+                "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-mono-tech shadow-xs backdrop-blur-xs transition-colors cursor-pointer whitespace-nowrap",
                 selected
                   ? "border-xblue bg-xblue text-white"
                   : spec.maturity === "PROPOSED"
@@ -149,6 +199,7 @@ function StudioRelationshipEdge({
 
 const NODE_TYPES: NodeTypes = {
   studioNode: StudioCanvasNodeCard,
+  domainGroup: DomainGroupNode,
 };
 
 const EDGE_TYPES: EdgeTypes = {
@@ -158,12 +209,21 @@ const EDGE_TYPES: EdgeTypes = {
 export interface StudioCanvasProps {
   nodeTypes: NodeTypeSpec[];
   edgeTypes: EdgeTypeSpec[];
+  workingDoc?: SchemaDoc;
+  datasetNames?: readonly string[];
   issues: ValidationIssue[];
   consumptionByNodeType?: Record<string, NodeConsumptionCounts>;
   selectedNodeName: string | null;
   selectedEdgeIndex: number | null;
+  selectedMappingIndex?: number | null;
+  canUndo?: boolean;
+  canRedo?: boolean;
+  onUndo?: () => void;
+  onRedo?: () => void;
   onSelectNode: (name: string | null) => void;
   onSelectEdge: (edgeIndex: number | null) => void;
+  onSelectMapping?: (mappingIndex: number) => void;
+  onCreateMapping?: (mapping: MappingSpec) => void;
   onUpdateNodePosition: (name: string, posX: number, posY: number) => void;
   onApplyLayoutPositions: (
     positions: Record<string, { x: number; y: number }>
@@ -175,15 +235,24 @@ export interface StudioCanvasProps {
   onOpenAppPackaging?: (nodeName: string) => void;
 }
 
-export function StudioCanvas({
+function StudioCanvasInner({
   nodeTypes,
   edgeTypes,
+  workingDoc,
+  datasetNames = [],
   issues,
   consumptionByNodeType,
   selectedNodeName,
   selectedEdgeIndex,
+  selectedMappingIndex = null,
+  canUndo = false,
+  canRedo = false,
+  onUndo,
+  onRedo,
   onSelectNode,
   onSelectEdge,
+  onSelectMapping,
+  onCreateMapping,
   onUpdateNodePosition,
   onApplyLayoutPositions,
   onCreateNodeType,
@@ -192,10 +261,23 @@ export function StudioCanvas({
   onOpenLineage,
   onOpenAppPackaging,
 }: StudioCanvasProps) {
-  const { tx } = useI18n();
+  const { tx, tEnum } = useI18n();
   const { isDark } = useTheme();
   const { can } = usePrincipal();
   const canEdit = can("STUDIO_EDIT");
+  const nodesInitialized = useNodesInitialized();
+  const { animatePositions } = useAnimatedNodes(240);
+
+  const [viewMode, setViewMode] =
+    useState<StudioCanvasViewMode>("ONTOLOGY_TOPOLOGY");
+  const [groupByDomain, setGroupByDomain] = useState(false);
+  const [collapsedDomains, setCollapsedDomains] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [foldedMasters, setFoldedMasters] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [marqueeMode, setMarqueeMode] = useState(false);
 
   const [quickAddNodeOpen, setQuickAddNodeOpen] = useState(false);
   const [newNodeName, setNewNodeName] = useState("");
@@ -206,7 +288,13 @@ export function StudioCanvas({
   const [newEdgeDst, setNewEdgeDst] = useState("");
   const [layoutRunning, setLayoutRunning] = useState(false);
 
+  const [helperGuides, setHelperGuides] = useState<{
+    verticalLines: readonly VerticalGuideLine[];
+    horizontalLines: readonly HorizontalGuideLine[];
+  }>({ verticalLines: [], horizontalLines: [] });
+
   const draggingNodeIdRef = useRef<string | null>(null);
+  const snappedPosRef = useRef<{ x: number; y: number } | null>(null);
 
   const issueStatsByNode = useMemo(() => {
     const stats: Record<string, { count: number; hasError: boolean }> = {};
@@ -227,19 +315,104 @@ export function StudioCanvas({
     return stats;
   }, [issues, nodeTypes]);
 
-  // Collision-free initial placement using full card dimensions (224x156 + 44px margin)
-  const flowNodes: StudioFlowNode[] = useMemo(() => {
-    const CARD_MIN_DX = 272;
-    const CARD_MIN_DY = 188;
+  const { dependentsByMaster, masterByDependent } = useMemo(
+    () => computeSubordinateTierMap(nodeTypes, edgeTypes),
+    [nodeTypes, edgeTypes]
+  );
+
+  const hiddenByTierFold = useMemo(() => {
+    const set = new Set<string>();
+    for (const [depName, masterName] of Object.entries(masterByDependent)) {
+      if (foldedMasters.has(masterName)) {
+        set.add(depName);
+      }
+    }
+    return set;
+  }, [foldedMasters, masterByDependent]);
+
+  const toggleDomainCollapse = useCallback((dg: string) => {
+    setCollapsedDomains((prev) => {
+      const next = new Set(prev);
+      if (next.has(dg)) {
+        next.delete(dg);
+      } else {
+        next.add(dg);
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleTierFold = useCallback((masterName: string) => {
+    setFoldedMasters((prev) => {
+      const next = new Set(prev);
+      if (next.has(masterName)) {
+        next.delete(masterName);
+      } else {
+        next.add(masterName);
+      }
+      return next;
+    });
+  }, []);
+
+  const visibleNodeSpecs = useMemo(
+    () => nodeTypes.filter((nt) => !hiddenByTierFold.has(nt.name)),
+    [hiddenByTierFold, nodeTypes]
+  );
+
+  const visibleNodeNameSet = useMemo(
+    () => new Set(visibleNodeSpecs.map((n) => n.name)),
+    [visibleNodeSpecs]
+  );
+
+  const allNodeNameSet = useMemo(
+    () => new Set(nodeTypes.map((n) => n.name)),
+    [nodeTypes]
+  );
+
+  const activeEdgeInputs = useMemo(
+    () =>
+      edgeTypes
+        .map((et, idx) => ({ et, idx }))
+        .filter(
+          ({ et }) =>
+            visibleNodeNameSet.has(et.src_type_name) &&
+            visibleNodeNameSet.has(et.dst_type_name)
+        )
+        .map(({ et, idx }) => ({
+          id: `edge-${idx}-${et.src_type_name}-${et.name}-${et.dst_type_name}`,
+          source: et.src_type_name,
+          target: et.dst_type_name,
+          et,
+          idx,
+        })),
+    [edgeTypes, visibleNodeNameSet]
+  );
+
+  const { portsByNode, edgeBindings } = useMemo(
+    () =>
+      allocateMultiPorts(
+        visibleNodeSpecs.map((n) => ({ id: n.name })),
+        activeEdgeInputs.map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+        }))
+      ),
+    [activeEdgeInputs, visibleNodeSpecs]
+  );
+
+  // Build initial collision-free positions + optional compound domain swimlanes
+  const computedRfNodes: AnyStudioRfNode[] = useMemo(() => {
+    const CARD_MIN_DX = 384;
+    const CARD_MIN_DY = 224;
     const placed: Array<{ x: number; y: number }> = [];
-    return nodeTypes.map((nt, idx) => {
-      const st = issueStatsByNode[nt.name] ?? { count: 0, hasError: false };
-      let x = Number.isFinite(nt.pos_x)
-        ? nt.pos_x
-        : 96 + (idx % 3) * 320;
+    const absPositions = new Map<string, { x: number; y: number }>();
+
+    visibleNodeSpecs.forEach((nt, idx) => {
+      let x = Number.isFinite(nt.pos_x) ? nt.pos_x : 96 + (idx % 3) * 420;
       let y = Number.isFinite(nt.pos_y)
         ? nt.pos_y
-        : 96 + Math.floor(idx / 3) * 212;
+        : 96 + Math.floor(idx / 3) * 244;
       let shiftStep = 0;
       while (
         placed.some(
@@ -256,38 +429,136 @@ export function StudioCanvas({
         }
       }
       placed.push({ x, y });
-      return {
+      absPositions.set(nt.name, { x, y });
+    });
+
+    const domainGroups = new Map<string, NodeTypeSpec[]>();
+    if (groupByDomain) {
+      for (const nt of visibleNodeSpecs) {
+        const dg = nt.domain_group?.trim();
+        if (dg) {
+          const list = domainGroups.get(dg) ?? [];
+          list.push(nt);
+          domainGroups.set(dg, list);
+        }
+      }
+    }
+
+    const outNodes: AnyStudioRfNode[] = [];
+    const domainOrigins = new Map<string, { x: number; y: number }>();
+
+    let domainIdx = 0;
+    for (const [dg, members] of domainGroups.entries()) {
+      const collapsed = collapsedDomains.has(dg);
+      const memberCoords = members.map(
+        (m) => absPositions.get(m.name) ?? { x: 96, y: 96 }
+      );
+      const minX = Math.min(...memberCoords.map((c) => c.x)) - 28;
+      const minY = Math.min(...memberCoords.map((c) => c.y)) - 52;
+      const maxX = Math.max(...memberCoords.map((c) => c.x + 240)) + 28;
+      const maxY = Math.max(...memberCoords.map((c) => c.y + 196)) + 28;
+
+      const gx = collapsed ? 96 + domainIdx * 320 : minX;
+      const gy = collapsed ? 96 : minY;
+      const gw = collapsed ? 264 : Math.max(304, maxX - minX);
+      const gh = collapsed ? 92 : Math.max(248, maxY - minY);
+      domainIdx += 1;
+
+      domainOrigins.set(dg, { x: gx, y: gy });
+      outNodes.push({
+        id: `domain:${dg}`,
+        type: "domainGroup",
+        position: { x: gx, y: gy },
+        style: { width: gw, height: gh },
+        data: {
+          domainGroup: dg,
+          memberCount: members.length,
+          collapsed,
+          width: gw,
+          height: gh,
+          onToggleCollapse: toggleDomainCollapse,
+        },
+      });
+    }
+
+    for (const nt of visibleNodeSpecs) {
+      const dg = groupByDomain ? nt.domain_group?.trim() : undefined;
+      if (dg && collapsedDomains.has(dg)) {
+        continue;
+      }
+      const abs = absPositions.get(nt.name) ?? { x: 96, y: 96 };
+      const parentOrigin = dg ? domainOrigins.get(dg) : undefined;
+      const pos = parentOrigin
+        ? {
+            x: Math.max(20, abs.x - parentOrigin.x),
+            y: Math.max(48, abs.y - parentOrigin.y),
+          }
+        : abs;
+      const st = issueStatsByNode[nt.name] ?? { count: 0, hasError: false };
+      const alloc = portsByNode[nt.name] ?? {
+        inPorts: ["in-0"],
+        outPorts: ["out-0"],
+      };
+      const deps = dependentsByMaster[nt.name] ?? [];
+
+      outNodes.push({
         id: nt.name,
         type: "studioNode",
-        position: { x, y },
+        position: pos,
+        ...(parentOrigin
+          ? {
+              parentId: `domain:${dg}`,
+              extent: "parent" as const,
+            }
+          : {}),
         data: {
           spec: nt,
           selected: selectedNodeName === nt.name,
           issueCount: st.count,
           hasError: st.hasError,
+          inPorts: alloc.inPorts,
+          outPorts: alloc.outPorts,
+          dependentSpecs: deps,
+          tierFolded: foldedMasters.has(nt.name),
+          onToggleTierFold: toggleTierFold,
+          onSelectFoldedSpec: (specName: string) => {
+            onSelectEdge(null);
+            onSelectNode(specName);
+          },
           consumption: consumptionByNodeType?.[nt.name] ?? null,
           onConfirmNode,
           onDoubleClickNode: onOpenLineage,
           onOpenAppPackaging,
         },
-      };
-    });
+      });
+    }
+
+    return outNodes;
   }, [
-    nodeTypes,
-    selectedNodeName,
-    issueStatsByNode,
+    collapsedDomains,
     consumptionByNodeType,
+    dependentsByMaster,
+    foldedMasters,
+    groupByDomain,
+    issueStatsByNode,
     onConfirmNode,
-    onOpenLineage,
     onOpenAppPackaging,
+    onOpenLineage,
+    onSelectEdge,
+    onSelectNode,
+    portsByNode,
+    selectedNodeName,
+    toggleDomainCollapse,
+    toggleTierFold,
+    visibleNodeSpecs,
   ]);
 
-  const [liveNodes, setLiveNodes] = useState<StudioFlowNode[]>(flowNodes);
+  const [liveNodes, setLiveNodes] = useState<AnyStudioRfNode[]>(computedRfNodes);
 
   useEffect(() => {
     setLiveNodes((prev) => {
       const prevMap = new Map(prev.map((n) => [n.id, n]));
-      return flowNodes.map((nextNode) => {
+      return computedRfNodes.map((nextNode) => {
         const existing = prevMap.get(nextNode.id);
         if (
           existing &&
@@ -297,45 +568,135 @@ export function StudioCanvas({
             ...nextNode,
             position: existing.position,
             measured: existing.measured,
+            selected: existing.selected,
             dragging: existing.dragging,
-          };
+          } as AnyStudioRfNode;
         }
-        if (existing?.measured) {
+        if (existing) {
           return {
             ...nextNode,
             measured: existing.measured,
-          };
+            selected: existing.selected,
+          } as AnyStudioRfNode;
         }
         return nextNode;
       });
     });
-  }, [flowNodes]);
+  }, [computedRfNodes]);
 
-  const handleNodesChange: OnNodesChange<StudioFlowNode> = useCallback(
+  const handleNodesChange: OnNodesChange<AnyStudioRfNode> = useCallback(
     (changes) => {
       setLiveNodes((nds) => applyNodeChanges(changes, nds));
     },
     []
   );
 
-  const nodeNameSet = useMemo(
-    () => new Set(nodeTypes.map((n) => n.name)),
-    [nodeTypes]
-  );
+  // Absolute bounding boxes of all rendered object cards for collision-free label routing
+  const absoluteNodeBoxes = useMemo(() => {
+    const parentPos = new Map<string, { x: number; y: number }>();
+    for (const n of liveNodes) {
+      if (n.type === "domainGroup") {
+        parentPos.set(n.id, n.position);
+      }
+    }
+    const map = new Map<string, MeasuredBox>();
+    for (const n of liveNodes) {
+      const p = n.parentId ? parentPos.get(n.parentId) : undefined;
+      const absX = (p?.x ?? 0) + n.position.x;
+      const absY = (p?.y ?? 0) + n.position.y;
+      const defaultW = n.type === "domainGroup" ? 264 : 240;
+      const defaultH = n.type === "domainGroup" ? 92 : 196;
+      map.set(n.id, {
+        id: n.id,
+        x: absX,
+        y: absY,
+        width: n.measured?.width ?? defaultW,
+        height: n.measured?.height ?? defaultH,
+      });
+    }
+    return map;
+  }, [liveNodes]);
 
   const flowEdges: StudioFlowEdge[] = useMemo(() => {
     const activeStroke = isDark ? "#3b82f6" : "#2563eb";
     const idleStroke = isDark ? "#71717a" : "#94a3b8";
-    return edgeTypes
-      .map((et, idx) => ({ et, idx }))
-      .filter(
-        ({ et }) =>
-          nodeNameSet.has(et.src_type_name) && nodeNameSet.has(et.dst_type_name)
-      )
-      .map(({ et, idx }) => ({
-        id: `edge-${idx}-${et.src_type_name}-${et.name}-${et.dst_type_name}`,
-        source: et.src_type_name,
-        target: et.dst_type_name,
+
+    const resolveEndpointId = (typeName: string): string => {
+      if (!groupByDomain) return typeName;
+      const spec = nodeTypes.find((n) => n.name === typeName);
+      const dg = spec?.domain_group?.trim();
+      if (dg && collapsedDomains.has(dg)) {
+        return `domain:${dg}`;
+      }
+      return typeName;
+    };
+
+    const resolvedEdges = activeEdgeInputs
+      .map((entry) => {
+        const sourceId = resolveEndpointId(entry.source);
+        const targetId = resolveEndpointId(entry.target);
+        return { ...entry, sourceId, targetId };
+      })
+      .filter((entry) => entry.sourceId !== entry.targetId);
+
+    const cardObstacles: MeasuredBox[] = liveNodes
+      .filter((n) => n.type === "studioNode")
+      .map((n) => absoluteNodeBoxes.get(n.id))
+      .filter((b): b is MeasuredBox => Boolean(b));
+
+    const labelInputs = resolvedEdges.map((entry) => {
+      const binding = edgeBindings[entry.id];
+      const srcBox = absoluteNodeBoxes.get(entry.sourceId) ?? {
+        id: entry.sourceId,
+        x: 96,
+        y: 96,
+        width: 240,
+        height: 180,
+      };
+      const dstBox = absoluteNodeBoxes.get(entry.targetId) ?? {
+        id: entry.targetId,
+        x: 480,
+        y: 96,
+        width: 240,
+        height: 180,
+      };
+      const srcRatio = binding
+        ? (binding.sourcePortIndex + 1) / (binding.sourcePortCount + 1)
+        : 0.5;
+      const dstRatio = binding
+        ? (binding.targetPortIndex + 1) / (binding.targetPortCount + 1)
+        : 0.5;
+      return {
+        id: entry.id,
+        sourceX: srcBox.x + srcBox.width,
+        sourceY: srcBox.y + srcBox.height * srcRatio,
+        targetX: dstBox.x,
+        targetY: dstBox.y + dstBox.height * dstRatio,
+        pillWidth: Math.max(108, entry.et.name.length * 7.5 + 52),
+        pillHeight: 26,
+      };
+    });
+
+    const labelCenters = computeCollisionFreeEdgeLabels(
+      labelInputs,
+      cardObstacles,
+      14
+    );
+
+    return resolvedEdges.map(({ id, et, idx, sourceId, targetId }) => {
+      const binding = edgeBindings[id];
+      const usePortHandles =
+        sourceId === et.src_type_name && targetId === et.dst_type_name;
+      return {
+        id,
+        source: sourceId,
+        target: targetId,
+        ...(usePortHandles && binding
+          ? {
+              sourceHandle: binding.sourcePortId,
+              targetHandle: binding.targetPortId,
+            }
+          : {}),
         type: "studioEdge",
         markerEnd: {
           type: MarkerType.ArrowClosed,
@@ -346,24 +707,58 @@ export function StudioCanvas({
           edgeIndex: idx,
           selected: selectedEdgeIndex === idx,
           isDark,
+          labelCenter: labelCenters[id],
           onSelectEdge: (edgeIdx: number) => {
             onSelectNode(null);
             onSelectEdge(edgeIdx);
           },
         },
-      }));
+      };
+    });
   }, [
-    edgeTypes,
+    absoluteNodeBoxes,
+    activeEdgeInputs,
+    collapsedDomains,
+    edgeBindings,
+    groupByDomain,
     isDark,
-    nodeNameSet,
-    selectedEdgeIndex,
+    liveNodes,
+    nodeTypes,
     onSelectEdge,
     onSelectNode,
+    selectedEdgeIndex,
   ]);
+
+  const selectedStudioNodes = useMemo(
+    () =>
+      liveNodes.filter(
+        (n): n is StudioFlowNode => n.type === "studioNode" && Boolean(n.selected)
+      ),
+    [liveNodes]
+  );
+
+  const handleAlignSelection = useCallback(
+    (action: AlignAction) => {
+      if (!canEdit || selectedStudioNodes.length < 2) return;
+      const boxes: MeasuredBox[] = selectedStudioNodes
+        .map((n) => absoluteNodeBoxes.get(n.id))
+        .filter((b): b is MeasuredBox => Boolean(b));
+      if (boxes.length < 2) return;
+      const nextMap = computeSelectionAlignment(boxes, action);
+      onApplyLayoutPositions(nextMap);
+    },
+    [absoluteNodeBoxes, canEdit, onApplyLayoutPositions, selectedStudioNodes]
+  );
 
   const handleConnect = useCallback(
     (connection: Connection) => {
       if (!canEdit || !connection.source || !connection.target) return;
+      if (
+        connection.source.startsWith("domain:") ||
+        connection.target.startsWith("domain:")
+      ) {
+        return;
+      }
       const candidateBase = `${connection.source.toUpperCase()}_TO_${connection.target.toUpperCase()}`;
       onCreateEdgeType({
         name: candidateBase.slice(0, 32),
@@ -380,57 +775,61 @@ export function StudioCanvas({
   );
 
   const runElkLayout = async () => {
-    if (nodeTypes.length === 0 || layoutRunning) return;
+    if (visibleNodeSpecs.length === 0 || layoutRunning) return;
     setLayoutRunning(true);
     try {
-      const elk = new ELK();
-      const graph = await elk.layout({
-        id: "studio-root",
-        layoutOptions: {
-          "elk.algorithm": "layered",
-          "elk.direction": "RIGHT",
-          "elk.layered.spacing.nodeNodeBetweenLayers": "180",
-          "elk.spacing.nodeNode": "96",
-          "elk.padding": "[top=64,left=48,bottom=48,right=48]",
-        },
-        children: nodeTypes.map((nt) => ({
+      const originPositions: Record<string, { x: number; y: number }> = {};
+      for (const nt of visibleNodeSpecs) {
+        const box = absoluteNodeBoxes.get(nt.name);
+        originPositions[nt.name] = box
+          ? { x: box.x, y: box.y }
+          : { x: nt.pos_x, y: nt.pos_y };
+      }
+
+      const layoutInputs = visibleNodeSpecs.map((nt) => {
+        const box = absoluteNodeBoxes.get(nt.name);
+        return {
           id: nt.name,
-          width: 224,
-          height: 152,
-        })),
-        edges: edgeTypes
-          .filter(
-            (et) =>
-              nodeNameSet.has(et.src_type_name) &&
-              nodeNameSet.has(et.dst_type_name)
-          )
-          .map((et, idx) => ({
-            id: `elk-e-${idx}`,
-            sources: [et.src_type_name],
-            targets: [et.dst_type_name],
-          })),
+          width: nodesInitialized && box ? box.width : 240,
+          height: nodesInitialized && box ? box.height : 192,
+          domainGroup: nt.domain_group ?? null,
+        };
       });
 
-      const positions: Record<string, { x: number; y: number }> = {};
-      for (const child of graph.children ?? []) {
-        if (
-          child.id &&
-          typeof child.x === "number" &&
-          typeof child.y === "number"
-        ) {
-          positions[child.id] = {
-            x: Math.round(child.x / 16) * 16,
-            y: Math.round(child.y / 16) * 16,
-          };
+      const res = await computeElkOrthogonalLayout(
+        layoutInputs,
+        activeEdgeInputs.map((e) => ({
+          id: e.id,
+          source: e.source,
+          target: e.target,
+          labelWidth: Math.max(108, e.et.name.length * 7.5 + 52),
+          labelHeight: 26,
+        })),
+        { groupByDomain, collapsedDomains }
+      );
+
+      animatePositions(
+        originPositions,
+        res.nodePositions,
+        (frame) => {
+          setLiveNodes((prev) =>
+            prev.map((n) => {
+              if (n.type !== "studioNode" || n.parentId) return n;
+              const f = frame[n.id];
+              return f ? { ...n, position: { x: f.x, y: f.y } } : n;
+            })
+          );
+        },
+        () => {
+          onApplyLayoutPositions({ ...res.nodePositions });
         }
-      }
-      onApplyLayoutPositions(positions);
+      );
     } catch {
       const fallback: Record<string, { x: number; y: number }> = {};
-      nodeTypes.forEach((nt, idx) => {
+      visibleNodeSpecs.forEach((nt, idx) => {
         fallback[nt.name] = {
-          x: 96 + (idx % 3) * 352,
-          y: 96 + Math.floor(idx / 3) * 204,
+          x: 96 + (idx % 3) * 440,
+          y: 96 + Math.floor(idx / 3) * 240,
         };
       });
       onApplyLayoutPositions(fallback);
@@ -467,273 +866,468 @@ export function StudioCanvas({
     setQuickAddEdgeOpen(false);
   };
 
+  const handleNodeDrag: OnNodeDrag<AnyStudioRfNode> = useCallback(
+    (_event, draggedNode) => {
+      if (draggedNode.type !== "studioNode") return;
+      const parentOrigin = draggedNode.parentId
+        ? liveNodes.find((n) => n.id === draggedNode.parentId)?.position
+        : undefined;
+      const absX = (parentOrigin?.x ?? 0) + draggedNode.position.x;
+      const absY = (parentOrigin?.y ?? 0) + draggedNode.position.y;
+      const w = draggedNode.measured?.width ?? 240;
+      const h = draggedNode.measured?.height ?? 192;
+
+      const others: MeasuredBox[] = liveNodes
+        .filter((n) => n.type === "studioNode" && n.id !== draggedNode.id)
+        .map((n) => absoluteNodeBoxes.get(n.id))
+        .filter((b): b is MeasuredBox => Boolean(b));
+
+      const snap = computeAlignmentGuides(
+        { id: draggedNode.id, x: absX, y: absY, width: w, height: h },
+        others,
+        6
+      );
+
+      setHelperGuides({
+        verticalLines: snap.verticalLines,
+        horizontalLines: snap.horizontalLines,
+      });
+
+      const resolvedAbsX = snap.snappedX ?? absX;
+      const resolvedAbsY = snap.snappedY ?? absY;
+      snappedPosRef.current = { x: resolvedAbsX, y: resolvedAbsY };
+
+      if (snap.snappedX !== null || snap.snappedY !== null) {
+        const nextLocalX = resolvedAbsX - (parentOrigin?.x ?? 0);
+        const nextLocalY = resolvedAbsY - (parentOrigin?.y ?? 0);
+        setLiveNodes((prev) =>
+          prev.map((n) =>
+            n.id === draggedNode.id
+              ? { ...n, position: { x: nextLocalX, y: nextLocalY } }
+              : n
+          )
+        );
+      }
+    },
+    [absoluteNodeBoxes, liveNodes]
+  );
+
+  const crossSubgraphEdges = useMemo(
+    () =>
+      edgeTypes
+        .map((et, idx) => ({ et, idx }))
+        .filter(
+          ({ et }) =>
+            !allNodeNameSet.has(et.src_type_name) ||
+            !allNodeNameSet.has(et.dst_type_name)
+        ),
+    [allNodeNameSet, edgeTypes]
+  );
+
   return (
     <div
-      className="relative flex-1 min-h-[360px] w-full rounded-md border border-border bg-muted/15 overflow-hidden"
+      className="relative flex flex-col flex-1 min-h-[360px] w-full rounded-md border border-border bg-muted/15 overflow-hidden"
       data-testid="xbluestudio-canvas"
     >
-      {/* Top Floating Canvas Toolbar (Deduplicated — counts live in PageHeader) */}
-      <div className="absolute top-2.5 left-2.5 z-10 flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-card/95 px-2 py-1.5 shadow-xs backdrop-blur-xs">
-        {canEdit && (
-          <>
-            <Button
-              variant="outline"
-              size="sm"
-              data-testid="canvas-add-node-btn"
-              onClick={() => {
-                setQuickAddNodeOpen((v) => !v);
-                setQuickAddEdgeOpen(false);
-              }}
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {tx("新增节点类型", "Add Node Type")}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              data-testid="canvas-add-edge-btn"
-              onClick={() => {
-                setNewEdgeSrc(nodeTypes[0]?.name ?? "");
-                setNewEdgeDst(nodeTypes[1]?.name ?? nodeTypes[0]?.name ?? "");
-                setQuickAddEdgeOpen((v) => !v);
-                setQuickAddNodeOpen(false);
-              }}
-            >
-              <Link2 className="h-3.5 w-3.5" />
-              {tx("新增关系连线", "Add Relation")}
-            </Button>
-          </>
+      {/* Top Floating / Header Dock */}
+      <div
+        className={cn(
+          "z-10 flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5",
+          viewMode === "ONTOLOGY_TOPOLOGY"
+            ? "absolute top-2.5 left-2.5 right-2.5 pointer-events-none"
+            : "border-b border-border bg-card/95 shrink-0"
         )}
-        <Button
-          variant="outline"
-          size="sm"
-          data-testid="canvas-elk-layout-btn"
-          onClick={() => void runElkLayout()}
-          disabled={layoutRunning || nodeTypes.length === 0}
-        >
-          <LayoutGrid className="h-3.5 w-3.5 text-xblue" />
-          {layoutRunning
-            ? tx("排布中…", "Arranging…")
-            : tx("自动分层布局", "Auto Layout")}
-        </Button>
-        {onOpenLineage && nodeTypes.length > 0 && (
-          <Button
-            variant="outline"
-            size="sm"
-            data-testid="canvas-open-lineage-btn"
-            onClick={() => {
-              const target = selectedNodeName ?? nodeTypes[0]?.name;
-              if (target) {
-                onOpenLineage(target);
-              }
-            }}
-          >
-            <GitBranch className="h-3.5 w-3.5 text-xblue" />
-            {tx("血缘视图", "Lineage")}
-          </Button>
+      >
+        <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-card/95 px-2 py-1 shadow-xs backdrop-blur-xs">
+          <SegmentedControl<StudioCanvasViewMode>
+            value={viewMode}
+            onChange={setViewMode}
+            items={[
+              {
+                key: "ONTOLOGY_TOPOLOGY",
+                label: tEnum("ONTOLOGY_TOPOLOGY"),
+                icon: <Blocks className="h-3.5 w-3.5" />,
+                testId: "studio-view-ONTOLOGY_TOPOLOGY",
+              },
+              {
+                key: "MAPPING_PIPELINE",
+                label: tEnum("MAPPING_PIPELINE"),
+                icon: <GitMerge className="h-3.5 w-3.5" />,
+                testId: "studio-view-MAPPING_PIPELINE",
+              },
+            ]}
+          />
+
+          {canEdit && (onUndo || onRedo) && (
+            <div className="inline-flex items-center gap-0.5 border-l border-border pl-1.5">
+              <IconButton
+                size="sm"
+                data-testid="canvas-undo-btn"
+                disabled={!canUndo}
+                onClick={onUndo}
+                title={tx("撤销", "Undo")}
+                aria-label={tx("撤销", "Undo")}
+              >
+                <Undo2 className="h-3.5 w-3.5" />
+              </IconButton>
+              <IconButton
+                size="sm"
+                data-testid="canvas-redo-btn"
+                disabled={!canRedo}
+                onClick={onRedo}
+                title={tx("重做", "Redo")}
+                aria-label={tx("重做", "Redo")}
+              >
+                <Redo2 className="h-3.5 w-3.5" />
+              </IconButton>
+            </div>
+          )}
+
+          {viewMode === "ONTOLOGY_TOPOLOGY" && (
+            <>
+              {canEdit && (
+                <>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-testid="canvas-add-node-btn"
+                    onClick={() => {
+                      setQuickAddNodeOpen((v) => !v);
+                      setQuickAddEdgeOpen(false);
+                    }}
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {tx("新增节点类型", "Add Node Type")}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-testid="canvas-add-edge-btn"
+                    onClick={() => {
+                      setNewEdgeSrc(nodeTypes[0]?.name ?? "");
+                      setNewEdgeDst(
+                        nodeTypes[1]?.name ?? nodeTypes[0]?.name ?? ""
+                      );
+                      setQuickAddEdgeOpen((v) => !v);
+                      setQuickAddNodeOpen(false);
+                    }}
+                  >
+                    <Link2 className="h-3.5 w-3.5" />
+                    {tx("新增关系连线", "Add Relation")}
+                  </Button>
+                </>
+              )}
+
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="canvas-elk-layout-btn"
+                onClick={() => void runElkLayout()}
+                disabled={layoutRunning || visibleNodeSpecs.length === 0}
+              >
+                <LayoutGrid className="h-3.5 w-3.5 text-xblue" />
+                {layoutRunning
+                  ? tx("排布中…", "Arranging…")
+                  : tx("自动分层布局", "Auto Layout")}
+              </Button>
+
+              <Button
+                variant={groupByDomain ? "primary" : "outline"}
+                size="sm"
+                data-testid="canvas-domain-group-toggle"
+                onClick={() => setGroupByDomain((v) => !v)}
+              >
+                <Layers className="h-3.5 w-3.5" />
+                {tx("按域分组", "Domain Lanes")}
+              </Button>
+
+              {canEdit && (
+                <IconButton
+                  size="sm"
+                  active={marqueeMode}
+                  data-testid="canvas-select-mode-btn"
+                  onClick={() => setMarqueeMode((v) => !v)}
+                  title={tx("框选对齐", "Marquee Select")}
+                  aria-label={tx("框选对齐", "Marquee Select")}
+                >
+                  <MousePointerSquareDashed className="h-3.5 w-3.5" />
+                </IconButton>
+              )}
+
+              {onOpenLineage && nodeTypes.length > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  data-testid="canvas-open-lineage-btn"
+                  onClick={() => {
+                    const target = selectedNodeName ?? nodeTypes[0]?.name;
+                    if (target) {
+                      onOpenLineage(target);
+                    }
+                  }}
+                >
+                  <GitBranch className="h-3.5 w-3.5 text-xblue" />
+                  {tx("血缘视图", "Lineage")}
+                </Button>
+              )}
+            </>
+          )}
+        </div>
+
+        {viewMode === "ONTOLOGY_TOPOLOGY" && canEdit && (
+          <SelectionAlignToolbar
+            selectedCount={selectedStudioNodes.length}
+            onAlign={handleAlignSelection}
+          />
         )}
       </div>
 
-      {/* Quick Create Node Popover */}
-      {quickAddNodeOpen && canEdit && (
-        <div className="absolute top-14 left-2.5 z-20 w-80 rounded-md border border-border bg-card p-3 shadow-md space-y-2 text-xs">
-          <div className="font-medium">
-            {tx("新建节点类型", "New Node Type")}
-          </div>
-          <div className="grid grid-cols-2 gap-1.5">
-            <Input
-              data-testid="quick-node-name-input"
-              placeholder="Factory"
-              value={newNodeName}
-              onChange={(e) => setNewNodeName(e.target.value)}
-              className="h-8 text-xs font-mono-tech"
-            />
-            <Input
-              data-testid="quick-node-display-input"
-              placeholder={tx("制造工厂", "Factory")}
-              value={newNodeDisplay}
-              onChange={(e) => setNewNodeDisplay(e.target.value)}
-              className="h-8 text-xs"
-            />
-          </div>
-          <div className="flex justify-end gap-1.5">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setQuickAddNodeOpen(false)}
-            >
-              {tx("取消", "Cancel")}
-            </Button>
-            <Button
-              data-testid="quick-node-submit-btn"
-              size="sm"
-              onClick={submitQuickNode}
-            >
-              {tx("创建", "Create")}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* Quick Create Edge Popover */}
-      {quickAddEdgeOpen && canEdit && (
-        <div className="absolute top-14 left-2.5 z-20 w-96 rounded-md border border-border bg-card p-3 shadow-md space-y-2 text-xs">
-          <div className="font-medium">
-            {tx("新建关系类型", "New Relation Type")}
-          </div>
-          <div className="grid grid-cols-3 gap-1.5">
-            <Select
-              value={newEdgeSrc}
-              onChange={(e) => setNewEdgeSrc(e.target.value)}
-              className="h-8 px-1.5 font-mono-tech"
-            >
-              <option value="">{tx("源类型", "Source")}</option>
-              {nodeTypes.map((nt) => (
-                <option key={nt.name} value={nt.name}>
-                  {nt.name}
-                </option>
-              ))}
-            </Select>
-            <Input
-              data-testid="quick-edge-name-input"
-              value={newEdgeName}
-              onChange={(e) => setNewEdgeName(e.target.value)}
-              placeholder="FULFILLS"
-              className="h-8 text-xs font-mono-tech"
-            />
-            <Select
-              value={newEdgeDst}
-              onChange={(e) => setNewEdgeDst(e.target.value)}
-              className="h-8 px-1.5 font-mono-tech"
-            >
-              <option value="">{tx("目标类型", "Target")}</option>
-              {nodeTypes.map((nt) => (
-                <option key={nt.name} value={nt.name}>
-                  {nt.name}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <div className="flex justify-end gap-1.5">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => setQuickAddEdgeOpen(false)}
-            >
-              {tx("取消", "Cancel")}
-            </Button>
-            <Button
-              data-testid="quick-edge-submit-btn"
-              size="sm"
-              onClick={submitQuickEdge}
-            >
-              {tx("创建", "Create")}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      <ReactFlow
-        nodes={liveNodes}
-        edges={flowEdges}
-        nodeTypes={NODE_TYPES}
-        edgeTypes={EDGE_TYPES}
-        onNodesChange={handleNodesChange}
-        nodesDraggable={canEdit}
-        nodesConnectable={canEdit}
-        snapToGrid
-        snapGrid={[16, 16]}
-        onNodeClick={(_event, node) => {
-          onSelectEdge(null);
-          onSelectNode(node.id);
-        }}
-        onNodeDoubleClick={(_event, node) => {
-          onSelectEdge(null);
-          onSelectNode(node.id);
-          onOpenLineage?.(node.id);
-        }}
-        onEdgeClick={(_event, edge) => {
-          if (typeof edge.data?.edgeIndex === "number") {
-            onSelectNode(null);
-            onSelectEdge(edge.data.edgeIndex);
+      {viewMode === "MAPPING_PIPELINE" ? (
+        <PipelineViewCanvas
+          workingDoc={
+            workingDoc ?? {
+              node_types: nodeTypes,
+              edge_types: edgeTypes,
+              mappings: [],
+            }
           }
-        }}
-        onPaneClick={() => {
-          onSelectNode(null);
-          onSelectEdge(null);
-        }}
-        onNodeDragStart={(_event, node) => {
-          draggingNodeIdRef.current = node.id;
-        }}
-        onNodeDragStop={(_event, node) => {
-          draggingNodeIdRef.current = null;
-          if (!canEdit) return;
-          onUpdateNodePosition(
-            node.id,
-            Math.round(node.position.x),
-            Math.round(node.position.y)
-          );
-        }}
-        onConnect={handleConnect}
-        fitView
-        fitViewOptions={{ padding: 0.24, maxZoom: 0.95 }}
-        proOptions={{ hideAttribution: true }}
-      >
-        <Background
-          color={isDark ? "#27272a" : "#d4d4d8"}
-          gap={16}
-          size={1}
+          datasetNames={datasetNames}
+          selectedNodeName={selectedNodeName}
+          selectedMappingIndex={selectedMappingIndex}
+          onSelectNode={(name) => onSelectNode(name)}
+          onSelectMapping={(idx) => onSelectMapping?.(idx)}
+          onCreateMapping={(m) => onCreateMapping?.(m)}
         />
-        <Controls showInteractive={false} />
-        {nodeTypes.length > 5 && (
-          <MiniMap
-            pannable
-            zoomable
-            style={{ width: 120, height: 80 }}
-            nodeColor={(n) => {
-              const spec = (n.data as StudioFlowNode["data"] | undefined)?.spec;
-              return spec?.color || (isDark ? "#3b82f6" : "#2563eb");
-            }}
-            className="!bg-card !border !border-border !rounded"
-          />
-        )}
-      </ReactFlow>
+      ) : (
+        <>
+          {/* Quick Create Node Popover */}
+          {quickAddNodeOpen && canEdit && (
+            <div className="absolute top-14 left-2.5 z-20 w-80 rounded-md border border-border bg-card p-3 shadow-md space-y-2 text-xs">
+              <div className="font-medium">
+                {tx("新建节点类型", "New Node Type")}
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <Input
+                  data-testid="quick-node-name-input"
+                  placeholder="Factory"
+                  value={newNodeName}
+                  onChange={(e) => setNewNodeName(e.target.value)}
+                  className="h-8 text-xs font-mono-tech"
+                />
+                <Input
+                  data-testid="quick-node-display-input"
+                  placeholder={tx("制造工厂", "Factory")}
+                  value={newNodeDisplay}
+                  onChange={(e) => setNewNodeDisplay(e.target.value)}
+                  className="h-8 text-xs"
+                />
+              </div>
+              <div className="flex justify-end gap-1.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setQuickAddNodeOpen(false)}
+                >
+                  {tx("取消", "Cancel")}
+                </Button>
+                <Button
+                  data-testid="quick-node-submit-btn"
+                  size="sm"
+                  onClick={submitQuickNode}
+                >
+                  {tx("创建", "Create")}
+                </Button>
+              </div>
+            </div>
+          )}
 
-      {/* Non-anchored cross-subgraph edges indicator */}
-      {edgeTypes.length > flowEdges.length && (
-        <div className="absolute bottom-2.5 left-12 z-10 flex flex-wrap items-center gap-1 rounded border border-border bg-card/95 px-2.5 py-1 text-[11px]">
-          <span className="text-muted-foreground">
-            {tx("跨子图关系:", "Cross-subgraph:")}
-          </span>
-          {edgeTypes
-            .map((et, idx) => ({ et, idx }))
-            .filter(
-              ({ et }) =>
-                !nodeNameSet.has(et.src_type_name) ||
-                !nodeNameSet.has(et.dst_type_name)
-            )
-            .map(({ et, idx }) => (
-              <button
-                key={`${et.name}-${idx}`}
-                type="button"
-                data-testid={`canvas-edge-${et.name}`}
-                onClick={() => {
+          {/* Quick Create Edge Popover */}
+          {quickAddEdgeOpen && canEdit && (
+            <div className="absolute top-14 left-2.5 z-20 w-96 rounded-md border border-border bg-card p-3 shadow-md space-y-2 text-xs">
+              <div className="font-medium">
+                {tx("新建关系类型", "New Relation Type")}
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                <Select
+                  value={newEdgeSrc}
+                  onChange={(e) => setNewEdgeSrc(e.target.value)}
+                  className="h-8 px-1.5 font-mono-tech"
+                >
+                  <option value="">{tx("源类型", "Source")}</option>
+                  {nodeTypes.map((nt) => (
+                    <option key={nt.name} value={nt.name}>
+                      {nt.name}
+                    </option>
+                  ))}
+                </Select>
+                <Input
+                  data-testid="quick-edge-name-input"
+                  value={newEdgeName}
+                  onChange={(e) => setNewEdgeName(e.target.value)}
+                  placeholder="FULFILLS"
+                  className="h-8 text-xs font-mono-tech"
+                />
+                <Select
+                  value={newEdgeDst}
+                  onChange={(e) => setNewEdgeDst(e.target.value)}
+                  className="h-8 px-1.5 font-mono-tech"
+                >
+                  <option value="">{tx("目标类型", "Target")}</option>
+                  {nodeTypes.map((nt) => (
+                    <option key={nt.name} value={nt.name}>
+                      {nt.name}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+              <div className="flex justify-end gap-1.5">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setQuickAddEdgeOpen(false)}
+                >
+                  {tx("取消", "Cancel")}
+                </Button>
+                <Button
+                  data-testid="quick-edge-submit-btn"
+                  size="sm"
+                  onClick={submitQuickEdge}
+                >
+                  {tx("创建", "Create")}
+                </Button>
+              </div>
+            </div>
+          )}
+
+          <div className="relative flex-1 min-h-0 w-full">
+            <ReactFlow
+              nodes={liveNodes}
+              edges={flowEdges}
+              nodeTypes={NODE_TYPES}
+              edgeTypes={EDGE_TYPES}
+              onNodesChange={handleNodesChange}
+              nodesDraggable={canEdit}
+              nodesConnectable={canEdit}
+              selectionOnDrag={marqueeMode}
+              panOnDrag={marqueeMode ? [1, 2] : true}
+              selectionMode={SelectionMode.Partial}
+              multiSelectionKeyCode="Shift"
+              onNodeClick={(event, node) => {
+                if (node.type !== "studioNode") return;
+                if (event.shiftKey) return;
+                onSelectEdge(null);
+                onSelectNode(node.id);
+              }}
+              onNodeDoubleClick={(_event, node) => {
+                if (node.type !== "studioNode") return;
+                onSelectEdge(null);
+                onSelectNode(node.id);
+                onOpenLineage?.(node.id);
+              }}
+              onEdgeClick={(_event, edge) => {
+                if (typeof edge.data?.edgeIndex === "number") {
                   onSelectNode(null);
-                  onSelectEdge(idx);
-                }}
-                className={cn(
-                  "rounded border px-1.5 py-0.5 font-mono-tech text-[10px] cursor-pointer",
-                  selectedEdgeIndex === idx
-                    ? "border-xblue bg-xblue-soft text-xblue"
-                    : "border-border bg-muted text-foreground"
-                )}
-              >
-                {et.src_type_name} → {et.name} (
-                {CARDINALITY_SHORT[et.cardinality]}) → {et.dst_type_name}
-              </button>
-            ))}
-        </div>
+                  onSelectEdge(edge.data.edgeIndex);
+                }
+              }}
+              onPaneClick={() => {
+                onSelectNode(null);
+                onSelectEdge(null);
+              }}
+              onNodeDragStart={(_event, node) => {
+                draggingNodeIdRef.current = node.id;
+                snappedPosRef.current = null;
+              }}
+              onNodeDrag={handleNodeDrag}
+              onNodeDragStop={(_event, node) => {
+                draggingNodeIdRef.current = null;
+                setHelperGuides({ verticalLines: [], horizontalLines: [] });
+                if (!canEdit || node.type !== "studioNode") return;
+                const parentOrigin = node.parentId
+                  ? liveNodes.find((n) => n.id === node.parentId)?.position
+                  : undefined;
+                const finalX =
+                  snappedPosRef.current?.x ??
+                  (parentOrigin?.x ?? 0) + node.position.x;
+                const finalY =
+                  snappedPosRef.current?.y ??
+                  (parentOrigin?.y ?? 0) + node.position.y;
+                snappedPosRef.current = null;
+                onUpdateNodePosition(
+                  node.id,
+                  Math.round(finalX),
+                  Math.round(finalY)
+                );
+              }}
+              onConnect={handleConnect}
+              fitView
+              fitViewOptions={{ padding: 0.24, maxZoom: 0.95 }}
+              proOptions={{ hideAttribution: true }}
+            >
+              <Background
+                color={isDark ? "#27272a" : "#d4d4d8"}
+                gap={16}
+                size={1}
+              />
+              <HelperLinesOverlay
+                verticalLines={helperGuides.verticalLines}
+                horizontalLines={helperGuides.horizontalLines}
+              />
+              <Controls showInteractive={false} />
+              {visibleNodeSpecs.length > 5 && (
+                <MiniMap
+                  pannable
+                  zoomable
+                  style={{ width: 120, height: 80 }}
+                  nodeColor={(n) => {
+                    const spec = (n.data as StudioFlowNode["data"] | undefined)
+                      ?.spec;
+                    return spec?.color || (isDark ? "#3b82f6" : "#2563eb");
+                  }}
+                  className="!bg-card !border !border-border !rounded"
+                />
+              )}
+            </ReactFlow>
+          </div>
+
+          {/* Non-anchored cross-subgraph edges strip (outside ReactFlow viewport so 0 overlap) */}
+          {crossSubgraphEdges.length > 0 && (
+            <div className="shrink-0 border-t border-border bg-card/95 px-2.5 py-1 flex flex-wrap items-center gap-1 text-[11px]">
+              <span className="text-muted-foreground">
+                {tx("跨子图关系:", "Cross-subgraph:")}
+              </span>
+              {crossSubgraphEdges.map(({ et, idx }) => (
+                <button
+                  key={`${et.name}-${idx}`}
+                  type="button"
+                  data-testid={`canvas-cross-edge-${et.name}`}
+                  onClick={() => {
+                    onSelectNode(null);
+                    onSelectEdge(idx);
+                  }}
+                  className={cn(
+                    "rounded border px-1.5 py-0.5 font-mono-tech text-[10px] cursor-pointer",
+                    selectedEdgeIndex === idx
+                      ? "border-xblue bg-xblue-soft text-xblue"
+                      : "border-border bg-muted text-foreground"
+                  )}
+                >
+                  {et.src_type_name} → {et.name} (
+                  {CARDINALITY_SHORT[et.cardinality]}) → {et.dst_type_name}
+                </button>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
+  );
+}
+
+export function StudioCanvas(props: StudioCanvasProps) {
+  return (
+    <ReactFlowProvider>
+      <StudioCanvasInner {...props} />
+    </ReactFlowProvider>
   );
 }

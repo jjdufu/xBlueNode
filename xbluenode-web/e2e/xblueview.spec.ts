@@ -19,6 +19,38 @@ const FACTORY_F1_ID = "00000000-0000-0000-0000-000000000300";
 const WAREHOUSE_W1_ID = "00000000-0000-0000-0000-000000000301";
 const RULE_R1_ID = "00000000-0000-0000-0000-000000000701";
 
+async function clickBarCategoryOnCanvas(
+  page: Page,
+  category: string,
+  timeout = 15_000
+): Promise<void> {
+  const chartLocator = page
+    .locator("[data-widget-kind='BAR_CHART'] [data-hit-points]")
+    .first();
+  await expect(chartLocator).toBeVisible({ timeout });
+  await expect
+    .poll(
+      async () => {
+        const raw = await chartLocator.getAttribute("data-hit-points");
+        if (!raw) return null;
+        const parsed = JSON.parse(raw) as Record<string, [number, number]>;
+        return parsed[category] ?? null;
+      },
+      { timeout }
+    )
+    .not.toBeNull();
+  const raw = (await chartLocator.getAttribute("data-hit-points")) ?? "{}";
+  const pts = JSON.parse(raw) as Record<string, [number, number]>;
+  const target = pts[category];
+  if (!target) {
+    throw new Error(`Missing canvas hit point for ${category}`);
+  }
+  await chartLocator
+    .locator("canvas")
+    .first()
+    .click({ position: { x: target[0], y: target[1] } });
+}
+
 async function installXBlueViewMocks(
   page: Page,
   leakedTenantUrls: string[],
@@ -893,10 +925,8 @@ test("xBlueView /view/supply-overview renders 8 isomorphic widgets incl. 3D scen
     .poll(() => barFilterPayloads.some((p) => p.status === "PAID"))
     .toBe(true);
 
-  // Click PAID bar category -> drill-down breadcrumb displays PAID
-  const paidTrigger = page.getByTestId("chart-category-PAID");
-  await expect(paidTrigger).toBeVisible();
-  await paidTrigger.click();
+  // Click PAID bar category on canvas -> drill-down breadcrumb displays PAID
+  await clickBarCategoryOnCanvas(page, "PAID");
   await expect(page.getByTestId("drill-breadcrumb")).toContainText("PAID");
 
   // Submit inventory writeback action form -> updates 3D scene value
@@ -1539,10 +1569,8 @@ if (process.env.AXPOINT_E2E_LIVE === "1") {
     await expect(actionFormFrame).toContainText("库存盘点回写");
     await expect(page.getByTestId("action-input-value")).toBeVisible();
 
-    // Click PAID bar category -> real backend drill-down query updates breadcrumb
-    const paidTrigger = page.getByTestId("chart-category-PAID");
-    await expect(paidTrigger).toBeVisible({ timeout: 20_000 });
-    await paidTrigger.click();
+    // Click PAID bar category on canvas -> real backend drill-down query updates breadcrumb
+    await clickBarCategoryOnCanvas(page, "PAID", 20_000);
     await expect(page.getByTestId("drill-breadcrumb")).toContainText("PAID", {
       timeout: 15_000,
     });

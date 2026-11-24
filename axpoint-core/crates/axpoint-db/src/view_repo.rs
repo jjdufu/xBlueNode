@@ -7,7 +7,8 @@ use std::str::FromStr;
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::PaginatedList;
 use axpoint_domain::enums::{
-    AssetKind, DataType, ExportFormat, JobKind, JobStatus, MetricSourceTag, OutboxTopic, WidgetKind,
+    AssetKind, DataType, ExportFormat, JobKind, JobStatus, MetricSourceTag, OutboxTopic,
+    SemanticZoneKind, Sensitivity, WidgetKind,
 };
 use axpoint_domain::export::{
     CompleteExportJobParams, CreateExportJobParams, CreateExportTemplateParams,
@@ -23,10 +24,11 @@ use axpoint_domain::view::{
     AffectedWidgetRef, AssetRecord, CanvasConfig, CreateAssetParams, CreateDashboardRequest,
     CreateWidgetRecordParams, DashboardDetail, DashboardRecord, DashboardStatus, DashboardTheme,
     DrillLevel, FilterDef, FloorPlacementRecord, FloorPlanRow, LayoutUpdateItem, NodesGeoLinkRow,
-    NodesGeoRow, PutFloorPlacementItem, PutScene3dBindingItem, RefreshMode, Scene3dBindingRecord,
-    Scene3dRow, UpdateDashboardRequest, UpdateWidgetRecordParams, ViewWriteNodeOutcome,
-    ViewWriteNodeParams, WidgetDataSource, WidgetDeps, WidgetPosition, WidgetRecord,
-    WriteNodeTargetKind,
+    NodesGeoRow, PinChartToDashboardRequest, PinChartToDashboardResponse, PinnedSlotRequest,
+    PutFloorPlacementItem, PutScene3dBindingItem, RefreshMode, SaveChartRequest, SavedChartRecord,
+    Scene3dBindingRecord, Scene3dRow, UpdateDashboardRequest, UpdateSavedChartRequest,
+    UpdateWidgetRecordParams, ViewWriteNodeOutcome, ViewWriteNodeParams, WidgetDataSource,
+    WidgetDeps, WidgetPosition, WidgetRecord, WriteNodeTargetKind, allocate_pinned_widget_slot,
 };
 use chrono::{DateTime, Utc};
 use sqlx::{Postgres, QueryBuilder, Row, Transaction};
@@ -3183,6 +3185,168 @@ impl ViewRepository for PgStore {
         })?;
         Ok(maybe_id.is_some())
     }
+
+    async fn list_saved_charts(
+        &self,
+        tenant_id: &str,
+        viewer_user_id: Uuid,
+        include_all: bool,
+        query: SimplePageQuery,
+    ) -> Result<PaginatedList<SavedChartRecord>, AppError> {
+        let (limit_usize, fetch_limit) = validate_page_limit(query.limit, 50)?;
+        let (cursor_ts, cursor_id) = parse_optional_cursor(query.cursor.as_deref())?;
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT id, tenant_id, name, description, widget_kind, data_source, encoding,
+                    options, owner_dept, sensitivity, shared, created_by, created_at, updated_at
+               FROM xv_charts
+              WHERE tenant_id = $1
+                AND ($2 OR shared = TRUE OR created_by = $3)
+                AND ($4::timestamptz IS NULL OR (updated_at, id) < ($4, $5::uuid))
+              ORDER BY updated_at DESC, id DESC
+              LIMIT $6",
+        )
+        .bind(tenant_id)
+        .bind(include_all)
+        .bind(viewer_user_id)
+        .bind(cursor_ts)
+        .bind(cursor_id)
+        .bind(fetch_limit)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("list xv_charts failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit list_saved_charts tx failed: {err}"))
+        })?;
+
+        let mut items = Vec::with_capacity(rows.len());
+        for row in &rows {
+            items.push(decode_saved_chart_row(row)?);
+        }
+        let next_cursor = paginate_ts_uuid_items(&mut items, limit_usize, |r| (r.updated_at, r.id));
+        Ok(PaginatedList { items, next_cursor })
+    }
+
+    async fn get_saved_chart(
+        &self,
+        tenant_id: &str,
+        chart_id: Uuid,
+    ) -> Result<Option<SavedChartRecord>, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let maybe_row = fetch_saved_chart_row_tx(&mut tx, tenant_id, chart_id).await?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit get_saved_chart tx failed: {err}"))
+        })?;
+        maybe_row.as_ref().map(decode_saved_chart_row).transpose()
+    }
+
+    async fn create_saved_chart(
+        &self,
+        tenant_id: &str,
+        created_by: Option<Uuid>,
+        owner_dept: &str,
+        req: SaveChartRequest,
+    ) -> Result<SavedChartRecord, AppError> {
+        let trimmed_name = validate_chart_name(&req.name)?;
+        ensure_json_object("encoding", &req.encoding)?;
+        ensure_json_object("options", &req.options)?;
+        let ds_json = serde_json::to_value(&req.data_source).map_err(|err| {
+            AppError::bad("INVALID_ARGUMENT", format!("serialize data_source: {err}"))
+        })?;
+        let dept = normalize_owner_dept(owner_dept);
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let row = sqlx::query(
+            "INSERT INTO xv_charts (
+                 tenant_id, name, description, widget_kind, data_source, encoding,
+                 options, owner_dept, sensitivity, shared, created_by
+             )
+             VALUES (
+                 $1, $2, $3, $4, $5, $6,
+                 $7, $8, $9, $10, (SELECT id FROM sec_users WHERE id = $11)
+             )
+             RETURNING id, tenant_id, name, description, widget_kind, data_source, encoding,
+                       options, owner_dept, sensitivity, shared, created_by, created_at, updated_at",
+        )
+        .bind(tenant_id)
+        .bind(trimmed_name)
+        .bind(req.description.trim())
+        .bind(req.widget_kind.as_str())
+        .bind(ds_json)
+        .bind(&req.encoding)
+        .bind(&req.options)
+        .bind(dept)
+        .bind(req.sensitivity.as_str())
+        .bind(req.shared)
+        .bind(created_by)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| {
+            if is_unique_violation(&err) {
+                AppError::Conflict("CONFLICT")
+            } else {
+                AppError::Database(format!("insert xv_charts failed: {err}"))
+            }
+        })?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit create_saved_chart tx failed: {err}"))
+        })?;
+        decode_saved_chart_row(&row)
+    }
+
+    async fn update_saved_chart(
+        &self,
+        tenant_id: &str,
+        chart_id: Uuid,
+        req: UpdateSavedChartRequest,
+    ) -> Result<Option<SavedChartRecord>, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let Some(existing_row) = fetch_saved_chart_row_tx(&mut tx, tenant_id, chart_id).await?
+        else {
+            tx.commit().await.map_err(|err| {
+                AppError::Database(format!("commit update_saved_chart empty tx failed: {err}"))
+            })?;
+            return Ok(None);
+        };
+        let existing = decode_saved_chart_row(&existing_row)?;
+        let row = execute_update_saved_chart_tx(&mut tx, tenant_id, &existing, req).await?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit update_saved_chart tx failed: {err}"))
+        })?;
+        Ok(Some(decode_saved_chart_row(&row)?))
+    }
+
+    async fn delete_saved_chart(&self, tenant_id: &str, chart_id: Uuid) -> Result<bool, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let res = sqlx::query("DELETE FROM xv_charts WHERE tenant_id = $1 AND id = $2")
+            .bind(tenant_id)
+            .bind(chart_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| AppError::Database(format!("delete xv_charts failed: {err}")))?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit delete_saved_chart tx failed: {err}"))
+        })?;
+        Ok(res.rows_affected() > 0)
+    }
+
+    async fn pin_saved_chart_to_dashboard(
+        &self,
+        tenant_id: &str,
+        chart_id: Uuid,
+        req: PinChartToDashboardRequest,
+        deps: WidgetDeps,
+    ) -> Result<PinChartToDashboardResponse, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let res = execute_pin_saved_chart_tx(&mut tx, tenant_id, chart_id, req, deps).await?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit pin_saved_chart_to_dashboard tx: {err}"))
+        })?;
+        Ok(res)
+    }
 }
 
 fn validate_i64_page_limit(
@@ -3392,4 +3556,291 @@ impl PgStore {
 
         Ok(DashboardDetail { dashboard, widgets })
     }
+}
+
+fn validate_chart_name(raw: &str) -> Result<&str, AppError> {
+    let trimmed = raw.trim();
+    let char_count = trimmed.chars().count();
+    if !(1..=128).contains(&char_count) {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            format!("chart name length must be in 1..=128 characters, got {char_count}"),
+        ));
+    }
+    Ok(trimmed)
+}
+
+fn ensure_json_object(field: &str, val: &serde_json::Value) -> Result<(), AppError> {
+    if !val.is_object() {
+        return Err(AppError::bad(
+            "INVALID_ARGUMENT",
+            format!("{field} must be a JSON object"),
+        ));
+    }
+    Ok(())
+}
+
+fn normalize_owner_dept(raw: &str) -> &str {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        "default"
+    } else {
+        trimmed
+    }
+}
+
+fn decode_saved_chart_row(row: &sqlx::postgres::PgRow) -> Result<SavedChartRecord, AppError> {
+    let kind_raw: String = row.get("widget_kind");
+    let widget_kind = WidgetKind::from_str(&kind_raw)?;
+    let sens_raw: String = row.get("sensitivity");
+    let sensitivity = Sensitivity::from_str(&sens_raw)?;
+    let data_source: WidgetDataSource = serde_json::from_value(row.get("data_source"))
+        .map_err(|err| AppError::Database(format!("decode xv_charts.data_source failed: {err}")))?;
+
+    Ok(SavedChartRecord {
+        id: row.get("id"),
+        tenant_id: row.get("tenant_id"),
+        name: row.get("name"),
+        description: row.get("description"),
+        widget_kind,
+        data_source,
+        encoding: row.get("encoding"),
+        options: row.get("options"),
+        owner_dept: row.get("owner_dept"),
+        sensitivity,
+        shared: row.get("shared"),
+        created_by: row.get("created_by"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+async fn fetch_saved_chart_row_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    chart_id: Uuid,
+) -> Result<Option<sqlx::postgres::PgRow>, AppError> {
+    sqlx::query(
+        "SELECT id, tenant_id, name, description, widget_kind, data_source, encoding,
+                options, owner_dept, sensitivity, shared, created_by, created_at, updated_at
+           FROM xv_charts
+          WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(tenant_id)
+    .bind(chart_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("fetch xv_charts row failed: {err}")))
+}
+
+async fn execute_update_saved_chart_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    existing: &SavedChartRecord,
+    req: UpdateSavedChartRequest,
+) -> Result<sqlx::postgres::PgRow, AppError> {
+    let name = match req.name {
+        Some(ref raw) => String::from(validate_chart_name(raw)?),
+        None => existing.name.clone(),
+    };
+    let description = req
+        .description
+        .map_or_else(|| existing.description.clone(), |d| String::from(d.trim()));
+    let widget_kind = req.widget_kind.unwrap_or(existing.widget_kind);
+    let data_source = req
+        .data_source
+        .unwrap_or_else(|| existing.data_source.clone());
+    let encoding = req.encoding.unwrap_or_else(|| existing.encoding.clone());
+    let options = req.options.unwrap_or_else(|| existing.options.clone());
+    ensure_json_object("encoding", &encoding)?;
+    ensure_json_object("options", &options)?;
+    let sensitivity = req.sensitivity.unwrap_or(existing.sensitivity);
+    let shared = req.shared.unwrap_or(existing.shared);
+    let ds_json = serde_json::to_value(&data_source).map_err(|err| {
+        AppError::bad("INVALID_ARGUMENT", format!("serialize data_source: {err}"))
+    })?;
+
+    sqlx::query(
+        "UPDATE xv_charts
+            SET name = $3,
+                description = $4,
+                widget_kind = $5,
+                data_source = $6,
+                encoding = $7,
+                options = $8,
+                sensitivity = $9,
+                shared = $10,
+                updated_at = NOW()
+          WHERE tenant_id = $1 AND id = $2
+          RETURNING id, tenant_id, name, description, widget_kind, data_source, encoding,
+                    options, owner_dept, sensitivity, shared, created_by, created_at, updated_at",
+    )
+    .bind(tenant_id)
+    .bind(existing.id)
+    .bind(name)
+    .bind(description)
+    .bind(widget_kind.as_str())
+    .bind(ds_json)
+    .bind(encoding)
+    .bind(options)
+    .bind(sensitivity.as_str())
+    .bind(shared)
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(|err| {
+        if is_unique_violation(&err) {
+            AppError::Conflict("CONFLICT")
+        } else {
+            AppError::Database(format!("update xv_charts failed: {err}"))
+        }
+    })
+}
+
+async fn shift_lower_widgets_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    existing_widgets: &[WidgetRecord],
+    shift_from_y: i32,
+    shift_delta: i32,
+) -> Result<(), AppError> {
+    if shift_delta <= 0 {
+        return Ok(());
+    }
+    for w in existing_widgets {
+        if w.position.y >= shift_from_y {
+            let shifted = WidgetPosition {
+                x: w.position.x,
+                y: w.position.y.saturating_add(shift_delta),
+                w: w.position.w,
+                h: w.position.h,
+            };
+            let pos_json = serde_json::to_value(&shifted).map_err(|err| {
+                AppError::bad("INVALID_ARGUMENT", format!("serialize position: {err}"))
+            })?;
+            sqlx::query(
+                "UPDATE xv_widgets
+                    SET position = $3,
+                        updated_at = NOW()
+                  WHERE tenant_id = $1 AND id = $2",
+            )
+            .bind(tenant_id)
+            .bind(w.id)
+            .bind(pos_json)
+            .execute(&mut **tx)
+            .await
+            .map_err(|err| {
+                AppError::Database(format!("shift xv_widgets position failed: {err}"))
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn merge_pinned_widget_options(
+    chart_options: &serde_json::Value,
+    chart_id: Uuid,
+    semantic_zone: Option<SemanticZoneKind>,
+) -> serde_json::Value {
+    let mut map = chart_options
+        .as_object()
+        .cloned()
+        .unwrap_or_else(serde_json::Map::new);
+    map.insert(
+        String::from("source_chart_id"),
+        serde_json::Value::String(chart_id.to_string()),
+    );
+    if let Some(zone) = semantic_zone {
+        map.insert(
+            String::from("semantic_zone"),
+            serde_json::Value::String(String::from(zone.as_str())),
+        );
+    }
+    serde_json::Value::Object(map)
+}
+
+async fn execute_pin_saved_chart_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+    chart_id: Uuid,
+    req: PinChartToDashboardRequest,
+    deps: WidgetDeps,
+) -> Result<PinChartToDashboardResponse, AppError> {
+    let maybe_dash = sqlx::query(
+        "SELECT id, tenant_id, name, slug, description, filters, theme, canvas,
+                status, version, created_by, created_at, updated_at
+           FROM xv_dashboards
+          WHERE tenant_id = $1 AND id = $2
+          FOR UPDATE",
+    )
+    .bind(tenant_id)
+    .bind(req.dashboard_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("lock xv_dashboards for pin failed: {err}")))?;
+    let dash_row = maybe_dash.ok_or(AppError::NotFound("DASHBOARD_NOT_FOUND"))?;
+    let dashboard = decode_dashboard_row(&dash_row)?;
+
+    let chart_row = fetch_saved_chart_row_tx(tx, tenant_id, chart_id)
+        .await?
+        .ok_or(AppError::NotFound("CHART_NOT_FOUND"))?;
+    let chart = decode_saved_chart_row(&chart_row)?;
+
+    let existing_widgets = fetch_dashboard_widgets_tx(tx, tenant_id, dashboard.id).await?;
+    let alloc = allocate_pinned_widget_slot(
+        &dashboard.canvas,
+        &existing_widgets,
+        PinnedSlotRequest {
+            widget_kind: chart.widget_kind,
+            target_zone: req.target_zone,
+            width: req.width,
+            height: req.height,
+        },
+    )?;
+
+    shift_lower_widgets_tx(
+        tx,
+        tenant_id,
+        &existing_widgets,
+        alloc.shift_from_y,
+        alloc.shift_delta,
+    )
+    .await?;
+
+    let merged_options = merge_pinned_widget_options(&chart.options, chart.id, alloc.semantic_zone);
+    let widget = insert_widget_tx(
+        tx,
+        tenant_id,
+        None,
+        &CreateWidgetRecordParams {
+            dashboard_id: dashboard.id,
+            widget_kind: chart.widget_kind,
+            title: chart.name,
+            position: alloc.position,
+            data_source: chart.data_source,
+            encoding: chart.encoding,
+            options: merged_options,
+            drill: Vec::new(),
+            refresh_mode: RefreshMode::Live,
+            refresh_seconds: 60,
+            deps,
+        },
+    )
+    .await?;
+
+    sqlx::query("UPDATE xv_dashboards SET updated_at = NOW() WHERE tenant_id = $1 AND id = $2")
+        .bind(tenant_id)
+        .bind(dashboard.id)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("touch xv_dashboards updated_at: {err}")))?;
+
+    let deep_link = format!("/view/{}", dashboard.slug);
+    Ok(PinChartToDashboardResponse {
+        widget_id: widget.id,
+        semantic_zone: alloc.semantic_zone,
+        widget,
+        dashboard_id: dashboard.id,
+        dashboard_slug: dashboard.slug,
+        deep_link,
+    })
 }

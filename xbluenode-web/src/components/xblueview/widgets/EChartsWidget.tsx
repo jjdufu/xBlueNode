@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as echarts from "echarts";
 import { useI18n } from "@/i18n";
 import type { WidgetDataResponse, WidgetRecord } from "@/lib/api/xblueview";
+import { enhanceClientEChartsOption } from "@/lib/chartTheme";
 import { useTheme } from "@/lib/theme";
 import { buildEChartsOption } from "../logic";
-import { buildColumnIndexMap, getCell, readString } from "../utils";
+import {
+  buildColumnIndexMap,
+  getCell,
+  readNumber,
+  readString,
+  toNumericValue,
+} from "../utils";
 
 export interface EChartsWidgetProps {
   widget: WidgetRecord;
@@ -13,8 +20,6 @@ export interface EChartsWidgetProps {
   nodeLabelMap?: Readonly<Record<string, string>>;
   onDataPointClick?: (field: string, value: unknown) => void;
 }
-
-const ISO_TIMESTAMP_PREFIX_RE = /^\d{4}-\d{2}-\d{2}[T\s]/;
 
 function extractClickValue(params: echarts.ECElementEvent): unknown {
   if (typeof params.data === "object" && params.data !== null) {
@@ -40,13 +45,14 @@ export function EChartsWidget({
   nodeLabelMap,
   onDataPointClick,
 }: EChartsWidgetProps) {
-  const { tx } = useI18n();
+  const { isZh, tx } = useI18n();
   const { isDark: themeDark } = useTheme();
   const effectiveDark = isDark ?? themeDark;
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
   const clickHandlerRef = useRef(onDataPointClick);
+  const [hitPointsJson, setHitPointsJson] = useState<string>("{}");
 
   useEffect(() => {
     clickHandlerRef.current = onDataPointClick;
@@ -54,7 +60,7 @@ export function EChartsWidget({
 
   const computed = useMemo(() => {
     if (!data) return null;
-    return buildEChartsOption({
+    const base = buildEChartsOption({
       kind: widget.widget_kind,
       title: widget.title,
       encoding: widget.encoding,
@@ -63,14 +69,86 @@ export function EChartsWidget({
       isDark: effectiveDark,
       nodeLabelMap,
     });
-  }, [data, effectiveDark, nodeLabelMap, widget]);
+    const enhanced = enhanceClientEChartsOption(base.option, {
+      isDark: effectiveDark,
+      locale: isZh ? "zh" : "en",
+      unit: readString(widget.options, "unit"),
+      decimals: readNumber(widget.options, "decimals"),
+      markLineValue: readNumber(widget.options, "mark_line_value") ?? null,
+      markLineLabel: readString(widget.options, "mark_line_label"),
+    });
+    return {
+      clickField: base.clickField,
+      option: enhanced,
+    };
+  }, [data, effectiveDark, isZh, nodeLabelMap, widget]);
 
   const clickFieldRef = useRef("value");
+  const rawCategoriesRef = useRef<string[]>([]);
+  const rawPrimaryValuesRef = useRef<number[]>([]);
   useEffect(() => {
     if (computed) {
       clickFieldRef.current = computed.clickField;
     }
-  }, [computed]);
+    if (data && computed) {
+      const colMap = buildColumnIndexMap(data);
+      rawCategoriesRef.current = data.rows.map((r) => {
+        const raw = getCell(r, colMap, computed.clickField, 0);
+        return raw === undefined || raw === null ? "" : String(raw).trim();
+      });
+      rawPrimaryValuesRef.current = data.rows.map((r) => {
+        const rawVal = r.length > 1 ? r[1] : r[0];
+        return toNumericValue(rawVal) ?? 0;
+      });
+    } else {
+      rawCategoriesRef.current = [];
+      rawPrimaryValuesRef.current = [];
+    }
+  }, [computed, data]);
+
+  const refreshHitPoints = useCallback(() => {
+    const chart = chartRef.current;
+    if (!chart || chart.isDisposed()) return;
+    const rawCats = rawCategoriesRef.current;
+    const rawVals = rawPrimaryValuesRef.current;
+    if (rawCats.length === 0 || rawCats.length > 32) {
+      setHitPointsJson("{}");
+      return;
+    }
+    const pts: Record<string, [number, number]> = {};
+    rawCats.forEach((cat, idx) => {
+      if (!cat || cat in pts) return;
+      try {
+        const yVal = rawVals[idx] ?? 0;
+        const topPx = chart.convertToPixel(
+          { xAxisIndex: 0, yAxisIndex: 0 },
+          [idx, yVal]
+        );
+        const basePx = chart.convertToPixel(
+          { xAxisIndex: 0, yAxisIndex: 0 },
+          [idx, 0]
+        );
+        if (
+          Array.isArray(topPx) &&
+          Array.isArray(basePx) &&
+          typeof topPx[0] === "number" &&
+          typeof topPx[1] === "number" &&
+          typeof basePx[1] === "number" &&
+          Number.isFinite(topPx[0]) &&
+          Number.isFinite(topPx[1]) &&
+          Number.isFinite(basePx[1])
+        ) {
+          pts[cat] = [
+            Math.round(topPx[0]),
+            Math.round((topPx[1] + basePx[1]) / 2),
+          ];
+        }
+      } catch {
+        // Non-cartesian chart types (e.g. pie/gauge) skip axis pixel conversion
+      }
+    });
+    setHitPointsJson(JSON.stringify(pts));
+  }, []);
 
   useEffect(() => {
     const el = containerRef.current;
@@ -83,15 +161,24 @@ export function EChartsWidget({
     chartRef.current = chart;
 
     chart.on("click", (params) => {
-      const val = extractClickValue(params);
+      const idx =
+        typeof params.dataIndex === "number" ? params.dataIndex : -1;
+      const rawCat = idx >= 0 ? rawCategoriesRef.current[idx] : undefined;
+      const val =
+        rawCat && rawCat.length > 0 ? rawCat : extractClickValue(params);
       if (val !== undefined && val !== null) {
         clickHandlerRef.current?.(clickFieldRef.current, val);
       }
     });
 
+    chart.on("finished", () => {
+      refreshHitPoints();
+    });
+
     const ro = new ResizeObserver(() => {
       if (!chart.isDisposed() && el.clientWidth > 0 && el.clientHeight > 0) {
         chart.resize({ width: el.clientWidth, height: el.clientHeight });
+        refreshHitPoints();
       }
     });
     ro.observe(el);
@@ -107,57 +194,14 @@ export function EChartsWidget({
         // Ignore ZRender 0x0 canvas dispose error during unmount
       }
     };
-  }, []);
+  }, [refreshHitPoints]);
 
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart || chart.isDisposed() || !computed) return;
     chart.setOption(computed.option as echarts.EChartsOption, true);
-  }, [computed]);
-
-  // Only render discrete category drilldown pills for BAR_CHART and PIE_CHART (never LINE_CHART / AREA_CHART)
-  const quickCategories = useMemo(() => {
-    if (
-      !data ||
-      !onDataPointClick ||
-      (widget.widget_kind !== "BAR_CHART" &&
-        widget.widget_kind !== "PIE_CHART")
-    ) {
-      return [];
-    }
-    const xField =
-      computed?.clickField ??
-      readString(widget.encoding, "x") ??
-      readString(widget.encoding, "category") ??
-      data.columns[0]?.name ??
-      "";
-    if (!xField) return [];
-    const seen = new Set<string>();
-    const items: string[] = [];
-    const colMap = buildColumnIndexMap(data);
-    for (const row of data.rows) {
-      const raw = getCell(row, colMap, xField, 0);
-      const label = raw === undefined || raw === null ? "" : String(raw).trim();
-      if (!label) continue;
-      if (ISO_TIMESTAMP_PREFIX_RE.test(label)) {
-        return [];
-      }
-      if (!seen.has(label)) {
-        seen.add(label);
-        items.push(label);
-        if (items.length > 8) {
-          return [];
-        }
-      }
-    }
-    return items.map((label) => ({ field: xField, label }));
-  }, [
-    computed?.clickField,
-    data,
-    onDataPointClick,
-    widget.encoding,
-    widget.widget_kind,
-  ]);
+    refreshHitPoints();
+  }, [computed, refreshHitPoints]);
 
   if (!data || (data.rows.length === 0 && widget.widget_kind !== "GAUGE")) {
     return (
@@ -171,23 +215,9 @@ export function EChartsWidget({
     <div
       className="h-full flex flex-col"
       data-testid={`widget-chart-${widget.id}`}
+      data-hit-points={hitPointsJson}
     >
       <div ref={containerRef} className="flex-1 min-h-[140px] w-full" />
-      {quickCategories.length > 0 && (
-        <div className="flex flex-wrap items-center gap-1 pt-1 border-t border-border/60 shrink-0">
-          {quickCategories.map((item) => (
-            <button
-              key={item.label}
-              type="button"
-              onClick={() => onDataPointClick?.(item.field, item.label)}
-              data-testid={`chart-category-${item.label}`}
-              className="rounded border border-border px-1.5 py-0.5 text-[10px] font-mono-tech text-muted-foreground hover:border-xblue hover:text-xblue cursor-pointer"
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

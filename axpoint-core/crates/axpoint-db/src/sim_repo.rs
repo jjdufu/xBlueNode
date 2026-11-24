@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::PaginatedList;
 use axpoint_domain::enums::{AuditAction, InterventionMode, MetricSourceTag, OutboxTopic};
-use axpoint_domain::graph::TraversalDirection;
+use axpoint_domain::geo_ops::{GeoShapeDto, validate_geo_point, validate_geo_shape};
+use axpoint_domain::graph::{GeoPoint, TraversalDirection};
 use axpoint_domain::platform::NewOutboxEvent;
 use axpoint_domain::ports::{SimPreflightPort, SimRepository};
 use axpoint_domain::sim::{
@@ -15,7 +16,7 @@ use axpoint_domain::sim::{
     MAX_SANDBOX_SCOPE_DEPTH, PatchOverlayLinkRequest, PatchOverlayNodeRequest, PropagationSpec,
     RefreshBaseResponse, SandboxGraphLink, SandboxGraphNode, SandboxGraphResponse, SandboxScope,
     SandboxStatus, ScenarioRecord, ScenarioStatus, ScenarioSummary, ScopeBoundaryEdgeGroup,
-    ScopeInducedEdgeGroup, ScopePreflightSlice, SimGraph, SimLink, SimMode, SimNode, SimResult,
+    ScopeInducedEdgeGroup, ScopePreflightSlice, SimGraph, SimLink, SimNode, SimResult,
 };
 use axpoint_domain::studio::{LinkDirection, SchemaDoc};
 use axpoint_domain::topology::{
@@ -130,6 +131,53 @@ fn decode_json_object(val: serde_json::Value) -> serde_json::Map<String, serde_j
 
 fn decode_metrics_map(val: serde_json::Value) -> BTreeMap<String, f64> {
     serde_json::from_value(val).unwrap_or_default()
+}
+
+fn decode_geo_point_opt(lng: Option<f64>, lat: Option<f64>) -> Option<GeoPoint> {
+    match (lng, lat) {
+        (Some(lng_val), Some(lat_val)) if lng_val.is_finite() && lat_val.is_finite() => {
+            Some(GeoPoint {
+                lng: lng_val,
+                lat: lat_val,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn decode_geo_shape_opt(val: Option<serde_json::Value>) -> Option<GeoShapeDto> {
+    val.and_then(|v| serde_json::from_value(v).ok())
+}
+
+struct SerializedOverlayGeo {
+    lng: Option<f64>,
+    lat: Option<f64>,
+    shape_json: Option<serde_json::Value>,
+}
+
+fn validate_and_serialize_geo(
+    geo: Option<GeoPoint>,
+    geo_shape: Option<&GeoShapeDto>,
+) -> Result<SerializedOverlayGeo, AppError> {
+    let (lng, lat) = if let Some(pt) = geo {
+        validate_geo_point(pt)?;
+        (Some(pt.lng), Some(pt.lat))
+    } else {
+        (None, None)
+    };
+    let shape_json = if let Some(shape) = geo_shape {
+        validate_geo_shape(shape)?;
+        Some(serde_json::to_value(shape).map_err(|err| {
+            AppError::bad("INVALID_GEOMETRY", format!("serialize geo_shape: {err}"))
+        })?)
+    } else {
+        None
+    };
+    Ok(SerializedOverlayGeo {
+        lng,
+        lat,
+        shape_json,
+    })
 }
 
 fn decode_sandbox_row(row: &sqlx::postgres::PgRow) -> Result<AxSandboxRecord, AppError> {
@@ -441,9 +489,10 @@ async fn clone_base_from_prod_tx(
     let inserted_nodes = sqlx::query(
         "INSERT INTO ax_sim_base_nodes (
              tenant_id, sandbox_id, node_id, type_name, node_key, title,
-             metrics, properties, row_version
+             metrics, properties, geo_lng, geo_lat, geo_shape, row_version
          )
-         SELECT $1, $2, id, type_name, node_key, title, metrics, properties, row_version
+         SELECT $1, $2, id, type_name, node_key, title, metrics, properties,
+                geo_lng, geo_lat, geo_shape, row_version
            FROM xb_nodes
           WHERE tenant_id = $1 AND subgraph_slug = 'main' AND id = ANY($3)",
     )
@@ -521,11 +570,16 @@ async fn load_sandbox_nodes_merged_tx(
 ) -> Result<Vec<(SandboxGraphNode, i64)>, AppError> {
     let base_rows = sqlx::query(
         "SELECT b.node_id, b.type_name, b.node_key, b.title, b.metrics, b.properties, b.row_version,
+                COALESCE(o.geo_lng, b.geo_lng, x.geo_lng) AS eff_geo_lng,
+                COALESCE(o.geo_lat, b.geo_lat, x.geo_lat) AS eff_geo_lat,
+                COALESCE(o.geo_shape, b.geo_shape, x.geo_shape) AS eff_geo_shape,
                 o.title AS o_title, o.metrics AS o_metrics, o.properties AS o_properties,
                 o.deleted AS o_deleted, (o.node_id IS NOT NULL) AS has_overlay
            FROM ax_sim_base_nodes b
            LEFT JOIN ax_sim_overlay_nodes o
              ON o.sandbox_id = b.sandbox_id AND o.node_id = b.node_id
+           LEFT JOIN xb_nodes x
+             ON x.id = b.node_id AND x.tenant_id = b.tenant_id AND x.subgraph_slug = 'main'
           WHERE b.sandbox_id = $1 AND b.tenant_id = $2
           ORDER BY b.node_id ASC",
     )
@@ -564,8 +618,8 @@ async fn load_sandbox_nodes_merged_tx(
                 title: o_title.unwrap_or(base_title),
                 metrics,
                 properties,
-                geo: None,
-                geo_shape: None,
+                geo: decode_geo_point_opt(row.get("eff_geo_lng"), row.get("eff_geo_lat")),
+                geo_shape: decode_geo_shape_opt(row.get("eff_geo_shape")),
                 is_modified: has_overlay,
                 is_new: false,
             },
@@ -574,7 +628,8 @@ async fn load_sandbox_nodes_merged_tx(
     }
 
     let new_rows = sqlx::query(
-        "SELECT node_id, type_name, node_key, title, metrics, properties
+        "SELECT node_id, type_name, node_key, title, metrics, properties,
+                geo_lng, geo_lat, geo_shape
            FROM ax_sim_overlay_nodes
           WHERE sandbox_id = $1 AND tenant_id = $2
             AND is_new = TRUE AND deleted = FALSE
@@ -603,8 +658,8 @@ async fn load_sandbox_nodes_merged_tx(
                 title: row.get::<Option<String>, _>("title").unwrap_or_default(),
                 metrics,
                 properties,
-                geo: None,
-                geo_shape: None,
+                geo: decode_geo_point_opt(row.get("geo_lng"), row.get("geo_lat")),
+                geo_shape: decode_geo_shape_opt(row.get("geo_shape")),
                 is_modified: false,
                 is_new: true,
             },
@@ -739,7 +794,8 @@ async fn compute_overlay_hash_tx(
     sandbox_id: Uuid,
 ) -> Result<String, AppError> {
     let node_rows = sqlx::query(
-        "SELECT node_id, type_name, node_key, title, metrics, properties, is_new, deleted
+        "SELECT node_id, type_name, node_key, title, metrics, properties,
+                geo_lng, geo_lat, geo_shape, is_new, deleted
            FROM ax_sim_overlay_nodes
           WHERE sandbox_id = $1 AND tenant_id = $2
           ORDER BY node_id ASC",
@@ -771,19 +827,29 @@ async fn compute_overlay_hash_tx(
         let type_name: Option<String> = row.get("type_name");
         let node_key: Option<String> = row.get("node_key");
         let title: Option<String> = row.get("title");
+        let geo_lng_bits = row.get::<Option<f64>, _>("geo_lng").map(f64::to_bits);
+        let geo_lat_bits = row.get::<Option<f64>, _>("geo_lat").map(f64::to_bits);
+        let geo_shape_val: Option<serde_json::Value> = row.get("geo_shape");
         let metrics = row
             .get::<Option<serde_json::Value>, _>("metrics")
             .map_or_default(decode_metrics_map);
         let props = row
             .get::<Option<serde_json::Value>, _>("properties")
             .map_or_default(decode_json_object);
-        let header = format!("N:{nid}:{is_new}:{deleted}:{type_name:?}:{node_key:?}:{title:?}:");
+        let header = format!(
+            "N:{nid}:{is_new}:{deleted}:{type_name:?}:{node_key:?}:{title:?}:{geo_lng_bits:?}:{geo_lat_bits:?}:"
+        );
         hasher.update(header.as_bytes());
         if let Ok(m_json) = serde_json::to_vec(&metrics) {
             hasher.update(&m_json);
         }
         if let Ok(p_json) = serde_json::to_vec(&props) {
             hasher.update(&p_json);
+        }
+        if let Some(ref s_val) = geo_shape_val
+            && let Ok(s_json) = serde_json::to_vec(s_val)
+        {
+            hasher.update(&s_json);
         }
         hasher.update(b";");
     }
@@ -811,9 +877,14 @@ async fn load_effective_node_tx(
     node_id: Uuid,
 ) -> Result<Option<SandboxGraphNode>, AppError> {
     let base = sqlx::query(
-        "SELECT type_name, node_key, title, metrics, properties
-           FROM ax_sim_base_nodes
-          WHERE sandbox_id = $1 AND tenant_id = $2 AND node_id = $3",
+        "SELECT b.type_name, b.node_key, b.title, b.metrics, b.properties,
+                COALESCE(b.geo_lng, x.geo_lng) AS b_geo_lng,
+                COALESCE(b.geo_lat, x.geo_lat) AS b_geo_lat,
+                COALESCE(b.geo_shape, x.geo_shape) AS b_geo_shape
+           FROM ax_sim_base_nodes b
+           LEFT JOIN xb_nodes x
+             ON x.id = b.node_id AND x.tenant_id = b.tenant_id AND x.subgraph_slug = 'main'
+          WHERE b.sandbox_id = $1 AND b.tenant_id = $2 AND b.node_id = $3",
     )
     .bind(sandbox_id)
     .bind(tenant_id)
@@ -823,7 +894,8 @@ async fn load_effective_node_tx(
     .map_err(|err| AppError::Database(format!("load base node failed: {err}")))?;
 
     let overlay = sqlx::query(
-        "SELECT type_name, node_key, title, metrics, properties, is_new, deleted
+        "SELECT type_name, node_key, title, metrics, properties,
+                geo_lng, geo_lat, geo_shape, is_new, deleted
            FROM ax_sim_overlay_nodes
           WHERE sandbox_id = $1 AND tenant_id = $2 AND node_id = $3",
     )
@@ -844,6 +916,8 @@ async fn load_effective_node_tx(
         let mut metrics = decode_metrics_map(b_row.get("metrics"));
         let mut properties = decode_json_object(b_row.get("properties"));
         let mut title: String = b_row.get("title");
+        let mut geo = decode_geo_point_opt(b_row.get("b_geo_lng"), b_row.get("b_geo_lat"));
+        let mut geo_shape = decode_geo_shape_opt(b_row.get("b_geo_shape"));
         let has_overlay = overlay.is_some();
         if let Some(ov) = overlay {
             if let Some(t) = ov.get::<Option<String>, _>("title") {
@@ -859,6 +933,12 @@ async fn load_effective_node_tx(
                     properties.insert(k, v);
                 }
             }
+            if let Some(ov_geo) = decode_geo_point_opt(ov.get("geo_lng"), ov.get("geo_lat")) {
+                geo = Some(ov_geo);
+            }
+            if let Some(ov_shape) = decode_geo_shape_opt(ov.get("geo_shape")) {
+                geo_shape = Some(ov_shape);
+            }
         }
         return Ok(Some(SandboxGraphNode {
             id: node_id,
@@ -867,8 +947,8 @@ async fn load_effective_node_tx(
             title,
             metrics,
             properties,
-            geo: None,
-            geo_shape: None,
+            geo,
+            geo_shape,
             is_modified: has_overlay,
             is_new: false,
         }));
@@ -888,8 +968,8 @@ async fn load_effective_node_tx(
             properties: ov
                 .get::<Option<serde_json::Value>, _>("properties")
                 .map_or_default(decode_json_object),
-            geo: None,
-            geo_shape: None,
+            geo: decode_geo_point_opt(ov.get("geo_lng"), ov.get("geo_lat")),
+            geo_shape: decode_geo_shape_opt(ov.get("geo_shape")),
             is_modified: false,
             is_new: true,
         }));
@@ -974,6 +1054,88 @@ async fn load_effective_link_tx(
     Ok(None)
 }
 
+struct MergedOverlayNodePatch {
+    title: Option<String>,
+    metrics_json: Option<serde_json::Value>,
+    props_json: Option<serde_json::Value>,
+    geo_lng: Option<f64>,
+    geo_lat: Option<f64>,
+    geo_shape: Option<serde_json::Value>,
+    is_new: bool,
+}
+
+fn merge_overlay_node_patch(
+    existing: Option<&sqlx::postgres::PgRow>,
+    req: &PatchOverlayNodeRequest,
+    incoming_geo: SerializedOverlayGeo,
+) -> Result<MergedOverlayNodePatch, AppError> {
+    let mut ov_metrics = existing
+        .and_then(|r| r.get::<Option<serde_json::Value>, _>("metrics"))
+        .map_or_default(decode_metrics_map);
+    if let Some(ref incoming) = req.metrics {
+        for (k, v) in incoming {
+            ov_metrics.insert(k.clone(), *v);
+        }
+    }
+
+    let mut ov_props = existing
+        .and_then(|r| r.get::<Option<serde_json::Value>, _>("properties"))
+        .map_or_default(decode_json_object);
+    if let Some(ref incoming) = req.properties {
+        for (k, v) in incoming {
+            ov_props.insert(k.clone(), v.clone());
+        }
+    }
+
+    let title = req
+        .title
+        .as_deref()
+        .map(str::trim)
+        .map(String::from)
+        .or_else(|| existing.and_then(|r| r.get::<Option<String>, _>("title")));
+    let is_new = existing.is_some_and(|r| r.get::<bool, _>("is_new"));
+    let geo_lng = incoming_geo
+        .lng
+        .or_else(|| existing.and_then(|r| r.get::<Option<f64>, _>("geo_lng")));
+    let geo_lat = incoming_geo
+        .lat
+        .or_else(|| existing.and_then(|r| r.get::<Option<f64>, _>("geo_lat")));
+    let geo_shape = incoming_geo
+        .shape_json
+        .or_else(|| existing.and_then(|r| r.get::<Option<serde_json::Value>, _>("geo_shape")));
+
+    let metrics_json = if req.metrics.is_some()
+        || existing
+            .and_then(|r| r.get::<Option<serde_json::Value>, _>("metrics"))
+            .is_some()
+    {
+        Some(serde_json::to_value(&ov_metrics).map_err(|err| {
+            AppError::bad("INVALID_ARGUMENT", format!("serialize metrics: {err}"))
+        })?)
+    } else {
+        None
+    };
+    let props_json = if req.properties.is_some()
+        || existing
+            .and_then(|r| r.get::<Option<serde_json::Value>, _>("properties"))
+            .is_some()
+    {
+        Some(serde_json::Value::Object(ov_props))
+    } else {
+        None
+    };
+
+    Ok(MergedOverlayNodePatch {
+        title,
+        metrics_json,
+        props_json,
+        geo_lng,
+        geo_lat,
+        geo_shape,
+        is_new,
+    })
+}
+
 async fn upsert_overlay_node_patch_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
@@ -981,8 +1143,9 @@ async fn upsert_overlay_node_patch_tx(
     node_id: Uuid,
     req: &PatchOverlayNodeRequest,
 ) -> Result<(), AppError> {
+    let incoming_geo = validate_and_serialize_geo(req.geo, req.geo_shape.as_ref())?;
     let existing = sqlx::query(
-        "SELECT title, metrics, properties, is_new
+        "SELECT title, metrics, properties, geo_lng, geo_lat, geo_shape, is_new
            FROM ax_sim_overlay_nodes
           WHERE sandbox_id = $1 AND tenant_id = $2 AND node_id = $3",
     )
@@ -993,82 +1156,34 @@ async fn upsert_overlay_node_patch_tx(
     .await
     .map_err(|err| AppError::Database(format!("query overlay node for patch failed: {err}")))?;
 
-    let mut ov_metrics = existing
-        .as_ref()
-        .and_then(|r| r.get::<Option<serde_json::Value>, _>("metrics"))
-        .map_or_default(decode_metrics_map);
-    if let Some(ref incoming) = req.metrics {
-        for (k, v) in incoming {
-            ov_metrics.insert(k.clone(), *v);
-        }
-    }
-
-    let mut ov_props = existing
-        .as_ref()
-        .and_then(|r| r.get::<Option<serde_json::Value>, _>("properties"))
-        .map_or_default(decode_json_object);
-    if let Some(ref incoming) = req.properties {
-        for (k, v) in incoming {
-            ov_props.insert(k.clone(), v.clone());
-        }
-    }
-
-    let existing_title = existing
-        .as_ref()
-        .and_then(|r| r.get::<Option<String>, _>("title"));
-    let next_title = req
-        .title
-        .as_deref()
-        .map(str::trim)
-        .map(String::from)
-        .or(existing_title);
-    let is_new = existing
-        .as_ref()
-        .is_some_and(|r| r.get::<bool, _>("is_new"));
-
-    let metrics_json = if req.metrics.is_some()
-        || existing
-            .as_ref()
-            .and_then(|r| r.get::<Option<serde_json::Value>, _>("metrics"))
-            .is_some()
-    {
-        Some(serde_json::to_value(&ov_metrics).map_err(|err| {
-            AppError::bad("INVALID_ARGUMENT", format!("serialize metrics: {err}"))
-        })?)
-    } else {
-        None
-    };
-
-    let props_json = if req.properties.is_some()
-        || existing
-            .as_ref()
-            .and_then(|r| r.get::<Option<serde_json::Value>, _>("properties"))
-            .is_some()
-    {
-        Some(serde_json::Value::Object(ov_props))
-    } else {
-        None
-    };
+    let merged = merge_overlay_node_patch(existing.as_ref(), req, incoming_geo)?;
 
     sqlx::query(
         "INSERT INTO ax_sim_overlay_nodes (
-             tenant_id, sandbox_id, node_id, title, metrics, properties, is_new, deleted, updated_at
+             tenant_id, sandbox_id, node_id, title, metrics, properties,
+             geo_lng, geo_lat, geo_shape, is_new, deleted, updated_at
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, NOW())
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, FALSE, NOW())
          ON CONFLICT (sandbox_id, node_id) DO UPDATE SET
              title = EXCLUDED.title,
              metrics = EXCLUDED.metrics,
              properties = EXCLUDED.properties,
+             geo_lng = EXCLUDED.geo_lng,
+             geo_lat = EXCLUDED.geo_lat,
+             geo_shape = EXCLUDED.geo_shape,
              deleted = FALSE,
              updated_at = NOW()",
     )
     .bind(tenant_id)
     .bind(sandbox_id)
     .bind(node_id)
-    .bind(next_title)
-    .bind(metrics_json)
-    .bind(props_json)
-    .bind(is_new)
+    .bind(merged.title)
+    .bind(merged.metrics_json)
+    .bind(merged.props_json)
+    .bind(merged.geo_lng)
+    .bind(merged.geo_lat)
+    .bind(merged.geo_shape)
+    .bind(merged.is_new)
     .execute(&mut **tx)
     .await
     .map_err(|err| AppError::Database(format!("upsert ax_sim_overlay_nodes failed: {err}")))?;
@@ -2043,6 +2158,7 @@ impl SimRepository for PgStore {
         if let Some(ref metrics) = req.metrics {
             validate_finite_metrics(metrics)?;
         }
+        let _validated = validate_and_serialize_geo(req.geo, req.geo_shape.as_ref())?;
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         ensure_sandbox_exists_tx(&mut tx, tenant_id, sandbox_id).await?;
@@ -2051,7 +2167,12 @@ impl SimRepository for PgStore {
             .await?
             .ok_or(AppError::NotFound("NODE_NOT_FOUND"))?;
 
-        if req.title.is_none() && req.metrics.is_none() && req.properties.is_none() {
+        if req.title.is_none()
+            && req.metrics.is_none()
+            && req.properties.is_none()
+            && req.geo.is_none()
+            && req.geo_shape.is_none()
+        {
             tx.commit().await.map_err(|err| {
                 AppError::Database(format!("commit noop patch_overlay_node tx failed: {err}"))
             })?;
@@ -2085,6 +2206,7 @@ impl SimRepository for PgStore {
             ));
         }
         validate_finite_metrics(&req.metrics)?;
+        let ser_geo = validate_and_serialize_geo(req.geo, req.geo_shape.as_ref())?;
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         ensure_sandbox_exists_tx(&mut tx, tenant_id, sandbox_id).await?;
@@ -2098,9 +2220,10 @@ impl SimRepository for PgStore {
         sqlx::query(
             "INSERT INTO ax_sim_overlay_nodes (
                  tenant_id, sandbox_id, node_id, type_name, node_key, title,
-                 metrics, properties, is_new, deleted, updated_at
+                 metrics, properties, geo_lng, geo_lat, geo_shape,
+                 is_new, deleted, updated_at
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, FALSE, NOW())",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, TRUE, FALSE, NOW())",
         )
         .bind(tenant_id)
         .bind(sandbox_id)
@@ -2110,6 +2233,9 @@ impl SimRepository for PgStore {
         .bind(title)
         .bind(metrics_json)
         .bind(props_json)
+        .bind(ser_geo.lng)
+        .bind(ser_geo.lat)
+        .bind(ser_geo.shape_json)
         .execute(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("insert overlay node failed: {err}")))?;
@@ -2553,13 +2679,13 @@ impl SimRepository for PgStore {
     ) -> Result<AxSimResult, AppError> {
         let graph = self.load_graph(tenant_id, sandbox_id).await?;
         let params = req.params.unwrap_or_default();
-        let sim_res = if params.uncertainty.is_some() {
-            axpoint_domain::sim::uncertainty::solve(&graph, &req.actions, &params)?
-        } else if params.mode == SimMode::Stepped {
-            axpoint_domain::sim::stepped::solve(&graph, &req.actions, &params)?
-        } else {
-            axpoint_domain::sim::steady::solve(&graph, &req.actions, &params)?
-        };
+        let sim_res = axpoint_domain::sim::uncertainty::solve_with_events(
+            &graph,
+            &req.actions,
+            &params,
+            &req.scheduled_events,
+            &req.goal_constraints,
+        )?;
 
         let impacts = sim_res
             .impacts
@@ -2630,8 +2756,9 @@ impl SimRepository for PgStore {
         let current_hash = compute_overlay_hash_tx(&mut tx, tenant_id, sandbox_id).await?;
 
         let rows = sqlx::query(
-            "SELECT id, sandbox_id, name, description, actions, params, overlay_hash,
-                    result, status, error_message, created_by, created_at, finished_at
+            "SELECT id, sandbox_id, name, description, actions, params,
+                    scheduled_events, goal_constraints, fired_events, deadline_report,
+                    overlay_hash, result, status, error_message, created_by, created_at, finished_at
                FROM ax_sim_scenarios
               WHERE sandbox_id = $1 AND tenant_id = $2
               ORDER BY created_at DESC, id DESC",
@@ -2658,8 +2785,9 @@ impl SimRepository for PgStore {
     ) -> Result<Option<ScenarioRecord>, AppError> {
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         let row_opt = sqlx::query(
-            "SELECT id, sandbox_id, name, description, actions, params, overlay_hash,
-                    result, status, error_message, created_by, created_at, finished_at
+            "SELECT id, sandbox_id, name, description, actions, params,
+                    scheduled_events, goal_constraints, fired_events, deadline_report,
+                    overlay_hash, result, status, error_message, created_by, created_at, finished_at
                FROM ax_sim_scenarios
               WHERE id = $1 AND tenant_id = $2",
         )
@@ -2704,6 +2832,18 @@ impl SimRepository for PgStore {
             .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid actions: {err}")))?;
         let params_json = serde_json::to_value(&req.params)
             .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid params: {err}")))?;
+        let scheduled_events_json = serde_json::to_value(&req.scheduled_events).map_err(|err| {
+            AppError::bad(
+                "INVALID_ARGUMENT",
+                format!("invalid scheduled_events: {err}"),
+            )
+        })?;
+        let goal_constraints_json = serde_json::to_value(&req.goal_constraints).map_err(|err| {
+            AppError::bad(
+                "INVALID_ARGUMENT",
+                format!("invalid goal_constraints: {err}"),
+            )
+        })?;
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         ensure_sandbox_exists_tx(&mut tx, tenant_id, sandbox_id).await?;
@@ -2712,11 +2852,12 @@ impl SimRepository for PgStore {
         let row = sqlx::query(
             "INSERT INTO ax_sim_scenarios (
                  tenant_id, sandbox_id, name, description, actions, params,
-                 overlay_hash, status, created_by
+                 scheduled_events, goal_constraints, overlay_hash, status, created_by
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', $8)
-         RETURNING id, sandbox_id, name, description, actions, params, overlay_hash,
-                   result, status, error_message, created_by, created_at, finished_at",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'PENDING', $10)
+         RETURNING id, sandbox_id, name, description, actions, params,
+                   scheduled_events, goal_constraints, fired_events, deadline_report,
+                   overlay_hash, result, status, error_message, created_by, created_at, finished_at",
         )
         .bind(tenant_id)
         .bind(sandbox_id)
@@ -2724,6 +2865,8 @@ impl SimRepository for PgStore {
         .bind(req.description.trim())
         .bind(actions_json)
         .bind(params_json)
+        .bind(scheduled_events_json)
+        .bind(goal_constraints_json)
         .bind(overlay_hash)
         .bind(created_by)
         .fetch_one(&mut *tx)
@@ -2798,6 +2941,15 @@ impl SimRepository for PgStore {
         let summary_json = serde_json::to_value(&summary).map_err(|err| {
             AppError::Database(format!("serialize ScenarioSummary failed: {err}"))
         })?;
+        let fired_events_json = serde_json::to_value(&result.fired_events).map_err(|err| {
+            AppError::Database(format!("serialize FiredEventRecord list failed: {err}"))
+        })?;
+        let deadline_report_json = result
+            .deadline_report
+            .as_ref()
+            .map(serde_json::to_value)
+            .transpose()
+            .map_err(|err| AppError::Database(format!("serialize DeadlineReport failed: {err}")))?;
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         let row = sqlx::query(
@@ -2805,16 +2957,21 @@ impl SimRepository for PgStore {
                 SET status = 'SUCCEEDED',
                     overlay_hash = $2,
                     result = $3,
+                    fired_events = $5,
+                    deadline_report = $6,
                     error_message = NULL,
                     finished_at = NOW()
               WHERE id = $1 AND tenant_id = $4
-          RETURNING id, sandbox_id, name, description, actions, params, overlay_hash,
-                    result, status, error_message, created_by, created_at, finished_at",
+          RETURNING id, sandbox_id, name, description, actions, params,
+                    scheduled_events, goal_constraints, fired_events, deadline_report,
+                    overlay_hash, result, status, error_message, created_by, created_at, finished_at",
         )
         .bind(scenario_id)
         .bind(overlay_hash)
         .bind(summary_json)
         .bind(tenant_id)
+        .bind(fired_events_json)
+        .bind(deadline_report_json)
         .fetch_optional(&mut *tx)
         .await
         .map_err(|err| AppError::Database(format!("save scenario success failed: {err}")))?

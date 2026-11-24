@@ -34,6 +34,11 @@ import {
   Input,
   Select,
 } from "@/components/ui/primitives";
+import {
+  PinToDashboardModal,
+  type PinChartDraftSpec,
+} from "./PinToDashboardModal";
+import { VTablePivotCanvas } from "./VTablePivotCanvas";
 
 const AGG_OPTIONS: readonly AggFn[] = [
   "SUM",
@@ -137,6 +142,7 @@ export function PivotBuilder({
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveName, setSaveName] = useState("");
   const [saving, setSaving] = useState(false);
+  const [pinDraft, setPinDraft] = useState<PinChartDraftSpec | null>(null);
 
   const grainLabel = (g: RollupGrain): string => {
     switch (g) {
@@ -404,14 +410,20 @@ export function PivotBuilder({
     else if (zone === "filters") addFilterField(fieldName);
   };
 
-  const rowDimSlotCount = useMemo(() => {
-    if (!pivotResult) return Math.max(1, rows.length);
-    const maxHeaderLen = pivotResult.row_headers.reduce(
-      (acc, h) => Math.max(acc, h.length),
-      0
-    );
-    return Math.max(1, rows.length, maxHeaderLen);
-  }, [pivotResult, rows.length]);
+  const handleOpenPinModal = () => {
+    const spec = buildSpec();
+    const specRecord: Record<string, unknown> = { ...spec };
+    setPinDraft({
+      name: `${selectedDataset || "pivot"} · ${tx("交叉透视", "Pivot")}`,
+      widgetKind: "PIVOT_TABLE",
+      dataSource: { kind: "PIVOT", spec: specRecord },
+      encoding: {},
+      options: {
+        show_data_bars: true,
+        freeze_headers: true,
+      },
+    });
+  };
 
   const handleSaveConfirm = async () => {
     if (!onSavePivotQuery || !saveName.trim()) return;
@@ -989,106 +1001,19 @@ export function PivotBuilder({
                 )}
           </div>
         ) : (
-          <div className="max-h-96 overflow-auto">
-            <table
-              className="w-full border-collapse text-left text-xs"
-              data-testid="pivot-result-table"
-            >
-              <thead className="sticky top-0 z-10 bg-muted border-b border-border">
-                <tr>
-                  {Array.from({ length: rowDimSlotCount }, (_, idx) => (
-                    <th
-                      key={`rdim-${idx}`}
-                      className="border-r border-border px-3 py-2 font-mono-tech font-semibold text-foreground whitespace-nowrap"
-                    >
-                      {rows[idx]?.label ||
-                        rows[idx]?.field ||
-                        tx("汇总维度", "Dimension")}
-                    </th>
-                  ))}
-                  {pivotResult.column_headers.map((colHdr, cIdx) => (
-                    <th
-                      key={`chdr-${cIdx}`}
-                      className="border-r border-border last:border-r-0 px-3 py-2 text-right font-mono-tech font-semibold text-foreground whitespace-nowrap"
-                    >
-                      {colHdr.filter(Boolean).join(" / ") ||
-                        `${tx("指标", "Measure")} ${cIdx + 1}`}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {pivotResult.cells.map((cellRow, rIdx) => {
-                  const kind = pivotResult.row_kinds[rIdx] ?? "DATA";
-                  const rawHeaders = pivotResult.row_headers[rIdx] ?? [];
-                  const grandLabel = tx("总计", "Grand Total");
-                  const subLabel = tx("小计", "Subtotal");
-                  const hasGrandLabel = rawHeaders.some(
-                    (h) => h.includes("总计") || h.toLowerCase().includes("total")
-                  );
-                  const hasSubLabel = rawHeaders.some(
-                    (h) => h.includes("小计") || h.toLowerCase().includes("subtotal")
-                  );
-
-                  const displayHeaders = Array.from(
-                    { length: rowDimSlotCount },
-                    (_, dIdx) => {
-                      const val = rawHeaders[dIdx] ?? "";
-                      if (kind === "GRAND_TOTAL" && !hasGrandLabel) {
-                        return dIdx === 0 ? grandLabel : "";
-                      }
-                      if (kind === "SUBTOTAL" && !hasSubLabel) {
-                        if (dIdx === rowDimSlotCount - 1) {
-                          return val ? `${val} · ${subLabel}` : subLabel;
-                        }
-                      }
-                      return val;
-                    }
-                  );
-
-                  const rowClass =
-                    kind === "GRAND_TOTAL"
-                      ? "bg-xblue-soft/60 font-semibold border-t-2 border-border"
-                      : kind === "SUBTOTAL"
-                        ? "bg-muted/60 font-medium border-t border-border"
-                        : "border-b border-border hover:bg-muted/30";
-
-                  return (
-                    <tr
-                      key={rIdx}
-                      className={rowClass}
-                      data-testid={
-                        kind === "GRAND_TOTAL"
-                          ? "pivot-row-grand-total"
-                          : kind === "SUBTOTAL"
-                            ? "pivot-row-subtotal"
-                            : `pivot-row-data-${rIdx}`
-                      }
-                    >
-                      {displayHeaders.map((hdrText, dIdx) => (
-                        <td
-                          key={`rh-${dIdx}`}
-                          className="border-r border-border px-3 py-1.5 font-mono-tech whitespace-nowrap"
-                        >
-                          {hdrText || (kind === "DATA" ? "-" : "")}
-                        </td>
-                      ))}
-                      {cellRow.map((cellVal, cIdx) => (
-                        <td
-                          key={`cell-${cIdx}`}
-                          className="border-r border-border last:border-r-0 px-3 py-1.5 text-right font-mono-tech whitespace-nowrap"
-                        >
-                          {cellVal === "" ? "-" : cellVal}
-                        </td>
-                      ))}
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <VTablePivotCanvas
+            pivotResult={pivotResult}
+            rowFields={rows}
+            onPin={handleOpenPinModal}
+          />
         )}
       </Card>
+
+      <PinToDashboardModal
+        open={Boolean(pinDraft)}
+        draft={pinDraft}
+        onClose={() => setPinDraft(null)}
+      />
     </div>
   );
 }

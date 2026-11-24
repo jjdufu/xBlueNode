@@ -166,6 +166,15 @@ pub(crate) fn build_channel_system(
     actions: &[NormalizedAction],
     max_hops: Option<u32>,
 ) -> ChannelSystem {
+    build_channel_system_with_extra_seeds(indexed, actions, &[], max_hops)
+}
+
+pub(crate) fn build_channel_system_with_extra_seeds(
+    indexed: &IndexedSimGraph,
+    actions: &[NormalizedAction],
+    extra_seeds: &[(usize, String)],
+    max_hops: Option<u32>,
+) -> ChannelSystem {
     let mut vertices: Vec<ChannelVertex> = Vec::new();
     let mut chan_map: HashMap<(usize, String), usize> = HashMap::new();
     let mut seeds: Vec<usize> = Vec::new();
@@ -192,6 +201,15 @@ pub(crate) fn build_channel_system(
                 value: act.value,
                 at_step: act.at_step,
             });
+        }
+    }
+
+    for (node_idx, metric) in extra_seeds {
+        let chan_idx =
+            get_or_insert_channel(indexed, &mut vertices, &mut chan_map, *node_idx, metric);
+        if !seeds.contains(&chan_idx) {
+            seeds.push(chan_idx);
+            queue.push_back((chan_idx, 0));
         }
     }
 

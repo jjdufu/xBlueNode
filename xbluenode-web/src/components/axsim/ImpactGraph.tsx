@@ -1,9 +1,12 @@
-import { useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useMemo, useRef, useState } from "react";
 import {
   Eye,
   Info,
+  Layers,
+  Loader2,
   Maximize2,
   Route,
+  ShieldAlert,
   X,
   ZoomIn,
   ZoomOut,
@@ -17,6 +20,20 @@ import type {
 import { Badge, Button, Card, IconButton } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/lib/theme";
+import { cn } from "@/lib/utils";
+import {
+  buildSimComboGroups,
+  computeHighImpactHullClusters,
+  resolveNodeComboKey,
+} from "./causalHull";
+import type {
+  ImpactGraphSurfaceHandle,
+  PreparedSimCardViewModel,
+} from "./ImpactGraphG6Surface";
+
+const LazyImpactGraphG6Surface = lazy(
+  () => import("./ImpactGraphG6Surface")
+);
 
 export interface ImpactGraphProps {
   nodes: SandboxGraphNode[];
@@ -31,17 +48,7 @@ export interface ImpactGraphProps {
   onClearPath?: () => void;
 }
 
-interface PositionedNode {
-  node: SandboxGraphNode;
-  x: number;
-  y: number;
-  layer: number;
-  acted: boolean;
-  primaryImpact: ImpactRow | null;
-  stepDeltaEntries: Array<[string, number]>;
-}
-
-const MAX_ROWS_PER_COL = 8;
+const MAX_ROWS_PER_COL = 6;
 const DEFAULT_IDLE_NODE_CAP = 24;
 
 export function ImpactGraph({
@@ -58,29 +65,15 @@ export function ImpactGraph({
 }: ImpactGraphProps) {
   const { tx, fmtNum } = useI18n();
   const { isDark } = useTheme();
+  const surfaceRef = useRef<ImpactGraphSurfaceHandle | null>(null);
 
   const [internalSelectedId, setInternalSelectedId] = useState<string | null>(
     null
   );
   const [showAllNodes, setShowAllNodes] = useState(false);
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
-
-  const dragStateRef = useRef<{
-    active: boolean;
-    startX: number;
-    startY: number;
-    originPanX: number;
-    originPanY: number;
-    moved: boolean;
-  }>({
-    active: false,
-    startX: 0,
-    startY: 0,
-    originPanX: 0,
-    originPanY: 0,
-    moved: false,
-  });
+  const [collapsedComboIds, setCollapsedComboIds] = useState<Set<string>>(
+    () => new Set()
+  );
 
   const activeSelectedId =
     selectedNodeId !== undefined ? selectedNodeId : internalSelectedId;
@@ -90,17 +83,21 @@ export function ImpactGraph({
     onSelectNode?.(id);
   };
 
-  const resetViewport = () => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  };
+  const actedByNode = useMemo(() => {
+    const map = new Map<string, AxSimAction>();
+    for (const act of actions) {
+      if (act.target_node_id && !map.has(act.target_node_id)) {
+        map.set(act.target_node_id, act);
+      }
+    }
+    return map;
+  }, [actions]);
 
   const actedNodeIds = useMemo(
-    () => new Set(actions.map((a) => a.target_node_id).filter(Boolean)),
-    [actions]
+    () => new Set(actedByNode.keys()),
+    [actedByNode]
   );
 
-  // Dominant impact rows per node
   const impactByNode = useMemo(() => {
     const map = new Map<string, ImpactRow[]>();
     for (const row of impacts) {
@@ -111,7 +108,7 @@ export function ImpactGraph({
     return map;
   }, [impacts]);
 
-  // Filter nodes to avoid scaling down 100+ unaffected baseline nodes into a 1px speck
+  // Filter unaffected baseline nodes by default so causal propagation stays crisp
   const { visibleNodes, visibleLinks, hiddenCount } = useMemo(() => {
     if (nodes.length === 0) {
       return {
@@ -145,35 +142,21 @@ export function ImpactGraph({
     }
 
     const keepIds = new Set<string>();
-
-    // (a) Intervention origins
-    for (const id of actedNodeIds) {
-      keepIds.add(id);
-    }
-    // (b) Nodes present in impactByNode or active checkpoint changes
-    for (const id of impactByNode.keys()) {
-      keepIds.add(id);
-    }
+    for (const id of actedNodeIds) keepIds.add(id);
+    for (const id of impactByNode.keys()) keepIds.add(id);
     for (const imp of impacts) {
-      for (const pid of imp.top_path ?? []) {
-        keepIds.add(pid);
-      }
+      for (const pid of imp.top_path ?? []) keepIds.add(pid);
     }
     if (checkpointChanges) {
-      for (const id of Object.keys(checkpointChanges)) {
-        keepIds.add(id);
-      }
+      for (const id of Object.keys(checkpointChanges)) keepIds.add(id);
     }
-    // (c) Highlighted path & currently selected node
-    for (const id of highlightedPath) {
-      keepIds.add(id);
-    }
-    if (activeSelectedId) {
-      keepIds.add(activeSelectedId);
-    }
+    for (const id of highlightedPath) keepIds.add(id);
+    if (activeSelectedId) keepIds.add(activeSelectedId);
 
-    if (impacts.length > 0 || (checkpointChanges && Object.keys(checkpointChanges).length > 0)) {
-      // (d) Intermediate bridge nodes along causal paths from actedNodeIds -> impacted/highlighted nodes
+    if (
+      impacts.length > 0 ||
+      (checkpointChanges && Object.keys(checkpointChanges).length > 0)
+    ) {
       const reachableFromOrigins = new Map<string, number>();
       const fwdQueue: string[] = [];
       for (const id of actedNodeIds) {
@@ -213,12 +196,9 @@ export function ImpactGraph({
       }
 
       for (const id of reachableFromOrigins.keys()) {
-        if (canReachTargets.has(id)) {
-          keepIds.add(id);
-        }
+        if (canReachTargets.has(id)) keepIds.add(id);
       }
     } else {
-      // Idle state (impacts.length === 0): show actedNodeIds + 1-hop neighbors + overlay edits, capped
       const seeds =
         actedNodeIds.size > 0
           ? Array.from(actedNodeIds)
@@ -235,7 +215,10 @@ export function ImpactGraph({
         }
       }
       for (const n of nodes) {
-        if ((n.is_new || n.is_modified) && keepIds.size < DEFAULT_IDLE_NODE_CAP) {
+        if (
+          (n.is_new || n.is_modified) &&
+          keepIds.size < DEFAULT_IDLE_NODE_CAP
+        ) {
           keepIds.add(n.id);
         }
       }
@@ -274,15 +257,33 @@ export function ImpactGraph({
     showAllNodes,
   ]);
 
-  // Layered layout with per-column vertical cap (MAX_ROWS_PER_COL = 8)
-  const { positionedNodes, svgWidth, svgHeight } = useMemo(() => {
-    if (visibleNodes.length === 0) {
-      return {
-        positionedNodes: [] as PositionedNode[],
-        svgWidth: 720,
-        svgHeight: 320,
-      };
+  const highlightedEdgePairs = useMemo(() => {
+    const pairs = new Set<string>();
+    for (let i = 0; i < highlightedPath.length - 1; i += 1) {
+      pairs.add(`${highlightedPath[i]}->${highlightedPath[i + 1]}`);
     }
+    return pairs;
+  }, [highlightedPath]);
+
+  const highlightedNodeSet = useMemo(
+    () => new Set(highlightedPath),
+    [highlightedPath]
+  );
+
+  const activeStepNodes = useMemo(() => {
+    if (!checkpointChanges || !activeStepLabel) return null;
+    const set = new Set<string>(Object.keys(checkpointChanges));
+    for (const id of actedNodeIds) set.add(id);
+    return set;
+  }, [actedNodeIds, activeStepLabel, checkpointChanges]);
+
+  const baselineLabel = tx("基线", "Base");
+  const interventionLabel = tx("干预", "Act");
+  const simulatedLabel = tx("推演值", "Sim");
+
+  // Compute deterministic hop-layered positions + 3-track card view models
+  const cardModels: PreparedSimCardViewModel[] = useMemo(() => {
+    if (visibleNodes.length === 0) return [];
 
     const visibleSet = new Set(visibleNodes.map((n) => n.id));
     const hopMap = new Map<string, number>();
@@ -337,9 +338,8 @@ export function ImpactGraph({
     }
 
     const sortedLayers = Array.from(layers.keys()).sort((a, b) => a - b);
-
-    // Split oversized layer buckets into wrapped sub-columns (max 8 rows/col)
-    const visualColumns: Array<{ layer: number; items: SandboxGraphNode[] }> = [];
+    const visualColumns: Array<{ layer: number; items: SandboxGraphNode[] }> =
+      [];
     for (const layerIdx of sortedLayers) {
       const bucket = layers.get(layerIdx) ?? [];
       for (let i = 0; i < bucket.length; i += MAX_ROWS_PER_COL) {
@@ -350,29 +350,12 @@ export function ImpactGraph({
       }
     }
 
-    const maxColRows = visualColumns.reduce(
-      (acc, col) => Math.max(acc, col.items.length),
-      1
-    );
+    const colWidth = 312;
+    const rowHeight = 148;
+    const out: PreparedSimCardViewModel[] = [];
 
-    const colWidth = 205;
-    const rowHeight = 84;
-    const padX = 110;
-    const padY = 58;
-    const width = Math.max(
-      700,
-      padX * 2 + Math.max(0, visualColumns.length - 1) * colWidth
-    );
-    const height = Math.max(
-      320,
-      padY * 2 + Math.max(0, maxColRows - 1) * rowHeight
-    );
-
-    const positioned: PositionedNode[] = [];
     visualColumns.forEach((col, colIdx) => {
-      const totalColHeight = (col.items.length - 1) * rowHeight;
-      const startY = height / 2 - totalColHeight / 2;
-
+      const startY = -((col.items.length - 1) * rowHeight) / 2;
       col.items.forEach((n, idxInCol) => {
         const nodeImpacts = impactByNode.get(n.id) ?? [];
         const primary =
@@ -381,53 +364,129 @@ export function ImpactGraph({
                 (a, b) =>
                   Math.abs(b.delta_ratio ?? b.delta ?? 0) -
                   Math.abs(a.delta_ratio ?? a.delta ?? 0)
-              )[0]
+              )[0] ?? null
             : null;
+        const action = actedByNode.get(n.id) ?? null;
         const ckpt = checkpointChanges?.[n.id];
         const stepEntries = ckpt ? Object.entries(ckpt) : [];
 
-        positioned.push({
-          node: n,
-          x: padX + colIdx * colWidth,
-          y: startY + idxInCol * rowHeight,
-          layer: col.layer,
+        const firstBaseEntry = Object.entries(n.metrics ?? {})[0];
+        const metricKey =
+          stepEntries[0]?.[0] ??
+          primary?.metric ??
+          action?.metric_key ??
+          firstBaseEntry?.[0] ??
+          null;
+
+        const baseNum =
+          metricKey && typeof n.metrics?.[metricKey] === "number"
+            ? n.metrics[metricKey]
+            : (primary?.before_val ?? firstBaseEntry?.[1] ?? null);
+
+        let simNum: number | null = baseNum;
+        if (stepEntries[0]) {
+          simNum = stepEntries[0][1];
+        } else if (primary) {
+          simNum = primary.after_val;
+        }
+
+        let interventionText = "—";
+        if (action) {
+          if (action.mode === "RATIO" && typeof action.value === "number") {
+            interventionText = `${action.value > 0 ? "+" : ""}${(action.value * 100).toFixed(0)}%`;
+          } else if (action.mode === "ADD" && typeof action.value === "number") {
+            interventionText = `${action.value > 0 ? "+" : ""}${fmtNum(action.value, 1)}`;
+          } else if (typeof action.value === "number") {
+            interventionText = fmtNum(action.value, 1);
+          }
+        }
+
+        let deltaPct: number | null = null;
+        let deltaBadgeText: string | null = null;
+        if (stepEntries[0] && typeof baseNum === "number" && baseNum !== 0) {
+          deltaPct = ((stepEntries[0][1] - baseNum) / Math.abs(baseNum)) * 100;
+          deltaBadgeText = `${deltaPct > 0 ? "+" : ""}${deltaPct.toFixed(1)}%`;
+        } else if (
+          primary?.delta_ratio !== null &&
+          primary?.delta_ratio !== undefined &&
+          Number.isFinite(primary.delta_ratio)
+        ) {
+          deltaPct = primary.delta_ratio * 100;
+          deltaBadgeText = `${deltaPct > 0 ? "+" : ""}${deltaPct.toFixed(1)}%`;
+        } else if (action?.mode === "RATIO" && typeof action.value === "number") {
+          deltaPct = action.value * 100;
+          deltaBadgeText = `${deltaPct > 0 ? "+" : ""}${deltaPct.toFixed(0)}%`;
+        }
+
+        const dimmed =
+          activeStepNodes !== null && !activeStepNodes.has(n.id);
+
+        out.push({
+          nodeId: n.id,
+          title: n.title,
+          nodeKey: n.node_key,
+          typeName: n.type_name,
+          metricKey,
+          baselineLabel,
+          interventionLabel,
+          simulatedLabel,
+          baselineValueText:
+            typeof baseNum === "number" ? fmtNum(baseNum, 1) : "—",
+          interventionValueText: interventionText,
+          simulatedValueText:
+            typeof simNum === "number" ? fmtNum(simNum, 1) : "—",
+          deltaBadgeText,
+          deltaPct,
+          p10: primary?.p10 ?? null,
+          meanVal: simNum,
+          p90: primary?.p90 ?? null,
           acted: actedNodeIds.has(n.id),
-          primaryImpact: primary,
-          stepDeltaEntries: stepEntries,
+          selected: activeSelectedId === n.id,
+          onPath: highlightedNodeSet.has(n.id),
+          isOverlay: Boolean(n.is_new || n.is_modified),
+          dimmed,
+          x: 160 + colIdx * colWidth,
+          y: 220 + startY + idxInCol * rowHeight,
+          comboId: `combo:${resolveNodeComboKey(n)}`,
         });
       });
     });
 
-    return { positionedNodes: positioned, svgWidth: width, svgHeight: height };
+    return out;
   }, [
+    actedByNode,
     actedNodeIds,
     actions,
+    activeSelectedId,
+    activeStepNodes,
+    baselineLabel,
     checkpointChanges,
+    fmtNum,
+    highlightedNodeSet,
     impactByNode,
     impacts,
+    interventionLabel,
+    simulatedLabel,
     visibleLinks,
     visibleNodes,
   ]);
 
-  const posMap = useMemo(() => {
-    const map = new Map<string, PositionedNode>();
-    for (const p of positionedNodes) {
-      map.set(p.node.id, p);
-    }
-    return map;
-  }, [positionedNodes]);
+  const comboGroups = useMemo(
+    () => buildSimComboGroups(visibleNodes),
+    [visibleNodes]
+  );
 
-  const highlightedEdgePairs = useMemo(() => {
-    const pairs = new Set<string>();
-    for (let i = 0; i < highlightedPath.length - 1; i += 1) {
-      pairs.add(`${highlightedPath[i]}->${highlightedPath[i + 1]}`);
-    }
-    return pairs;
-  }, [highlightedPath]);
-
-  const highlightedNodeSet = useMemo(
-    () => new Set(highlightedPath),
-    [highlightedPath]
+  const hullPreviewCount = useMemo(
+    () =>
+      computeHighImpactHullClusters(
+        visibleNodes,
+        visibleLinks,
+        impacts,
+        actions,
+        new Set(),
+        0.15
+      ).length,
+    [actions, impacts, visibleLinks, visibleNodes]
   );
 
   const selectedNode = useMemo(
@@ -440,14 +499,17 @@ export function ImpactGraph({
     [impactByNode, selectedNode]
   );
 
-  const vbWidth = svgWidth / zoom;
-  const vbHeight = svgHeight / zoom;
-  const vbX = (svgWidth - vbWidth) / 2 - pan.x;
-  const vbY = (svgHeight - vbHeight) / 2 - pan.y;
-
-  const baseEdgeStroke = isDark ? "#71717a" : "#94a3b8";
-  const accentStroke = isDark ? "#3b82f6" : "#2563eb";
-  const neutralStroke = isDark ? "#a1a1aa" : "#71717a";
+  const handleToggleComboChip = (comboId: string) => {
+    setCollapsedComboIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(comboId)) {
+        next.delete(comboId);
+      } else {
+        next.add(comboId);
+      }
+      return next;
+    });
+  };
 
   return (
     <Card className="p-4 space-y-3" data-testid="impact-graph-card">
@@ -462,6 +524,19 @@ export function ImpactGraph({
               `${visibleNodes.length} / ${nodes.length} nodes`
             )}
           </Badge>
+          {hullPreviewCount > 0 && (
+            <Badge
+              variant="danger"
+              data-testid="impact-hull-badge"
+              className="gap-1"
+            >
+              <ShieldAlert className="h-3 w-3" />
+              {tx(
+                `${hullPreviewCount} 风险簇`,
+                `${hullPreviewCount} Risk Hull`
+              )}
+            </Badge>
+          )}
           {activeStepLabel && (
             <Badge variant="xblue">
               {tx(`检查点: ${activeStepLabel}`, `Step: ${activeStepLabel}`)}
@@ -494,10 +569,7 @@ export function ImpactGraph({
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => {
-                setShowAllNodes((v) => !v);
-                resetViewport();
-              }}
+              onClick={() => setShowAllNodes((v) => !v)}
               data-testid="impact-graph-toggle-all-btn"
             >
               <Eye className="h-3.5 w-3.5 text-xblue" />
@@ -510,7 +582,7 @@ export function ImpactGraph({
           <div className="inline-flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5">
             <IconButton
               size="sm"
-              onClick={() => setZoom((z) => Math.min(3, Number((z * 1.25).toFixed(2))))}
+              onClick={() => surfaceRef.current?.zoomBy(1.2)}
               title={tx("放大", "Zoom in")}
               aria-label={tx("放大", "Zoom in")}
               data-testid="impact-graph-zoom-in"
@@ -519,7 +591,7 @@ export function ImpactGraph({
             </IconButton>
             <IconButton
               size="sm"
-              onClick={() => setZoom((z) => Math.max(0.5, Number((z / 1.25).toFixed(2))))}
+              onClick={() => surfaceRef.current?.zoomBy(0.8)}
               title={tx("缩小", "Zoom out")}
               aria-label={tx("缩小", "Zoom out")}
               data-testid="impact-graph-zoom-out"
@@ -531,7 +603,7 @@ export function ImpactGraph({
               variant="ghost"
               size="sm"
               className="h-7 px-2 text-[11px]"
-              onClick={resetViewport}
+              onClick={() => surfaceRef.current?.fitView()}
               data-testid="impact-graph-fit-btn"
             >
               <Maximize2 className="h-3 w-3" />
@@ -541,24 +613,52 @@ export function ImpactGraph({
         </div>
       </div>
 
-      {/* Compact Legend */}
-      <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
-        <span className="inline-flex items-center gap-1">
-          <span className="h-2.5 w-2.5 rounded-full border-2 border-xblue bg-xblue-soft inline-block" />
-          {tx("干预起点", "Intervention")}
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="h-2.5 w-2.5 rounded-full bg-red-500/80 inline-block" />
-          {tx("负向冲击", "Negative Delta")}
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/80 inline-block" />
-          {tx("正向增益", "Positive Delta")}
-        </span>
-        <span className="inline-flex items-center gap-1">
-          <span className="w-4 border-t-2 border-dashed border-xblue inline-block" />
-          {tx("覆盖层变更", "Overlay Edit")}
-        </span>
+      {/* Legend + Domain/Type Combo Quick Collapse Chips */}
+      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2.5 w-2.5 rounded-full border-2 border-xblue bg-xblue-soft inline-block" />
+            {tx("干预起点", "Intervention")}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2.5 w-2.5 rounded-full bg-red-500/80 inline-block" />
+            {tx("负向冲击", "Negative Delta")}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-500/80 inline-block" />
+            {tx("正向增益", "Positive Delta")}
+          </span>
+          <span className="inline-flex items-center gap-1">
+            <span className="w-4 border-t-2 border-dashed border-xblue inline-block" />
+            {tx("覆盖层变更", "Overlay Edit")}
+          </span>
+        </div>
+
+        {comboGroups.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1">
+            <Layers className="h-3 w-3 text-xblue" />
+            {comboGroups.map((cg) => {
+              const collapsed = collapsedComboIds.has(cg.comboId);
+              return (
+                <button
+                  key={cg.comboId}
+                  type="button"
+                  data-testid={`impact-combo-toggle-${cg.key}`}
+                  data-collapsed={collapsed ? "true" : "false"}
+                  onClick={() => handleToggleComboChip(cg.comboId)}
+                  className={cn(
+                    "rounded border px-1.5 py-0.5 text-[10px] font-mono-tech transition-colors cursor-pointer",
+                    collapsed
+                      ? "border-xblue bg-xblue-soft text-xblue"
+                      : "border-border bg-background text-foreground hover:border-xblue"
+                  )}
+                >
+                  {cg.label} ({cg.memberIds.length})
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
@@ -567,261 +667,46 @@ export function ImpactGraph({
             selectedNode ? "lg:col-span-8" : "lg:col-span-12"
           } overflow-hidden rounded-md border border-border bg-muted/15 relative`}
         >
-          {positionedNodes.length === 0 ? (
+          {cardModels.length === 0 ? (
             <div className="h-64 flex items-center justify-center text-xs text-muted-foreground">
               {tx("暂无沙盘拓扑节点", "No topology nodes")}
             </div>
           ) : (
-            <svg
-              viewBox={`${vbX} ${vbY} ${vbWidth} ${vbHeight}`}
-              className="w-full h-[360px] cursor-grab active:cursor-grabbing touch-none select-none"
-              data-testid="impact-graph-svg"
-              onPointerDown={(e) => {
-                dragStateRef.current = {
-                  active: true,
-                  startX: e.clientX,
-                  startY: e.clientY,
-                  originPanX: pan.x,
-                  originPanY: pan.y,
-                  moved: false,
-                };
-              }}
-              onPointerMove={(e) => {
-                const st = dragStateRef.current;
-                if (!st.active) return;
-                const dx = e.clientX - st.startX;
-                const dy = e.clientY - st.startY;
-                if (Math.hypot(dx, dy) > 4) {
-                  st.moved = true;
-                }
-                if (st.moved) {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const scaleX = rect.width > 0 ? vbWidth / rect.width : 1;
-                  const scaleY = rect.height > 0 ? vbHeight / rect.height : 1;
-                  setPan({
-                    x: st.originPanX + dx * scaleX,
-                    y: st.originPanY + dy * scaleY,
-                  });
-                }
-              }}
-              onPointerUp={() => {
-                dragStateRef.current.active = false;
-              }}
-              onPointerLeave={() => {
-                dragStateRef.current.active = false;
-              }}
+            <Suspense
+              fallback={
+                <div className="h-[420px] flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin text-xblue" />
+                  <span>{tx("加载因果画布…", "Loading causal canvas…")}</span>
+                </div>
+              }
             >
-              <defs>
-                <marker
-                  id="axsim-arrow"
-                  viewBox="0 0 10 10"
-                  refX="9"
-                  refY="5"
-                  markerWidth="6"
-                  markerHeight="6"
-                  orient="auto-start-reverse"
-                >
-                  <path d="M 0 1 L 10 5 L 0 9 z" fill={baseEdgeStroke} />
-                </marker>
-                <marker
-                  id="axsim-arrow-active"
-                  viewBox="0 0 10 10"
-                  refX="9"
-                  refY="5"
-                  markerWidth="6"
-                  markerHeight="6"
-                  orient="auto-start-reverse"
-                >
-                  <path d="M 0 1 L 10 5 L 0 9 z" fill={accentStroke} />
-                </marker>
-              </defs>
-
-              {/* Edges */}
-              {visibleLinks.map((lk) => {
-                const src = posMap.get(lk.src_node_id);
-                const dst = posMap.get(lk.dst_node_id);
-                if (!src || !dst) return null;
-
-                const isHighlighted = highlightedEdgePairs.has(
-                  `${lk.src_node_id}->${lk.dst_node_id}`
-                );
-                const isOverlay = lk.is_new || lk.is_modified;
-
-                const dx = dst.x - src.x;
-                const dy = dst.y - src.y;
-                const dist = Math.hypot(dx, dy) || 1;
-                const startOffset = 58;
-                const endOffset = 60;
-                const x1 =
-                  dist > startOffset + endOffset
-                    ? src.x + (dx / dist) * startOffset
-                    : src.x;
-                const y1 =
-                  dist > startOffset + endOffset
-                    ? src.y + (dy / dist) * 24
-                    : src.y;
-                const x2 =
-                  dist > startOffset + endOffset
-                    ? dst.x - (dx / dist) * endOffset
-                    : dst.x;
-                const y2 =
-                  dist > startOffset + endOffset
-                    ? dst.y - (dy / dist) * 24
-                    : dst.y;
-
-                return (
-                  <g key={lk.id}>
-                    <line
-                      x1={x1}
-                      y1={y1}
-                      x2={x2}
-                      y2={y2}
-                      stroke={
-                        isHighlighted || isOverlay ? accentStroke : baseEdgeStroke
-                      }
-                      strokeWidth={isHighlighted ? 2.8 : isOverlay ? 2 : 1.5}
-                      strokeDasharray={isOverlay ? "5 4" : undefined}
-                      strokeOpacity={
-                        highlightedPath.length > 0 && !isHighlighted ? 0.28 : 0.88
-                      }
-                      markerEnd={
-                        isHighlighted || isOverlay
-                          ? "url(#axsim-arrow-active)"
-                          : "url(#axsim-arrow)"
-                      }
-                    />
-                    <text
-                      x={(x1 + x2) / 2}
-                      y={(y1 + y2) / 2 - 5}
-                      textAnchor="middle"
-                      fontSize="9.5"
-                      className="fill-muted-foreground font-mono-tech select-none"
-                    >
-                      {lk.link_type} ({fmtNum(lk.weight, 2)})
-                    </text>
-                  </g>
-                );
-              })}
-
-              {/* Node Cards */}
-              {positionedNodes.map((pn) => {
-                const n = pn.node;
-                const isSelected = activeSelectedId === n.id;
-                const isOnPath = highlightedNodeSet.has(n.id);
-                const isOverlay = n.is_new || n.is_modified;
-
-                let deltaVal: number | null = pn.primaryImpact?.delta ?? null;
-                let badgeText = "";
-                if (pn.stepDeltaEntries.length > 0) {
-                  const [mKey, val] = pn.stepDeltaEntries[0];
-                  const baseVal = n.metrics[mKey];
-                  deltaVal =
-                    typeof baseVal === "number" ? val - baseVal : val;
-                  badgeText = `${mKey}: ${fmtNum(val, 2)}`;
-                } else if (pn.primaryImpact) {
-                  const ratio = pn.primaryImpact.delta_ratio;
-                  if (ratio !== null && Number.isFinite(ratio)) {
-                    badgeText = `${ratio > 0 ? "+" : ""}${(ratio * 100).toFixed(1)}%`;
-                  } else if (pn.primaryImpact.delta !== null) {
-                    badgeText = `${pn.primaryImpact.delta > 0 ? "+" : ""}${fmtNum(pn.primaryImpact.delta, 2)}`;
-                  }
-                }
-
-                let strokeColor = neutralStroke;
-                let cardFill = isDark ? "#18181b" : "#ffffff";
-                if (deltaVal !== null && deltaVal < 0) {
-                  strokeColor = "#ef4444";
-                  cardFill = isDark ? "#2a1215" : "#fef2f2";
-                } else if (deltaVal !== null && deltaVal > 0) {
-                  strokeColor = "#10b981";
-                  cardFill = isDark ? "#0f2922" : "#ecfdf5";
-                }
-                if (pn.acted || isOnPath || isSelected) {
-                  strokeColor = accentStroke;
-                }
-
-                const cardW = 112;
-                const cardH = 48;
-                const displayTitle =
-                  n.title.length > 10 ? `${n.title.slice(0, 9)}…` : n.title;
-
-                return (
-                  <g
-                    key={n.id}
-                    transform={`translate(${pn.x}, ${pn.y})`}
-                    onClick={() => {
-                      if (dragStateRef.current.moved) {
-                        dragStateRef.current.moved = false;
-                        return;
-                      }
-                      setSelected(n.id);
-                    }}
-                    className="cursor-pointer"
-                    data-testid={`impact-graph-node-${n.id}`}
-                  >
-                    {(pn.acted || isOnPath || isSelected) && (
-                      <rect
-                        x={-cardW / 2 - 4}
-                        y={-cardH / 2 - 4}
-                        width={cardW + 8}
-                        height={cardH + 8}
-                        rx={9}
-                        fill="none"
-                        stroke={accentStroke}
-                        strokeWidth={isSelected ? 2 : 1.4}
-                        strokeOpacity={0.5}
-                      />
-                    )}
-                    <rect
-                      x={-cardW / 2}
-                      y={-cardH / 2}
-                      width={cardW}
-                      height={cardH}
-                      rx={7}
-                      fill={cardFill}
-                      stroke={strokeColor}
-                      strokeWidth={isOnPath || pn.acted ? 2.2 : 1.5}
-                      strokeDasharray={isOverlay ? "4 3" : undefined}
-                    />
-                    <text
-                      y={-5}
-                      textAnchor="middle"
-                      fontSize="10.5"
-                      fontWeight="600"
-                      className="fill-foreground select-none"
-                    >
-                      {displayTitle}
-                    </text>
-                    <text
-                      y={11}
-                      textAnchor="middle"
-                      fontSize="9"
-                      className="fill-muted-foreground font-mono-tech select-none"
-                    >
-                      {n.node_key} · {n.type_name}
-                    </text>
-                    {badgeText && (
-                      <text
-                        y={-cardH / 2 - 6}
-                        textAnchor="middle"
-                        fontSize="10"
-                        fontWeight="600"
-                        fill={
-                          deltaVal !== null && deltaVal < 0
-                            ? "#ef4444"
-                            : deltaVal !== null && deltaVal > 0
-                              ? "#10b981"
-                              : accentStroke
-                        }
-                        className="font-mono-tech select-none"
-                      >
-                        {pn.acted ? `DO ${badgeText}` : badgeText}
-                      </text>
-                    )}
-                  </g>
-                );
-              })}
-            </svg>
+              <LazyImpactGraphG6Surface
+                ref={surfaceRef}
+                nodes={visibleNodes}
+                links={visibleLinks}
+                impacts={impacts}
+                actions={actions}
+                cardModels={cardModels}
+                collapsedComboIds={collapsedComboIds}
+                highlightedEdgePairs={highlightedEdgePairs}
+                activeStepNodes={activeStepNodes}
+                hasHighlightedPath={highlightedPath.length > 0}
+                isDark={isDark}
+                riskHullLabel={tx("高冲击簇", "High Shock")}
+                onSelectNode={(id) => setSelected(id)}
+                onComboCollapsedChange={(cid, isCol) => {
+                  setCollapsedComboIds((prev) => {
+                    const next = new Set(prev);
+                    if (isCol) {
+                      next.add(cid);
+                    } else {
+                      next.delete(cid);
+                    }
+                    return next;
+                  });
+                }}
+              />
+            </Suspense>
           )}
         </div>
 

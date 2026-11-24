@@ -23,6 +23,8 @@ import {
 import type { RollupGrain } from "@/lib/api/enums";
 import { usePrincipal } from "@/lib/permissions";
 import { ChartPanel } from "@/components/analytics/ChartPanel";
+import type { ChartStudioSeed } from "@/components/analytics/ChartStudioPanel";
+import type { PinChartDraftSpec } from "@/components/analytics/PinToDashboardModal";
 import { ResultGrid } from "@/components/analytics/ResultGrid";
 import {
   Badge,
@@ -40,12 +42,16 @@ export interface MetricManagerProps {
   catalog: AnalyticsCatalogResponse;
   metrics: MetricDef[];
   onRefreshMetrics: () => Promise<void> | void;
+  onOpenChartStudio?: (seed: ChartStudioSeed) => void;
+  onPinToDashboard?: (draft: PinChartDraftSpec) => void;
 }
 
 export function MetricManager({
   catalog,
   metrics,
   onRefreshMetrics,
+  onOpenChartStudio,
+  onPinToDashboard,
 }: MetricManagerProps) {
   const { tx, fmtNum } = useI18n();
   const { canAny } = usePrincipal();
@@ -890,6 +896,70 @@ export function MetricManager({
               rowCount={lastMetricResult.rows.length}
               durationMs={lastMetricResult.duration_ms}
               sql={lastMetricResult.sql}
+              onOpenChartStudio={
+                onOpenChartStudio
+                  ? () => {
+                      const targetName =
+                        multiSelectedNames[0] ?? activeMetric?.name ?? "";
+                      onOpenChartStudio({
+                        title:
+                          activeMetric?.display_name ||
+                          targetName ||
+                          tx("语义指标图表", "Metric Chart"),
+                        dataSource:
+                          multiSelectedNames.length >= 2
+                            ? { kind: "SQL", sql: lastMetricResult.sql }
+                            : {
+                                kind: "METRIC",
+                                metric: targetName,
+                                dimensions: queryDims,
+                                time_grain: queryGrain,
+                              },
+                        columns: lastMetricResult.columns,
+                        rows: lastMetricResult.rows,
+                        suggestedKind:
+                          queryDims.length === 0 &&
+                          lastMetricResult.rows.length <= 1
+                            ? "KPI_CARD"
+                            : "BAR_CHART",
+                      });
+                    }
+                  : undefined
+              }
+              onPinToDashboard={
+                onPinToDashboard
+                  ? () => {
+                      const targetName =
+                        multiSelectedNames[0] ?? activeMetric?.name ?? "";
+                      onPinToDashboard({
+                        name:
+                          activeMetric?.display_name ||
+                          targetName ||
+                          tx("语义指标卡片", "Metric Card"),
+                        widgetKind:
+                          queryDims.length === 0 &&
+                          lastMetricResult.rows.length <= 1
+                            ? "KPI_CARD"
+                            : "BAR_CHART",
+                        dataSource:
+                          multiSelectedNames.length >= 2
+                            ? { kind: "SQL", sql: lastMetricResult.sql }
+                            : {
+                                kind: "METRIC",
+                                metric: targetName,
+                                dimensions: queryDims,
+                                time_grain: queryGrain,
+                              },
+                        encoding: {},
+                        options: {
+                          ...(activeMetric?.unit
+                            ? { unit: activeMetric.unit }
+                            : {}),
+                        },
+                      });
+                    }
+                  : undefined
+              }
             />
           </div>
           <div className="xl:col-span-5">

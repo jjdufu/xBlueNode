@@ -8,6 +8,7 @@ import {
   Edit3,
   FileArchive,
   FolderKanban,
+  LayoutGrid,
   Layers,
   MessageSquare,
   Monitor,
@@ -31,6 +32,7 @@ import {
   type DashboardRecord,
   type DashboardTheme,
   type DrillPathItem,
+  type GridCompactMode,
   type LayoutUpdateItem,
   type WidgetDataResponse,
   type WidgetRecord,
@@ -67,6 +69,7 @@ import {
   buildWidgetFilters as computeScopedWidgetFilters,
   resolveLeafDrillNodeKey,
   sanitizeExportFilters,
+  tidyDashboardLayout,
 } from "@/components/xblueview/logic";
 import { NodeDrawer } from "@/components/xblueview/NodeDrawer";
 import { PublishPreflightModal } from "@/components/xblueview/PublishPreflightModal";
@@ -664,6 +667,55 @@ export function XBlueViewPage() {
     }
   };
 
+  const handleCompactModeChange = async (nextMode: GridCompactMode) => {
+    if (!dashboard || !canEdit) return;
+    const nextCanvas = {
+      ...dashboard.canvas,
+      compact_mode: nextMode,
+    };
+    setDashboard((prev) => (prev ? { ...prev, canvas: nextCanvas } : prev));
+    try {
+      await xblueviewApi.updateDashboard(dashboard.id, {
+        canvas: nextCanvas,
+      });
+    } catch (err) {
+      setDetailError(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const handleTidyLayout = () => {
+    if (!dashboard || !canEdit) return;
+    const isFiveZone = dashboard.canvas.zone_layout === "STANDARD_FIVE_ZONE";
+    const cols = isFiveZone
+      ? dashboard.canvas.cols > 0 && dashboard.canvas.cols <= 12
+        ? dashboard.canvas.cols
+        : 12
+      : dashboard.canvas.cols > 0
+        ? dashboard.canvas.cols
+        : 24;
+    const pendingMap = new Map(
+      (pendingLayout ?? []).map((it) => [it.id, it.position])
+    );
+    const currentEntries = dashboard.widgets.map((w) => ({
+      id: w.id,
+      position: pendingMap.get(w.id) ?? w.position,
+    }));
+    const tidied = tidyDashboardLayout(currentEntries, cols);
+    const tidiedMap = new Map(tidied.map((it) => [it.id, it.position]));
+    setDashboard((prev) =>
+      prev
+        ? {
+            ...prev,
+            widgets: prev.widgets.map((w) => ({
+              ...w,
+              position: tidiedMap.get(w.id) ?? w.position,
+            })),
+          }
+        : prev
+    );
+    setPendingLayout(tidied);
+  };
+
   const openPreflightModal = async (intent: "CHECK" | "PUBLISH" | "SHARE") => {
     if (!dashboard) return;
     setPreflightIntent(intent);
@@ -771,6 +823,18 @@ export function XBlueViewPage() {
       setDeletingWidget(false);
     }
   };
+
+  const effectiveWidgets = useMemo(() => {
+    if (!dashboard) return [];
+    if (!isEditing || !pendingLayout || pendingLayout.length === 0) {
+      return dashboard.widgets;
+    }
+    const posMap = new Map(pendingLayout.map((it) => [it.id, it.position]));
+    return dashboard.widgets.map((w) => {
+      const nextPos = posMap.get(w.id);
+      return nextPos ? { ...w, position: nextPos } : w;
+    });
+  }, [dashboard, isEditing, pendingLayout]);
 
   const actionWidgets = useMemo(
     () =>
@@ -1275,6 +1339,31 @@ export function XBlueViewPage() {
               </>
             ) : (
               <>
+                <SegmentedControl<GridCompactMode>
+                  value={dashboard.canvas?.compact_mode ?? "VERTICAL_COMPACT"}
+                  onChange={(mode) => void handleCompactModeChange(mode)}
+                  items={[
+                    {
+                      key: "VERTICAL_COMPACT",
+                      label: tx("自动上紧", "Auto Compact"),
+                      testId: "grid-compact-vertical-btn",
+                    },
+                    {
+                      key: "FREE_FLOAT",
+                      label: tx("锁定位置", "Lock Position"),
+                      testId: "grid-compact-free-float-btn",
+                    },
+                  ]}
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleTidyLayout}
+                  data-testid="grid-tidy-layout-btn"
+                >
+                  <LayoutGrid className="h-3.5 w-3.5 text-xblue" />
+                  {tx("对齐整理", "Tidy")}
+                </Button>
                 <Button
                   type="button"
                   variant="outline"
@@ -1377,8 +1466,9 @@ export function XBlueViewPage() {
             )}
 
             <DashboardGrid
-              widgets={dashboard.widgets}
+              widgets={effectiveWidgets}
               canvas={dashboard.canvas}
+              compactMode={dashboard.canvas?.compact_mode ?? "VERTICAL_COMPACT"}
               widgetDataMap={widgetDataMap}
               loadingMap={loadingMap}
               errorMap={errorMap}
