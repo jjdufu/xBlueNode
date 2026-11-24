@@ -1878,7 +1878,7 @@ async function installV3Mocks(
         contentType: "application/json",
         body: JSON.stringify({
           database: { ok: true, latency_ms: 2, replication_lag_s: 0 },
-          parser: { ok: true, version: "0.2.0" },
+          parser: { ok: true, version: "0.3.0" },
           lake: { ok: true, snapshot_id: 1 },
           llm: { ok: true, provider: "cassette" },
           embed: { ok: true },
@@ -1886,7 +1886,7 @@ async function installV3Mocks(
           jobs: { pending: 0, running: 0, failed_24h: 0, oldest_pending_s: 0 },
           outbox: { lag_s: 0, pending: 0 },
           migrations: { ok: true, current: 24, pending: 0 },
-          version: "0.2.0",
+          version: "0.3.0",
         }),
       });
       return;

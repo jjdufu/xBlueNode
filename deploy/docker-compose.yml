@@ -20,7 +20,7 @@ services:
     networks: [internal]
 
   axpoint-parser:
-    image: ${AXPOINT_REGISTRY:-dex2all}/axpoint-parser:${AXPOINT_PARSER_VERSION:-v0.2.0}-${AXPOINT_PARSER_VARIANT:-full}
+    image: ${AXPOINT_REGISTRY:-dex2all}/axpoint-parser:${AXPOINT_PARSER_VERSION:-v0.3.0}-${AXPOINT_PARSER_VARIANT:-full}
     build:
       context: ..
       dockerfile: deploy/docker/axpoint-parser.Dockerfile
@@ -35,7 +35,7 @@ services:
     networks: [internal]
 
   axpoint-core:
-    image: ${AXPOINT_REGISTRY:-dex2all}/axpoint-core:${AXPOINT_VERSION:-v0.2.0}
+    image: ${AXPOINT_REGISTRY:-dex2all}/axpoint-core:${AXPOINT_VERSION:-v0.3.0}
     build:
       context: ..
       dockerfile: deploy/docker/axpoint-core.Dockerfile
