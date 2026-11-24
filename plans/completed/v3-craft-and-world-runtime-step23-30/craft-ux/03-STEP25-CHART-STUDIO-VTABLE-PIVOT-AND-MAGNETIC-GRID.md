@@ -2,7 +2,7 @@
 
 本步聚焦数据洞察与可视呈现体验的全面跃升：① 新增独立图表资产表 `xv_charts`，将**可视化制图工作台（Chart Studio）**提升为「探索与制图」的一等公民视图，使用户在问数、SQL 或语义指标查询后可 1 步完成高级图表编码并一键钉入任意孪生驾驶舱（消除原有的 4 层深藏路径）；② 按需引入 `@visactor/react-vtable` 升级百万行 Canvas 级多维透视表；③ 封装统一的 ECharts 6 视觉设计令牌与内嵌 Sparkline 趋势火花线的 `KpiWidget`；④ 升级 `xBlueView` 驾驶舱网格编辑层，提供可视背景列轨、8 向显式缩放手柄、边缘磁吸辅助线、自由浮动防挤压模式与一键整齐排布（Tidy Up）。
 
-总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[01-STEP23](./01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) 与 [IRON_RULES.md](../../../IRON_RULES.md)。
+总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[01-STEP23](./01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) 与 [IRON_RULES.md](../../../../IRON_RULES.md)。
 
 ---
 
@@ -19,7 +19,7 @@
   - `C81`：`step25` `"vtable-pivot-render"`、`"grid-float-tidy"`
 - **契约清单**：
   - 数据库迁移：`deploy/migrations/0020_saved_charts.sql`；
-  - 公共枚举与审计动作：`GridCompactMode`（`VERTICAL_COMPACT | FREE_FLOAT`）、`AuditAction::ChartPublish`（同步更新 [A1](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md) 与 [A2](../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)）；
+  - 公共枚举与审计动作：`GridCompactMode`（`VERTICAL_COMPACT | FREE_FLOAT`）、`AuditAction::ChartPublish`（同步更新 [A1](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md) 与 [A2](../../../../docs/standards/A2-DATABASE-MIGRATIONS-INDEX.md)）；
   - 领域模型与端口：`axpoint-domain::view::{SavedChartRecord, SaveChartRequest, PinChartToDashboardRequest, CanvasConfig.compact_mode}`、`ViewRepository` 新增图表资产 CRUD 与钉入看板事务方法；
   - HTTP 路由：`/api/xblueview/charts`（`GET / POST`）、`/api/xblueview/charts/{id}`（`GET / PUT / DELETE`）、`/api/xblueview/charts/{id}/pin`（`POST`）。
 

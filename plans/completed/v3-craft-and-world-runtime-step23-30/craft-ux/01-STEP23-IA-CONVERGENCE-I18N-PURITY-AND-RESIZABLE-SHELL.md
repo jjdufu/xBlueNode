@@ -2,7 +2,7 @@
 
 本步作为 Phase 3 前端交互重塑（Track A）的首发地基，系统性解决平台当前存在的三大表层结构痛点：① 侧边栏按后端模块平铺 13 项导致跨页心智割裂、高频可视化制图入口深埋 4 层；② 中文界面充斥内部研发代号尾缀（`productTag`）、页面标题模块英文冠名、技术黑话标语与未翻译的 `SCREAMING_SNAKE_CASE` 原始枚举；③ 全站侧栏与检查器写死固定像素宽度、三重套娃边框与过度局促的 10–12px 等宽小字造成的视觉拘谨感。
 
-总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md)、[xbluenode-web/AGENTS.md](../../../xbluenode-web/AGENTS.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
+总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md)、[xbluenode-web/AGENTS.md](../../../../xbluenode-web/AGENTS.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
 
 ---
 
@@ -13,7 +13,7 @@
   2. **全局 `⌘K / Ctrl+K` 命令直达面板（`CommandPalette.tsx`）**：引入轻量无头命令原语 `cmdk`（`^1.x`），支持按关键字模糊搜索并 1 秒直达任意工作台视图、已发布领域对象、语义指标、图表资产、编排流水线、推演沙盘与驾驶舱。
   3. **品牌唯一性与单语 100% 纯净化**：品牌名 `xBlueNode` 仅在全局顶栏左上角、登录页品牌区与侧栏底部版本锚点展示；彻底删除侧边栏 `productTag` 渲染节点，将 `MODULE_META` 的中文标题、英文标题与全部内页 `PageHeader` 清理为纯粹的领域业务词汇；全面清零中文界面残留的裸大写枚举码、单字母统计缩写（如 `4p·1m·0r`）与技术栈炫技标语；在 `scripts/web-guard.py` 新增 **双语纯净度与反代号外泄静态守卫**。
   4. **弹性可调分栏（`react-resizable-panels` v4）与去拘谨视觉升级**：引入 `react-resizable-panels` 封装标准 `ResizableWorkspace` 原语，全面替换全站死板的 `xl:w-[416px]`、`xl:w-[368px]`、`max-h-56` 固定尺寸，支持拖拽调宽、双击分隔线折叠与 `localStorage` 比例持久化；重构 `globals.css` 与 `primitives.tsx` 圆角、底色层次、留白与字号阶梯，收敛 `font-mono-tech` 适用边界。
-- **前置**：[Step 22](../../completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/08-STEP22-V2-E2E-BENCHMARKS-AND-ACCEPTANCE.md) 已完成合入（**本步无数据库迁移与后端存储变更**）。
+- **前置**：[Step 22](../../v2-ux-and-grounded-ai-step15-22/builder-and-ux/08-STEP22-V2-E2E-BENCHMARKS-AND-ACCEPTANCE.md) 已完成合入（**本步无数据库迁移与后端存储变更**）。
 - **覆盖能力项**：
   - `C76`：`step23` `"ia-8-domains"`、`"legacy-route-redirect"`、`"cmdk-jump-ok"`
   - `C77`：`step23` `"zh-zero-codename"`、`"i18n-guard-ok"`、`"resizable-pane-persist"`

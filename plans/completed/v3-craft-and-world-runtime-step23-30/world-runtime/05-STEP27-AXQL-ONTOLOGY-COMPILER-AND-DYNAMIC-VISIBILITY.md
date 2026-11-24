@@ -2,7 +2,7 @@
 
 本步解决多粒度业务模型下的两大深层数据消费与治理难题：① 当同一业务实体同时拥有静态主档表（`STATIC_FACT`）、高频过程单据表（`EVENT_DYNAMIC`）与日/月切片汇总表（`CUBE_ROLLUP`）时，分析师与智能体若直接手写多表 `JOIN` 极易产生一对多扇出重复累加（Fanout Inflation）或连接键遗漏——本步在 `axpoint-analytics::axql` 构建零存储侵入的**声明式本体查询编译层 `AxQL`**，自动按领域对象身份重写跨层连接并内置 `SUM_BY_ENTITY` 去重聚合与超图混合检索桥接；② 升级 `AxGuard` 行级安全策略，支持基于业务节点实时指标与状态字段的**状态驱动动态行级视野（State-Driven Visibility）**，并确保 `AxSim` 推演沙盘克隆与模拟计算全量继承该动态可见性规则。
 
-总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md) 与 [AGENTS.md](../../../AGENTS.md)。
+总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md) 与 [AGENTS.md](../../../../AGENTS.md)。
 
 ---
 
@@ -11,9 +11,9 @@
 - **目标**：
   1. **`AxQL` 跨层免手动 `JOIN` 编译器（`axpoint-analytics::axql`）**：提供面向人与大模型极简低门槛的本体 SQL 方言编译能力——查询主实体对象（如 `SELECT d.name, d.daily_visits, d.monthly_budget_rate FROM OBJECT(Department) d WHERE d.biz_date = $day`）时，编译器读取已发布 `SchemaDoc` 自动关联主档、事件流与切片立方底层数据集，生成防粒度膨胀的预聚合子查询关联 DuckDB SQL，并经既有 `sql_guard` AST 二次核验；
   2. **一对多路径膨胀防护算子 `SUM_BY_ENTITY` / `AVG_BY_ENTITY`**：支持在跨跳关联路径查询（如 `(s:Supplier)-[:SUPPLIES]->(w:Warehouse)-[:FULFILLS]->(o:Order)`）中编写 `SUM_BY_ENTITY(w.inventory BY w)`，确定性编译为按目标实体主键先去重再汇总的子查询，彻底根治因下游多笔订单导致上游仓库库存被重复累加的经典统计失真；
-  3. **单语句超图混合检索桥接**：支持 `MATCH_KNOWLEDGE($question, top_k = 10)` 表值谓词，先在服务端执行五路超图 + RRF 召回并通过 `xb_entity_links` 提取关联 `xb_nodes.id` 集合，再作为参数化白名单下推至 DuckDB / PG 结构化过滤，全程严守 [AGENTS.md](../../../AGENTS.md) §3 本体级无幻觉五条铁律；
+  3. **单语句超图混合检索桥接**：支持 `MATCH_KNOWLEDGE($question, top_k = 10)` 表值谓词，先在服务端执行五路超图 + RRF 召回并通过 `xb_entity_links` 提取关联 `xb_nodes.id` 集合，再作为参数化白名单下推至 DuckDB / PG 结构化过滤，全程严守 [AGENTS.md](../../../../AGENTS.md) §3 本体级无幻觉五条铁律；
   4. **状态驱动动态行级视野（State-Driven Row Visibility）**：扩展 `sec_row_policies` EBNF 谓词语法，支持在 `NODE_TYPE` 目标策略中引用 `node.metric.<key>` 与 `node.prop.<key>` 实时业务状态以及时间过期条件（TTL 视图退场），使记录可见范围随风险评分、金额阈值或业务阶段升级自动扩缩容，并在 `AxSim` 沙盘克隆与场景查询中同源强制执行。
-- **前置**：[Step 22](../../completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/08-STEP22-V2-E2E-BENCHMARKS-AND-ACCEPTANCE.md) 通过。
+- **前置**：[Step 22](../../v2-ux-and-grounded-ai-step15-22/builder-and-ux/08-STEP22-V2-E2E-BENCHMARKS-AND-ACCEPTANCE.md) 通过。
 - **覆盖能力项**：
   - `C85`：`step27` `"axql-cross-tier-compile"`、`"sum-by-entity-exact"`
   - `C86`：`step27` `"state-visibility-escalate"`、`"sim-inherits-state-visibility"`

@@ -1,8 +1,8 @@
 # 08 · Step 30：Phase 3 全旅程端到端验收、交互性能基准与全栈总门禁
 
-本步是 Phase 3（Step 23～30）的双轨合流终验节点：通过端到端浏览器自动化套件 `xbluenode-web/e2e/v3-craft-and-runtime.spec.ts` 完整串联 Track A（8 域导航、`⌘K` 命令直达、弹性分栏、零代号双语纯净度、正交避障复合画布、一等公民制图与 VTable 透视表、磁吸驾驶舱）与 Track B（`ActionSpec` 契约与 GraphQL `Mutation`、四路径边动力学、L4 `Trial Tick` 认证、免连接 `AxQL`、状态动态视野、`AxSim` 事件队列与 Deadline 预警、空间多边形围栏及 22 工具问答验收闭环）；运行画布与透视表交互帧率及大图下推基准；将 [A7-REQUIREMENTS-TRACEABILITY.md](../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md) 能力追踪下限提升至 **92 项（`C01`～`C92`）**，升级 `scripts/gate/all.sh` 覆盖 `Step 00～30`，并在全绿合入后完成三期方案归档与 `v0.3.0` 版本发布就绪确认。
+本步是 Phase 3（Step 23～30）的双轨合流终验节点：通过端到端浏览器自动化套件 `xbluenode-web/e2e/v3-craft-and-runtime.spec.ts` 完整串联 Track A（8 域导航、`⌘K` 命令直达、弹性分栏、零代号双语纯净度、正交避障复合画布、一等公民制图与 VTable 透视表、磁吸驾驶舱）与 Track B（`ActionSpec` 契约与 GraphQL `Mutation`、四路径边动力学、L4 `Trial Tick` 认证、免连接 `AxQL`、状态动态视野、`AxSim` 事件队列与 Deadline 预警、空间多边形围栏及 22 工具问答验收闭环）；运行画布与透视表交互帧率及大图下推基准；将 [A7-REQUIREMENTS-TRACEABILITY.md](../../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md) 能力追踪下限提升至 **92 项（`C01`～`C92`）**，升级 `scripts/gate/all.sh` 覆盖 `Step 00～30`，并在全绿合入后完成三期方案归档与 `v0.3.0` 版本发布就绪确认。
 
-总览索引与门禁准则见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md) 与 [QUALITY_GATES_AND_VERIFICATION.md](../../../docs/QUALITY_GATES_AND_VERIFICATION.md)。
+总览索引与门禁准则见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md) 与 [QUALITY_GATES_AND_VERIFICATION.md](../../../../docs/QUALITY_GATES_AND_VERIFICATION.md)。
 
 ---
 
@@ -12,7 +12,7 @@
   1. `xbluenode-web/e2e/v3-craft-and-runtime.spec.ts` 在前端桩模式与 `AXPOINT_E2E_LIVE=1` 真实全栈模式下均一次全绿通过；
   2. 全路由中英双态与亮暗双主题巡检确认：**中文态下零内部模块英文尾缀、零未翻译 `SCREAMING_SNAKE_CASE` 枚举、任意画布关系标签与节点卡片几何交集面积为 `0`**；
   3. 交互与内核性能红线达标：100 节点正交排布与拖拽对齐帧率 `>= 55fps`、`@visactor/react-vtable` 50,000 行透视表首屏渲染 `< 300ms`、60 万边 DuckDB 连通分量下推求解 `< 8s`、接地无幻觉双轨 50 例对抗拦截率保持 **100%**；
-  4. `check_routes.py` 确认全部新增 REST / GraphQL / MCP 路由与 [A4-API-CONTRACT-INDEX.md](../../../docs/standards/A4-API-CONTRACT-INDEX.md) 双向零差集；`check_traceability.py` 确认 `C01`～`C92`（92 项能力）与 `D01`～`D26`（26 类数据源）全部关联真实门禁断言；
+  4. `check_routes.py` 确认全部新增 REST / GraphQL / MCP 路由与 [A4-API-CONTRACT-INDEX.md](../../../../docs/standards/A4-API-CONTRACT-INDEX.md) 双向零差集；`check_traceability.py` 确认 `C01`～`C92`（92 项能力）与 `D01`～`D26`（26 类数据源）全部关联真实门禁断言；
   5. `scripts/gate/all.sh` 从干净环境顺序跑通 `step00`～`step30` 及三套全旅程 Playwright E2E（`full-journey`、`v2-grounded-journey`、`v3-craft-and-runtime`），末行输出 `ALL GATES PASS`。
 - **前置**：[Step 24](../craft-ux/02-STEP24-ADVANCED-MODELING-FLOW-AND-CAUSAL-CANVASES.md)、[Step 25](../craft-ux/03-STEP25-CHART-STUDIO-VTABLE-PIVOT-AND-MAGNETIC-GRID.md)、[Step 28](./06-STEP28-SIM-EVENT-QUEUE-DEADLINE-AND-RUST-GEOSHAPE.md)、[Step 29](./07-STEP29-STREAM-WORKERS-LOG-CDC-AND-AUTONOMOUS-HARNESS.md) 全部合入（无新增数据库迁移）。
 - **覆盖能力项**：
@@ -91,4 +91,4 @@ gate_pass step30
 
 ### 收官封存动作
 
-当 `bash scripts/gate/all.sh`（覆盖 `Step 00～30`）与 GitHub Actions 全作业绿灯合入 `main` 后，由 `orchestrator` 提交归档 PR：将 `plans/v3-craft-and-world-runtime/` 移入 `plans/completed/v3-craft-and-world-runtime-step23-30/` 只读封存，同步更新 [plans/README.md](../../README.md) 与全栈版本号至 `v0.3.0`。
+当 `bash scripts/gate/all.sh`（覆盖 `Step 00～30`）与 GitHub Actions 全作业绿灯合入 `main` 后，由 `orchestrator` 提交归档 PR：将 `plans/v3-craft-and-world-runtime/` 移入 `plans/completed/v3-craft-and-world-runtime-step23-30/` 只读封存，同步更新 [plans/README.md](../../../README.md) 与全栈版本号至 `v0.3.0`。

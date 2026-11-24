@@ -2,7 +2,7 @@
 
 本步作为 Phase 3 可执行世界运行时（Track B）的核心底座，将业务本体从“节点属性与只读聚合映射”升级为完整的**状态-关系-动作闭环系统**：① 在 `SchemaDoc` 中引入挂靠于 `NodeTypeSpec` 的一等公民 `ActionSpec` 多对象事务动作契约（含输入参数 Schema、前置状态断言、显式 `ReadSet / WriteSet` 副作用边界与审批级别），发布后零代码自动生成领域 REST 动作端点、动态 GraphQL `Mutation`、驾驶舱动作绑定项与受控 MCP 写工具；② 为 `xb_links` 与 `EdgeTypeSpec` 扩展边时序指标与边级规则，打通 **`V→V`、`V→E`、`E→V`、`E→E` 四路径动力学传播**；③ 在 `xBlueStudio` 建立 **L0–L4 Runtime Readiness 发布门禁**，内置孤立死指标（Dead Knowledge）静态扫描与开发沙盒子图一键 **`Trial Tick` 端到端实算认证**。
 
-总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
+总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
 
 ---
 
@@ -13,7 +13,7 @@
   2. **多通道自动服务化暴露**：主图 `SchemaDoc` 发布后，无需重启服务，立即暴露 `POST /api/xblue/objects/{type_name}/{key}/actions/{action_name}`、动态 GraphQL `Mutation`（如 `invokeWarehouseRebalance(...)`）、运行态 `/api/mcp` 受控写工具（带 `OBJECT_ACTION_INVOKE` 哈希审计与 `ax_action_log` 幂等锁）以及 `xBlueView` 动作按钮一键下拉绑定；
   3. **关系边一等公民动力学（Edge Flow）**：扩展 `xb_links.metrics`（JSONB）与 `xb_link_metric_series` 时序存储，允许在 `EdgeTypeSpec` 上声明运力、通量、时延等动态指标及派生/聚合规则，升级 `MetricDependencyPlan` 统一拓扑编排 `VERTEX_TO_VERTEX`、`VERTEX_TO_EDGE`、`EDGE_TO_VERTEX`、`EDGE_TO_EDGE` 四类传播路径，并输出包含 **规则链（WHY）、变化幅度（DELTA）、输入快照（INPUTS）** 的三轨溯源记录；
   4. **L0–L4 运行时就绪认证与死指标扫描**：静态校验器自动扫描未被任何下游聚合、派生、动作前置/写入、告警规则、保存图表或驾驶舱引用的孤立派生指标（标记 `DEAD_KNOWLEDGE` 诊断告警）及高扇出传导风险；新增 `POST /api/xblue/subgraphs/{slug}/certify` 在开发沙盒子图运行一轮 `Trial Tick` 冒烟验证并持久化 `L0_INVALID ～ L4_CERTIFIED` 认证记录。
-- **前置**：[Step 22](../../completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/08-STEP22-V2-E2E-BENCHMARKS-AND-ACCEPTANCE.md) 通过。
+- **前置**：[Step 22](../../v2-ux-and-grounded-ai-step15-22/builder-and-ux/08-STEP22-V2-E2E-BENCHMARKS-AND-ACCEPTANCE.md) 通过。
 - **覆盖能力项**：
   - `C82`：`step26` `"action-spec-precondition"`、`"graphql-action-mutation"`
   - `C83`：`step26` `"edge-metric-ingest"`、`"four-path-propagation"`

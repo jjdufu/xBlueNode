@@ -2,7 +2,7 @@
 
 本步彻底重塑平台内所有可拖拽节点画布与图谱可视化组件的**操作手感、视觉秩序、避障逻辑与信息密度**：在 `xBlueStudio` 与 `AxFlow` 中深度挖掘 `@xyflow/react` v12 + `elkjs` 的复合父子节点、字段级多端口正交避障、6 轴动态磁吸对齐参考线、框选对齐分布栏、平滑布局插值过渡与 `zundo` 50 步撤销重做栈；并按路由懒加载引入 `@antv/g6` v5（配合 `@antv/g6-extension-react`）重写 `AxSim` 因果传导画布与全站资产血缘画布，淘汰原有的 933 行手写原生 SVG 与随机弹跳力导图。
 
-总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[01-STEP23](./01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) 与 [xbluenode-web/AGENTS.md](../../../xbluenode-web/AGENTS.md)。
+总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[01-STEP23](./01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) 与 [xbluenode-web/AGENTS.md](../../../../xbluenode-web/AGENTS.md)。
 
 ---
 

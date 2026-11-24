@@ -2,7 +2,7 @@
 
 本步将 `AxSim` 因果推演引擎从“单次静态干预 + 固定权重传导”升级为支持**多阶段动态事件队列、红线目标最晚干预窗口（Deadline）反推与多边形空间几何约束**的决策沙盘系统，同时在 `axpoint-domain` 纯 Rust 层引入轻量几何库 `geo`（零 PostGIS 容器运维负担），一次性打通 `xb_nodes`、`xBlueView` 地图围栏与 `AxSim` 空间范围约束。
 
-总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[04-STEP26](./04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) 与 [IRON_RULES.md](../../../IRON_RULES.md)。
+总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[04-STEP26](./04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) 与 [IRON_RULES.md](../../../../IRON_RULES.md)。
 
 ---
 
