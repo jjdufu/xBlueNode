@@ -12,9 +12,15 @@ use crate::expr::EvalWarningCode;
 use crate::studio::{AggRuleSpec, MappingMode, SchemaDoc};
 use crate::topology::BlueNode;
 
+/// Unified 4-path (`V->V`, `V->E`, `E->V`, `E->E`) dependency DAG and causal rule-chain builder (`04-STEP26` §26.3).
+pub mod four_path;
 /// Metric dependency DAG construction, Kahn layered topological sort, and dirty-instance propagation planning.
 pub mod plan;
 
+pub use four_path::{
+    FourPathDependencyPlan, FourPathRuleStep, PropagationVertex, build_four_path_plan,
+    compute_four_path_layers,
+};
 pub use plan::{
     PlannedLayerTask, RuntimeLinkEdge, build_dependency_plan, compute_rule_layers,
     plan_dirty_propagation,

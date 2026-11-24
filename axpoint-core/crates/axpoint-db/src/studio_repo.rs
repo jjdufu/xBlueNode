@@ -12,13 +12,14 @@ use axpoint_domain::graph::GeoPoint;
 use axpoint_domain::platform::NewJob;
 use axpoint_domain::ports::StudioRepository;
 use axpoint_domain::studio::{
-    AggRuleSpec, ConfirmProposalsRequest, CreateDraftRequest, CreateSubgraphRequest,
-    DatasetValidationMeta, DerivedRuleSpec, DocEntityGroup, DomainObjectListQuery,
-    DownstreamConsumerBinding, DownstreamConsumerKind, DraftSnapshotReason, DraftSnapshotSummary,
-    DraftSource, DraftStatus, EdgeTypeSpec, IssueSeverity, LinkDirection, MappingMode,
-    MappingRecord, MappingRejectSample, MappingRunRecord, MappingRunStatus, MappingSpec,
-    MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeTypeSpec, PropertySpec,
-    PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest,
+    AggRuleSpec, CertifySubgraphRequest, ConfirmProposalsRequest, CreateDraftRequest,
+    CreateSubgraphRequest, DatasetValidationMeta, DerivedRuleSpec, DocEntityGroup,
+    DomainObjectListQuery, DownstreamConsumerBinding, DownstreamConsumerKind, DraftSnapshotReason,
+    DraftSnapshotSummary, DraftSource, DraftStatus, EdgeTypeSpec, InvokeObjectActionRequest,
+    InvokeObjectActionResponse, IssueSeverity, LinkDirection, MappingMode, MappingRecord,
+    MappingRejectSample, MappingRunRecord, MappingRunStatus, MappingSpec, MergePreview,
+    MergePreviewRequest, MergeSubgraphRequest, NodeTypeSpec, PropertySpec, PublishDraftRequest,
+    PublishDraftResponse, PublishedSchemaResponse, RuntimeCertReport, SaveSchemaDirectRequest,
     SchemaDiff, SchemaDoc, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary, SubgraphInfo,
     TriggerMappingRunRequest, TriggerMappingRunResponse, UpdateDraftRequest, UpdateSubgraphRequest,
     ValidationContext, ValidationIssue, apply_merge, diff_schema, preview_merge,
@@ -294,7 +295,7 @@ fn is_doc_empty(doc: &SchemaDoc) -> bool {
     doc.node_types.is_empty() && doc.edge_types.is_empty() && doc.mappings.is_empty()
 }
 
-async fn load_validation_context_tx(
+pub(crate) async fn load_validation_context_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
     subgraph_slug: &str,
@@ -1191,6 +1192,24 @@ fn rules_modified_in_publish(published_doc: &SchemaDoc, diff: &SchemaDiff) -> bo
     }
     for changed_nt in &diff.node_types.changed {
         if changed_nt
+            .fields
+            .iter()
+            .any(|f| f.path.starts_with("agg_rules[") || f.path.starts_with("derived_rules["))
+        {
+            return true;
+        }
+    }
+    for added_edge in &diff.edge_types.added {
+        let edge_name = added_edge.split(':').next().unwrap_or(added_edge.as_str());
+        if published_doc.edge_types.iter().any(|e| {
+            e.name == edge_name
+                && (!e.agg_rules.is_empty() || e.derived_rules.iter().any(|r| r.enabled))
+        }) {
+            return true;
+        }
+    }
+    for changed_et in &diff.edge_types.changed {
+        if changed_et
             .fields
             .iter()
             .any(|f| f.path.starts_with("agg_rules[") || f.path.starts_with("derived_rules["))
@@ -2710,6 +2729,42 @@ impl StudioRepository for PgStore {
             ))
         })?;
         Ok(out)
+    }
+
+    async fn invoke_object_action(
+        &self,
+        tenant_id: &str,
+        actor_user_id: Option<Uuid>,
+        type_name: &str,
+        node_key: &str,
+        action_name: &str,
+        req: InvokeObjectActionRequest,
+    ) -> Result<InvokeObjectActionResponse, AppError> {
+        crate::action_exec::invoke_object_action_impl(
+            self,
+            tenant_id,
+            actor_user_id,
+            (type_name, node_key, action_name),
+            req,
+        )
+        .await
+    }
+
+    async fn certify_subgraph_runtime(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        actor_user_id: Option<Uuid>,
+        req: CertifySubgraphRequest,
+    ) -> Result<RuntimeCertReport, AppError> {
+        crate::action_exec::certify_subgraph_runtime_impl(
+            self,
+            tenant_id,
+            subgraph_slug,
+            actor_user_id,
+            req,
+        )
+        .await
     }
 }
 

@@ -189,36 +189,13 @@ impl PrattParser {
         call_depth: usize,
     ) -> Result<(Expr, usize), ExprIssue> {
         if self.peek().is_some_and(|t| t.kind == TokenKind::Dot) {
-            let dot_tok = self.next_token();
-            let dot_col = dot_tok.map_or(ident_col, |t| t.span.column);
-            if name != "prop" {
-                return Err(parse_err(
-                    ident_col,
-                    format!(
-                        "dot property access is only supported via 'prop.<attr>', got '{name}.'"
-                    ),
-                ));
-            }
-            return match self.next_token() {
-                Some(Token {
-                    kind: TokenKind::Ident(attr),
-                    ..
-                }) => Ok((Expr::PropRef(attr), 1)),
-                Some(other) => Err(parse_err(
-                    other.span.column,
-                    "expected attribute identifier after 'prop.'",
-                )),
-                None => Err(parse_err(
-                    dot_col.saturating_add(1),
-                    "expected attribute identifier after 'prop.'",
-                )),
-            };
+            return self.parse_scoped_ref(&name, ident_col);
         }
 
-        if name == "prop" {
+        if matches!(name.as_str(), "prop" | "param" | "src" | "dst" | "self") {
             return Err(parse_err(
                 ident_col,
-                "reserved identifier 'prop' must be followed by '.<attr>'",
+                format!("reserved identifier '{name}' must be followed by '.<field>'"),
             ));
         }
 
@@ -277,6 +254,80 @@ impl PrattParser {
         }
 
         Ok((Expr::MetricRef(name), 1))
+    }
+
+    fn parse_scoped_ref(
+        &mut self,
+        prefix: &str,
+        ident_col: usize,
+    ) -> Result<(Expr, usize), ExprIssue> {
+        let dot_tok = self.next_token();
+        let dot_col = dot_tok.map_or(ident_col, |t| t.span.column);
+        if prefix == "prop" {
+            return match self.next_token() {
+                Some(Token {
+                    kind: TokenKind::Ident(attr),
+                    ..
+                }) => Ok((Expr::PropRef(attr), 1)),
+                Some(other) => Err(parse_err(
+                    other.span.column,
+                    "expected attribute identifier after 'prop.'",
+                )),
+                None => Err(parse_err(
+                    dot_col.saturating_add(1),
+                    "expected attribute identifier after 'prop.'",
+                )),
+            };
+        }
+        if !matches!(prefix, "param" | "src" | "dst" | "self" | "target" | "edge") {
+            return Err(parse_err(
+                ident_col,
+                format!("dot property access is only supported via 'prop.<attr>', got '{prefix}.'"),
+            ));
+        }
+
+        let first_seg = match self.next_token() {
+            Some(Token {
+                kind: TokenKind::Ident(seg),
+                ..
+            }) => seg,
+            Some(other) => {
+                return Err(parse_err(
+                    other.span.column,
+                    format!("expected field identifier after '{prefix}.'"),
+                ));
+            }
+            None => {
+                return Err(parse_err(
+                    dot_col.saturating_add(1),
+                    format!("expected field identifier after '{prefix}.'"),
+                ));
+            }
+        };
+
+        if self.peek().is_some_and(|t| t.kind == TokenKind::Dot)
+            && prefix != "param"
+            && matches!(first_seg.as_str(), "prop" | "metric")
+        {
+            let second_dot = self.next_token();
+            let second_col = second_dot.map_or(dot_col, |t| t.span.column);
+            return match self.next_token() {
+                Some(Token {
+                    kind: TokenKind::Ident(leaf),
+                    ..
+                }) => Ok((Expr::PropRef(format!("{prefix}.{first_seg}.{leaf}")), 1)),
+                Some(other) => Err(parse_err(
+                    other.span.column,
+                    format!("expected identifier after '{prefix}.{first_seg}.'"),
+                )),
+                None => Err(parse_err(
+                    second_col.saturating_add(1),
+                    format!("expected identifier after '{prefix}.{first_seg}.'"),
+                )),
+            };
+        }
+
+        Ok((Expr::PropRef(format!("{prefix}.{first_seg}")), 1))
     }
 }
 

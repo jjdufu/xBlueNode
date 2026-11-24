@@ -6,24 +6,31 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 
 use async_graphql::dataloader::{DataLoader, Loader};
 use async_graphql::dynamic::{
-    Field, FieldFuture, FieldValue, InputValue, Object, Scalar, Schema, TypeRef,
+    Field, FieldFuture, FieldValue, InputObject, InputValue, Object, Scalar, Schema, TypeRef,
 };
 use async_graphql::{Error as GqlError, Request as GqlRequest, Value as GqlValue, Variables};
 use async_graphql_axum::GraphQLResponse;
 use axpoint_db::PgStore;
 use axpoint_db::studio_repo::NeighborBatchKey;
 use axpoint_domain::AppError;
-use axpoint_domain::enums::{DataType, Permission, PiiCategory};
+use axpoint_domain::enums::{AuditAction, DataType, DesignMaturity, Permission, PiiCategory};
+use axpoint_domain::platform::AuditRecord;
+use axpoint_domain::ports::StudioRepository as _;
 use axpoint_domain::studio::{
-    DomainObjectListQuery, LinkDirection, NodeTypeSpec, ObjectNeighborSig, PropertyKind,
+    ActionParamSpec, ActionSpec, DomainObjectListQuery, InvokeObjectActionRequest,
+    InvokeObjectActionResponse, LinkDirection, NodeTypeSpec, ObjectNeighborSig, PropertyKind,
     PropertySpec, SchemaDoc,
 };
 use axpoint_domain::topology::BlueNode;
-use axpoint_security::AuthPrincipal;
+use axpoint_security::cedar_authz::CedarAuthorizer;
+use axpoint_security::{AuditWriter, AuthPrincipal};
 use axum::extract::State;
+use chrono::Utc;
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 use crate::state::{ApiJson, AppState, HttpError};
+use crate::telemetry::current_trace_id;
 
 const MAX_GRAPHQL_DEPTH: usize = 6;
 const MAX_GRAPHQL_COMPLEXITY: usize = 200;
@@ -45,9 +52,13 @@ pub(crate) struct GraphqlHttpPayload {
 #[derive(Clone)]
 struct GqlRequestCtx {
     tenant_id: String,
+    principal: AuthPrincipal,
+    client_ip: String,
     has_pii_raw: bool,
     policy: std::sync::Arc<axpoint_domain::guard::PolicyContext>,
     tenant_hmac_key: [u8; 32],
+    cedar: std::sync::Arc<CedarAuthorizer>,
+    audit: AuditWriter,
     store: PgStore,
 }
 
@@ -198,8 +209,12 @@ pub(crate) async fn graphql_handler(
     let req_ctx = GqlRequestCtx {
         tenant_id: principal.tenant_id.clone(),
         has_pii_raw: principal.has(Permission::PiiRawRead),
+        principal: principal.clone(),
+        client_ip,
         policy: std::sync::Arc::clone(&policy),
         tenant_hmac_key,
+        cedar: std::sync::Arc::clone(&state.cedar),
+        audit: state.audit.clone(),
         store: state.store.clone(),
     };
     let loader = DataLoader::new(
@@ -277,11 +292,22 @@ fn build_dynamic_schema(version: i32, doc: &SchemaDoc) -> Result<Schema, AppErro
             ));
     }
 
-    let mut builder = Schema::build("Query", None, None)
+    let (mutation_root_opt, input_objects) = build_mutation_root_and_inputs(doc);
+    let mutation_type_name = mutation_root_opt.as_ref().map(|_| "Mutation");
+
+    let mut builder = Schema::build("Query", mutation_type_name, None)
         .register(json_scalar)
         .register(query_root);
     for obj in objects_to_register {
         builder = builder.register(obj);
+    }
+    if let Some(mut_root) = mutation_root_opt {
+        builder = builder
+            .register(build_action_payload_object())
+            .register(mut_root);
+        for in_obj in input_objects {
+            builder = builder.register(in_obj);
+        }
     }
 
     builder
@@ -810,6 +836,338 @@ fn pluralize_pascal(type_name: &str) -> String {
     }
 }
 
+fn pascal_from_ident(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut upper_next = true;
+    for ch in raw.chars() {
+        if ch == '_' {
+            upper_next = true;
+        } else if upper_next {
+            for uc in ch.to_uppercase() {
+                out.push(uc);
+            }
+            upper_next = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn payload_usize_field(name: &str, f: fn(&InvokeObjectActionResponse) -> usize) -> Field {
+    Field::new(name, TypeRef::named_nn(TypeRef::INT), move |ctx| {
+        FieldFuture::new(async move {
+            let r = ctx
+                .parent_value
+                .try_downcast_ref::<InvokeObjectActionResponse>()?;
+            let v = i32::try_from(f(r)).unwrap_or(i32::MAX);
+            Ok(Some(GqlValue::from(v)))
+        })
+    })
+}
+
+fn build_action_payload_object() -> Object {
+    Object::new("ObjectActionPayload")
+        .field(Field::new(
+            "status",
+            TypeRef::named_nn(TypeRef::STRING),
+            |ctx| {
+                FieldFuture::new(async move {
+                    let r = ctx
+                        .parent_value
+                        .try_downcast_ref::<InvokeObjectActionResponse>()?;
+                    Ok(Some(GqlValue::String(r.status.clone())))
+                })
+            },
+        ))
+        .field(payload_usize_field("mutatedNodes", |r| r.mutated_nodes))
+        .field(payload_usize_field("mutatedEdges", |r| r.mutated_links))
+        .field(payload_usize_field("mutatedLinks", |r| r.mutated_links))
+        .field(payload_usize_field("recomputedMetrics", |r| {
+            r.recomputed_metrics
+        }))
+        .field(Field::new(
+            "actionLogId",
+            TypeRef::named(TypeRef::INT),
+            |ctx| {
+                FieldFuture::new(async move {
+                    let r = ctx
+                        .parent_value
+                        .try_downcast_ref::<InvokeObjectActionResponse>()?;
+                    Ok(r.action_log_id.map(GqlValue::from))
+                })
+            },
+        ))
+        .field(Field::new(
+            "approvalId",
+            TypeRef::named(TypeRef::ID),
+            |ctx| {
+                FieldFuture::new(async move {
+                    let r = ctx
+                        .parent_value
+                        .try_downcast_ref::<InvokeObjectActionResponse>()?;
+                    Ok(r.approval_id.map(|id| GqlValue::String(id.to_string())))
+                })
+            },
+        ))
+        .field(Field::new(
+            "idempotencyReplay",
+            TypeRef::named_nn(TypeRef::BOOLEAN),
+            |ctx| {
+                FieldFuture::new(async move {
+                    let r = ctx
+                        .parent_value
+                        .try_downcast_ref::<InvokeObjectActionResponse>()?;
+                    Ok(Some(GqlValue::Boolean(r.idempotency_replay)))
+                })
+            },
+        ))
+}
+
+fn build_mutation_root_and_inputs(doc: &SchemaDoc) -> (Option<Object>, Vec<InputObject>) {
+    let mut mut_root = Object::new("Mutation");
+    let mut input_objects = Vec::new();
+    let mut used_fields = BTreeSet::new();
+
+    for nt in &doc.node_types {
+        let type_camel = lower_camel_case(&nt.name);
+        for action in &nt.actions {
+            if action.maturity != DesignMaturity::Confirmed {
+                continue;
+            }
+            let act_camel = snake_to_camel(&action.name);
+            let field_name = format!("{type_camel}_{act_camel}");
+            if field_name.is_empty() || !used_fields.insert(field_name.clone()) {
+                continue;
+            }
+            let input_type_opt = if action.parameters.is_empty() {
+                None
+            } else {
+                let in_name = format!("{}{}Input", nt.name, pascal_from_ident(&action.name));
+                input_objects.push(build_action_input_object(&in_name, &action.parameters));
+                Some(in_name)
+            };
+            mut_root = mut_root.field(build_action_mutation_field(
+                &field_name,
+                &nt.name,
+                action,
+                input_type_opt.as_deref(),
+            ));
+        }
+    }
+
+    if used_fields.is_empty() {
+        (None, Vec::new())
+    } else {
+        (Some(mut_root), input_objects)
+    }
+}
+
+fn build_action_input_object(input_name: &str, params: &[ActionParamSpec]) -> InputObject {
+    let mut in_obj = InputObject::new(input_name);
+    let mut seen = BTreeSet::new();
+    for p in params {
+        let gql_name = snake_to_camel(&p.name);
+        if gql_name.is_empty() || !seen.insert(gql_name.clone()) {
+            continue;
+        }
+        let base_scalar = match p.data_type {
+            DataType::Int64 => TypeRef::INT,
+            DataType::Float64 | DataType::Decimal => TypeRef::FLOAT,
+            DataType::Boolean => TypeRef::BOOLEAN,
+            DataType::String | DataType::Date | DataType::Timestamp | DataType::Binary => {
+                TypeRef::STRING
+            }
+            DataType::Json | DataType::List | DataType::Struct => "JSON",
+        };
+        let tref = if p.required && p.default_value.is_none() {
+            TypeRef::named_nn(base_scalar)
+        } else {
+            TypeRef::named(base_scalar)
+        };
+        in_obj = in_obj.field(InputValue::new(gql_name, tref));
+    }
+    in_obj
+}
+
+fn build_action_mutation_field(
+    field_name: &str,
+    type_name: &str,
+    action: &ActionSpec,
+    input_type_name: Option<&str>,
+) -> Field {
+    let owned_type = String::from(type_name);
+    let owned_action = action.clone();
+    let mut field = Field::new(
+        field_name,
+        TypeRef::named_nn("ObjectActionPayload"),
+        move |ctx| {
+            let tname = owned_type.clone();
+            let act = owned_action.clone();
+            FieldFuture::new(async move {
+                let req_ctx = ctx.data::<GqlRequestCtx>()?;
+                let key = ctx.args.try_get("key")?.string()?.to_owned();
+                let idempotency_key = ctx.args.try_get("idempotencyKey")?.string()?.to_owned();
+                let expected_version = ctx.args.get("expectedVersion").and_then(|v| v.i64().ok());
+                let dry_run = ctx
+                    .args
+                    .get("dryRun")
+                    .and_then(|v| v.boolean().ok())
+                    .unwrap_or(false);
+                let inputs = extract_gql_action_inputs(ctx.args.get("input"), &act.parameters)?;
+                let resp = execute_gql_object_action(
+                    req_ctx,
+                    &tname,
+                    &key,
+                    &act,
+                    InvokeObjectActionRequest {
+                        inputs,
+                        idempotency_key,
+                        expected_version,
+                        dry_run,
+                    },
+                )
+                .await
+                .map_err(|e| GqlError::new(e.client_message()))?;
+                Ok(Some(FieldValue::owned_any(resp)))
+            })
+        },
+    )
+    .description(&action.description)
+    .argument(InputValue::new("key", TypeRef::named_nn(TypeRef::STRING)))
+    .argument(InputValue::new(
+        "idempotencyKey",
+        TypeRef::named_nn(TypeRef::STRING),
+    ))
+    .argument(InputValue::new(
+        "expectedVersion",
+        TypeRef::named(TypeRef::INT),
+    ))
+    .argument(InputValue::new("dryRun", TypeRef::named(TypeRef::BOOLEAN)));
+
+    if let Some(in_name) = input_type_name {
+        field = field.argument(InputValue::new("input", TypeRef::named_nn(in_name)));
+    } else {
+        field = field.argument(InputValue::new("input", TypeRef::named("JSON")));
+    }
+    field
+}
+
+fn extract_gql_action_inputs(
+    input_arg: Option<async_graphql::dynamic::ValueAccessor<'_>>,
+    params: &[ActionParamSpec],
+) -> Result<serde_json::Value, GqlError> {
+    let Some(val_acc) = input_arg else {
+        return Ok(serde_json::json!({}));
+    };
+    let raw_json = val_acc
+        .deserialize::<serde_json::Value>()
+        .map_err(|e| GqlError::new(format!("invalid action input JSON: {e:?}")))?;
+    let Some(raw_map) = raw_json.as_object() else {
+        return Ok(serde_json::json!({}));
+    };
+
+    if params.is_empty() {
+        return Ok(raw_json);
+    }
+
+    let mut normalized = serde_json::Map::with_capacity(raw_map.len());
+    for (k, v) in raw_map {
+        let mapped = params
+            .iter()
+            .find(|p| p.name == *k || snake_to_camel(&p.name) == *k)
+            .map_or_else(|| k.clone(), |p| p.name.clone());
+        normalized.insert(mapped, v.clone());
+    }
+    Ok(serde_json::Value::Object(normalized))
+}
+
+async fn execute_gql_object_action(
+    req_ctx: &GqlRequestCtx,
+    type_name: &str,
+    node_key: &str,
+    action: &ActionSpec,
+    req: InvokeObjectActionRequest,
+) -> Result<InvokeObjectActionResponse, AppError> {
+    req_ctx.principal.enforce_no_prod_mutation()?;
+    req_ctx.principal.require(Permission::FlowRun)?;
+    let req_perm = axpoint_domain::studio::resolve_action_permission(&action.required_permission)
+        .map_err(|_| AppError::Forbidden("PERMISSION_DENIED"))?;
+    req_ctx.principal.require(req_perm)?;
+
+    let _ = axpoint_server::policy::authorize_resource_for_store(
+        &req_ctx.store,
+        &req_ctx.cedar,
+        &req_ctx.principal,
+        Permission::FlowRun,
+        axpoint_domain::guard::GrantResourceKind::NodeType,
+        type_name,
+        &req_ctx.client_ip,
+    )
+    .await?;
+
+    if !req_ctx.policy.bypass_row_policies
+        && let Some(target_node) = req_ctx
+            .store
+            .get_domain_object_by_key(&req_ctx.tenant_id, type_name, node_key)
+            .await?
+    {
+        let visible = req_ctx
+            .store
+            .filter_visible_node_ids(
+                &req_ctx.tenant_id,
+                &[target_node.id],
+                &req_ctx.policy.node_types,
+            )
+            .await?;
+        if !visible.contains(&target_node.id) {
+            return Err(AppError::Forbidden("PERMISSION_DENIED"));
+        }
+    }
+
+    let actor = (!req_ctx.principal.user_id.is_nil()).then_some(req_ctx.principal.user_id);
+    let digest = hex::encode(Sha256::digest(req.inputs.to_string().as_bytes()));
+    let idem_key = req.idempotency_key.clone();
+    let resp = req_ctx
+        .store
+        .invoke_object_action(
+            &req_ctx.tenant_id,
+            actor,
+            type_name,
+            node_key,
+            &action.name,
+            req,
+        )
+        .await?;
+
+    req_ctx.audit.record(AuditRecord {
+        tenant_id: req_ctx.tenant_id.clone(),
+        user_id: actor,
+        username: req_ctx.principal.username.clone(),
+        action: AuditAction::ObjectActionInvoke,
+        resource_ref: format!("{type_name}:{node_key}:{}", action.name),
+        status_code: if resp.status == "WAITING_APPROVAL" {
+            202
+        } else {
+            200
+        },
+        client_ip: req_ctx.client_ip.clone(),
+        trace_id: current_trace_id(),
+        detail_json: serde_json::json!({
+            "channel": "GRAPHQL",
+            "status": &resp.status,
+            "idempotency_key": idem_key,
+            "idempotency_replay": resp.idempotency_replay,
+            "payload_sha256": digest,
+        }),
+        created_at: Utc::now(),
+    });
+    if let Err(err) = req_ctx.audit.flush().await {
+        tracing::warn!(error = %err, "graphql object action audit flush failed");
+    }
+    Ok(resp)
+}
+
 #[cfg(test)]
 mod tests {
     use axpoint_domain::enums::Cardinality;
@@ -838,14 +1196,14 @@ mod tests {
                         required: false,
                         pii_category: PiiCategory::None,
                         allowed_values: None,
-                        maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+                        maturity: DesignMaturity::Confirmed,
                     }],
                     agg_rules: Vec::new(),
                     derived_rules: Vec::new(),
                     sync_to_knowledge: false,
                     pos_x: 0.0,
                     pos_y: 0.0,
-                    maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+                    maturity: DesignMaturity::Confirmed,
                     semantic_layer_tier: None,
                     domain_group: None,
                     actions: Vec::new(),
@@ -864,7 +1222,7 @@ mod tests {
                     sync_to_knowledge: false,
                     pos_x: 100.0,
                     pos_y: 0.0,
-                    maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+                    maturity: DesignMaturity::Confirmed,
                     semantic_layer_tier: None,
                     domain_group: None,
                     actions: Vec::new(),
@@ -880,7 +1238,7 @@ mod tests {
                 description: String::new(),
                 properties: Vec::new(),
                 propagation: serde_json::json!({}),
-                maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+                maturity: DesignMaturity::Confirmed,
                 derived_rules: Vec::new(),
                 agg_rules: Vec::new(),
             }],

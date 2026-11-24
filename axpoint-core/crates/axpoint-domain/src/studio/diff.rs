@@ -138,6 +138,7 @@ fn diff_single_node_type(old_nt: &NodeTypeSpec, new_nt: &NodeTypeSpec) -> Vec<Fi
     diff_properties(&old_nt.properties, &new_nt.properties, &mut fields);
     diff_agg_rules(&old_nt.agg_rules, &new_nt.agg_rules, &mut fields);
     diff_derived_rules(&old_nt.derived_rules, &new_nt.derived_rules, &mut fields);
+    push_if_eq_ne(&mut fields, "actions", &old_nt.actions, &new_nt.actions);
     fields
 }
 
@@ -422,6 +423,13 @@ fn diff_edge_types(before: &[EdgeTypeSpec], after: &[EdgeTypeSpec]) -> SectionDi
                 &new_e.propagation,
             );
             push_if_eq_ne(&mut fields, "maturity", &old_e.maturity, &new_e.maturity);
+            push_if_eq_ne(
+                &mut fields,
+                "derived_rules",
+                &old_e.derived_rules,
+                &new_e.derived_rules,
+            );
+            push_if_eq_ne(&mut fields, "agg_rules", &old_e.agg_rules, &new_e.agg_rules);
             if !fields.is_empty() {
                 changed.push(ChangedItemDiff {
                     name: key.clone(),

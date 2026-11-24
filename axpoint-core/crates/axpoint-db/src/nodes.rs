@@ -837,7 +837,8 @@ impl GraphStorePort for PgStore {
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         let rows = sqlx::query(
             "SELECT id, link_type, src_node_id, dst_node_id, weight,
-                    properties, source_dataset_id, valid_from, valid_to, created_at, updated_at
+                    properties, metrics, row_version, source_dataset_id, valid_from, valid_to,
+                    created_at, updated_at
                FROM xb_links
               WHERE subgraph_slug = 'main'
                 AND ($1::uuid IS NULL OR src_node_id = $1 OR dst_node_id = $1)
@@ -880,6 +881,8 @@ impl GraphStorePort for PgStore {
             ));
         }
 
+        validate_finite_metrics(&req.metrics)?;
+
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
         let default_w = lookup_edge_impact_weight_tx(&mut tx, ltype).await?;
         let weight = req.weight.unwrap_or(default_w);
@@ -899,20 +902,26 @@ impl GraphStorePort for PgStore {
         }
 
         let props_json = serde_json::Value::Object(req.properties);
+        let metrics_json = serde_json::to_value(&req.metrics).map_err(|err| {
+            AppError::bad("INVALID_ARGUMENT", format!("invalid link metrics: {err}"))
+        })?;
         let row = sqlx::query(
             "INSERT INTO xb_links (
                  tenant_id, link_type, src_node_id, dst_node_id, weight,
-                 properties, valid_from, valid_to
+                 properties, metrics, valid_from, valid_to
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
              ON CONFLICT (tenant_id, subgraph_slug, link_type, src_node_id, dst_node_id) DO UPDATE SET
                  weight = EXCLUDED.weight,
                  properties = EXCLUDED.properties,
+                 metrics = EXCLUDED.metrics,
                  valid_from = EXCLUDED.valid_from,
                  valid_to = EXCLUDED.valid_to,
+                 row_version = xb_links.row_version + 1,
                  updated_at = NOW()
              RETURNING id, link_type, src_node_id, dst_node_id, weight,
-                       properties, source_dataset_id, valid_from, valid_to, created_at, updated_at",
+                       properties, metrics, row_version, source_dataset_id,
+                       valid_from, valid_to, created_at, updated_at",
         )
         .bind(tenant_id)
         .bind(ltype)
@@ -920,6 +929,7 @@ impl GraphStorePort for PgStore {
         .bind(req.dst_node_id)
         .bind(weight)
         .bind(props_json)
+        .bind(metrics_json)
         .bind(req.valid_from)
         .bind(req.valid_to)
         .fetch_one(&mut *tx)
