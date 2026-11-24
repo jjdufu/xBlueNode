@@ -170,6 +170,7 @@ fn warehouse_schema_doc() -> SchemaDoc {
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             semantic_layer_tier: None,
             domain_group: None,
+            actions: Vec::new(),
         }],
         edge_types: Vec::new(),
         mappings: Vec::new(),
@@ -1472,6 +1473,7 @@ async fn view_repo_geo_links_and_concurrent_write_idempotency() -> TestResult {
                 properties: serde_json::Map::new(),
                 valid_from: None,
                 valid_to: None,
+                metrics: std::collections::BTreeMap::new(),
             },
         )
         .await?;

@@ -2306,6 +2306,7 @@ mod tests {
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             semantic_layer_tier: None,
             domain_group: None,
+            actions: Vec::new(),
         });
         let redacted = redact_action_log_payload(
             serde_json::json!({

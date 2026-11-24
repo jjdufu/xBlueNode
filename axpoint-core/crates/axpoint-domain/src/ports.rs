@@ -61,8 +61,8 @@ use crate::graph::{
     MetricCatalogEntry, MetricSeriesPoint, NeighborQuery, NodeDocumentsResponse, NodeListQuery,
     NodeListResponse, NodeMetricSeriesQuery, NodeSearchQuery, NodeSearchResponse, PatchNodeRequest,
     PathQuery, PathResponse, ResolveEntitiesRequest, ResolveEntitiesResponse, SubgraphQuery,
-    SubgraphResponse, UpsertLinkRequest, WindowQuery, WindowQueryResponse, WriteMetricsRequest,
-    WriteMetricsResponse,
+    SubgraphResponse, UpsertLinkRequest, WindowQuery, WindowQueryResponse, WriteLinkMetricsRequest,
+    WriteLinkMetricsResponse, WriteMetricsRequest, WriteMetricsResponse,
 };
 use crate::guard::{
     AuditLogEntry, AuditQueryFilter, AuditStatsResponse, AuditVerifyQuery, AuditVerifyResponse,
@@ -92,8 +92,8 @@ use crate::platform::{
 };
 use crate::rollup::{
     AcceptNodeCandidateRequest, AcceptNodeCandidateResponse, GraphAggregateJobPayload,
-    KnowledgeNodeCandidatesResponse, KnowledgeSyncJobPayload, MapMaterializeJobPayload,
-    MetricExplainResponse,
+    KnowledgeNodeCandidatesResponse, KnowledgeSyncJobPayload, LinkMetricExplainResponse,
+    MapMaterializeJobPayload, MetricExplainResponse,
 };
 use crate::rules::{
     AbsenceRuleItem, AckBatchResponse, AlertEventKind, AlertEventRecord, AlertEventsQuery,
@@ -110,12 +110,13 @@ use crate::sim::{
     SandboxGraphResponse, SandboxScope, ScenarioRecord, ScopePreflightSlice, SimGraph, SimResult,
 };
 use crate::studio::{
-    CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus, MappingRecord,
-    MappingRunRecord, MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeTypeSpec,
-    PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest,
-    SchemaDiff, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary,
-    SubgraphConsumptionResponse, SubgraphInfo, TriggerMappingRunRequest, TriggerMappingRunResponse,
-    UpdateDraftRequest, UpdateSubgraphRequest, ValidationContext,
+    CertifySubgraphRequest, CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus,
+    InvokeObjectActionRequest, InvokeObjectActionResponse, MappingRecord, MappingRunRecord,
+    MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeTypeSpec, PublishDraftRequest,
+    PublishDraftResponse, PublishedObjectActionDescriptor, PublishedSchemaResponse,
+    RuntimeCertReport, SaveSchemaDirectRequest, SchemaDiff, SchemaDraft, SchemaVersionDetail,
+    SchemaVersionSummary, SubgraphConsumptionResponse, SubgraphInfo, TriggerMappingRunRequest,
+    TriggerMappingRunResponse, UpdateDraftRequest, UpdateSubgraphRequest, ValidationContext,
 };
 use crate::topology::{
     AxFlowDef, AxFlowRunResult, AxSandboxRecord, AxSimAction, AxSimResult, AxSimSnapshot, BlueNode,
@@ -1046,6 +1047,16 @@ pub trait MetricStorePort: Send + Sync {
         &self,
         tenant_id: &str,
     ) -> impl Future<Output = Result<u64, AppError>> + Send;
+
+    /// Writes edge time-series observations into `xb_link_metric_series`, updates `xb_links.metrics`,
+    /// and triggers 4-path downstream metric propagation (`04-STEP26` §26.3).
+    fn write_link_metrics(
+        &self,
+        _tenant_id: &str,
+        _req: WriteLinkMetricsRequest,
+    ) -> impl Future<Output = Result<WriteLinkMetricsResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("LINK_METRICS_UNSUPPORTED")))
+    }
 }
 
 /// Graph traversal (`k`-hop neighbors, shortest path, subgraph) and `petgraph` algorithm port (Step 03).
@@ -1595,6 +1606,30 @@ pub trait StudioRepository: Send + Sync {
     {
         std::future::ready(Ok(Vec::new()))
     }
+
+    /// Executes a published `ActionSpec` on `(type_name, node_key)` under `SELECT ... FOR UPDATE` CAS transaction (`04-STEP26` §26.2).
+    fn invoke_object_action(
+        &self,
+        _tenant_id: &str,
+        _actor_user_id: Option<Uuid>,
+        _type_name: &str,
+        _node_key: &str,
+        _action_name: &str,
+        _req: InvokeObjectActionRequest,
+    ) -> impl Future<Output = Result<InvokeObjectActionResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("OBJECT_ACTION_UNSUPPORTED")))
+    }
+
+    /// Evaluates L0–L4 runtime readiness, Dead Knowledge closure, and dev-sandbox `Trial Tick` certification (`04-STEP26` §26.4).
+    fn certify_subgraph_runtime(
+        &self,
+        _tenant_id: &str,
+        _subgraph_slug: &str,
+        _actor_user_id: Option<Uuid>,
+        _req: CertifySubgraphRequest,
+    ) -> impl Future<Output = Result<RuntimeCertReport, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("RUNTIME_CERT_UNSUPPORTED")))
+    }
 }
 
 /// Internal trusted query port for reading `DuckLake` tables and change feeds inside background workers (`06-STEP05-06` §06.2.1).
@@ -1663,6 +1698,16 @@ pub trait StudioExecutionPort: Send + Sync {
         node_id: Uuid,
         metric: &str,
     ) -> impl Future<Output = Result<MetricExplainResponse, AppError>> + Send;
+
+    /// Explains how edge `metric` on `link_id` was produced with 3-track provenance (`WHY`, `DELTA`, `INPUTS`, `04-STEP26` §26.3).
+    fn explain_link_metric(
+        &self,
+        _tenant_id: &str,
+        _link_id: Uuid,
+        _metric: &str,
+    ) -> impl Future<Output = Result<LinkMetricExplainResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("LINK_EXPLAIN_UNSUPPORTED")))
+    }
 
     /// Executes `KNOWLEDGE_SYNC` (upserting or deleting `xb_node:<node_id>` hypergraph dossiers and `EXACT_KEY` links).
     fn execute_knowledge_sync<E: TextEmbedderPort>(
@@ -2334,6 +2379,26 @@ pub trait AgentCapabilityPort: Send + Sync {
         pinned_snapshot: Option<&'a NodeTypeSpec>,
         payload: &'a serde_json::Value,
     ) -> BoxFuture<'a, serde_json::Value>;
+
+    /// Lists confirmed `ActionSpec` definitions across published `main` node types for controlled MCP write tool exposure (`04-STEP26` §26.0).
+    fn list_published_object_actions<'a>(
+        &'a self,
+        _tenant_id: &'a str,
+    ) -> BoxFuture<'a, Vec<PublishedObjectActionDescriptor>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Invokes a published `ActionSpec` via controlled MCP tool execution (`04-STEP26` §26.2).
+    fn invoke_published_object_action<'a>(
+        &'a self,
+        _principal: &'a AnalyticsPrincipal,
+        _type_name: &'a str,
+        _node_key: &'a str,
+        _action_name: &'a str,
+        _req: InvokeObjectActionRequest,
+    ) -> BoxFuture<'a, InvokeObjectActionResponse> {
+        Box::pin(async { Err(AppError::Unsupported("OBJECT_ACTION_UNSUPPORTED")) })
+    }
 }
 
 /// Object-safe LLM provider lookup and daily token usage persistence port consumed by `axpoint-llm::router::LlmRouter` (`08-STEP09` §09.2).

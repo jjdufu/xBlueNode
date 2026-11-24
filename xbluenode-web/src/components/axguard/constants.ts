@@ -231,6 +231,8 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   "STUDIO_SNAPSHOT_RESTORE",
   "IM_ACCOUNT_BIND",
   "CHART_PUBLISH",
+  "OBJECT_ACTION_INVOKE",
+  "TRIAL_TICK_CERTIFY",
 ];
 
 export interface CedarSnippetTemplate {

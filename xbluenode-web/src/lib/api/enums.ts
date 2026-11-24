@@ -335,7 +335,9 @@ export type AuditAction =
   | "TRIAL_TEMPLATE_CLONE"
   | "STUDIO_SNAPSHOT_RESTORE"
   | "IM_ACCOUNT_BIND"
-  | "CHART_PUBLISH";
+  | "CHART_PUBLISH"
+  | "OBJECT_ACTION_INVOKE"
+  | "TRIAL_TICK_CERTIFY";
 
 export type TokenKind =
   | "ACCESS"
@@ -388,3 +390,21 @@ export type SemanticZoneKind =
 export type StudioCanvasViewMode = "ONTOLOGY_TOPOLOGY" | "MAPPING_PIPELINE";
 
 export type GridCompactMode = "VERTICAL_COMPACT" | "FREE_FLOAT";
+
+export type ActionSideEffectTier =
+  | "SELF_ONLY"
+  | "RELATED_NODES"
+  | "EXTERNAL_EFFECT";
+
+export type RuntimeCertLevel =
+  | "L0_INVALID"
+  | "L1_CONFIGURED"
+  | "L2_RUNNABLE"
+  | "L3_VERIFIED"
+  | "L4_CERTIFIED";
+
+export type PropagationPathKind =
+  | "VERTEX_TO_VERTEX"
+  | "VERTEX_TO_EDGE"
+  | "EDGE_TO_VERTEX"
+  | "EDGE_TO_EDGE";

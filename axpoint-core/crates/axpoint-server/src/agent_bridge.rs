@@ -348,6 +348,57 @@ impl AgentCapabilityPort for ServerAgentCapability {
             execute_domain_object_query(state, principal, type_name, pinned_snapshot, payload).await
         })
     }
+
+    fn list_published_object_actions<'a>(
+        &'a self,
+        tenant_id: &'a str,
+    ) -> BoxFuture<'a, Vec<axpoint_domain::studio::PublishedObjectActionDescriptor>> {
+        Box::pin(async move {
+            let state = self.require_state()?;
+            let published = state.store.get_published_schema(tenant_id, "main").await?;
+            let mut out = Vec::new();
+            for nt in published.doc.node_types {
+                for action in nt.actions {
+                    if action.maturity == axpoint_domain::enums::DesignMaturity::Confirmed {
+                        out.push(axpoint_domain::studio::PublishedObjectActionDescriptor {
+                            type_name: nt.name.clone(),
+                            type_display_name: nt.display_name.clone(),
+                            action,
+                        });
+                    }
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    fn invoke_published_object_action<'a>(
+        &'a self,
+        principal: &'a AnalyticsPrincipal,
+        type_name: &'a str,
+        node_key: &'a str,
+        action_name: &'a str,
+        req: axpoint_domain::studio::InvokeObjectActionRequest,
+    ) -> BoxFuture<'a, axpoint_domain::studio::InvokeObjectActionResponse> {
+        Box::pin(async move {
+            if !principal.has_permission(Permission::FlowRun) {
+                return Err(AppError::Forbidden("PERMISSION_DENIED"));
+            }
+            let state = self.require_state()?;
+            let actor = (!principal.user_id.is_nil()).then_some(principal.user_id);
+            state
+                .store
+                .invoke_object_action(
+                    &principal.tenant_id,
+                    actor,
+                    type_name,
+                    node_key,
+                    action_name,
+                    req,
+                )
+                .await
+        })
+    }
 }
 
 async fn resolve_ask_dataset_context(

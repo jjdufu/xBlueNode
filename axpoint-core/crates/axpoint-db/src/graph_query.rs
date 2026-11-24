@@ -1752,6 +1752,8 @@ mod tests {
             dst_node_id: Uuid::from_u128(v),
             weight: 1.0,
             properties: serde_json::Map::new(),
+            metrics: BTreeMap::new(),
+            row_version: 1,
             source_dataset_id: None,
             valid_from: None,
             valid_to: None,

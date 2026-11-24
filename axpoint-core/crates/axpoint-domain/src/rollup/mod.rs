@@ -254,7 +254,11 @@ pub struct ExplainInputItem {
     pub weight: Option<f64>,
 }
 
-/// Explainability report returned by `GET /api/xblue/nodes/{id}/explain/{metric}` (`06-STEP05-06` §06.4).
+fn default_empty_snapshot() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+/// Explainability report returned by `GET /api/xblue/nodes/{id}/explain/{metric}` (`06-STEP05-06` §06.4 & `04-STEP26` §26.3).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetricExplainResponse {
     /// Explained `xb_nodes.id`.
@@ -272,6 +276,60 @@ pub struct MetricExplainResponse {
     /// Latest computation timestamp recorded for this metric.
     pub computed_at: Option<DateTime<Utc>>,
     /// Any warnings encountered when evaluating a `DERIVED` expression (`DIV_BY_ZERO`, `DOMAIN_ERROR`).
+    pub warnings: Vec<EvalWarningCode>,
+    /// Ordered causal rule chain (`WHY` track, `04-STEP26` §26.3).
+    #[serde(default)]
+    pub rule_chain: Vec<String>,
+    /// Prior numeric value before the latest recomputation (`DELTA` track, `04-STEP26` §26.3).
+    #[serde(default)]
+    pub previous_value: Option<f64>,
+    /// Current numeric value (`DELTA` track, `04-STEP26` §26.3).
+    #[serde(default)]
+    pub current_value: Option<f64>,
+    /// Signed numeric change `current_value - previous_value` (`DELTA` track, `04-STEP26` §26.3).
+    #[serde(default)]
+    pub delta: Option<f64>,
+    /// Structured snapshot of upstream node/edge inputs (`INPUTS` track, `04-STEP26` §26.3).
+    #[serde(default = "default_empty_snapshot")]
+    pub input_snapshot: serde_json::Value,
+}
+
+/// Explainability report returned by `GET /api/xblue/links/{id}/explain/{metric}` (`04-STEP26` §26.3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LinkMetricExplainResponse {
+    /// Explained `xb_links.id`.
+    pub link_id: Uuid,
+    /// Relationship type name (`xb_links.link_type`).
+    pub link_type: String,
+    /// Explained edge metric name.
+    pub metric: String,
+    /// Current edge metric value (`null` if absent).
+    pub value: Option<f64>,
+    /// Producer category (`DERIVED`, `AGG`, `MANUAL`, `ACTION`, `SYNC`).
+    pub producer: MetricProducer,
+    /// Propagation path classification (`VERTEX_TO_EDGE` or `EDGE_TO_EDGE`).
+    pub path_kind: crate::enums::PropagationPathKind,
+    /// Serialized edge rule definition (`EdgeDerivedRuleSpec` or `EdgeAggRuleSpec`).
+    pub rule: Option<serde_json::Value>,
+    /// Ordered causal rule chain (`WHY` track).
+    #[serde(default)]
+    pub rule_chain: Vec<String>,
+    /// Prior numeric value before the latest recomputation (`DELTA` track).
+    #[serde(default)]
+    pub previous_value: Option<f64>,
+    /// Current numeric value (`DELTA` track).
+    #[serde(default)]
+    pub current_value: Option<f64>,
+    /// Signed numeric change `current_value - previous_value` (`DELTA` track).
+    #[serde(default)]
+    pub delta: Option<f64>,
+    /// Structured snapshot of source/destination/edge inputs (`INPUTS` track).
+    #[serde(default = "default_empty_snapshot")]
+    pub input_snapshot: serde_json::Value,
+    /// Latest observation timestamp recorded in `xb_link_metric_series`.
+    pub computed_at: Option<DateTime<Utc>>,
+    /// Expression evaluation warnings (`DIV_BY_ZERO`, `DOMAIN_ERROR`).
+    #[serde(default)]
     pub warnings: Vec<EvalWarningCode>,
 }
 

@@ -118,7 +118,7 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `Sensitivity` | `PUBLIC` `INTERNAL` `CONFIDENTIAL` `SECRET` | 资源 `sensitivity`、用户 `clearance` |
 | `Permission` | `DATA_READ` `DATA_SYNC` `DATA_ADMIN` `STUDIO_EDIT` `STUDIO_PUBLISH` `FLOW_EDIT` `FLOW_RUN` `FLOW_PUBLISH` `APPROVAL_DECIDE` `RULE_EDIT` `ALERT_ACK` `AGENT_EDIT` `AGENT_RUN` `SIM_RUN` `SIM_APPLY` `VIEW_EDIT` `VIEW_SHARE` `EXPORT_DATA` `PII_RAW_READ` `GUARD_ADMIN` `OPS_ADMIN` | `sec_roles.permissions` |
 | `BuiltinRole` | `ADMIN`（全部权限）`ANALYST` `OPERATOR` `VIEWER` | `sec_roles.name` |
-| `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` `BUILDER_MCP_MUTATE` `TRIAL_TEMPLATE_CLONE` `STUDIO_SNAPSHOT_RESTORE` `IM_ACCOUNT_BIND` `CHART_PUBLISH` | `sec_audit_logs.action` |
+| `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` `BUILDER_MCP_MUTATE` `TRIAL_TEMPLATE_CLONE` `STUDIO_SNAPSHOT_RESTORE` `IM_ACCOUNT_BIND` `CHART_PUBLISH` `OBJECT_ACTION_INVOKE` `TRIAL_TICK_CERTIFY` | `sec_audit_logs.action` |
 | `StructuredOutputMode` | `NONE` `JSON_OBJECT` `JSON_SCHEMA` | `ax_llm_providers.structured_mode`（Step 15） |
 | `GroundingMode` | `SEMANTIC_METRIC` `DOMAIN_OBJECT` `GUARDED_SQL` `GROUNDED_DOC` `ABSTAINED` `CLARIFICATION` | `an_ask_turns.grounding_mode`（Step 16） |
 | `TokenProfile` | `GENERAL` `BUILDER` | `sec_api_tokens.token_profile`（Step 17） |
@@ -132,6 +132,9 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `SemanticZoneKind` | `CONTROL` `KPI` `SCENE` `INSIGHT` `DECISION` | `xv_widgets.options.semantic_zone`（Step 20） |
 | `StudioCanvasViewMode` | `ONTOLOGY_TOPOLOGY` `MAPPING_PIPELINE` | `xBlueStudio` 画布视图模式（Step 24） |
 | `GridCompactMode` | `VERTICAL_COMPACT` `FREE_FLOAT` | `xv_dashboards.canvas.compact_mode`（Step 25） |
+| `ActionSideEffectTier` | `SELF_ONLY` `RELATED_NODES` `EXTERNAL_EFFECT` | `NodeTypeSpec.actions[].side_effect_tier`（Step 26） |
+| `RuntimeCertLevel` | `L0_INVALID` `L1_CONFIGURED` `L2_RUNNABLE` `L3_VERIFIED` `L4_CERTIFIED` | `xb_runtime_certifications.cert_level`（Step 26） |
+| `PropagationPathKind` | `VERTEX_TO_VERTEX` `VERTEX_TO_EDGE` `EDGE_TO_VERTEX` `EDGE_TO_EDGE` | 四路径边动力学拓扑传播（Step 26） |
 
 ---
 
@@ -147,14 +150,14 @@ Rust 侧 `axpoint-domain::AppError` 枚举与 HTTP 状态码映射：
 
 | `AppError` 变体 | HTTP | 典型 `error_code` |
 | :--- | :--- | :--- |
-| `BadRequest(code, msg)` | 400 | `INVALID_ARGUMENT` `SQL_REJECTED` `JOIN_PATH_UNGROUNDED` `CYCLE_DETECTED` `DIV_BY_ZERO` `LIMIT_OUT_OF_RANGE` `SCHEMA_INVALID` `UNCONFIRMED_PROPOSALS_REMAIN` `SIM_DIVERGENT` `BUILDER_SCOPE_FORBIDDEN` `DEV_SANDBOX_REQUIRED` |
+| `BadRequest(code, msg)` | 400 | `INVALID_ARGUMENT` `SQL_REJECTED` `JOIN_PATH_UNGROUNDED` `CYCLE_DETECTED` `DIV_BY_ZERO` `LIMIT_OUT_OF_RANGE` `SCHEMA_INVALID` `UNCONFIRMED_PROPOSALS_REMAIN` `DERIVED_METRIC_WRITE_FORBIDDEN` `SIM_DIVERGENT` `BUILDER_SCOPE_FORBIDDEN` `DEV_SANDBOX_REQUIRED` |
 | `Unauthorized(code)` | 401 | `TOKEN_MISSING` `TOKEN_INVALID` `TOKEN_EXPIRED` `SIGNATURE_INVALID` |
 | `Forbidden(code)` | 403 | `PERMISSION_DENIED` `POLICY_DENIED` `BUILDER_TOKEN_PROD_FORBIDDEN` |
 | `NotFound(code)` | 404 | `ROUTE_NOT_FOUND` `DATASET_NOT_FOUND` `NODE_NOT_FOUND` `FLOW_NOT_FOUND` `JOB_NOT_FOUND` `SHARE_NOT_FOUND`（跨租户访问一律返回 404） |
 | `Conflict(code)` | 409 | `NAME_TAKEN` `VERSION_CONFLICT` `SCHEMA_BREAKING_CHANGE` `IDEMPOTENCY_REPLAY` |
 | `PayloadTooLarge(code)` | 413 | `UPLOAD_TOO_LARGE` `ARCHIVE_BOMB` |
 | `Unsupported(code)` | 415 | `UNSUPPORTED_FORMAT` `UNSUPPORTED_EARLY_OFFICE_FORMAT` |
-| `Unprocessable(code, msg)` / `UnprocessableDetails(code, msg, details)` | 422 | `PARSE_FAILED` `XML_UNSAFE` `PII_POLICY_VIOLATION` `STRUCTURED_OUTPUT_INVALID` `VIEW_PREFLIGHT_BLOCKED`（携带结构化 `details`） |
+| `Unprocessable(code, msg)` / `UnprocessableDetails(code, msg, details)` | 422 | `PARSE_FAILED` `XML_UNSAFE` `PII_POLICY_VIOLATION` `STRUCTURED_OUTPUT_INVALID` `VIEW_PREFLIGHT_BLOCKED` `ACTION_PRECONDITION_FAILED`（携带结构化 `details`） |
 | `RateLimited` | 429 | `RATE_LIMITED` |
 | `Config(msg)` / `Database(msg)` | 500 | `INTERNAL` |
 | `Llm(msg)` / `Parser(msg)` / `Upstream(msg)` | 502 | `UPSTREAM_LLM` `UPSTREAM_PARSER` `UPSTREAM_CONNECTOR` |

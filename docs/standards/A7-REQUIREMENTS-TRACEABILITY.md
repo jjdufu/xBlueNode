@@ -40,6 +40,7 @@
 | C68 | `xBlueStudio` 焦点感知常驻 AI 助手与草案快照一键回退 | 18 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.3 | step18 “copilot-readonly-diag”、“copilot-mutate-rollback” |
 | C69 | 模型要素 `PROPOSED / CONFIRMED` 成熟度状态流与完备度通过项计数 | 18 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.2 | step18 “proposal-confirm-flow”、“pass-count-metrics” |
 | C70 | 单节点左→右全链路数据血缘管道图与自动生成模型全景规格书 | 18 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.4 | step18 “node-lineage-graph”、“subgraph-spec-doc” |
+| C84 | 孤立死指标（Dead Knowledge）静态闭包扫描与开发沙盒 `Trial Tick` L0–L4 运行时就绪认证 | 26 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.4 | step26 “dead-knowledge-detected”、“trial-tick-certified” |
 
 ### C 构建
 
@@ -61,6 +62,8 @@
 | C66 | `AxBuilder` 构建态 MCP 工具集（拉取/校验/推送模型、流程与看板草案并回传深链） | 17 | [03-STEP17](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2～§17.3 | step17 “mcp-axbuilder-preflight”、“mcp-push-draft”、“mcp-deeplink” |
 | C67 | 细粒度构建令牌预设与隔离开发子图试灌及一键清空 | 17 | [03-STEP17](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2.2、§17.4 | step17 “builder-token-no-prod”、“dev-subgraph-reset” |
 | C72 | `xBlueStudio` 一键双态应用包装（领域智能体 + 孪生驾驶舱） | 19 | [05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.3 | step19 “studio-pack-agent”、“studio-pack-dashboard” |
+| C82 | 一等公民 `ActionSpec` 动作契约（前置断言、派生锁、多对象 CAS 原子回写、动态 GraphQL `Mutation` 与 MCP 暴露） | 26 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.2 | step26 “action-spec-precondition”、“graphql-action-mutation” |
+| C83 | 关系边时序指标与 `V→V / V→E / E→V / E→E` 四路径动力学拓扑传播及三轨溯源 | 26 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.3 | step26 “edge-metric-ingest”、“four-path-propagation” |
 
 ### D 智能
 

@@ -1167,6 +1167,11 @@ fn build_derived_explain(
         inputs,
         computed_at,
         warnings,
+        rule_chain: vec![format!("{}.{metric_name} = {}", node.type_name, drule.expression)],
+        previous_value: None,
+        current_value: value,
+        delta: None,
+        input_snapshot: serde_json::json!({}),
     })
 }
 
@@ -1230,6 +1235,14 @@ async fn build_agg_explain_tx(
         inputs,
         computed_at,
         warnings: warnings_set.into_iter().collect(),
+        rule_chain: vec![format!(
+            "{}.{metric_name} = {}({}.{} via {})",
+            node.type_name, arule.op, arule.source_type_name, arule.source_metric, arule.via_link_type
+        )],
+        previous_value: None,
+        current_value: value,
+        delta: None,
+        input_snapshot: serde_json::json!({}),
     })
 }
 
@@ -1306,6 +1319,11 @@ async fn build_non_rule_explain_tx(
         inputs: Vec::new(),
         computed_at,
         warnings: Vec::new(),
+        rule_chain: vec![format!("{}.{metric_name} <- {producer:?}", node.type_name)],
+        previous_value: None,
+        current_value: value,
+        delta: None,
+        input_snapshot: serde_json::json!({}),
     })
 }
 
@@ -1342,6 +1360,7 @@ async fn load_main_schema_doc(store: &PgStore, tenant_id: &str) -> Result<Schema
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             semantic_layer_tier: None,
             domain_group: None,
+            actions: Vec::new(),
         })
         .collect();
 
@@ -1389,6 +1408,7 @@ async fn load_single_main_node_type_tx(
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     }))
 }
 

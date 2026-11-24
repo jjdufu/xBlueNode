@@ -84,6 +84,7 @@ fn sample_supply_chain_doc() -> SchemaDoc {
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     };
 
     let order = NodeTypeSpec {
@@ -107,6 +108,7 @@ fn sample_supply_chain_doc() -> SchemaDoc {
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     };
 
     let fulfills = EdgeTypeSpec {
@@ -120,6 +122,8 @@ fn sample_supply_chain_doc() -> SchemaDoc {
         properties: Vec::new(),
         propagation: serde_json::json!({}),
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        derived_rules: Vec::new(),
+        agg_rules: Vec::new(),
     };
 
     SchemaDoc {
@@ -165,6 +169,7 @@ fn studio_rule1_names_reserved_colors_and_templates() {
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     };
     doc.node_types.push(dup_order);
 
@@ -193,6 +198,7 @@ fn studio_rule2_and_rule3_edge_endpoints_cross_subgraph_and_weights() {
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     };
     let sub_doc = SchemaDoc {
         node_types: vec![shipment],
@@ -207,6 +213,8 @@ fn studio_rule2_and_rule3_edge_endpoints_cross_subgraph_and_weights() {
             properties: Vec::new(),
             propagation: serde_json::json!({}),
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            derived_rules: Vec::new(),
+            agg_rules: Vec::new(),
         }],
         mappings: Vec::new(),
     };
@@ -408,6 +416,7 @@ fn studio_diff_schema_detects_added_removed_and_changed_fields() {
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             semantic_layer_tier: None,
             domain_group: None,
+            actions: Vec::new(),
         }],
         edge_types: Vec::new(),
         mappings: Vec::new(),
@@ -448,6 +457,7 @@ fn logistics_subgraph_doc() -> SchemaDoc {
                 maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                 semantic_layer_tier: None,
                 domain_group: None,
+                actions: Vec::new(),
             },
             NodeTypeSpec {
                 id: None,
@@ -466,6 +476,7 @@ fn logistics_subgraph_doc() -> SchemaDoc {
                 maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                 semantic_layer_tier: None,
                 domain_group: None,
+                actions: Vec::new(),
             },
         ],
         edge_types: vec![EdgeTypeSpec {
@@ -479,6 +490,8 @@ fn logistics_subgraph_doc() -> SchemaDoc {
             properties: Vec::new(),
             propagation: serde_json::json!({}),
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            derived_rules: Vec::new(),
+            agg_rules: Vec::new(),
         }],
         mappings: Vec::new(),
     }
@@ -600,6 +613,7 @@ fn studio_merge_extend_props_rejects_unresolved_type_conflict() {
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             semantic_layer_tier: None,
             domain_group: None,
+            actions: Vec::new(),
         }],
         edge_types: Vec::new(),
         mappings: Vec::new(),

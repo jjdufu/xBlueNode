@@ -143,6 +143,8 @@ fn build_eval_context() -> DashboardGenContext {
         properties: Vec::new(),
         propagation: serde_json::json!({}),
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+        derived_rules: Vec::new(),
+        agg_rules: Vec::new(),
     }];
     seed_eval_metrics(&mut ctx, ds_orders_id);
     seed_eval_datasets(&mut ctx, ds_orders_id);
@@ -329,6 +331,7 @@ fn make_node_type(name: &str, display_name: &str, metrics: &[&str]) -> NodeTypeS
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     }
 }
 

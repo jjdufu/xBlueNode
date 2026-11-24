@@ -159,6 +159,7 @@ async fn resolve_sync_targets(
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             semantic_layer_tier: None,
             domain_group: None,
+            actions: Vec::new(),
         };
         sync_types.insert(nt.name.clone(), nt);
     }
@@ -992,6 +993,7 @@ mod tests {
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             semantic_layer_tier: None,
             domain_group: None,
+            actions: Vec::new(),
         };
 
         let md = render_node_dossier_markdown(&node, &nt, &[], &[String::from("2026履约SOP")]);

@@ -1986,6 +1986,7 @@ async fn load_mapping_and_model(
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             semantic_layer_tier: None,
             domain_group: None,
+            actions: Vec::new(),
         };
         node_types.insert(nt.name.clone(), nt);
     }

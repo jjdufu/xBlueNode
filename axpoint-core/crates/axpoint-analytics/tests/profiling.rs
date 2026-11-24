@@ -372,6 +372,7 @@ fn build_sales_order_mapping_fixture() -> (NodeTypeSpec, MappingSpec) {
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     };
 
     let mut attributes = BTreeMap::new();
@@ -565,6 +566,7 @@ async fn session_pool_ducklake_profile_and_preview_end_to_end() -> Result<(), Ap
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     };
     let mut attrs = BTreeMap::new();
     attrs.insert(String::from("status"), String::from("status"));

@@ -34,8 +34,8 @@ use axpoint_domain::graph::{
     MetricCatalogEntry, MetricSeriesPoint, NeighborQuery, NodeDocumentsResponse, NodeListQuery,
     NodeListResponse, NodeMetricSeriesQuery, NodeSearchQuery, NodeSearchResponse, PatchNodeRequest,
     PathQuery, PathResponse, ResolveEntitiesRequest, ResolveEntitiesResponse, SubgraphQuery,
-    SubgraphResponse, UpsertLinkRequest, WindowQuery, WindowQueryResponse, WriteMetricsRequest,
-    WriteMetricsResponse,
+    SubgraphResponse, UpsertLinkRequest, WindowQuery, WindowQueryResponse, WriteLinkMetricsRequest,
+    WriteLinkMetricsResponse, WriteMetricsRequest, WriteMetricsResponse,
 };
 use axpoint_domain::platform::{AuditRecord, NewJob};
 use axpoint_domain::ports::{
@@ -45,24 +45,26 @@ use axpoint_domain::ports::{
 };
 use axpoint_domain::rollup::{
     AcceptNodeCandidateRequest, AcceptNodeCandidateResponse, GraphAggregateJobPayload,
-    KnowledgeNodeCandidatesResponse, KnowledgeSyncJobPayload, MetricExplainResponse,
-    RecomputeAggregateRequest, RecomputeAggregateResponse,
+    KnowledgeNodeCandidatesResponse, KnowledgeSyncJobPayload, LinkMetricExplainResponse,
+    MetricExplainResponse, RecomputeAggregateRequest, RecomputeAggregateResponse,
 };
 use axpoint_domain::studio::{
-    AiDraftRequest, ColumnProfileStats, ColumnRoleTag, ConfirmProposalsRequest, CreateDraftRequest,
-    CreateSubgraphRequest, DatasetProfileSummary, DomainObjectItemQuery, DomainObjectListQuery,
-    DomainObjectListResponse, DomainObjectRecord, DraftSnapshotListResponse, DraftSource,
-    DraftStatus, IssueSeverity, MappingPreviewResponse, MappingRecord, MappingRunsResponse,
-    MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeLineageGraph, NodeTypeSpec,
-    ObjectCatalogResponse, ObjectFieldSig, ObjectTypeCatalogItem, PackageSubgraphAgentRequest,
-    PackageSubgraphAgentResponse, PackagedEndpointItem, ProfilingBundle, PropertyKind,
-    PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest,
-    SchemaDiff, SchemaDoc, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary,
-    SpecDocCompileInput, SpecMappingSyncMeta, StudioCopilotRequest, StudioCopilotResponse,
-    SubgraphConsumptionResponse, SubgraphInfo, SubgraphQueryParam, TrialCloneTemplateRequest,
-    TrialCloneTemplateResponse, TriggerMappingRunRequest, TriggerMappingRunResponse,
-    UpdateDraftRequest, UpdateSubgraphRequest, ValidateSchemaResponse, build_node_lineage,
-    build_packaged_endpoint_slug, compile_subgraph_spec_doc, validate_with_metrics,
+    AiDraftRequest, CertifySubgraphRequest, ColumnProfileStats, ColumnRoleTag,
+    ConfirmProposalsRequest, CreateDraftRequest, CreateSubgraphRequest, DatasetProfileSummary,
+    DomainObjectItemQuery, DomainObjectListQuery, DomainObjectListResponse, DomainObjectRecord,
+    DraftSnapshotListResponse, DraftSource, DraftStatus, InvokeObjectActionRequest,
+    InvokeObjectActionResponse, IssueSeverity, MappingPreviewResponse, MappingRecord,
+    MappingRunsResponse, MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeLineageGraph,
+    NodeTypeSpec, ObjectCatalogResponse, ObjectFieldSig, ObjectTypeCatalogItem,
+    PackageSubgraphAgentRequest, PackageSubgraphAgentResponse, PackagedEndpointItem,
+    ProfilingBundle, PropertyKind, PublishDraftRequest, PublishDraftResponse,
+    PublishedSchemaResponse, RuntimeCertReport, SaveSchemaDirectRequest, SchemaDiff, SchemaDoc,
+    SchemaDraft, SchemaVersionDetail, SchemaVersionSummary, SpecDocCompileInput,
+    SpecMappingSyncMeta, StudioCopilotRequest, StudioCopilotResponse, SubgraphConsumptionResponse,
+    SubgraphInfo, SubgraphQueryParam, TrialCloneTemplateRequest, TrialCloneTemplateResponse,
+    TriggerMappingRunRequest, TriggerMappingRunResponse, UpdateDraftRequest, UpdateSubgraphRequest,
+    ValidateSchemaResponse, build_node_lineage, build_packaged_endpoint_slug,
+    compile_subgraph_spec_doc, validate_with_metrics,
 };
 use axpoint_domain::topology::{BlueNode, UpsertBlueNodeRequest};
 use axpoint_llm::{
@@ -130,6 +132,10 @@ pub(crate) fn router() -> Router<AppState> {
         .route(
             "/xblue/subgraphs/{slug}/spec-doc",
             get(get_subgraph_spec_doc_handler),
+        )
+        .route(
+            "/xblue/subgraphs/{slug}/certify",
+            post(certify_subgraph_handler),
         )
         .route(
             "/xblue/schema",
@@ -206,6 +212,10 @@ fn studio_copilot_and_objects_router() -> Router<AppState> {
             "/xblue/objects/{type_name}/{node_key}",
             get(get_domain_object_handler),
         )
+        .route(
+            "/xblue/objects/{type_name}/{node_key}/actions/{action_name}",
+            post(invoke_object_action_handler),
+        )
         .route("/xblue/graphql", post(xblue_graphql::graphql_handler))
         .route(
             "/xblue/graphql/sdl",
@@ -240,6 +250,14 @@ fn runtime_graph_router() -> Router<AppState> {
             get(list_links_handler).post(upsert_link_handler),
         )
         .route("/xblue/links/{id}", delete(delete_link_handler))
+        .route(
+            "/xblue/links/{id}/explain/{metric}",
+            get(explain_link_metric_handler),
+        )
+        .route(
+            "/xblue/links/metrics/write",
+            post(write_link_metrics_handler),
+        )
         .route("/xblue/metrics/write", post(write_metrics_handler))
         .route("/xblue/metrics/window", post(query_window_handler))
         .route("/xblue/metrics/catalog", get(list_metric_catalog_handler))
@@ -3098,6 +3116,85 @@ async fn accept_knowledge_node_candidate_handler(
         }
     }
 
+    Ok(Json(resp))
+}
+
+async fn invoke_object_action_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath((type_name, node_key, action_name)): ApiPath<(String, String, String)>,
+    ApiJson(req): ApiJson<InvokeObjectActionRequest>,
+) -> Result<(StatusCode, Json<InvokeObjectActionResponse>), HttpError> {
+    principal.require(Permission::FlowRun)?;
+    let resp = state
+        .store
+        .invoke_object_action(
+            &principal.tenant_id,
+            actor_uuid(&principal),
+            &type_name,
+            &node_key,
+            &action_name,
+            req,
+        )
+        .await?;
+    let status = if resp.status == "WAITING_APPROVAL" {
+        StatusCode::ACCEPTED
+    } else {
+        StatusCode::OK
+    };
+    Ok((status, Json(resp)))
+}
+
+async fn certify_subgraph_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(slug): ApiPath<String>,
+    body: Bytes,
+) -> Result<Json<RuntimeCertReport>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    let req: CertifySubgraphRequest = if body.is_empty() || body.iter().all(u8::is_ascii_whitespace)
+    {
+        CertifySubgraphRequest::default()
+    } else {
+        serde_json::from_slice(&body).map_err(|err| {
+            AppError::bad("INVALID_ARGUMENT", format!("invalid JSON payload: {err}"))
+        })?
+    };
+    let report = state
+        .store
+        .certify_subgraph_runtime(
+            &principal.tenant_id,
+            &slug,
+            actor_uuid(&principal),
+            req,
+        )
+        .await?;
+    Ok(Json(report))
+}
+
+async fn explain_link_metric_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath((link_id, metric)): ApiPath<(Uuid, String)>,
+) -> Result<Json<LinkMetricExplainResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let resp = state
+        .store
+        .explain_link_metric(&principal.tenant_id, link_id, &metric)
+        .await?;
+    Ok(Json(resp))
+}
+
+async fn write_link_metrics_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<WriteLinkMetricsRequest>,
+) -> Result<Json<WriteLinkMetricsResponse>, HttpError> {
+    principal.require(Permission::DataSync)?;
+    let resp = state
+        .store
+        .write_link_metrics(&principal.tenant_id, req)
+        .await?;
     Ok(Json(resp))
 }
 

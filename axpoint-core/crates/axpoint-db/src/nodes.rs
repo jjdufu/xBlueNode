@@ -62,6 +62,12 @@ pub(crate) fn decode_link_record(row: &sqlx::postgres::PgRow) -> LinkRecord {
         serde_json::Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
+    let metrics: BTreeMap<String, f64> = row
+        .try_get::<serde_json::Value, _>("metrics")
+        .ok()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let row_version: i64 = row.try_get("row_version").unwrap_or(1);
 
     LinkRecord {
         id: row.get("id"),
@@ -70,6 +76,8 @@ pub(crate) fn decode_link_record(row: &sqlx::postgres::PgRow) -> LinkRecord {
         dst_node_id: row.get("dst_node_id"),
         weight: row.get("weight"),
         properties,
+        metrics,
+        row_version,
         source_dataset_id: row.get("source_dataset_id"),
         valid_from: row.get("valid_from"),
         valid_to: row.get("valid_to"),

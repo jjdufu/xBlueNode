@@ -243,6 +243,7 @@ fn build_order_and_warehouse_types() -> Vec<NodeTypeSpec> {
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     };
 
     let warehouse = NodeTypeSpec {
@@ -281,6 +282,7 @@ fn build_order_and_warehouse_types() -> Vec<NodeTypeSpec> {
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     };
     vec![warehouse, order]
 }
@@ -299,6 +301,8 @@ fn build_supply_chain_schema() -> SchemaDoc {
             properties: Vec::new(),
             propagation: serde_json::json!({}),
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            derived_rules: Vec::new(),
+            agg_rules: Vec::new(),
         }],
         mappings: vec![MappingSpec {
             name: String::from("orders_to_graph"),

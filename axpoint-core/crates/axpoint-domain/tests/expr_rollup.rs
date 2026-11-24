@@ -88,6 +88,7 @@ fn sample_node_type() -> NodeTypeSpec {
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     }
 }
 
@@ -606,6 +607,7 @@ fn build_node_type(
         maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
         semantic_layer_tier: None,
         domain_group: None,
+        actions: Vec::new(),
     }
 }
 
@@ -676,6 +678,8 @@ fn three_tier_supply_chain_doc() -> SchemaDoc {
                 properties: Vec::new(),
                 propagation: serde_json::json!({}),
                 maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+                derived_rules: Vec::new(),
+                agg_rules: Vec::new(),
             },
             EdgeTypeSpec {
                 id: None,
@@ -688,6 +692,8 @@ fn three_tier_supply_chain_doc() -> SchemaDoc {
                 properties: Vec::new(),
                 propagation: serde_json::json!({}),
                 maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+                derived_rules: Vec::new(),
+                agg_rules: Vec::new(),
             },
         ],
         mappings: Vec::new(),

@@ -28,6 +28,7 @@
 | 0018 | `0018_studio_proposal_status.sql` | Step 18 | 模型草案增量快照表 `xb_schema_draft_snapshots`、`xb_schema_drafts.pass_count`、节点类型语义分层/业务域列与 `STUDIO_SNAPSHOT_RESTORE` 审计动作 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.1 |
 | 0019 | `0019_im_bot_bindings.sql` | Step 21 | 企业 IM 出站长连接连接器 `ax_im_connectors`、身份映射 `ax_im_user_bindings`、一次性挑战码 `ax_im_bind_challenges`、事件去重 `ax_im_event_dedup`、`ax_conversations` IM 通道扩展及单主租约与原子绑定核销函数 | [07-STEP21](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/07-STEP21-IM-BIDIRECTIONAL-AGENT-CONNECTORS.md) §21.1 |
 | 0020 | `0020_saved_charts.sql` | Step 25 | 可复用可视化图表资产表 `xv_charts`（强制租户 RLS）与 `CHART_PUBLISH` 审计动作扩展 | [03-STEP25](../../plans/v3-craft-and-world-runtime/craft-ux/03-STEP25-CHART-STUDIO-VTABLE-PIVOT-AND-MAGNETIC-GRID.md) §25.1 |
+| 0021 | `0021_actions_and_edge_dynamics.sql` | Step 26 | `xb_node_types.actions`、`xb_edge_types.spec`、`xb_links.{metrics,row_version}`、边时序表 `xb_link_metric_series`、子图运行时认证记录 `xb_runtime_certifications` 及对象动作审计/审批约束扩展 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.1 |
 
 Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 中的时序表）。
 
@@ -41,23 +42,24 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `hg_paras` | 0001 | 0013（`pii_spans`） | 仓库已有 / 13 | 是 |
 | `hg_entities` | 0001 | 0004 | 仓库已有 / 03 | 是 |
 | `hg_edges`、`hg_embeddings` | 0001 | — | 仓库已有 | 是 |
-| `xb_node_types` | 0001 | 0006、0013、0018（语义分层与业务域） | 05 / 13 / 18 | 是 |
-| `xb_edge_types` | 0001 | 0006 | 05 | 是 |
+| `xb_node_types` | 0001 | 0006、0013、0018（语义分层与业务域）、0021（`actions` 契约） | 05 / 13 / 18 / 26 | 是 |
+| `xb_edge_types` | 0001 | 0006、0021（`spec` 边派生与聚合规则） | 05 / 26 | 是 |
 | `xb_nodes` | 0001 | 0004、0006、0017（`subgraph_slug` 隔离） | 03 / 05 / 17 | 是 |
-| `xb_links` | 0001 | 0004、0006、0017（`subgraph_slug` 隔离） | 03 / 05 / 17 | 是 |
+| `xb_links` | 0001 | 0004、0006、0017（`subgraph_slug` 隔离）、0021（`metrics`、`row_version`） | 03 / 05 / 17 / 26 | 是 |
 | `ax_flows` | 0001 | 0007 | 07 | 是 |
 | `ax_sandboxes` | 0001 | 0010 | 10 | 是 |
 | `sec_tenants` | 0002 | — | 00 | 否（平台级，应用只读） |
 | `sec_users` | 0002 | 0013 | 00 / 13 | 是 |
 | `sec_roles`、`sec_user_roles` | 0002 | — | 00 | 是 |
 | `sec_api_tokens` | 0002 | 0017（`token_profile`、`web_base_url`） | 00 / 09 / 17 | 是 |
-| `sec_audit_logs` | 0002 | 0013（哈希链）、0017（构建与克隆动作）、0018（快照回退动作）、0019（`IM_ACCOUNT_BIND`）、0020（`CHART_PUBLISH`） | 00 / 13 / 17 / 18 / 21 / 25 | 是（应用角色无 UPDATE / DELETE） |
+| `sec_audit_logs` | 0002 | 0013（哈希链）、0017（构建与克隆动作）、0018（快照回退动作）、0019（`IM_ACCOUNT_BIND`）、0020（`CHART_PUBLISH`）、0021（`OBJECT_ACTION_INVOKE`、`TRIAL_TICK_CERTIFY`） | 00 / 13 / 17 / 18 / 21 / 25 / 26 | 是（应用角色无 UPDATE / DELETE） |
 | `ax_jobs`、`ax_outbox` | 0002 | — | 00 | 是 |
 | `ax_retention_policies` | 0002 | 0019（`IM_EVENT_DEDUP` 目标） | 00 / 21 | 是 |
 | `ds_credentials`、`ds_connections`、`ds_column_meta`、`ds_sync_jobs`、`ds_uploads`、`ds_webhooks`、`ds_webhook_buffer`、`ds_stream_offsets`、`ds_quality_rules`、`ds_glossary_terms`、`ds_lineage` | 0003 | — | 02 | 是 |
 | `ds_datasets` | 0003 | 0013（归属、密级） | 02 / 13 | 是 |
 | `xb_metric_series`（按月分区，含 `xb_metric_series_default`） | 0004 | — | 03 | 是 |
 | `xb_metric_rollups`、`xb_rollup_watermarks`、`xb_rollup_dirty`、`xb_entity_links`、`xb_graph_algo_results` | 0004 | — | 03 | 是 |
+| `xb_link_metric_series`、`xb_runtime_certifications` | 0021 | — | 26 | 是 |
 | `an_metrics`、`an_saved_queries`、`an_query_history`、`an_transform_drafts` | 0005 | — | 04 | 是 |
 | `an_ask_turns` | 0005 | 0016（接地路径与核验计数列） | 04 / 16 | 是 |
 | `an_grounding_eval_runs` | 0016 | — | 16 | 是 |
