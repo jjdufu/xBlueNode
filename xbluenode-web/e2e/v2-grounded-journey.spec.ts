@@ -2932,8 +2932,13 @@ test.describe("Step 22 Phase 2 Grounded AI & Builder UX Full Journey", () => {
       await expect(fillTypesBtn).toBeVisible();
       for (let hop = 0; hop < 3; hop += 1) {
         if (await fillTypesBtn.isVisible()) {
+          const preflightRespPromise = page.waitForResponse(
+            (res) =>
+              res.url().endsWith("/api/axsim/sandboxes/preflight") &&
+              res.request().method() === "POST"
+          );
           await fillTypesBtn.click();
-          await page.waitForTimeout(450);
+          await preflightRespPromise;
         }
         const badgeText = await preflightBadge.innerText();
         if (badgeText.includes("就绪")) {

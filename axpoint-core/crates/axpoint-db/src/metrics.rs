@@ -604,7 +604,7 @@ async fn sync_latest_node_snapshots_tx(
 
     let target_ids: Vec<Uuid> = latest_by_node.keys().copied().collect();
     let rows = sqlx::query(
-        "SELECT id, properties, metrics FROM xb_nodes WHERE id = ANY($1) AND subgraph_slug = 'main' FOR UPDATE",
+        "SELECT id, properties, metrics FROM xb_nodes WHERE id = ANY($1) AND subgraph_slug = 'main' ORDER BY id FOR UPDATE",
     )
     .bind(&target_ids)
     .fetch_all(&mut **tx)
@@ -1073,6 +1073,7 @@ async fn write_link_metrics_impl(
         .unwrap_or("INGEST");
 
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
+    crate::aggregate_exec::acquire_tenant_agg_xact_lock(&mut tx, tenant_id).await?;
     let deduped = dedup_link_points(&req.points);
     let link_ids: Vec<Uuid> = deduped
         .iter()
@@ -1174,6 +1175,7 @@ async fn upsert_link_series_and_snapshots_tx(
            LEFT JOIN xb_nodes s ON s.tenant_id = l.tenant_id AND s.id = l.src_node_id
            LEFT JOIN xb_nodes d ON d.tenant_id = l.tenant_id AND d.id = l.dst_node_id
           WHERE l.tenant_id = $1 AND l.id = ANY($2)
+          ORDER BY l.id
           FOR UPDATE OF l",
     )
     .bind(tenant_id)
