@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Award, Code2, TableProperties, Wand2 } from "lucide-react";
+import { useSearchParams } from "react-router";
+import { Award, Code2, Sparkles, TableProperties, Wand2 } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { MODULE_META } from "@/modules/meta";
 import {
@@ -21,14 +22,33 @@ import { ResultGrid } from "@/components/analytics/ResultGrid";
 import { SchemaTree } from "@/components/analytics/SchemaTree";
 import { SqlEditor } from "@/components/analytics/SqlEditor";
 import { TransformWizard } from "@/components/analytics/TransformWizard";
+import { ResizableWorkspace } from "@/components/ui/ResizableWorkspace";
 import {
   Card,
   PageHeader,
   SegmentedControl,
   StatText,
 } from "@/components/ui/primitives";
+import { AxQueryPage } from "@/pages/AxQueryPage";
 
-type StudioTab = "sql" | "pivot" | "metrics" | "transform";
+type StudioTab = "ask" | "sql" | "pivot" | "metrics" | "transform";
+
+function resolveAnalyticsTab(rawTab: string | null): StudioTab {
+  const normalized = (rawTab ?? "").trim().toLowerCase();
+  if (normalized === "ask" || normalized === "query" || normalized === "qa") {
+    return "ask";
+  }
+  if (normalized === "pivot") {
+    return "pivot";
+  }
+  if (normalized === "metrics" || normalized === "semantic") {
+    return "metrics";
+  }
+  if (normalized === "transform" || normalized === "federation") {
+    return "transform";
+  }
+  return "sql";
+}
 
 const EMPTY_CATALOG: AnalyticsCatalogResponse = {
   datasets: [],
@@ -55,9 +75,13 @@ function pickInitialDatasetSql(datasets: CatalogDatasetNode[]): string {
 
 export function AnalyticsStudioPage() {
   const { tx, fmtNum } = useI18n();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
   const userEditedSqlRef = useRef(false);
 
-  const [activeTab, setActiveTab] = useState<StudioTab>("sql");
+  const [activeTab, setActiveTab] = useState<StudioTab>(() =>
+    resolveAnalyticsTab(tabParam)
+  );
   const [catalog, setCatalog] =
     useState<AnalyticsCatalogResponse>(EMPTY_CATALOG);
   const [catalogLoading, setCatalogLoading] = useState(false);
@@ -85,6 +109,21 @@ export function AnalyticsStudioPage() {
   const [resultTruncated, setResultTruncated] = useState<boolean>(false);
   const [resultDurationMs, setResultDurationMs] = useState<number | null>(null);
   const [resultExecutedSql, setResultExecutedSql] = useState<string>("");
+
+  useEffect(() => {
+    setActiveTab(resolveAnalyticsTab(tabParam));
+  }, [tabParam]);
+
+  const handleSwitchTab = (next: StudioTab) => {
+    setActiveTab(next);
+    const updated = new URLSearchParams(searchParams);
+    if (next === "sql") {
+      updated.delete("tab");
+    } else {
+      updated.set("tab", next);
+    }
+    setSearchParams(updated, { replace: true });
+  };
 
   const loadCatalog = useCallback(async () => {
     setCatalogLoading(true);
@@ -236,10 +275,10 @@ export function AnalyticsStudioPage() {
     if (typeof sq.spec?.sql === "string") {
       userEditedSqlRef.current = true;
       setSqlText(sq.spec.sql);
-      setActiveTab("sql");
+      handleSwitchTab("sql");
     } else if (sq.kind === "PIVOT" && typeof sq.spec?.dataset === "string") {
       setSelectedPivotDataset(sq.spec.dataset);
-      setActiveTab("pivot");
+      handleSwitchTab("pivot");
     }
   };
 
@@ -254,7 +293,7 @@ export function AnalyticsStudioPage() {
 
   const handleInsertIdentifier = (identifier: string) => {
     userEditedSqlRef.current = true;
-    setActiveTab("sql");
+    handleSwitchTab("sql");
     setSqlText((prev) => {
       const trimmed = prev.trimEnd();
       if (!trimmed) return identifier;
@@ -264,12 +303,12 @@ export function AnalyticsStudioPage() {
 
   const handleSelectForPivot = (datasetOrViewName: string) => {
     setSelectedPivotDataset(datasetOrViewName);
-    setActiveTab("pivot");
+    handleSwitchTab("pivot");
   };
 
   return (
     <div
-      className="flex flex-1 min-h-0 flex-col gap-3"
+      className="flex flex-1 min-h-0 flex-col gap-2.5 overflow-hidden"
       data-testid="analytics-studio-page"
     >
       <PageHeader
@@ -293,10 +332,16 @@ export function AnalyticsStudioPage() {
         }
         actions={
           <div data-testid="analytics-tabs">
-            <SegmentedControl
+            <SegmentedControl<StudioTab>
               value={activeTab}
-              onChange={(next) => setActiveTab(next)}
+              onChange={handleSwitchTab}
               items={[
+                {
+                  key: "ask",
+                  label: tx("智能问答", "Ask"),
+                  icon: <Sparkles className="h-3.5 w-3.5 text-xblue" />,
+                  testId: "analytics-tab-ask",
+                },
                 {
                   key: "sql",
                   label: "SQL",
@@ -327,100 +372,146 @@ export function AnalyticsStudioPage() {
         }
       />
 
-      {/* 2-Pane Full-Height Studio Layout: Left SchemaTree + Right Workspace */}
-      <div className="flex flex-1 min-h-0 flex-col lg:flex-row gap-3 items-stretch overflow-hidden">
-        <div className="w-full lg:w-68 shrink-0 h-60 lg:h-full min-h-0 flex flex-col">
-          <SchemaTree
-            catalog={catalog}
-            loading={catalogLoading}
-            selectedPivotDataset={selectedPivotDataset}
-            onRefresh={() => void loadCatalog()}
-            onInsertIdentifier={handleInsertIdentifier}
-            onSelectForPivot={handleSelectForPivot}
+      {activeTab === "ask" ? (
+        <AxQueryPage embedded />
+      ) : (
+        <div className="flex flex-1 min-h-0 overflow-hidden">
+          <ResizableWorkspace
+            storageKey="axpoint.layout.analytics"
+            panes={[
+              {
+                id: "catalog",
+                defaultSize: 20,
+                minSize: 12,
+                maxSize: 38,
+                collapsible: true,
+                handleTestId: "resizable-handle-left",
+                className: "pr-1",
+                children: (
+                  <SchemaTree
+                    catalog={catalog}
+                    loading={catalogLoading}
+                    selectedPivotDataset={selectedPivotDataset}
+                    onRefresh={() => void loadCatalog()}
+                    onInsertIdentifier={handleInsertIdentifier}
+                    onSelectForPivot={handleSelectForPivot}
+                  />
+                ),
+              },
+              {
+                id: "main",
+                defaultSize: 80,
+                minSize: 55,
+                className: "pl-1 overflow-y-auto",
+                children: (
+                  <div className="flex flex-1 min-h-0 flex-col h-full">
+                    {activeTab === "sql" && (
+                      <ResizableWorkspace
+                        storageKey="axpoint.layout.analytics-sql"
+                        direction="vertical"
+                        panes={[
+                          {
+                            id: "editor",
+                            defaultSize: 44,
+                            minSize: 24,
+                            collapsible: true,
+                            className: "pb-1 overflow-y-auto",
+                            children: (
+                              <div className="space-y-2">
+                                <SqlEditor
+                                  sql={sqlText}
+                                  onChangeSql={handleChangeSql}
+                                  catalog={catalog}
+                                  running={sqlRunning}
+                                  explaining={sqlExplaining}
+                                  explainResult={explainResult}
+                                  onCloseExplain={() => setExplainResult(null)}
+                                  onRunSql={(opts) => void handleRunSql(opts)}
+                                  onExplainSql={(opts) =>
+                                    void handleExplainSql(opts)
+                                  }
+                                  onSaveQuery={handleSaveSqlQuery}
+                                  savedQueries={savedQueries}
+                                  historyEntries={historyEntries}
+                                  onLoadSavedQuery={handleLoadSavedQuery}
+                                  onDeleteSavedQuery={(id) =>
+                                    void handleDeleteSavedQuery(id)
+                                  }
+                                />
+                                {sqlError && (
+                                  <Card
+                                    className="shrink-0 border-red-500/30 bg-red-500/5 p-3 text-xs text-red-600 dark:text-red-400"
+                                    data-testid="sql-error-card"
+                                  >
+                                    <span className="font-mono-tech font-semibold">
+                                      {tx("执行异常：", "Query error: ")}
+                                    </span>
+                                    {sqlError}
+                                  </Card>
+                                )}
+                              </div>
+                            ),
+                          },
+                          {
+                            id: "results",
+                            defaultSize: 56,
+                            minSize: 28,
+                            className: "pt-1",
+                            children: (
+                              <div className="grid flex-1 min-h-[220px] h-full grid-cols-1 xl:grid-cols-12 gap-3 items-stretch">
+                                <div className="xl:col-span-7 min-w-0 flex flex-col min-h-0">
+                                  <ResultGrid
+                                    columns={resultColumns}
+                                    rows={resultRows}
+                                    rowCount={resultRowCount}
+                                    truncated={resultTruncated}
+                                    durationMs={resultDurationMs}
+                                    sql={resultExecutedSql}
+                                  />
+                                </div>
+                                <div className="xl:col-span-5 min-w-0 flex flex-col min-h-0">
+                                  <ChartPanel
+                                    columns={resultColumns}
+                                    rows={resultRows}
+                                  />
+                                </div>
+                              </div>
+                            ),
+                          },
+                        ]}
+                      />
+                    )}
+
+                    {activeTab === "pivot" && (
+                      <PivotBuilder
+                        catalog={catalog}
+                        selectedDataset={selectedPivotDataset}
+                        onSelectDataset={setSelectedPivotDataset}
+                        onSavePivotQuery={handleSavePivotQuery}
+                      />
+                    )}
+
+                    {activeTab === "metrics" && (
+                      <MetricManager
+                        catalog={catalog}
+                        metrics={metrics}
+                        onRefreshMetrics={loadMetrics}
+                      />
+                    )}
+
+                    {activeTab === "transform" && (
+                      <TransformWizard
+                        catalog={catalog}
+                        onMaterialized={loadCatalog}
+                      />
+                    )}
+                  </div>
+                ),
+              },
+            ]}
           />
         </div>
-
-        <div className="min-w-0 flex-1 w-full h-full min-h-0 flex flex-col overflow-y-auto">
-          {/* Tab 1: SQL Workspace + Equal-Height Stretched ResultGrid & ChartPanel */}
-          {activeTab === "sql" && (
-            <div className="flex flex-1 min-h-0 flex-col gap-3">
-              <div className="shrink-0">
-                <SqlEditor
-                  sql={sqlText}
-                  onChangeSql={handleChangeSql}
-                  catalog={catalog}
-                  running={sqlRunning}
-                  explaining={sqlExplaining}
-                  explainResult={explainResult}
-                  onCloseExplain={() => setExplainResult(null)}
-                  onRunSql={(opts) => void handleRunSql(opts)}
-                  onExplainSql={(opts) => void handleExplainSql(opts)}
-                  onSaveQuery={handleSaveSqlQuery}
-                  savedQueries={savedQueries}
-                  historyEntries={historyEntries}
-                  onLoadSavedQuery={handleLoadSavedQuery}
-                  onDeleteSavedQuery={(id) => void handleDeleteSavedQuery(id)}
-                />
-              </div>
-
-              {sqlError && (
-                <Card
-                  className="shrink-0 border-red-500/30 bg-red-500/5 p-3 text-xs text-red-600 dark:text-red-400"
-                  data-testid="sql-error-card"
-                >
-                  <span className="font-mono-tech font-semibold">
-                    {tx("执行异常：", "Query error: ")}
-                  </span>
-                  {sqlError}
-                </Card>
-              )}
-
-              <div className="grid flex-1 min-h-[240px] grid-cols-1 xl:grid-cols-12 gap-3 items-stretch">
-                <div className="xl:col-span-7 min-w-0 flex flex-col min-h-0">
-                  <ResultGrid
-                    columns={resultColumns}
-                    rows={resultRows}
-                    rowCount={resultRowCount}
-                    truncated={resultTruncated}
-                    durationMs={resultDurationMs}
-                    sql={resultExecutedSql}
-                  />
-                </div>
-                <div className="xl:col-span-5 min-w-0 flex flex-col min-h-0">
-                  <ChartPanel columns={resultColumns} rows={resultRows} />
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Tab 2: Pivot Workspace (isolated result matrix inside PivotBuilder) */}
-          {activeTab === "pivot" && (
-            <PivotBuilder
-              catalog={catalog}
-              selectedDataset={selectedPivotDataset}
-              onSelectDataset={setSelectedPivotDataset}
-              onSavePivotQuery={handleSavePivotQuery}
-            />
-          )}
-
-          {/* Tab 3: Semantic Metrics Workspace (isolated result panel inside MetricManager) */}
-          {activeTab === "metrics" && (
-            <MetricManager
-              catalog={catalog}
-              metrics={metrics}
-              onRefreshMetrics={loadMetrics}
-            />
-          )}
-
-          {/* Tab 4: AI Transform Wizard (isolated preview grid inside TransformWizard) */}
-          {activeTab === "transform" && (
-            <TransformWizard
-              catalog={catalog}
-              onMaterialized={loadCatalog}
-            />
-          )}
-        </div>
-      </div>
+      )}
     </div>
   );
 }

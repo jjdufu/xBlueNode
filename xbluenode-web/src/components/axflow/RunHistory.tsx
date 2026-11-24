@@ -1,5 +1,5 @@
 import { Ban, RefreshCw, RotateCcw } from "lucide-react";
-import { useI18n } from "@/i18n";
+import { translateEnum, useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 import type { FlowRunRecord } from "@/lib/api/axflow";
 import type { RunStatus } from "@/lib/api/enums";
@@ -22,36 +22,37 @@ export function formatDurationMs(
 }
 
 export function renderRunStatusBadge(status: RunStatus) {
+  const label = translateEnum(status);
   switch (status) {
     case "SUCCEEDED":
       return (
-        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-mono-tech font-medium border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
-          SUCCEEDED
+        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-sans font-medium border border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400">
+          {label}
         </span>
       );
     case "WAITING_APPROVAL":
       return (
-        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-mono-tech font-medium border border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300">
-          WAITING_APPROVAL
+        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-sans font-medium border border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300">
+          {label}
         </span>
       );
     case "RUNNING":
     case "PENDING":
       return (
-        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-mono-tech font-medium border border-xblue/35 bg-xblue-soft text-xblue">
-          {status}
+        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-sans font-medium border border-xblue/35 bg-xblue-soft text-xblue">
+          {label}
         </span>
       );
     case "FAILED":
       return (
-        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-mono-tech font-medium border border-red-500/35 bg-red-500/10 text-red-700 dark:text-red-400">
-          FAILED
+        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-sans font-medium border border-red-500/35 bg-red-500/10 text-red-700 dark:text-red-400">
+          {label}
         </span>
       );
     case "CANCELED":
       return (
-        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-mono-tech font-medium border border-border bg-muted text-muted-foreground">
-          CANCELED
+        <span className="inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-sans font-medium border border-border bg-muted text-muted-foreground">
+          {label}
         </span>
       );
   }

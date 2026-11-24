@@ -999,7 +999,7 @@ test("AxSim Step 10 end-to-end workbench: sandbox, intervention, overlay, steppe
   // 1) Open /sim and create a new sandbox via SandboxWizard
   await page.goto("/sim");
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxSim · 因果推演" })
+    page.getByRole("heading", { level: 1, name: "推演沙盘" })
   ).toBeVisible();
 
   await page.getByTestId("open-sandbox-wizard-btn").click();
@@ -1046,7 +1046,7 @@ test("AxSim Step 10 end-to-end workbench: sandbox, intervention, overlay, steppe
 
   const virtualRow = page.getByTestId("overlay-node-row-W-VIRTUAL");
   await expect(virtualRow).toBeVisible();
-  await expect(virtualRow).toContainText("OVERLAY · NEW");
+  await expect(virtualRow).toContainText("覆盖 · 新增");
   expect(state.prodMutationUrls).toEqual([]);
 
   // 4) Switch to STEPPED replay timeline and scrub slider t = 0..6

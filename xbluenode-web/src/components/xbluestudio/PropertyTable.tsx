@@ -227,8 +227,11 @@ export function PropertyTable({ properties, onChange }: PropertyTableProps) {
                         {row.unit}
                       </span>
                     )}
-                    <Badge variant={isMetric ? "xblue" : "outline"}>
-                      {row.data_type}
+                    <Badge
+                      variant={isMetric ? "xblue" : "outline"}
+                      title={row.data_type}
+                    >
+                      {tEnum(row.data_type)}
                     </Badge>
                     {canEdit && (
                       <button

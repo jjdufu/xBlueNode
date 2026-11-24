@@ -316,7 +316,7 @@ export interface OperatorSpecDto {
 export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
   {
     kind: "SOURCE_INGEST",
-    display_name: "数据源同步 (SOURCE_INGEST)",
+    display_name: "数据源同步",
     description: "触发数据集入湖同步任务并可选等待完成",
     config_schema: {
       type: "object",
@@ -325,7 +325,7 @@ export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
         dataset_id: {
           type: "string",
           title: "数据集 UUID",
-          description: "目标 AxHub 数据集 ID",
+          description: "目标数据集 ID",
         },
         wait: {
           type: "boolean",
@@ -344,7 +344,7 @@ export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
   },
   {
     kind: "SQL_TRANSFORM",
-    display_name: "SQL 变换与校验 (SQL_TRANSFORM)",
+    display_name: "SQL 变换与校验",
     description: "执行受保护只读 OLAP SQL 或物化为派生视图数据集",
     config_schema: {
       type: "object",
@@ -362,7 +362,7 @@ export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
         materialize_to: {
           type: "string",
           title: "物化派生表名 (可选)",
-          description: "填写后将结果写入 DERIVED_VIEW 数据集",
+          description: "填写后将结果写入派生视图数据集",
         },
         max_rows: {
           type: "integer",
@@ -381,7 +381,7 @@ export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
   },
   {
     kind: "LLM_EXTRACT",
-    display_name: "智能结构化抽取 (LLM_EXTRACT)",
+    display_name: "智能结构化抽取",
     description: "调用模型按 JSON Schema 从文本中提取结构化字段",
     config_schema: {
       type: "object",
@@ -411,8 +411,8 @@ export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
   },
   {
     kind: "XBLUE_MAP",
-    display_name: "业务节点映射 (XBLUE_MAP)",
-    description: "将湖表数据按 xBlueStudio 映射规则物化为图谱节点与关系",
+    display_name: "业务节点映射",
+    description: "将湖表数据按本体映射规则物化为图谱节点与关系",
     config_schema: {
       type: "object",
       required: ["mapping_id"],
@@ -432,7 +432,7 @@ export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
   },
   {
     kind: "AGG_TRIGGER",
-    display_name: "图谱动态聚合 (AGG_TRIGGER)",
+    display_name: "图谱动态聚合",
     description: "触发跨关系指标上卷聚合与派生指标重算",
     config_schema: {
       type: "object",
@@ -447,7 +447,7 @@ export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
   },
   {
     kind: "CAUSAL_SIM",
-    display_name: "因果推演沙盘 (CAUSAL_SIM)",
+    display_name: "因果推演沙盘",
     description: "在写时复制沙盘中执行多跳干预推演并评估影响",
     config_schema: {
       type: "object",
@@ -471,7 +471,7 @@ export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
   },
   {
     kind: "HUMAN_APPROVAL",
-    display_name: "人工审批门禁 (HUMAN_APPROVAL)",
+    display_name: "人工审批门禁",
     description: "挂起当前分支并生成审批单，待指派角色/用户决策后恢复",
     config_schema: {
       type: "object",
@@ -508,15 +508,15 @@ export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
   },
   {
     kind: "ACTION_EMIT",
-    display_name: "业务动作回写 (ACTION_EMIT)",
-    description: "回写节点指标/属性或发送通知（TEST 环境自动记录为 DRY_RUN）",
+    display_name: "业务动作回写",
+    description: "回写节点指标/属性或发送通知（测试环境自动记录为演练态）",
     config_schema: {
       type: "object",
       required: ["actions"],
       properties: {
         dry_run: {
           type: "boolean",
-          title: "强制演练模式 (DRY_RUN)",
+          title: "强制演练模式",
           default: false,
         },
         actions: {
@@ -536,7 +536,7 @@ export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
   },
   {
     kind: "HTTP_CALL",
-    display_name: "外部 HTTP 调用 (HTTP_CALL)",
+    display_name: "外部 HTTP 调用",
     description: "经出站安全守卫校验后发送带幂等键的 HTTP 请求",
     config_schema: {
       type: "object",
@@ -2921,29 +2921,48 @@ export function formatComparisonOpSymbol(op: ComparisonOp): string {
   }
 }
 
-export function formatConditionSummary(condition: Condition): string {
+export function formatConditionSummary(
+  condition: Condition,
+  isZh = true
+): string {
   switch (condition.kind) {
     case "THRESHOLD": {
       const sym = formatComparisonOpSymbol(condition.op);
       const dur =
-        condition.for_minutes > 0 ? ` · 持续 ${condition.for_minutes}m` : "";
-      return `THRESHOLD (${sym} ${condition.value}${dur})`;
+        condition.for_minutes > 0
+          ? isZh
+            ? ` · 持续 ${condition.for_minutes} 分钟`
+            : ` · for ${condition.for_minutes}m`
+          : "";
+      return isZh
+        ? `阈值判定 (${sym} ${condition.value}${dur})`
+        : `Threshold (${sym} ${condition.value}${dur})`;
     }
     case "CHANGE_RATE": {
       const sym = formatComparisonOpSymbol(condition.op);
       const pctText = `${(condition.pct * 100).toFixed(1)}%`;
-      return `CHANGE_RATE (${condition.window_minutes}m 变化率 ${sym} ${pctText})`;
+      return isZh
+        ? `变化率异动 (${condition.window_minutes} 分钟变化率 ${sym} ${pctText})`
+        : `Change Rate (${condition.window_minutes}m ${sym} ${pctText})`;
     }
     case "ABSENCE":
-      return `ABSENCE (${condition.minutes}m 无数据点)`;
+      return isZh
+        ? `断流缺口 (${condition.minutes} 分钟无数据)`
+        : `Absence (${condition.minutes}m no data)`;
     case "ANOMALY_ZSCORE":
-      return `ANOMALY_ZSCORE (|Z| >= ${condition.z}, 回看 ${condition.lookback_points} 点)`;
+      return isZh
+        ? `Z-Score 异常 (|Z| >= ${condition.z}, 回看 ${condition.lookback_points} 点)`
+        : `Z-Score (|Z| >= ${condition.z}, lookback ${condition.lookback_points})`;
     case "EXPR":
-      return `EXPR (${condition.expression})`;
+      return isZh
+        ? `表达式 (${condition.expression})`
+        : `Expression (${condition.expression})`;
     case "QUALITY_FAILED":
-      return `QUALITY_FAILED (>= ${condition.min_severity})`;
+      return isZh
+        ? `质量未达标 (>= ${condition.min_severity})`
+        : `Quality Failed (>= ${condition.min_severity})`;
     case "EVENT_MATCH":
-      return "EVENT_MATCH (事件主题匹配)";
+      return isZh ? "事件主题匹配" : "Event Topic Match";
   }
 }
 

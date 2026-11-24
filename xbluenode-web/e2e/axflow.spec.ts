@@ -812,7 +812,7 @@ test("daily_supply_refresh DAG loads on canvas, pauses at HUMAN_APPROVAL, and co
   // 1) Navigate to /flow and verify heading, deployment badges, and 6 DAG nodes + conditional edge
   await page.goto("/flow");
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxFlow · 编排" })
+    page.getByRole("heading", { level: 1, name: "编排与告警" })
   ).toBeVisible();
 
   await expect(page.getByTestId("axflow-badge-test")).toHaveText("TEST v1");
@@ -838,26 +838,26 @@ test("daily_supply_refresh DAG loads on canvas, pauses at HUMAN_APPROVAL, and co
 
   await expect(page.getByTestId("axflow-run-timeline")).toBeVisible();
   await expect(page.getByTestId("timeline-run-status")).toContainText(
-    "WAITING_APPROVAL"
+    "待审批"
   );
   await expect(page.getByTestId("timeline-step-status-sync_orders")).toHaveText(
-    "SUCCEEDED"
+    "成功"
   );
   await expect(page.getByTestId("timeline-step-status-check")).toHaveText(
-    "SUCCEEDED"
+    "成功"
   );
   await expect(page.getByTestId("timeline-step-status-approve")).toHaveText(
-    "WAITING_APPROVAL"
+    "待审批"
   );
   await expect(page.getByTestId("canvas-node-status-approve")).toContainText(
-    "WAITING_APPROVAL"
+    "待审批"
   );
 
   // 3) Pending approval appears in ApprovalInbox -> fill comment "同意补货" -> click "通过"
   const approvalCard = page.getByTestId(`approval-item-${APPROVAL_1_ID}`);
   await expect(approvalCard).toBeVisible();
   await expect(approvalCard).toContainText("补货审批");
-  await expect(approvalCard).toContainText("HUMAN_APPROVAL");
+  await expect(approvalCard).toContainText("人工审批门禁");
 
   await page.getByTestId(`approval-comment-${APPROVAL_1_ID}`).fill("同意补货");
   await page.getByTestId(`approval-approve-${APPROVAL_1_ID}`).click();
@@ -870,7 +870,7 @@ test("daily_supply_refresh DAG loads on canvas, pauses at HUMAN_APPROVAL, and co
   // Verify approval clears from pending inbox and all 6 steps transition to SUCCEEDED
   await expect(page.getByTestId("approval-inbox-empty")).toBeVisible();
   await expect(page.getByTestId("timeline-run-status")).toContainText(
-    "SUCCEEDED"
+    "成功"
   );
   for (const nodeId of [
     "sync_orders",
@@ -881,11 +881,11 @@ test("daily_supply_refresh DAG loads on canvas, pauses at HUMAN_APPROVAL, and co
     "emit",
   ]) {
     await expect(page.getByTestId(`timeline-step-status-${nodeId}`)).toHaveText(
-      "SUCCEEDED"
+      "成功"
     );
   }
   await expect(page.getByTestId("timeline-action-logs")).toContainText(
-    "DRY_RUN"
+    "演练模式"
   );
 
   expect(leakedTenantUrls).toEqual([]);

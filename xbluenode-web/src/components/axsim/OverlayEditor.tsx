@@ -296,7 +296,8 @@ export function OverlayEditor({
           position: "bottom" as const,
           color: fgColor,
           fontSize: 11,
-          formatter: () => `${n.title}${isOverlay ? " [OVERLAY]" : ""}`,
+          formatter: () =>
+            `${n.title}${isOverlay ? tx(" [覆盖]", " [Overlay]") : ""}`,
         },
       };
     });
@@ -814,7 +815,7 @@ export function OverlayEditor({
                 {tx("编辑沙盘节点：", "Edit Node: ")}[{editingNode.type_name}]{" "}
                 {editingNode.title}
               </span>
-              <Badge variant="xblue">OVERLAY PATCH</Badge>
+              <Badge variant="xblue">{tx("覆盖补丁", "Overlay Patch")}</Badge>
             </div>
             <IconButton
               size="sm"
@@ -1001,14 +1002,14 @@ export function OverlayEditor({
                         <td className="py-2 pr-2">
                           {n.is_new ? (
                             <Badge variant="xblue" className="border-dashed">
-                              OVERLAY · NEW
+                              {tx("覆盖 · 新增", "Overlay · New")}
                             </Badge>
                           ) : n.is_modified ? (
                             <Badge variant="xblue" className="border-dashed">
-                              OVERLAY · PATCHED
+                              {tx("覆盖 · 已改", "Overlay · Patched")}
                             </Badge>
                           ) : (
-                            <Badge variant="neutral">BASE</Badge>
+                            <Badge variant="neutral">{tx("基线", "Base")}</Badge>
                           )}
                         </td>
                         <td className="py-2 pr-2 font-medium">{n.title}</td>
@@ -1127,14 +1128,14 @@ export function OverlayEditor({
                         <td className="py-2 pr-2">
                           {lk.is_new ? (
                             <Badge variant="xblue" className="border-dashed">
-                              OVERLAY · NEW
+                              {tx("覆盖 · 新增", "Overlay · New")}
                             </Badge>
                           ) : lk.is_modified ? (
                             <Badge variant="xblue" className="border-dashed">
-                              OVERLAY · PATCHED
+                              {tx("覆盖 · 已改", "Overlay · Patched")}
                             </Badge>
                           ) : (
-                            <Badge variant="neutral">BASE</Badge>
+                            <Badge variant="neutral">{tx("基线", "Base")}</Badge>
                           )}
                         </td>
                         <td className="py-2 pr-2">

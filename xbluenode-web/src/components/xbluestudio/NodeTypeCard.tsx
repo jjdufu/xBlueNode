@@ -94,9 +94,81 @@ export function renderNodeIcon(iconKey: string) {
   }
 }
 
+function formatNodeBadgeSummary(
+  counts: {
+    readonly property_count: number;
+    readonly metric_count: number;
+    readonly rule_count: number;
+  },
+  isZh: boolean
+): string {
+  if (isZh) {
+    const base = `${counts.property_count} 属性 · ${counts.metric_count} 指标`;
+    return counts.rule_count > 0 ? `${base} · ${counts.rule_count} 规则` : base;
+  }
+  const base = `${counts.property_count} Attr · ${counts.metric_count} Metric`;
+  return counts.rule_count > 0 ? `${base} · ${counts.rule_count} Rule` : base;
+}
+
+function formatFieldTypeCompact(
+  kind: string | undefined,
+  dataType: string,
+  isZh: boolean
+): string {
+  const upper = dataType.toUpperCase();
+  let baseLabel: string;
+  switch (upper) {
+    case "STRING":
+    case "TEXT":
+      baseLabel = isZh ? "文本" : "Text";
+      break;
+    case "FLOAT64":
+    case "FLOAT":
+    case "DOUBLE":
+    case "NUMBER":
+      baseLabel = isZh ? "浮点" : "Float";
+      break;
+    case "INT64":
+    case "INT":
+    case "INTEGER":
+      baseLabel = isZh ? "整数" : "Int";
+      break;
+    case "DECIMAL":
+      baseLabel = isZh ? "金额" : "Decimal";
+      break;
+    case "BOOLEAN":
+    case "BOOL":
+      baseLabel = isZh ? "布尔" : "Bool";
+      break;
+    case "DATE":
+      baseLabel = isZh ? "日期" : "Date";
+      break;
+    case "TIMESTAMP":
+    case "DATETIME":
+      baseLabel = isZh ? "时间" : "Timestamp";
+      break;
+    case "JSON":
+      baseLabel = isZh ? "对象" : "JSON";
+      break;
+    case "LIST":
+      baseLabel = isZh ? "列表" : "List";
+      break;
+    case "STRUCT":
+      baseLabel = isZh ? "结构" : "Struct";
+      break;
+    default:
+      baseLabel = dataType;
+      break;
+  }
+  if (kind === "METRIC") {
+    return isZh ? `指标·${baseLabel}` : `Metric·${baseLabel}`;
+  }
+  return baseLabel;
+}
+
 /** Custom `@xyflow/react` canvas card renderer for a `NodeTypeSpec`. */
 export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
-  const { tx, tEnum } = useI18n();
+  const { isZh, tx, tEnum } = useI18n();
   const { can } = usePrincipal();
   const canEdit = can("STUDIO_EDIT");
   const {
@@ -165,9 +237,9 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
             <Badge
               variant="neutral"
               data-testid={`canvas-node-badge-${spec.name}`}
-              className="tabular-nums font-mono-tech text-[10px] px-1.5 py-0.5"
+              className="tabular-nums text-[10px] px-1.5 py-0.5"
             >
-              {`${counts.property_count}p·${counts.metric_count}m·${counts.rule_count}r`}
+              {formatNodeBadgeSummary(counts, isZh)}
             </Badge>
             {issueCount > 0 && (
               <span
@@ -255,9 +327,11 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
                     <span className="h-1.5 w-1.5 rounded-full bg-amber-500 shrink-0" />
                   )}
                 </span>
-                <span className="text-muted-foreground shrink-0">
-                  {prop.kind === "METRIC" ? "M·" : ""}
-                  {prop.data_type}
+                <span
+                  className="font-sans text-muted-foreground shrink-0"
+                  title={`${prop.kind ?? "ATTRIBUTE"} · ${prop.data_type}`}
+                >
+                  {formatFieldTypeCompact(prop.kind, prop.data_type, isZh)}
                 </span>
               </div>
             ))}
@@ -319,7 +393,7 @@ export function NodeTypeCard({
   onOpenLineage,
   onOpenAppPackaging,
 }: NodeTypeCardProps) {
-  const { tx, tEnum } = useI18n();
+  const { isZh, tx, tEnum } = useI18n();
   const { can } = usePrincipal();
   const canEdit = can("STUDIO_EDIT");
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -349,9 +423,9 @@ export function NodeTypeCard({
           <Badge
             variant="neutral"
             data-testid="inspector-node-badge-counts"
-            className="tabular-nums font-mono-tech"
+            className="tabular-nums"
           >
-            {`${counts.property_count}p·${counts.metric_count}m·${counts.rule_count}r`}
+            {formatNodeBadgeSummary(counts, isZh)}
           </Badge>
           {nodeType.semantic_layer_tier && (
             <Badge variant="xblue">{tEnum(nodeType.semantic_layer_tier)}</Badge>

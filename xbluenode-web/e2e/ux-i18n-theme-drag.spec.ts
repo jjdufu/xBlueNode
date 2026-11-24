@@ -28,7 +28,7 @@ test.describe("UX overhaul: i18n, system theme persistence, topbar layout & canv
     await expect(page.locator("html")).toHaveClass(/dark/);
     // 2. Auto-detected English from browser locale en-US
     await expect(
-      page.getByRole("heading", { level: 1, name: "AxGuard · Sign In" })
+      page.getByRole("heading", { level: 1, name: "Sign In" })
     ).toBeVisible();
 
     // 3. Theme toggle is a borderless icon-only button in top-right
@@ -54,11 +54,11 @@ test.describe("UX overhaul: i18n, system theme persistence, topbar layout & canv
 
     await localeBtn.click();
     await expect(
-      page.getByRole("heading", { level: 1, name: "AxGuard · 统一身份认证" })
+      page.getByRole("heading", { level: 1, name: "登录" })
     ).toBeVisible();
     await page.reload();
     await expect(
-      page.getByRole("heading", { level: 1, name: "AxGuard · 统一身份认证" })
+      page.getByRole("heading", { level: 1, name: "登录" })
     ).toBeVisible();
 
     await context.close();

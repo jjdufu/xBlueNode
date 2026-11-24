@@ -70,7 +70,11 @@ function translateHyperRel(rel: string, isZh: boolean): string {
   }
 }
 
-export function AxIngestPage() {
+export function AxIngestPage({
+  embedded = false,
+}: {
+  readonly embedded?: boolean;
+} = {}) {
   const { isZh, tx, fmtNum, fmtTime } = useI18n();
   const { can } = usePrincipal();
   const canSync = can("DATA_SYNC");
@@ -308,10 +312,9 @@ export function AxIngestPage() {
 
   return (
     <div className="space-y-3.5" data-testid="axingest-page">
-      <PageHeader
-        title={tx(MODULE_META.axingest.label, MODULE_META.axingest.enLabel)}
-        badges={
-          <div className="flex items-center gap-2.5 pl-1">
+      {embedded ? (
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          <div className="flex items-center gap-2.5">
             <StatText
               label={tx("文档", "Documents")}
               value={fmtNum(docTotal, 0)}
@@ -320,9 +323,7 @@ export function AxIngestPage() {
               <Badge variant="outline">{tx("只读权限", "Read-Only")}</Badge>
             )}
           </div>
-        }
-        actions={
-          canSync ? (
+          {canSync && (
             <Button
               type="button"
               onClick={() => {
@@ -334,9 +335,39 @@ export function AxIngestPage() {
               <Plus className="h-3.5 w-3.5" />
               {tx("新增文档", "Ingest Document")}
             </Button>
-          ) : undefined
-        }
-      />
+          )}
+        </div>
+      ) : (
+        <PageHeader
+          title={tx(MODULE_META.axingest.label, MODULE_META.axingest.enLabel)}
+          badges={
+            <div className="flex items-center gap-2.5 pl-1">
+              <StatText
+                label={tx("文档", "Documents")}
+                value={fmtNum(docTotal, 0)}
+              />
+              {!canSync && (
+                <Badge variant="outline">{tx("只读权限", "Read-Only")}</Badge>
+              )}
+            </div>
+          }
+          actions={
+            canSync ? (
+              <Button
+                type="button"
+                onClick={() => {
+                  setError(null);
+                  setIngestModalOpen(true);
+                }}
+                data-testid="open-ingest-modal-btn"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {tx("新增文档", "Ingest Document")}
+              </Button>
+            ) : undefined
+          }
+        />
+      )}
 
       {error && (
         <Card
@@ -374,7 +405,10 @@ export function AxIngestPage() {
               {tx("段落", "Chunks")} {fmtNum(result.para_count, 0)} ·{" "}
               {tx("实体", "Entities")} {fmtNum(result.entity_count, 0)} ·{" "}
               {tx("超边", "Hyperedges")} {fmtNum(result.edge_count, 0)} ·{" "}
-              {fmtNum(result.embedding_dim, 0)}d
+              {tx(
+                `${fmtNum(result.embedding_dim, 0)} 维`,
+                `${fmtNum(result.embedding_dim, 0)}-dim`
+              )}
             </span>
           </div>
           <button

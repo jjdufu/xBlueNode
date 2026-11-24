@@ -755,7 +755,7 @@ test("AxGuard login, single-flight silent refresh, all 8 governance tabs, Cedar 
   // 1. LoginPage lockout error banner + successful username/password login
   await page.goto("/login");
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxGuard · 统一身份认证" })
+    page.getByRole("heading", { level: 1, name: "登录" })
   ).toBeVisible();
 
   await page.getByTestId("login-username-input").fill("locked_user");
@@ -768,11 +768,11 @@ test("AxGuard login, single-flight silent refresh, all 8 governance tabs, Cedar 
   await page.getByTestId("login-submit-btn").click();
   await expect(page).toHaveURL(/\/$/);
 
-  // 2. Navigate to /guard — forceNextUsers401 triggers single-flight /api/auth/refresh transparently!
-  await page.getByRole("link", { name: "AxGuard · 安全治理" }).click();
-  await expect(page).toHaveURL(/\/guard$/);
+  // 2. Navigate to /governance — forceNextUsers401 triggers single-flight /api/auth/refresh transparently!
+  await page.getByRole("link", { name: "系统治理" }).click();
+  await expect(page).toHaveURL(/\/governance/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "AxGuard · 安全治理" })
+    page.getByRole("heading", { level: 1, name: "系统治理" })
   ).toBeVisible();
 
   // Tab 1: 用户管理 (loaded after transparent 401 -> refresh retry!)
@@ -828,7 +828,7 @@ test("AxGuard login, single-flight silent refresh, all 8 governance tabs, Cedar 
   // Tab 6: 列脱敏
   await page.getByRole("tab", { name: "列脱敏" }).click();
   await expect(page.getByTestId("axguard-column-policies-panel")).toContainText(
-    "手机号 (PHONE)"
+    "手机号码"
   );
   await expect(page.getByTestId("axguard-column-policies-panel")).toContainText(
     "命中 96%"

@@ -40,7 +40,7 @@ export function ApprovalInbox({
   onDecide,
   onRefresh,
 }: ApprovalInboxProps) {
-  const { tx, fmtNum } = useI18n();
+  const { tx, tEnum, fmtNum } = useI18n();
   const { can } = usePrincipal();
   const canDecide = can("APPROVAL_DECIDE");
 
@@ -137,22 +137,26 @@ export function ApprovalInbox({
                     <div className="font-semibold text-foreground truncate">
                       {item.title}
                     </div>
-                    <div className="flex flex-wrap items-center gap-1.5 font-mono-tech text-[10px] text-muted-foreground">
+                    <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground">
                       <Badge variant="outline">
                         {item.source_kind === "FLOW"
-                          ? "HUMAN_APPROVAL"
-                          : item.source_kind}
+                          ? tEnum("HUMAN_APPROVAL")
+                          : tEnum(item.source_kind)}
                       </Badge>
                       {item.node_id && (
-                        <span>
+                        <span className="font-mono-tech">
                           {tx("节点:", "Step:")} {item.node_id}
                         </span>
                       )}
                       {item.run_id && (
-                        <span>Run #{item.run_id.slice(0, 8)}</span>
+                        <span className="font-mono-tech">
+                          Run #{item.run_id.slice(0, 8)}
+                        </span>
                       )}
                       {item.assignee_roles.length > 0 && (
-                        <span>{item.assignee_roles.join(", ")}</span>
+                        <span>
+                          {item.assignee_roles.map((r) => tEnum(r)).join(" · ")}
+                        </span>
                       )}
                     </div>
                   </div>
@@ -165,7 +169,7 @@ export function ApprovalInbox({
                           : "danger"
                     }
                   >
-                    {item.status}
+                    {tEnum(item.status)}
                   </Badge>
                 </div>
 

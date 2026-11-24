@@ -81,11 +81,13 @@ export type AxFlowRfEdge = Edge<AxFlowCanvasEdgeData, "axflowEdge">;
 
 function renderStepStatusBadge(
   nodeId: string,
-  runtime: NodeStepRuntimeBadge
+  runtime: NodeStepRuntimeBadge,
+  tEnum: (code: string | null | undefined) => string
 ) {
   const { status, attempt } = runtime;
   const baseCls =
-    "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-mono-tech font-medium border";
+    "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-sans font-medium border tabular-nums";
+  const label = tEnum(status);
 
   switch (status) {
     case "SUCCEEDED":
@@ -98,7 +100,8 @@ function renderStepStatusBadge(
           )}
         >
           <CheckCircle2 className="h-2.5 w-2.5" />
-          SUCCEEDED{attempt > 1 ? ` #${attempt}` : ""}
+          {label}
+          {attempt > 1 ? ` #${attempt}` : ""}
         </span>
       );
     case "WAITING_APPROVAL":
@@ -111,7 +114,7 @@ function renderStepStatusBadge(
           )}
         >
           <PauseCircle className="h-2.5 w-2.5" />
-          WAITING_APPROVAL
+          {label}
         </span>
       );
     case "RUNNING":
@@ -121,7 +124,7 @@ function renderStepStatusBadge(
           className={cn(baseCls, "border-xblue/40 bg-xblue-soft text-xblue")}
         >
           <Loader2 className="h-2.5 w-2.5 animate-spin" />
-          RUNNING #{attempt}
+          {label} #{attempt}
         </span>
       );
     case "FAILED":
@@ -134,7 +137,7 @@ function renderStepStatusBadge(
           )}
         >
           <XCircle className="h-2.5 w-2.5" />
-          FAILED #{attempt}
+          {label} #{attempt}
         </span>
       );
     case "SKIPPED":
@@ -147,7 +150,7 @@ function renderStepStatusBadge(
           )}
         >
           <Slash className="h-2.5 w-2.5" />
-          SKIPPED
+          {label}
         </span>
       );
     case "PENDING":
@@ -160,15 +163,21 @@ function renderStepStatusBadge(
           )}
         >
           <Clock className="h-2.5 w-2.5" />
-          PENDING
+          {label}
         </span>
       );
   }
 }
 
 function AxFlowCanvasNodeCard({ data }: NodeProps<AxFlowRfNode>) {
-  const { tx } = useI18n();
+  const { isZh, tx, tEnum } = useI18n();
   const { node, selected, issueCount, hasError, runtime } = data;
+  const opMeta = OPERATOR_I18N[node.kind];
+  const opLabel = opMeta
+    ? isZh
+      ? opMeta.zh
+      : opMeta.en
+    : tEnum(node.kind);
   const accentColor =
     runtime?.status === "FAILED"
       ? "#dc2626"
@@ -228,27 +237,27 @@ function AxFlowCanvasNodeCard({ data }: NodeProps<AxFlowRfNode>) {
         </div>
 
         <div className="flex flex-wrap items-center gap-1">
-          <Badge variant="xblue" className="text-[10px]">
-            {node.kind}
+          <Badge variant="xblue" className="text-[10px]" title={node.kind}>
+            {opLabel}
           </Badge>
           {node.join !== "ALL_SUCCESS" && (
-            <Badge variant="outline" className="text-[10px]">
-              {node.join}
+            <Badge variant="outline" className="text-[10px]" title={node.join}>
+              {tEnum(node.join)}
             </Badge>
           )}
           {node.on_failure === "CONTINUE" && (
             <Badge variant="neutral" className="text-[10px]">
-              CONTINUE
+              {tx("继续执行", "Continue")}
             </Badge>
           )}
-          <Badge variant="outline" className="text-[10px]">
+          <Badge variant="outline" className="text-[10px] tabular-nums">
             {tx("重试", "Retry")}×{node.retry.max_attempts}
           </Badge>
         </div>
 
         {runtime && (
           <div className="pt-1 border-t border-border flex items-center justify-between">
-            {renderStepStatusBadge(node.id, runtime)}
+            {renderStepStatusBadge(node.id, runtime, tEnum)}
           </div>
         )}
       </div>

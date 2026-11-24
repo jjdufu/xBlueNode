@@ -418,13 +418,13 @@ export function AlertTable({
                         </span>
                         <span
                           data-testid={`alert-status-${alert.id}`}
-                          title={tEnum(alert.status)}
+                          title={alert.status}
                           className={cn(
-                            "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-mono-tech font-semibold",
+                            "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-sans font-semibold",
                             getStatusBadgeClass(alert.status)
                           )}
                         >
-                          {alert.status}
+                          {tEnum(alert.status)}
                         </span>
                       </div>
                     </td>
@@ -454,7 +454,7 @@ export function AlertTable({
                         )}
                         {alert.resolve_reason && (
                           <Badge variant="outline">
-                            {tx("恢复", "Resolved")}: {alert.resolve_reason}
+                            {tx("恢复", "Resolved")}: {tEnum(alert.resolve_reason)}
                           </Badge>
                         )}
                       </div>

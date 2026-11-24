@@ -379,7 +379,9 @@ export function AuditExplorer({
                   )}
                 </span>
               </div>
-              <Badge variant="danger">CHAIN BROKEN</Badge>
+              <Badge variant="danger">
+                {tx("哈希链断裂", "Chain Broken")}
+              </Badge>
             </div>
           ))}
       </Card>

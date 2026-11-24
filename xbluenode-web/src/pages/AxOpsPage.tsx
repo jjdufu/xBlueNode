@@ -79,10 +79,15 @@ const AXOPS_TABS: readonly AxOpsTabSpec[] = [
   },
 ];
 
-export function AxOpsPage() {
+export function AxOpsPage({
+  embedded = false,
+}: {
+  readonly embedded?: boolean;
+} = {}) {
   const { isZh, tx } = useI18n();
-  const [searchParams] = useSearchParams();
-  const requestedTab = searchParams.get("tab");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const rawTabParam = searchParams.get("tab");
+  const requestedTab = rawTabParam === "settings" ? "retention" : rawTabParam;
   const [me, setMe] = useState<MeResponse | null>(() => getCachedMe());
   const [meResolved, setMeResolved] = useState<boolean>(
     () => getCachedMe() !== null
@@ -241,14 +246,16 @@ export function AxOpsPage() {
   if (!hasAnyOpsAccess) {
     return (
       <div className="space-y-4">
-        <PageHeader
-          title={
-            <span className="inline-flex items-center gap-2">
-              <ServerCog className="h-4 w-4 text-xblue" />
-              {tx(MODULE_META.axops.label, MODULE_META.axops.enLabel)}
-            </span>
-          }
-        />
+        {!embedded && (
+          <PageHeader
+            title={
+              <span className="inline-flex items-center gap-2">
+                <ServerCog className="h-4 w-4 text-xblue" />
+                {tx(MODULE_META.axops.label, MODULE_META.axops.enLabel)}
+              </span>
+            }
+          />
+        )}
         <Card className="p-8 text-center space-y-2">
           <Lock className="h-6 w-6 text-muted-foreground mx-auto" />
           <div className="text-sm font-semibold">
@@ -267,14 +274,16 @@ export function AxOpsPage() {
 
   return (
     <div className="space-y-5" data-testid="axops-page">
-      <PageHeader
-        title={
-          <span className="inline-flex items-center gap-2">
-            <ServerCog className="h-4 w-4 text-xblue" />
-            {tx(MODULE_META.axops.label, MODULE_META.axops.enLabel)}
-          </span>
-        }
-      />
+      {!embedded && (
+        <PageHeader
+          title={
+            <span className="inline-flex items-center gap-2">
+              <ServerCog className="h-4 w-4 text-xblue" />
+              {tx(MODULE_META.axops.label, MODULE_META.axops.enLabel)}
+            </span>
+          }
+        />
+      )}
 
       <Tabs
         items={tabItems}
@@ -282,6 +291,9 @@ export function AxOpsPage() {
         onChange={(next) => {
           if (canAccessAxOpsTab(next, effectivePerms, effectiveRoles)) {
             setActiveTab(next);
+            const updated = new URLSearchParams(searchParams);
+            updated.set("tab", next);
+            setSearchParams(updated, { replace: true });
           }
         }}
       />

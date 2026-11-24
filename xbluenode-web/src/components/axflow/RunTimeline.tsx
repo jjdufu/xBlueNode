@@ -75,7 +75,7 @@ export function RunTimeline({
   nodes,
   polling,
 }: RunTimelineProps) {
-  const { tx, fmtNum } = useI18n();
+  const { tx, tEnum, fmtNum } = useI18n();
   const [expandedStepIds, setExpandedStepIds] = useState<
     Record<string, boolean>
   >({});
@@ -253,11 +253,11 @@ export function RunTimeline({
                       <span
                         data-testid={`timeline-step-status-${st.node_id}`}
                         className={cn(
-                          "rounded border px-1.5 py-0.5 font-mono-tech text-[10px] font-medium shrink-0",
+                          "rounded border px-1.5 py-0.5 font-sans text-[10px] font-medium shrink-0",
                           stepBadgeClass(st.status)
                         )}
                       >
-                        {st.status}
+                        {tEnum(st.status)}
                       </span>
                       <span className="hidden md:inline font-mono-tech text-[10px] text-muted-foreground tabular-nums w-12 text-right">
                         {formatDurationMs(st.started_at, st.finished_at)}
@@ -335,9 +335,11 @@ export function RunTimeline({
                       <Badge
                         variant={act.status === "DONE" ? "success" : "neutral"}
                       >
-                        {act.status}
+                        {tEnum(act.status)}
                       </Badge>
-                      <span className="font-medium">{act.action_kind}</span>
+                      <span className="font-sans font-medium">
+                        {tEnum(act.action_kind)}
+                      </span>
                       <button
                         type="button"
                         title={act.target}

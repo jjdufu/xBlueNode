@@ -976,7 +976,7 @@ test("AxAlerts /alerts renders active OPEN alert, inspects timeline & sparkline 
   await expect(
     page.getByRole("heading", {
       level: 1,
-      name: "AxAlerts · 告警中心",
+      name: "编排与告警",
     })
   ).toBeVisible();
   await expect(page.getByTestId("alerts-polling-badge")).toContainText(
@@ -988,13 +988,13 @@ test("AxAlerts /alerts renders active OPEN alert, inspects timeline & sparkline 
   await expect(alertRow).toBeVisible();
   await expect(
     page.getByTestId(`alert-status-${handles.alertId}`)
-  ).toHaveText("OPEN");
+  ).toHaveText("待处理");
 
   // 2. Open AlertDetail drawer and verify timeline events & sparkline
   await page.getByTestId(`open-alert-detail-btn-${handles.alertId}`).click();
   const drawer = page.getByTestId("alert-detail-drawer");
   await expect(drawer).toBeVisible();
-  await expect(page.getByTestId("alert-detail-status")).toHaveText("OPEN");
+  await expect(page.getByTestId("alert-detail-status")).toHaveText("待处理");
   await expect(page.getByTestId("alert-detail-timeline")).toBeVisible();
   await expect(
     page.getByTestId("alert-event-OPENED").first()
@@ -1007,7 +1007,7 @@ test("AxAlerts /alerts renders active OPEN alert, inspects timeline & sparkline 
     .fill("值班工程师已接手核查华东一号仓补货单");
   await page.getByTestId("alert-detail-ack-btn").click();
 
-  await expect(page.getByTestId("alert-detail-status")).toHaveText("ACK");
+  await expect(page.getByTestId("alert-detail-status")).toHaveText("已确认");
   await expect(
     page.getByTestId("alert-event-ACKED").first()
   ).toBeVisible();
@@ -1017,7 +1017,7 @@ test("AxAlerts /alerts renders active OPEN alert, inspects timeline & sparkline 
   await expect(drawer).toBeHidden();
   await expect(
     page.getByTestId(`alert-status-${handles.alertId}`)
-  ).toHaveText("ACK");
+  ).toHaveText("已确认");
 
   expect(leakedTenantUrls).toEqual([]);
   expect(missingAuthUrls).toEqual([]);

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import {
@@ -80,16 +80,30 @@ function isSilenceActiveNow(silence: AlertSilenceRecord): boolean {
   return true;
 }
 
-export function AxAlertsPage() {
+export function AxAlertsPage({
+  embedded = false,
+  initialTab,
+}: {
+  readonly embedded?: boolean;
+  readonly initialTab?: AlertsTabKey;
+} = {}) {
   const queryClient = useQueryClient();
-  const { tx, fmtNum } = useI18n();
+  const { tx, tEnum, fmtNum } = useI18n();
   const { can } = usePrincipal();
 
   const canAck = can("ALERT_ACK");
   const canEditRules = can("RULE_EDIT");
   const canSilence = canAck || canEditRules;
 
-  const [activeTab, setActiveTab] = useState<AlertsTabKey>("alerts");
+  const [activeTab, setActiveTab] = useState<AlertsTabKey>(
+    () => initialTab ?? "alerts"
+  );
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
   const [filters, setFilters] = useState<AlertListQuery>({});
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [selectedAlertSnapshot, setSelectedAlertSnapshot] =
@@ -665,17 +679,14 @@ export function AxAlertsPage() {
         setTestResults((prev) => ({ ...prev, [id]: res }));
         if (res.ok && res.delivery.status === "SENT") {
           setNoticeMessage(
-            tx(
-              `测试投递已送达 (${res.delivery.status})`,
-              `Test delivery sent (${res.delivery.status})`
-            )
+            tx("测试投递已送达", "Test delivery sent")
           );
         } else {
           setErrorMessage(
             res.delivery.error_message ??
               tx(
-                `测试投递未送达 (${res.delivery.status})`,
-                `Test delivery failed (${res.delivery.status})`
+                `测试投递未送达 (${tEnum(res.delivery.status)})`,
+                `Test delivery failed (${tEnum(res.delivery.status)})`
               )
           );
         }
@@ -784,15 +795,24 @@ export function AxAlertsPage() {
 
   return (
     <div className="space-y-5" data-testid="axalerts-page">
-      <PageHeader
-        title={tx(MODULE_META.axalerts.label, MODULE_META.axalerts.enLabel)}
-        badges={
+      {embedded ? (
+        <div className="flex items-center justify-end">
           <Badge variant="xblue" data-testid="alerts-polling-badge">
             <Activity className="h-3 w-3 mr-1" />
             {tx("15s 自动轮询", "15s Auto-Poll")}
           </Badge>
-        }
-      />
+        </div>
+      ) : (
+        <PageHeader
+          title={tx(MODULE_META.axalerts.label, MODULE_META.axalerts.enLabel)}
+          badges={
+            <Badge variant="xblue" data-testid="alerts-polling-badge">
+              <Activity className="h-3 w-3 mr-1" />
+              {tx("15s 自动轮询", "15s Auto-Poll")}
+            </Badge>
+          }
+        />
+      )}
 
       {/* KPI Summary Cards */}
       <div

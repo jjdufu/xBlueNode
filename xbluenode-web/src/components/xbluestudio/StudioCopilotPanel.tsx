@@ -388,9 +388,6 @@ export function StudioCopilotPanel({
           <Crosshair className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{focusLabel}</span>
         </span>
-        <Badge variant="outline" className="text-[10px]">
-          {activeInspectorTab}
-        </Badge>
       </div>
 
       {/* Mode Tabs */}

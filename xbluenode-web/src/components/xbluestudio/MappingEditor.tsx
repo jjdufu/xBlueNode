@@ -598,10 +598,10 @@ export function MappingEditor({
                         direction: e.target.value as LinkDirection,
                       })
                     }
-                    className="h-7 w-24 px-1.5 text-[11px] font-mono-tech"
+                    className="h-7 w-24 px-1.5 text-[11px]"
                   >
-                    <option value="OUT">OUT</option>
-                    <option value="IN">IN</option>
+                    <option value="OUT">{tx("出向", "Outbound")}</option>
+                    <option value="IN">{tx("入向", "Inbound")}</option>
                   </Select>
                   {canEdit && (
                     <button

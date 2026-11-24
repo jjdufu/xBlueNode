@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -57,12 +58,15 @@ import {
   Input,
   Modal,
   PageHeader,
+  SegmentedControl,
   Select,
   StatText,
   Switch,
   Tabs,
   Textarea,
 } from "@/components/ui/primitives";
+import { ResizableWorkspace } from "@/components/ui/ResizableWorkspace";
+import { XBlueGraphPage } from "@/pages/XBlueGraphPage";
 import { cn } from "@/lib/utils";
 import { AiDraftWizard } from "@/components/xbluestudio/AiDraftWizard";
 import { DomainApiDrawer } from "@/components/xbluestudio/DomainApiDrawer";
@@ -85,6 +89,7 @@ import { StudioSubgraphBar } from "@/components/xbluestudio/StudioSubgraphBar";
 import { SubgraphMergeDialog } from "@/components/xbluestudio/SubgraphMergeDialog";
 import { VersionPanel } from "@/components/xbluestudio/VersionPanel";
 
+type StudioViewMode = "model" | "explorer";
 type InspectorTab = "basic" | "properties" | "rules" | "edge" | "mappings";
 type DockTab = "issues" | "nodes";
 
@@ -96,6 +101,11 @@ const EMPTY_DOC: SchemaDoc = {
 
 export function XBlueStudioPage() {
   const { tx, fmtNum } = useI18n();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const tabParam = searchParams.get("tab");
+  const nodeParam = searchParams.get("node");
+  const studioMode: StudioViewMode =
+    tabParam === "explorer" || tabParam === "graph" ? "explorer" : "model";
   const { can } = usePrincipal();
   const canEdit = can("STUDIO_EDIT");
   const canPublish = can("STUDIO_PUBLISH");
@@ -139,8 +149,33 @@ export function XBlueStudioPage() {
   const [dockTab, setDockTab] = useState<DockTab>("issues");
   // Collapsed 34px status bar by default in 100vh IDE mode; auto-expands on errors or tab click
   const [dockCollapsed, setDockCollapsed] = useState<boolean>(true);
-  const [copilotCollapsed, setCopilotCollapsed] = useState<boolean>(false);
+  const [copilotCollapsed, setCopilotCollapsed] = useState<boolean>(true);
   const [specOverviewOpen, setSpecOverviewOpen] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (tabParam === "mappings") {
+      setInspectorTab("mappings");
+    } else if (tabParam === "proposals") {
+      setDockTab("issues");
+      setDockCollapsed(false);
+    }
+  }, [tabParam]);
+
+  useEffect(() => {
+    if (nodeParam) {
+      setSelectedNodeName(nodeParam);
+    }
+  }, [nodeParam]);
+
+  const handleStudioModeChange = (nextMode: StudioViewMode) => {
+    const updated = new URLSearchParams(searchParams);
+    if (nextMode === "explorer") {
+      updated.set("tab", "explorer");
+    } else {
+      updated.delete("tab");
+    }
+    setSearchParams(updated, { replace: true });
+  };
 
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [conflictBanner, setConflictBanner] = useState<string | null>(null);
@@ -1212,16 +1247,21 @@ export function XBlueStudioPage() {
         )}
         badges={
           <div className="flex items-center gap-3 pl-1">
-            <StatText
-              label={tx("类型", "Types")}
-              value={workingDoc.node_types.length}
-            />
-            <span className="text-border">·</span>
-            <StatText
-              label={tx("关系", "Relations")}
-              value={workingDoc.edge_types.length}
-            />
-            {activeSubgraphInfo?.is_dev_sandbox &&
+            {studioMode === "model" && (
+              <>
+                <StatText
+                  label={tx("类型", "Types")}
+                  value={workingDoc.node_types.length}
+                />
+                <span className="text-border">·</span>
+                <StatText
+                  label={tx("关系", "Relations")}
+                  value={workingDoc.edge_types.length}
+                />
+              </>
+            )}
+            {studioMode === "model" &&
+              activeSubgraphInfo?.is_dev_sandbox &&
               activeSubgraphInfo?.source_template_id && (
                 <Badge variant="xblue" data-testid="studio-trial-sandbox-badge">
                   {tx(
@@ -1234,128 +1274,157 @@ export function XBlueStudioPage() {
         }
         actions={
           <>
-            {canEdit && (
+            <SegmentedControl<StudioViewMode>
+              value={studioMode}
+              onChange={handleStudioModeChange}
+              items={[
+                {
+                  key: "model",
+                  label: tx("模型设计", "Model"),
+                  icon: <Blocks className="h-3.5 w-3.5" />,
+                  testId: "studio-mode-model",
+                },
+                {
+                  key: "explorer",
+                  label: tx("图谱浏览", "Explorer"),
+                  icon: <GitBranch className="h-3.5 w-3.5" />,
+                  testId: "studio-mode-explorer",
+                },
+              ]}
+            />
+
+            {studioMode === "model" && (
               <>
-                <Button
-                  variant="outline"
-                  data-testid="open-ai-wizard-btn"
-                  onClick={() => setAiWizardOpen(true)}
-                >
-                  <Sparkles className="h-3.5 w-3.5 text-xblue" />
-                  {tx("AI 草案", "AI Draft")}
-                </Button>
+                {canEdit && (
+                  <>
+                    <Button
+                      variant="outline"
+                      data-testid="open-ai-wizard-btn"
+                      onClick={() => setAiWizardOpen(true)}
+                    >
+                      <Sparkles className="h-3.5 w-3.5 text-xblue" />
+                      {tx("AI 草案", "AI Draft")}
+                    </Button>
+
+                    <Button
+                      variant="outline"
+                      data-testid="knowledge-candidates-btn"
+                      onClick={() => setKnowledgeCandidatesOpen(true)}
+                    >
+                      <BookOpenCheck className="h-3.5 w-3.5 text-xblue" />
+                      {tx("知识建点", "KG Candidates")}
+                    </Button>
+                  </>
+                )}
 
                 <Button
                   variant="outline"
-                  data-testid="knowledge-candidates-btn"
-                  onClick={() => setKnowledgeCandidatesOpen(true)}
-                >
-                  <BookOpenCheck className="h-3.5 w-3.5 text-xblue" />
-                  {tx("知识建点", "KG Candidates")}
-                </Button>
-              </>
-            )}
-
-            <Button
-              variant="outline"
-              data-testid="toggle-lineage-view-btn"
-              disabled={
-                lineageNodeName === null && workingDoc.node_types.length === 0
-              }
-              onClick={() => {
-                if (lineageNodeName !== null) {
-                  setLineageNodeName(null);
-                } else {
-                  const target =
-                    selectedNode?.name ?? workingDoc.node_types[0]?.name;
-                  if (target) {
-                    setLineageNodeName(target);
+                  data-testid="toggle-lineage-view-btn"
+                  disabled={
+                    lineageNodeName === null &&
+                    workingDoc.node_types.length === 0
                   }
-                }
-              }}
-            >
-              {lineageNodeName !== null ? (
-                <>
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                  {tx("返回画布", "Canvas")}
-                </>
-              ) : (
-                <>
-                  <GitBranch className="h-3.5 w-3.5 text-xblue" />
-                  {tx("血缘视图", "Lineage")}
-                </>
-              )}
-            </Button>
+                  onClick={() => {
+                    if (lineageNodeName !== null) {
+                      setLineageNodeName(null);
+                    } else {
+                      const target =
+                        selectedNode?.name ?? workingDoc.node_types[0]?.name;
+                      if (target) {
+                        setLineageNodeName(target);
+                      }
+                    }
+                  }}
+                >
+                  {lineageNodeName !== null ? (
+                    <>
+                      <ArrowLeft className="h-3.5 w-3.5" />
+                      {tx("返回画布", "Canvas")}
+                    </>
+                  ) : (
+                    <>
+                      <GitBranch className="h-3.5 w-3.5 text-xblue" />
+                      {tx("血缘视图", "Lineage")}
+                    </>
+                  )}
+                </Button>
 
-            <Button
-              variant="outline"
-              data-testid="open-spec-doc-btn"
-              onClick={() => setSpecOverviewOpen(true)}
-            >
-              <BookOpen className="h-3.5 w-3.5 text-xblue" />
-              {tx("模型规格书", "Spec Doc")}
-            </Button>
+                <Button
+                  variant="outline"
+                  data-testid="open-spec-doc-btn"
+                  onClick={() => setSpecOverviewOpen(true)}
+                >
+                  <BookOpen className="h-3.5 w-3.5 text-xblue" />
+                  {tx("模型规格书", "Spec Doc")}
+                </Button>
 
-            <Button
-              variant="outline"
-              data-testid="open-version-panel-btn"
-              onClick={() => setVersionPanelOpen(true)}
-            >
-              <History className="h-3.5 w-3.5" />
-              {tx("版本历史", "Versions")}
-            </Button>
+                <Button
+                  variant="outline"
+                  data-testid="open-version-panel-btn"
+                  onClick={() => setVersionPanelOpen(true)}
+                >
+                  <History className="h-3.5 w-3.5" />
+                  {tx("版本历史", "Versions")}
+                </Button>
 
-            <Button
-              variant="outline"
-              data-testid="open-domain-drawer-btn"
-              onClick={() => setDomainDrawerOpen(true)}
-            >
-              <Code2 className="h-3.5 w-3.5 text-xblue" />
-              {tx("领域接口", "Domain API")}
-            </Button>
+                <Button
+                  variant="outline"
+                  data-testid="open-domain-drawer-btn"
+                  onClick={() => setDomainDrawerOpen(true)}
+                >
+                  <Code2 className="h-3.5 w-3.5 text-xblue" />
+                  {tx("领域接口", "Domain API")}
+                </Button>
 
-            <Button
-              variant="outline"
-              data-testid="studio-package-app-btn"
-              onClick={() => {
-                setAppDrawerFilterNode(null);
-                setAppDrawerOpen(true);
-              }}
-            >
-              <Blocks className="h-3.5 w-3.5 text-xblue" />
-              {tx("应用包装", "Package App")}
-            </Button>
+                <Button
+                  variant="outline"
+                  data-testid="studio-package-app-btn"
+                  onClick={() => {
+                    setAppDrawerFilterNode(null);
+                    setAppDrawerOpen(true);
+                  }}
+                >
+                  <Blocks className="h-3.5 w-3.5 text-xblue" />
+                  {tx("应用包装", "Package App")}
+                </Button>
 
-            {canEdit && (
-              <Button
-                variant="outline"
-                data-testid="save-draft-btn"
-                disabled={busyOp !== null}
-                onClick={() => void handleSaveDraft()}
-              >
-                <Save className="h-3.5 w-3.5" />
-                {busyOp === "save-draft"
-                  ? tx("保存中…", "Saving…")
-                  : tx("保存草案", "Save Draft")}
-              </Button>
-            )}
+                {canEdit && (
+                  <Button
+                    variant="outline"
+                    data-testid="save-draft-btn"
+                    disabled={busyOp !== null}
+                    onClick={() => void handleSaveDraft()}
+                  >
+                    <Save className="h-3.5 w-3.5" />
+                    {busyOp === "save-draft"
+                      ? tx("保存中…", "Saving…")
+                      : tx("保存草案", "Save Draft")}
+                  </Button>
+                )}
 
-            {canPublish && (
-              <Button
-                variant="primary"
-                data-testid="open-publish-modal-btn"
-                disabled={busyOp !== null || errorCount > 0}
-                onClick={() => setPublishModalOpen(true)}
-              >
-                <UploadCloud className="h-3.5 w-3.5" />
-                {busyOp === "publish"
-                  ? tx("发布中…", "Publishing…")
-                  : tx("发布版本", "Publish")}
-              </Button>
+                {canPublish && (
+                  <Button
+                    variant="primary"
+                    data-testid="open-publish-modal-btn"
+                    disabled={busyOp !== null || errorCount > 0}
+                    onClick={() => setPublishModalOpen(true)}
+                  >
+                    <UploadCloud className="h-3.5 w-3.5" />
+                    {busyOp === "publish"
+                      ? tx("发布中…", "Publishing…")
+                      : tx("发布版本", "Publish")}
+                  </Button>
+                )}
+              </>
             )}
           </>
         }
       />
+
+      {studioMode === "explorer" ? (
+        <XBlueGraphPage embedded />
+      ) : (
+        <>
 
       {/* Condensed Single-Row Subgraph & Draft Context Bar */}
       <StudioSubgraphBar
@@ -1482,304 +1551,344 @@ export function XBlueStudioPage() {
         </Card>
       )}
 
-      {/* Locked 100vh Master IDE Split: Canvas/Lineage + Inspector + Collapsible Copilot */}
-      <div className="flex flex-1 min-h-0 flex-col lg:flex-row gap-2.5 overflow-hidden">
-        <div className="flex-1 min-w-0 min-h-0 flex flex-col">
-          {lineageNodeName ? (
-            <NodeLineageCanvas
-              subgraphSlug={activeSubgraph}
-              nodeType={lineageNodeName}
-              activeDraftId={activeDraft?.id ?? null}
-              workingDoc={workingDoc}
-              onSelectNodeType={(nextType) => {
-                setSelectedNodeName(nextType);
-                setLineageNodeName(nextType);
-              }}
-              onBackToCanvas={() => setLineageNodeName(null)}
-            />
-          ) : (
-            <StudioCanvas
-              nodeTypes={workingDoc.node_types}
-              edgeTypes={workingDoc.edge_types}
-              issues={issues}
-              consumptionByNodeType={consumptionByNodeType}
-              selectedNodeName={
-                inspectorTab === "edge" ? null : (selectedNode?.name ?? null)
-              }
-              selectedEdgeIndex={
-                inspectorTab === "edge" ? effectiveEdgeIndex : selectedEdgeIndex
-              }
-              onSelectNode={(name) => {
-                if (name) {
-                  setSelectedNodeName(name);
-                  setSelectedEdgeIndex(null);
-                  if (inspectorTab === "edge" || inspectorTab === "mappings") {
-                    setInspectorTab("basic");
-                  }
-                }
-              }}
-              onSelectEdge={(edgeIdx) => {
-                setSelectedEdgeIndex(edgeIdx);
-                if (edgeIdx !== null) {
-                  setInspectorTab("edge");
-                }
-              }}
-              onUpdateNodePosition={(name, posX, posY) => {
-                mutateDoc((prev) => ({
-                  ...prev,
-                  node_types: prev.node_types.map((nt) =>
-                    nt.name === name ? { ...nt, pos_x: posX, pos_y: posY } : nt
-                  ),
-                }));
-              }}
-              onApplyLayoutPositions={(positions) => {
-                mutateDoc((prev) => ({
-                  ...prev,
-                  node_types: prev.node_types.map((nt) => {
-                    const pos = positions[nt.name];
-                    return pos ? { ...nt, pos_x: pos.x, pos_y: pos.y } : nt;
-                  }),
-                }));
-              }}
-              onCreateNodeType={handleCreateNodeType}
-              onCreateEdgeType={handleCreateEdgeType}
-              onConfirmNode={(name) => void handleConfirmNodeProposal(name)}
-              onOpenLineage={(name) => {
-                setSelectedNodeName(name);
-                setLineageNodeName(name);
-              }}
-              onOpenAppPackaging={(name) => {
-                setAppDrawerFilterNode(name);
-                setAppDrawerOpen(true);
-              }}
-            />
-          )}
-        </div>
+      {/* Resizable 100vh Master IDE Split: Canvas/Lineage + Inspector + Collapsible Copilot */}
+      <div className="flex flex-1 min-h-0 gap-2 overflow-hidden">
+        <div className="flex-1 min-w-0 min-h-0 flex">
+          <ResizableWorkspace
+            storageKey="axpoint.layout.studio"
+            panes={[
+              {
+                id: "canvas",
+                defaultSize: 68,
+                minSize: 35,
+                handleTestId: "resizable-handle-right",
+                className: "pr-1",
+                children: lineageNodeName ? (
+                  <NodeLineageCanvas
+                    subgraphSlug={activeSubgraph}
+                    nodeType={lineageNodeName}
+                    activeDraftId={activeDraft?.id ?? null}
+                    workingDoc={workingDoc}
+                    onSelectNodeType={(nextType) => {
+                      setSelectedNodeName(nextType);
+                      setLineageNodeName(nextType);
+                    }}
+                    onBackToCanvas={() => setLineageNodeName(null)}
+                  />
+                ) : (
+                  <StudioCanvas
+                    nodeTypes={workingDoc.node_types}
+                    edgeTypes={workingDoc.edge_types}
+                    issues={issues}
+                    consumptionByNodeType={consumptionByNodeType}
+                    selectedNodeName={
+                      inspectorTab === "edge"
+                        ? null
+                        : (selectedNode?.name ?? null)
+                    }
+                    selectedEdgeIndex={
+                      inspectorTab === "edge"
+                        ? effectiveEdgeIndex
+                        : selectedEdgeIndex
+                    }
+                    onSelectNode={(name) => {
+                      if (name) {
+                        setSelectedNodeName(name);
+                        setSelectedEdgeIndex(null);
+                        if (
+                          inspectorTab === "edge" ||
+                          inspectorTab === "mappings"
+                        ) {
+                          setInspectorTab("basic");
+                        }
+                      }
+                    }}
+                    onSelectEdge={(edgeIdx) => {
+                      setSelectedEdgeIndex(edgeIdx);
+                      if (edgeIdx !== null) {
+                        setInspectorTab("edge");
+                      }
+                    }}
+                    onUpdateNodePosition={(name, posX, posY) => {
+                      mutateDoc((prev) => ({
+                        ...prev,
+                        node_types: prev.node_types.map((nt) =>
+                          nt.name === name
+                            ? { ...nt, pos_x: posX, pos_y: posY }
+                            : nt
+                        ),
+                      }));
+                    }}
+                    onApplyLayoutPositions={(positions) => {
+                      mutateDoc((prev) => ({
+                        ...prev,
+                        node_types: prev.node_types.map((nt) => {
+                          const pos = positions[nt.name];
+                          return pos
+                            ? { ...nt, pos_x: pos.x, pos_y: pos.y }
+                            : nt;
+                        }),
+                      }));
+                    }}
+                    onCreateNodeType={handleCreateNodeType}
+                    onCreateEdgeType={handleCreateEdgeType}
+                    onConfirmNode={(name) => void handleConfirmNodeProposal(name)}
+                    onOpenLineage={(name) => {
+                      setSelectedNodeName(name);
+                      setLineageNodeName(name);
+                    }}
+                    onOpenAppPackaging={(name) => {
+                      setAppDrawerFilterNode(name);
+                      setAppDrawerOpen(true);
+                    }}
+                  />
+                ),
+              },
+              {
+                id: "inspector",
+                defaultSize: 32,
+                minSize: 20,
+                collapsible: true,
+                className: "pl-1",
+                children: (
+                  <Card className="w-full h-full min-h-0 p-3 flex flex-col gap-2.5 overflow-hidden">
+                    <Tabs<InspectorTab>
+                      className="shrink-0"
+                      value={inspectorTab}
+                      onChange={(tab) => {
+                        setInspectorTab(tab);
+                        if (
+                          tab === "edge" &&
+                          selectedEdgeIndex === null &&
+                          workingDoc.edge_types.length > 0
+                        ) {
+                          setSelectedEdgeIndex(0);
+                        }
+                      }}
+                      items={[
+                        {
+                          key: "basic",
+                          label: tx("基础信息", "General"),
+                          testId: "inspector-tab-basic",
+                        },
+                        {
+                          key: "properties",
+                          label: tx("属性指标", "Fields"),
+                          testId: "inspector-tab-properties",
+                        },
+                        {
+                          key: "rules",
+                          label: tx("聚合派生", "Rules"),
+                          testId: "inspector-tab-rules",
+                        },
+                        {
+                          key: "edge",
+                          label: `${tx("关系", "Relations")} (${workingDoc.edge_types.length})`,
+                          testId: "inspector-tab-edge",
+                        },
+                        {
+                          key: "mappings",
+                          label: `${tx("数据映射", "Mappings")} (${workingDoc.mappings.length})`,
+                          testId: "inspector-tab-mappings",
+                        },
+                      ]}
+                    />
 
-        {/* Center-Right Inspector Workbench — Full Height Independent Scroll with High-Contrast Tabs */}
-        <Card className="w-full lg:w-[376px] xl:w-[416px] shrink-0 h-full min-h-0 p-3 flex flex-col gap-2.5 overflow-hidden">
-          <Tabs<InspectorTab>
-            className="shrink-0"
-            value={inspectorTab}
-            onChange={(tab) => {
-              setInspectorTab(tab);
-              if (tab === "edge" && selectedEdgeIndex === null && workingDoc.edge_types.length > 0) {
-                setSelectedEdgeIndex(0);
-              }
-            }}
-            items={[
-              {
-                key: "basic",
-                label: tx("基础信息", "General"),
-                testId: "inspector-tab-basic",
-              },
-              {
-                key: "properties",
-                label: tx("属性指标", "Fields"),
-                testId: "inspector-tab-properties",
-              },
-              {
-                key: "rules",
-                label: tx("聚合派生", "Rules"),
-                testId: "inspector-tab-rules",
-              },
-              {
-                key: "edge",
-                label: `${tx("关系", "Relations")} (${workingDoc.edge_types.length})`,
-                testId: "inspector-tab-edge",
-              },
-              {
-                key: "mappings",
-                label: `${tx("数据映射", "Mappings")} (${workingDoc.mappings.length})`,
-                testId: "inspector-tab-mappings",
+                    {(inspectorTab === "basic" ||
+                      inspectorTab === "properties" ||
+                      inspectorTab === "rules") &&
+                      workingDoc.node_types.length > 0 && (
+                        <div className="shrink-0 flex items-center gap-2 rounded-md bg-muted/35 px-2.5 py-1.5 text-xs">
+                          <span className="text-[11px] text-muted-foreground shrink-0">
+                            {tx("当前节点", "Active Node")}
+                          </span>
+                          <Select
+                            value={selectedNode?.name ?? ""}
+                            onChange={(e) => setSelectedNodeName(e.target.value)}
+                            options={workingDoc.node_types.map((nt) => ({
+                              value: nt.name,
+                              label: `${nt.display_name || nt.name} (${nt.name})`,
+                              text: `${nt.display_name} ${nt.name}`,
+                              icon: renderNodeIcon(nt.icon),
+                            }))}
+                            className="h-7 flex-1 min-w-0 font-mono-tech"
+                          />
+                        </div>
+                      )}
+
+                    <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
+                      {inspectorTab === "basic" &&
+                        (selectedNode ? (
+                          <NodeTypeCard
+                            nodeType={selectedNode}
+                            consumption={
+                              consumptionByNodeType[selectedNode.name] ?? null
+                            }
+                            onChange={handleUpdateSelectedNode}
+                            onDelete={handleDeleteSelectedNode}
+                            onConfirmNode={(name) =>
+                              void handleConfirmNodeProposal(name)
+                            }
+                            onOpenLineage={(name) => {
+                              setSelectedNodeName(name);
+                              setLineageNodeName(name);
+                            }}
+                            onOpenAppPackaging={(name) => {
+                              setAppDrawerFilterNode(name);
+                              setAppDrawerOpen(true);
+                            }}
+                          />
+                        ) : (
+                          <EmptyState
+                            title={tx("未选中节点类型", "No node type selected")}
+                          />
+                        ))}
+
+                      {inspectorTab === "properties" &&
+                        (selectedNode ? (
+                          <PropertyTable
+                            properties={selectedNode.properties}
+                            onChange={(nextProps) =>
+                              handleUpdateSelectedNode({
+                                ...selectedNode,
+                                properties: nextProps,
+                              })
+                            }
+                          />
+                        ) : (
+                          <EmptyState
+                            title={tx("未选中节点类型", "No node type selected")}
+                          />
+                        ))}
+
+                      {inspectorTab === "rules" &&
+                        (selectedNode ? (
+                          <RuleEditor
+                            nodeIndex={selectedNodeIndex}
+                            nodeType={selectedNode}
+                            allNodeTypes={availableNodeTypesForEdges}
+                            edgeTypes={workingDoc.edge_types}
+                            issues={issues}
+                            subgraph={activeSubgraph}
+                            onChangeAggRules={(nextAgg) =>
+                              handleUpdateSelectedNode({
+                                ...selectedNode,
+                                agg_rules: nextAgg,
+                              })
+                            }
+                            onChangeDerivedRules={(nextDerived) =>
+                              handleUpdateSelectedNode({
+                                ...selectedNode,
+                                derived_rules: nextDerived,
+                              })
+                            }
+                          />
+                        ) : (
+                          <EmptyState
+                            title={tx("未选中节点类型", "No node type selected")}
+                          />
+                        ))}
+
+                      {inspectorTab === "edge" && (
+                        <div className="space-y-3">
+                          <div className="flex items-center gap-2">
+                            {workingDoc.edge_types.length > 0 ? (
+                              <Select
+                                value={effectiveEdgeIndex ?? 0}
+                                onChange={(e) =>
+                                  setSelectedEdgeIndex(Number(e.target.value))
+                                }
+                                className="h-8 flex-1 min-w-0 font-mono-tech"
+                              >
+                                {workingDoc.edge_types.map((et, idx) => (
+                                  <option key={`${et.name}-${idx}`} value={idx}>
+                                    {et.src_type_name} → {et.name} →{" "}
+                                    {et.dst_type_name}
+                                  </option>
+                                ))}
+                              </Select>
+                            ) : (
+                              <span className="text-xs text-muted-foreground flex-1">
+                                {tx("当前全图尚无关系连线", "No relations defined")}
+                              </span>
+                            )}
+                            {canEdit && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleInlineAddEdge}
+                                className="shrink-0"
+                              >
+                                <Plus className="h-3 w-3" />
+                                {tx("新建关系", "New")}
+                              </Button>
+                            )}
+                          </div>
+
+                          {selectedEdge && effectiveEdgeIndex !== null ? (
+                            <EdgeTypeEditor
+                              edgeType={selectedEdge}
+                              availableNodeTypes={availableNodeTypesForEdges}
+                              onChange={(updatedEdge) =>
+                                mutateDoc((prev) => ({
+                                  ...prev,
+                                  edge_types: prev.edge_types.map((et, i) =>
+                                    i === effectiveEdgeIndex ? updatedEdge : et
+                                  ),
+                                }))
+                              }
+                              onDelete={() => {
+                                const rmIdx = effectiveEdgeIndex;
+                                const remaining =
+                                  workingDoc.edge_types.length - 1;
+                                mutateDoc((prev) => ({
+                                  ...prev,
+                                  edge_types: prev.edge_types.filter(
+                                    (_, i) => i !== rmIdx
+                                  ),
+                                }));
+                                setSelectedEdgeIndex(remaining > 0 ? 0 : null);
+                              }}
+                            />
+                          ) : (
+                            <EmptyState
+                              title={tx("暂无关系连线定义", "No relation defined")}
+                            />
+                          )}
+                        </div>
+                      )}
+
+                      {inspectorTab === "mappings" && (
+                        <MappingEditor
+                          activeSubgraph={activeSubgraph}
+                          mappings={workingDoc.mappings}
+                          persistedMappings={persistedMappings}
+                          datasets={datasets}
+                          nodeTypes={workingDoc.node_types}
+                          edgeTypes={workingDoc.edge_types}
+                          selectedMappingIndex={selectedMappingIndex}
+                          onSelectMappingIndex={setSelectedMappingIndex}
+                          onChangeMappings={(nextMappings: MappingSpec[]) =>
+                            mutateDoc((prev) => ({
+                              ...prev,
+                              mappings: nextMappings,
+                            }))
+                          }
+                          onRefreshPersistedMappings={async () => {
+                            const latest = await xblueApi
+                              .listMappings(activeSubgraph)
+                              .catch(() => [] as MappingRecord[]);
+                            setPersistedMappings(latest);
+                          }}
+                        />
+                      )}
+                    </div>
+                  </Card>
+                ),
               },
             ]}
           />
-
-          {/* Single-Line Node Selector synced with Canvas for Node-Scoped Tabs */}
-          {(inspectorTab === "basic" ||
-            inspectorTab === "properties" ||
-            inspectorTab === "rules") &&
-            workingDoc.node_types.length > 0 && (
-              <div className="shrink-0 flex items-center gap-2 rounded-md bg-muted/35 px-2.5 py-1.5 text-xs">
-                <span className="text-[11px] text-muted-foreground shrink-0">
-                  {tx("当前节点", "Active Node")}
-                </span>
-                <Select
-                  value={selectedNode?.name ?? ""}
-                  onChange={(e) => setSelectedNodeName(e.target.value)}
-                  options={workingDoc.node_types.map((nt) => ({
-                    value: nt.name,
-                    label: `${nt.display_name || nt.name} (${nt.name})`,
-                    text: `${nt.display_name} ${nt.name}`,
-                    icon: renderNodeIcon(nt.icon),
-                  }))}
-                  className="h-7 flex-1 min-w-0 font-mono-tech"
-                />
-              </div>
-            )}
-
-          {/* Scrollable Inspector Body */}
-          <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
-            {inspectorTab === "basic" &&
-              (selectedNode ? (
-                <NodeTypeCard
-                  nodeType={selectedNode}
-                  consumption={consumptionByNodeType[selectedNode.name] ?? null}
-                  onChange={handleUpdateSelectedNode}
-                  onDelete={handleDeleteSelectedNode}
-                  onConfirmNode={(name) => void handleConfirmNodeProposal(name)}
-                  onOpenLineage={(name) => {
-                    setSelectedNodeName(name);
-                    setLineageNodeName(name);
-                  }}
-                  onOpenAppPackaging={(name) => {
-                    setAppDrawerFilterNode(name);
-                    setAppDrawerOpen(true);
-                  }}
-                />
-              ) : (
-                <EmptyState
-                  title={tx("未选中节点类型", "No node type selected")}
-                />
-              ))}
-
-            {inspectorTab === "properties" &&
-              (selectedNode ? (
-                <PropertyTable
-                  properties={selectedNode.properties}
-                  onChange={(nextProps) =>
-                    handleUpdateSelectedNode({
-                      ...selectedNode,
-                      properties: nextProps,
-                    })
-                  }
-                />
-              ) : (
-                <EmptyState
-                  title={tx("未选中节点类型", "No node type selected")}
-                />
-              ))}
-
-            {inspectorTab === "rules" &&
-              (selectedNode ? (
-                <RuleEditor
-                  nodeIndex={selectedNodeIndex}
-                  nodeType={selectedNode}
-                  allNodeTypes={availableNodeTypesForEdges}
-                  edgeTypes={workingDoc.edge_types}
-                  issues={issues}
-                  subgraph={activeSubgraph}
-                  onChangeAggRules={(nextAgg) =>
-                    handleUpdateSelectedNode({
-                      ...selectedNode,
-                      agg_rules: nextAgg,
-                    })
-                  }
-                  onChangeDerivedRules={(nextDerived) =>
-                    handleUpdateSelectedNode({
-                      ...selectedNode,
-                      derived_rules: nextDerived,
-                    })
-                  }
-                />
-              ) : (
-                <EmptyState
-                  title={tx("未选中节点类型", "No node type selected")}
-                />
-              ))}
-
-            {inspectorTab === "edge" && (
-              <div className="space-y-3">
-                {/* Single-Row Relation Selector + Inline Create Button */}
-                <div className="flex items-center gap-2">
-                  {workingDoc.edge_types.length > 0 ? (
-                    <Select
-                      value={effectiveEdgeIndex ?? 0}
-                      onChange={(e) =>
-                        setSelectedEdgeIndex(Number(e.target.value))
-                      }
-                      className="h-8 flex-1 min-w-0 font-mono-tech"
-                    >
-                      {workingDoc.edge_types.map((et, idx) => (
-                        <option key={`${et.name}-${idx}`} value={idx}>
-                          {et.src_type_name} → {et.name} → {et.dst_type_name}
-                        </option>
-                      ))}
-                    </Select>
-                  ) : (
-                    <span className="text-xs text-muted-foreground flex-1">
-                      {tx("当前全图尚无关系连线", "No relations defined")}
-                    </span>
-                  )}
-                  {canEdit && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleInlineAddEdge}
-                      className="shrink-0"
-                    >
-                      <Plus className="h-3 w-3" />
-                      {tx("新建关系", "New")}
-                    </Button>
-                  )}
-                </div>
-
-                {selectedEdge && effectiveEdgeIndex !== null ? (
-                  <EdgeTypeEditor
-                    edgeType={selectedEdge}
-                    availableNodeTypes={availableNodeTypesForEdges}
-                    onChange={(updatedEdge) =>
-                      mutateDoc((prev) => ({
-                        ...prev,
-                        edge_types: prev.edge_types.map((et, i) =>
-                          i === effectiveEdgeIndex ? updatedEdge : et
-                        ),
-                      }))
-                    }
-                    onDelete={() => {
-                      const rmIdx = effectiveEdgeIndex;
-                      const remaining = workingDoc.edge_types.length - 1;
-                      mutateDoc((prev) => ({
-                        ...prev,
-                        edge_types: prev.edge_types.filter(
-                          (_, i) => i !== rmIdx
-                        ),
-                      }));
-                      setSelectedEdgeIndex(remaining > 0 ? 0 : null);
-                    }}
-                  />
-                ) : (
-                  <EmptyState
-                    title={tx("暂无关系连线定义", "No relation defined")}
-                  />
-                )}
-              </div>
-            )}
-
-            {inspectorTab === "mappings" && (
-              <MappingEditor
-                activeSubgraph={activeSubgraph}
-                mappings={workingDoc.mappings}
-                persistedMappings={persistedMappings}
-                datasets={datasets}
-                nodeTypes={workingDoc.node_types}
-                edgeTypes={workingDoc.edge_types}
-                selectedMappingIndex={selectedMappingIndex}
-                onSelectMappingIndex={setSelectedMappingIndex}
-                onChangeMappings={(nextMappings: MappingSpec[]) =>
-                  mutateDoc((prev) => ({ ...prev, mappings: nextMappings }))
-                }
-                onRefreshPersistedMappings={async () => {
-                  const latest = await xblueApi
-                    .listMappings(activeSubgraph)
-                    .catch(() => [] as MappingRecord[]);
-                  setPersistedMappings(latest);
-                }}
-              />
-            )}
-          </div>
-        </Card>
+        </div>
 
         {/* Right-Hand Collapsible Resident Copilot Sidebar */}
         <StudioCopilotPanel
@@ -2192,6 +2301,8 @@ export function XBlueStudioPage() {
             .catch(() => {});
         }}
       />
+        </>
+      )}
     </div>
   );
 }

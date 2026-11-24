@@ -8,15 +8,40 @@ import { AxOpsPage } from "@/pages/AxOpsPage";
 
 type GovernanceSection = "security" | "ops";
 
+const OPS_TABS = new Set([
+  "health",
+  "jobs",
+  "retention",
+  "backups",
+  "templates",
+  "work_items",
+  "settings",
+]);
+
+function resolveGovernanceSection(
+  rawSection: string | null,
+  rawTab: string | null
+): GovernanceSection {
+  if (rawSection === "ops") return "ops";
+  if (rawSection === "security") return "security";
+  const normalizedTab = (rawTab ?? "").trim().toLowerCase();
+  if (OPS_TABS.has(normalizedTab)) {
+    return "ops";
+  }
+  return "security";
+}
+
 export function GovernancePage() {
   const { tx } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
   const rawSection = searchParams.get("section");
-  const section: GovernanceSection = rawSection === "ops" ? "ops" : "security";
+  const rawTab = searchParams.get("tab");
+  const section = resolveGovernanceSection(rawSection, rawTab);
 
   const handleSectionChange = (next: GovernanceSection) => {
     const updated = new URLSearchParams(searchParams);
     updated.set("section", next);
+    updated.delete("tab");
     setSearchParams(updated, { replace: true });
   };
 
@@ -46,7 +71,7 @@ export function GovernancePage() {
         }
       />
 
-      {section === "ops" ? <AxOpsPage /> : <AxGuardPage />}
+      {section === "ops" ? <AxOpsPage embedded /> : <AxGuardPage embedded />}
     </div>
   );
 }

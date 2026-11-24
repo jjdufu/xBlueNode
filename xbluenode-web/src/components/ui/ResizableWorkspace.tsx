@@ -1,0 +1,253 @@
+import React, { useCallback, useMemo, useRef } from "react";
+import {
+  Group,
+  Panel,
+  Separator,
+  type GroupImperativeHandle,
+  type Layout,
+  type PanelImperativeHandle,
+} from "react-resizable-panels";
+import { useI18n } from "@/i18n";
+import { cn } from "@/lib/utils";
+
+export interface WorkspacePaneSpec {
+  readonly id: string;
+  /** Default percentage share (10..90). */
+  readonly defaultSize: number;
+  readonly minSize?: number;
+  readonly maxSize?: number;
+  readonly collapsible?: boolean;
+  readonly className?: string;
+  readonly handleTestId?: string;
+  readonly children: React.ReactNode;
+}
+
+export interface ResizableWorkspaceProps {
+  readonly storageKey: string;
+  readonly direction?: "horizontal" | "vertical";
+  readonly panes: readonly WorkspacePaneSpec[];
+  readonly className?: string;
+  readonly testId?: string;
+}
+
+export function normalizeLayoutStorageKey(rawKey: string): string {
+  const trimmed = rawKey.trim();
+  return trimmed.startsWith("axpoint.layout.")
+    ? trimmed
+    : `axpoint.layout.${trimmed}`;
+}
+
+function readPersistedLayout(
+  storageKey: string,
+  panes: readonly WorkspacePaneSpec[]
+): Layout | undefined {
+  try {
+    if (typeof localStorage === "undefined") return undefined;
+    const raw = localStorage.getItem(storageKey);
+    if (!raw) return undefined;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const rec = parsed as Record<string, unknown>;
+    const out: Layout = {};
+    let total = 0;
+    for (const pane of panes) {
+      const val = rec[pane.id];
+      if (typeof val !== "number" || !Number.isFinite(val) || val < 0 || val > 100) {
+        return undefined;
+      }
+      out[pane.id] = val;
+      total += val;
+    }
+    if (Object.keys(rec).length !== panes.length || total < 95 || total > 105) {
+      return undefined;
+    }
+    return out;
+  } catch {
+    return undefined;
+  }
+}
+
+function writePersistedLayout(storageKey: string, layout: Layout): void {
+  try {
+    if (typeof localStorage !== "undefined") {
+      localStorage.setItem(storageKey, JSON.stringify(layout));
+    }
+  } catch {
+    // Ignore storage quota or privacy-mode failures
+  }
+}
+
+function resolveDefaultHandleTestId(
+  direction: "horizontal" | "vertical",
+  panes: readonly WorkspacePaneSpec[],
+  index: number
+): string {
+  const explicit = panes[index]?.handleTestId;
+  if (explicit) return explicit;
+  if (direction === "vertical") {
+    return index === 0 ? "resizable-handle-vertical" : `resizable-handle-vertical-${index}`;
+  }
+  if (panes.length >= 3) {
+    if (index === 0) return "resizable-handle-left";
+    if (index === panes.length - 2) return "resizable-handle-right";
+    return `resizable-handle-${index}`;
+  }
+  const left = panes[index];
+  const right = panes[index + 1];
+  if (left && !left.collapsible && right?.collapsible) {
+    return "resizable-handle-right";
+  }
+  return "resizable-handle-left";
+}
+
+export function ResizableWorkspace({
+  storageKey,
+  direction = "horizontal",
+  panes,
+  className,
+  testId,
+}: ResizableWorkspaceProps) {
+  const { tx } = useI18n();
+  const effectiveStorageKey = normalizeLayoutStorageKey(storageKey);
+  const shortId = effectiveStorageKey.replace(/^axpoint\.layout\./, "");
+
+  const groupRef = useRef<GroupImperativeHandle | null>(null);
+  const panelRefs = useRef<Record<string, PanelImperativeHandle | null>>({});
+
+  const initialLayout = useMemo(
+    () => readPersistedLayout(effectiveStorageKey, panes),
+    [effectiveStorageKey, panes]
+  );
+
+  const defaultPercentLayout = useMemo<Layout>(() => {
+    const map: Layout = {};
+    for (const p of panes) {
+      map[p.id] = p.defaultSize;
+    }
+    return map;
+  }, [panes]);
+
+  const handlePersist = useCallback(
+    (layout: Layout) => {
+      writePersistedLayout(effectiveStorageKey, layout);
+    },
+    [effectiveStorageKey]
+  );
+
+  const handleSeparatorDoubleClick = useCallback(
+    (leftIndex: number) => {
+      const leftPane = panes[leftIndex];
+      const rightPane = panes[leftIndex + 1];
+      if (!leftPane || !rightPane) return;
+
+      const targetPane = leftPane.collapsible
+        ? leftPane
+        : rightPane.collapsible
+          ? rightPane
+          : leftPane.defaultSize <= rightPane.defaultSize
+            ? leftPane
+            : rightPane;
+
+      const handle = panelRefs.current[targetPane.id];
+      if (targetPane.collapsible && handle) {
+        const sizeInfo = handle.getSize();
+        if (handle.isCollapsed() || sizeInfo.asPercentage < 2) {
+          handle.expand();
+          const afterExpand = handle.getSize();
+          if (afterExpand.asPercentage < 2) {
+            handle.resize(`${targetPane.defaultSize}%`);
+          }
+        } else {
+          handle.collapse();
+        }
+        requestAnimationFrame(() => {
+          const current = groupRef.current?.getLayout();
+          if (current) {
+            writePersistedLayout(effectiveStorageKey, current);
+          }
+        });
+        return;
+      }
+
+      if (groupRef.current) {
+        const next = groupRef.current.setLayout(defaultPercentLayout);
+        writePersistedLayout(effectiveStorageKey, next);
+      }
+    },
+    [defaultPercentLayout, effectiveStorageKey, panes]
+  );
+
+  return (
+    <Group
+      id={`workspace-group-${shortId}`}
+      data-testid={testId ?? `resizable-workspace-${shortId}`}
+      orientation={direction}
+      groupRef={groupRef}
+      defaultLayout={initialLayout}
+      onLayoutChange={handlePersist}
+      onLayoutChanged={(layout, meta) => {
+        handlePersist(meta.requestedLayout ?? layout);
+      }}
+      className={cn("h-full w-full min-h-0 min-w-0", className)}
+    >
+      {panes.map((pane, idx) => {
+        const isLast = idx === panes.length - 1;
+        const handleId = resolveDefaultHandleTestId(direction, panes, idx);
+        return (
+          <React.Fragment key={pane.id}>
+            <Panel
+              id={pane.id}
+              data-testid={`resizable-pane-${shortId}-${pane.id}`}
+              defaultSize={`${pane.defaultSize}%`}
+              minSize={`${pane.minSize ?? 12}%`}
+              maxSize={
+                pane.maxSize !== undefined ? `${pane.maxSize}%` : undefined
+              }
+              collapsible={Boolean(pane.collapsible)}
+              collapsedSize="0%"
+              panelRef={(inst) => {
+                panelRefs.current[pane.id] = inst;
+              }}
+              className={cn(
+                "h-full min-h-0 min-w-0 flex flex-col overflow-hidden",
+                pane.className
+              )}
+            >
+              {pane.children}
+            </Panel>
+
+            {!isLast && (
+              <Separator
+                id={`${shortId}-sep-${idx}`}
+                data-testid={handleId}
+                data-handle-id={`${shortId}-${idx}`}
+                disableDoubleClick
+                aria-label={tx("拖拽调整分栏宽度", "Drag to resize pane")}
+                title={tx("拖拽调宽，双击折叠或还原", "Drag to resize, double-click to toggle")}
+                onDoubleClick={() => handleSeparatorDoubleClick(idx)}
+                className={cn(
+                  "group relative z-10 flex shrink-0 items-center justify-center outline-none select-none",
+                  direction === "horizontal"
+                    ? "w-2.5 h-full cursor-col-resize"
+                    : "h-2.5 w-full cursor-row-resize"
+                )}
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "rounded-full bg-[var(--border-subtle,var(--border))] transition-all duration-150",
+                    direction === "horizontal"
+                      ? "h-full w-px group-hover:w-[3px] group-hover:bg-[var(--accent-primary,var(--xblue))] group-focus-visible:w-[3px] group-focus-visible:bg-[var(--accent-primary,var(--xblue))] group-data-[separator=hover]:w-[3px] group-data-[separator=hover]:bg-[var(--accent-primary,var(--xblue))] group-data-[separator=active]:w-[3px] group-data-[separator=active]:bg-[var(--accent-primary,var(--xblue))]"
+                      : "w-full h-px group-hover:h-[3px] group-hover:bg-[var(--accent-primary,var(--xblue))] group-focus-visible:h-[3px] group-focus-visible:bg-[var(--accent-primary,var(--xblue))] group-data-[separator=hover]:h-[3px] group-data-[separator=hover]:bg-[var(--accent-primary,var(--xblue))] group-data-[separator=active]:h-[3px] group-data-[separator=active]:bg-[var(--accent-primary,var(--xblue))]"
+                  )}
+                />
+              </Separator>
+            )}
+          </React.Fragment>
+        );
+      })}
+    </Group>
+  );
+}

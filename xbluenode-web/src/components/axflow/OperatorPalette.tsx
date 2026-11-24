@@ -34,8 +34,8 @@ export const OPERATOR_I18N: Readonly<
   SOURCE_INGEST: {
     zh: "数据源同步",
     en: "Source Sync",
-    descZh: "触发 AxHub 数据集同步并等待快照落湖",
-    descEn: "Trigger AxHub dataset ingestion into lakehouse snapshot",
+    descZh: "触发数据集同步并等待快照落湖",
+    descEn: "Trigger dataset ingestion into lakehouse snapshot",
   },
   SQL_TRANSFORM: {
     zh: "SQL 变换",
@@ -254,9 +254,6 @@ export function OperatorPalette({
                 <div className="min-w-0">
                   <div className="truncate text-xs font-medium leading-tight text-foreground">
                     {title}
-                  </div>
-                  <div className="truncate font-mono-tech text-[10px] text-muted-foreground">
-                    {spec.kind}
                   </div>
                 </div>
               </div>
