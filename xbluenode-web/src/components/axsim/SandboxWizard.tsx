@@ -1014,6 +1014,7 @@ export function SandboxWizard({
                           type="button"
                           variant="outline"
                           size="sm"
+                          disabled={preflightLoading}
                           onClick={handleFillMissingTypes}
                           data-testid="sim-preflight-fill-types-btn"
                         >

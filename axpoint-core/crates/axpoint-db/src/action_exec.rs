@@ -64,6 +64,7 @@ pub async fn invoke_object_action_impl(
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
 
     if !req.dry_run {
+        crate::aggregate_exec::acquire_tenant_agg_xact_lock(&mut tx, tenant_id).await?;
         let lock_key = format!("{tenant_id}:act_idem:{idem_key}");
         sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
             .bind(&lock_key)
@@ -763,6 +764,7 @@ async fn apply_neighbor_mutation_tx(
                JOIN xb_nodes n ON n.tenant_id = l.tenant_id AND n.id = l.dst_node_id
               WHERE l.tenant_id = $1 AND l.subgraph_slug = 'main'
                 AND l.link_type = $2 AND l.src_node_id = $3 AND n.type_name = ANY($4)
+              ORDER BY n.id
               FOR UPDATE OF n"
         }
         LinkDirection::In => {
@@ -770,6 +772,7 @@ async fn apply_neighbor_mutation_tx(
                JOIN xb_nodes n ON n.tenant_id = l.tenant_id AND n.id = l.src_node_id
               WHERE l.tenant_id = $1 AND l.subgraph_slug = 'main'
                 AND l.link_type = $2 AND l.dst_node_id = $3 AND n.type_name = ANY($4)
+              ORDER BY n.id
               FOR UPDATE OF n"
         }
     };
@@ -855,6 +858,7 @@ async fn lock_incident_links_for_action_tx(
                LEFT JOIN xb_nodes d ON d.tenant_id = l.tenant_id AND d.id = l.dst_node_id
               WHERE l.tenant_id = $1 AND l.subgraph_slug = 'main'
                 AND l.link_type = $2 AND l.src_node_id = $3
+              ORDER BY l.id
               FOR UPDATE OF l"
         }
         LinkDirection::In => {
@@ -865,6 +869,7 @@ async fn lock_incident_links_for_action_tx(
                LEFT JOIN xb_nodes d ON d.tenant_id = l.tenant_id AND d.id = l.dst_node_id
               WHERE l.tenant_id = $1 AND l.subgraph_slug = 'main'
                 AND l.link_type = $2 AND l.dst_node_id = $3
+              ORDER BY l.id
               FOR UPDATE OF l"
         }
     };
@@ -1118,6 +1123,7 @@ pub async fn certify_subgraph_runtime_impl(
     req: CertifySubgraphRequest,
 ) -> Result<RuntimeCertReport, AppError> {
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
+    crate::aggregate_exec::acquire_tenant_agg_xact_lock(&mut tx, tenant_id).await?;
     let head_ver = require_subgraph_exists_tx(&mut tx, tenant_id, subgraph_slug).await?;
 
     let (doc, schema_version, draft_id) = if let Some(did) = req.draft_id {

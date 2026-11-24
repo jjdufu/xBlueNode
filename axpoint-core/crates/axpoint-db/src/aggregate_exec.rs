@@ -172,6 +172,22 @@ pub async fn execute_graph_aggregate_impl(
     exec_result
 }
 
+/// Acquires the tenant-scoped `xb_agg:{tenant_id}` transaction advisory lock so synchronous
+/// 4-path mutations (`write_link_metrics`, `invoke_object_action`, `Trial Tick`) serialize
+/// cleanly with background `GRAPH_AGGREGATE` workers without lock-order inversion (`04-STEP26`).
+pub(crate) async fn acquire_tenant_agg_xact_lock(
+    tx: &mut Transaction<'_, Postgres>,
+    tenant_id: &str,
+) -> Result<(), AppError> {
+    let lock_name = format!("xb_agg:{tenant_id}");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1))")
+        .bind(&lock_name)
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("acquire xb_agg xact advisory lock: {err}")))?;
+    Ok(())
+}
+
 async fn run_graph_aggregate_locked(
     store: &PgStore,
     tenant_id: &str,
@@ -823,6 +839,7 @@ async fn apply_computed_metric_updates_tx(
         "SELECT id, properties, metrics
            FROM xb_nodes
           WHERE tenant_id = $1 AND id = ANY($2)
+          ORDER BY id
           FOR UPDATE",
     )
     .bind(ctx.tenant_id)
@@ -1782,6 +1799,7 @@ async fn load_subgraph_mem_nodes_tx(
         "SELECT id, type_name, node_key, properties, metrics, updated_at
            FROM xb_nodes
           WHERE tenant_id = $1 AND subgraph_slug = $2
+          ORDER BY id
           FOR UPDATE",
     )
     .bind(tenant_id)
@@ -1825,6 +1843,7 @@ async fn load_subgraph_mem_links_tx(
                 properties, metrics, updated_at
            FROM xb_links
           WHERE tenant_id = $1 AND subgraph_slug = $2
+          ORDER BY id
           FOR UPDATE",
     )
     .bind(tenant_id)
