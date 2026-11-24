@@ -124,30 +124,43 @@ pub fn validate_geo_shape(shape: &GeoShapeDto) -> Result<(), AppError> {
             }
             Ok(())
         }
-        GeoShapeDto::Polygon(rings) => {
-            let Some(exterior) = rings.first() else {
-                return Err(AppError::bad(
-                    "INVALID_GEOMETRY",
-                    "Polygon requires at least an exterior ring",
-                ));
-            };
-            let ext_poly = validate_ring_and_build_poly(exterior)?;
-            for hole in rings.iter().skip(1) {
-                let hole_poly = validate_ring_and_build_poly(hole)?;
-                let inside = hole_poly
-                    .exterior()
-                    .coords()
-                    .all(|c| ext_poly.intersects(&geo::Point::from(*c)));
-                if !inside {
-                    return Err(AppError::bad(
-                        "INVALID_GEOMETRY",
-                        "Polygon interior hole must lie within the exterior ring",
-                    ));
-                }
-            }
-            Ok(())
-        }
+        GeoShapeDto::Polygon(rings) => validate_polygon_rings(rings),
     }
+}
+
+fn validate_polygon_rings(rings: &[Vec<[f64; 2]>]) -> Result<(), AppError> {
+    let Some(exterior) = rings.first() else {
+        return Err(AppError::bad(
+            "INVALID_GEOMETRY",
+            "Polygon requires at least an exterior ring",
+        ));
+    };
+    let ext_poly = validate_ring_and_build_poly(exterior)?;
+    let mut holes_area_sum = 0.0_f64;
+    for hole in rings.iter().skip(1) {
+        let hole_poly = validate_ring_and_build_poly(hole)?;
+        let inside = hole_poly
+            .exterior()
+            .coords()
+            .all(|c| ext_poly.intersects(&geo::Point::from(*c)));
+        if !inside {
+            return Err(AppError::bad(
+                "INVALID_GEOMETRY",
+                "Polygon interior hole must lie within the exterior ring",
+            ));
+        }
+        holes_area_sum += hole_poly.unsigned_area();
+    }
+    let full_poly = build_geo_polygon(rings)?;
+    if ext_poly.unsigned_area() - holes_area_sum <= GEOM_EPS
+        || full_poly.unsigned_area() <= GEOM_EPS
+    {
+        return Err(AppError::bad(
+            "INVALID_GEOMETRY",
+            "Polygon net area must be > 0",
+        ));
+    }
+    Ok(())
 }
 
 /// Parses a URL-decoded `polygon` query parameter (`GeoJSON` `Polygon` object or ring array) and validates it.
@@ -266,10 +279,10 @@ pub fn spatial_filter_bbox(filter: &SpatialFilterSpec) -> Result<[f64; 4], AppEr
                 ));
             };
             validate_geo_point(center)?;
-            if !radius_m.is_finite() || radius_m < 0.0 {
+            if !radius_m.is_finite() || radius_m <= 0.0 {
                 return Err(AppError::bad(
                     "INVALID_GEOMETRY",
-                    "radius_meters must be finite and >= 0",
+                    "radius_meters must be finite and > 0",
                 ));
             }
             Ok(dwithin_degree_bbox(center, radius_m))
@@ -352,7 +365,15 @@ pub fn matches_spatial_filter(
             let center = filter.center.ok_or_else(|| {
                 AppError::bad("INVALID_GEOMETRY", "center is required for DWITHIN")
             })?;
-            let radius_m = filter.radius_meters.unwrap_or(0.0);
+            let radius_m = filter.radius_meters.ok_or_else(|| {
+                AppError::bad("INVALID_GEOMETRY", "radius_meters is required for DWITHIN")
+            })?;
+            if !radius_m.is_finite() || radius_m <= 0.0 {
+                return Err(AppError::bad(
+                    "INVALID_GEOMETRY",
+                    "radius_meters must be finite and > 0",
+                ));
+            }
             if let Some(pt) = point {
                 if !point_in_bbox(pt, f_bbox) {
                     return Ok(false);

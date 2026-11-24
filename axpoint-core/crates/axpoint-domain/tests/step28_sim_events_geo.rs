@@ -588,3 +588,182 @@ fn step28_geo_validation_rejects_invalid_geometries() -> Result<(), AppError> {
 
     Ok(())
 }
+
+#[test]
+fn step28_zero_radius_and_zero_net_area_polygon_rejected() -> Result<(), AppError> {
+    let center = GeoPoint {
+        lng: 121.47,
+        lat: 31.23,
+    };
+    for bad_radius in [0.0, -10.0, f64::NAN] {
+        let spec = SpatialFilterSpec {
+            op: GeoPredicateOp::GeoDwithinMeters,
+            bbox: None,
+            polygon: None,
+            center: Some(center),
+            radius_meters: Some(bad_radius),
+        };
+        expect_invalid_geometry(spatial_filter_bbox(&spec))?;
+        expect_invalid_geometry(matches_spatial_filter(Some(center), None, &spec))?;
+    }
+
+    // Polygon([ring, ring]) with identical exterior & interior hole -> 0 net area (same & opposite winding)
+    let outer_ring = vec![
+        [120.0, 30.0],
+        [122.0, 30.0],
+        [122.0, 32.0],
+        [120.0, 32.0],
+        [120.0, 30.0],
+    ];
+    let mut reversed_ring = outer_ring.clone();
+    reversed_ring.reverse();
+    expect_invalid_geometry(validate_geo_shape(&GeoShapeDto::Polygon(vec![
+        outer_ring.clone(),
+        outer_ring.clone(),
+    ])))?;
+    expect_invalid_geometry(validate_geo_shape(&GeoShapeDto::Polygon(vec![
+        outer_ring,
+        reversed_ring,
+    ])))?;
+
+    Ok(())
+}
+
+#[test]
+fn step28_manual_action_and_at_step_event_compose_on_same_channel() -> Result<(), AppError> {
+    let plant = make_geo_node(
+        41,
+        "Step28Plant",
+        "Kunshan Plant",
+        &[("output", 300.0)],
+        None,
+    );
+    let graph = SimGraph {
+        nodes: vec![plant.clone()],
+        links: Vec::new(),
+        edge_specs: BTreeMap::new(),
+    };
+    let manual_actions = vec![AxSimAction {
+        target_node_id: plant.id,
+        metric_key: String::from("output"),
+        mode: Some(InterventionMode::Add),
+        value: Some(-100.0),
+        delta_ratio: None,
+        at_step: 0,
+    }];
+    let params = SimParams {
+        mode: SimMode::Stepped,
+        horizon_steps: 6,
+        ..SimParams::default()
+    };
+    let recover_events = vec![SimEventSpec {
+        id: String::from("ev_recover_step4"),
+        name: String::from("Step-4 Recovery"),
+        trigger_kind: SimEventTriggerKind::AtStep,
+        at_step: Some(4),
+        watch_node_id: None,
+        watch_metric: None,
+        op: None,
+        threshold: None,
+        cooldown_steps: 1,
+        max_fires: 1,
+        actions: vec![AxSimAction {
+            target_node_id: plant.id,
+            metric_key: String::from("output"),
+            mode: Some(InterventionMode::Add),
+            value: Some(80.0),
+            delta_ratio: None,
+            at_step: 0,
+        }],
+    }];
+
+    let res = stepped::solve_with_events(&graph, &manual_actions, &params, &recover_events, &[])?;
+    let imp = res
+        .impacts
+        .iter()
+        .find(|r| r.node_id == plant.id && r.metric == "output")
+        .ok_or_else(|| AppError::bad("TEST_MISSING", "missing output impact"))?;
+    assert!((imp.after_val - 280.0).abs() < 1e-9);
+    Ok(())
+}
+
+#[test]
+fn step28_manual_action_threshold_and_at_step_compose_chronologically() -> Result<(), AppError> {
+    let plant = make_geo_node(
+        42,
+        "Step28Plant",
+        "Kunshan Plant",
+        &[("output", 300.0)],
+        None,
+    );
+    let graph = SimGraph {
+        nodes: vec![plant.clone()],
+        links: Vec::new(),
+        edge_specs: BTreeMap::new(),
+    };
+    let manual_actions = vec![AxSimAction {
+        target_node_id: plant.id,
+        metric_key: String::from("output"),
+        mode: Some(InterventionMode::Add),
+        value: Some(-100.0),
+        delta_ratio: None,
+        at_step: 0,
+    }];
+    let events = vec![
+        SimEventSpec {
+            id: String::from("ev_thresh_boost"),
+            name: String::from("Low Output Boost"),
+            trigger_kind: SimEventTriggerKind::MetricThreshold,
+            at_step: None,
+            watch_node_id: Some(plant.id),
+            watch_metric: Some(String::from("output")),
+            op: Some(SimThresholdOp::Lt),
+            threshold: Some(220.0),
+            cooldown_steps: 2,
+            max_fires: 1,
+            actions: vec![AxSimAction {
+                target_node_id: plant.id,
+                metric_key: String::from("output"),
+                mode: Some(InterventionMode::Add),
+                value: Some(30.0),
+                delta_ratio: None,
+                at_step: 0,
+            }],
+        },
+        SimEventSpec {
+            id: String::from("ev_recover_step4"),
+            name: String::from("Step-4 Recovery"),
+            trigger_kind: SimEventTriggerKind::AtStep,
+            at_step: Some(4),
+            watch_node_id: None,
+            watch_metric: None,
+            op: None,
+            threshold: None,
+            cooldown_steps: 1,
+            max_fires: 1,
+            actions: vec![AxSimAction {
+                target_node_id: plant.id,
+                metric_key: String::from("output"),
+                mode: Some(InterventionMode::Add),
+                value: Some(80.0),
+                delta_ratio: None,
+                at_step: 0,
+            }],
+        },
+    ];
+    let params = SimParams {
+        mode: SimMode::Stepped,
+        horizon_steps: 6,
+        ..SimParams::default()
+    };
+
+    let res = stepped::solve_with_events(&graph, &manual_actions, &params, &events, &[])?;
+    assert_eq!(res.fired_events.len(), 2);
+    let imp = res
+        .impacts
+        .iter()
+        .find(|r| r.node_id == plant.id && r.metric == "output")
+        .ok_or_else(|| AppError::bad("TEST_MISSING", "missing combined output impact"))?;
+    assert!((imp.after_val - 310.0).abs() < 1e-9);
+    Ok(())
+}

@@ -16,8 +16,8 @@ use crate::sim::scc::{SccGraph, is_cyclic_component, tarjan_scc_topo};
 use crate::sim::steady::{
     ChannelFixedAction, ChannelSystem, ChannelVertex, accumulate_single_edge,
     build_channel_system_with_extra_seeds, collect_impacts_and_warnings, combine_channel_deltas,
-    compute_system_top_paths, compute_vertex_after_val, empty_sim_result, evaluate_fixed_actions,
-    insert_checkpoint_metric, set_pair, sort_impacts_desc, validate_common_params,
+    compute_system_top_paths, compute_vertex_after_val, empty_sim_result, insert_checkpoint_metric,
+    set_pair, sort_impacts_desc, validate_common_params,
 };
 use crate::sim::{
     Checkpoint, DeadlineReport, FiredEventRecord, ImpactRow, NormalizedAction, SimEventSpec,
@@ -649,9 +649,50 @@ fn eval_event_exogenous_delta(acts: &[NormalizedAction]) -> (f64, f64) {
     (rel_mult - 1.0, abs_sum)
 }
 
-fn eval_event_absolute_override(vert: &ChannelVertex, acts: &[NormalizedAction]) -> (f64, f64) {
+#[derive(Clone, Copy)]
+struct OrderedChannelAction {
+    at_step: u32,
+    source_rank: u8,
+    seq: usize,
+    mode: InterventionMode,
+    value: f64,
+}
+
+fn evaluate_masked_actions(
+    vert: &ChannelVertex,
+    ev_acts: &[NormalizedAction],
+    step: u32,
+) -> (f64, f64) {
+    let mut ordered = Vec::with_capacity(vert.fixed_actions.len() + ev_acts.len());
+    for (idx, act) in vert.fixed_actions.iter().enumerate() {
+        if act.at_step <= step {
+            ordered.push(OrderedChannelAction {
+                at_step: act.at_step,
+                source_rank: 0,
+                seq: idx,
+                mode: act.mode,
+                value: act.value,
+            });
+        }
+    }
+    for (idx, act) in ev_acts.iter().enumerate() {
+        if act.at_step <= step {
+            ordered.push(OrderedChannelAction {
+                at_step: act.at_step,
+                source_rank: 1,
+                seq: idx,
+                mode: act.mode,
+                value: act.value,
+            });
+        }
+    }
+    if ordered.is_empty() {
+        return (0.0, 0.0);
+    }
+    ordered.sort_by_key(|a| (a.at_step, a.source_rank, a.seq));
+
     let mut after_val = vert.before_val.unwrap_or(0.0);
-    for act in acts {
+    for act in ordered {
         match act.mode {
             InterventionMode::Ratio => after_val *= 1.0 + act.value,
             InterventionMode::Add => after_val += act.value,
@@ -735,15 +776,9 @@ fn solve_step_acyclic_vertex(
     let Some(vert) = system.vertices.get(u) else {
         return;
     };
-    if is_fixed_at(system, u, ctx.step) {
-        let (rx, ax) = evaluate_fixed_actions(vert, Some(ctx.step));
-        set_pair(rel_t, abs_t, u, rx, ax);
-        return;
-    }
-    if has_event_absolute(ctx.event_actions, u)
-        && let Some(ev_acts) = ctx.event_actions.get(u)
-    {
-        let (rx, ax) = eval_event_absolute_override(vert, ev_acts);
+    if is_masked_at(system, ctx.event_actions, u, ctx.step) {
+        let ev_acts = ctx.event_actions.get(u).map_or(&[][..], Vec::as_slice);
+        let (rx, ax) = evaluate_masked_actions(vert, ev_acts, ctx.step);
         set_pair(rel_t, abs_t, u, rx, ax);
         return;
     }
@@ -896,30 +931,14 @@ fn jacobi_step_for_t(
     let mut max_diff = 0.0_f64;
 
     for (local_i, &u) in comp.iter().enumerate() {
-        let mut r_sum = prep.ext_rel.get(local_i).copied().unwrap_or(0.0);
-        let mut a_sum = prep.ext_abs.get(local_i).copied().unwrap_or(0.0);
-        if let Some(e_list) = prep.int_edges.get(local_i) {
-            for &ei in e_list {
-                if let Some(e) = system.edges.get(ei) {
-                    let scale = ctx.edge_scales.get(ei).copied().unwrap_or(1.0);
-                    accumulate_single_edge(
-                        e,
-                        scale,
-                        state.rel_t,
-                        state.abs_t,
-                        Some(&mut r_sum),
-                        Some(&mut a_sum),
-                    );
-                }
-            }
-        }
-
-        let before = system.vertices.get(u).and_then(|v| v.before_val);
-        let (target_r, target_a) = combine_channel_deltas(before, r_sum, a_sum);
-        let old_r = state.cur_rel.get(local_i).copied().unwrap_or(0.0);
-        let old_a = state.cur_abs.get(local_i).copied().unwrap_or(0.0);
-        let nr = (1.0 - alpha) * old_r + alpha * target_r;
-        let na = (1.0 - alpha) * old_a + alpha * target_a;
+        let (nr, na) = if is_masked_at(system, ctx.event_actions, u, ctx.step)
+            && let Some(vert) = system.vertices.get(u)
+        {
+            let ev_acts = ctx.event_actions.get(u).map_or(&[][..], Vec::as_slice);
+            evaluate_masked_actions(vert, ev_acts, ctx.step)
+        } else {
+            eval_jacobi_unmasked_vertex(system, ctx, prep, state, local_i, u, alpha)
+        };
 
         if !nr.is_finite() || !na.is_finite() {
             return Err(AppError::bad(
@@ -928,6 +947,8 @@ fn jacobi_step_for_t(
             ));
         }
 
+        let old_r = state.cur_rel.get(local_i).copied().unwrap_or(0.0);
+        let old_a = state.cur_abs.get(local_i).copied().unwrap_or(0.0);
         max_diff = max_diff.max((nr - old_r).abs().max((na - old_a).abs()));
         if let Some(slot) = next_rel.get_mut(local_i) {
             *slot = nr;
@@ -945,6 +966,42 @@ fn jacobi_step_for_t(
     }
 
     Ok(max_diff)
+}
+
+fn eval_jacobi_unmasked_vertex(
+    system: &ChannelSystem,
+    ctx: &StepSolveCtx<'_>,
+    prep: &StepCyclicPrep,
+    state: &StepJacobiState<'_>,
+    local_i: usize,
+    u: usize,
+    alpha: f64,
+) -> (f64, f64) {
+    let mut r_sum = prep.ext_rel.get(local_i).copied().unwrap_or(0.0);
+    let mut a_sum = prep.ext_abs.get(local_i).copied().unwrap_or(0.0);
+    if let Some(e_list) = prep.int_edges.get(local_i) {
+        for &ei in e_list {
+            if let Some(e) = system.edges.get(ei) {
+                let scale = ctx.edge_scales.get(ei).copied().unwrap_or(1.0);
+                accumulate_single_edge(
+                    e,
+                    scale,
+                    state.rel_t,
+                    state.abs_t,
+                    Some(&mut r_sum),
+                    Some(&mut a_sum),
+                );
+            }
+        }
+    }
+    let before = system.vertices.get(u).and_then(|v| v.before_val);
+    let (target_r, target_a) = combine_channel_deltas(before, r_sum, a_sum);
+    let old_r = state.cur_rel.get(local_i).copied().unwrap_or(0.0);
+    let old_a = state.cur_abs.get(local_i).copied().unwrap_or(0.0);
+    (
+        (1.0 - alpha) * old_r + alpha * target_r,
+        (1.0 - alpha) * old_a + alpha * target_a,
+    )
 }
 
 fn compute_step_after_vals(system: &ChannelSystem, rel_t: &[f64], abs_t: &[f64]) -> Vec<f64> {
