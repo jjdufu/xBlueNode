@@ -3,6 +3,12 @@
 //! `AxQL` compilation, `AxSim` trial run, chart/dashboard preflight, and Competency QA harness,
 //! `07-STEP29` §29.4).
 
+mod action_dryrun;
+mod sandbox_eval;
+mod schemas;
+
+pub use schemas::step29_axbuilder_tool_schema;
+
 use std::collections::BTreeMap;
 
 use axpoint_domain::AppError;
@@ -11,15 +17,15 @@ use axpoint_domain::builder::{
     BuilderDatasetSampleResponse, BuilderSimTrialRunInput, BuilderUpsertChartDraftInput,
     CompetencyQuestionSpec, UpsertCompetencySuiteRequest, VerifyCompetencySuiteRequest,
 };
-use axpoint_domain::enums::{DataType, MaskRule, Permission, PiiCategory};
+use axpoint_domain::enums::{DataType, Permission, PiiCategory};
 use axpoint_domain::expr::{EvalEnv, collect_references, eval as eval_expr, parse as parse_expr};
+use axpoint_domain::graph::NodeListQuery;
 use axpoint_domain::ports::{
     AgentRepository, AnalyticsRepository, DatasetRepository, FlowRepository, GraphQueryPort,
     GraphStorePort, StudioRepository,
 };
 use axpoint_domain::studio::{CertifySubgraphRequest, DraftStatus, diff_schema};
 use axpoint_security::AuthPrincipal;
-use axpoint_security::masking::mask_json_properties;
 use serde::Serialize;
 use uuid::Uuid;
 
@@ -111,154 +117,6 @@ pub fn discover_fk_join_candidates(
         }
     }
     out
-}
-
-/// Returns the JSON Schema (`inputSchema`) for one of the 13 Step 29 `axbuilder_*` tools (`07-STEP29` §29.4).
-#[must_use]
-pub fn step29_axbuilder_tool_schema(name: &str) -> Option<serde_json::Value> {
-    step29_data_and_model_schema(name).or_else(|| step29_sandbox_and_qa_schema(name))
-}
-
-fn step29_data_and_model_schema(name: &str) -> Option<serde_json::Value> {
-    match name {
-        "axbuilder_list_datasets" => Some(serde_json::json!({
-            "type": "object",
-            "properties": {
-                "q": { "type": "string" },
-                "tag": { "type": "string" },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
-            },
-            "additionalProperties": false
-        })),
-        "axbuilder_inspect_dataset_profile" => Some(serde_json::json!({
-            "type": "object",
-            "required": ["dataset"],
-            "properties": {
-                "dataset": { "type": "string", "minLength": 1 }
-            },
-            "additionalProperties": false
-        })),
-        "axbuilder_sample_dataset_rows" => Some(serde_json::json!({
-            "type": "object",
-            "required": ["dataset"],
-            "properties": {
-                "dataset": { "type": "string", "minLength": 1 },
-                "limit": { "type": "integer", "minimum": 1, "maximum": 20 }
-            },
-            "additionalProperties": false
-        })),
-        "axbuilder_diff_schema_draft" => Some(serde_json::json!({
-            "type": "object",
-            "properties": {
-                "subgraph_slug": { "type": "string", "minLength": 1 },
-                "draft_id": { "type": "string", "format": "uuid" }
-            },
-            "additionalProperties": false
-        })),
-        "axbuilder_eval_expression" => Some(serde_json::json!({
-            "type": "object",
-            "required": ["expression"],
-            "properties": {
-                "expression": { "type": "string", "minLength": 1 },
-                "metrics": { "type": "object" },
-                "properties": { "type": "object" },
-                "subgraph_slug": { "type": "string", "minLength": 1 },
-                "node_id": { "type": "string", "format": "uuid" }
-            },
-            "additionalProperties": false
-        })),
-        "axbuilder_dryrun_action_spec" => Some(serde_json::json!({
-            "type": "object",
-            "required": ["subgraph_slug", "type_name", "node_key", "action_name"],
-            "properties": {
-                "subgraph_slug": { "type": "string", "minLength": 1 },
-                "type_name": { "type": "string", "minLength": 1 },
-                "node_key": { "type": "string", "minLength": 1 },
-                "action_name": { "type": "string", "minLength": 1 },
-                "inputs": { "type": "object" }
-            },
-            "additionalProperties": false
-        })),
-        _ => None,
-    }
-}
-
-fn step29_sandbox_and_qa_schema(name: &str) -> Option<serde_json::Value> {
-    match name {
-        "axbuilder_certify_subgraph" => Some(serde_json::json!({
-            "type": "object",
-            "required": ["subgraph_slug"],
-            "properties": {
-                "subgraph_slug": { "type": "string", "minLength": 1 },
-                "draft_id": { "type": "string", "format": "uuid" },
-                "sample_limit": { "type": "integer", "minimum": 1, "maximum": 500 }
-            },
-            "additionalProperties": false
-        })),
-        "axbuilder_compile_axql" => Some(serde_json::json!({
-            "type": "object",
-            "required": ["axql"],
-            "properties": {
-                "axql": { "type": "string", "minLength": 1 },
-                "subgraph_slug": { "type": "string", "minLength": 1 }
-            },
-            "additionalProperties": false
-        })),
-        "axbuilder_sim_trial_run" => Some(serde_json::json!({
-            "type": "object",
-            "required": ["subgraph_slug", "actions"],
-            "properties": {
-                "subgraph_slug": { "type": "string", "minLength": 1 },
-                "actions": { "type": "array", "items": { "type": "object" } },
-                "params": { "type": "object" }
-            },
-            "additionalProperties": false
-        })),
-        "axbuilder_upsert_chart_draft" => Some(serde_json::json!({
-            "type": "object",
-            "required": ["name", "widget_kind", "data_source"],
-            "properties": {
-                "chart_id": { "type": "string", "format": "uuid" },
-                "name": { "type": "string", "minLength": 1 },
-                "description": { "type": "string" },
-                "widget_kind": { "type": "string", "minLength": 1 },
-                "data_source": { "type": "object" },
-                "encoding": { "type": "object" },
-                "options": { "type": "object" },
-                "sensitivity": { "type": "string", "enum": ["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"] }
-            },
-            "additionalProperties": false
-        })),
-        "axbuilder_preflight_dashboard" => Some(serde_json::json!({
-            "type": "object",
-            "required": ["dashboard_id"],
-            "properties": {
-                "dashboard_id": { "type": "string", "format": "uuid" }
-            },
-            "additionalProperties": false
-        })),
-        "axbuilder_upsert_competency_suite" => Some(serde_json::json!({
-            "type": "object",
-            "required": ["questions"],
-            "properties": {
-                "subgraph_slug": { "type": "string", "minLength": 1 },
-                "questions": { "type": "array", "items": { "type": "object" } }
-            },
-            "additionalProperties": false
-        })),
-        "axbuilder_verify_competency_suite" => Some(serde_json::json!({
-            "type": "object",
-            "properties": {
-                "subgraph_slug": { "type": "string", "minLength": 1 },
-                "draft_id": { "type": "string", "format": "uuid" },
-                "run_dev_materialize": { "type": "boolean" },
-                "limit_rows": { "type": "integer", "minimum": 1, "maximum": 5000 },
-                "questions_override": { "type": "array", "items": { "type": "object" } }
-            },
-            "additionalProperties": false
-        })),
-        _ => None,
-    }
 }
 
 impl<R> McpServerHub<R>
@@ -551,32 +409,38 @@ where
         args: &serde_json::Value,
     ) -> Result<EvalEnv, AppError> {
         if let Some(nid) = optional_uuid_arg(args, "node_id")? {
-            let mut node = self
-                .store
-                .get_node(&principal.tenant_id, nid)
-                .await?
-                .ok_or(AppError::NotFound("NODE_NOT_FOUND"))?;
-            if !principal.has(Permission::PiiRawRead)
-                && let Ok(pub_schema) = self
+            let slug = optional_slug_or_main(args);
+            let draft_id = optional_uuid_arg(args, "draft_id")?;
+            let mut node = if slug == "main" {
+                self.store
+                    .get_node(&principal.tenant_id, nid)
+                    .await?
+                    .ok_or(AppError::NotFound("NODE_NOT_FOUND"))?
+            } else {
+                let page = self
                     .store
-                    .get_published_schema(&principal.tenant_id, optional_slug_or_main(args))
-                    .await
-                && let Some(nt) = pub_schema
-                    .doc
-                    .node_types
-                    .iter()
-                    .find(|n| n.name == node.type_name)
-            {
-                let mut masks = BTreeMap::new();
-                for p in &nt.properties {
-                    if p.pii_category != PiiCategory::None {
-                        masks.insert(p.name.clone(), MaskRule::from_pii_category(p.pii_category));
-                    }
-                }
-                if !masks.is_empty() {
-                    let key = self.mask_keys.tenant_key(&principal.tenant_id);
-                    mask_json_properties(&mut node.properties, &masks, &key);
-                }
+                    .list_nodes(
+                        &principal.tenant_id,
+                        NodeListQuery {
+                            subgraph: Some(String::from(slug)),
+                            limit: Some(5_000),
+                            ..NodeListQuery::default()
+                        },
+                    )
+                    .await?;
+                page.nodes
+                    .into_iter()
+                    .find(|n| n.id == nid)
+                    .ok_or(AppError::NotFound("NODE_NOT_FOUND"))?
+            };
+            if !principal.has(Permission::PiiRawRead) {
+                self.mask_sandbox_sample_nodes(
+                    &principal.tenant_id,
+                    slug,
+                    draft_id,
+                    std::slice::from_mut(&mut node),
+                )
+                .await;
             }
             return Ok(EvalEnv::from_node(&node.metrics, &node.properties));
         }
@@ -595,41 +459,6 @@ where
             .and_then(serde_json::Value::as_object)
             .unwrap_or(&empty_props);
         Ok(EvalEnv::from_node(&metrics, props))
-    }
-
-    async fn tool_dryrun_action_spec(
-        &self,
-        principal: &AuthPrincipal,
-        args: &serde_json::Value,
-    ) -> Result<serde_json::Value, AppError> {
-        let slug = required_str_arg(args, "subgraph_slug")?;
-        if slug == "main" {
-            return Err(AppError::bad(
-                "DEV_SANDBOX_REQUIRED",
-                "axbuilder_dryrun_action_spec requires a non-main dev/trial subgraph",
-            ));
-        }
-        let type_name = required_str_arg(args, "type_name")?;
-        let node_key = required_str_arg(args, "node_key")?;
-        let action_name = required_str_arg(args, "action_name")?;
-        let inputs = args
-            .get("inputs")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}));
-        let harness = self.builder_harness.as_ref().ok_or_else(|| {
-            AppError::Config(String::from("BuilderHarnessPort is not configured"))
-        })?;
-
-        let resp = harness
-            .dryrun_dev_action_spec(
-                &principal.tenant_id,
-                non_nil_uid(principal.user_id),
-                slug,
-                (type_name, node_key, action_name),
-                inputs,
-            )
-            .await?;
-        to_json_val(&resp, "InvokeObjectActionResponse")
     }
 
     async fn tool_certify_subgraph(

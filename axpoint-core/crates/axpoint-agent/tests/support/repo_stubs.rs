@@ -1186,8 +1186,19 @@ impl GraphStorePort for MockStep09Store {
             tokio::time::sleep(Duration::from_millis(delay)).await;
         }
         let guard = self.inner.lock().await;
-        let items: Vec<BlueNode> = guard
-            .nodes
+        let slug = query
+            .subgraph
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("main");
+        let empty_nodes = Vec::new();
+        let src_nodes = if slug == "main" {
+            &guard.nodes
+        } else {
+            guard.sandbox_nodes.get(slug).unwrap_or(&empty_nodes)
+        };
+        let items: Vec<BlueNode> = src_nodes
             .iter()
             .filter(|n| {
                 query
@@ -1220,7 +1231,8 @@ impl GraphStorePort for MockStep09Store {
         if delay > 0 {
             tokio::time::sleep(Duration::from_millis(delay)).await;
         }
-        let guard = self.inner.lock().await;
+        let mut guard = self.inner.lock().await;
+        guard.get_node_main_calls = guard.get_node_main_calls.saturating_add(1);
         Ok(guard.nodes.iter().find(|n| n.id == node_id).cloned())
     }
 
@@ -1378,12 +1390,30 @@ impl GraphQueryPort for MockStep09Store {
         std::future::ready(Err(AppError::NotFound("NOT_FOUND")))
     }
 
-    fn query_subgraph(
+    async fn query_subgraph(
         &self,
         _tenant_id: &str,
-        _query: SubgraphQuery,
-    ) -> impl Future<Output = Result<SubgraphResponse, AppError>> {
-        std::future::ready(Err(AppError::NotFound("NOT_FOUND")))
+        query: SubgraphQuery,
+    ) -> Result<SubgraphResponse, AppError> {
+        let guard = self.inner.lock().await;
+        let slug = query
+            .subgraph
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("main");
+        if slug == "main" {
+            return Ok(SubgraphResponse {
+                nodes: guard.nodes.clone(),
+                links: guard.links.clone(),
+                truncated: false,
+            });
+        }
+        Ok(SubgraphResponse {
+            nodes: guard.sandbox_nodes.get(slug).cloned().unwrap_or_default(),
+            links: guard.sandbox_links.get(slug).cloned().unwrap_or_default(),
+            truncated: false,
+        })
     }
 
     fn run_algorithm(

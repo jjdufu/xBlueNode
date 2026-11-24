@@ -1809,3 +1809,360 @@ async fn mcp_axbuilder_22_tools_eval_expr_and_main_isolation() -> Result<(), App
     );
     Ok(())
 }
+
+async fn init_builder_mcp_session(
+    stack: &HarnessStack,
+    builder: &axpoint_security::AuthPrincipal,
+) -> Result<String, AppError> {
+    stack
+        .mcp_hub
+        .handle_post(
+            builder,
+            None,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "protocolVersion": "2025-03-26" }
+            }),
+            "127.0.0.1",
+            "tr-rt-init",
+        )
+        .await?
+        .session_id
+        .ok_or_else(|| AppError::Config(String::from("missing Mcp-Session-Id")))
+}
+
+async fn call_builder_mcp_tool(
+    stack: &HarnessStack,
+    builder: &axpoint_security::AuthPrincipal,
+    sid: &str,
+    name: &str,
+    arguments: serde_json::Value,
+) -> Result<serde_json::Value, AppError> {
+    Ok(stack
+        .mcp_hub
+        .handle_post(
+            builder,
+            Some(sid),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": { "name": name, "arguments": arguments }
+            }),
+            "127.0.0.1",
+            "tr-rt-call",
+        )
+        .await?
+        .body
+        .unwrap_or_default())
+}
+
+async fn setup_redteam_dev_sandbox_session(
+    schema_doc: serde_json::Value,
+    dev_node: axpoint_domain::topology::BlueNode,
+) -> Result<(HarnessStack, axpoint_security::AuthPrincipal, String), AppError> {
+    use axpoint_domain::builder::BUILDER_DEFAULT_SCOPES;
+    use axpoint_domain::enums::TokenProfile;
+    use axpoint_domain::ports::StudioRepository;
+    use axpoint_domain::studio::CreateSubgraphRequest;
+
+    let stack = HarnessStack::build(
+        Arc::new(CassetteModelAdapter::from_entries(Vec::new())),
+        None,
+    )
+    .await?;
+    let mut builder = make_principal(TokenKind::ApiToken, BUILDER_DEFAULT_SCOPES);
+    builder.token_profile = TokenProfile::Builder;
+    assert!(!builder.has(Permission::PiiRawRead));
+
+    stack
+        .store
+        .create_subgraph(
+            "default",
+            None,
+            CreateSubgraphRequest {
+                slug: String::from("dev_sbx"),
+                display_name: String::from("开发沙盒"),
+                description: String::new(),
+                owner_dept: String::new(),
+                is_dev_sandbox: true,
+                seed_from_main: false,
+                seed_node_types: None,
+                source_template_id: None,
+            },
+        )
+        .await?;
+
+    let sid = init_builder_mcp_session(&stack, &builder).await?;
+    let _push = call_builder_mcp_tool(
+        &stack,
+        &builder,
+        &sid,
+        "axbuilder_push_schema_draft",
+        serde_json::json!({
+            "subgraph_slug": "dev_sbx",
+            "title": "红队验证草案",
+            "schema_doc": schema_doc
+        }),
+    )
+    .await?;
+
+    {
+        let mut guard = stack.store.inner.lock().await;
+        guard
+            .sandbox_nodes
+            .insert(String::from("dev_sbx"), vec![dev_node]);
+        guard.get_node_main_calls = 0;
+    }
+    Ok((stack, builder, sid))
+}
+
+#[tokio::test]
+async fn mcp_axbuilder_redteam_eval_expression_subgraph_isolation_and_pii_masking()
+-> Result<(), AppError> {
+    let dev_c1_id = Uuid::from_u128(0x9901);
+    let dev_node = serde_json::from_value(serde_json::json!({
+        "id": dev_c1_id,
+        "type_name": "DevCustomer",
+        "node_key": "C-1",
+        "title": "客户一号",
+        "properties": { "contact_phone": "13900009999" },
+        "metrics": {},
+        "row_version": 1
+    }))
+    .map_err(|e| AppError::Config(format!("dev_node deserialize: {e}")))?;
+
+    let (stack, builder, sid) = setup_redteam_dev_sandbox_session(
+        serde_json::json!({
+            "node_types": [{
+                "name": "DevCustomer",
+                "display_name": "沙盒客户",
+                "properties": [{
+                    "name": "contact_phone",
+                    "display_name": "联系手机",
+                    "data_type": "STRING",
+                    "kind": "ATTRIBUTE",
+                    "required": false,
+                    "pii_category": "PHONE"
+                }]
+            }],
+            "edge_types": [],
+            "mappings": []
+        }),
+        dev_node,
+    )
+    .await?;
+
+    // 1. Passing a PROD main node_id with subgraph_slug = "dev_sbx" must return 404 NODE_NOT_FOUND with 0 main reads
+    let cross_rpc = call_builder_mcp_tool(
+        &stack,
+        &builder,
+        &sid,
+        "axbuilder_eval_expression",
+        serde_json::json!({
+            "expression": "prop.manager_phone",
+            "node_id": WAREHOUSE_W1_ID,
+            "subgraph_slug": "dev_sbx"
+        }),
+    )
+    .await?;
+    assert_eq!(
+        cross_rpc.pointer("/result/isError"),
+        Some(&serde_json::json!(true))
+    );
+    let cross_txt = cross_rpc.to_string();
+    assert!(cross_txt.contains("NODE_NOT_FOUND"));
+    assert!(!cross_txt.contains("13812345678"));
+    assert_eq!(stack.store.inner.lock().await.get_node_main_calls, 0);
+
+    // 2. Evaluating on main masks main PII (prop.manager_phone)
+    let main_rpc = call_builder_mcp_tool(
+        &stack,
+        &builder,
+        &sid,
+        "axbuilder_eval_expression",
+        serde_json::json!({
+            "expression": "prop.manager_phone",
+            "node_id": WAREHOUSE_W1_ID,
+            "subgraph_slug": "main"
+        }),
+    )
+    .await?;
+    let main_val = decode_mcp_tool_text(&main_rpc)?;
+    let masked_main = main_val
+        .get("value")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    assert!(masked_main.contains("****"));
+    assert_ne!(masked_main, "13812345678");
+
+    // 3. Evaluating on dev_sbx masks DRAFT-only PII (prop.contact_phone)
+    let dev_rpc = call_builder_mcp_tool(
+        &stack,
+        &builder,
+        &sid,
+        "axbuilder_eval_expression",
+        serde_json::json!({
+            "expression": "prop.contact_phone",
+            "node_id": dev_c1_id,
+            "subgraph_slug": "dev_sbx"
+        }),
+    )
+    .await?;
+    let dev_val = decode_mcp_tool_text(&dev_rpc)?;
+    let masked_dev = dev_val
+        .get("value")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    assert!(masked_dev.contains("****"));
+    assert_ne!(masked_dev, "13900009999");
+    Ok(())
+}
+
+fn seed_redteam_dev_hub_schema() -> serde_json::Value {
+    serde_json::json!({
+        "node_types": [{
+            "name": "DevHub",
+            "display_name": "沙盒枢纽",
+            "properties": [
+                { "name": "manager_phone", "display_name": "手机", "data_type": "STRING", "kind": "ATTRIBUTE", "required": false, "pii_category": "PHONE" },
+                { "name": "stock_qty", "display_name": "库存", "data_type": "FLOAT64", "kind": "METRIC", "required": false },
+                { "name": "turnover_qty", "display_name": "周转", "data_type": "FLOAT64", "kind": "METRIC", "required": false }
+            ],
+            "derived_rules": [
+                { "target_metric": "turnover_qty", "expression": "stock_qty * 0.5", "enabled": true }
+            ],
+            "actions": [
+                {
+                    "name": "dispatch_batch",
+                    "display_name": "批次出库",
+                    "maturity": "PROPOSED",
+                    "side_effect_tier": "SELF_ONLY",
+                    "parameters": [{ "name": "amount", "display_name": "数量", "data_type": "FLOAT64", "required": true }],
+                    "precondition_expr": "stock_qty >= param.amount",
+                    "mutations": [{ "target": "self.stock_qty", "expression": "stock_qty - param.amount" }]
+                },
+                {
+                    "name": "write_protected",
+                    "display_name": "违规改写派生指标",
+                    "maturity": "PROPOSED",
+                    "side_effect_tier": "SELF_ONLY",
+                    "parameters": [],
+                    "mutations": [{ "target": "self.turnover_qty", "expression": "999.0" }]
+                }
+            ]
+        }],
+        "edge_types": [],
+        "mappings": []
+    })
+}
+
+#[tokio::test]
+async fn mcp_axbuilder_redteam_dryrun_action_spec_proposed_draft_pii_and_precondition()
+-> Result<(), AppError> {
+    let hub_node = serde_json::from_value(serde_json::json!({
+        "id": Uuid::from_u128(0x9902),
+        "type_name": "DevHub",
+        "node_key": "DH-1",
+        "title": "沙盒一号枢纽",
+        "properties": { "manager_phone": "13788886666" },
+        "metrics": { "stock_qty": 200.0, "turnover_qty": 100.0 },
+        "row_version": 1
+    }))
+    .map_err(|e| AppError::Config(format!("hub_node deserialize: {e}")))?;
+
+    let (stack, builder, sid) =
+        setup_redteam_dev_sandbox_session(seed_redteam_dev_hub_schema(), hub_node).await?;
+
+    // 1. PROPOSED draft ActionSpec dry-run mutates in memory, recomputes derived rule, masks PII, and leaves store untouched
+    let ok_rpc = call_builder_mcp_tool(
+        &stack,
+        &builder,
+        &sid,
+        "axbuilder_dryrun_action_spec",
+        serde_json::json!({
+            "subgraph_slug": "dev_sbx",
+            "type_name": "DevHub",
+            "node_key": "DH-1",
+            "action_name": "dispatch_batch",
+            "inputs": { "amount": 60.0 }
+        }),
+    )
+    .await?;
+    let ok_val = decode_mcp_tool_text(&ok_rpc)?;
+    assert_eq!(ok_val.get("status"), Some(&serde_json::json!("DRY_RUN")));
+    assert_eq!(
+        ok_val.pointer("/node/metrics/stock_qty"),
+        Some(&serde_json::json!(140.0))
+    );
+    assert_eq!(
+        ok_val.pointer("/node/metrics/turnover_qty"),
+        Some(&serde_json::json!(70.0))
+    );
+    let masked_phone = ok_val
+        .pointer("/node/properties/manager_phone")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    assert!(masked_phone.contains("****"));
+    assert_ne!(masked_phone, "13788886666");
+    {
+        let guard = stack.store.inner.lock().await;
+        assert_eq!(guard.get_node_main_calls, 0);
+        let stored_qty = guard
+            .sandbox_nodes
+            .get("dev_sbx")
+            .and_then(|v| v.first())
+            .and_then(|n| n.metrics.get("stock_qty"))
+            .copied();
+        assert_eq!(stored_qty, Some(200.0));
+    }
+
+    // 2. Precondition violation returns 422 ACTION_PRECONDITION_FAILED
+    let pre_rpc = call_builder_mcp_tool(
+        &stack,
+        &builder,
+        &sid,
+        "axbuilder_dryrun_action_spec",
+        serde_json::json!({
+            "subgraph_slug": "dev_sbx",
+            "type_name": "DevHub",
+            "node_key": "DH-1",
+            "action_name": "dispatch_batch",
+            "inputs": { "amount": 500.0 }
+        }),
+    )
+    .await?;
+    assert_eq!(
+        pre_rpc.pointer("/result/isError"),
+        Some(&serde_json::json!(true))
+    );
+    assert!(pre_rpc.to_string().contains("ACTION_PRECONDITION_FAILED"));
+
+    // 3. Direct mutation of derived metric returns DERIVED_METRIC_WRITE_FORBIDDEN
+    let prot_rpc = call_builder_mcp_tool(
+        &stack,
+        &builder,
+        &sid,
+        "axbuilder_dryrun_action_spec",
+        serde_json::json!({
+            "subgraph_slug": "dev_sbx",
+            "type_name": "DevHub",
+            "node_key": "DH-1",
+            "action_name": "write_protected",
+            "inputs": {}
+        }),
+    )
+    .await?;
+    assert_eq!(
+        prot_rpc.pointer("/result/isError"),
+        Some(&serde_json::json!(true))
+    );
+    assert!(
+        prot_rpc
+            .to_string()
+            .contains("DERIVED_METRIC_WRITE_FORBIDDEN")
+    );
+    Ok(())
+}

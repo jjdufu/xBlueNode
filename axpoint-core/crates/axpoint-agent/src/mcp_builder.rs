@@ -1032,7 +1032,7 @@ where
         to_json_val(&resp, "DevSubgraphRunResponse")
     }
 
-    async fn mask_sandbox_sample_nodes(
+    pub(crate) async fn mask_sandbox_sample_nodes(
         &self,
         tenant_id: &str,
         subgraph_slug: &str,
