@@ -24,7 +24,8 @@ use axpoint_domain::sim::{
     DecisionStatus, ImpactListQuery, ImpactRow, PatchOverlayLinkRequest, PatchOverlayNodeRequest,
     RefreshBaseResponse, SandboxGraphLink, SandboxGraphNode, SandboxGraphResponse, SandboxScope,
     ScenarioRecord, ScenarioStatus, ScopePreflightReport, ScopePreflightRequest, SimAskIntent,
-    SimAskRequest, SimAskResponse, SimGraph, SimMode, SimParams, evaluate_scope_preflight,
+    SimAskRequest, SimAskResponse, SimEventSpec, SimGoalConstraint, SimGraph, SimParams,
+    evaluate_scope_preflight,
 };
 use axpoint_domain::topology::{
     AxSandboxRecord, AxSimAction, AxSimImpactRow, AxSimResult, CreateAxSandboxRequest,
@@ -344,6 +345,34 @@ fn ensure_actions_target_visible(
     Ok(())
 }
 
+fn ensure_events_and_goals_visible(
+    scheduled_events: &[SimEventSpec],
+    goal_constraints: &[SimGoalConstraint],
+    visible: Option<&HashSet<Uuid>>,
+) -> Result<(), AppError> {
+    let Some(vis) = visible else {
+        return Ok(());
+    };
+    for ev in scheduled_events {
+        if ev.watch_node_id.is_some_and(|nid| !vis.contains(&nid))
+            || ev.actions.iter().any(|a| !vis.contains(&a.target_node_id))
+        {
+            return Err(AppError::NotFound("NODE_NOT_FOUND"));
+        }
+    }
+    for goal in goal_constraints {
+        if goal.target_node_id.is_some_and(|nid| !vis.contains(&nid))
+            || goal
+                .controllable_node_ids
+                .iter()
+                .any(|nid| !vis.contains(nid))
+        {
+            return Err(AppError::NotFound("NODE_NOT_FOUND"));
+        }
+    }
+    Ok(())
+}
+
 fn mask_sandbox_graph_node(
     state: &AppState,
     tenant_id: &str,
@@ -415,9 +444,31 @@ fn redact_scenario_with_visible(sc: &mut ScenarioRecord, visible: &HashSet<Uuid>
     let pre_act = sc.actions.len();
     sc.actions.retain(|a| visible.contains(&a.target_node_id));
     let act_removed = sc.actions.len() < pre_act;
+    sc.scheduled_events.retain(|ev| {
+        ev.watch_node_id.is_none_or(|nid| visible.contains(&nid))
+            && ev
+                .actions
+                .iter()
+                .all(|a| visible.contains(&a.target_node_id))
+    });
+    sc.goal_constraints
+        .retain(|g| g.target_node_id.is_none_or(|nid| visible.contains(&nid)));
+    for g in &mut sc.goal_constraints {
+        g.controllable_node_ids.retain(|nid| visible.contains(nid));
+    }
+    if let Some(ref mut report) = sc.deadline_report {
+        report
+            .items
+            .retain(|d| d.breach_node_id.is_none_or(|nid| visible.contains(&nid)));
+    }
     if let Some(ref mut sum) = sc.result {
         let pre_imp = sum.top_impacts.len();
         sum.top_impacts.retain(|r| visible.contains(&r.node_id));
+        if let Some(ref mut report) = sum.deadline_report {
+            report
+                .items
+                .retain(|d| d.breach_node_id.is_none_or(|nid| visible.contains(&nid)));
+        }
         if sum.top_impacts.len() < pre_imp || act_removed {
             sum.affected_count = sum.top_impacts.len();
             sum.kpis.clear();
@@ -476,13 +527,13 @@ fn solve_governed_sandbox_quick(
     req: &SimulateAxSandboxRequest,
 ) -> Result<AxSimResult, AppError> {
     let params = req.params.clone().unwrap_or_default();
-    let sim_res = if params.uncertainty.is_some() {
-        axpoint_domain::sim::uncertainty::solve(graph, &req.actions, &params)?
-    } else if params.mode == SimMode::Stepped {
-        axpoint_domain::sim::stepped::solve(graph, &req.actions, &params)?
-    } else {
-        axpoint_domain::sim::steady::solve(graph, &req.actions, &params)?
-    };
+    let sim_res = axpoint_domain::sim::uncertainty::solve_with_events(
+        graph,
+        &req.actions,
+        &params,
+        &req.scheduled_events,
+        &req.goal_constraints,
+    )?;
     let impacts = sim_res
         .impacts
         .into_iter()
@@ -523,6 +574,11 @@ async fn simulate_sandbox_handler(
         let (graph, visible) =
             load_governed_sim_graph(&state.store, &principal.tenant_id, id, &policy_ctx).await?;
         ensure_actions_target_visible(&req.actions, visible.as_ref())?;
+        ensure_events_and_goals_visible(
+            &req.scheduled_events,
+            &req.goal_constraints,
+            visible.as_ref(),
+        )?;
         return Ok(Json(solve_governed_sandbox_quick(&graph, &req)?));
     }
     let res = state
@@ -721,6 +777,15 @@ async fn list_scenarios_handler(
     Ok(Json(items))
 }
 
+struct ScenarioSolveJob {
+    scenario_id: Uuid,
+    graph: SimGraph,
+    actions: Vec<AxSimAction>,
+    scheduled_events: Vec<SimEventSpec>,
+    goal_constraints: Vec<SimGoalConstraint>,
+    params: SimParams,
+}
+
 async fn create_scenario_handler(
     State(state): State<AppState>,
     headers: axum::http::HeaderMap,
@@ -735,10 +800,11 @@ async fn create_scenario_handler(
             "scenario name cannot be empty",
         )));
     }
-    if req.actions.is_empty() {
+    if req.actions.is_empty() && req.scheduled_events.is_empty() && req.goal_constraints.is_empty()
+    {
         return Err(HttpError::from(AppError::bad(
             "INVALID_ARGUMENT",
-            "scenario actions cannot be empty",
+            "scenario requires at least one action, scheduled_event, or goal_constraint",
         )));
     }
 
@@ -750,9 +816,19 @@ async fn create_scenario_handler(
     let (graph, visible) =
         load_governed_sim_graph(&state.store, &principal.tenant_id, id, &policy_ctx).await?;
     ensure_actions_target_visible(&req.actions, visible.as_ref())?;
+    ensure_events_and_goals_visible(
+        &req.scheduled_events,
+        &req.goal_constraints,
+        visible.as_ref(),
+    )?;
 
-    // Validate actions synchronously before creating scenario row so bad requests fail immediately.
+    // Validate actions, events, and goal constraints synchronously before creating scenario row.
     axpoint_domain::sim::action::normalize_actions(&graph, &req.actions)?;
+    axpoint_domain::sim::stepped::validate_events_and_goals(
+        &graph,
+        &req.scheduled_events,
+        &req.goal_constraints,
+    )?;
 
     let created = state
         .store
@@ -771,56 +847,49 @@ async fn create_scenario_handler(
             .uncertainty
             .as_ref()
             .is_some_and(|u| u.samples > 1);
+    let job = ScenarioSolveJob {
+        scenario_id: created.id,
+        graph,
+        actions: req.actions,
+        scheduled_events: req.scheduled_events,
+        goal_constraints: req.goal_constraints,
+        params: req.params,
+    };
     if is_heavy {
         let store = state.store.clone();
         let tenant_id = principal.tenant_id.clone();
-        let scenario_id = created.id;
-        let actions = req.actions;
-        let params = req.params;
         let hash = overlay_hash;
         drop(tokio::spawn(async move {
-            let _res = execute_and_persist_scenario(
-                &store,
-                &tenant_id,
-                scenario_id,
-                graph,
-                actions,
-                params,
-                &hash,
-            )
-            .await;
+            let _res = execute_and_persist_scenario(&store, &tenant_id, &hash, job).await;
         }));
         return Ok(Json(created));
     }
 
-    let finished = execute_and_persist_scenario(
-        &state.store,
-        &principal.tenant_id,
-        created.id,
-        graph,
-        req.actions,
-        req.params,
-        &overlay_hash,
-    )
-    .await?;
+    let finished =
+        execute_and_persist_scenario(&state.store, &principal.tenant_id, &overlay_hash, job)
+            .await?;
     Ok(Json(finished))
 }
 
 async fn execute_and_persist_scenario(
     store: &PgStore,
     tenant_id: &str,
-    scenario_id: Uuid,
-    graph: SimGraph,
-    actions: Vec<AxSimAction>,
-    params: SimParams,
     overlay_hash: &str,
+    job: ScenarioSolveJob,
 ) -> Result<ScenarioRecord, AppError> {
+    let scenario_id = job.scenario_id;
     store
         .mark_scenario_running(tenant_id, scenario_id, overlay_hash)
         .await?;
 
     let solve_outcome = tokio::task::spawn_blocking(move || {
-        axpoint_domain::sim::uncertainty::solve(&graph, &actions, &params)
+        axpoint_domain::sim::uncertainty::solve_with_events(
+            &job.graph,
+            &job.actions,
+            &job.params,
+            &job.scheduled_events,
+            &job.goal_constraints,
+        )
     })
     .await
     .map_err(|err| AppError::Database(format!("sim solver join failed: {err}")))?;
@@ -905,14 +974,23 @@ async fn rerun_scenario_handler(
     )
     .await?;
     ensure_actions_target_visible(&existing.actions, visible.as_ref())?;
+    ensure_events_and_goals_visible(
+        &existing.scheduled_events,
+        &existing.goal_constraints,
+        visible.as_ref(),
+    )?;
     let finished = execute_and_persist_scenario(
         &state.store,
         &principal.tenant_id,
-        existing.id,
-        graph,
-        existing.actions,
-        existing.params,
         &overlay_hash,
+        ScenarioSolveJob {
+            scenario_id: existing.id,
+            graph,
+            actions: existing.actions,
+            scheduled_events: existing.scheduled_events,
+            goal_constraints: existing.goal_constraints,
+            params: existing.params,
+        },
     )
     .await?;
     Ok(Json(finished))
@@ -1771,55 +1849,75 @@ impl SimExecutionPort for ServerSimPort {
             let solved = execute_and_persist_scenario(
                 &self.store,
                 tenant_id,
-                scenario.id,
-                graph,
-                actions,
-                params,
                 &overlay_hash,
+                ScenarioSolveJob {
+                    scenario_id: scenario.id,
+                    graph,
+                    actions,
+                    scheduled_events: Vec::new(),
+                    goal_constraints: Vec::new(),
+                    params,
+                },
             )
             .await?;
 
-            let mut top_page = self
-                .store
-                .list_scenario_impacts(
-                    tenant_id,
-                    solved.id,
-                    ImpactListQuery {
-                        limit: Some(50),
-                        ..ImpactListQuery::default()
-                    },
-                )
-                .await?;
-            if let Some(ref vis) = visible {
-                top_page.items.retain(|r| vis.contains(&r.node_id));
-            }
-
-            let max_abs_delta = top_page
-                .items
-                .iter()
-                .filter_map(|r| r.delta)
-                .map(f64::abs)
-                .fold(0.0_f64, f64::max);
-            let affected_count = solved.result.as_ref().map_or(0, |s| s.affected_count);
-            let kpis = solved.result.as_ref().map_or_default(|s| s.kpis.clone());
-            let warnings = solved
-                .result
-                .as_ref()
-                .map_or_default(|s| s.warnings.clone());
-
-            Ok(SimRunToolOutput {
+            build_sim_tool_output(
+                &self.store,
+                tenant_id,
                 sandbox_id,
-                scenario_id: Some(solved.id),
-                summary: serde_json::json!({
-                    "affected_count": affected_count,
-                    "max_abs_delta": max_abs_delta,
-                    "kpis": kpis,
-                    "warnings": warnings,
-                    "impacts": top_page.items,
-                }),
-            })
+                &solved,
+                visible.as_ref(),
+            )
+            .await
         })
     }
+}
+
+async fn build_sim_tool_output(
+    store: &PgStore,
+    tenant_id: &str,
+    sandbox_id: Uuid,
+    solved: &ScenarioRecord,
+    visible: Option<&HashSet<Uuid>>,
+) -> Result<SimRunToolOutput, AppError> {
+    let mut top_page = store
+        .list_scenario_impacts(
+            tenant_id,
+            solved.id,
+            ImpactListQuery {
+                limit: Some(50),
+                ..ImpactListQuery::default()
+            },
+        )
+        .await?;
+    if let Some(vis) = visible {
+        top_page.items.retain(|r| vis.contains(&r.node_id));
+    }
+
+    let max_abs_delta = top_page
+        .items
+        .iter()
+        .filter_map(|r| r.delta)
+        .map(f64::abs)
+        .fold(0.0_f64, f64::max);
+    let affected_count = solved.result.as_ref().map_or(0, |s| s.affected_count);
+    let kpis = solved.result.as_ref().map_or_default(|s| s.kpis.clone());
+    let warnings = solved
+        .result
+        .as_ref()
+        .map_or_default(|s| s.warnings.clone());
+
+    Ok(SimRunToolOutput {
+        sandbox_id,
+        scenario_id: Some(solved.id),
+        summary: serde_json::json!({
+            "affected_count": affected_count,
+            "max_abs_delta": max_abs_delta,
+            "kpis": kpis,
+            "warnings": warnings,
+            "impacts": top_page.items,
+        }),
+    })
 }
 
 fn parse_tool_interventions(
