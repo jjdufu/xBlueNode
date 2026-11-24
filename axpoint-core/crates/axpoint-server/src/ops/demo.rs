@@ -364,6 +364,8 @@ where
                     name: String::from(preset.scenario_name),
                     description: String::from(preset.scenario_description),
                     actions: vec![action.clone()],
+                    scheduled_events: Vec::new(),
+                    goal_constraints: Vec::new(),
                     params: params.clone(),
                 },
             )
@@ -461,6 +463,7 @@ mod tests {
             properties: serde_json::Map::new(),
             metrics: BTreeMap::from([(String::from("capacity_units"), 5200.0)]),
             geo: None,
+            geo_shape: None,
             source_dataset_id: None,
             source_row_key: None,
             row_version: 1,

@@ -864,6 +864,7 @@ pub fn make_warehouse_node(
         properties: props,
         metrics: BTreeMap::from([(String::from("inventory"), inventory)]),
         geo: None,
+        geo_shape: None,
         source_dataset_id: None,
         source_row_key: None,
         row_version: 1,

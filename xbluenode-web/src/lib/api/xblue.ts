@@ -10,6 +10,7 @@ import type {
   DesignMaturity,
   EndpointKind,
   Environment,
+  GeoPredicateOp,
   GraphAlgo,
   GroundingMode,
   MetricSourceTag,
@@ -87,6 +88,33 @@ export interface GeoPoint {
   lat: number;
 }
 
+export type GeoShapeDto =
+  | { type: "Point"; coordinates: [number, number] }
+  | { type: "LineString"; coordinates: Array<[number, number]> }
+  | { type: "Polygon"; coordinates: Array<Array<[number, number]>> };
+
+export interface SpatialFilterSpec {
+  op: GeoPredicateOp;
+  bbox?: [number, number, number, number];
+  polygon?: GeoShapeDto;
+  center?: GeoPoint;
+  radius_meters?: number;
+}
+
+export interface ConvexHullRequest {
+  subgraph?: string;
+  type_name?: string;
+  node_ids?: string[];
+  points?: GeoPoint[];
+}
+
+export interface ConvexHullResponse {
+  hull: GeoShapeDto | null;
+  point_count: number;
+  area_sq_deg: number;
+  bbox?: [number, number, number, number] | null;
+}
+
 export type MetricsMerge = "MERGE" | "REPLACE";
 
 export interface BlueNode {
@@ -97,6 +125,7 @@ export interface BlueNode {
   properties?: Record<string, unknown>;
   metrics: Record<string, number>;
   geo?: GeoPoint | null;
+  geo_shape?: GeoShapeDto | null;
   source_dataset_id?: string | null;
   source_row_key?: string | null;
   row_version?: number;
@@ -146,6 +175,7 @@ export interface BulkNodeInput {
   metrics?: Record<string, number>;
   metrics_merge?: MetricsMerge;
   geo?: GeoPoint | null;
+  geo_shape?: GeoShapeDto | null;
   source_dataset_id?: string | null;
   source_row_key?: string | null;
 }
@@ -2173,6 +2203,24 @@ export const KnowledgeNodeCandidatesResponseSchema: z.ZodType<KnowledgeNodeCandi
     items: z.array(KnowledgeNodeCandidateSchema).default([]),
   });
 
+export const GeoShapeDtoSchema: z.ZodType<GeoShapeDto> = z.discriminatedUnion(
+  "type",
+  [
+    z.object({
+      type: z.literal("Point"),
+      coordinates: z.tuple([z.number(), z.number()]),
+    }),
+    z.object({
+      type: z.literal("LineString"),
+      coordinates: z.array(z.tuple([z.number(), z.number()])),
+    }),
+    z.object({
+      type: z.literal("Polygon"),
+      coordinates: z.array(z.array(z.tuple([z.number(), z.number()]))),
+    }),
+  ]
+);
+
 export const BlueNodeSchema: z.ZodType<BlueNode> = z.object({
   id: z.string().default(""),
   type_name: z.string().default(""),
@@ -2184,6 +2232,7 @@ export const BlueNodeSchema: z.ZodType<BlueNode> = z.object({
     .object({ lng: z.number(), lat: z.number() })
     .nullable()
     .optional(),
+  geo_shape: GeoShapeDtoSchema.nullable().optional(),
   source_dataset_id: z.string().nullable().optional(),
   source_row_key: z.string().nullable().optional(),
   row_version: z.number().optional(),
@@ -2492,12 +2541,23 @@ export const xblueApi = {
     type_name?: string;
     q?: string;
     bbox?: string;
+    geo_op?: GeoPredicateOp;
+    polygon?: string;
+    center_lng?: number;
+    center_lat?: number;
+    radius_meters?: number;
     limit?: number;
     cursor?: string;
   }) =>
     requestJson<NodeListResponse>(
       `/api/xblue/nodes${buildQuery(params ?? {})}`
     ),
+  computeConvexHull: (body: ConvexHullRequest) =>
+    requestJson<ConvexHullResponse>("/api/xblue/geo/convex-hull", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
   getNode: (id: string) =>
     requestJson<BlueNode>(`/api/xblue/nodes/${encodeURIComponent(id)}`),
   upsertNode: (payload: {
@@ -2508,6 +2568,7 @@ export const xblueApi = {
     metrics?: Record<string, number>;
     metrics_merge?: MetricsMerge;
     geo?: GeoPoint | null;
+    geo_shape?: GeoShapeDto | null;
     if_row_version?: number;
     link_to_node_id?: string;
     link_type?: string;
@@ -2526,6 +2587,7 @@ export const xblueApi = {
       metrics?: Record<string, number>;
       metrics_merge?: MetricsMerge;
       geo?: GeoPoint | null;
+      geo_shape?: GeoShapeDto | null;
       if_row_version?: number;
     }
   ) =>

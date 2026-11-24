@@ -13,7 +13,8 @@ use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use crate::AppError;
-use crate::enums::{AggFn, GraphAlgo, MetricSourceTag, RollupGrain};
+use crate::enums::{AggFn, GeoPredicateOp, GraphAlgo, MetricSourceTag, RollupGrain};
+use crate::geo_ops::GeoShapeDto;
 use crate::topology::{BlueLink, BlueNode};
 
 /// `HyperLogLog++` register precision (`p = 14`, 16,384 registers, ~0.81% standard error).
@@ -170,6 +171,9 @@ pub struct BulkNodeInput {
     /// Optional WGS-84 coordinate.
     #[serde(default)]
     pub geo: Option<GeoPoint>,
+    /// Optional `GeoJSON` geometry (`Point`, `LineString`, or `Polygon`, `06-STEP28` §28.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_shape: Option<GeoShapeDto>,
     /// Optional source dataset UUID.
     #[serde(default)]
     pub source_dataset_id: Option<Uuid>,
@@ -268,6 +272,9 @@ pub struct PatchNodeRequest {
     /// Optional geographic coordinate (`Some(None)` clears geo when represented via explicit patch; `Some(pt)` sets geo).
     #[serde(default)]
     pub geo: Option<GeoPoint>,
+    /// Optional `GeoJSON` geometry (`Point`, `LineString`, or `Polygon`, `06-STEP28` §28.1).
+    #[serde(default)]
+    pub geo_shape: Option<GeoShapeDto>,
     /// Optimistic concurrency guard (`409 VERSION_CONFLICT` on mismatch).
     #[serde(default)]
     pub if_row_version: Option<i64>,
@@ -288,6 +295,21 @@ pub struct NodeListQuery {
     /// Optional geographic bounding box `"minLng,minLat,maxLng,maxLat"`.
     #[serde(default)]
     pub bbox: Option<String>,
+    /// Optional spatial predicate operator (`BBOX`, `GEO_WITHIN_POLYGON`, or `GEO_DWITHIN_METERS`, `06-STEP28` §28.3).
+    #[serde(default)]
+    pub geo_op: Option<GeoPredicateOp>,
+    /// Optional JSON-encoded `GeoJSON` `Polygon` (or closed ring array) when `geo_op == GEO_WITHIN_POLYGON`.
+    #[serde(default)]
+    pub polygon: Option<String>,
+    /// Optional center longitude in degrees when `geo_op == GEO_DWITHIN_METERS`.
+    #[serde(default)]
+    pub center_lng: Option<f64>,
+    /// Optional center latitude in degrees when `geo_op == GEO_DWITHIN_METERS`.
+    #[serde(default)]
+    pub center_lat: Option<f64>,
+    /// Optional spherical buffer radius in meters when `geo_op == GEO_DWITHIN_METERS`.
+    #[serde(default)]
+    pub radius_meters: Option<f64>,
     /// Page size (default 200, max 10,000 for bbox queries).
     #[serde(default)]
     pub limit: Option<u32>,
@@ -820,6 +842,9 @@ pub struct NodeSearchHit {
     pub metrics: BTreeMap<String, f64>,
     /// Optional WGS-84 coordinate.
     pub geo: Option<GeoPoint>,
+    /// Optional `GeoJSON` geometry (`06-STEP28` §28.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_shape: Option<GeoShapeDto>,
     /// Reciprocal Rank Fusion score.
     pub score: f64,
     /// Retrieval channels that matched (`"FTS"`, `"VECTOR"`).

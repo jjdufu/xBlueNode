@@ -567,6 +567,8 @@ fn assemble_stepped_result(
         reason: numeric.reason.clone(),
         iterations: params.horizon_steps,
         checkpoints,
+        fired_events: Vec::new(),
+        deadline_report: None,
     })
 }
 

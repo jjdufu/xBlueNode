@@ -1249,6 +1249,11 @@ fn decode_blue_node_row(row: &sqlx::postgres::PgRow) -> BlueNode {
         (Some(lng), Some(lat)) => Some(GeoPoint { lng, lat }),
         _ => None,
     };
+    let geo_shape = row
+        .try_get::<Option<serde_json::Value>, _>("geo_shape")
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_value(v).ok());
     BlueNode {
         id: row.get("id"),
         type_name: row.get("type_name"),
@@ -1257,6 +1262,7 @@ fn decode_blue_node_row(row: &sqlx::postgres::PgRow) -> BlueNode {
         properties,
         metrics,
         geo,
+        geo_shape,
         source_dataset_id: row.get("source_dataset_id"),
         source_row_key: row.get("source_row_key"),
         row_version: row.get("row_version"),

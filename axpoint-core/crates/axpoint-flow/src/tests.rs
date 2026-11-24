@@ -1400,6 +1400,7 @@ impl GraphStorePort for MockStore {
             properties: req.properties,
             metrics: req.metrics,
             geo: req.geo,
+            geo_shape: req.geo_shape,
             source_dataset_id: None,
             source_row_key: None,
             row_version: 1,
@@ -2953,6 +2954,8 @@ mod step10_causal_sim_tests {
                 kpis: Vec::new(),
                 warnings: Vec::new(),
                 converged: true,
+                fired_events: Vec::new(),
+                deadline_report: None,
             })
         }
     }
@@ -3941,6 +3944,7 @@ mod step10_causal_sim_tests {
                     properties: serde_json::Map::new(),
                     metrics: BTreeMap::from([(String::from("output"), 100.0)]),
                     geo: None,
+                    geo_shape: None,
                     source_dataset_id: None,
                     source_row_key: None,
                     row_version: 1,
@@ -3955,6 +3959,7 @@ mod step10_causal_sim_tests {
                     properties: serde_json::Map::new(),
                     metrics: BTreeMap::from([(String::from("output"), 50.0)]),
                     geo: None,
+                    geo_shape: None,
                     source_dataset_id: None,
                     source_row_key: None,
                     row_version: 1,

@@ -152,6 +152,8 @@ fn fixture_nodes() -> (Vec<SimNode>, BTreeMap<String, Uuid>) {
             title: String::from(title),
             metrics,
             properties: serde_json::Map::new(),
+            geo: None,
+            geo_shape: None,
             row_version: 1,
         }
     };
@@ -329,6 +331,10 @@ fn briefing_fixture_scenario(sb: Uuid, id: Uuid, name: &str, max_d: f64) -> Scen
             at_step: 0,
         }],
         params: SimParams::default(),
+        scheduled_events: Vec::new(),
+        goal_constraints: Vec::new(),
+        fired_events: Vec::new(),
+        deadline_report: None,
         result: Some(ScenarioSummary {
             affected_count: 4,
             top_impacts: vec![ImpactRow {
@@ -351,6 +357,8 @@ fn briefing_fixture_scenario(sb: Uuid, id: Uuid, name: &str, max_d: f64) -> Scen
             converged: true,
             reason: None,
             iterations: 1,
+            fired_events: Vec::new(),
+            deadline_report: None,
         }),
         error_message: None,
         overlay_hash: String::from("h0"),

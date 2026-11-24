@@ -297,6 +297,7 @@ fn runtime_graph_router() -> Router<AppState> {
             "/xblue/entities/links/{entity_id}/{node_id}/reject",
             post(reject_entity_link_handler),
         )
+        .route("/xblue/geo/convex-hull", post(compute_convex_hull_handler))
 }
 
 fn actor_uuid(principal: &AuthPrincipal) -> Option<Uuid> {
@@ -3415,6 +3416,15 @@ async fn write_link_metrics_handler(
         .write_link_metrics(&principal.tenant_id, req)
         .await?;
     Ok(Json(resp))
+}
+
+async fn compute_convex_hull_handler(
+    State(_state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiJson(_req): ApiJson<axpoint_domain::geo_ops::ConvexHullRequest>,
+) -> Result<Json<axpoint_domain::geo_ops::ConvexHullResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    Err(HttpError(AppError::Unsupported("GEO_OPS_UNSUPPORTED")))
 }
 
 #[cfg(test)]

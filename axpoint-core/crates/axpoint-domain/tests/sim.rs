@@ -35,6 +35,8 @@ fn make_node(idx: u128, type_name: &str, title: &str, metrics: &[(&str, f64)]) -
         title: title.to_string(),
         metrics: map,
         properties: serde_json::Map::new(),
+        geo: None,
+        geo_shape: None,
         row_version: 1,
     }
 }
@@ -718,6 +720,8 @@ fn generate_benchmark_graph(
             title: format!("Node {i}"),
             metrics,
             properties: serde_json::Map::new(),
+            geo: None,
+            geo_shape: None,
             row_version: 1,
         });
     }

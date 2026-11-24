@@ -530,6 +530,7 @@ where
                     limit: Some(200),
                     cursor: None,
                     reveal_pii: false,
+                    ..NodeListQuery::default()
                 },
             )
             .await
@@ -552,6 +553,7 @@ where
                         limit: Some(500),
                         cursor: cursor.clone(),
                         reveal_pii: false,
+                        ..NodeListQuery::default()
                     },
                 )
                 .await?;

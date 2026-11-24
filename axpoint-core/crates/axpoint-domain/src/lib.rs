@@ -10,6 +10,7 @@ pub mod enums;
 pub mod export;
 pub mod expr;
 pub mod flow;
+pub mod geo_ops;
 pub mod graph;
 pub mod grounding;
 pub mod guard;

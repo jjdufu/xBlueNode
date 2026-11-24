@@ -30,6 +30,7 @@
 | 0020 | `0020_saved_charts.sql` | Step 25 | 可复用可视化图表资产表 `xv_charts`（强制租户 RLS）与 `CHART_PUBLISH` 审计动作扩展 | [03-STEP25](../../plans/v3-craft-and-world-runtime/craft-ux/03-STEP25-CHART-STUDIO-VTABLE-PIVOT-AND-MAGNETIC-GRID.md) §25.1 |
 | 0021 | `0021_actions_and_edge_dynamics.sql` | Step 26 | `xb_node_types.actions`、`xb_edge_types.spec`、`xb_links.{metrics,row_version}`、边时序表 `xb_link_metric_series`、子图运行时认证记录 `xb_runtime_certifications` 及对象动作审计/审批约束扩展 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.1 |
 | 0022 | `0022_state_visibility_policies.sql` | Step 27 | `sec_row_policies` 状态驱动动态行级视野模式 `policy_mode` 与活跃期退场列 `ttl_timestamp_field` / `ttl_max_age_hours` | [05-STEP27](../../plans/v3-craft-and-world-runtime/world-runtime/05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) §27.1 |
+| 0023 | `0023_sim_events_and_geoshape.sql` | Step 28 | `xb_nodes.geo_shape`、`ax_sim_base_nodes` / `ax_sim_overlay_nodes` 空间几何列，以及 `ax_sim_scenarios` 定时/条件事件队列与 `deadline_report` 列 | [06-STEP28](../../plans/v3-craft-and-world-runtime/world-runtime/06-STEP28-SIM-EVENT-QUEUE-DEADLINE-AND-RUST-GEOSHAPE.md) §28.1 |
 
 Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 中的时序表）。
 
@@ -45,7 +46,7 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `hg_edges`、`hg_embeddings` | 0001 | — | 仓库已有 | 是 |
 | `xb_node_types` | 0001 | 0006、0013、0018（语义分层与业务域）、0021（`actions` 契约） | 05 / 13 / 18 / 26 | 是 |
 | `xb_edge_types` | 0001 | 0006、0021（`spec` 边派生与聚合规则） | 05 / 26 | 是 |
-| `xb_nodes` | 0001 | 0004、0006、0017（`subgraph_slug` 隔离） | 03 / 05 / 17 | 是 |
+| `xb_nodes` | 0001 | 0004、0006、0017（`subgraph_slug` 隔离）、0023（`geo_shape`） | 03 / 05 / 17 / 28 | 是 |
 | `xb_links` | 0001 | 0004、0006、0017（`subgraph_slug` 隔离）、0021（`metrics`、`row_version`） | 03 / 05 / 17 / 26 | 是 |
 | `ax_flows` | 0001 | 0007 | 07 | 是 |
 | `ax_sandboxes` | 0001 | 0010 | 10 | 是 |
@@ -77,7 +78,7 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `ax_conversations` | 0009 | 0019（`IM` 通道、`im_connector_id`、`external_chat_id`） | 09 / 21 | 是 |
 | `ax_im_connectors`、`ax_im_user_bindings`、`ax_im_bind_challenges`、`ax_im_event_dedup` | 0019 | — | 21 | 是 |
 | `ax_agents` | 0009 | 0013（归属、密级） | 09 / 13 | 是 |
-| `ax_sim_base_nodes`、`ax_sim_base_links`、`ax_sim_overlay_nodes`、`ax_sim_overlay_links`、`ax_sim_scenarios`、`ax_sim_impacts`、`ax_sim_checkpoints`、`ax_sim_decisions` | 0010 | — | 10 | 是 |
+| `ax_sim_base_nodes`、`ax_sim_base_links`、`ax_sim_overlay_nodes`、`ax_sim_overlay_links`、`ax_sim_scenarios`、`ax_sim_impacts`、`ax_sim_checkpoints`、`ax_sim_decisions` | 0010 | 0023（空间几何列、事件队列与 `deadline_report`） | 10 / 28 | 是 |
 | `xv_dashboards` | 0011 | 0013（归属、密级） | 11 / 13 | 是 |
 | `xv_widgets`、`xv_assets`、`xv_floor_placements`、`xv_scene3d_bindings` | 0011 | — | 11 | 是 |
 | `xv_charts` | 0020 | — | 25 | 是 |

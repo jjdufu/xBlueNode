@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { requestJson } from "./client";
-import type { InterventionMode } from "./enums";
+import type {
+  DeadlineWindowStatus,
+  InterventionMode,
+  SimEventTriggerKind,
+  SimThresholdOp,
+} from "./enums";
+import type { GeoPoint, GeoShapeDto, SpatialFilterSpec } from "./xblue";
 
 export type SandboxStatus = "CLONING" | "READY" | "ARCHIVED";
 export type GraphDirection = "OUT" | "IN" | "BOTH";
@@ -128,12 +134,70 @@ export interface AxSimImpactRowCompat {
   top_path?: string[];
 }
 
+export interface SimEventSpec {
+  id: string;
+  name?: string;
+  trigger_kind: SimEventTriggerKind;
+  at_step?: number | null;
+  watch_node_id?: string | null;
+  watch_metric?: string | null;
+  op?: SimThresholdOp | null;
+  threshold?: number | null;
+  cooldown_steps?: number;
+  max_fires?: number;
+  actions: AxSimAction[];
+}
+
+export interface FiredEventRecord {
+  event_id: string;
+  event_name?: string;
+  trigger_kind: SimEventTriggerKind;
+  step: number;
+  trigger_value?: number | null;
+  applied_actions: number;
+}
+
+export interface SimGoalConstraint {
+  id: string;
+  name?: string;
+  target_node_id?: string | null;
+  target_type_name?: string | null;
+  metric_key: string;
+  op?: SimThresholdOp;
+  threshold: number;
+  spatial_filter?: SpatialFilterSpec | null;
+  controllable_node_ids?: string[];
+}
+
+export interface DeadlineDiagnostic {
+  constraint_id: string;
+  constraint_name?: string;
+  breached: boolean;
+  breach_node_id?: string | null;
+  breach_step?: number | null;
+  breach_value?: number | null;
+  min_lag_steps?: number | null;
+  deadline_step?: number | null;
+  status: DeadlineWindowStatus;
+  recommended_sources?: string[];
+}
+
+export interface DeadlineReport {
+  all_satisfied: boolean;
+  earliest_breach_step?: number | null;
+  earliest_deadline_step?: number | null;
+  status: DeadlineWindowStatus;
+  items: DeadlineDiagnostic[];
+}
+
 export interface AxSimQuickResult {
   impacts: AxSimImpactRowCompat[];
   affected_count: number;
   kpis?: SimKpiRow[];
   warnings?: SimWarning[];
   converged?: boolean;
+  fired_events?: FiredEventRecord[];
+  deadline_report?: DeadlineReport | null;
 }
 
 export type AxSimImpactRow = AxSimImpactRowCompat;
@@ -167,6 +231,8 @@ export interface SandboxGraphNode {
   title: string;
   metrics: Record<string, number>;
   properties: Record<string, unknown>;
+  geo?: GeoPoint | null;
+  geo_shape?: GeoShapeDto | null;
   is_modified: boolean;
   is_new: boolean;
 }
@@ -192,6 +258,8 @@ export interface PatchOverlayNodeRequest {
   title?: string;
   metrics?: Record<string, number>;
   properties?: Record<string, unknown>;
+  geo?: GeoPoint | null;
+  geo_shape?: GeoShapeDto | null;
 }
 
 export interface CreateOverlayNodeRequest {
@@ -200,6 +268,8 @@ export interface CreateOverlayNodeRequest {
   title: string;
   metrics?: Record<string, number>;
   properties?: Record<string, unknown>;
+  geo?: GeoPoint | null;
+  geo_shape?: GeoShapeDto | null;
 }
 
 export interface CreateOverlayLinkRequest {
@@ -228,6 +298,8 @@ export interface ScenarioSummary {
   converged: boolean;
   reason?: string | null;
   iterations: number;
+  fired_events?: FiredEventRecord[];
+  deadline_report?: DeadlineReport | null;
 }
 
 export interface ScenarioRecord {
@@ -236,10 +308,14 @@ export interface ScenarioRecord {
   name: string;
   description: string;
   actions: AxSimAction[];
+  scheduled_events?: SimEventSpec[];
+  goal_constraints?: SimGoalConstraint[];
   params: SimParams;
   overlay_hash: string;
   is_stale: boolean;
   result: ScenarioSummary | null;
+  fired_events?: FiredEventRecord[];
+  deadline_report?: DeadlineReport | null;
   status: ScenarioStatus;
   error_message: string | null;
   created_by: string | null;
@@ -251,6 +327,8 @@ export interface CreateScenarioRequest {
   name: string;
   description?: string;
   actions: AxSimAction[];
+  scheduled_events?: SimEventSpec[];
+  goal_constraints?: SimGoalConstraint[];
   params?: SimParams;
 }
 
@@ -541,13 +619,26 @@ export const axsimApi = {
   quickSimulate: (
     sandboxId: string,
     actions: AxSimAction[],
-    params?: SimParams
+    params?: SimParams,
+    extras?: {
+      scheduled_events?: SimEventSpec[];
+      goal_constraints?: SimGoalConstraint[];
+    }
   ) =>
     requestJson<AxSimQuickResult>(
       `/api/axsim/sandboxes/${sandboxId}/simulate`,
       {
         method: "POST",
-        body: JSON.stringify({ actions, params }),
+        body: JSON.stringify({
+          actions,
+          params,
+          ...(extras?.scheduled_events
+            ? { scheduled_events: extras.scheduled_events }
+            : {}),
+          ...(extras?.goal_constraints
+            ? { goal_constraints: extras.goal_constraints }
+            : {}),
+        }),
       }
     ),
 

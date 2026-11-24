@@ -15,7 +15,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::graph::TraversalDirection;
+use crate::enums::{DeadlineWindowStatus, SimEventTriggerKind, SimThresholdOp};
+use crate::geo_ops::{GeoShapeDto, SpatialFilterSpec};
+use crate::graph::{GeoPoint, TraversalDirection};
 use crate::topology::{AxSandboxRecord, AxSimAction};
 
 pub use action::{NormalizedAction, normalize_actions, normalize_actions_indexed};
@@ -397,6 +399,152 @@ pub struct Checkpoint {
     pub changes: serde_json::Value,
 }
 
+/// Scheduled (`AT_STEP`) or conditional (`METRIC_THRESHOLD`) event queued in `STEPPED` simulation (`06-STEP28` §28.0 & §28.2.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SimEventSpec {
+    /// Stable event identifier within the scenario (e.g., `"ev_port_recover"`).
+    pub id: String,
+    /// Optional human-readable event label.
+    #[serde(default)]
+    pub name: String,
+    /// Activation trigger kind (`AT_STEP` or `METRIC_THRESHOLD`).
+    #[serde(default)]
+    pub trigger_kind: SimEventTriggerKind,
+    /// Target discrete step `t` when `trigger_kind == AT_STEP`.
+    #[serde(default)]
+    pub at_step: Option<u32>,
+    /// Watched business node UUID when `trigger_kind == METRIC_THRESHOLD`.
+    #[serde(default)]
+    pub watch_node_id: Option<Uuid>,
+    /// Watched metric key on `watch_node_id` when `trigger_kind == METRIC_THRESHOLD`.
+    #[serde(default)]
+    pub watch_metric: Option<String>,
+    /// Threshold comparison operator (`LT | LTE | GT | GTE`) evaluated against step `t - 1` value.
+    #[serde(default)]
+    pub op: Option<SimThresholdOp>,
+    /// Numeric threshold value when `trigger_kind == METRIC_THRESHOLD`.
+    #[serde(default)]
+    pub threshold: Option<f64>,
+    /// Minimum discrete steps between consecutive firings (`0` = allowed on consecutive steps).
+    #[serde(default)]
+    pub cooldown_steps: u32,
+    /// Maximum number of times this conditional trigger may fire (`1` default when `0` is omitted via `default_max_fires`).
+    #[serde(default = "default_event_max_fires")]
+    pub max_fires: u32,
+    /// Interventions injected at activation step `t`.
+    #[serde(default)]
+    pub actions: Vec<AxSimAction>,
+}
+
+const fn default_event_max_fires() -> u32 {
+    1
+}
+
+/// Recorded event activation emitted during `STEPPED` simulation (`06-STEP28` §28.2.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FiredEventRecord {
+    /// Originating `SimEventSpec.id`.
+    pub event_id: String,
+    /// Originating `SimEventSpec.name`.
+    #[serde(default)]
+    pub event_name: String,
+    /// Trigger category (`AT_STEP` or `METRIC_THRESHOLD`).
+    pub trigger_kind: SimEventTriggerKind,
+    /// Simulation step `t` at which the event fired.
+    pub step: u32,
+    /// Observed watched metric value from step `t - 1` that triggered firing (`None` for `AT_STEP`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_value: Option<f64>,
+    /// Count of `AxSimAction` perturbations applied when this event fired.
+    pub applied_actions: usize,
+}
+
+/// Goal redline constraint evaluated across all simulation steps to derive `deadline_step` (`06-STEP28` §28.0 & §28.2.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SimGoalConstraint {
+    /// Stable constraint identifier within the scenario (e.g., `"goal_order_sla"`).
+    pub id: String,
+    /// Optional human-readable goal title.
+    #[serde(default)]
+    pub name: String,
+    /// Optional single target node UUID to monitor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_node_id: Option<Uuid>,
+    /// Optional node `type_name` selector (monitors all matching in-scope nodes when `target_node_id` is `None`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_type_name: Option<String>,
+    /// Required metric key that must satisfy `value <op> threshold` across `t = 0..=horizon_steps`.
+    pub metric_key: String,
+    /// Required invariant comparison operator (e.g., `Gte` with `threshold = 0.90` requires `x(t) >= 0.90`).
+    #[serde(default = "default_goal_gte_op")]
+    pub op: SimThresholdOp,
+    /// Redline threshold value `τ`.
+    pub threshold: f64,
+    /// Optional spatial geofence (`Polygon` or `DWithin` circle) restricting monitored target nodes (`06-STEP28` §28.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spatial_filter: Option<SpatialFilterSpec>,
+    /// Optional candidate controllable upstream node UUIDs `U_ctrl`; empty considers all upstream reachable nodes with incoming/controllable channels.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controllable_node_ids: Vec<Uuid>,
+}
+
+const fn default_goal_gte_op() -> SimThresholdOp {
+    SimThresholdOp::Gte
+}
+
+/// Per-constraint breach and latest actionable intervention window diagnostic (`06-STEP28` §28.2.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DeadlineDiagnostic {
+    /// Originating `SimGoalConstraint.id`.
+    pub constraint_id: String,
+    /// Originating `SimGoalConstraint.name`.
+    #[serde(default)]
+    pub constraint_name: String,
+    /// `true` when at least one monitored node violated the constraint within `0..=horizon_steps`.
+    pub breached: bool,
+    /// Node UUID that experienced the earliest redline breach, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breach_node_id: Option<Uuid>,
+    /// Earliest simulation step `t_breach` where the constraint failed, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breach_step: Option<u32>,
+    /// Simulated metric value at `breach_step`, if breached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub breach_value: Option<f64>,
+    /// Minimum total causal propagation lag `L_min` from controllable upstream nodes to `(breach_node_id, metric_key)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_lag_steps: Option<u32>,
+    /// Latest effective intervention step `t_deadline = t_breach - L_min - 1` (`None` when satisfied).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_step: Option<i32>,
+    /// Actionability status (`SATISFIED`, `ACTIONABLE_WINDOW`, or `IMMEDIATE_BREACH_UNAVOIDABLE_BY_LAG`).
+    pub status: DeadlineWindowStatus,
+    /// Upstream controllable node UUIDs achieving `min_lag_steps`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recommended_sources: Vec<Uuid>,
+}
+
+/// Aggregate goal-constraint and `deadline_step` report persisted on `ax_sim_scenarios.deadline_report` (`06-STEP28` §28.1 & §28.2.2).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DeadlineReport {
+    /// `true` when every configured `SimGoalConstraint` remained satisfied across the horizon.
+    pub all_satisfied: bool,
+    /// Minimum `breach_step` across all breached constraints, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earliest_breach_step: Option<u32>,
+    /// Minimum `deadline_step` across all breached constraints, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub earliest_deadline_step: Option<i32>,
+    /// Worst-case status across all evaluated constraints.
+    #[serde(default)]
+    pub status: DeadlineWindowStatus,
+    /// Per-constraint diagnostics in declaration order.
+    #[serde(default)]
+    pub items: Vec<DeadlineDiagnostic>,
+}
+
 /// Full output returned by the pure `AxSim` solver kernel (`steady::solve` / `stepped::solve` / `uncertainty::solve`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SimResult {
@@ -422,6 +570,12 @@ pub struct SimResult {
     /// Incremental replay checkpoints generated during simulation.
     #[serde(default)]
     pub checkpoints: Vec<Checkpoint>,
+    /// Scheduled and conditional events activated during `STEPPED` simulation (`06-STEP28` §28.2.1).
+    #[serde(default)]
+    pub fired_events: Vec<FiredEventRecord>,
+    /// Goal redline breach and `deadline_step` diagnostics (`06-STEP28` §28.2.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_report: Option<DeadlineReport>,
 }
 
 /// Compact summary persisted on `ax_sim_scenarios.result` (top 200 impacts + KPIs + convergence metadata).
@@ -447,9 +601,15 @@ pub struct ScenarioSummary {
     /// Iteration count executed.
     #[serde(default)]
     pub iterations: u32,
+    /// Scheduled and conditional events fired during execution (`06-STEP28` §28.2.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fired_events: Vec<FiredEventRecord>,
+    /// Goal redline breach and `deadline_step` report (`06-STEP28` §28.2.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_report: Option<DeadlineReport>,
 }
 
-/// Request payload for `POST /api/axsim/sandboxes/{id}/scenarios` (`§10.7.1`).
+/// Request payload for `POST /api/axsim/sandboxes/{id}/scenarios` (`§10.7.1` & `06-STEP28` §28.0).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CreateScenarioRequest {
@@ -458,14 +618,21 @@ pub struct CreateScenarioRequest {
     /// Optional description.
     #[serde(default)]
     pub description: String,
-    /// Interventions to apply.
+    /// Interventions to apply (`may be empty when scheduled_events or goal_constraints are supplied`).
+    #[serde(default)]
     pub actions: Vec<AxSimAction>,
     /// Simulation solver parameters (defaults to steady-state).
     #[serde(default)]
     pub params: SimParams,
+    /// Optional scheduled (`AT_STEP`) and conditional (`METRIC_THRESHOLD`) event queue (`06-STEP28` §28.2.1).
+    #[serde(default)]
+    pub scheduled_events: Vec<SimEventSpec>,
+    /// Optional redline goal constraints evaluated for `deadline_step` diagnostics (`06-STEP28` §28.2.2).
+    #[serde(default)]
+    pub goal_constraints: Vec<SimGoalConstraint>,
 }
 
-/// Persisted `ax_sim_scenarios` record (`§10.7.1`).
+/// Persisted `ax_sim_scenarios` record (`§10.7.1` & `06-STEP28` §28.1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScenarioRecord {
     /// Scenario UUID.
@@ -480,6 +647,18 @@ pub struct ScenarioRecord {
     pub actions: Vec<AxSimAction>,
     /// Solver parameters.
     pub params: SimParams,
+    /// Configured scheduled/conditional events (`06-STEP28` §28.1).
+    #[serde(default)]
+    pub scheduled_events: Vec<SimEventSpec>,
+    /// Configured redline goal constraints (`06-STEP28` §28.1).
+    #[serde(default)]
+    pub goal_constraints: Vec<SimGoalConstraint>,
+    /// Events activated during the latest execution (`06-STEP28` §28.1).
+    #[serde(default)]
+    pub fired_events: Vec<FiredEventRecord>,
+    /// Latest goal constraint and `deadline_step` report (`06-STEP28` §28.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_report: Option<DeadlineReport>,
     /// Overlay hash captured at last execution.
     pub overlay_hash: String,
     /// `true` when the sandbox overlay has mutated since `overlay_hash` was recorded.
@@ -658,6 +837,12 @@ pub struct SandboxGraphNode {
     pub metrics: BTreeMap<String, f64>,
     /// Effective merged properties.
     pub properties: serde_json::Map<String, serde_json::Value>,
+    /// Optional WGS-84 coordinate (`06-STEP28` §28.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo: Option<GeoPoint>,
+    /// Optional `GeoJSON` geometry (`06-STEP28` §28.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_shape: Option<GeoShapeDto>,
     /// `true` if modified in overlay (excluding newly created nodes).
     pub is_modified: bool,
     /// `true` if created inside the sandbox overlay.
@@ -709,6 +894,12 @@ pub struct PatchOverlayNodeRequest {
     /// Optional key-level property patch merged onto baseline properties.
     #[serde(default)]
     pub properties: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Optional WGS-84 coordinate patch (`06-STEP28` §28.3).
+    #[serde(default)]
+    pub geo: Option<GeoPoint>,
+    /// Optional `GeoJSON` geometry patch (`06-STEP28` §28.3).
+    #[serde(default)]
+    pub geo_shape: Option<GeoShapeDto>,
 }
 
 /// Request payload for `POST /api/axsim/sandboxes/{id}/nodes` (`§10.2.3`).
@@ -727,6 +918,12 @@ pub struct CreateOverlayNodeRequest {
     /// Initial static properties.
     #[serde(default)]
     pub properties: serde_json::Map<String, serde_json::Value>,
+    /// Optional WGS-84 coordinate (`06-STEP28` §28.3).
+    #[serde(default)]
+    pub geo: Option<GeoPoint>,
+    /// Optional `GeoJSON` geometry (`06-STEP28` §28.3).
+    #[serde(default)]
+    pub geo_shape: Option<GeoShapeDto>,
 }
 
 /// Request payload for `POST /api/axsim/sandboxes/{id}/links` (`§10.2.3`).

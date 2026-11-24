@@ -1186,6 +1186,62 @@ define_str_enum! {
     }
 }
 
+define_str_enum! {
+    /// Event activation trigger category in `AxSim` stepped scenarios (`06-STEP28` §28.0 & §28.2).
+    #[derive(Default)]
+    pub enum SimEventTriggerKind {
+        /// Activates deterministically at an exact simulation time step `t == at_step`.
+        #[default]
+        AtStep => "AT_STEP",
+        /// Activates when a watched `(node_id, metric)` crosses `threshold` subject to cooldown and max-fire limits.
+        MetricThreshold => "METRIC_THRESHOLD",
+    }
+}
+
+define_str_enum! {
+    /// Numeric threshold comparison operator for `AxSim` conditional triggers and goal redline constraints (`06-STEP28` §28.2).
+    #[derive(Default)]
+    pub enum SimThresholdOp {
+        /// Strictly less than (`val < threshold`).
+        #[default]
+        Lt => "LT",
+        /// Less than or equal to (`val <= threshold`).
+        Lte => "LTE",
+        /// Strictly greater than (`val > threshold`).
+        Gt => "GT",
+        /// Greater than or equal to (`val >= threshold`).
+        Gte => "GTE",
+    }
+}
+
+define_str_enum! {
+    /// Spatial predicate operator for business node queries and `AxSim` goal scopes (`06-STEP28` §28.0 & §28.3).
+    #[derive(Default)]
+    pub enum GeoPredicateOp {
+        /// Axis-aligned WGS-84 bounding box `[min_lng, min_lat, max_lng, max_lat]`.
+        #[default]
+        Bbox => "BBOX",
+        /// Exact `GeoJSON` `Polygon` containment predicate (`GEO_WITHIN_POLYGON`).
+        GeoWithinPolygon => "GEO_WITHIN_POLYGON",
+        /// Spherical Haversine buffer distance predicate (`GEO_DWITHIN_METERS`).
+        GeoDwithinMeters => "GEO_DWITHIN_METERS",
+    }
+}
+
+define_str_enum! {
+    /// Latest actionable intervention window classification for `SimGoalConstraint` diagnostics (`06-STEP28` §28.2.2).
+    #[derive(Default)]
+    pub enum DeadlineWindowStatus {
+        /// Constraint remains satisfied across all `0..=horizon_steps`.
+        #[default]
+        Satisfied => "SATISFIED",
+        /// Breach occurs at `breach_step` and `deadline_step >= 0` leaves an actionable window `[0, deadline_step]`.
+        ActionableWindow => "ACTIONABLE_WINDOW",
+        /// Breach occurs before upstream lag can arrive (`deadline_step < 0` or no controllable path).
+        ImmediateBreachUnavoidableByLag => "IMMEDIATE_BREACH_UNAVOIDABLE_BY_LAG",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

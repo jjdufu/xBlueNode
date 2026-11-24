@@ -410,3 +410,17 @@ export type PropagationPathKind =
   | "EDGE_TO_EDGE";
 
 export type RowPolicyMode = "STATIC_ATTR" | "STATE_DRIVEN";
+
+export type SimEventTriggerKind = "AT_STEP" | "METRIC_THRESHOLD";
+
+export type SimThresholdOp = "LT" | "LTE" | "GT" | "GTE";
+
+export type GeoPredicateOp =
+  | "BBOX"
+  | "GEO_WITHIN_POLYGON"
+  | "GEO_DWITHIN_METERS";
+
+export type DeadlineWindowStatus =
+  | "SATISFIED"
+  | "ACTIONABLE_WINDOW"
+  | "IMMEDIATE_BREACH_UNAVOIDABLE_BY_LAG";
