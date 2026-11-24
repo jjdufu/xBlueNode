@@ -79,7 +79,6 @@ expect_json "sum-by-entity-exact" "$AXQL_DEDUP" '
 # 3. C86：状态驱动动态行级视野（inventory < 100 时对跨事业部观察员自动可见）及 AxSim 沙盘同源继承
 OBS_USERNAME="obs27_$(date +%s)"
 OBS_PASS="Step27Pass!9876"
-api POST /api/axguard/departments '{"name":"风控观察组"}' >/dev/null 2>&1 || true
 api PUT /api/axguard/departments/risk_obs '{"name":"风控观察组"}' >/dev/null
 OBS_USER=$(api POST /api/axguard/users "$(jq -n --arg u "$OBS_USERNAME" --arg p "$OBS_PASS" '{
   username: $u, display_name: "跨部风控员", password: $p, dept_id: "risk_obs", clearance: "INTERNAL", roles: ["ANALYST"]
@@ -104,7 +103,7 @@ RP_ID=$(echo "$RP_CREATED" | jq -r '.id')
 # 初始 inventory=500：跨部门观察员不可见该节点，克隆沙盘亦包含 0 个该类型节点
 BEFORE_NODES=$(curl -fsS -H "Authorization: Bearer ${OBS_TOKEN}" "${CORE_BASE_URL}/api/xblue/nodes?type_name=Step27Warehouse")
 SB_BEFORE=$(curl -fsS -X POST -H "Authorization: Bearer ${OBS_TOKEN}" -H 'Content-Type: application/json' \
-  "${CORE_BASE_URL}/api/axsim/sandboxes" -d '{"name":"step27-sb-before","scope":{"node_types":["Step27Warehouse"]}}')
+  "${CORE_BASE_URL}/api/axsim/sandboxes" -d '{"name":"step27-sb-before","scope":{"type_names":["Step27Warehouse"]}}')
 SB_BEFORE_ID=$(echo "$SB_BEFORE" | jq -r '.id')
 SB_BEFORE_GRAPH=$(curl -fsS -H "Authorization: Bearer ${OBS_TOKEN}" "${CORE_BASE_URL}/api/axsim/sandboxes/${SB_BEFORE_ID}/graph")
 
@@ -117,7 +116,7 @@ expect_json "state-visibility-escalate" "$(jq -n --argjson b "$BEFORE_NODES" --a
 '
 
 SB_AFTER=$(curl -fsS -X POST -H "Authorization: Bearer ${OBS_TOKEN}" -H 'Content-Type: application/json' \
-  "${CORE_BASE_URL}/api/axsim/sandboxes" -d '{"name":"step27-sb-after","scope":{"node_types":["Step27Warehouse"]}}')
+  "${CORE_BASE_URL}/api/axsim/sandboxes" -d '{"name":"step27-sb-after","scope":{"type_names":["Step27Warehouse"]}}')
 SB_AFTER_ID=$(echo "$SB_AFTER" | jq -r '.id')
 SB_AFTER_GRAPH=$(curl -fsS -H "Authorization: Bearer ${OBS_TOKEN}" "${CORE_BASE_URL}/api/axsim/sandboxes/${SB_AFTER_ID}/graph")
 expect_json "sim-inherits-state-visibility" "$(jq -n --argjson gb "$SB_BEFORE_GRAPH" --argjson ga "$SB_AFTER_GRAPH" '{gb:$gb, ga:$ga}')" '
