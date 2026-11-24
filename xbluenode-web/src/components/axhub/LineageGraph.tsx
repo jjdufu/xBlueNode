@@ -1,44 +1,35 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import * as echarts from "echarts";
-import { GitFork, RefreshCw } from "lucide-react";
+import { Suspense, lazy, useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
+import { GitFork, Loader2, RefreshCw, X } from "lucide-react";
 import { useI18n } from "@/i18n";
 import { axhubApi, type Dataset, type LineageEdge } from "@/lib/api/axhub";
 import { useTheme } from "@/lib/theme";
 import { Badge, Button, Card, Select } from "@/components/ui/primitives";
+import type {
+  LineageAssetEdgeModel,
+  LineageAssetNodeModel,
+} from "./LineageGraphG6Surface";
+
+const LazyLineageGraphG6Surface = lazy(
+  () => import("./LineageGraphG6Surface")
+);
 
 export interface LineageGraphProps {
   dataset: Dataset;
   connectionNames?: Record<string, string>;
 }
 
-interface LineageVisualSpec {
-  symbol: "circle" | "rect" | "roundRect" | "diamond" | "triangle";
-  categoryIdx: number;
-}
-
-const KIND_SPECS: Record<string, LineageVisualSpec> = {
-  CONNECTION: { symbol: "roundRect", categoryIdx: 0 },
-  UPLOAD: { symbol: "diamond", categoryIdx: 1 },
-  DATASET: { symbol: "circle", categoryIdx: 2 },
-  DOC: { symbol: "rect", categoryIdx: 3 },
-  METRIC: { symbol: "triangle", categoryIdx: 4 },
-  NODE_TYPE: { symbol: "triangle", categoryIdx: 4 },
-  FLOW: { symbol: "triangle", categoryIdx: 4 },
-  AGENT: { symbol: "triangle", categoryIdx: 4 },
-  DASHBOARD: { symbol: "triangle", categoryIdx: 4 },
-  EXPORT: { symbol: "triangle", categoryIdx: 4 },
-};
-
 export function LineageGraph({ dataset, connectionNames }: LineageGraphProps) {
   const { tx, tEnum, fmtNum } = useI18n();
   const { isDark } = useTheme();
-  const chartContainerRef = useRef<HTMLDivElement | null>(null);
-  const chartRef = useRef<echarts.ECharts | null>(null);
+  const navigate = useNavigate();
 
   const [depth, setDepth] = useState(3);
   const [edges, setEdges] = useState<LineageEdge[]>([]);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
+  const [hideDownstreamLeafs, setHideDownstreamLeafs] = useState(false);
 
   const formatLineageKind = useCallback(
     (kind: string): string => {
@@ -72,17 +63,6 @@ export function LineageGraph({ dataset, connectionNames }: LineageGraphProps) {
     [tEnum, tx]
   );
 
-  const categories = useMemo(
-    () => [
-      { name: formatLineageKind("CONNECTION") },
-      { name: formatLineageKind("UPLOAD") },
-      { name: formatLineageKind("DATASET") },
-      { name: formatLineageKind("DOC") },
-      { name: formatLineageKind("DOWNSTREAM") },
-    ],
-    [formatLineageKind]
-  );
-
   const loadLineage = useCallback(async () => {
     setLoading(true);
     setErrorMsg(null);
@@ -97,6 +77,7 @@ export function LineageGraph({ dataset, connectionNames }: LineageGraphProps) {
   }, [dataset.id, depth]);
 
   useEffect(() => {
+    setFocusedNodeId(null);
     void loadLineage();
   }, [loadLineage]);
 
@@ -108,76 +89,63 @@ export function LineageGraph({ dataset, connectionNames }: LineageGraphProps) {
       if (kind === "CONNECTION" && connectionNames?.[rawId]) {
         return connectionNames[rawId];
       }
-      return rawId.length > 14 ? `${rawId.slice(0, 8)}…` : rawId;
+      return rawId.length > 16 ? `${rawId.slice(0, 10)}…` : rawId;
     },
-    [dataset.id, dataset.name, connectionNames]
+    [connectionNames, dataset.id, dataset.name]
   );
 
   const graphElements = useMemo(() => {
-    const nodeMap = new Map<
-      string,
-      {
-        id: string;
-        name: string;
-        kind: string;
-        rawId: string;
-        symbol: LineageVisualSpec["symbol"];
-        category: number;
-        isCenter: boolean;
-      }
-    >();
-
     const centerKey = `DATASET:${dataset.id}`;
+    const filteredEdges = hideDownstreamLeafs
+      ? edges.filter(
+          (e) =>
+            e.dst_kind !== "DASHBOARD" &&
+            e.dst_kind !== "EXPORT" &&
+            e.dst_kind !== "AGENT"
+        )
+      : edges;
+
+    const nodeMap = new Map<string, LineageAssetNodeModel>();
     nodeMap.set(centerKey, {
       id: centerKey,
-      name: `[${formatLineageKind("DATASET")}] ${dataset.name}`,
       kind: "DATASET",
+      kindLabel: formatLineageKind("DATASET"),
+      title: dataset.name,
       rawId: dataset.id,
-      symbol: "circle",
-      category: 2,
       isCenter: true,
     });
 
-    for (const edge of edges) {
+    for (const edge of filteredEdges) {
       const srcKey = `${edge.src_kind}:${edge.src_id}`;
       if (!nodeMap.has(srcKey)) {
-        const spec = KIND_SPECS[edge.src_kind] ?? {
-          symbol: "rect",
-          categoryIdx: 4,
-        };
         nodeMap.set(srcKey, {
           id: srcKey,
-          name: `[${formatLineageKind(edge.src_kind)}] ${formatNodeTitle(edge.src_kind, edge.src_id)}`,
           kind: edge.src_kind,
+          kindLabel: formatLineageKind(edge.src_kind),
+          title: formatNodeTitle(edge.src_kind, edge.src_id),
           rawId: edge.src_id,
-          symbol: spec.symbol,
-          category: spec.categoryIdx,
           isCenter: srcKey === centerKey,
         });
       }
 
       const dstKey = `${edge.dst_kind}:${edge.dst_id}`;
       if (!nodeMap.has(dstKey)) {
-        const spec = KIND_SPECS[edge.dst_kind] ?? {
-          symbol: "rect",
-          categoryIdx: 4,
-        };
         nodeMap.set(dstKey, {
           id: dstKey,
-          name: `[${formatLineageKind(edge.dst_kind)}] ${formatNodeTitle(edge.dst_kind, edge.dst_id)}`,
           kind: edge.dst_kind,
+          kindLabel: formatLineageKind(edge.dst_kind),
+          title: formatNodeTitle(edge.dst_kind, edge.dst_id),
           rawId: edge.dst_id,
-          symbol: spec.symbol,
-          category: spec.categoryIdx,
           isCenter: dstKey === centerKey,
         });
       }
     }
 
-    const links = edges.map((edge) => ({
+    const links: LineageAssetEdgeModel[] = filteredEdges.map((edge) => ({
+      id: String(edge.id),
       source: `${edge.src_kind}:${edge.src_id}`,
       target: `${edge.dst_kind}:${edge.dst_id}`,
-      via: edge.via ? tEnum(edge.via) : "",
+      viaLabel: edge.via ? tEnum(edge.via) : "",
     }));
 
     return {
@@ -190,111 +158,24 @@ export function LineageGraph({ dataset, connectionNames }: LineageGraphProps) {
     edges,
     formatLineageKind,
     formatNodeTitle,
+    hideDownstreamLeafs,
     tEnum,
   ]);
 
-  useEffect(() => {
-    const el = chartContainerRef.current;
-    if (!el) return;
-
-    const chart = echarts.init(el);
-    chartRef.current = chart;
-
-    const resizeObserver = new ResizeObserver(() => {
-      chart.resize();
-    });
-    resizeObserver.observe(el);
-
-    return () => {
-      resizeObserver.disconnect();
-      chart.dispose();
-      chartRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart) return;
-
-    const fgColor = isDark ? "#fafafa" : "#09090b";
-    const mutedColor = isDark ? "#a1a1aa" : "#71717a";
-    const cardBg = isDark ? "#18181b" : "#f4f4f5";
-    const borderCol = isDark ? "#3f3f46" : "#d4d4d8";
-    const accentBlue = isDark ? "#3b82f6" : "#2563eb";
-
-    const option: echarts.EChartsOption = {
-      tooltip: {
-        trigger: "item",
-        backgroundColor: cardBg,
-        borderColor: borderCol,
-        textStyle: { color: fgColor, fontSize: 12 },
-      },
-      legend: {
-        top: 6,
-        left: 8,
-        data: categories.map((c) => c.name),
-        textStyle: { color: mutedColor, fontSize: 11 },
-      },
-      series: [
-        {
-          type: "graph",
-          layout: "force",
-          roam: true,
-          draggable: true,
-          categories,
-          edgeSymbol: ["none", "arrow"],
-          edgeSymbolSize: [4, 8],
-          force: {
-            repulsion: 260,
-            edgeLength: [90, 150],
-            gravity: 0.12,
-          },
-          label: {
-            show: true,
-            position: "bottom",
-            color: fgColor,
-            fontSize: 11,
-          },
-          data: graphElements.nodes.map((node) => ({
-            id: node.id,
-            name: node.name,
-            symbol: node.symbol,
-            symbolSize: node.isCenter ? 32 : 22,
-            category: node.category,
-            itemStyle: {
-              color:
-                node.kind === "DATASET"
-                  ? accentBlue
-                  : node.kind === "CONNECTION" || node.kind === "UPLOAD"
-                    ? fgColor
-                    : cardBg,
-              borderColor: node.isCenter ? accentBlue : fgColor,
-              borderWidth: node.isCenter ? 2.5 : 1.5,
-            },
-          })),
-          links: graphElements.links.map((lk) => ({
-            source: lk.source,
-            target: lk.target,
-            label: lk.via
-              ? {
-                  show: true,
-                  formatter: lk.via,
-                  color: mutedColor,
-                  fontSize: 10,
-                }
-              : undefined,
-            lineStyle: {
-              color: mutedColor,
-              width: 1.5,
-              curveness: 0.08,
-            },
-          })),
-        },
-      ],
-    };
-
-    chart.setOption(option, true);
-  }, [categories, graphElements, isDark]);
+  const handleNavigateAsset = useCallback(
+    (kind: string, rawId: string) => {
+      if (kind === "DASHBOARD") {
+        void navigate(`/view?dashboard=${encodeURIComponent(rawId)}`);
+      } else if (kind === "NODE_TYPE") {
+        void navigate(`/studio?node=${encodeURIComponent(rawId)}`);
+      } else if (kind === "FLOW") {
+        void navigate("/flow");
+      } else if (kind === "DATASET" && rawId !== dataset.id) {
+        void navigate(`/hub?dataset=${encodeURIComponent(rawId)}`);
+      }
+    },
+    [dataset.id, navigate]
+  );
 
   return (
     <Card className="p-4 space-y-3" data-testid="lineage-graph-panel">
@@ -304,9 +185,33 @@ export function LineageGraph({ dataset, connectionNames }: LineageGraphProps) {
           <h3 className="text-xs font-semibold">
             {tx("血缘拓扑", "Lineage Graph")} · {dataset.name}
           </h3>
+          {focusedNodeId && (
+            <button
+              type="button"
+              data-testid="lineage-clear-focus-btn"
+              onClick={() => setFocusedNodeId(null)}
+              className="inline-flex items-center gap-1 rounded border border-xblue/40 bg-xblue-soft px-1.5 py-0.5 text-[10px] text-xblue cursor-pointer"
+            >
+              <span>{tx("闭包追踪", "Closure")}</span>
+              <X className="h-2.5 w-2.5" />
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-2">
+          {edges.length > 0 && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              data-testid="lineage-fold-downstream-btn"
+              onClick={() => setHideDownstreamLeafs((v) => !v)}
+            >
+              {hideDownstreamLeafs
+                ? tx("展开下游", "Expand Leaf")
+                : tx("收纳下游", "Fold Leaf")}
+            </Button>
+          )}
           <label className="text-xs text-muted-foreground">
             {tx("跳数", "Hops")}
           </label>
@@ -342,10 +247,27 @@ export function LineageGraph({ dataset, connectionNames }: LineageGraphProps) {
       )}
 
       <div
-        ref={chartContainerRef}
-        className="h-72 w-full rounded border border-border bg-background"
+        className="h-72 w-full rounded border border-border bg-background overflow-hidden"
         data-testid="lineage-graph-canvas"
-      />
+      >
+        <Suspense
+          fallback={
+            <div className="h-full w-full flex items-center justify-center gap-2 text-xs text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin text-xblue" />
+              <span>{tx("加载血缘画布…", "Loading lineage…")}</span>
+            </div>
+          }
+        >
+          <LazyLineageGraphG6Surface
+            nodes={graphElements.nodes}
+            edges={graphElements.links}
+            focusedNodeId={focusedNodeId}
+            isDark={isDark}
+            onSelectNode={setFocusedNodeId}
+            onNavigateAsset={handleNavigateAsset}
+          />
+        </Suspense>
+      </div>
 
       <div className="space-y-1.5">
         <div className="text-[11px] font-medium text-muted-foreground">

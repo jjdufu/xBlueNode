@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
 import {
   Activity,
@@ -34,6 +34,7 @@ import {
   type Environment,
   type FlowDeploymentRecord,
   type FlowEdgeDef,
+  type FlowGraphDef,
   type FlowIssue,
   type FlowNodeDef,
   type FlowOperator,
@@ -50,6 +51,8 @@ import {
   FlowCanvas,
   type NodeStepRuntimeBadge,
 } from "@/components/axflow/FlowCanvas";
+import { spliceNodeIntoFlowEdge } from "@/components/axflow/edgeSplice";
+import { useCanvasHistory } from "@/components/canvas/useCanvasHistory";
 import { NodeConfigForm } from "@/components/axflow/NodeConfigForm";
 import {
   OperatorPalette,
@@ -151,6 +154,41 @@ export function AxFlowPage() {
   const [draftIssues, setDraftIssues] = useState<FlowIssue[]>([]);
   const [isDirty, setIsDirty] = useState(false);
 
+  const flowHistory = useCanvasHistory<FlowGraphDef>({
+    currentDoc: { nodes: draftNodes, edges: draftEdges },
+    enabled: flowMode === "workflows" && canEdit,
+    limit: 50,
+    onApplySnapshot: (snap) => {
+      setDraftNodes(snap.nodes);
+      setDraftEdges(snap.edges);
+      setIsDirty(true);
+    },
+  });
+  const resetFlowHistoryRef = useRef(flowHistory.resetHistory);
+  resetFlowHistoryRef.current = flowHistory.resetHistory;
+  const recordFlowHistoryRef = useRef(flowHistory.recordDoc);
+  recordFlowHistoryRef.current = flowHistory.recordDoc;
+
+  const commitGraphMutation = useCallback(
+    (
+      computeNext: (prev: FlowGraphDef) => FlowGraphDef,
+      selectAfter?: { nodeId?: string | null; edgeIndex?: number | null }
+    ) => {
+      const next = computeNext({ nodes: draftNodes, edges: draftEdges });
+      setDraftNodes(next.nodes);
+      setDraftEdges(next.edges);
+      recordFlowHistoryRef.current(next);
+      if (selectAfter?.nodeId !== undefined) {
+        setSelectedNodeId(selectAfter.nodeId);
+      }
+      if (selectAfter?.edgeIndex !== undefined) {
+        setSelectedEdgeIndex(selectAfter.edgeIndex);
+      }
+      setIsDirty(true);
+    },
+    [draftEdges, draftNodes]
+  );
+
   // Selection, Inspector & Trigger Popover state
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeIndex, setSelectedEdgeIndex] = useState<number | null>(
@@ -220,6 +258,7 @@ export function AxFlowPage() {
     setDraftSlug(flow.slug ?? null);
     setDraftNodes(flow.nodes);
     setDraftEdges(flow.edges);
+    resetFlowHistoryRef.current({ nodes: flow.nodes, edges: flow.edges });
     setDraftTrigger(flow.trigger_cfg);
     setDraftIssues(flow.issues);
     setIsDirty(false);
@@ -427,7 +466,36 @@ export function AxFlowPage() {
     for (const st of runSteps) {
       const prev = map[st.node_id];
       if (!prev || st.attempt >= prev.attempt) {
-        map[st.node_id] = { status: st.status, attempt: st.attempt };
+        let durationMs: number | null = null;
+        if (st.started_at && st.finished_at) {
+          const diff =
+            Date.parse(st.finished_at) - Date.parse(st.started_at);
+          if (Number.isFinite(diff) && diff >= 0) {
+            durationMs = Math.max(1, diff);
+          }
+        }
+        let outputCount: number | null = null;
+        if (st.output && typeof st.output === "object") {
+          const outObj = st.output as Record<string, unknown>;
+          for (const key of [
+            "rows_written",
+            "nodes_upserted",
+            "row_count",
+            "nodes_changed",
+            "affected_count",
+          ]) {
+            if (typeof outObj[key] === "number") {
+              outputCount = outObj[key];
+              break;
+            }
+          }
+        }
+        map[st.node_id] = {
+          status: st.status,
+          attempt: st.attempt,
+          durationMs,
+          outputCount,
+        };
       }
     }
     return map;
@@ -567,15 +635,18 @@ export function AxFlowPage() {
   };
 
   // Handlers: Canvas & Node Editing
-  const addOperatorNode = useCallback(
-    (spec: OperatorSpecDto, explicitPos?: { x: number; y: number }) => {
-      if (!canEdit) return;
-      const newId = generateUniqueNodeId(spec.kind, draftNodes);
+  const buildNewOperatorNode = useCallback(
+    (
+      spec: OperatorSpecDto,
+      existing: readonly FlowNodeDef[],
+      explicitPos?: { x: number; y: number }
+    ): FlowNodeDef => {
+      const newId = generateUniqueNodeId(spec.kind, existing);
       const pos = explicitPos ?? {
-        x: 80 + (draftNodes.length % 4) * 272,
-        y: 128 + Math.floor(draftNodes.length / 4) * 160,
+        x: 80 + (existing.length % 4) * 272,
+        y: 128 + Math.floor(existing.length / 4) * 160,
       };
-      const newNode: FlowNodeDef = {
+      return {
         id: newId,
         kind: spec.kind,
         label: resolveOperatorTitle(spec, isZh),
@@ -586,14 +657,25 @@ export function AxFlowPage() {
         join: "ALL_SUCCESS",
         pos,
       };
-      setDraftNodes((prev) => [...prev, newNode]);
-      setSelectedEdgeIndex(null);
-      setSelectedNodeId(newId);
+    },
+    [isZh]
+  );
+
+  const addOperatorNode = useCallback(
+    (spec: OperatorSpecDto, explicitPos?: { x: number; y: number }) => {
+      if (!canEdit) return;
+      const newNode = buildNewOperatorNode(spec, draftNodes, explicitPos);
+      commitGraphMutation(
+        (prev) => ({
+          nodes: [...prev.nodes, newNode],
+          edges: prev.edges,
+        }),
+        { nodeId: newNode.id, edgeIndex: null }
+      );
       setTriggerPopoverOpen(false);
       setInspectorTab("node");
-      setIsDirty(true);
     },
-    [canEdit, draftNodes, isZh]
+    [buildNewOperatorNode, canEdit, commitGraphMutation, draftNodes]
   );
 
   const handleDropOperator = useCallback(
@@ -608,70 +690,143 @@ export function AxFlowPage() {
     [operators, addOperatorNode]
   );
 
+  const handleSpliceOperatorOnEdge = useCallback(
+    (
+      edgeIndex: number,
+      kind: FlowOperator,
+      pos?: { x: number; y: number }
+    ) => {
+      if (!canEdit) return;
+      const spec =
+        operators.find((o) => o.kind === kind) ??
+        FALLBACK_OPERATOR_SPECS.find((o) => o.kind === kind);
+      if (!spec) return;
+      const newNode = buildNewOperatorNode(spec, draftNodes, pos);
+      commitGraphMutation(
+        (prev) =>
+          spliceNodeIntoFlowEdge(prev.nodes, prev.edges, edgeIndex, newNode),
+        { nodeId: newNode.id, edgeIndex: null }
+      );
+      setTriggerPopoverOpen(false);
+      setInspectorTab("node");
+    },
+    [buildNewOperatorNode, canEdit, commitGraphMutation, draftNodes, operators]
+  );
+
+  const handleCreateAndConnectOperator = useCallback(
+    (
+      fromNodeId: string,
+      kind: FlowOperator,
+      pos: { x: number; y: number }
+    ) => {
+      if (!canEdit) return;
+      const spec =
+        operators.find((o) => o.kind === kind) ??
+        FALLBACK_OPERATOR_SPECS.find((o) => o.kind === kind);
+      if (!spec) return;
+      const newNode = buildNewOperatorNode(spec, draftNodes, pos);
+      commitGraphMutation(
+        (prev) => ({
+          nodes: [...prev.nodes, newNode],
+          edges: [
+            ...prev.edges,
+            { from: fromNodeId, to: newNode.id, when: null },
+          ],
+        }),
+        { nodeId: newNode.id, edgeIndex: null }
+      );
+      setTriggerPopoverOpen(false);
+      setInspectorTab("node");
+    },
+    [buildNewOperatorNode, canEdit, commitGraphMutation, draftNodes, operators]
+  );
+
   const handleUpdateNodePos = useCallback(
     (nodeId: string, pos: { x: number; y: number }) => {
-      setDraftNodes((prev) =>
-        prev.map((n) => (n.id === nodeId ? { ...n, pos } : n))
-      );
-      setIsDirty(true);
+      commitGraphMutation((prev) => ({
+        nodes: prev.nodes.map((n) => (n.id === nodeId ? { ...n, pos } : n)),
+        edges: prev.edges,
+      }));
     },
-    []
+    [commitGraphMutation]
   );
 
   const handleApplyLayout = useCallback(
     (positions: Record<string, { x: number; y: number }>) => {
-      setDraftNodes((prev) =>
-        prev.map((n) => (positions[n.id] ? { ...n, pos: positions[n.id] } : n))
-      );
-      setIsDirty(true);
+      commitGraphMutation((prev) => ({
+        nodes: prev.nodes.map((n) =>
+          positions[n.id] ? { ...n, pos: positions[n.id] } : n
+        ),
+        edges: prev.edges,
+      }));
     },
-    []
+    [commitGraphMutation]
   );
 
   const handleConnectNodes = useCallback(
     (from: string, to: string, when?: string | null) => {
       if (!from || !to || from === to) return;
-      setDraftEdges((prev) => {
-        const exists = prev.some((e) => e.from === from && e.to === to);
+      commitGraphMutation((prev) => {
+        const exists = prev.edges.some(
+          (e) => e.from === from && e.to === to
+        );
         if (exists) return prev;
-        return [...prev, { from, to, when: when ?? null }];
+        return {
+          nodes: prev.nodes,
+          edges: [...prev.edges, { from, to, when: when ?? null }],
+        };
       });
-      setIsDirty(true);
     },
-    []
+    [commitGraphMutation]
   );
 
-  const handleUpdateNode = useCallback((updated: FlowNodeDef) => {
-    setDraftNodes((prev) =>
-      prev.map((n) => (n.id === updated.id ? updated : n))
-    );
-    setIsDirty(true);
-  }, []);
+  const handleUpdateNode = useCallback(
+    (updated: FlowNodeDef) => {
+      commitGraphMutation((prev) => ({
+        nodes: prev.nodes.map((n) => (n.id === updated.id ? updated : n)),
+        edges: prev.edges,
+      }));
+    },
+    [commitGraphMutation]
+  );
 
-  const handleDeleteNode = useCallback((nodeId: string) => {
-    setDraftNodes((prev) => prev.filter((n) => n.id !== nodeId));
-    setDraftEdges((prev) =>
-      prev.filter((e) => e.from !== nodeId && e.to !== nodeId)
-    );
-    setSelectedNodeId(null);
-    setIsDirty(true);
-  }, []);
+  const handleDeleteNode = useCallback(
+    (nodeId: string) => {
+      commitGraphMutation(
+        (prev) => ({
+          nodes: prev.nodes.filter((n) => n.id !== nodeId),
+          edges: prev.edges.filter(
+            (e) => e.from !== nodeId && e.to !== nodeId
+          ),
+        }),
+        { nodeId: null }
+      );
+    },
+    [commitGraphMutation]
+  );
 
   const handleUpdateEdge = useCallback(
     (edgeIndex: number, updated: FlowEdgeDef) => {
-      setDraftEdges((prev) =>
-        prev.map((e, idx) => (idx === edgeIndex ? updated : e))
-      );
-      setIsDirty(true);
+      commitGraphMutation((prev) => ({
+        nodes: prev.nodes,
+        edges: prev.edges.map((e, idx) => (idx === edgeIndex ? updated : e)),
+      }));
     },
-    []
+    [commitGraphMutation]
   );
 
-  const handleDeleteEdge = useCallback((edgeIndex: number) => {
-    setDraftEdges((prev) => prev.filter((_, idx) => idx !== edgeIndex));
-    setSelectedEdgeIndex(null);
-    setIsDirty(true);
-  }, []);
+  const handleDeleteEdge = useCallback(
+    (edgeIndex: number) => {
+      commitGraphMutation(
+        (prev) => ({
+          nodes: prev.nodes,
+          edges: prev.edges.filter((_, idx) => idx !== edgeIndex),
+        }),
+        { edgeIndex: null }
+      );
+    },
+    [commitGraphMutation]
+  );
 
   // Handlers: Save / Validate / Publish / Deploy
   const handleSaveDraft = async (): Promise<boolean> => {
@@ -1233,10 +1388,19 @@ export function AxFlowPage() {
                 <FlowCanvas
                   nodes={draftNodes}
                   edges={draftEdges}
+                  operators={operators}
                   issues={draftIssues}
                   stepStatusByNodeId={stepStatusByNodeId}
                   selectedNodeId={selectedNodeId}
                   selectedEdgeIndex={selectedEdgeIndex}
+                  canUndo={flowHistory.canUndo}
+                  canRedo={flowHistory.canRedo}
+                  onUndo={() => {
+                    flowHistory.undo();
+                  }}
+                  onRedo={() => {
+                    flowHistory.redo();
+                  }}
                   onSelectNode={(id) => {
                     setSelectedNodeId(id);
                     if (id) {
@@ -1257,6 +1421,8 @@ export function AxFlowPage() {
                   onUpdateEdge={handleUpdateEdge}
                   onDeleteEdge={handleDeleteEdge}
                   onDropOperator={handleDropOperator}
+                  onSpliceOperatorOnEdge={handleSpliceOperatorOnEdge}
+                  onCreateAndConnectOperator={handleCreateAndConnectOperator}
                 />
               ),
             },
