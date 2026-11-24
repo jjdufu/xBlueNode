@@ -6,8 +6,14 @@ use std::str::FromStr;
 
 use axpoint_domain::AppError;
 use axpoint_domain::axhub::ColumnProfile;
-use axpoint_domain::builder::{DevSubgraphResetResponse, resolve_deep_links};
-use axpoint_domain::enums::{Cardinality, DataType, DesignMaturity, JobKind, SemanticLayerTier};
+use axpoint_domain::builder::{
+    CompetencyQuestionOutcome, CompetencyQuestionSpec, CompetencySuiteRecord,
+    DevSubgraphResetResponse, HarnessGapDiagnostic, HarnessRunRecord, UpsertCompetencySuiteRequest,
+    resolve_deep_links,
+};
+use axpoint_domain::enums::{
+    Cardinality, DataType, DesignMaturity, HarnessRunStatus, JobKind, SemanticLayerTier,
+};
 use axpoint_domain::graph::GeoPoint;
 use axpoint_domain::platform::NewJob;
 use axpoint_domain::ports::StudioRepository;
@@ -2772,6 +2778,200 @@ impl StudioRepository for PgStore {
         )
         .await
     }
+
+    async fn get_competency_suite(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+    ) -> Result<CompetencySuiteRecord, AppError> {
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let _head = require_subgraph_exists_tx(&mut tx, tenant_id, subgraph_slug).await?;
+        let row_opt = sqlx::query(
+            "SELECT subgraph_slug, questions, updated_by, updated_at
+               FROM xb_competency_suites
+              WHERE tenant_id = $1 AND subgraph_slug = $2",
+        )
+        .bind(tenant_id)
+        .bind(subgraph_slug)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("load xb_competency_suites failed: {err}")))?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit get_competency_suite tx failed: {err}"))
+        })?;
+
+        if let Some(row) = row_opt {
+            decode_competency_suite_row(&row)
+        } else {
+            Ok(CompetencySuiteRecord {
+                subgraph_slug: String::from(subgraph_slug),
+                questions: Vec::new(),
+                updated_by: None,
+                updated_at: Utc::now(),
+            })
+        }
+    }
+
+    async fn upsert_competency_suite(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        actor_user_id: Option<Uuid>,
+        req: UpsertCompetencySuiteRequest,
+    ) -> Result<CompetencySuiteRecord, AppError> {
+        if req.questions.len() > 200 {
+            return Err(AppError::bad(
+                "LIMIT_OUT_OF_RANGE",
+                "competency suite cannot exceed 200 questions",
+            ));
+        }
+        for q in &req.questions {
+            if q.id.trim().is_empty() || q.question.trim().is_empty() {
+                return Err(AppError::bad(
+                    "INVALID_ARGUMENT",
+                    "competency question id and question text must be non-empty",
+                ));
+            }
+            if !q.tolerance.is_finite() || q.tolerance < 0.0 {
+                return Err(AppError::bad(
+                    "INVALID_ARGUMENT",
+                    "competency question tolerance must be finite and non-negative",
+                ));
+            }
+        }
+        let questions_json = serde_json::to_value(&req.questions).map_err(|err| {
+            AppError::bad(
+                "INVALID_ARGUMENT",
+                format!("serialize competency questions failed: {err}"),
+            )
+        })?;
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let _head = require_subgraph_exists_tx(&mut tx, tenant_id, subgraph_slug).await?;
+        let row = sqlx::query(
+            "INSERT INTO xb_competency_suites (tenant_id, subgraph_slug, questions, updated_by, updated_at)
+             VALUES ($1, $2, $3, $4, NOW())
+             ON CONFLICT (tenant_id, subgraph_slug) DO UPDATE
+               SET questions = EXCLUDED.questions,
+                   updated_by = EXCLUDED.updated_by,
+                   updated_at = NOW()
+             RETURNING subgraph_slug, questions, updated_by, updated_at",
+        )
+        .bind(tenant_id)
+        .bind(subgraph_slug)
+        .bind(questions_json)
+        .bind(actor_user_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("upsert xb_competency_suites failed: {err}")))?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit upsert_competency_suite tx failed: {err}"))
+        })?;
+
+        decode_competency_suite_row(&row)
+    }
+
+    async fn record_harness_run(
+        &self,
+        tenant_id: &str,
+        run: &HarnessRunRecord,
+    ) -> Result<HarnessRunRecord, AppError> {
+        let gaps_json = serde_json::to_value(&run.gap_diagnostics).map_err(|err| {
+            AppError::Database(format!("serialize harness gap_diagnostics failed: {err}"))
+        })?;
+        let results_json = serde_json::to_value(&run.results).map_err(|err| {
+            AppError::Database(format!("serialize harness results failed: {err}"))
+        })?;
+
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let row = sqlx::query(
+            "INSERT INTO xb_harness_runs (
+                 id, tenant_id, subgraph_slug, total_questions, passed_count,
+                 status, gap_diagnostics, results_json, triggered_by
+             )
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+             RETURNING id, subgraph_slug, total_questions, passed_count, status,
+                       gap_diagnostics, results_json, triggered_by, created_at",
+        )
+        .bind(run.id)
+        .bind(tenant_id)
+        .bind(&run.subgraph_slug)
+        .bind(run.total_questions)
+        .bind(run.passed_count)
+        .bind(run.status.as_str())
+        .bind(gaps_json)
+        .bind(results_json)
+        .bind(run.triggered_by)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("insert xb_harness_runs failed: {err}")))?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit record_harness_run tx failed: {err}"))
+        })?;
+
+        decode_harness_run_row(&row)
+    }
+
+    async fn list_harness_runs(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        limit: u32,
+    ) -> Result<Vec<HarnessRunRecord>, AppError> {
+        let capped = i64::from(limit.clamp(1, 100));
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let rows = sqlx::query(
+            "SELECT id, subgraph_slug, total_questions, passed_count, status,
+                    gap_diagnostics, results_json, triggered_by, created_at
+               FROM xb_harness_runs
+              WHERE tenant_id = $1 AND subgraph_slug = $2
+              ORDER BY created_at DESC, id DESC
+              LIMIT $3",
+        )
+        .bind(tenant_id)
+        .bind(subgraph_slug)
+        .bind(capped)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("list xb_harness_runs failed: {err}")))?;
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit list_harness_runs tx failed: {err}"))
+        })?;
+
+        rows.iter().map(decode_harness_run_row).collect()
+    }
+}
+
+fn decode_competency_suite_row(
+    row: &sqlx::postgres::PgRow,
+) -> Result<CompetencySuiteRecord, AppError> {
+    let questions: Vec<CompetencyQuestionSpec> = serde_json::from_value(row.get("questions"))
+        .map_err(|err| AppError::Database(format!("decode competency questions failed: {err}")))?;
+    Ok(CompetencySuiteRecord {
+        subgraph_slug: row.get("subgraph_slug"),
+        questions,
+        updated_by: row.get("updated_by"),
+        updated_at: row.get("updated_at"),
+    })
+}
+
+fn decode_harness_run_row(row: &sqlx::postgres::PgRow) -> Result<HarnessRunRecord, AppError> {
+    let status = HarnessRunStatus::from_str(&row.get::<String, _>("status"))?;
+    let gap_diagnostics: Vec<HarnessGapDiagnostic> =
+        serde_json::from_value(row.get("gap_diagnostics")).unwrap_or_default();
+    let results: Vec<CompetencyQuestionOutcome> =
+        serde_json::from_value(row.get("results_json")).unwrap_or_default();
+    Ok(HarnessRunRecord {
+        id: row.get("id"),
+        subgraph_slug: row.get("subgraph_slug"),
+        total_questions: row.get("total_questions"),
+        passed_count: row.get("passed_count"),
+        status,
+        gap_diagnostics,
+        results,
+        triggered_by: row.get("triggered_by"),
+        created_at: row.get("created_at"),
+    })
 }
 
 const MAX_DRAFT_SNAPSHOTS_RETAINED: i32 = 20;

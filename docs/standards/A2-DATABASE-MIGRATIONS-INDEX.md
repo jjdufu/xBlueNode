@@ -31,6 +31,7 @@
 | 0021 | `0021_actions_and_edge_dynamics.sql` | Step 26 | `xb_node_types.actions`、`xb_edge_types.spec`、`xb_links.{metrics,row_version}`、边时序表 `xb_link_metric_series`、子图运行时认证记录 `xb_runtime_certifications` 及对象动作审计/审批约束扩展 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.1 |
 | 0022 | `0022_state_visibility_policies.sql` | Step 27 | `sec_row_policies` 状态驱动动态行级视野模式 `policy_mode` 与活跃期退场列 `ttl_timestamp_field` / `ttl_max_age_hours` | [05-STEP27](../../plans/v3-craft-and-world-runtime/world-runtime/05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) §27.1 |
 | 0023 | `0023_sim_events_and_geoshape.sql` | Step 28 | `xb_nodes.geo_shape`、`ax_sim_base_nodes` / `ax_sim_overlay_nodes` 空间几何列，以及 `ax_sim_scenarios` 定时/条件事件队列与 `deadline_report` 列 | [06-STEP28](../../plans/v3-craft-and-world-runtime/world-runtime/06-STEP28-SIM-EVENT-QUEUE-DEADLINE-AND-RUST-GEOSHAPE.md) §28.1 |
+| 0024 | `0024_streams_and_harness_runs.sql` | Step 29 | `ds_datasets` 常驻流租约与 `LOG_CDC` 位点列、单主流租约函数、`xb_competency_suites`、`xb_harness_runs` 及 `HARNESS_VERIFY_RUN` 审计动作 | [07-STEP29](../../plans/v3-craft-and-world-runtime/world-runtime/07-STEP29-STREAM-WORKERS-LOG-CDC-AND-AUTONOMOUS-HARNESS.md) §29.1 |
 
 Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 中的时序表）。
 
@@ -54,14 +55,15 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `sec_users` | 0002 | 0013 | 00 / 13 | 是 |
 | `sec_roles`、`sec_user_roles` | 0002 | — | 00 | 是 |
 | `sec_api_tokens` | 0002 | 0017（`token_profile`、`web_base_url`） | 00 / 09 / 17 | 是 |
-| `sec_audit_logs` | 0002 | 0013（哈希链）、0017（构建与克隆动作）、0018（快照回退动作）、0019（`IM_ACCOUNT_BIND`）、0020（`CHART_PUBLISH`）、0021（`OBJECT_ACTION_INVOKE`、`TRIAL_TICK_CERTIFY`） | 00 / 13 / 17 / 18 / 21 / 25 / 26 | 是（应用角色无 UPDATE / DELETE） |
+| `sec_audit_logs` | 0002 | 0013（哈希链）、0017（构建与克隆动作）、0018（快照回退动作）、0019（`IM_ACCOUNT_BIND`）、0020（`CHART_PUBLISH`）、0021（`OBJECT_ACTION_INVOKE`、`TRIAL_TICK_CERTIFY`）、0024（`HARNESS_VERIFY_RUN`） | 00 / 13 / 17 / 18 / 21 / 25 / 26 / 29 | 是（应用角色无 UPDATE / DELETE） |
 | `ax_jobs`、`ax_outbox` | 0002 | — | 00 | 是 |
 | `ax_retention_policies` | 0002 | 0019（`IM_EVENT_DEDUP` 目标） | 00 / 21 | 是 |
 | `ds_credentials`、`ds_connections`、`ds_column_meta`、`ds_sync_jobs`、`ds_uploads`、`ds_webhooks`、`ds_webhook_buffer`、`ds_stream_offsets`、`ds_quality_rules`、`ds_glossary_terms`、`ds_lineage` | 0003 | — | 02 | 是 |
-| `ds_datasets` | 0003 | 0013（归属、密级） | 02 / 13 | 是 |
+| `ds_datasets` | 0003 | 0013（归属、密级）、0024（`LOG_CDC`、常驻流与租约列） | 02 / 13 / 29 | 是 |
 | `xb_metric_series`（按月分区，含 `xb_metric_series_default`） | 0004 | — | 03 | 是 |
 | `xb_metric_rollups`、`xb_rollup_watermarks`、`xb_rollup_dirty`、`xb_entity_links`、`xb_graph_algo_results` | 0004 | — | 03 | 是 |
 | `xb_link_metric_series`、`xb_runtime_certifications` | 0021 | — | 26 | 是 |
+| `xb_competency_suites`、`xb_harness_runs` | 0024 | — | 29 | 是 |
 | `an_metrics`、`an_saved_queries`、`an_query_history`、`an_transform_drafts` | 0005 | — | 04 | 是 |
 | `an_ask_turns` | 0005 | 0016（接地路径与核验计数列） | 04 / 16 | 是 |
 | `an_grounding_eval_runs` | 0016 | — | 16 | 是 |
@@ -121,6 +123,8 @@ DuckLake 目录表位于 `lake_catalog` 模式，属主为 `axpoint_lake`，由 
 | `ax_claim_im_connectors(holder, limit, lease_s)` | 0019 | IM 连接器单主租约认领与续期 |
 | `ax_release_im_connectors(holder)` | 0019 | 优雅停机释放本实例持有的 IM 连接器租约 |
 | `ax_consume_im_bind_challenge(hash, tenant, user_id)` | 0019 | 原子校验核销一次性 IM 绑定挑战码并写入绑定记录 |
+| `ax_claim_stream_datasets(holder, limit, lease_s)` | 0024 | 常驻流消费数据集单主租约认领与续期 |
+| `ax_release_stream_datasets(holder)` | 0024 | 优雅停机释放本实例持有的常驻流消费租约 |
 
 函数返回结果后，调用方立即以返回的 `tenant_id` 开启租户事务（`begin_tenant_tx`），后续读写全部受 RLS 约束。
 

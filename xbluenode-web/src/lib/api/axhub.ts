@@ -107,6 +107,8 @@ export interface Dataset {
   last_snapshot_id: number | null;
   last_synced_at: string | null;
   schedule_cron: string | null;
+  continuous_stream?: boolean;
+  cdc_slot_meta?: Record<string, unknown>;
   tags: string[];
   owner_user_id: string | null;
   status: DatasetStatus;
@@ -373,6 +375,8 @@ export const axhubApi = {
     delete_column?: string | null;
     schema_policy?: SchemaPolicy;
     schedule_cron?: string | null;
+    continuous_stream?: boolean;
+    cdc_slot_meta?: Record<string, unknown>;
     tags?: string[];
   }) =>
     requestJson<Dataset>("/api/axhub/datasets", {
@@ -392,6 +396,8 @@ export const axhubApi = {
       delete_column?: string | null;
       schema_policy?: SchemaPolicy;
       schedule_cron?: string | null;
+      continuous_stream?: boolean;
+      cdc_slot_meta?: Record<string, unknown>;
       tags?: string[];
       status?: DatasetStatus;
     }

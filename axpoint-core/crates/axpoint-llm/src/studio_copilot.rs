@@ -1220,6 +1220,8 @@ mod tests {
             last_snapshot_id: None,
             last_synced_at: None,
             schedule_cron: None,
+            continuous_stream: false,
+            cdc_slot_meta: json!({}),
             tags: Vec::new(),
             owner_user_id: None,
             status: DatasetStatus::Ready,

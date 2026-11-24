@@ -752,10 +752,10 @@ async fn create_dataset_handler(
     ApiJson(req): ApiJson<CreateDatasetRequest>,
 ) -> Result<Json<Dataset>, HttpError> {
     principal.require(Permission::DataSync)?;
-    if req.sync_mode == SyncMode::Upsert && req.primary_key.is_empty() {
+    if matches!(req.sync_mode, SyncMode::Upsert | SyncMode::LogCdc) && req.primary_key.is_empty() {
         return Err(HttpError(AppError::bad(
             "INVALID_ARGUMENT",
-            "UPSERT sync_mode requires non-empty primary_key",
+            "UPSERT or LOG_CDC sync_mode requires non-empty primary_key",
         )));
     }
     if let Some(ref cron_expr) = req.schedule_cron {

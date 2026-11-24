@@ -138,6 +138,18 @@ pub(crate) fn router() -> Router<AppState> {
             post(certify_subgraph_handler),
         )
         .route(
+            "/xblue/subgraphs/{slug}/competency-suite",
+            get(get_competency_suite_handler).put(put_competency_suite_handler),
+        )
+        .route(
+            "/xblue/subgraphs/{slug}/competency-verify",
+            post(verify_competency_suite_handler),
+        )
+        .route(
+            "/xblue/subgraphs/{slug}/harness-runs",
+            get(list_harness_runs_handler),
+        )
+        .route(
             "/xblue/schema",
             get(get_schema_handler)
                 .post(save_schema_handler)
@@ -3425,6 +3437,96 @@ async fn compute_convex_hull_handler(
 ) -> Result<Json<axpoint_domain::geo_ops::ConvexHullResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
     Err(HttpError(AppError::Unsupported("GEO_OPS_UNSUPPORTED")))
+}
+
+async fn get_competency_suite_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath(slug): ApiPath<String>,
+) -> Result<Json<axpoint_domain::builder::CompetencySuiteRecord>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let clean_slug = slug.trim();
+    authorize_subgraph_read(&state, &headers, &principal, clean_slug).await?;
+    let suite = state
+        .store
+        .get_competency_suite(&principal.tenant_id, clean_slug)
+        .await?;
+    Ok(Json(suite))
+}
+
+async fn put_competency_suite_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(slug): ApiPath<String>,
+    ApiJson(req): ApiJson<axpoint_domain::builder::UpsertCompetencySuiteRequest>,
+) -> Result<Json<axpoint_domain::builder::CompetencySuiteRecord>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    let suite = state
+        .store
+        .upsert_competency_suite(
+            &principal.tenant_id,
+            slug.trim(),
+            actor_uuid(&principal),
+            req,
+        )
+        .await?;
+    Ok(Json(suite))
+}
+
+async fn verify_competency_suite_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath(slug): ApiPath<String>,
+    body: Bytes,
+) -> Result<Json<axpoint_domain::builder::HarnessRunRecord>, HttpError> {
+    principal.require(Permission::StudioEdit)?;
+    principal.require(Permission::DataRead)?;
+    let clean_slug = slug.trim();
+    authorize_subgraph_read(&state, &headers, &principal, clean_slug).await?;
+    let req: axpoint_domain::builder::VerifyCompetencySuiteRequest =
+        if body.is_empty() || body.iter().all(u8::is_ascii_whitespace) {
+            axpoint_domain::builder::VerifyCompetencySuiteRequest::default()
+        } else {
+            serde_json::from_slice(&body).map_err(|err| {
+                AppError::bad("INVALID_ARGUMENT", format!("invalid JSON payload: {err}"))
+            })?
+        };
+    let mut perms = principal.permissions.clone();
+    perms.remove(&Permission::PiiRawRead);
+    let analytics_principal = axpoint_domain::analytics::AnalyticsPrincipal {
+        user_id: principal.user_id,
+        tenant_id: principal.tenant_id.clone(),
+        username: principal.username.clone(),
+        permissions: perms,
+    };
+    let run = axpoint_domain::ports::BuilderHarnessPort::verify_competency_suite(
+        state.axagent.capability.as_ref(),
+        &analytics_principal,
+        actor_uuid(&principal),
+        &principal.username,
+        clean_slug,
+        req,
+    )
+    .await?;
+    Ok(Json(run))
+}
+
+async fn list_harness_runs_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    principal: AuthPrincipal,
+    ApiPath(slug): ApiPath<String>,
+) -> Result<Json<serde_json::Value>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let clean_slug = slug.trim();
+    authorize_subgraph_read(&state, &headers, &principal, clean_slug).await?;
+    let items = state
+        .store
+        .list_harness_runs(&principal.tenant_id, clean_slug, 20)
+        .await?;
+    Ok(Json(serde_json::json!({ "items": items })))
 }
 
 #[cfg(test)]

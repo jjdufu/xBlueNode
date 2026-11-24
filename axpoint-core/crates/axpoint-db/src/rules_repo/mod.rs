@@ -133,6 +133,10 @@ fn decode_dataset_row(row: &sqlx::postgres::PgRow) -> Result<Dataset, AppError> 
         last_snapshot_id: row.get("last_snapshot_id"),
         last_synced_at: row.get("last_synced_at"),
         schedule_cron: row.get("schedule_cron"),
+        continuous_stream: row.try_get("continuous_stream").unwrap_or(false),
+        cdc_slot_meta: row
+            .try_get("cdc_slot_meta")
+            .unwrap_or_else(|_| serde_json::json!({})),
         tags: row.get("tags"),
         owner_user_id: row.get("owner_user_id"),
         status,

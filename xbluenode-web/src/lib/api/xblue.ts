@@ -12,7 +12,10 @@ import type {
   Environment,
   GeoPredicateOp,
   GraphAlgo,
+  GraphAlgoBackend,
   GroundingMode,
+  HarnessGapKind,
+  HarnessRunStatus,
   MetricSourceTag,
   PiiCategory,
   PropagationPathKind,
@@ -330,6 +333,7 @@ export interface AlgoRunResponse {
   node_count: number;
   edge_count: number;
   duration_ms: number;
+  backend?: GraphAlgoBackend;
   top: AlgoTopEntry[];
 }
 
@@ -1322,6 +1326,67 @@ export interface RuntimeCertReport {
   triggered_rules_cnt: number;
   dead_knowledge: DeadKnowledgeIssue[];
   issues: ValidationIssue[];
+  created_at: string;
+}
+
+export interface CompetencyQuestionSpec {
+  id: string;
+  question: string;
+  expected_grounding_mode?: GroundingMode;
+  expected_node_types?: string[];
+  expected_metrics?: string[];
+  expected_number?: number;
+  tolerance?: number;
+  must_not_abstain?: boolean;
+}
+
+export interface CompetencySuiteRecord {
+  subgraph_slug: string;
+  questions: CompetencyQuestionSpec[];
+  updated_by?: string | null;
+  updated_at: string;
+}
+
+export interface UpsertCompetencySuiteRequest {
+  questions: CompetencyQuestionSpec[];
+}
+
+export interface VerifyCompetencySuiteRequest {
+  draft_id?: string | null;
+  run_dev_materialize?: boolean;
+  limit_rows?: number;
+  questions_override?: CompetencyQuestionSpec[];
+}
+
+export interface HarnessGapDiagnostic {
+  question_id: string;
+  gap_kind: HarnessGapKind;
+  target_ref: string;
+  message: string;
+  suggested_tool: string;
+}
+
+export interface CompetencyQuestionOutcome {
+  question_id: string;
+  question: string;
+  passed: boolean;
+  grounding_mode: GroundingMode;
+  abstained: boolean;
+  answer: string;
+  observed_numbers: number[];
+  sql?: string;
+  failure_reason?: string;
+}
+
+export interface HarnessRunRecord {
+  id: string;
+  subgraph_slug: string;
+  total_questions: number;
+  passed_count: number;
+  status: HarnessRunStatus;
+  gap_diagnostics: HarnessGapDiagnostic[];
+  results: CompetencyQuestionOutcome[];
+  triggered_by?: string | null;
   created_at: string;
 }
 
@@ -2698,6 +2763,7 @@ export const xblueApi = {
   runAlgorithm: (
     algo: GraphAlgo,
     payload: {
+      subgraph?: string;
       type_names?: string[];
       link_types?: string[];
       params?: Record<string, unknown>;
@@ -3641,5 +3707,41 @@ export const xblueApi = {
   ): Promise<LinkMetricExplainResponse> =>
     requestJson<LinkMetricExplainResponse>(
       `/api/xblue/links/${encodeURIComponent(linkId)}/explain/${encodeURIComponent(metric)}`
+    ),
+  getCompetencySuite: (
+    subgraphSlug: string
+  ): Promise<CompetencySuiteRecord> =>
+    requestJson<CompetencySuiteRecord>(
+      `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/competency-suite`
+    ),
+  putCompetencySuite: (
+    subgraphSlug: string,
+    body: UpsertCompetencySuiteRequest
+  ): Promise<CompetencySuiteRecord> =>
+    requestJson<CompetencySuiteRecord>(
+      `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/competency-suite`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    ),
+  verifyCompetencySuite: (
+    subgraphSlug: string,
+    body?: VerifyCompetencySuiteRequest
+  ): Promise<HarnessRunRecord> =>
+    requestJson<HarnessRunRecord>(
+      `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/competency-verify`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body ?? {}),
+      }
+    ),
+  listHarnessRuns: (
+    subgraphSlug: string
+  ): Promise<{ items: HarnessRunRecord[] }> =>
+    requestJson<{ items: HarnessRunRecord[] }>(
+      `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/harness-runs`
     ),
 };

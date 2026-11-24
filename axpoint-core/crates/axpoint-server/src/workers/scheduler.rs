@@ -166,3 +166,45 @@ async fn enqueue_daily_lake_maintenance(store: &PgStore) -> Result<(), AppError>
     }
     Ok(())
 }
+
+/// Sub-second continuous micro-batch stream coordinator claiming `continuous_stream = true` datasets
+/// under a `30s` single-leader lease (`07-STEP29` §29.1 & §29.2).
+pub(crate) async fn run_continuous_stream_coordinator(
+    holder_id: String,
+    store: PgStore,
+    mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut ticker = tokio::time::interval(Duration::from_millis(750));
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+
+    while !*shutdown_rx.borrow_and_update() {
+        tokio::select! {
+            _ = ticker.tick() => {}
+            _ = shutdown_rx.changed() => break,
+        }
+        match store.claim_stream_datasets(&holder_id, 32, 30).await {
+            Ok(leased) => {
+                for item in leased {
+                    if let Err(err) = store
+                        .enqueue_sync_job(&item.tenant_id, item.dataset_id)
+                        .await
+                    {
+                        tracing::warn!(
+                            tenant_id = %item.tenant_id,
+                            dataset_id = %item.dataset_id,
+                            error = %err,
+                            "continuous stream micro-batch sync enqueue failed"
+                        );
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "claim_stream_datasets failed");
+            }
+        }
+    }
+
+    if let Err(err) = store.release_stream_datasets(&holder_id).await {
+        tracing::warn!(holder_id = %holder_id, error = %err, "release_stream_datasets failed");
+    }
+}

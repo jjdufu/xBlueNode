@@ -1299,6 +1299,8 @@ where
                     delete_column: None,
                     schema_policy: SchemaPolicy::Evolve,
                     schedule_cron: None,
+                    continuous_stream: false,
+                    cdc_slot_meta: serde_json::json!({}),
                     tags: vec![String::from("template"), session.manifest.id.clone()],
                 },
             )

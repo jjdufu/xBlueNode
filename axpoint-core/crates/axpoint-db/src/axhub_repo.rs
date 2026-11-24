@@ -7,12 +7,12 @@ use axpoint_domain::AppError;
 use axpoint_domain::axhub::{
     CatalogSearchHit, ColumnMeta, ColumnProfile, Connection, ConnectionStatus,
     CreateDatasetRequest, CreateGlossaryTermRequest, CreateQualityRuleRequest,
-    CreateWebhookRequest, Dataset, DatasetListQuery, DatasetStatus, GlossaryTerm, LineageEdge,
-    NewConnectionInput, NewUploadInput, PaginatedList, QualityOnFail, QualityReport, QualityRule,
-    ResolvedWebhook, ScheduledDataset, SchemaChange, SchemaPolicy, SealedCredential,
-    SidecarSyncResult, SyncDatasetResponse, SyncJob, UpdateColumnMetaRequest,
-    UpdateConnectionInput, UpdateDatasetRequest, UploadRecord, UploadStatus, WebhookAuthScheme,
-    WebhookBufferItem, WebhookConfig,
+    CreateWebhookRequest, Dataset, DatasetListQuery, DatasetStatus, GlossaryTerm,
+    LeasedStreamDataset, LineageEdge, NewConnectionInput, NewUploadInput, PaginatedList,
+    QualityOnFail, QualityReport, QualityRule, ResolvedWebhook, ScheduledDataset, SchemaChange,
+    SchemaPolicy, SealedCredential, SidecarSyncResult, SyncDatasetResponse, SyncJob,
+    UpdateColumnMetaRequest, UpdateConnectionInput, UpdateDatasetRequest, UploadRecord,
+    UploadStatus, WebhookAuthScheme, WebhookBufferItem, WebhookConfig,
 };
 use axpoint_domain::enums::{
     AuditAction, ConnectorType, DataType, JobStatus, OutboxTopic, PiiCategory, QualityRuleKind,
@@ -212,6 +212,10 @@ fn decode_dataset(row: &sqlx::postgres::PgRow) -> Result<Dataset, AppError> {
     let status = parse_dataset_status(&row.get::<String, _>("status"))?;
     let schema_val: serde_json::Value = row.get("schema_json");
     let schema_json: Vec<ColumnProfile> = serde_json::from_value(schema_val).unwrap_or_default();
+    let continuous_stream: bool = row.try_get("continuous_stream").unwrap_or(false);
+    let cdc_slot_meta: serde_json::Value = row
+        .try_get("cdc_slot_meta")
+        .unwrap_or_else(|_| serde_json::json!({}));
 
     Ok(Dataset {
         id: row.get("id"),
@@ -235,6 +239,8 @@ fn decode_dataset(row: &sqlx::postgres::PgRow) -> Result<Dataset, AppError> {
         last_snapshot_id: row.get("last_snapshot_id"),
         last_synced_at: row.get("last_synced_at"),
         schedule_cron: row.get("schedule_cron"),
+        continuous_stream,
+        cdc_slot_meta,
         tags: row.get("tags"),
         owner_user_id: row.get("owner_user_id"),
         status,
@@ -866,7 +872,8 @@ impl DatasetRepository for PgStore {
             "SELECT id, connection_id, name, display_name, description, source_kind, source_ref,
                     sync_mode, primary_key, cursor_column, cursor_value, delete_column, schema_policy,
                     lake_schema, lake_table, schema_json, schema_version, row_count, last_snapshot_id,
-                    last_synced_at, schedule_cron, tags, owner_user_id, status, created_at, updated_at
+                    last_synced_at, schedule_cron, continuous_stream, cdc_slot_meta, tags, owner_user_id,
+                    status, created_at, updated_at
                FROM ds_datasets
               WHERE ($1::text IS NULL OR fts @@ plainto_tsquery('simple', $1)
                      OR name ILIKE $2 OR display_name ILIKE $2 OR description ILIKE $2)
@@ -910,7 +917,8 @@ impl DatasetRepository for PgStore {
             "SELECT id, connection_id, name, display_name, description, source_kind, source_ref,
                     sync_mode, primary_key, cursor_column, cursor_value, delete_column, schema_policy,
                     lake_schema, lake_table, schema_json, schema_version, row_count, last_snapshot_id,
-                    last_synced_at, schedule_cron, tags, owner_user_id, status, created_at, updated_at
+                    last_synced_at, schedule_cron, continuous_stream, cdc_slot_meta, tags, owner_user_id,
+                    status, created_at, updated_at
                FROM ds_datasets
               WHERE id = $1",
         )
@@ -935,7 +943,8 @@ impl DatasetRepository for PgStore {
             "SELECT id, connection_id, name, display_name, description, source_kind, source_ref,
                     sync_mode, primary_key, cursor_column, cursor_value, delete_column, schema_policy,
                     lake_schema, lake_table, schema_json, schema_version, row_count, last_snapshot_id,
-                    last_synced_at, schedule_cron, tags, owner_user_id, status, created_at, updated_at
+                    last_synced_at, schedule_cron, continuous_stream, cdc_slot_meta, tags, owner_user_id,
+                    status, created_at, updated_at
                FROM ds_datasets
               WHERE name = $1",
         )
@@ -2233,6 +2242,91 @@ impl DatasetRepository for PgStore {
 
         Ok(maybe_days.unwrap_or(30))
     }
+
+    async fn claim_stream_datasets(
+        &self,
+        holder_id: &str,
+        limit: i32,
+        lease_seconds: i32,
+    ) -> Result<Vec<LeasedStreamDataset>, AppError> {
+        let rows = sqlx::query(
+            "SELECT tenant_id, dataset_id
+               FROM ax_claim_stream_datasets($1, $2, $3)",
+        )
+        .bind(holder_id)
+        .bind(limit)
+        .bind(lease_seconds)
+        .fetch_all(self.pool())
+        .await
+        .map_err(|err| AppError::Database(format!("ax_claim_stream_datasets failed: {err}")))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|r| LeasedStreamDataset {
+                tenant_id: r.get("tenant_id"),
+                dataset_id: r.get("dataset_id"),
+            })
+            .collect())
+    }
+
+    async fn release_stream_datasets(&self, holder_id: &str) -> Result<i32, AppError> {
+        let count: i32 = sqlx::query_scalar("SELECT ax_release_stream_datasets($1)")
+            .bind(holder_id)
+            .fetch_one(self.pool())
+            .await
+            .map_err(|err| {
+                AppError::Database(format!("ax_release_stream_datasets failed: {err}"))
+            })?;
+        Ok(count)
+    }
+
+    async fn purge_deleted_mapped_source_rows(
+        &self,
+        tenant_id: &str,
+        dataset_id: Uuid,
+        deleted_row_keys: &[String],
+    ) -> Result<u64, AppError> {
+        if deleted_row_keys.is_empty() {
+            return Ok(0);
+        }
+        let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
+        let has_delete_mapping: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                 SELECT 1
+                   FROM xb_mappings
+                  WHERE dataset_id = $1
+                    AND enabled = TRUE
+                    AND COALESCE(spec->>'on_source_delete', 'KEEP') = 'DELETE'
+             )",
+        )
+        .bind(dataset_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("check delete mapping failed: {err}")))?;
+
+        if !has_delete_mapping {
+            tx.commit()
+                .await
+                .map_err(|err| AppError::Database(format!("commit noop purge tx: {err}")))?;
+            return Ok(0);
+        }
+
+        let res = sqlx::query(
+            "DELETE FROM xb_nodes
+              WHERE source_dataset_id = $1
+                AND source_row_key = ANY($2)",
+        )
+        .bind(dataset_id)
+        .bind(deleted_row_keys)
+        .execute(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("purge deleted xb_nodes failed: {err}")))?;
+
+        tx.commit().await.map_err(|err| {
+            AppError::Database(format!("commit purge_deleted_mapped_source_rows tx: {err}"))
+        })?;
+        Ok(res.rows_affected())
+    }
 }
 
 async fn upsert_column_profiles_tx(
@@ -2393,10 +2487,10 @@ async fn create_dataset_impl(
             format!("dataset name '{name}' must match ^[a-z][a-z0-9_]{{0,62}}$"),
         ));
     }
-    if req.sync_mode == SyncMode::Upsert && req.primary_key.is_empty() {
+    if matches!(req.sync_mode, SyncMode::Upsert | SyncMode::LogCdc) && req.primary_key.is_empty() {
         return Err(AppError::bad(
             "INVALID_ARGUMENT",
-            "primary_key must be non-empty when sync_mode is UPSERT",
+            "primary_key must be non-empty when sync_mode is UPSERT or LOG_CDC",
         ));
     }
 
@@ -2458,17 +2552,25 @@ async fn insert_new_dataset_row_tx(
         .filter(|s| !s.is_empty())
         .map(String::from);
 
+    let cdc_slot_meta = if req.cdc_slot_meta.is_null() {
+        serde_json::json!({})
+    } else {
+        req.cdc_slot_meta.clone()
+    };
+
     let insert_res = sqlx::query(
         "INSERT INTO ds_datasets (
              tenant_id, connection_id, name, display_name, description, source_kind,
              source_ref, sync_mode, primary_key, cursor_column, delete_column,
-             schema_policy, lake_schema, lake_table, schedule_cron, tags, owner_user_id
+             schema_policy, lake_schema, lake_table, schedule_cron, continuous_stream,
+             cdc_slot_meta, tags, owner_user_id
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
          RETURNING id, connection_id, name, display_name, description, source_kind, source_ref,
                    sync_mode, primary_key, cursor_column, cursor_value, delete_column, schema_policy,
                    lake_schema, lake_table, schema_json, schema_version, row_count, last_snapshot_id,
-                   last_synced_at, schedule_cron, tags, owner_user_id, status, created_at, updated_at",
+                   last_synced_at, schedule_cron, continuous_stream, cdc_slot_meta, tags, owner_user_id,
+                   status, created_at, updated_at",
     )
     .bind(tenant_id)
     .bind(req.connection_id)
@@ -2485,6 +2587,8 @@ async fn insert_new_dataset_row_tx(
     .bind(&lake_schema)
     .bind(name)
     .bind(schedule_cron)
+    .bind(req.continuous_stream)
+    .bind(cdc_slot_meta)
     .bind(&req.tags)
     .bind(owner_user_id)
     .fetch_one(&mut **tx)
@@ -2539,10 +2643,10 @@ async fn update_dataset_impl(
     let current = decode_dataset(&existing_row)?;
     let sync_mode = req.sync_mode.unwrap_or(current.sync_mode);
     let primary_key = req.primary_key.unwrap_or(current.primary_key);
-    if sync_mode == SyncMode::Upsert && primary_key.is_empty() {
+    if matches!(sync_mode, SyncMode::Upsert | SyncMode::LogCdc) && primary_key.is_empty() {
         return Err(AppError::bad(
             "INVALID_ARGUMENT",
-            "primary_key must be non-empty when sync_mode is UPSERT",
+            "primary_key must be non-empty when sync_mode is UPSERT or LOG_CDC",
         ));
     }
 
@@ -2565,6 +2669,8 @@ async fn update_dataset_impl(
     let schedule_cron = req
         .schedule_cron
         .map_or(current.schedule_cron, non_empty_trimmed);
+    let continuous_stream = req.continuous_stream.unwrap_or(current.continuous_stream);
+    let cdc_slot_meta = req.cdc_slot_meta.unwrap_or(current.cdc_slot_meta);
     let schema_policy = req.schema_policy.unwrap_or(current.schema_policy);
     let tags = req.tags.unwrap_or(current.tags);
     let status = req.status.unwrap_or(current.status);
@@ -2573,12 +2679,13 @@ async fn update_dataset_impl(
         "UPDATE ds_datasets
             SET display_name = $2, description = $3, sync_mode = $4, primary_key = $5,
                 cursor_column = $6, delete_column = $7, schema_policy = $8, schedule_cron = $9,
-                tags = $10, status = $11, updated_at = NOW()
+                continuous_stream = $10, cdc_slot_meta = $11, tags = $12, status = $13, updated_at = NOW()
           WHERE id = $1
           RETURNING id, connection_id, name, display_name, description, source_kind, source_ref,
                     sync_mode, primary_key, cursor_column, cursor_value, delete_column, schema_policy,
                     lake_schema, lake_table, schema_json, schema_version, row_count, last_snapshot_id,
-                    last_synced_at, schedule_cron, tags, owner_user_id, status, created_at, updated_at",
+                    last_synced_at, schedule_cron, continuous_stream, cdc_slot_meta, tags, owner_user_id,
+                    status, created_at, updated_at",
     )
     .bind(id)
     .bind(display_name)
@@ -2589,6 +2696,8 @@ async fn update_dataset_impl(
     .bind(delete_column)
     .bind(schema_policy.as_str())
     .bind(schedule_cron)
+    .bind(continuous_stream)
+    .bind(cdc_slot_meta)
     .bind(tags)
     .bind(status.as_str())
     .fetch_one(&mut *tx)
@@ -2674,7 +2783,7 @@ async fn apply_sync_job_and_dataset_stats_tx(
     let new_row_count = result.total_rows.map_or_else(
         || match sync_mode {
             SyncMode::Snapshot => result.rows_written.max(0),
-            SyncMode::Append | SyncMode::Upsert => prev_row_count
+            SyncMode::Append | SyncMode::Upsert | SyncMode::LogCdc => prev_row_count
                 .saturating_add(result.rows_written)
                 .saturating_sub(result.rows_deleted)
                 .max(0),
@@ -2723,10 +2832,21 @@ async fn apply_sync_job_and_dataset_stats_tx(
     .await
     .map_err(|err| AppError::Database(format!("complete ds_sync_jobs failed: {err}")))?;
 
+    let next_cdc_meta = if result
+        .cdc_slot_meta
+        .as_object()
+        .is_some_and(|m| !m.is_empty())
+    {
+        Some(&result.cdc_slot_meta)
+    } else {
+        None
+    };
+
     sqlx::query(
         "UPDATE ds_datasets
             SET cursor_value = $2, schema_json = $3, schema_version = $4, row_count = $5,
-                last_snapshot_id = $6, last_synced_at = NOW(), status = 'READY', updated_at = NOW()
+                last_snapshot_id = $6, cdc_slot_meta = COALESCE($7, cdc_slot_meta),
+                last_synced_at = NOW(), status = 'READY', updated_at = NOW()
           WHERE id = $1",
     )
     .bind(dataset_id)
@@ -2735,6 +2855,7 @@ async fn apply_sync_job_and_dataset_stats_tx(
     .bind(new_schema_ver)
     .bind(new_row_count)
     .bind(result.snapshot_id)
+    .bind(next_cdc_meta)
     .execute(&mut **tx)
     .await
     .map_err(|err| AppError::Database(format!("update dataset post-sync failed: {err}")))?;

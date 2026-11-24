@@ -88,7 +88,7 @@ SourceKind = Literal[
     "DERIVED_VIEW",
 ]
 
-SyncMode = Literal["SNAPSHOT", "APPEND", "UPSERT"]
+SyncMode = Literal["SNAPSHOT", "APPEND", "UPSERT", "LOG_CDC"]
 SchemaPolicy = Literal["STRICT", "ADDITIVE", "EVOLVE"]
 QualityRuleKind = Literal[
     "NOT_NULL",
@@ -297,6 +297,8 @@ class SyncRequest(BaseModel):
     cursor_from: str | None = None
     delete_column: str | None = None
     stream_offsets: dict[str, str] = Field(default_factory=dict)
+    continuous_stream: bool = False
+    cdc_slot_meta: dict[str, Any] = Field(default_factory=dict)
     lake_table: str
     schema_policy: SchemaPolicy = "ADDITIVE"
     expected_schema: list[ColumnProfile] = Field(default_factory=list)
@@ -316,6 +318,8 @@ class SyncResult(BaseModel):
     total_rows: int | None = None
     cursor_to: str | None = None
     stream_offsets: dict[str, str] = Field(default_factory=dict)
+    cdc_slot_meta: dict[str, Any] = Field(default_factory=dict)
+    deleted_primary_keys: list[Any] = Field(default_factory=list)
     snapshot_id: int
     columns_schema: list[ColumnProfile] = Field(alias="schema", serialization_alias="schema")
     schema_change: SchemaChange

@@ -233,6 +233,7 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   "CHART_PUBLISH",
   "OBJECT_ACTION_INVOKE",
   "TRIAL_TICK_CERTIFY",
+  "HARNESS_VERIFY_RUN",
 ];
 
 export interface CedarSnippetTemplate {

@@ -77,8 +77,8 @@
 - `POST /api/axhub/connections/{id}/test` / `GET /api/axhub/connections/{id}/discover`（`DATA_ADMIN`）：连接测试（返回 `{ok, message, latency_ms}`）与远端对象发现（返回 `DiscoveredObject[]`）。
 - `POST /api/axhub/connections/{id}/preview`（`DATA_READ`）：远端对象样本预览（`{ref, limit}`）。
 - `POST /api/axhub/credentials/rotate`（`DATA_ADMIN`）：入队 `CREDENTIAL_ROTATE` 任务，使用当前最大版本密钥重新加密 `ds_credentials`。
-- `GET /api/axhub/datasets` / `POST /api/axhub/datasets`（`DATA_READ` / `DATA_SYNC`）：查询或创建数据集（支持 `?q=&tag=&source_kind=&limit=&cursor=`）。
-- `GET /api/axhub/datasets/{id}` / `PATCH /api/axhub/datasets/{id}` / `DELETE /api/axhub/datasets/{id}`（`DATA_READ` / `DATA_SYNC` / `DATA_ADMIN`）：数据集详情、更新与删除（同时清理 DuckLake 表）。
+- `GET /api/axhub/datasets` / `POST /api/axhub/datasets`（`DATA_READ` / `DATA_SYNC`）：查询或创建数据集（支持 `?q=&tag=&source_kind=&limit=&cursor=`，可选开启 `continuous_stream` 秒级微批流消费或 `sync_mode = "LOG_CDC"` 日志级硬删除捕获，Step 02 / Step 29）。
+- `GET /api/axhub/datasets/{id}` / `PATCH /api/axhub/datasets/{id}` / `DELETE /api/axhub/datasets/{id}`（`DATA_READ` / `DATA_SYNC` / `DATA_ADMIN`）：数据集详情、更新（含 `continuous_stream`、`cdc_slot_meta`）与删除（同时清理 DuckLake 表）。
 - `POST /api/axhub/datasets/{id}/sync`（`DATA_SYNC`）：单飞入队 `SYNC_DATASET`（新建返回 `202 {job_id}`，已有待执行/运行中任务返回 `200 {job_id, existing: true}`）。
 - `GET /api/axhub/datasets/{id}/sync-jobs` / `GET /api/axhub/datasets/{id}/preview` / `GET /api/axhub/datasets/{id}/snapshots`（`DATA_READ`）：同步历史、湖表预览（支持 `?snapshot_id=`）与快照列表。
 - `GET /api/axhub/datasets/{id}/columns` / `PUT /api/axhub/datasets/{id}/columns/{column}`（`DATA_READ` / `DATA_ADMIN`）：列级目录元数据与人工 PII 确认。
@@ -103,7 +103,7 @@
 - `GET /api/xblue/nodes/{id}/metrics/{metric}?from=&to=&grain=&agg=`（`DATA_READ`）：自动或显式粒度时序查询（超过 5 000 点自动升粒度）。
 - `POST /api/xblue/metrics/window` / `GET /api/xblue/metrics/catalog`（`DATA_READ`）：滚动/滑动窗口聚合查询与租户指标目录。
 - `GET /api/xblue/graph/neighbors` / `GET /api/xblue/graph/path` / `GET /api/xblue/graph/subgraph`（`DATA_READ`）：防环递归 CTE k 跳邻居、双向 BFS / Dijkstra 最短路径与画布子图；`GET /api/xblue/graph/subgraph` 支持 `?type_names=&link_types=&subgraph=&src_type=&edge_type=&dst_type=&limit=` 三元图模式 `(src:NodeType)-[r:EdgeType]->(dst:NodeType)` 诱导子图筛选（Step 03 / Step 20）。
-- `POST /api/xblue/graph/algorithms/{algo}` / `GET /api/xblue/graph/algorithms/{algo}/results`（`STUDIO_EDIT` / `DATA_READ`）：`PAGERANK`、`DEGREE`、`LABEL_PROPAGATION`、`CONNECTED_COMPONENTS` 图算法运行与分页结果读取。
+- `POST /api/xblue/graph/algorithms/{algo}` / `GET /api/xblue/graph/algorithms/{algo}/results`（`STUDIO_EDIT` / `DATA_READ`）：`PAGERANK`、`DEGREE`、`LABEL_PROPAGATION`、`CONNECTED_COMPONENTS` 图算法运行（支持 `subgraph` 指定目标子图；`<= 500,000` 边返回 `backend: "PETGRAPH_MEMORY"`，`(500,000, 10,000,000]` 边自动路由至 `backend: "DUCKDB_PUSHDOWN"` 向量化迭代求解）与分页结果读取（Step 03 / Step 29）。
 - `POST /api/xblue/entities/resolve` / `GET /api/xblue/entities/candidates` / `POST /api/xblue/entities/links/{entity_id}/{node_id}/confirm|reject`（`STUDIO_EDIT`）：超图实体与业务节点归一化自动对齐与人工确认/拒绝。
 - `POST /api/axops/jobs/rollup-now`（`OPS_ADMIN`）：为当前租户立即入队一次 `ROLLUP` 任务并返回 `{job_id}`。
 
@@ -139,6 +139,7 @@
 - `POST /api/xblue/objects/{type_name}/{node_key}/actions/{action_name} {inputs?, idempotency_key, expected_version?, dry_run?}`（`FLOW_RUN` → `200 | 202 InvokeObjectActionResponse`）：经 JSON Schema 入参校验、Cedar ABAC 与行级可见性核验、`SELECT ... FOR UPDATE` 乐观版本守卫（冲突返回 `409 VERSION_CONFLICT`）与 `precondition_expr` 前置断言（不满足返回 `422 ACTION_PRECONDITION_FAILED`），在单租户事务内原子更新自身与声明邻居节点/关系（禁止覆写派生指标 `400 DERIVED_METRIC_WRITE_FORBIDDEN`）、写 `xb_metric_series` 与 `ax_action_log` 幂等锁、触发下游四路径重算并记录 `OBJECT_ACTION_INVOKE` 审计（`require_approval=true` 时写 `ax_approvals(OBJECT_ACTION)` 返回 `202`，Step 26）。
 - `POST /api/xblue/links/metrics/write {points: [{link_id, metric, ts, value?, value_text?}], source_tag?}`（`DATA_SYNC` → `200 WriteLinkMetricsResponse`）与 `GET /api/xblue/links/{id}/explain/{metric}`（`DATA_READ` → `200 LinkMetricExplainResponse`）：写入关系边时序指标 `xb_link_metric_series` 并触发 `V→V / V→E / E→V / E→E` 四路径拓扑传播，输出含 `{rule_chain, previous_value, current_value, delta, input_snapshot}` 的三轨溯源（Step 26）。
 - `POST /api/xblue/subgraphs/{slug}/certify {draft_id?, sample_limit?}`（`STUDIO_EDIT` → `200 RuntimeCertReport`）：静态扫描孤立死指标（`DEAD_KNOWLEDGE`）与高扇出传导风险，在开发沙盒子图运行一轮 `Trial Tick` 实算冒烟并落库 `L0_INVALID ～ L4_CERTIFIED` 认证记录及 `TRIAL_TICK_CERTIFY` 审计（Step 26）。
+- `GET /api/xblue/subgraphs/{slug}/competency-suite`（`DATA_READ` → `200 CompetencySuiteRecord`）/ `PUT /api/xblue/subgraphs/{slug}/competency-suite {questions}`（`STUDIO_EDIT` → `200 CompetencySuiteRecord`）/ `POST /api/xblue/subgraphs/{slug}/competency-verify {draft_id?, run_dev_materialize?, limit_rows?, questions_override?}`（`STUDIO_EDIT` + `DATA_READ` → `200 HarnessRunRecord`，写 `HARNESS_VERIFY_RUN` 审计）/ `GET /api/xblue/subgraphs/{slug}/harness-runs`（`DATA_READ` → `200 {items: HarnessRunRecord[]}`）：管理子图黄金能力问答集并执行开发沙盒试灌、四路径重算与逐题接地问数核验，输出结构化缺口诊断（Step 29）。
 - `POST /api/xblue/expr/validate`（`STUDIO_EDIT`）：在指定 `NodeType` 作用域下解析并静态类型检查表达式，返回推断类型与带列号的诊断列表。
 - `POST /api/xblue/expr/evaluate`（`DATA_READ`）：在指定 `node_id` 当前快照上只读试算表达式，返回值、类型与求值警告（`DIV_BY_ZERO` / `DOMAIN_ERROR`）。
 - `POST /api/xblue/aggregate/recompute`（`STUDIO_EDIT`）：入队全量或按 `type_name` 限定的 `GRAPH_AGGREGATE` 重算任务。
@@ -183,7 +184,7 @@
 - `GET /api/axagent/endpoints/openapi.json?environment=PROD` / `GET /api/axagent/endpoints/{id}/skill.json`（`DATA_READ`）：导出 OpenAPI 3.1 规范文档与外部智能体 Skill 清单。
 - `POST /api/axagent/apps/{endpoint_id}/run`（端点 `required_scope`）：查询即应用内部执行入口，以当前登录主体直接调用目标能力。
 - `POST /api/published/{env}/{tenant_id}/{slug}` / `GET /api/published/{env}/{tenant_id}/{slug}/runs/{run_id}`（`Authorization: Bearer axp_...` 个人访问令牌）：校验租户与 `required_scope`、`(endpoint_id, token_id)` 速率限制、JSON Schema 入参、`moka` TTL 缓存后执行能力并写审计日志。
-- `POST /api/mcp` / `GET /api/mcp` / `DELETE /api/mcp`（`Authorization: Bearer axp_...` 个人访问令牌）：Streamable HTTP MCP Server（`Mcp-Session-Id` 会话管理），同时提供运行态消费平面（`PROD` 且 `expose_mcp=true` 的发布端点、7 个内置只读工具与 `axpoint://datasets/*`、`axpoint://objects/*` 资源）与 `AxBuilder` 构建态平面（按细粒度权限动态暴露 `axbuilder_preflight`、`axbuilder_pull_workspace`、`axbuilder_validate_schema`、`axbuilder_push_schema_draft`、`axbuilder_clone_template`、`axbuilder_upsert_flow_draft`、`axbuilder_run_dev_subgraph`、`axbuilder_reset_dev_subgraph`、`axbuilder_upsert_dashboard_draft` 共 9 个构建工具及 `axpoint://templates/{id}`、`axpoint://subgraphs/{slug}` 资源，统一回传 `deep_links` 并对草稿/沙盒写操作记录 `BUILDER_MCP_MUTATE` 审计，Step 09 / Step 17）。
+- `POST /api/mcp` / `GET /api/mcp` / `DELETE /api/mcp`（`Authorization: Bearer axp_...` 个人访问令牌）：Streamable HTTP MCP Server（`Mcp-Session-Id` 会话管理），同时提供运行态消费平面（`PROD` 且 `expose_mcp=true` 的发布端点、7 个内置只读工具与 `axpoint://datasets/*`、`axpoint://objects/*` 资源）与 `AxBuilder` 构建态平面（按细粒度权限动态暴露 `axbuilder_preflight`、`axbuilder_pull_workspace`、`axbuilder_list_datasets`、`axbuilder_inspect_dataset_profile`、`axbuilder_sample_dataset_rows`、`axbuilder_clone_template`、`axbuilder_validate_schema`、`axbuilder_push_schema_draft`、`axbuilder_diff_schema_draft`、`axbuilder_eval_expression`、`axbuilder_upsert_flow_draft`、`axbuilder_dryrun_action_spec`、`axbuilder_run_dev_subgraph`、`axbuilder_reset_dev_subgraph`、`axbuilder_certify_subgraph`、`axbuilder_compile_axql`、`axbuilder_sim_trial_run`、`axbuilder_upsert_chart_draft`、`axbuilder_upsert_dashboard_draft`、`axbuilder_preflight_dashboard`、`axbuilder_upsert_competency_suite`、`axbuilder_verify_competency_suite` 共 22 个构建工具及 `axpoint://templates/{id}`、`axpoint://subgraphs/{slug}` 资源，统一回传 `deep_links` 并对草稿/沙盒写操作记录 `BUILDER_MCP_MUTATE` 审计，Step 09 / Step 17 / Step 29）。
 - `GET /api/axagent/mcp-clients` / `POST /api/axagent/mcp-clients` / `DELETE /api/axagent/mcp-clients/{id}` / `POST /api/axagent/mcp-clients/{id}/sync`（`AGENT_EDIT`）：外部 Streamable HTTP MCP 服务登记（经 `NetGuard` 校验）与 `tools/list` 同步缓存。
 - `GET /api/axagent/agents` / `POST /api/axagent/agents` / `GET /api/axagent/agents/{id}` / `PUT /api/axagent/agents/{id}` / `DELETE /api/axagent/agents/{id}` / `POST /api/axagent/agents/{id}/publish`（`DATA_READ` / `AGENT_EDIT`）：智能体草稿编辑、多智能体嵌套深度校验（`<= 2`）与不可变版本发布（`ax_agent_versions`）。
 - `POST /api/axagent/agents/{id}/chat`（`AGENT_RUN`；`draft=true` 需 `AGENT_EDIT`）：智能体多轮工具循环对话（支持 `Accept: text/event-stream` 流式 `token|tool_call|tool_result|approval_required|final|error` 事件与 `Accept: application/json` 同步返回，写 `ax_messages` 与 `AGENT_CHAT` 审计）。
@@ -282,7 +283,7 @@
 - `POST /connectors/test`：测试连接并返回 `TestResult {ok, message, latency_ms}`。
 - `POST /connectors/discover`：发现远端对象并返回 `DiscoveredObject[]`。
 - `POST /connectors/preview`：抽样预览远端对象（PII 样例脱敏）。
-- `POST /connectors/sync`：按 `SNAPSHOT` / `APPEND` / `UPSERT` 同步源数据入 DuckLake，执行质量规则与 Schema 演进，返回 `SyncResult`。
+- `POST /connectors/sync`：按 `SNAPSHOT` / `APPEND` / `UPSERT` / `LOG_CDC`（及 `continuous_stream` 微批流模式）同步源数据入 DuckLake，执行主键物理删除合并、质量规则与 Schema 演进，返回 `SyncResult`（Step 02 / Step 29）。
 - `POST /lake/commit_staging`：把 `/parse/unified` 生成的暂存 Parquet 原子提交入 DuckLake。
 - `POST /lake/preview` / `GET /lake/snapshots` / `POST /lake/maintenance` / `POST /lake/drop_table`：湖表快照预览、历史快照列表、小文件合并与快照清理、删表。
 - `POST /lake/materialize`（Step 04）：经 `sqlglot` 二次校验 SQL 仅引用 `lake."tenant_<id>".*` 且 `enable_external_access=false` 后，在写连接事务内执行 `CREATE OR REPLACE TABLE lake."tenant_<id>".<t> AS <sql>` 并返回 `SyncResult`。

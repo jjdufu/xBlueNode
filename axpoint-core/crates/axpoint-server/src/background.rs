@@ -825,6 +825,18 @@ fn spawn_singleton_schedulers(
         crate::workers::run_cron_scheduler(cron_store, cron_shutdown).await;
     });
 
+    let stream_holder = format!("stream-{}", Uuid::new_v4().simple());
+    let stream_store = store.clone();
+    let stream_shutdown = shutdown_rx.clone();
+    tokio::spawn(async move {
+        crate::workers::run_continuous_stream_coordinator(
+            stream_holder,
+            stream_store,
+            stream_shutdown,
+        )
+        .await;
+    });
+
     let flow_cron_store = Arc::clone(&store_arc);
     let flow_cron_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {

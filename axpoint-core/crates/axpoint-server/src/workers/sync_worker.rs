@@ -134,6 +134,8 @@ impl SyncDatasetHandler {
                     total_rows: Some(ds.row_count),
                     cursor_to: ds.cursor_value.clone(),
                     stream_offsets: stream_offsets.clone(),
+                    cdc_slot_meta: ds.cdc_slot_meta.clone(),
+                    deleted_primary_keys: Vec::new(),
                     snapshot_id: ds.last_snapshot_id.unwrap_or(0),
                     schema: ds.schema_json.clone(),
                     schema_change: SchemaChange::default(),
@@ -258,6 +260,11 @@ impl SyncDatasetHandler {
             }));
         };
 
+        let batch_rows = if ds.continuous_stream {
+            2_000
+        } else {
+            DEFAULT_SYNC_BATCH_ROWS
+        };
         let sync_req = SidecarSyncRequest {
             tenant_id: job.tenant_id.clone(),
             dataset_id: ds.id.to_string(),
@@ -277,7 +284,9 @@ impl SyncDatasetHandler {
             schema_policy: ds.schema_policy,
             expected_schema: ds.schema_json.clone(),
             quality_rules,
-            batch_rows: DEFAULT_SYNC_BATCH_ROWS,
+            batch_rows,
+            continuous_stream: ds.continuous_stream,
+            cdc_slot_meta: ds.cdc_slot_meta.clone(),
         };
 
         let result = self
@@ -293,6 +302,24 @@ impl SyncDatasetHandler {
         self.store
             .complete_sync_execution(&job.tenant_id, sj.id, ds.id, &result)
             .await?;
+
+        if !result.deleted_primary_keys.is_empty() {
+            let deleted_row_keys =
+                extract_deleted_row_keys(&ds.primary_key, &result.deleted_primary_keys);
+            if !deleted_row_keys.is_empty()
+                && let Err(err) = self
+                    .store
+                    .purge_deleted_mapped_source_rows(&job.tenant_id, ds.id, &deleted_row_keys)
+                    .await
+            {
+                tracing::warn!(
+                    tenant_id = %job.tenant_id,
+                    dataset_id = %ds.id,
+                    error = %err,
+                    "purge_deleted_mapped_source_rows failed"
+                );
+            }
+        }
 
         if let Err(err) = axpoint_domain::ports::JobQueuePort::enqueue(
             &self.store,
@@ -332,6 +359,34 @@ struct ResolvedSyncSource {
     allow_private_network: bool,
     source_ref: serde_json::Value,
     pending_webhook_ids: Vec<i64>,
+}
+
+fn extract_deleted_row_keys(
+    primary_key: &[String],
+    deleted_pks: &[serde_json::Value],
+) -> Vec<String> {
+    let mut keys = Vec::with_capacity(deleted_pks.len());
+    for entry in deleted_pks {
+        match entry {
+            serde_json::Value::String(s) if !s.trim().is_empty() => keys.push(s.clone()),
+            serde_json::Value::Number(n) => keys.push(n.to_string()),
+            serde_json::Value::Object(map) => {
+                if let Some(pk_col) = primary_key.first()
+                    && let Some(val) = map.get(pk_col)
+                {
+                    match val {
+                        serde_json::Value::String(s) if !s.trim().is_empty() => {
+                            keys.push(s.clone());
+                        }
+                        serde_json::Value::Number(n) => keys.push(n.to_string()),
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    keys
 }
 
 #[derive(Debug, Deserialize)]
@@ -450,6 +505,8 @@ impl ParseFileHandler {
                     delete_column: None,
                     schema_policy: SchemaPolicy::Evolve,
                     schedule_cron: None,
+                    continuous_stream: false,
+                    cdc_slot_meta: serde_json::json!({}),
                     tags: vec![String::from("upload")],
                 },
             )

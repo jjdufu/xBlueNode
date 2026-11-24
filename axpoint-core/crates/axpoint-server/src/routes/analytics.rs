@@ -2301,6 +2301,8 @@ async fn apply_transform_draft_handler(
                 delete_column: None,
                 schema_policy: SchemaPolicy::Evolve,
                 schedule_cron: None,
+                continuous_stream: false,
+                cdc_slot_meta: serde_json::json!({}),
                 tags: vec![String::from("derived")],
             },
         )
@@ -2853,6 +2855,8 @@ impl axpoint_domain::ports::FlowSqlMaterializePort for AppState {
                         delete_column: None,
                         schema_policy: SchemaPolicy::Evolve,
                         schedule_cron: None,
+                        continuous_stream: false,
+                        cdc_slot_meta: serde_json::json!({}),
                         tags: vec![String::from("derived"), String::from("axflow")],
                     },
                 )

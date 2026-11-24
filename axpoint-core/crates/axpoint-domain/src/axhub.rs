@@ -517,6 +517,12 @@ pub struct Dataset {
     pub last_synced_at: Option<DateTime<Utc>>,
     /// Optional 5-field cron schedule.
     pub schedule_cron: Option<String>,
+    /// Whether single-leader continuous micro-batch streaming (`<= 1s` / `2,000` rows) is enabled (`07-STEP29` §29.1).
+    #[serde(default)]
+    pub continuous_stream: bool,
+    /// Log-CDC replication slot / binlog position metadata (`07-STEP29` §29.1).
+    #[serde(default = "empty_json_obj")]
+    pub cdc_slot_meta: serde_json::Value,
     /// Classification tags.
     pub tags: Vec<String>,
     /// Owner user UUID.
@@ -588,6 +594,12 @@ pub struct CreateDatasetRequest {
     pub schema_policy: SchemaPolicy,
     /// Optional 5-field cron schedule.
     pub schedule_cron: Option<String>,
+    /// Enable single-leader continuous micro-batch stream consumption (`07-STEP29` §29.1).
+    #[serde(default)]
+    pub continuous_stream: bool,
+    /// Optional initial CDC slot/binlog configuration (`07-STEP29` §29.1).
+    #[serde(default = "empty_json_obj")]
+    pub cdc_slot_meta: serde_json::Value,
     /// Tags.
     #[serde(default)]
     pub tags: Vec<String>,
@@ -617,6 +629,10 @@ pub struct UpdateDatasetRequest {
     pub schema_policy: Option<SchemaPolicy>,
     /// Updated cron schedule (`Some(None)` clears schedule).
     pub schedule_cron: Option<Option<String>>,
+    /// Updated continuous micro-batch streaming flag (`07-STEP29` §29.1).
+    pub continuous_stream: Option<bool>,
+    /// Updated CDC slot/binlog metadata (`07-STEP29` §29.1).
+    pub cdc_slot_meta: Option<serde_json::Value>,
     /// Updated tags.
     pub tags: Option<Vec<String>>,
     /// Updated status (`DISABLED` / `READY`).
@@ -1045,6 +1061,15 @@ pub struct ScheduledDataset {
     pub last_synced_at: Option<DateTime<Utc>>,
 }
 
+/// Leased continuous-stream dataset row returned by `ax_claim_stream_datasets` (`07-STEP29` §29.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeasedStreamDataset {
+    /// Owning tenant ID.
+    pub tenant_id: String,
+    /// Dataset UUID.
+    pub dataset_id: Uuid,
+}
+
 /// Sidecar `/connectors/test` and `/connectors/discover` request payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SidecarConnectorRequest {
@@ -1117,6 +1142,12 @@ pub struct SidecarSyncRequest {
     pub quality_rules: Vec<QualityRule>,
     /// Arrow batch row size.
     pub batch_rows: u32,
+    /// Whether invoked from the sub-second continuous stream micro-batch coordinator (`2,000` rows / `1,000ms`, `07-STEP29` §29.2).
+    #[serde(default)]
+    pub continuous_stream: bool,
+    /// Current `LOG_CDC` replication slot / binlog position metadata (`07-STEP29` §29.2).
+    #[serde(default = "empty_json_obj")]
+    pub cdc_slot_meta: serde_json::Value,
 }
 
 /// Sidecar `POST /connectors/sync` and `/lake/commit_staging` item result (`03-STEP02` §02.9.1).
@@ -1138,6 +1169,12 @@ pub struct SidecarSyncResult {
     /// Updated stream offsets.
     #[serde(default)]
     pub stream_offsets: BTreeMap<String, String>,
+    /// Updated `LOG_CDC` slot / binlog position metadata (`07-STEP29` §29.2).
+    #[serde(default = "empty_json_obj")]
+    pub cdc_slot_meta: serde_json::Value,
+    /// Primary-key tuples physically deleted via `LOG_CDC` (`'D'` events) for downstream `on_source_delete = DELETE` cleanup (`07-STEP29` §29.2).
+    #[serde(default)]
+    pub deleted_primary_keys: Vec<serde_json::Value>,
     /// New `DuckLake` snapshot ID.
     pub snapshot_id: i64,
     /// Resulting table column profiles.

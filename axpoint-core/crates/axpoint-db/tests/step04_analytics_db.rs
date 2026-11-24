@@ -176,6 +176,8 @@ async fn seed_ready_dataset(
                 delete_column: None,
                 schema_policy: SchemaPolicy::Additive,
                 schedule_cron: None,
+                continuous_stream: false,
+                cdc_slot_meta: serde_json::json!({}),
                 tags: vec![String::from("orders")],
             },
         )
@@ -193,6 +195,8 @@ async fn seed_ready_dataset(
         total_rows: Some(100),
         cursor_to: None,
         stream_offsets: BTreeMap::new(),
+        cdc_slot_meta: serde_json::json!({}),
+        deleted_primary_keys: Vec::new(),
         snapshot_id: 1,
         schema: cols,
         schema_change: SchemaChange::default(),
@@ -920,6 +924,8 @@ async fn create_derived_ds(
                 delete_column: None,
                 schema_policy: SchemaPolicy::Additive,
                 schedule_cron: None,
+                continuous_stream: false,
+                cdc_slot_meta: serde_json::json!({}),
                 tags: Vec::new(),
             },
         )

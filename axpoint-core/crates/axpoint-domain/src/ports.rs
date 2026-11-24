@@ -28,16 +28,19 @@ use crate::axhub::{
     ConnectionTestResult, ConnectorSpecDto, CreateDatasetRequest, CreateGlossaryTermRequest,
     CreateQualityRuleRequest, CreateWebhookRequest, Dataset, DatasetListQuery, DiscoveredObject,
     GlossaryTerm, LakeMaintenanceRequest, LakeMaintenanceResult, LakePreviewRequest,
-    LakeSnapshotInfo, LineageEdge, NewConnectionInput, NewUploadInput, PaginatedList,
-    PreviewResponse, QualityReport, QualityRule, ResolvedWebhook, ScheduledDataset,
+    LakeSnapshotInfo, LeasedStreamDataset, LineageEdge, NewConnectionInput, NewUploadInput,
+    PaginatedList, PreviewResponse, QualityReport, QualityRule, ResolvedWebhook, ScheduledDataset,
     SealedCredential, SidecarConnectorRequest, SidecarPreviewRequest, SidecarSyncRequest,
     SidecarSyncResult, SyncDatasetResponse, SyncJob, UnifiedParseResponse, UpdateColumnMetaRequest,
     UpdateConnectionInput, UpdateDatasetRequest, UploadRecord, WebhookBufferItem, WebhookConfig,
 };
 use crate::builder::{
-    BuilderDashboardBrief, CloneTemplateSandboxResponse, DevSubgraphResetResponse,
-    DevSubgraphRunRequest, DevSubgraphRunResponse, TemplateResourcePayload,
-    UpsertDashboardDraftInput, UpsertDashboardDraftResponse,
+    BuilderAxqlPlan, BuilderCertReport, BuilderDashboardBrief, BuilderDashboardPreflight,
+    BuilderDatasetSampleResponse, BuilderSimTrialRunInput, BuilderSimTrialRunResponse,
+    BuilderUpsertChartDraftInput, BuilderUpsertChartDraftResponse, CloneTemplateSandboxResponse,
+    CompetencySuiteRecord, DevSubgraphResetResponse, DevSubgraphRunRequest, DevSubgraphRunResponse,
+    HarnessRunRecord, TemplateResourcePayload, UpsertCompetencySuiteRequest,
+    UpsertDashboardDraftInput, UpsertDashboardDraftResponse, VerifyCompetencySuiteRequest,
 };
 use crate::enums::{
     ConversationStatus, Environment, ExportFormat, GraphAlgo, ImConnectorStatus, ImIdentityPolicy,
@@ -776,6 +779,34 @@ pub trait DatasetRepository: Send + Sync {
         &self,
         tenant_id: &str,
     ) -> impl Future<Output = Result<i32, AppError>> + Send;
+
+    /// Claims or renews single-leader leases on `continuous_stream = true` datasets via `ax_claim_stream_datasets` (`07-STEP29` §29.1).
+    fn claim_stream_datasets(
+        &self,
+        _holder_id: &str,
+        _limit: i32,
+        _lease_seconds: i32,
+    ) -> impl Future<Output = Result<Vec<LeasedStreamDataset>, AppError>> + Send {
+        std::future::ready(Ok(Vec::new()))
+    }
+
+    /// Releases all continuous-stream dataset leases held by `holder_id` via `ax_release_stream_datasets` (`07-STEP29` §29.1).
+    fn release_stream_datasets(
+        &self,
+        _holder_id: &str,
+    ) -> impl Future<Output = Result<i32, AppError>> + Send {
+        std::future::ready(Ok(0))
+    }
+
+    /// Purges `xb_nodes` (and cascading `xb_links` / `xb_metric_series`) mapped from `dataset_id` with `on_source_delete = DELETE` matching `deleted_row_keys` (`07-STEP29` §29.2).
+    fn purge_deleted_mapped_source_rows(
+        &self,
+        _tenant_id: &str,
+        _dataset_id: Uuid,
+        _deleted_row_keys: &[String],
+    ) -> impl Future<Output = Result<u64, AppError>> + Send {
+        std::future::ready(Ok(0))
+    }
 }
 
 /// Internal HTTP port to the `axpoint-parser` Sidecar (`02-STEP01` & `03-STEP02`).
@@ -1648,6 +1679,45 @@ pub trait StudioRepository: Send + Sync {
         _req: CertifySubgraphRequest,
     ) -> impl Future<Output = Result<RuntimeCertReport, AppError>> + Send {
         std::future::ready(Err(AppError::Unsupported("RUNTIME_CERT_UNSUPPORTED")))
+    }
+
+    /// Loads the persisted `CompetencySuiteRecord` for `(tenant_id, subgraph_slug)` (`07-STEP29` §29.1).
+    fn get_competency_suite(
+        &self,
+        _tenant_id: &str,
+        _subgraph_slug: &str,
+    ) -> impl Future<Output = Result<CompetencySuiteRecord, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("COMPETENCY_SUITE_UNSUPPORTED")))
+    }
+
+    /// Upserts `xb_competency_suites` for `(tenant_id, subgraph_slug)` (`07-STEP29` §29.1).
+    fn upsert_competency_suite(
+        &self,
+        _tenant_id: &str,
+        _subgraph_slug: &str,
+        _actor_user_id: Option<Uuid>,
+        _req: UpsertCompetencySuiteRequest,
+    ) -> impl Future<Output = Result<CompetencySuiteRecord, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("COMPETENCY_SUITE_UNSUPPORTED")))
+    }
+
+    /// Inserts a completed `xb_harness_runs` record (`07-STEP29` §29.1).
+    fn record_harness_run(
+        &self,
+        _tenant_id: &str,
+        _run: &HarnessRunRecord,
+    ) -> impl Future<Output = Result<HarnessRunRecord, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("HARNESS_RUN_UNSUPPORTED")))
+    }
+
+    /// Lists recent `xb_harness_runs` for `(tenant_id, subgraph_slug)` ordered by `created_at DESC` (`07-STEP29` §29.1).
+    fn list_harness_runs(
+        &self,
+        _tenant_id: &str,
+        _subgraph_slug: &str,
+        _limit: u32,
+    ) -> impl Future<Output = Result<Vec<HarnessRunRecord>, AppError>> + Send {
+        std::future::ready(Ok(Vec::new()))
     }
 }
 
@@ -4194,4 +4264,79 @@ pub trait SimVisibilityPort: Send + Sync {
         sandbox_id: Uuid,
         policy: &PolicyContext,
     ) -> impl Future<Output = Result<SandboxGraphResponse, AppError>> + Send;
+}
+
+/// Object-safe build-plane port backing the Step 29 22-tool `AxBuilder` engineering suite and
+/// autonomous Competency QA harness (`07-STEP29` §29.4).
+pub trait BuilderHarnessPort: Send + Sync {
+    /// Samples up to 20 PII-masked rows from `dataset_id` in `DuckLake` (`axbuilder_sample_dataset_rows`).
+    fn sample_masked_dataset_rows<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        dataset_id: Uuid,
+        limit: u32,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, BuilderDatasetSampleResponse>;
+
+    /// Dry-runs an `ActionSpec` against a dev sandbox node (`dry_run = true`, zero production mutation, `axbuilder_dryrun_action_spec`).
+    fn dryrun_dev_action_spec<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        actor_user_id: Option<Uuid>,
+        subgraph_slug: &'a str,
+        action_target: (&'a str, &'a str, &'a str),
+        inputs: serde_json::Value,
+    ) -> BoxFuture<'a, InvokeObjectActionResponse>;
+
+    /// Certifies L0–L4 runtime readiness and scans Dead Knowledge on a dev/draft subgraph (`axbuilder_certify_subgraph`).
+    fn certify_builder_subgraph<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        actor_user_id: Option<Uuid>,
+        subgraph_slug: &'a str,
+        req: CertifySubgraphRequest,
+    ) -> BoxFuture<'a, BuilderCertReport>;
+
+    /// Compiles an `AxQL` query against `subgraph_slug` (or active draft) into guarded `DuckDB` SQL (`axbuilder_compile_axql`).
+    fn compile_builder_axql<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        subgraph_slug: &'a str,
+        axql: &'a str,
+    ) -> BoxFuture<'a, BuilderAxqlPlan>;
+
+    /// Runs an ephemeral single-round `AxSim` trial propagation over nodes in a dev sandbox subgraph (`axbuilder_sim_trial_run`).
+    fn sim_trial_dev_subgraph<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        input: BuilderSimTrialRunInput,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, BuilderSimTrialRunResponse>;
+
+    /// Creates or updates a reusable `xv_charts` visualization draft (`axbuilder_upsert_chart_draft`).
+    fn upsert_chart_draft<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        actor_user_id: Option<Uuid>,
+        actor_dept: &'a str,
+        input: BuilderUpsertChartDraftInput,
+        web_base_url: Option<&'a str>,
+    ) -> BoxFuture<'a, BuilderUpsertChartDraftResponse>;
+
+    /// Runs static health preflight on `dashboard_id` (`axbuilder_preflight_dashboard`).
+    fn preflight_dashboard_draft<'a>(
+        &'a self,
+        tenant_id: &'a str,
+        dashboard_id: Uuid,
+    ) -> BoxFuture<'a, BuilderDashboardPreflight>;
+
+    /// Executes the full Competency QA harness loop (optional dev materialize → grounded ask per question → gap diagnosis → `xb_harness_runs` + `HARNESS_VERIFY_RUN` audit).
+    fn verify_competency_suite<'a>(
+        &'a self,
+        principal: &'a AnalyticsPrincipal,
+        actor_user_id: Option<Uuid>,
+        actor_username: &'a str,
+        subgraph_slug: &'a str,
+        req: VerifyCompetencySuiteRequest,
+    ) -> BoxFuture<'a, HarnessRunRecord>;
 }

@@ -13,7 +13,9 @@ use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use crate::AppError;
-use crate::enums::{AggFn, GeoPredicateOp, GraphAlgo, MetricSourceTag, RollupGrain};
+use crate::enums::{
+    AggFn, GeoPredicateOp, GraphAlgo, GraphAlgoBackend, MetricSourceTag, RollupGrain,
+};
 use crate::geo_ops::GeoShapeDto;
 use crate::topology::{BlueLink, BlueNode};
 
@@ -1099,6 +1101,9 @@ pub struct PathResponse {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AlgoRunRequest {
+    /// Optional target subgraph slug (`"main"` default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subgraph: Option<String>,
     /// Optional node type filter.
     #[serde(default)]
     pub type_names: Vec<String>,
@@ -1132,6 +1137,9 @@ pub struct AlgoTopEntry {
 pub struct AlgoRunResponse {
     /// Executed algorithm.
     pub algo: GraphAlgo,
+    /// Execution backend (`PETGRAPH_MEMORY` for `<= 500,000` edges; `DUCKDB_PUSHDOWN` for `(500_000, 10_000_000]` edges, `07-STEP29` §29.3).
+    #[serde(default)]
+    pub backend: GraphAlgoBackend,
     /// Deterministic SHA-256 hash of `(type_names, link_types, params)`.
     pub params_hash: String,
     /// Number of nodes in analyzed graph.
