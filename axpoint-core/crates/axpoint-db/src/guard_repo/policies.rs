@@ -181,7 +181,8 @@ pub(super) async fn list_row_policies_impl(
 ) -> Result<Vec<RowPolicyRecord>, AppError> {
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
     let rows = sqlx::query(
-        "SELECT id, tenant_id, name, target_kind, target_ref, applies_to, predicate, enabled, created_at
+        "SELECT id, tenant_id, name, target_kind, target_ref, applies_to, predicate, enabled,
+                policy_mode, ttl_timestamp_field, ttl_max_age_hours, created_at
            FROM sec_row_policies
           ORDER BY created_at ASC, name ASC",
     )
@@ -199,6 +200,31 @@ pub(super) async fn list_row_policies_impl(
     Ok(out)
 }
 
+fn normalize_row_policy_ttl(
+    ttl_timestamp_field: Option<&str>,
+    ttl_max_age_hours: Option<i32>,
+) -> Result<(Option<String>, Option<i32>), AppError> {
+    let clean_field = ttl_timestamp_field
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+    if let Some(hours) = ttl_max_age_hours
+        && !(1..=87_600).contains(&hours)
+    {
+        return Err(AppError::bad(
+            "INVALID_PREDICATE",
+            format!("ttl_max_age_hours must be between 1 and 87600, got {hours}"),
+        ));
+    }
+    if clean_field.is_some() && ttl_max_age_hours.is_none() {
+        return Err(AppError::bad(
+            "INVALID_PREDICATE",
+            "ttl_max_age_hours is required when ttl_timestamp_field is set",
+        ));
+    }
+    Ok((clean_field, ttl_max_age_hours))
+}
+
 pub(super) async fn create_row_policy_impl(
     store: &PgStore,
     tenant_id: &str,
@@ -211,16 +237,20 @@ pub(super) async fn create_row_policy_impl(
             "row policy name cannot be empty",
         ));
     }
+    let (ttl_field, ttl_hours) =
+        normalize_row_policy_ttl(req.ttl_timestamp_field.as_deref(), req.ttl_max_age_hours)?;
     let applies_json = serde_json::to_value(&req.applies_to)
         .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid applies_to: {err}")))?;
 
     let mut tx = begin_tenant_tx(store.pool(), tenant_id).await?;
     let row = sqlx::query(
         "INSERT INTO sec_row_policies (
-             tenant_id, name, target_kind, target_ref, applies_to, predicate, enabled
+             tenant_id, name, target_kind, target_ref, applies_to, predicate, enabled,
+             policy_mode, ttl_timestamp_field, ttl_max_age_hours
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         RETURNING id, tenant_id, name, target_kind, target_ref, applies_to, predicate, enabled, created_at",
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING id, tenant_id, name, target_kind, target_ref, applies_to, predicate, enabled,
+                   policy_mode, ttl_timestamp_field, ttl_max_age_hours, created_at",
     )
     .bind(tenant_id)
     .bind(clean_name)
@@ -229,6 +259,9 @@ pub(super) async fn create_row_policy_impl(
     .bind(applies_json)
     .bind(req.predicate.trim())
     .bind(req.enabled)
+    .bind(req.policy_mode.as_str())
+    .bind(ttl_field)
+    .bind(ttl_hours)
     .fetch_one(&mut *tx)
     .await
     .map_err(|err| {
@@ -260,6 +293,8 @@ pub(super) async fn update_row_policy_impl(
             "row policy name cannot be empty",
         ));
     }
+    let (ttl_field, ttl_hours) =
+        normalize_row_policy_ttl(req.ttl_timestamp_field.as_deref(), req.ttl_max_age_hours)?;
     let applies_json = serde_json::to_value(&req.applies_to)
         .map_err(|err| AppError::bad("INVALID_ARGUMENT", format!("invalid applies_to: {err}")))?;
 
@@ -271,9 +306,13 @@ pub(super) async fn update_row_policy_impl(
                 target_ref = $4,
                 applies_to = $5,
                 predicate = $6,
-                enabled = $7
+                enabled = $7,
+                policy_mode = $8,
+                ttl_timestamp_field = $9,
+                ttl_max_age_hours = $10
           WHERE id = $1
-      RETURNING id, tenant_id, name, target_kind, target_ref, applies_to, predicate, enabled, created_at",
+      RETURNING id, tenant_id, name, target_kind, target_ref, applies_to, predicate, enabled,
+                policy_mode, ttl_timestamp_field, ttl_max_age_hours, created_at",
     )
     .bind(policy_id)
     .bind(clean_name)
@@ -282,6 +321,9 @@ pub(super) async fn update_row_policy_impl(
     .bind(applies_json)
     .bind(req.predicate.trim())
     .bind(req.enabled)
+    .bind(req.policy_mode.as_str())
+    .bind(ttl_field)
+    .bind(ttl_hours)
     .fetch_optional(&mut *tx)
     .await
     .map_err(|err| {

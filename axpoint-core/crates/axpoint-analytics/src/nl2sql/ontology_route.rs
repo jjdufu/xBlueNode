@@ -634,6 +634,15 @@ fn execute_domain_object_on_conn(
 fn compile_domain_object_plan(
     args: &OntologyCompileArgs<'_>,
 ) -> Result<Option<CompiledDomainPlan>, AppError> {
+    if let Some(flat_plan) = compile_flat_mapped_domain_object_plan(args)? {
+        return Ok(Some(flat_plan));
+    }
+    compile_domain_object_via_axql(args)
+}
+
+fn compile_flat_mapped_domain_object_plan(
+    args: &OntologyCompileArgs<'_>,
+) -> Result<Option<CompiledDomainPlan>, AppError> {
     let Some(target_type) = args.draft.target_node_type.as_deref() else {
         return Ok(None);
     };
@@ -712,6 +721,106 @@ fn compile_domain_object_plan(
         node_type_name: node_spec.name.clone(),
         raw_sql,
         guarded,
+        slot_payload,
+    }))
+}
+
+fn compile_domain_object_via_axql(
+    args: &OntologyCompileArgs<'_>,
+) -> Result<Option<CompiledDomainPlan>, AppError> {
+    if !args.draft.include_links.is_empty() {
+        return Ok(None);
+    }
+    let Some(target_type) = args.draft.target_node_type.as_deref() else {
+        return Ok(None);
+    };
+    let Some((schema_doc, node_spec)) = args.linked.published_schemas.iter().find_map(|s| {
+        s.node_types
+            .iter()
+            .find(|nt| nt.name.eq_ignore_ascii_case(target_type))
+            .map(|nt| (s, nt))
+    }) else {
+        return Ok(None);
+    };
+    let Some(filters) = collect_combined_filters(args.draft, args.context) else {
+        return Ok(None);
+    };
+
+    let mut select_fields = vec![String::from("o.node_key")];
+    let mut seen = BTreeSet::from([String::from("node_key")]);
+    let requested: Vec<&String> = args
+        .draft
+        .dimensions
+        .iter()
+        .chain(args.draft.metric_names.iter())
+        .collect();
+    if requested.is_empty() {
+        for prop in node_spec.properties.iter().take(8) {
+            if seen.insert(prop.name.to_ascii_lowercase()) {
+                select_fields.push(format!("o.{}", prop.name));
+            }
+        }
+    } else {
+        for field in requested {
+            if seen.insert(field.to_ascii_lowercase()) {
+                select_fields.push(format!("o.{field}"));
+            }
+        }
+    }
+
+    let mut params = BTreeMap::new();
+    let mut where_parts = Vec::with_capacity(filters.len());
+    for (idx, flt) in filters.iter().enumerate() {
+        let col_ref = format!("o.{}", flt.field.trim());
+        let Some(clause) = compile_qualified_filter(&col_ref, flt, idx, &mut params) else {
+            return Ok(None);
+        };
+        where_parts.push(clause);
+    }
+    let where_sql = if where_parts.is_empty() {
+        String::new()
+    } else {
+        format!(" WHERE {}", where_parts.join(" AND "))
+    };
+    let axql = format!(
+        "SELECT {} FROM OBJECT({}) o{} ORDER BY o.node_key ASC",
+        select_fields.join(", "),
+        node_spec.name,
+        where_sql
+    );
+
+    let req = axpoint_domain::analytics::AxqlQueryRequest {
+        axql: axql.clone(),
+        params,
+        max_rows: Some(NL2SQL_MAX_ROWS),
+        timeout_ms: args.timeout_ms,
+        reveal_pii: false,
+        subgraph_slug: None,
+    };
+    let artifact = match crate::axql::compile_axql_query(
+        &req,
+        schema_doc,
+        args.catalog,
+        args.policy,
+        false,
+        &BTreeMap::new(),
+    ) {
+        Ok(art) => art,
+        Err(AppError::Forbidden(code)) => return Err(AppError::Forbidden(code)),
+        Err(_) => return Ok(None),
+    };
+
+    let slot_payload = serde_json::json!({
+        "route": "DOMAIN_OBJECT_AXQL",
+        "target_node_type": node_spec.name,
+        "axql": axql,
+        "fanout_protected": artifact.plan.fanout_protected,
+        "filters": filters,
+    });
+    Ok(Some(CompiledDomainPlan {
+        node_type_name: node_spec.name.clone(),
+        raw_sql: axql,
+        guarded: artifact.guarded,
         slot_payload,
     }))
 }

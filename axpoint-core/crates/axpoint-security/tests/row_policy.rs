@@ -12,8 +12,9 @@ use axpoint_domain::guard::{
     GuardPrincipalProfile, PolicyTargetKind, RowPolicyRecord, SubjectSelector, UserAccountStatus,
 };
 use axpoint_security::row_policy::{
-    DatasetPolicyInput, NodeTypePolicyInput, compile_predicate, resolve_dataset_policy,
-    resolve_node_type_policy, validate_predicate_syntax,
+    DatasetPolicyInput, NodeTypePolicyInput, compile_predicate, compile_predicate_with_ttl,
+    resolve_dataset_policy, resolve_node_type_policy, validate_predicate_syntax,
+    validate_predicate_syntax_for_target, validate_ttl_config,
 };
 use chrono::{Duration, Utc};
 use serde::Deserialize;
@@ -317,5 +318,137 @@ fn dataset_and_node_resolvers_handle_default_deny_admin_bypass_and_exemptions()
     })?;
     assert!(nt_exempt);
     assert!(nt_spec.property_masks.is_empty());
+    Ok(())
+}
+
+#[test]
+fn step27_state_predicates_roles_double_eq_and_ttl_compile_dual_dialect() -> Result<(), AppError> {
+    let mut profile = make_south_analyst();
+    profile.dept_id = String::from("risk_obs");
+    profile.roles = vec![String::from("ANALYST"), String::from("INCIDENT_CMD")];
+
+    let allowed = BTreeSet::from([
+        String::from("region"),
+        String::from("inventory"),
+        String::from("severity"),
+        String::from("opened_at"),
+    ]);
+
+    let pred = "properties.region == {{user.dept}} OR (metrics.inventory < 100 AND \"INCIDENT_CMD\" IN {{user.roles}})";
+    validate_predicate_syntax_for_target(pred, PolicyTargetKind::NodeType, Some(&allowed))?;
+    validate_ttl_config(
+        PolicyTargetKind::NodeType,
+        Some("updated_at"),
+        Some(72),
+        Some(&allowed),
+    )?;
+
+    let compiled = compile_predicate_with_ttl(
+        pred,
+        PolicyTargetKind::NodeType,
+        Some(&allowed),
+        &profile,
+        Some("updated_at"),
+        Some(72),
+    )?;
+    assert!(
+        compiled
+            .duckdb_sql
+            .contains("json_extract_string(properties, '$.region') = 'risk_obs'")
+    );
+    assert!(
+        compiled
+            .duckdb_sql
+            .contains("TRY_CAST(json_extract_string(metrics, '$.inventory') AS DOUBLE) < 100")
+    );
+    assert!(
+        compiled
+            .duckdb_sql
+            .contains("'INCIDENT_CMD' IN ('ANALYST', 'INCIDENT_CMD')")
+    );
+    assert!(
+        compiled
+            .duckdb_sql
+            .contains("\"updated_at\" >= (CURRENT_TIMESTAMP - INTERVAL '72 hours')")
+    );
+
+    assert!(
+        compiled
+            .pg_sql
+            .contains("(properties->>'region') = 'risk_obs'")
+    );
+    assert!(
+        compiled
+            .pg_sql
+            .contains("THEN (metrics->>'inventory')::double precision END) < 100")
+    );
+    assert!(
+        compiled
+            .pg_sql
+            .contains("updated_at >= (NOW() - INTERVAL '72 hours')")
+    );
+    Ok(())
+}
+
+#[test]
+fn step27_safe_pg_casts_for_custom_property_ttl() -> Result<(), AppError> {
+    let profile = make_south_analyst();
+    let allowed = BTreeSet::from([String::from("inventory"), String::from("opened_at")]);
+    let prop_ttl = compile_predicate_with_ttl(
+        "metrics.inventory < 100",
+        PolicyTargetKind::NodeType,
+        Some(&allowed),
+        &profile,
+        Some("opened_at"),
+        Some(24),
+    )?;
+    assert!(
+        prop_ttl
+            .pg_sql
+            .contains("(0[13578]|1[02])-(0[1-9]|[12][0-9]|3[01])")
+    );
+    assert!(
+        prop_ttl
+            .pg_sql
+            .contains("THEN (properties->>'opened_at')::timestamptz END")
+    );
+
+    let alt_pred = "node.prop.opened_at == '2026-01-01'";
+    let alt = compile_predicate(
+        alt_pred,
+        PolicyTargetKind::NodeType,
+        Some(&allowed),
+        &profile,
+    )?;
+    assert!(
+        alt.pg_sql
+            .contains("(properties->>'opened_at') = '2026-01-01'")
+    );
+
+    assert!(
+        validate_predicate_syntax_for_target(
+            "properties.unknown_col == 'x'",
+            PolicyTargetKind::NodeType,
+            Some(&allowed),
+        )
+        .is_err()
+    );
+    assert!(
+        validate_ttl_config(
+            PolicyTargetKind::NodeType,
+            Some("updated_at"),
+            Some(0),
+            Some(&allowed),
+        )
+        .is_err()
+    );
+    assert!(
+        validate_predicate_syntax_for_target(
+            "properties.region == 'east'; DROP TABLE xb_nodes",
+            PolicyTargetKind::NodeType,
+            Some(&allowed),
+        )
+        .is_err()
+    );
     Ok(())
 }
