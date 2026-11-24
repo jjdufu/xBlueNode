@@ -14,6 +14,7 @@
 - **分阶段实施方案仓**：[plans/README.md](./plans/README.md)
   - 已完成基线归档（Step 00～14）：`plans/completed/v1-foundation-step00-14/`（只读封存）
   - 已完成二期归档（Step 15～22）：`plans/completed/v2-ux-and-grounded-ai-step15-22/`（只读封存）
+  - 当前推进三期（Step 23～30）：[plans/v3-craft-and-world-runtime/00-V3-MASTER-INDEX.md](./plans/v3-craft-and-world-runtime/00-V3-MASTER-INDEX.md)
 - **严禁重新创建遗留混合目录 `docs/blueprint/`**（`docs/` 只放跨阶段宪章与活标准，`plans/` 只放分阶段实施方案）。
 
 ---

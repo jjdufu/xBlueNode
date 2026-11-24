@@ -10,7 +10,7 @@
 - **质量门禁总则**：[docs/QUALITY_GATES_AND_VERIFICATION.md](./docs/QUALITY_GATES_AND_VERIFICATION.md)
 - **多团队 / 多分支 Worktree / 多 Subagent 协同宪章**：[docs/MULTI_AGENT_TEAM_WORKFLOW.md](./docs/MULTI_AGENT_TEAM_WORKFLOW.md)
 - **全量接口与基准规范**：[docs/API_CONTRACT.md](./docs/API_CONTRACT.md) 与 `docs/standards/A1～A7`
-- **分阶段实施方案仓**：[plans/README.md](./plans/README.md)（`plans/completed/v1-foundation-step00-14/` 与 `plans/completed/v2-ux-and-grounded-ai-step15-22/` 为已完成归档）。`docs/` 与 `plans/` 严格动静分离，禁止新建 `docs/blueprint/`。
+- **分阶段实施方案仓**：[plans/README.md](./plans/README.md)（`plans/completed/v1-foundation-step00-14/` 与 `plans/completed/v2-ux-and-grounded-ai-step15-22/` 为已完成归档；当前推进三期总入口见 [plans/v3-craft-and-world-runtime/00-V3-MASTER-INDEX.md](./plans/v3-craft-and-world-runtime/00-V3-MASTER-INDEX.md)）。`docs/` 与 `plans/` 严格动静分离，禁止新建 `docs/blueprint/`。
 
 ---
 
