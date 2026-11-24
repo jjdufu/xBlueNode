@@ -6,12 +6,14 @@ import type {
   CockpitZoneLayout,
   DataType,
   ExportFormat,
+  GridCompactMode,
   JobStatus,
   SemanticZoneKind,
+  Sensitivity,
   WidgetKind,
 } from "./enums";
 
-export type { CockpitZoneLayout, SemanticZoneKind } from "./enums";
+export type { CockpitZoneLayout, GridCompactMode, SemanticZoneKind } from "./enums";
 
 export type DashboardTheme = "light" | "dark" | "screen";
 export type DashboardStatus = "DRAFT" | "PUBLISHED";
@@ -32,6 +34,7 @@ export interface CanvasConfig {
   screen_width: number;
   screen_height: number;
   zone_layout?: CockpitZoneLayout;
+  compact_mode?: GridCompactMode;
 }
 
 export interface WidgetPosition {
@@ -771,7 +774,103 @@ export const xblueviewApi = {
     requestJson<{ deleted: boolean }>(`/api/xblueview/shares/${shareId}`, {
       method: "DELETE",
     }),
+
+  listSavedCharts: (params?: { limit?: number; cursor?: string }) =>
+    requestJson<ViewPaginatedList<SavedChartRecord>>(
+      `/api/xblueview/charts${qs(params ?? {})}`
+    ),
+
+  createSavedChart: (body: SaveChartRequest) =>
+    requestJson<SavedChartRecord>("/api/xblueview/charts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+
+  getSavedChart: (chartId: string) =>
+    requestJson<SavedChartRecord>(
+      `/api/xblueview/charts/${encodeURIComponent(chartId)}`
+    ),
+
+  updateSavedChart: (chartId: string, body: UpdateSavedChartRequest) =>
+    requestJson<SavedChartRecord>(
+      `/api/xblueview/charts/${encodeURIComponent(chartId)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    ),
+
+  deleteSavedChart: (chartId: string) =>
+    requestJson<{ deleted: boolean }>(
+      `/api/xblueview/charts/${encodeURIComponent(chartId)}`,
+      { method: "DELETE" }
+    ),
+
+  pinSavedChart: (chartId: string, body: PinChartToDashboardRequest) =>
+    requestJson<PinChartToDashboardResponse>(
+      `/api/xblueview/charts/${encodeURIComponent(chartId)}/pin`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    ),
 };
+
+export interface SavedChartRecord {
+  id: string;
+  tenant_id: string;
+  name: string;
+  description: string;
+  widget_kind: WidgetKind;
+  data_source: WidgetDataSource;
+  encoding: Record<string, unknown>;
+  options: Record<string, unknown>;
+  owner_dept: string;
+  sensitivity: Sensitivity;
+  shared: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SaveChartRequest {
+  name: string;
+  description?: string;
+  widget_kind: WidgetKind;
+  data_source: WidgetDataSource;
+  encoding?: Record<string, unknown>;
+  options?: Record<string, unknown>;
+  sensitivity?: Sensitivity;
+  shared?: boolean;
+}
+
+export interface UpdateSavedChartRequest {
+  name?: string;
+  description?: string;
+  widget_kind?: WidgetKind;
+  data_source?: WidgetDataSource;
+  encoding?: Record<string, unknown>;
+  options?: Record<string, unknown>;
+  sensitivity?: Sensitivity;
+  shared?: boolean;
+}
+
+export interface PinChartToDashboardRequest {
+  dashboard_id: string;
+  target_zone?: SemanticZoneKind;
+  width?: number;
+  height?: number;
+}
+
+export interface PinChartToDashboardResponse {
+  widget: WidgetRecord;
+  dashboard_id: string;
+  dashboard_slug: string;
+  deep_link: string;
+}
 
 export type ExportPageSize = "A4" | "A3";
 export type ExportOrientation = "portrait" | "landscape";

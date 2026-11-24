@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::analytics::QueryColumn;
-use crate::enums::{AssetKind, CockpitZoneLayout, DataType, WidgetKind};
+use crate::enums::{
+    AssetKind, CockpitZoneLayout, DataType, GridCompactMode, SemanticZoneKind, Sensitivity,
+    WidgetKind,
+};
 
 pub use crate::view_zones::*;
 
@@ -176,6 +179,9 @@ pub struct CanvasConfig {
     /// Cockpit semantic zone layout preset (`06-STEP20` §20.3.1).
     #[serde(default)]
     pub zone_layout: CockpitZoneLayout,
+    /// Grid vertical compaction mode (`03-STEP25` §25.2.1).
+    #[serde(default)]
+    pub compact_mode: GridCompactMode,
 }
 
 const fn default_canvas_cols() -> i32 {
@@ -204,6 +210,7 @@ impl CanvasConfig {
             screen_width: 1920,
             screen_height: 1080,
             zone_layout: CockpitZoneLayout::StandardFiveZone,
+            compact_mode: GridCompactMode::VerticalCompact,
         }
     }
 }
@@ -216,6 +223,7 @@ impl Default for CanvasConfig {
             screen_width: default_screen_width(),
             screen_height: default_screen_height(),
             zone_layout: CockpitZoneLayout::FreeGrid,
+            compact_mode: GridCompactMode::VerticalCompact,
         }
     }
 }
@@ -1198,6 +1206,126 @@ pub struct NodesGeoLinkRow {
     pub dst_lat: f64,
     /// Relationship weight.
     pub weight: f64,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_internal_sensitivity() -> Sensitivity {
+    Sensitivity::Internal
+}
+
+/// Stored reusable chart asset record (`xv_charts`, `03-STEP25` §25.1–§25.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedChartRecord {
+    /// Chart UUID.
+    pub id: Uuid,
+    /// Owning tenant ID.
+    pub tenant_id: String,
+    /// Unique chart display name within tenant (`1..=128` chars).
+    pub name: String,
+    /// Optional chart description.
+    pub description: String,
+    /// Visual widget kind rendered by this chart definition.
+    pub widget_kind: WidgetKind,
+    /// Declarative data source definition.
+    pub data_source: WidgetDataSource,
+    /// Visual channel encoding JSON.
+    pub encoding: serde_json::Value,
+    /// Thresholds, formatting, and display options JSON.
+    pub options: serde_json::Value,
+    /// Owning department slug (`"default"` by default).
+    pub owner_dept: String,
+    /// Resource security classification.
+    pub sensitivity: Sensitivity,
+    /// Whether this chart is visible across the tenant (`true` by default).
+    pub shared: bool,
+    /// Creator user UUID.
+    pub created_by: Option<Uuid>,
+    /// Creation timestamp (UTC).
+    pub created_at: DateTime<Utc>,
+    /// Last modification timestamp (UTC).
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Request payload for `POST /api/xblueview/charts` (`03-STEP25` §25.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SaveChartRequest {
+    /// Unique chart display name (`1..=128` chars).
+    pub name: String,
+    /// Optional chart description.
+    #[serde(default)]
+    pub description: String,
+    /// Visual widget kind.
+    pub widget_kind: WidgetKind,
+    /// Declarative data source definition.
+    pub data_source: WidgetDataSource,
+    /// Visual channel encoding JSON.
+    #[serde(default = "default_empty_obj")]
+    pub encoding: serde_json::Value,
+    /// Thresholds, formatting, and display options JSON.
+    #[serde(default = "default_empty_obj")]
+    pub options: serde_json::Value,
+    /// Resource security classification (`INTERNAL` default).
+    #[serde(default = "default_internal_sensitivity")]
+    pub sensitivity: Sensitivity,
+    /// Whether this chart is shared with tenant peers (`true` default).
+    #[serde(default = "default_true")]
+    pub shared: bool,
+}
+
+/// Request payload for `PUT /api/xblueview/charts/{id}` (`03-STEP25` §25.2).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UpdateSavedChartRequest {
+    /// Updated chart display name.
+    pub name: Option<String>,
+    /// Updated chart description.
+    pub description: Option<String>,
+    /// Updated visual widget kind.
+    pub widget_kind: Option<WidgetKind>,
+    /// Updated data source definition.
+    pub data_source: Option<WidgetDataSource>,
+    /// Updated visual channel encoding JSON.
+    pub encoding: Option<serde_json::Value>,
+    /// Updated options JSON.
+    pub options: Option<serde_json::Value>,
+    /// Updated sensitivity classification.
+    pub sensitivity: Option<Sensitivity>,
+    /// Updated tenant sharing flag.
+    pub shared: Option<bool>,
+}
+
+/// Request payload for `POST /api/xblueview/charts/{id}/pin` (`03-STEP25` §25.2.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinChartToDashboardRequest {
+    /// Target `xv_dashboards.id` to mount a widget bound to this chart definition.
+    pub dashboard_id: Uuid,
+    /// Optional target semantic zone when the dashboard uses `STANDARD_FIVE_ZONE`.
+    #[serde(default)]
+    pub target_zone: Option<SemanticZoneKind>,
+    /// Optional explicit grid width (`2..=24`); defaults by `widget_kind`.
+    #[serde(default)]
+    pub width: Option<i32>,
+    /// Optional explicit grid height (`2..=16`); defaults by `widget_kind`.
+    #[serde(default)]
+    pub height: Option<i32>,
+}
+
+/// Response payload returned by `POST /api/xblueview/charts/{id}/pin` (`03-STEP25` §25.2.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PinChartToDashboardResponse {
+    /// Newly created dashboard widget bound to the source chart (`options.source_chart_id`).
+    pub widget: WidgetRecord,
+    /// Target dashboard UUID.
+    pub dashboard_id: Uuid,
+    /// Target dashboard URL slug.
+    pub dashboard_slug: String,
+    /// Frontend deep link (`/view/{slug}`).
+    pub deep_link: String,
 }
 
 #[cfg(test)]

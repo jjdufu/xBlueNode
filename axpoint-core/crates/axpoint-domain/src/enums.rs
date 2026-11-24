@@ -847,6 +847,8 @@ define_str_enum! {
         StudioSnapshotRestore => "STUDIO_SNAPSHOT_RESTORE",
         /// External enterprise IM account bound to a platform user (`07-STEP21`).
         ImAccountBind => "IM_ACCOUNT_BIND",
+        /// Reusable `xv_charts` visualization asset saved or pinned (`03-STEP25`).
+        ChartPublish => "CHART_PUBLISH",
     }
 }
 
@@ -1093,6 +1095,30 @@ define_str_enum! {
         Insight => "INSIGHT",
         /// Active alerts, scenario comparison, and writeback action controls.
         Decision => "DECISION",
+    }
+}
+
+define_str_enum! {
+    /// Grid compaction strategy in `xv_dashboards.canvas.compact_mode` (`03-STEP25` §25.2.1).
+    #[derive(Default)]
+    pub enum GridCompactMode {
+        /// Automatically compacts items upward when dragging or resizing.
+        #[default]
+        VerticalCompact => "VERTICAL_COMPACT",
+        /// Preserves exact `(x, y)` coordinates without pushing unrelated below-items upward.
+        FreeFloat => "FREE_FLOAT",
+    }
+}
+
+define_str_enum! {
+    /// Dual-mode canvas view perspective in `xBlueStudio` (`02-STEP24` §24.0).
+    #[derive(Default)]
+    pub enum StudioCanvasViewMode {
+        /// Domain object, relationship, and action topology canvas.
+        #[default]
+        OntologyTopology => "ONTOLOGY_TOPOLOGY",
+        /// Left-to-right dataset-to-mapping-to-object-to-rollup pipeline canvas.
+        MappingPipeline => "MAPPING_PIPELINE",
     }
 }
 

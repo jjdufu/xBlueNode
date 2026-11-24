@@ -230,6 +230,7 @@ export const AUDIT_ACTIONS: readonly AuditAction[] = [
   "TRIAL_TEMPLATE_CLONE",
   "STUDIO_SNAPSHOT_RESTORE",
   "IM_ACCOUNT_BIND",
+  "CHART_PUBLISH",
 ];
 
 export interface CedarSnippetTemplate {

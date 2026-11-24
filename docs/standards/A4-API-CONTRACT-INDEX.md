@@ -151,6 +151,7 @@
 | `POST /dashboards/ai-generate`、`POST /dashboards/ai-draft` | `VIEW_EDIT` | §11.6、[05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.3.2 |
 | `POST /dashboards/{id}/publish`、`POST /dashboards/{id}/duplicate`、`PUT /dashboards/{id}/layout`、`POST /dashboards/{id}/apply-zone-preset`、`POST /dashboards/{id}/preflight` | `VIEW_EDIT` / `VIEW_SHARE` | §11.7、[06-STEP20](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.3 |
 | `POST /dashboards/{id}/widgets`、`PUT /widgets/{id}`、`DELETE /widgets/{id}` | `VIEW_EDIT` | 同上 |
+| `GET /charts`、`POST /charts`、`GET /charts/{id}`、`PUT /charts/{id}`、`DELETE /charts/{id}`、`POST /charts/{id}/pin` | `DATA_READ` / `VIEW_EDIT` | [03-STEP25](../../plans/v3-craft-and-world-runtime/craft-ux/03-STEP25-CHART-STUDIO-VTABLE-PIVOT-AND-MAGNETIC-GRID.md) §25.2 |
 | `POST /widgets/{id}/data`、`POST /widgets/preview` | `DATA_READ` | §11.2 |
 | `POST /widgets/{id}/invoke` | `FLOW_RUN` | §11.6 |
 | `GET /dashboards/{id}/stream`（SSE） | `DATA_READ` | §11.5 |

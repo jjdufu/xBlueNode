@@ -125,9 +125,11 @@ use crate::topology::{
 use crate::view::{
     AffectedWidgetRef, AssetRecord, CreateAssetParams, CreateDashboardRequest,
     CreateWidgetRecordParams, DashboardDetail, DashboardRecord, FloorPlacementRecord, FloorPlanRow,
-    LayoutUpdateItem, NodesGeoLinkRow, NodesGeoRow, PutFloorPlacementItem, PutScene3dBindingItem,
-    Scene3dBindingRecord, Scene3dRow, UpdateDashboardRequest, UpdateWidgetRecordParams,
-    ViewWriteNodeOutcome, ViewWriteNodeParams, WidgetDeps, WidgetRecord,
+    LayoutUpdateItem, NodesGeoLinkRow, NodesGeoRow, PinChartToDashboardRequest,
+    PinChartToDashboardResponse, PutFloorPlacementItem, PutScene3dBindingItem, SaveChartRequest,
+    SavedChartRecord, Scene3dBindingRecord, Scene3dRow, UpdateDashboardRequest,
+    UpdateSavedChartRequest, UpdateWidgetRecordParams, ViewWriteNodeOutcome, ViewWriteNodeParams,
+    WidgetDeps, WidgetRecord,
 };
 use crate::{AppError, ExtractedTriple, FusedHit, SystemStats, TopologyGraph};
 
@@ -3306,6 +3308,67 @@ pub trait ViewRepository: Send + Sync {
         tenant_id: &str,
         share_id: Uuid,
     ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists reusable visualization charts in `xv_charts` visible to `viewer_user_id` (`03-STEP25` §25.2).
+    fn list_saved_charts(
+        &self,
+        _tenant_id: &str,
+        _viewer_user_id: Uuid,
+        _include_all: bool,
+        _query: SimplePageQuery,
+    ) -> impl Future<Output = Result<PaginatedList<SavedChartRecord>, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
+
+    /// Fetches a single reusable visualization chart by UUID in `tenant_id` (`03-STEP25` §25.2).
+    fn get_saved_chart(
+        &self,
+        _tenant_id: &str,
+        _chart_id: Uuid,
+    ) -> impl Future<Output = Result<Option<SavedChartRecord>, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
+
+    /// Creates a reusable visualization chart in `xv_charts` (`03-STEP25` §25.2).
+    fn create_saved_chart(
+        &self,
+        _tenant_id: &str,
+        _created_by: Option<Uuid>,
+        _owner_dept: &str,
+        _req: SaveChartRequest,
+    ) -> impl Future<Output = Result<SavedChartRecord, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
+
+    /// Updates a reusable visualization chart in `xv_charts` (`03-STEP25` §25.2).
+    fn update_saved_chart(
+        &self,
+        _tenant_id: &str,
+        _chart_id: Uuid,
+        _req: UpdateSavedChartRequest,
+    ) -> impl Future<Output = Result<Option<SavedChartRecord>, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
+
+    /// Deletes a reusable visualization chart by UUID in `tenant_id` (`03-STEP25` §25.2).
+    fn delete_saved_chart(
+        &self,
+        _tenant_id: &str,
+        _chart_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
+
+    /// Atomically allocates a non-overlapping dashboard slot and mounts `chart_id` into `req.dashboard_id` (`03-STEP25` §25.2.2).
+    fn pin_saved_chart_to_dashboard(
+        &self,
+        _tenant_id: &str,
+        _chart_id: Uuid,
+        _req: PinChartToDashboardRequest,
+        _deps: WidgetDeps,
+    ) -> impl Future<Output = Result<PinChartToDashboardResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
 }
 
 /// Persistence port for `AxGuard` authentication, sessions, OIDC states, departments, users, roles,

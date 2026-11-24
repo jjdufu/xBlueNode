@@ -219,4 +219,9 @@ export const ENUM_LABELS: Readonly<Record<string, BilingualLabel>> = {
   IM: { zh: "IM 连接", en: "IM" },
   IM_ACCOUNT_BIND: { zh: "IM 账号绑定", en: "IM Bind" },
   IM_EVENT_DEDUP: { zh: "IM 事件去重", en: "IM Dedup" },
+  CHART_PUBLISH: { zh: "图表发布", en: "Chart Publish" },
+  ONTOLOGY_TOPOLOGY: { zh: "对象拓扑", en: "Topology" },
+  MAPPING_PIPELINE: { zh: "数据流水线", en: "Pipeline" },
+  VERTICAL_COMPACT: { zh: "自动上紧", en: "Vertical Compact" },
+  FREE_FLOAT: { zh: "锁定位置", en: "Free Float" },
 };

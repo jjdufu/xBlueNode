@@ -118,7 +118,7 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `Sensitivity` | `PUBLIC` `INTERNAL` `CONFIDENTIAL` `SECRET` | 资源 `sensitivity`、用户 `clearance` |
 | `Permission` | `DATA_READ` `DATA_SYNC` `DATA_ADMIN` `STUDIO_EDIT` `STUDIO_PUBLISH` `FLOW_EDIT` `FLOW_RUN` `FLOW_PUBLISH` `APPROVAL_DECIDE` `RULE_EDIT` `ALERT_ACK` `AGENT_EDIT` `AGENT_RUN` `SIM_RUN` `SIM_APPLY` `VIEW_EDIT` `VIEW_SHARE` `EXPORT_DATA` `PII_RAW_READ` `GUARD_ADMIN` `OPS_ADMIN` | `sec_roles.permissions` |
 | `BuiltinRole` | `ADMIN`（全部权限）`ANALYST` `OPERATOR` `VIEWER` | `sec_roles.name` |
-| `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` `BUILDER_MCP_MUTATE` `TRIAL_TEMPLATE_CLONE` `STUDIO_SNAPSHOT_RESTORE` `IM_ACCOUNT_BIND` | `sec_audit_logs.action` |
+| `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` `BUILDER_MCP_MUTATE` `TRIAL_TEMPLATE_CLONE` `STUDIO_SNAPSHOT_RESTORE` `IM_ACCOUNT_BIND` `CHART_PUBLISH` | `sec_audit_logs.action` |
 | `StructuredOutputMode` | `NONE` `JSON_OBJECT` `JSON_SCHEMA` | `ax_llm_providers.structured_mode`（Step 15） |
 | `GroundingMode` | `SEMANTIC_METRIC` `DOMAIN_OBJECT` `GUARDED_SQL` `GROUNDED_DOC` `ABSTAINED` `CLARIFICATION` | `an_ask_turns.grounding_mode`（Step 16） |
 | `TokenProfile` | `GENERAL` `BUILDER` | `sec_api_tokens.token_profile`（Step 17） |
@@ -130,6 +130,8 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `ImConnectorStatus` | `DISCONNECTED` `CONNECTING` `CONNECTED` `DEGRADED` `ERROR` | `ax_im_connectors.status`（Step 21） |
 | `CockpitZoneLayout` | `FREE_GRID` `STANDARD_FIVE_ZONE` | `xv_dashboards.canvas.zone_layout`（Step 20） |
 | `SemanticZoneKind` | `CONTROL` `KPI` `SCENE` `INSIGHT` `DECISION` | `xv_widgets.options.semantic_zone`（Step 20） |
+| `StudioCanvasViewMode` | `ONTOLOGY_TOPOLOGY` `MAPPING_PIPELINE` | `xBlueStudio` 画布视图模式（Step 24） |
+| `GridCompactMode` | `VERTICAL_COMPACT` `FREE_FLOAT` | `xv_dashboards.canvas.compact_mode`（Step 25） |
 
 ---
 

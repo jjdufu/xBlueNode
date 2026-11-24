@@ -27,6 +27,7 @@
 | 0017 | `0017_axbuilder_scopes.sql` | Step 17 | `AxBuilder` 构建令牌档位与深链基址、开发子图沙盒元数据、运行态节点 `subgraph_slug` 隔离索引与审计动作扩展 | [03-STEP17](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.1 |
 | 0018 | `0018_studio_proposal_status.sql` | Step 18 | 模型草案增量快照表 `xb_schema_draft_snapshots`、`xb_schema_drafts.pass_count`、节点类型语义分层/业务域列与 `STUDIO_SNAPSHOT_RESTORE` 审计动作 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.1 |
 | 0019 | `0019_im_bot_bindings.sql` | Step 21 | 企业 IM 出站长连接连接器 `ax_im_connectors`、身份映射 `ax_im_user_bindings`、一次性挑战码 `ax_im_bind_challenges`、事件去重 `ax_im_event_dedup`、`ax_conversations` IM 通道扩展及单主租约与原子绑定核销函数 | [07-STEP21](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/07-STEP21-IM-BIDIRECTIONAL-AGENT-CONNECTORS.md) §21.1 |
+| 0020 | `0020_saved_charts.sql` | Step 25 | 可复用可视化图表资产表 `xv_charts`（强制租户 RLS）与 `CHART_PUBLISH` 审计动作扩展 | [03-STEP25](../../plans/v3-craft-and-world-runtime/craft-ux/03-STEP25-CHART-STUDIO-VTABLE-PIVOT-AND-MAGNETIC-GRID.md) §25.1 |
 
 Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 中的时序表）。
 
@@ -50,7 +51,7 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `sec_users` | 0002 | 0013 | 00 / 13 | 是 |
 | `sec_roles`、`sec_user_roles` | 0002 | — | 00 | 是 |
 | `sec_api_tokens` | 0002 | 0017（`token_profile`、`web_base_url`） | 00 / 09 / 17 | 是 |
-| `sec_audit_logs` | 0002 | 0013（哈希链）、0017（构建与克隆动作）、0018（快照回退动作）、0019（`IM_ACCOUNT_BIND`） | 00 / 13 / 17 / 18 / 21 | 是（应用角色无 UPDATE / DELETE） |
+| `sec_audit_logs` | 0002 | 0013（哈希链）、0017（构建与克隆动作）、0018（快照回退动作）、0019（`IM_ACCOUNT_BIND`）、0020（`CHART_PUBLISH`） | 00 / 13 / 17 / 18 / 21 / 25 | 是（应用角色无 UPDATE / DELETE） |
 | `ax_jobs`、`ax_outbox` | 0002 | — | 00 | 是 |
 | `ax_retention_policies` | 0002 | 0019（`IM_EVENT_DEDUP` 目标） | 00 / 21 | 是 |
 | `ds_credentials`、`ds_connections`、`ds_column_meta`、`ds_sync_jobs`、`ds_uploads`、`ds_webhooks`、`ds_webhook_buffer`、`ds_stream_offsets`、`ds_quality_rules`、`ds_glossary_terms`、`ds_lineage` | 0003 | — | 02 | 是 |
@@ -76,6 +77,7 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `ax_sim_base_nodes`、`ax_sim_base_links`、`ax_sim_overlay_nodes`、`ax_sim_overlay_links`、`ax_sim_scenarios`、`ax_sim_impacts`、`ax_sim_checkpoints`、`ax_sim_decisions` | 0010 | — | 10 | 是 |
 | `xv_dashboards` | 0011 | 0013（归属、密级） | 11 / 13 | 是 |
 | `xv_widgets`、`xv_assets`、`xv_floor_placements`、`xv_scene3d_bindings` | 0011 | — | 11 | 是 |
+| `xv_charts` | 0020 | — | 25 | 是 |
 | `xv_export_templates`、`xv_export_jobs`、`xv_share_links` | 0012 | — | 12 | 是 |
 | `sec_departments`、`sec_user_attributes`、`sec_sessions`、`sec_policies`、`sec_row_policies`、`sec_row_policy_defaults`、`sec_column_policies`、`sec_grants` | 0013 | — | 13 | 是 |
 | `sec_audit_chain_heads` | 0013 | 0014（锚点） | 13 / 14 | 是 |
