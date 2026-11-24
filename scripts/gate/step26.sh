@@ -138,24 +138,27 @@ NEXT_SCHEMA=$(echo "$CUR_SCHEMA" | jq '
 ')
 api POST "/api/xblue/schema?subgraph=main" "$NEXT_SCHEMA" >/dev/null
 
-HUB_NODE=$(api POST /api/xblue/nodes '{"type_name":"Step26Hub","node_key":"H-26","title":"华东枢纽","metrics":{"output_rate":100,"reserve_qty":50}}')
-DEPOT_NODE=$(api POST /api/xblue/nodes '{"type_name":"Step26Depot","node_key":"D-26","title":"苏州前置仓","metrics":{"congestion_ratio":0.2,"inbound_flux":0}}')
+RUN_TAG="$(date +%s)-$$"
+HUB_KEY="H-26-${RUN_TAG}"
+DEPOT_KEY="D-26-${RUN_TAG}"
+HUB_NODE=$(api POST /api/xblue/nodes "$(jq -n --arg k "$HUB_KEY" '{type_name:"Step26Hub",node_key:$k,title:"华东枢纽",metrics:{output_rate:100,reserve_qty:50}}')")
+DEPOT_NODE=$(api POST /api/xblue/nodes "$(jq -n --arg k "$DEPOT_KEY" '{type_name:"Step26Depot",node_key:$k,title:"苏州前置仓",metrics:{congestion_ratio:0.2,inbound_flux:0}}')")
 HUB_ID=$(echo "$HUB_NODE" | jq -r '.id')
 DEPOT_ID=$(echo "$DEPOT_NODE" | jq -r '.id')
 LANE=$(api POST /api/xblue/links "$(jq -n --arg s "$HUB_ID" --arg d "$DEPOT_ID" '{link_type:"STEP26_LANE",src_node_id:$s,dst_node_id:$d,weight:0.8}')")
 LANE_ID=$(echo "$LANE" | jq -r '.id')
 
 # 前置条件不满足（请求调拨 999 > reserve_qty 50）应返回 422 ACTION_PRECONDITION_FAILED
-expect_code "action-spec-precondition-422" 422 POST /api/xblue/objects/Step26Hub/H-26/actions/dispatch_reserve '{"inputs":{"qty":999},"idempotency_key":"step26-precond-fail"}'
-ACT_OK=$(api POST /api/xblue/objects/Step26Hub/H-26/actions/dispatch_reserve '{"inputs":{"qty":20},"idempotency_key":"step26-rest-1"}')
+expect_code "action-spec-precondition-422" 422 POST "/api/xblue/objects/Step26Hub/${HUB_KEY}/actions/dispatch_reserve" "$(jq -n --arg ik "step26-precond-${RUN_TAG}" '{inputs:{qty:999},idempotency_key:$ik}')"
+ACT_OK=$(api POST "/api/xblue/objects/Step26Hub/${HUB_KEY}/actions/dispatch_reserve" "$(jq -n --arg ik "step26-rest-${RUN_TAG}" '{inputs:{qty:20},idempotency_key:$ik}')")
 expect_json "action-spec-precondition" "$ACT_OK" '
   .status == "APPLIED" and (.node.metrics.reserve_qty == 30) and (.node.metrics.output_rate == 120)
 '
 
 # GraphQL 动态 Mutation 执行
-GQL_MUT=$(api POST /api/xblue/graphql '{
-  "query": "mutation { step26Hub_dispatchReserve(key: \"H-26\", idempotencyKey: \"step26-gql-1\", input: { qty: 10 }) { status mutatedNodes idempotencyReplay } }"
-}')
+GQL_MUT=$(api POST /api/xblue/graphql "$(jq -n --arg k "$HUB_KEY" --arg ik "step26-gql-${RUN_TAG}" '{
+  query: ("mutation { step26Hub_dispatchReserve(key: \"" + $k + "\", idempotencyKey: \"" + $ik + "\", input: { qty: 10 }) { status mutatedNodes idempotencyReplay } }")
+}')")
 expect_json "graphql-action-mutation" "$GQL_MUT" '
   .data.step26Hub_dispatchReserve.status == "APPLIED"
   and (.data.step26Hub_dispatchReserve.mutatedNodes >= 1)
