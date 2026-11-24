@@ -15,12 +15,13 @@ use crate::agent::{
     UpdateEndpointRequest, UserLlmPreferenceRecord,
 };
 use crate::analytics::{
-    AnalyticsPrincipal, AskFeedbackKind, AskTurnRecord, CreateMetricRequest,
-    CreateSavedQueryRequest, FewShotTurn, GroundingEvalRunRecord, MaterializeRequest, MetricDef,
-    MetricQuery, MetricQueryResult, NewAskTurnInput, NewGroundingEvalRunInput,
-    NewQueryHistoryEntry, NewTransformDraftInput, PivotResult, PivotSpec, QueryHistoryEntry,
-    QueryHistoryListQuery, QueryRequest, QueryResult, SavedQuery, SchemaRecallBundle,
-    TransformDraft, TransformPreview, UpdateMetricRequest, UpdateSavedQueryRequest,
+    AnalyticsPrincipal, AskFeedbackKind, AskTurnRecord, AxqlCompilePlan, AxqlQueryRequest,
+    AxqlQueryResponse, CreateMetricRequest, CreateSavedQueryRequest, FewShotTurn,
+    GroundingEvalRunRecord, MaterializeRequest, MetricDef, MetricQuery, MetricQueryResult,
+    NewAskTurnInput, NewGroundingEvalRunInput, NewQueryHistoryEntry, NewTransformDraftInput,
+    PivotResult, PivotSpec, QueryHistoryEntry, QueryHistoryListQuery, QueryRequest, QueryResult,
+    SavedQuery, SchemaRecallBundle, TransformDraft, TransformPreview, UpdateMetricRequest,
+    UpdateSavedQueryRequest,
 };
 use crate::axhub::{
     CatalogSearchHit, ColumnMeta, CommitStagingRequest, Connection, ConnectionStatus,
@@ -70,10 +71,10 @@ use crate::guard::{
     CreateGuardUserRequest, DepartmentRecord, GrantRecord, GrantResourceKind,
     GuardPrincipalProfile, GuardRoleRecord, GuardUserRecord, LoginLookupRow, OidcLoginState,
     PatchGuardRoleRequest, PatchGuardUserRequest, PiiAnalyzeRequest, PiiAnalyzeResponse,
-    PiiAnonymizeRequest, PiiAnonymizeResponse, PutCedarPolicyRequest, PutColumnPolicyRequest,
-    PutRowPolicyDefaultRequest, ResolvedSessionRow, ResourceRef, RowPolicyDefaultRecord,
-    RowPolicyRecord, SaveRowPolicyRequest, SessionSummaryRecord, UpsertDepartmentRequest,
-    UpsertOidcUserParams,
+    PiiAnonymizeRequest, PiiAnonymizeResponse, PolicyContext, PutCedarPolicyRequest,
+    PutColumnPolicyRequest, PutRowPolicyDefaultRequest, ResolvedSessionRow, ResourceRef,
+    RowPolicyDefaultRecord, RowPolicyRecord, SaveRowPolicyRequest, SessionSummaryRecord,
+    UpsertDepartmentRequest, UpsertOidcUserParams,
 };
 use crate::im::{
     ConsumedImBindChallenge, HydratedImPrincipal, ImBindChallengePreview, ImConnectorRecord,
@@ -1351,6 +1352,24 @@ pub trait AnalyticsQueryPort: Send + Sync {
         principal: &AnalyticsPrincipal,
         spec: PivotSpec,
     ) -> impl Future<Output = Result<PivotResult, AppError>> + Send;
+
+    /// Compiles a join-free `AxQL` statement into a guarded `DuckDB` SQL plan (`05-STEP27` §27.2).
+    fn compile_axql(
+        &self,
+        _principal: &AnalyticsPrincipal,
+        _req: AxqlQueryRequest,
+    ) -> impl Future<Output = Result<AxqlCompilePlan, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("AXQL_UNSUPPORTED")))
+    }
+
+    /// Compiles and executes a join-free `AxQL` statement with row/column governance (`05-STEP27` §27.2).
+    fn run_axql(
+        &self,
+        _principal: &AnalyticsPrincipal,
+        _req: AxqlQueryRequest,
+    ) -> impl Future<Output = Result<AxqlQueryResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("AXQL_UNSUPPORTED")))
+    }
 }
 
 /// Persistence port for `xBlueStudio` subgraphs, drafts, optimistic schema publication,
@@ -4145,4 +4164,34 @@ pub trait SimPreflightPort: Send + Sync {
         subgraph_slug: &str,
         scope: &SandboxScope,
     ) -> impl Future<Output = Result<ScopePreflightSlice, AppError>> + Send;
+}
+
+/// Governance-aware `AxSim` visibility port enforcing state-driven row-level policies and property masking
+/// identically across sandbox preflight, baseline cloning, and sandbox graph reads (`05-STEP27` §27.3).
+pub trait SimVisibilityPort: Send + Sync {
+    /// Previews a `SandboxScope` slice filtered by the caller's compiled [`PolicyContext`].
+    fn preview_scope_slice_governed(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        scope: &SandboxScope,
+        policy: &PolicyContext,
+    ) -> impl Future<Output = Result<ScopePreflightSlice, AppError>> + Send;
+
+    /// Clones a new `AxSim` sandbox containing only production nodes and incident links visible under `policy`.
+    fn create_sandbox_governed(
+        &self,
+        tenant_id: &str,
+        created_by: Option<Uuid>,
+        req: CreateAxSandboxRequest,
+        policy: &PolicyContext,
+    ) -> impl Future<Output = Result<AxSandboxRecord, AppError>> + Send;
+
+    /// Reads the merged Copy-on-Write sandbox graph filtered and masked under the caller's live `policy`.
+    fn get_sandbox_graph_governed(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+        policy: &PolicyContext,
+    ) -> impl Future<Output = Result<SandboxGraphResponse, AppError>> + Send;
 }

@@ -16,10 +16,11 @@ use axpoint_analytics::{
 use axpoint_domain::agent::{EndpointListQuery, EndpointSpec};
 use axpoint_domain::analytics::{
     AnalyticsCatalogResponse, AnalyticsPrincipal, ApplyTransformResponse, AskContext,
-    AskFeedbackRequest, AskIntent, AskRequest, AskResponse, AskTurnRecord, CatalogDatasetNode,
-    CreateMetricRequest, CreateSavedQueryRequest, CreateTransformDraftRequest, ExplainResult,
-    FewShotTurn, GroundingEvalRunRecord, GroundingEvalRunResponse, LiveConnectionNode, MetricDef,
-    MetricQuery, MetricQueryResult, MultiMetricQuery, NewAskTurnInput, NewQueryHistoryEntry,
+    AskFeedbackRequest, AskIntent, AskRequest, AskResponse, AskTurnRecord, AxqlCompilePlan,
+    AxqlQueryRequest, AxqlQueryResponse, CatalogDatasetNode, CreateMetricRequest,
+    CreateSavedQueryRequest, CreateTransformDraftRequest, ExplainResult, FewShotTurn,
+    GroundingEvalRunRecord, GroundingEvalRunResponse, LiveConnectionNode, MetricDef, MetricQuery,
+    MetricQueryResult, MultiMetricQuery, NewAskTurnInput, NewQueryHistoryEntry,
     NewTransformDraftInput, PivotResult, PivotSpec, PlatformViewNode, QueryColumn,
     QueryHistoryEntry, QueryHistoryKind, QueryHistoryListQuery, QueryHistoryStatus, QueryRequest,
     QueryResult, RunSavedQueryRequest, SavedQuery, SavedQueryKind, TransformDraft,
@@ -56,6 +57,8 @@ pub(crate) fn router() -> Router<AppState> {
         .route("/analytics/catalog", get(get_catalog_handler))
         .route("/analytics/sql/run", post(run_sql_handler))
         .route("/analytics/sql/explain", post(explain_sql_handler))
+        .route("/analytics/axql/compile", post(compile_axql_handler))
+        .route("/analytics/axql/run", post(run_axql_handler))
         .route("/analytics/pivot", post(run_pivot_handler))
         .route(
             "/analytics/metrics",
@@ -2411,6 +2414,38 @@ async fn list_history_handler(
         .list_query_history(&principal.tenant_id, only_user_id, query)
         .await?;
     Ok(Json(page))
+}
+
+async fn compile_axql_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<AxqlQueryRequest>,
+) -> Result<Json<AxqlCompilePlan>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let analytics_principal = AnalyticsPrincipal {
+        user_id: principal.user_id,
+        tenant_id: principal.tenant_id,
+        username: principal.username,
+        permissions: principal.permissions,
+    };
+    let plan = state.compile_axql(&analytics_principal, req).await?;
+    Ok(Json(plan))
+}
+
+async fn run_axql_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<AxqlQueryRequest>,
+) -> Result<Json<AxqlQueryResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let analytics_principal = AnalyticsPrincipal {
+        user_id: principal.user_id,
+        tenant_id: principal.tenant_id,
+        username: principal.username,
+        permissions: principal.permissions,
+    };
+    let resp = state.run_axql(&analytics_principal, req).await?;
+    Ok(Json(resp))
 }
 
 impl AnalyticsQueryPort for AppState {

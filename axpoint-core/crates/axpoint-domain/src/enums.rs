@@ -1174,6 +1174,18 @@ define_str_enum! {
     }
 }
 
+define_str_enum! {
+    /// Evaluation mode of a row-level security policy in `sec_row_policies.policy_mode` (`05-STEP27` §27.1 & §27.3).
+    #[derive(Default)]
+    pub enum RowPolicyMode {
+        /// Evaluates static columns or static node attributes only.
+        #[default]
+        StaticAttr => "STATIC_ATTR",
+        /// Evaluates live node metrics (`metrics.*` / `node.metric.*`), properties, and optional TTL expiration.
+        StateDriven => "STATE_DRIVEN",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

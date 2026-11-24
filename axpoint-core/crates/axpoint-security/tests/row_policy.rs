@@ -190,6 +190,9 @@ fn dataset_policy_resolver_handles_grants_or_union_and_reveal_permission() -> Re
         },
         predicate: String::from("warehouse_code IN {{user.attr.warehouses}}"),
         enabled: true,
+        policy_mode: axpoint_domain::enums::RowPolicyMode::StaticAttr,
+        ttl_timestamp_field: None,
+        ttl_max_age_hours: None,
         created_at: Utc::now(),
     };
 

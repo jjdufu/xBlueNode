@@ -1167,7 +1167,10 @@ fn build_derived_explain(
         inputs,
         computed_at,
         warnings,
-        rule_chain: vec![format!("{}.{metric_name} = {}", node.type_name, drule.expression)],
+        rule_chain: vec![format!(
+            "{}.{metric_name} = {}",
+            node.type_name, drule.expression
+        )],
         previous_value: None,
         current_value: value,
         delta: None,
@@ -1237,7 +1240,11 @@ async fn build_agg_explain_tx(
         warnings: warnings_set.into_iter().collect(),
         rule_chain: vec![format!(
             "{}.{metric_name} = {}({}.{} via {})",
-            node.type_name, arule.op, arule.source_type_name, arule.source_metric, arule.via_link_type
+            node.type_name,
+            arule.op,
+            arule.source_type_name,
+            arule.source_metric,
+            arule.via_link_type
         )],
         previous_value: None,
         current_value: value,

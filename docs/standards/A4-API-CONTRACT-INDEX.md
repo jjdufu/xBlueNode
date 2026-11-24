@@ -81,6 +81,7 @@
 | :--- | :--- | :--- |
 | `GET /catalog` | `DATA_READ` | [05](../../plans/completed/v1-foundation-step00-14/05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) §04.9 |
 | `POST /sql/run`（`{sql, params?, max_rows?, timeout_ms?, allow_live?, reveal_pii?}`）、`POST /sql/explain` | `DATA_READ` | §04.3；`reveal_pii` 见 [11](../../plans/completed/v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.7 |
+| `POST /axql/compile`、`POST /axql/run` | `DATA_READ` | [05-STEP27](../../plans/v3-craft-and-world-runtime/world-runtime/05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) §27.2 |
 | `POST /pivot` | `DATA_READ` | §04.4 |
 | `GET /metrics`、`POST /metrics`、`GET /metrics/{name}`、`PATCH /metrics/{name}`、`DELETE /metrics/{name}` | `DATA_READ` / `STUDIO_EDIT` | §04.5 |
 | `POST /metrics/{name}/query`、`POST /metrics/query-multi` | `DATA_READ` | 同上 |
@@ -169,7 +170,7 @@
 | `GET /roles`、`POST /roles`、`PATCH /roles/{id}`、`DELETE /roles/{id}` | `GUARD_ADMIN` | 同上 |
 | `GET /departments`、`PUT /departments/{dept_id}`、`DELETE /departments/{dept_id}` | `GUARD_ADMIN` | 同上 |
 | `GET /policies`、`PUT /policies/{name}`、`DELETE /policies/{name}`、`POST /policies/validate`、`POST /policies/simulate` | `GUARD_ADMIN` | §13.6.1 |
-| `GET /row-policies`、`POST /row-policies`、`PUT /row-policies/{id}`、`DELETE /row-policies/{id}`、`GET /row-policy-defaults`、`PUT /row-policy-defaults`、`POST /row-policies/preview` | `GUARD_ADMIN` | §13.6.2 |
+| `GET /row-policies`、`POST /row-policies`、`PUT /row-policies/{id}`、`DELETE /row-policies/{id}`、`GET /row-policy-defaults`、`PUT /row-policy-defaults`、`POST /row-policies/preview`、`POST /row-policies/simulate-state` | `GUARD_ADMIN` | §13.6.2、[05-STEP27](../../plans/v3-craft-and-world-runtime/world-runtime/05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) §27.3 |
 | `GET /column-policies`、`PUT /column-policies`、`DELETE /column-policies/{id}` | `GUARD_ADMIN` | §13.7 |
 | `GET /grants`、`POST /grants`、`DELETE /grants/{id}` | `DATA_READ` / `GUARD_ADMIN` | §13.9.1 |
 | `GET /audit`、`GET /audit/export.csv`、`GET /audit/verify`、`GET /audit/stats` | `GUARD_ADMIN` | §13.9.2 |

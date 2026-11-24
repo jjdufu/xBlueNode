@@ -238,4 +238,6 @@ export const ENUM_LABELS: Readonly<Record<string, BilingualLabel>> = {
   VERTEX_TO_EDGE: { zh: "节点到关系边", en: "Vertex to Edge" },
   EDGE_TO_VERTEX: { zh: "关系边到节点", en: "Edge to Vertex" },
   EDGE_TO_EDGE: { zh: "关系边级联", en: "Edge to Edge" },
+  STATIC_ATTR: { zh: "静态属性", en: "Static Attribute" },
+  STATE_DRIVEN: { zh: "状态驱动", en: "State Driven" },
 };

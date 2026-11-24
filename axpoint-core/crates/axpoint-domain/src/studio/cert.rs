@@ -79,7 +79,7 @@ pub struct ActionSpec {
     /// Localized display title (e.g., `"紧急库存调拨"`).
     #[serde(default)]
     pub display_name: String,
-    /// Optional action description exposed in OpenAPI, GraphQL SDL, and MCP tool metadata.
+    /// Optional action description exposed in `OpenAPI`, `GraphQL` SDL, and MCP tool metadata.
     #[serde(default)]
     pub description: String,
     /// Typed input parameters validated via JSON Schema Draft 2020-12 before execution.
@@ -226,7 +226,7 @@ pub struct CertifySubgraphRequest {
 }
 
 /// Persisted L0–L4 runtime readiness certification report (`xb_runtime_certifications`, `04-STEP26` §26.1 & §26.4).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeCertReport {
     /// Certification record UUID.
     pub id: Uuid,
@@ -281,7 +281,7 @@ fn default_empty_inputs() -> serde_json::Value {
     serde_json::Value::Object(serde_json::Map::new())
 }
 
-/// Response payload returned by `POST /api/xblue/objects/{type_name}/{key}/actions/{action_name}` and GraphQL `Mutation` (`04-STEP26` §26.2).
+/// Response payload returned by `POST /api/xblue/objects/{type_name}/{key}/actions/{action_name}` and `GraphQL` `Mutation` (`04-STEP26` §26.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InvokeObjectActionResponse {
     /// Execution status (`"APPLIED"`, `"WAITING_APPROVAL"`, or `"DRY_RUN"`).

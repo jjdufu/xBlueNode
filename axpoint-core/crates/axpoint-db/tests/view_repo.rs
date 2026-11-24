@@ -1473,7 +1473,7 @@ async fn view_repo_geo_links_and_concurrent_write_idempotency() -> TestResult {
                 properties: serde_json::Map::new(),
                 valid_from: None,
                 valid_to: None,
-                metrics: std::collections::BTreeMap::new(),
+                metrics: BTreeMap::new(),
             },
         )
         .await?;

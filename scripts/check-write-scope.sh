@@ -38,6 +38,8 @@ is_allowed_for_role() {
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(rules_repo|guard_repo)/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(rules_repo|step02_03_db|step04_analytics_db|step27_[a-z0-9_]+)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/(axhub|analytics|documents|axguard)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/axguard/ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/tests/step27_[a-z0-9_]+\.rs$ ]] && return 0
       [[ "$file" =~ ^tests/cassettes/ ]] && return 0
       return 1
       ;;
@@ -51,6 +53,7 @@ is_allowed_for_role() {
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(studio_repo|agent_repo|im_repo|sim_repo|view_repo|step06_exec|step26_[a-z0-9_]+)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/(ops|view)/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/(xblue|xblue_graphql|axflow|axagent|published|mcp|axsim|xblueview|axops)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/tests/step26_[a-z0-9_]+\.rs$ ]] && return 0
       [[ "$file" =~ ^templates/packs/ ]] && return 0
       [[ "$file" =~ ^scripts/ops/ ]] && return 0
       return 1

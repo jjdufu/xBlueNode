@@ -21,6 +21,7 @@
 | C09 | 图算法（社区、中心性） | 03 | §03.6 | step03 “pagerank” |
 | C10 | 空间地理数据与地图态势 | 03 / 11 | §03.2（`geo_lng/geo_lat`）、[10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.4 | step03 “geo-bbox”；`e2e/xblueview.spec.ts` 地图组件渲染 |
 | C11 | 行级与子图级可见范围 | 13 | [11](../../plans/completed/v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.6 | step13 “row-policy”、“row-policy-filter” |
+| C86 | 状态驱动动态行级视野（实时指标/属性阈值扩缩容与 TTL 退场）及 `AxSim` 沙盘同源继承 | 27 | [05-STEP27](../../plans/v3-craft-and-world-runtime/world-runtime/05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) §27.3 | step27 “state-visibility-escalate”、“sim-inherits-state-visibility” |
 | C12 | 敏感信息脱敏后协作 | 13 | §13.7、§13.8 | step13 “mask-phone”、“east-no-reveal”、“pii-egress”；step04 “pii-mask” |
 | C13 | 跨部门共享访问 | 13 | §13.9.1 | step13 “cedar-deny”、“grant-active” |
 | C14 | 第三方库全量 + 增量同步（含 Schema 演进） | 02 | [03](../../plans/completed/v1-foundation-step00-14/03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md) §02.4、§02.9 | step02 “orders-rows”、“single-flight”；`tests/test_connectors_sql.py` |
@@ -77,6 +78,7 @@
 | C60 | 云端与本地小模型 `json_schema` 受限解码及确定性零温采样 | 15 | [01-STEP15](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.2～§15.3 | step15 “schema-guided-ok”、“temp-zero-enforced” |
 | C62 | 本体与认证指标优先问数路由（零裸 SQL 确定性语义编译） | 16 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.2 | step16 “ontology-metric-route”、“slot-compile-exact” |
 | C63 | 多表问数本体外键路径守卫（拦截无映射依据的自由 `JOIN`） | 16 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.3 | step16 “ungrounded-join-rejected”、“mapped-join-ok” |
+| C85 | 免连接本体查询编译层 `AxQL`（跨三层侧面自动折叠、`SUM_BY_ENTITY` 防扇出膨胀与超图检索桥接） | 27 | [05-STEP27](../../plans/v3-craft-and-world-runtime/world-runtime/05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) §27.2 | step27 “axql-cross-tier-compile”、“sum-by-entity-exact” |
 | C64 | 知识问答段落引用角标核验与零召回确定性拒答 | 16 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.4 | step16 “phantom-citation-stripped”、“empty-recall-abstain” |
 | C65 | 云/端双轨 50 例反幻觉对抗基准 100% 拦截 | 16 / 22 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.5、[08-STEP22](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/08-STEP22-V2-E2E-BENCHMARKS-AND-ACCEPTANCE.md) §22.2 | step16 “hallucination-eval-100”；step22 “dual-track-cloud_flagship-100”、“dual-track-local_7b_qwen-100” |
 | C74 | 会话级显式上下文锁定问数、五区语义驾驶舱预设与发布前全组件健康自检 | 20 | [06-STEP20](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.2～§20.4 | step20 “scoped-ask-isolated”、“view-zone-preset”、“view-publish-preflight” |

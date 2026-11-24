@@ -146,8 +146,7 @@ LANE=$(api POST /api/xblue/links "$(jq -n --arg s "$HUB_ID" --arg d "$DEPOT_ID" 
 LANE_ID=$(echo "$LANE" | jq -r '.id')
 
 # 前置条件不满足（请求调拨 999 > reserve_qty 50）应返回 422 ACTION_PRECONDITION_FAILED
-PRECOND_CODE=$(api_code POST /api/xblue/objects/Step26Hub/H-26/actions/dispatch_reserve '{"inputs":{"qty":999},"idempotency_key":"step26-precond-fail"}')
-[[ "$PRECOND_CODE" == "422" ]]
+expect_code "action-spec-precondition-422" 422 POST /api/xblue/objects/Step26Hub/H-26/actions/dispatch_reserve '{"inputs":{"qty":999},"idempotency_key":"step26-precond-fail"}'
 ACT_OK=$(api POST /api/xblue/objects/Step26Hub/H-26/actions/dispatch_reserve '{"inputs":{"qty":20},"idempotency_key":"step26-rest-1"}')
 expect_json "action-spec-precondition" "$ACT_OK" '
   .status == "APPLIED" and (.node.metrics.reserve_qty == 30) and (.node.metrics.output_rate == 120)

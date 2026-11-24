@@ -165,6 +165,71 @@ fn decode_subgraph_info(row: &sqlx::postgres::PgRow) -> SubgraphInfo {
     }
 }
 
+fn decode_published_node_type(r: &sqlx::postgres::PgRow) -> NodeTypeSpec {
+    let props: Vec<PropertySpec> = serde_json::from_value(r.get("properties")).unwrap_or_default();
+    let agg_rules: Vec<AggRuleSpec> =
+        serde_json::from_value(r.get("agg_rules")).unwrap_or_default();
+    let derived_rules: Vec<DerivedRuleSpec> =
+        serde_json::from_value(r.get("derived_rules")).unwrap_or_default();
+    let actions: Vec<axpoint_domain::studio::ActionSpec> =
+        serde_json::from_value(r.get("actions")).unwrap_or_default();
+    let raw_tier: Option<String> = r.get("semantic_layer_tier");
+    let semantic_layer_tier = raw_tier
+        .as_deref()
+        .and_then(|s| SemanticLayerTier::from_str(s).ok());
+    NodeTypeSpec {
+        id: Some(r.get("id")),
+        name: r.get("name"),
+        display_name: r.get("display_name"),
+        description: r.get("description"),
+        icon: r.get("icon"),
+        color: r.get("color"),
+        title_template: r.get("title_template"),
+        properties: props,
+        agg_rules,
+        derived_rules,
+        sync_to_knowledge: r.get("sync_to_knowledge"),
+        pos_x: r.get("pos_x"),
+        pos_y: r.get("pos_y"),
+        maturity: DesignMaturity::Confirmed,
+        semantic_layer_tier,
+        domain_group: r.get("domain_group"),
+        actions,
+    }
+}
+
+fn decode_published_edge_type(r: &sqlx::postgres::PgRow) -> EdgeTypeSpec {
+    let card_raw: String = r.get("cardinality");
+    let cardinality = Cardinality::from_str(&card_raw).unwrap_or(Cardinality::ManyToMany);
+    let properties: Vec<PropertySpec> =
+        serde_json::from_value(r.get("properties")).unwrap_or_default();
+    let spec_json: serde_json::Value = r.get("spec");
+    let derived_rules: Vec<axpoint_domain::studio::EdgeDerivedRuleSpec> = spec_json
+        .get("derived_rules")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let agg_rules: Vec<axpoint_domain::studio::EdgeAggRuleSpec> = spec_json
+        .get("agg_rules")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    EdgeTypeSpec {
+        id: Some(r.get("id")),
+        name: r.get("name"),
+        src_type_name: r.get("src_type_name"),
+        dst_type_name: r.get("dst_type_name"),
+        impact_weight: r.get("impact_weight"),
+        cardinality,
+        description: r.get("description"),
+        properties,
+        propagation: r.get("propagation"),
+        maturity: DesignMaturity::Confirmed,
+        derived_rules,
+        agg_rules,
+    }
+}
+
 pub(crate) async fn load_schema_doc_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
@@ -183,41 +248,7 @@ pub(crate) async fn load_schema_doc_tx(
     .fetch_all(&mut **tx)
     .await
     .map_err(|err| AppError::Database(format!("load xb_node_types failed: {err}")))?;
-
-    let mut node_types = Vec::with_capacity(node_rows.len());
-    for r in node_rows {
-        let props: Vec<PropertySpec> =
-            serde_json::from_value(r.get("properties")).unwrap_or_default();
-        let agg_rules: Vec<AggRuleSpec> =
-            serde_json::from_value(r.get("agg_rules")).unwrap_or_default();
-        let derived_rules: Vec<DerivedRuleSpec> =
-            serde_json::from_value(r.get("derived_rules")).unwrap_or_default();
-        let actions: Vec<axpoint_domain::studio::ActionSpec> =
-            serde_json::from_value(r.get("actions")).unwrap_or_default();
-        let raw_tier: Option<String> = r.get("semantic_layer_tier");
-        let semantic_layer_tier = raw_tier
-            .as_deref()
-            .and_then(|s| SemanticLayerTier::from_str(s).ok());
-        node_types.push(NodeTypeSpec {
-            id: Some(r.get("id")),
-            name: r.get("name"),
-            display_name: r.get("display_name"),
-            description: r.get("description"),
-            icon: r.get("icon"),
-            color: r.get("color"),
-            title_template: r.get("title_template"),
-            properties: props,
-            agg_rules,
-            derived_rules,
-            sync_to_knowledge: r.get("sync_to_knowledge"),
-            pos_x: r.get("pos_x"),
-            pos_y: r.get("pos_y"),
-            maturity: DesignMaturity::Confirmed,
-            semantic_layer_tier,
-            domain_group: r.get("domain_group"),
-            actions,
-        });
-    }
+    let node_types = node_rows.iter().map(decode_published_node_type).collect();
 
     let edge_rows = sqlx::query(
         "SELECT id, name, src_type_name, dst_type_name, impact_weight,
@@ -231,39 +262,7 @@ pub(crate) async fn load_schema_doc_tx(
     .fetch_all(&mut **tx)
     .await
     .map_err(|err| AppError::Database(format!("load xb_edge_types failed: {err}")))?;
-
-    let mut edge_types = Vec::with_capacity(edge_rows.len());
-    for r in edge_rows {
-        let card_raw: String = r.get("cardinality");
-        let cardinality = Cardinality::from_str(&card_raw).unwrap_or(Cardinality::ManyToMany);
-        let properties: Vec<PropertySpec> =
-            serde_json::from_value(r.get("properties")).unwrap_or_default();
-        let spec_json: serde_json::Value = r.get("spec");
-        let derived_rules: Vec<axpoint_domain::studio::EdgeDerivedRuleSpec> = spec_json
-            .get("derived_rules")
-            .cloned()
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
-        let agg_rules: Vec<axpoint_domain::studio::EdgeAggRuleSpec> = spec_json
-            .get("agg_rules")
-            .cloned()
-            .and_then(|v| serde_json::from_value(v).ok())
-            .unwrap_or_default();
-        edge_types.push(EdgeTypeSpec {
-            id: Some(r.get("id")),
-            name: r.get("name"),
-            src_type_name: r.get("src_type_name"),
-            dst_type_name: r.get("dst_type_name"),
-            impact_weight: r.get("impact_weight"),
-            cardinality,
-            description: r.get("description"),
-            properties,
-            propagation: r.get("propagation"),
-            maturity: DesignMaturity::Confirmed,
-            derived_rules,
-            agg_rules,
-        });
-    }
+    let edge_types = edge_rows.iter().map(decode_published_edge_type).collect();
 
     let map_rows = sqlx::query(
         "SELECT spec FROM xb_mappings

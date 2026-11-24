@@ -3162,12 +3162,7 @@ async fn certify_subgraph_handler(
     };
     let report = state
         .store
-        .certify_subgraph_runtime(
-            &principal.tenant_id,
-            &slug,
-            actor_uuid(&principal),
-            req,
-        )
+        .certify_subgraph_runtime(&principal.tenant_id, &slug, actor_uuid(&principal), req)
         .await?;
     Ok(Json(report))
 }

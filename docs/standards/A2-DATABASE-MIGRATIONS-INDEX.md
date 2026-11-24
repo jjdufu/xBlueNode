@@ -29,6 +29,7 @@
 | 0019 | `0019_im_bot_bindings.sql` | Step 21 | 企业 IM 出站长连接连接器 `ax_im_connectors`、身份映射 `ax_im_user_bindings`、一次性挑战码 `ax_im_bind_challenges`、事件去重 `ax_im_event_dedup`、`ax_conversations` IM 通道扩展及单主租约与原子绑定核销函数 | [07-STEP21](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/07-STEP21-IM-BIDIRECTIONAL-AGENT-CONNECTORS.md) §21.1 |
 | 0020 | `0020_saved_charts.sql` | Step 25 | 可复用可视化图表资产表 `xv_charts`（强制租户 RLS）与 `CHART_PUBLISH` 审计动作扩展 | [03-STEP25](../../plans/v3-craft-and-world-runtime/craft-ux/03-STEP25-CHART-STUDIO-VTABLE-PIVOT-AND-MAGNETIC-GRID.md) §25.1 |
 | 0021 | `0021_actions_and_edge_dynamics.sql` | Step 26 | `xb_node_types.actions`、`xb_edge_types.spec`、`xb_links.{metrics,row_version}`、边时序表 `xb_link_metric_series`、子图运行时认证记录 `xb_runtime_certifications` 及对象动作审计/审批约束扩展 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.1 |
+| 0022 | `0022_state_visibility_policies.sql` | Step 27 | `sec_row_policies` 状态驱动动态行级视野模式 `policy_mode` 与活跃期退场列 `ttl_timestamp_field` / `ttl_max_age_hours` | [05-STEP27](../../plans/v3-craft-and-world-runtime/world-runtime/05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) §27.1 |
 
 Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 中的时序表）。
 
@@ -81,7 +82,8 @@ Step 01 与 Step 06 不含迁移（Step 06 使用 0006 中的映射表与 0004 �
 | `xv_widgets`、`xv_assets`、`xv_floor_placements`、`xv_scene3d_bindings` | 0011 | — | 11 | 是 |
 | `xv_charts` | 0020 | — | 25 | 是 |
 | `xv_export_templates`、`xv_export_jobs`、`xv_share_links` | 0012 | — | 12 | 是 |
-| `sec_departments`、`sec_user_attributes`、`sec_sessions`、`sec_policies`、`sec_row_policies`、`sec_row_policy_defaults`、`sec_column_policies`、`sec_grants` | 0013 | — | 13 | 是 |
+| `sec_departments`、`sec_user_attributes`、`sec_sessions`、`sec_policies`、`sec_row_policy_defaults`、`sec_column_policies`、`sec_grants` | 0013 | — | 13 | 是 |
+| `sec_row_policies` | 0013 | 0022（`policy_mode`、`ttl_timestamp_field`、`ttl_max_age_hours`） | 13 / 27 | 是 |
 | `sec_audit_chain_heads` | 0013 | 0014（锚点） | 13 / 14 | 是 |
 | `sec_login_states` | 0013 | — | 13 | 否（登录前无租户上下文；一次性、10 分钟过期） |
 | `ax_work_items`、`ax_work_item_events`、`ax_template_installs` | 0014 | — | 14 | 是 |

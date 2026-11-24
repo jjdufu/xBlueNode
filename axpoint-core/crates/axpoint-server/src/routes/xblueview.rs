@@ -26,9 +26,9 @@ use axpoint_domain::view::{
     FloorPlacementRecord, InvokeWidgetActionRequest, InvokeWidgetActionResponse,
     PinChartToDashboardRequest, PinChartToDashboardResponse, PutFloorPlacementsRequest,
     PutScene3dBindingsRequest, SaveChartRequest, SavedChartRecord, Scene3dBindingRecord,
-    UpdateDashboardRequest, UpdateLayoutRequest, UpdateSavedChartRequest,
-    UpdateWidgetRecordParams, UpdateWidgetRequest, ViewEvent, WidgetDataRequest,
-    WidgetDataResponse, WidgetPreviewRequest, WidgetRecord,
+    UpdateDashboardRequest, UpdateLayoutRequest, UpdateSavedChartRequest, UpdateWidgetRecordParams,
+    UpdateWidgetRequest, ViewEvent, WidgetDataRequest, WidgetDataResponse, WidgetPreviewRequest,
+    WidgetRecord,
 };
 use axpoint_security::AuthPrincipal;
 use axpoint_server::view::action::invoke_widget_action;

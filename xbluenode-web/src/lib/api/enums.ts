@@ -408,3 +408,5 @@ export type PropagationPathKind =
   | "VERTEX_TO_EDGE"
   | "EDGE_TO_VERTEX"
   | "EDGE_TO_EDGE";
+
+export type RowPolicyMode = "STATIC_ATTR" | "STATE_DRIVEN";

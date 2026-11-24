@@ -484,7 +484,7 @@ async fn verify_bulk_bbox_and_search(store: &PgStore, tenant: &str, w1_id: Uuid)
                         properties: serde_json::Map::new(),
                         valid_from: None,
                         valid_to: None,
-                        metrics: std::collections::BTreeMap::new(),
+                        metrics: BTreeMap::new(),
                     },
                     BulkLinkInput {
                         link_type: String::from("SUPPLIES"),
@@ -497,7 +497,7 @@ async fn verify_bulk_bbox_and_search(store: &PgStore, tenant: &str, w1_id: Uuid)
                         properties: serde_json::Map::new(),
                         valid_from: None,
                         valid_to: None,
-                        metrics: std::collections::BTreeMap::new(),
+                        metrics: BTreeMap::new(),
                     },
                 ],
             },
@@ -772,7 +772,7 @@ async fn setup_supply_chain_trio(
                     properties: serde_json::Map::new(),
                     valid_from: None,
                     valid_to: None,
-                    metrics: std::collections::BTreeMap::new(),
+                    metrics: BTreeMap::new(),
                 },
             )
             .await?;
