@@ -6,6 +6,8 @@ declare const process: {
 
 const isCI = Boolean(process.env.CI);
 const isLive = process.env.AXPOINT_E2E_LIVE === "1";
+const previewPort = process.env.PLAYWRIGHT_PORT ?? "4173";
+const previewUrl = `http://127.0.0.1:${previewPort}`;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -15,7 +17,7 @@ export default defineConfig({
   workers: 1,
   reporter: "list",
   use: {
-    baseURL: "http://127.0.0.1:4173",
+    baseURL: previewUrl,
     locale: "zh-CN",
     trace: "on-first-retry",
   },
@@ -27,8 +29,8 @@ export default defineConfig({
   ],
   webServer: {
     command:
-      'VITE_DEV_TOKEN="${VITE_DEV_TOKEN:-${AXPOINT_DEV_TOKEN:-dev-smoke-token-00000000000000000000}}" npm run build && npx vite preview --host 127.0.0.1 --port 4173 --strictPort',
-    url: "http://127.0.0.1:4173",
+      `VITE_DEV_TOKEN="\${VITE_DEV_TOKEN:-\${AXPOINT_DEV_TOKEN:-dev-smoke-token-00000000000000000000}}" npm run build && npx vite preview --host 127.0.0.1 --port ${previewPort} --strictPort`,
+    url: previewUrl,
     reuseExistingServer: !isCI && !isLive,
     timeout: 120_000,
   },

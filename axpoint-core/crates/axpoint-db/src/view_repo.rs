@@ -259,6 +259,7 @@ fn parse_action_source_kind(raw: &str) -> Result<ActionSourceKind, AppError> {
         "AGENT" => Ok(ActionSourceKind::Agent),
         "RULE" => Ok(ActionSourceKind::Rule),
         "VIEW" => Ok(ActionSourceKind::View),
+        "OBJECT_ACTION" => Ok(ActionSourceKind::ObjectAction),
         _ => Err(AppError::Database(format!(
             "unknown ax_action_log.source_kind: {raw}"
         ))),
@@ -272,6 +273,7 @@ fn parse_action_kind(raw: &str) -> Result<ActionKind, AppError> {
         "HTTP" => Ok(ActionKind::Http),
         "NOTIFY" => Ok(ActionKind::Notify),
         "WORK_ITEM" => Ok(ActionKind::WorkItem),
+        "OBJECT_ACTION" => Ok(ActionKind::ObjectAction),
         _ => Err(AppError::Database(format!(
             "unknown ax_action_log.action_kind: {raw}"
         ))),

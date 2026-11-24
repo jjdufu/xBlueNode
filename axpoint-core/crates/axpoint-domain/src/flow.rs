@@ -514,6 +514,9 @@ pub enum ApprovalSourceKind {
     /// `AxGuard` cross-department access grant approval gate (Step 13).
     #[serde(rename = "GRANT")]
     Grant,
+    /// `xBlueStudio` `ActionSpec` invocation requiring human approval (`04-STEP26` §26.2).
+    #[serde(rename = "OBJECT_ACTION")]
+    ObjectAction,
 }
 
 /// Lifecycle status of an `ax_approvals` row.
@@ -655,6 +658,9 @@ pub enum ActionSourceKind {
     /// Emitted by an `xBlueView` action widget.
     #[serde(rename = "VIEW")]
     View,
+    /// Emitted by a published `NodeTypeSpec` `ActionSpec` invocation (`04-STEP26` §26.2).
+    #[serde(rename = "OBJECT_ACTION")]
+    ObjectAction,
 }
 
 /// Writeback action category in `ax_action_log`.
@@ -675,6 +681,9 @@ pub enum ActionKind {
     /// Operational work item creation (Step 14; rejected with `UNSUPPORTED_FORMAT` before Step 14).
     #[serde(rename = "WORK_ITEM")]
     WorkItem,
+    /// Multi-field/neighbor transactional `ActionSpec` mutation (`04-STEP26` §26.2).
+    #[serde(rename = "OBJECT_ACTION")]
+    ObjectAction,
 }
 
 /// Execution outcome status in `ax_action_log`.

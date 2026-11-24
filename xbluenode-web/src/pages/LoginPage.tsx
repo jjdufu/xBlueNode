@@ -251,7 +251,7 @@ export function LoginPage() {
           <div className="flex items-center justify-between border-b border-border pb-3.5">
             <h1 className="text-base font-semibold tracking-tight flex items-center gap-2">
               <ShieldCheck className="h-4 w-4 text-xblue shrink-0" />
-              {tx("AxGuard · 统一身份认证", "AxGuard · Sign In")}
+              {tx("登录", "Sign In")}
             </h1>
           </div>
 

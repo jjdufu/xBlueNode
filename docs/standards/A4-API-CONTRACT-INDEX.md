@@ -55,7 +55,7 @@
 | :--- | :--- | :--- |
 | `GET /nodes`、`POST /nodes`、`POST /nodes/bulk`、`GET /nodes/{id}`、`PATCH /nodes/{id}`、`DELETE /nodes/{id}`、`GET /nodes/search` | `DATA_READ` / `STUDIO_EDIT` | [04](../../plans/completed/v1-foundation-step00-14/04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md) §03.7 |
 | `GET /nodes/{id}/documents`、`GET /nodes/{id}/metrics/{metric}` | `DATA_READ` | 同上 |
-| `GET /links`、`POST /links`、`DELETE /links/{id}` | `DATA_READ` / `STUDIO_EDIT` | 同上 |
+| `GET /links`、`POST /links`、`DELETE /links/{id}`、`POST /links/metrics/write`、`GET /links/{id}/explain/{metric}` | `DATA_READ` / `STUDIO_EDIT` / `DATA_SYNC` | 同上、[04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.3 |
 | `POST /metrics/write` | `DATA_SYNC` | 同上 |
 | `POST /metrics/window`、`GET /metrics/catalog` | `DATA_READ` | 同上 |
 | `GET /graph/neighbors`、`GET /graph/path`、`GET /graph/subgraph` | `DATA_READ` | 同上 |
@@ -64,13 +64,13 @@
 | `GET /subgraphs`、`POST /subgraphs`、`PATCH /subgraphs/{slug}`、`DELETE /subgraphs/{slug}` | `DATA_READ` / `STUDIO_EDIT` | [06](../../plans/completed/v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §05.7 |
 | `POST /subgraphs/{slug}/merge-preview`、`POST /subgraphs/{slug}/merge`、`POST /subgraphs/{slug}/dry-run-materialize`、`POST /subgraphs/{slug}/reset-nodes` | `STUDIO_EDIT` / `STUDIO_PUBLISH` / `DATA_SYNC` | §05.7、[03](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.4 |
 | `GET /subgraphs/{slug}/lineage/{node_type}`、`GET /subgraphs/{slug}/spec-doc` | `DATA_READ` | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.4、§18.5 |
-| `POST /subgraphs/from-template`、`POST /subgraphs/{slug}/package-agent`、`GET /subgraphs/{slug}/consumption` | `STUDIO_EDIT` / `AGENT_EDIT` / `DATA_READ` | [05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.2、§19.3 |
+| `POST /subgraphs/from-template`、`POST /subgraphs/{slug}/package-agent`、`GET /subgraphs/{slug}/consumption`、`POST /subgraphs/{slug}/certify` | `STUDIO_EDIT` / `AGENT_EDIT` / `DATA_READ` | [05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.2、§19.3；[04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.4 |
 | `GET /schema`、`POST /schema`、`PUT /schema`、`POST /schema/validate` | `DATA_READ` / `STUDIO_PUBLISH` / `STUDIO_EDIT` | §05.7 |
 | `GET /schema/versions`、`GET /schema/versions/{v}`、`GET /schema/versions/{a}/diff/{b}`、`POST /schema/versions/{v}/restore` | `DATA_READ` / `STUDIO_PUBLISH` | 同上 |
 | `GET /drafts`、`POST /drafts`、`GET /drafts/{id}`、`PUT /drafts/{id}`、`POST /drafts/{id}/discard`、`POST /drafts/ai`、`POST /drafts/{id}/publish` | `STUDIO_EDIT` / `STUDIO_PUBLISH` | 同上 |
 | `POST /drafts/{id}/copilot`、`GET /drafts/{id}/snapshots`、`POST /drafts/{id}/snapshots/{snap_id}/restore`、`POST /drafts/{id}/confirm-proposals` | `DATA_READ` / `STUDIO_EDIT` | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.3 |
 | `GET /mappings`、`GET /mappings/{id}/runs`、`POST /mappings/{id}/run`、`POST /mappings/{id}/preview` | `DATA_READ` / `STUDIO_EDIT` | 同上 |
-| `GET /objects`、`GET /objects/{type_name}`、`GET /objects/{type_name}/{key}` | `DATA_READ` | §05.6、§05.7 |
+| `GET /objects`、`GET /objects/{type_name}`、`GET /objects/{type_name}/{key}`、`POST /objects/{type_name}/{key}/actions/{action_name}` | `DATA_READ` / `FLOW_RUN` | §05.6、§05.7、[04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.2 |
 | `POST /graphql`、`GET /graphql/sdl` | `DATA_READ` | §05.6、§05.7 |
 | `POST /expr/validate`、`POST /expr/evaluate`、`POST /aggregate/recompute`、`GET /nodes/{id}/explain/{metric}` | `STUDIO_EDIT` / `DATA_READ` | [06](../../plans/completed/v1-foundation-step00-14/06-STEP05-06-XBLUESTUDIO-MODELING-AND-ROLLUP.md) §06.6 |
 | `GET /knowledge/node-candidates`、`POST /knowledge/node-candidates/{entity_id}/accept` | `STUDIO_EDIT` | 同上 |
@@ -81,6 +81,7 @@
 | :--- | :--- | :--- |
 | `GET /catalog` | `DATA_READ` | [05](../../plans/completed/v1-foundation-step00-14/05-STEP04-AXANALYTICS-OLAP-AND-NL2SQL.md) §04.9 |
 | `POST /sql/run`（`{sql, params?, max_rows?, timeout_ms?, allow_live?, reveal_pii?}`）、`POST /sql/explain` | `DATA_READ` | §04.3；`reveal_pii` 见 [11](../../plans/completed/v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.7 |
+| `POST /axql/compile`、`POST /axql/run` | `DATA_READ` | [05-STEP27](../../plans/v3-craft-and-world-runtime/world-runtime/05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) §27.2 |
 | `POST /pivot` | `DATA_READ` | §04.4 |
 | `GET /metrics`、`POST /metrics`、`GET /metrics/{name}`、`PATCH /metrics/{name}`、`DELETE /metrics/{name}` | `DATA_READ` / `STUDIO_EDIT` | §04.5 |
 | `POST /metrics/{name}/query`、`POST /metrics/query-multi` | `DATA_READ` | 同上 |
@@ -151,6 +152,7 @@
 | `POST /dashboards/ai-generate`、`POST /dashboards/ai-draft` | `VIEW_EDIT` | §11.6、[05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.3.2 |
 | `POST /dashboards/{id}/publish`、`POST /dashboards/{id}/duplicate`、`PUT /dashboards/{id}/layout`、`POST /dashboards/{id}/apply-zone-preset`、`POST /dashboards/{id}/preflight` | `VIEW_EDIT` / `VIEW_SHARE` | §11.7、[06-STEP20](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.3 |
 | `POST /dashboards/{id}/widgets`、`PUT /widgets/{id}`、`DELETE /widgets/{id}` | `VIEW_EDIT` | 同上 |
+| `GET /charts`、`POST /charts`、`GET /charts/{id}`、`PUT /charts/{id}`、`DELETE /charts/{id}`、`POST /charts/{id}/pin` | `DATA_READ` / `VIEW_EDIT` | [03-STEP25](../../plans/v3-craft-and-world-runtime/craft-ux/03-STEP25-CHART-STUDIO-VTABLE-PIVOT-AND-MAGNETIC-GRID.md) §25.2 |
 | `POST /widgets/{id}/data`、`POST /widgets/preview` | `DATA_READ` | §11.2 |
 | `POST /widgets/{id}/invoke` | `FLOW_RUN` | §11.6 |
 | `GET /dashboards/{id}/stream`（SSE） | `DATA_READ` | §11.5 |
@@ -168,7 +170,7 @@
 | `GET /roles`、`POST /roles`、`PATCH /roles/{id}`、`DELETE /roles/{id}` | `GUARD_ADMIN` | 同上 |
 | `GET /departments`、`PUT /departments/{dept_id}`、`DELETE /departments/{dept_id}` | `GUARD_ADMIN` | 同上 |
 | `GET /policies`、`PUT /policies/{name}`、`DELETE /policies/{name}`、`POST /policies/validate`、`POST /policies/simulate` | `GUARD_ADMIN` | §13.6.1 |
-| `GET /row-policies`、`POST /row-policies`、`PUT /row-policies/{id}`、`DELETE /row-policies/{id}`、`GET /row-policy-defaults`、`PUT /row-policy-defaults`、`POST /row-policies/preview` | `GUARD_ADMIN` | §13.6.2 |
+| `GET /row-policies`、`POST /row-policies`、`PUT /row-policies/{id}`、`DELETE /row-policies/{id}`、`GET /row-policy-defaults`、`PUT /row-policy-defaults`、`POST /row-policies/preview`、`POST /row-policies/simulate-state` | `GUARD_ADMIN` | §13.6.2、[05-STEP27](../../plans/v3-craft-and-world-runtime/world-runtime/05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) §27.3 |
 | `GET /column-policies`、`PUT /column-policies`、`DELETE /column-policies/{id}` | `GUARD_ADMIN` | §13.7 |
 | `GET /grants`、`POST /grants`、`DELETE /grants/{id}` | `DATA_READ` / `GUARD_ADMIN` | §13.9.1 |
 | `GET /audit`、`GET /audit/export.csv`、`GET /audit/verify`、`GET /audit/stats` | `GUARD_ADMIN` | §13.9.2 |

@@ -60,27 +60,22 @@ Sidecar（`axpoint-parser`，端口 `8001`，只在内部网络暴露）：`/hea
 
 ## 3. 页面注册表（前端唯一来源）
 
-`xbluenode-web/src/modules/registry.ts` 按本表生成侧栏与路由；`App.tsx` 使用 `react-router` 的 `createBrowserRouter` 生成路由树。
+`xbluenode-web/src/modules/registry.ts` 按本表生成 8 个高频业务工作域侧栏 + 底部折叠系统治理入口、兼容重定向与公开路由；`App.tsx` 使用 `react-router` 的 `createBrowserRouter` 生成路由树并挂载全局 `⌘K / Ctrl+K` 命令直达面板（Step 23）。侧栏与内页一级标题遵循无品牌前缀单语纯净规范。
 
-| key | 页面文件 | 路由 | 侧栏标签 | 所属 Step |
-| :--- | :--- | :--- | :--- | :--- |
-| `dashboard` | `DashboardPage.tsx` | `/` | 系统概览 | 仓库已有 |
-| `axhub` | `AxHubPage.tsx` | `/hub` | AxHub · 数据接入 | Step 02 |
-| `axingest` | `AxIngestPage.tsx` | `/ingest` | AxIngest · 知识入库 | 仓库已有 |
-| `analytics` | `AnalyticsStudioPage.tsx` | `/analytics` | AxAnalytics · 分析制表 | Step 04 |
-| `axquery` | `AxQueryPage.tsx` | `/query` | AxQuery · 智能问答 | 仓库已有，Step 04 / 09 扩展 |
-| `xbluegraph` | `XBlueGraphPage.tsx` | `/graph` | xBlueGraph · 图浏览 | 仓库已有，Step 03 / 11 扩展 |
-| `xbluestudio` | `XBlueStudioPage.tsx` | `/studio` | xBlueStudio · 节点建模 | 仓库已有，Step 05 扩展 |
-| `axflow` | `AxFlowPage.tsx` | `/flow` | AxFlow · 编排 | 仓库已有，Step 07 扩展 |
-| `axalerts` | `AxAlertsPage.tsx` | `/alerts` | AxFlow · 运营告警 | Step 08 |
-| `axagent` | `AxAgentPage.tsx` | `/agents` | AxAgent · 智能体 | Step 09 |
-| `axsim` | `AxSimPage.tsx` | `/sim` | AxSim · 因果推演 | 仓库已有，Step 10 扩展 |
-| `xblueview` | `XBlueViewPage.tsx` | `/view` | xBlueView · 孪生驾驶舱 | Step 11 |
-| `axguard` | `AxGuardPage.tsx` | `/guard` | AxGuard · 权限与审计 | Step 13 |
-| `axops` | `AxOpsPage.tsx` | `/ops` | AxOps · 运维与模板 | Step 14 |
-| —（公开，无侧栏） | `LoginPage.tsx` | `/login` | — | Step 00 |
-| —（公开，无侧栏） | `SharePage.tsx` | `/share/:token` | — | Step 12 |
-| —（公开，无侧栏） | `AgentEmbedPage.tsx` | `/share/agent/:token` | — | Step 09 |
+| key | 页面文件 | 主路由 | 兼容旧路由映射 | 中文侧栏与 H1 | 英文侧栏与 H1 | 所属 Step |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `dashboard` | `DashboardPage.tsx` | `/` | — | 概览 | Overview | 仓库已有 / Step 19 / Step 23 |
+| `axhub` | `AxHubPage.tsx` | `/hub` | `/ingest` → `/hub?tab=knowledge` | 数据与知识 | Data & Knowledge | Step 02 / Step 23 |
+| `axanalytics` | `AnalyticsStudioPage.tsx` | `/analytics` | `/query` → `/analytics?tab=ask` | 探索与制图 | Explore & Charts | Step 04 / Step 23 / Step 25 |
+| `xbluestudio` | `XBlueStudioPage.tsx` | `/studio` | `/graph` → `/studio?tab=explorer` | 本体工作室 | Ontology Studio | Step 05 / Step 18 / Step 23 |
+| `axflow` | `AxFlowPage.tsx` | `/flow` | `/alerts` → `/flow?tab=alerts` | 编排与告警 | Automation & Alerts | Step 07 / Step 08 / Step 23 |
+| `axagent` | `AxAgentPage.tsx` | `/agents` | — | 智能体中心 | Agents & APIs | Step 09 / Step 21 / Step 23 |
+| `axsim` | `AxSimPage.tsx` | `/sim` | — | 推演沙盘 | Simulation | Step 10 / Step 20 / Step 23 |
+| `xblueview` | `XBlueViewPage.tsx` | `/view`（`/view/:slug`） | — | 孪生看板 | Twin Cockpits | Step 11 / Step 20 / Step 23 |
+| `governance` | `GovernancePage.tsx`（含 `AxGuardPage` / `AxOpsPage`） | `/governance` | 保留 `/guard`、`/ops` 直接渲染 | 系统治理 | Governance & Ops | Step 13 / Step 14 / Step 23 |
+| —（公开，无侧栏） | `LoginPage.tsx` | `/login` | — | 登录 | Sign In | Step 00 / Step 13 / Step 23 |
+| —（公开，无侧栏） | `SharePage.tsx` | `/share/:token` | — | 安全分享 | Secure Share | Step 12 |
+| —（公开，无侧栏） | `AgentEmbedPage.tsx` | `/share/agent/:token` | — | 智能对话 | Assistant | Step 09 |
 
 ---
 
@@ -123,7 +118,7 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `Sensitivity` | `PUBLIC` `INTERNAL` `CONFIDENTIAL` `SECRET` | 资源 `sensitivity`、用户 `clearance` |
 | `Permission` | `DATA_READ` `DATA_SYNC` `DATA_ADMIN` `STUDIO_EDIT` `STUDIO_PUBLISH` `FLOW_EDIT` `FLOW_RUN` `FLOW_PUBLISH` `APPROVAL_DECIDE` `RULE_EDIT` `ALERT_ACK` `AGENT_EDIT` `AGENT_RUN` `SIM_RUN` `SIM_APPLY` `VIEW_EDIT` `VIEW_SHARE` `EXPORT_DATA` `PII_RAW_READ` `GUARD_ADMIN` `OPS_ADMIN` | `sec_roles.permissions` |
 | `BuiltinRole` | `ADMIN`（全部权限）`ANALYST` `OPERATOR` `VIEWER` | `sec_roles.name` |
-| `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` `BUILDER_MCP_MUTATE` `TRIAL_TEMPLATE_CLONE` `STUDIO_SNAPSHOT_RESTORE` `IM_ACCOUNT_BIND` | `sec_audit_logs.action` |
+| `AuditAction` | `LOGIN` `LOGOUT` `TOKEN_ISSUE` `TOKEN_REVOKE` `QUERY_SQL` `ASK_DATA` `RAG_ASK` `DATA_SYNC` `FILE_UPLOAD` `SCHEMA_PUBLISH` `FLOW_RUN` `APPROVAL_DECIDE` `MCP_CALL` `AGENT_CHAT` `SIM_APPLY` `EXPORT_FILE` `SHARE_CREATE` `SHARE_ACCESS` `POLICY_CHANGE` `BACKUP_RUN` `TEMPLATE_INSTALL` `BUILDER_MCP_MUTATE` `TRIAL_TEMPLATE_CLONE` `STUDIO_SNAPSHOT_RESTORE` `IM_ACCOUNT_BIND` `CHART_PUBLISH` `OBJECT_ACTION_INVOKE` `TRIAL_TICK_CERTIFY` | `sec_audit_logs.action` |
 | `StructuredOutputMode` | `NONE` `JSON_OBJECT` `JSON_SCHEMA` | `ax_llm_providers.structured_mode`（Step 15） |
 | `GroundingMode` | `SEMANTIC_METRIC` `DOMAIN_OBJECT` `GUARDED_SQL` `GROUNDED_DOC` `ABSTAINED` `CLARIFICATION` | `an_ask_turns.grounding_mode`（Step 16） |
 | `TokenProfile` | `GENERAL` `BUILDER` | `sec_api_tokens.token_profile`（Step 17） |
@@ -135,6 +130,12 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `ImConnectorStatus` | `DISCONNECTED` `CONNECTING` `CONNECTED` `DEGRADED` `ERROR` | `ax_im_connectors.status`（Step 21） |
 | `CockpitZoneLayout` | `FREE_GRID` `STANDARD_FIVE_ZONE` | `xv_dashboards.canvas.zone_layout`（Step 20） |
 | `SemanticZoneKind` | `CONTROL` `KPI` `SCENE` `INSIGHT` `DECISION` | `xv_widgets.options.semantic_zone`（Step 20） |
+| `StudioCanvasViewMode` | `ONTOLOGY_TOPOLOGY` `MAPPING_PIPELINE` | `xBlueStudio` 画布视图模式（Step 24） |
+| `GridCompactMode` | `VERTICAL_COMPACT` `FREE_FLOAT` | `xv_dashboards.canvas.compact_mode`（Step 25） |
+| `ActionSideEffectTier` | `SELF_ONLY` `RELATED_NODES` `EXTERNAL_EFFECT` | `NodeTypeSpec.actions[].side_effect_tier`（Step 26） |
+| `RuntimeCertLevel` | `L0_INVALID` `L1_CONFIGURED` `L2_RUNNABLE` `L3_VERIFIED` `L4_CERTIFIED` | `xb_runtime_certifications.cert_level`（Step 26） |
+| `PropagationPathKind` | `VERTEX_TO_VERTEX` `VERTEX_TO_EDGE` `EDGE_TO_VERTEX` `EDGE_TO_EDGE` | 四路径边动力学拓扑传播（Step 26） |
+| `RowPolicyMode` | `STATIC_ATTR` `STATE_DRIVEN` | `sec_row_policies.policy_mode`（Step 27） |
 
 ---
 
@@ -150,14 +151,14 @@ Rust 侧 `axpoint-domain::AppError` 枚举与 HTTP 状态码映射：
 
 | `AppError` 变体 | HTTP | 典型 `error_code` |
 | :--- | :--- | :--- |
-| `BadRequest(code, msg)` | 400 | `INVALID_ARGUMENT` `SQL_REJECTED` `JOIN_PATH_UNGROUNDED` `CYCLE_DETECTED` `DIV_BY_ZERO` `LIMIT_OUT_OF_RANGE` `SCHEMA_INVALID` `UNCONFIRMED_PROPOSALS_REMAIN` `SIM_DIVERGENT` `BUILDER_SCOPE_FORBIDDEN` `DEV_SANDBOX_REQUIRED` |
+| `BadRequest(code, msg)` | 400 | `INVALID_ARGUMENT` `SQL_REJECTED` `JOIN_PATH_UNGROUNDED` `AXQL_UNMAPPED_SYMBOL` `CYCLE_DETECTED` `DIV_BY_ZERO` `LIMIT_OUT_OF_RANGE` `SCHEMA_INVALID` `UNCONFIRMED_PROPOSALS_REMAIN` `DERIVED_METRIC_WRITE_FORBIDDEN` `SIM_DIVERGENT` `BUILDER_SCOPE_FORBIDDEN` `DEV_SANDBOX_REQUIRED` |
 | `Unauthorized(code)` | 401 | `TOKEN_MISSING` `TOKEN_INVALID` `TOKEN_EXPIRED` `SIGNATURE_INVALID` |
 | `Forbidden(code)` | 403 | `PERMISSION_DENIED` `POLICY_DENIED` `BUILDER_TOKEN_PROD_FORBIDDEN` |
 | `NotFound(code)` | 404 | `ROUTE_NOT_FOUND` `DATASET_NOT_FOUND` `NODE_NOT_FOUND` `FLOW_NOT_FOUND` `JOB_NOT_FOUND` `SHARE_NOT_FOUND`（跨租户访问一律返回 404） |
 | `Conflict(code)` | 409 | `NAME_TAKEN` `VERSION_CONFLICT` `SCHEMA_BREAKING_CHANGE` `IDEMPOTENCY_REPLAY` |
 | `PayloadTooLarge(code)` | 413 | `UPLOAD_TOO_LARGE` `ARCHIVE_BOMB` |
 | `Unsupported(code)` | 415 | `UNSUPPORTED_FORMAT` `UNSUPPORTED_EARLY_OFFICE_FORMAT` |
-| `Unprocessable(code, msg)` / `UnprocessableDetails(code, msg, details)` | 422 | `PARSE_FAILED` `XML_UNSAFE` `PII_POLICY_VIOLATION` `STRUCTURED_OUTPUT_INVALID` `VIEW_PREFLIGHT_BLOCKED`（携带结构化 `details`） |
+| `Unprocessable(code, msg)` / `UnprocessableDetails(code, msg, details)` | 422 | `PARSE_FAILED` `XML_UNSAFE` `PII_POLICY_VIOLATION` `STRUCTURED_OUTPUT_INVALID` `VIEW_PREFLIGHT_BLOCKED` `ACTION_PRECONDITION_FAILED`（携带结构化 `details`） |
 | `RateLimited` | 429 | `RATE_LIMITED` |
 | `Config(msg)` / `Database(msg)` | 500 | `INTERNAL` |
 | `Llm(msg)` / `Parser(msg)` / `Upstream(msg)` | 502 | `UPSTREAM_LLM` `UPSTREAM_PARSER` `UPSTREAM_CONNECTOR` |

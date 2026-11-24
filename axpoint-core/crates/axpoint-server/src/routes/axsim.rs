@@ -13,7 +13,7 @@ use axpoint_domain::flow::{ApprovalSourceKind, ApprovalStatus, StartRunParams};
 use axpoint_domain::graph::NodeSearchQuery;
 use axpoint_domain::platform::{AuditRecord, BoxFuture, OutboxEvent, OutboxSubscriber};
 use axpoint_domain::ports::{
-    FlowRepository, GraphStorePort, SimExecutionPort, SimPreflightPort, SimRepository,
+    FlowRepository, GraphStorePort, SimExecutionPort, SimRepository, SimVisibilityPort as _,
 };
 use axpoint_domain::sim::{
     CheckpointsResponse, CompareKpiCell, CompareKpiRow, CompareNodeCell, CompareNodeRow,
@@ -145,8 +145,8 @@ async fn preflight_sandbox_handler(
         let trimmed = req.subgraph_slug.trim();
         if trimmed.is_empty() { "main" } else { trimmed }
     };
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
     if slug != "main" {
-        let client_ip = crate::routes::auth::extract_client_ip(&headers);
         let sub_action = if principal.has(Permission::DataRead) {
             Permission::DataRead
         } else {
@@ -163,21 +163,46 @@ async fn preflight_sandbox_handler(
         )
         .await?;
     }
-    let slice =
-        SimPreflightPort::preview_scope_slice(&state.store, &principal.tenant_id, slug, &req.scope)
-            .await?;
+    let policy_ctx = axpoint_server::policy::build_policy_context_for_subgraph(
+        &state.store,
+        &state.cedar,
+        &principal,
+        slug,
+        false,
+        &client_ip,
+    )
+    .await?;
+    let slice = state
+        .store
+        .preview_scope_slice_governed(&principal.tenant_id, slug, &req.scope, &policy_ctx)
+        .await?;
     Ok(Json(evaluate_scope_preflight(&req.scope, &slice)))
 }
 
 async fn create_sandbox_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<CreateAxSandboxRequest>,
 ) -> Result<Json<AxSandboxRecord>, HttpError> {
     principal.require(Permission::SimRun)?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let policy_ctx = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
     let created = state
         .store
-        .create_sandbox(&principal.tenant_id, Some(principal.user_id), req)
+        .create_sandbox_governed(
+            &principal.tenant_id,
+            Some(principal.user_id),
+            req,
+            &policy_ctx,
+        )
         .await?;
     Ok(Json(created))
 }
@@ -211,13 +236,23 @@ async fn delete_sandbox_handler(
 
 async fn get_sandbox_graph_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiPath(id): ApiPath<Uuid>,
 ) -> Result<Json<SandboxGraphResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let policy_ctx = axpoint_server::policy::build_policy_context_for_store(
+        &state.store,
+        &state.cedar,
+        &principal,
+        false,
+        &client_ip,
+    )
+    .await?;
     let graph = state
         .store
-        .get_sandbox_graph(&principal.tenant_id, id)
+        .get_sandbox_graph_governed(&principal.tenant_id, id, &policy_ctx)
         .await?;
     Ok(Json(graph))
 }

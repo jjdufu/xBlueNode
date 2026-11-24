@@ -165,6 +165,71 @@ fn decode_subgraph_info(row: &sqlx::postgres::PgRow) -> SubgraphInfo {
     }
 }
 
+fn decode_published_node_type(r: &sqlx::postgres::PgRow) -> NodeTypeSpec {
+    let props: Vec<PropertySpec> = serde_json::from_value(r.get("properties")).unwrap_or_default();
+    let agg_rules: Vec<AggRuleSpec> =
+        serde_json::from_value(r.get("agg_rules")).unwrap_or_default();
+    let derived_rules: Vec<DerivedRuleSpec> =
+        serde_json::from_value(r.get("derived_rules")).unwrap_or_default();
+    let actions: Vec<axpoint_domain::studio::ActionSpec> =
+        serde_json::from_value(r.get("actions")).unwrap_or_default();
+    let raw_tier: Option<String> = r.get("semantic_layer_tier");
+    let semantic_layer_tier = raw_tier
+        .as_deref()
+        .and_then(|s| SemanticLayerTier::from_str(s).ok());
+    NodeTypeSpec {
+        id: Some(r.get("id")),
+        name: r.get("name"),
+        display_name: r.get("display_name"),
+        description: r.get("description"),
+        icon: r.get("icon"),
+        color: r.get("color"),
+        title_template: r.get("title_template"),
+        properties: props,
+        agg_rules,
+        derived_rules,
+        sync_to_knowledge: r.get("sync_to_knowledge"),
+        pos_x: r.get("pos_x"),
+        pos_y: r.get("pos_y"),
+        maturity: DesignMaturity::Confirmed,
+        semantic_layer_tier,
+        domain_group: r.get("domain_group"),
+        actions,
+    }
+}
+
+fn decode_published_edge_type(r: &sqlx::postgres::PgRow) -> EdgeTypeSpec {
+    let card_raw: String = r.get("cardinality");
+    let cardinality = Cardinality::from_str(&card_raw).unwrap_or(Cardinality::ManyToMany);
+    let properties: Vec<PropertySpec> =
+        serde_json::from_value(r.get("properties")).unwrap_or_default();
+    let spec_json: serde_json::Value = r.get("spec");
+    let derived_rules: Vec<axpoint_domain::studio::EdgeDerivedRuleSpec> = spec_json
+        .get("derived_rules")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    let agg_rules: Vec<axpoint_domain::studio::EdgeAggRuleSpec> = spec_json
+        .get("agg_rules")
+        .cloned()
+        .and_then(|v| serde_json::from_value(v).ok())
+        .unwrap_or_default();
+    EdgeTypeSpec {
+        id: Some(r.get("id")),
+        name: r.get("name"),
+        src_type_name: r.get("src_type_name"),
+        dst_type_name: r.get("dst_type_name"),
+        impact_weight: r.get("impact_weight"),
+        cardinality,
+        description: r.get("description"),
+        properties,
+        propagation: r.get("propagation"),
+        maturity: DesignMaturity::Confirmed,
+        derived_rules,
+        agg_rules,
+    }
+}
+
 pub(crate) async fn load_schema_doc_tx(
     tx: &mut Transaction<'_, Postgres>,
     tenant_id: &str,
@@ -173,7 +238,7 @@ pub(crate) async fn load_schema_doc_tx(
     let node_rows = sqlx::query(
         "SELECT id, name, display_name, description, icon, color, title_template,
                 properties, agg_rules, derived_rules, sync_to_knowledge, pos_x, pos_y,
-                semantic_layer_tier, domain_group
+                semantic_layer_tier, domain_group, actions
            FROM xb_node_types
           WHERE tenant_id = $1 AND subgraph_slug = $2
           ORDER BY created_at ASC, name ASC",
@@ -183,42 +248,11 @@ pub(crate) async fn load_schema_doc_tx(
     .fetch_all(&mut **tx)
     .await
     .map_err(|err| AppError::Database(format!("load xb_node_types failed: {err}")))?;
-
-    let mut node_types = Vec::with_capacity(node_rows.len());
-    for r in node_rows {
-        let props: Vec<PropertySpec> =
-            serde_json::from_value(r.get("properties")).unwrap_or_default();
-        let agg_rules: Vec<AggRuleSpec> =
-            serde_json::from_value(r.get("agg_rules")).unwrap_or_default();
-        let derived_rules: Vec<DerivedRuleSpec> =
-            serde_json::from_value(r.get("derived_rules")).unwrap_or_default();
-        let raw_tier: Option<String> = r.get("semantic_layer_tier");
-        let semantic_layer_tier = raw_tier
-            .as_deref()
-            .and_then(|s| SemanticLayerTier::from_str(s).ok());
-        node_types.push(NodeTypeSpec {
-            id: Some(r.get("id")),
-            name: r.get("name"),
-            display_name: r.get("display_name"),
-            description: r.get("description"),
-            icon: r.get("icon"),
-            color: r.get("color"),
-            title_template: r.get("title_template"),
-            properties: props,
-            agg_rules,
-            derived_rules,
-            sync_to_knowledge: r.get("sync_to_knowledge"),
-            pos_x: r.get("pos_x"),
-            pos_y: r.get("pos_y"),
-            maturity: DesignMaturity::Confirmed,
-            semantic_layer_tier,
-            domain_group: r.get("domain_group"),
-        });
-    }
+    let node_types = node_rows.iter().map(decode_published_node_type).collect();
 
     let edge_rows = sqlx::query(
         "SELECT id, name, src_type_name, dst_type_name, impact_weight,
-                cardinality, description, properties, propagation
+                cardinality, description, properties, propagation, spec
            FROM xb_edge_types
           WHERE tenant_id = $1 AND subgraph_slug = $2
           ORDER BY created_at ASC, name ASC",
@@ -228,26 +262,7 @@ pub(crate) async fn load_schema_doc_tx(
     .fetch_all(&mut **tx)
     .await
     .map_err(|err| AppError::Database(format!("load xb_edge_types failed: {err}")))?;
-
-    let mut edge_types = Vec::with_capacity(edge_rows.len());
-    for r in edge_rows {
-        let card_raw: String = r.get("cardinality");
-        let cardinality = Cardinality::from_str(&card_raw).unwrap_or(Cardinality::ManyToMany);
-        let properties: Vec<PropertySpec> =
-            serde_json::from_value(r.get("properties")).unwrap_or_default();
-        edge_types.push(EdgeTypeSpec {
-            id: Some(r.get("id")),
-            name: r.get("name"),
-            src_type_name: r.get("src_type_name"),
-            dst_type_name: r.get("dst_type_name"),
-            impact_weight: r.get("impact_weight"),
-            cardinality,
-            description: r.get("description"),
-            properties,
-            propagation: r.get("propagation"),
-            maturity: DesignMaturity::Confirmed,
-        });
-    }
+    let edge_types = edge_rows.iter().map(decode_published_edge_type).collect();
 
     let map_rows = sqlx::query(
         "SELECT spec FROM xb_mappings
@@ -714,14 +729,16 @@ async fn apply_node_and_edge_tables_tx(
             .map_err(|err| AppError::Database(format!("serialize agg_rules: {err}")))?;
         let derived_json = serde_json::to_value(&nt.derived_rules)
             .map_err(|err| AppError::Database(format!("serialize derived_rules: {err}")))?;
+        let actions_json = serde_json::to_value(&nt.actions)
+            .map_err(|err| AppError::Database(format!("serialize actions: {err}")))?;
 
         let row = sqlx::query(
             "INSERT INTO xb_node_types (
                  tenant_id, subgraph_slug, name, display_name, description, icon, color,
                  title_template, properties, agg_rules, derived_rules, sync_to_knowledge, pos_x, pos_y,
-                 semantic_layer_tier, domain_group
+                 semantic_layer_tier, domain_group, actions
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
              ON CONFLICT (tenant_id, subgraph_slug, name) DO UPDATE SET
                  display_name = EXCLUDED.display_name,
                  description = EXCLUDED.description,
@@ -736,6 +753,7 @@ async fn apply_node_and_edge_tables_tx(
                  pos_y = EXCLUDED.pos_y,
                  semantic_layer_tier = EXCLUDED.semantic_layer_tier,
                  domain_group = EXCLUDED.domain_group,
+                 actions = EXCLUDED.actions,
                  updated_at = NOW()
              RETURNING id",
         )
@@ -755,6 +773,7 @@ async fn apply_node_and_edge_tables_tx(
         .bind(nt.pos_y)
         .bind(nt.semantic_layer_tier.map(SemanticLayerTier::as_str))
         .bind(&nt.domain_group)
+        .bind(actions_json)
         .fetch_one(&mut **tx)
         .await
         .map_err(|err| AppError::Database(format!("upsert xb_node_types failed: {err}")))?;
@@ -822,18 +841,23 @@ async fn sync_edge_types_table_tx(
     for et in &mut doc.edge_types {
         let props_json = serde_json::to_value(&et.properties)
             .map_err(|err| AppError::Database(format!("serialize edge properties: {err}")))?;
+        let spec_json = serde_json::json!({
+            "derived_rules": et.derived_rules,
+            "agg_rules": et.agg_rules,
+        });
         let row = sqlx::query(
             "INSERT INTO xb_edge_types (
                  tenant_id, subgraph_slug, name, src_type_name, dst_type_name,
-                 impact_weight, cardinality, description, properties, propagation
+                 impact_weight, cardinality, description, properties, propagation, spec
              )
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT (tenant_id, subgraph_slug, name, src_type_name, dst_type_name) DO UPDATE SET
                  impact_weight = EXCLUDED.impact_weight,
                  cardinality = EXCLUDED.cardinality,
                  description = EXCLUDED.description,
                  properties = EXCLUDED.properties,
                  propagation = EXCLUDED.propagation,
+                 spec = EXCLUDED.spec,
                  updated_at = NOW()
              RETURNING id",
         )
@@ -847,6 +871,7 @@ async fn sync_edge_types_table_tx(
         .bind(&et.description)
         .bind(props_json)
         .bind(&et.propagation)
+        .bind(spec_json)
         .fetch_one(&mut **tx)
         .await
         .map_err(|err| AppError::Database(format!("upsert xb_edge_types failed: {err}")))?;

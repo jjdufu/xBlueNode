@@ -15,12 +15,13 @@ use crate::agent::{
     UpdateEndpointRequest, UserLlmPreferenceRecord,
 };
 use crate::analytics::{
-    AnalyticsPrincipal, AskFeedbackKind, AskTurnRecord, CreateMetricRequest,
-    CreateSavedQueryRequest, FewShotTurn, GroundingEvalRunRecord, MaterializeRequest, MetricDef,
-    MetricQuery, MetricQueryResult, NewAskTurnInput, NewGroundingEvalRunInput,
-    NewQueryHistoryEntry, NewTransformDraftInput, PivotResult, PivotSpec, QueryHistoryEntry,
-    QueryHistoryListQuery, QueryRequest, QueryResult, SavedQuery, SchemaRecallBundle,
-    TransformDraft, TransformPreview, UpdateMetricRequest, UpdateSavedQueryRequest,
+    AnalyticsPrincipal, AskFeedbackKind, AskTurnRecord, AxqlCompilePlan, AxqlQueryRequest,
+    AxqlQueryResponse, CreateMetricRequest, CreateSavedQueryRequest, FewShotTurn,
+    GroundingEvalRunRecord, MaterializeRequest, MetricDef, MetricQuery, MetricQueryResult,
+    NewAskTurnInput, NewGroundingEvalRunInput, NewQueryHistoryEntry, NewTransformDraftInput,
+    PivotResult, PivotSpec, QueryHistoryEntry, QueryHistoryListQuery, QueryRequest, QueryResult,
+    SavedQuery, SchemaRecallBundle, TransformDraft, TransformPreview, UpdateMetricRequest,
+    UpdateSavedQueryRequest,
 };
 use crate::axhub::{
     CatalogSearchHit, ColumnMeta, CommitStagingRequest, Connection, ConnectionStatus,
@@ -61,8 +62,8 @@ use crate::graph::{
     MetricCatalogEntry, MetricSeriesPoint, NeighborQuery, NodeDocumentsResponse, NodeListQuery,
     NodeListResponse, NodeMetricSeriesQuery, NodeSearchQuery, NodeSearchResponse, PatchNodeRequest,
     PathQuery, PathResponse, ResolveEntitiesRequest, ResolveEntitiesResponse, SubgraphQuery,
-    SubgraphResponse, UpsertLinkRequest, WindowQuery, WindowQueryResponse, WriteMetricsRequest,
-    WriteMetricsResponse,
+    SubgraphResponse, UpsertLinkRequest, WindowQuery, WindowQueryResponse, WriteLinkMetricsRequest,
+    WriteLinkMetricsResponse, WriteMetricsRequest, WriteMetricsResponse,
 };
 use crate::guard::{
     AuditLogEntry, AuditQueryFilter, AuditStatsResponse, AuditVerifyQuery, AuditVerifyResponse,
@@ -70,10 +71,10 @@ use crate::guard::{
     CreateGuardUserRequest, DepartmentRecord, GrantRecord, GrantResourceKind,
     GuardPrincipalProfile, GuardRoleRecord, GuardUserRecord, LoginLookupRow, OidcLoginState,
     PatchGuardRoleRequest, PatchGuardUserRequest, PiiAnalyzeRequest, PiiAnalyzeResponse,
-    PiiAnonymizeRequest, PiiAnonymizeResponse, PutCedarPolicyRequest, PutColumnPolicyRequest,
-    PutRowPolicyDefaultRequest, ResolvedSessionRow, ResourceRef, RowPolicyDefaultRecord,
-    RowPolicyRecord, SaveRowPolicyRequest, SessionSummaryRecord, UpsertDepartmentRequest,
-    UpsertOidcUserParams,
+    PiiAnonymizeRequest, PiiAnonymizeResponse, PolicyContext, PutCedarPolicyRequest,
+    PutColumnPolicyRequest, PutRowPolicyDefaultRequest, ResolvedSessionRow, ResourceRef,
+    RowPolicyDefaultRecord, RowPolicyRecord, SaveRowPolicyRequest, SessionSummaryRecord,
+    UpsertDepartmentRequest, UpsertOidcUserParams,
 };
 use crate::im::{
     ConsumedImBindChallenge, HydratedImPrincipal, ImBindChallengePreview, ImConnectorRecord,
@@ -92,8 +93,8 @@ use crate::platform::{
 };
 use crate::rollup::{
     AcceptNodeCandidateRequest, AcceptNodeCandidateResponse, GraphAggregateJobPayload,
-    KnowledgeNodeCandidatesResponse, KnowledgeSyncJobPayload, MapMaterializeJobPayload,
-    MetricExplainResponse,
+    KnowledgeNodeCandidatesResponse, KnowledgeSyncJobPayload, LinkMetricExplainResponse,
+    MapMaterializeJobPayload, MetricExplainResponse,
 };
 use crate::rules::{
     AbsenceRuleItem, AckBatchResponse, AlertEventKind, AlertEventRecord, AlertEventsQuery,
@@ -110,12 +111,13 @@ use crate::sim::{
     SandboxGraphResponse, SandboxScope, ScenarioRecord, ScopePreflightSlice, SimGraph, SimResult,
 };
 use crate::studio::{
-    CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus, MappingRecord,
-    MappingRunRecord, MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeTypeSpec,
-    PublishDraftRequest, PublishDraftResponse, PublishedSchemaResponse, SaveSchemaDirectRequest,
-    SchemaDiff, SchemaDraft, SchemaVersionDetail, SchemaVersionSummary,
-    SubgraphConsumptionResponse, SubgraphInfo, TriggerMappingRunRequest, TriggerMappingRunResponse,
-    UpdateDraftRequest, UpdateSubgraphRequest, ValidationContext,
+    CertifySubgraphRequest, CreateDraftRequest, CreateSubgraphRequest, DocEntityGroup, DraftStatus,
+    InvokeObjectActionRequest, InvokeObjectActionResponse, MappingRecord, MappingRunRecord,
+    MergePreview, MergePreviewRequest, MergeSubgraphRequest, NodeTypeSpec, PublishDraftRequest,
+    PublishDraftResponse, PublishedObjectActionDescriptor, PublishedSchemaResponse,
+    RuntimeCertReport, SaveSchemaDirectRequest, SchemaDiff, SchemaDraft, SchemaVersionDetail,
+    SchemaVersionSummary, SubgraphConsumptionResponse, SubgraphInfo, TriggerMappingRunRequest,
+    TriggerMappingRunResponse, UpdateDraftRequest, UpdateSubgraphRequest, ValidationContext,
 };
 use crate::topology::{
     AxFlowDef, AxFlowRunResult, AxSandboxRecord, AxSimAction, AxSimResult, AxSimSnapshot, BlueNode,
@@ -125,9 +127,11 @@ use crate::topology::{
 use crate::view::{
     AffectedWidgetRef, AssetRecord, CreateAssetParams, CreateDashboardRequest,
     CreateWidgetRecordParams, DashboardDetail, DashboardRecord, FloorPlacementRecord, FloorPlanRow,
-    LayoutUpdateItem, NodesGeoLinkRow, NodesGeoRow, PutFloorPlacementItem, PutScene3dBindingItem,
-    Scene3dBindingRecord, Scene3dRow, UpdateDashboardRequest, UpdateWidgetRecordParams,
-    ViewWriteNodeOutcome, ViewWriteNodeParams, WidgetDeps, WidgetRecord,
+    LayoutUpdateItem, NodesGeoLinkRow, NodesGeoRow, PinChartToDashboardRequest,
+    PinChartToDashboardResponse, PutFloorPlacementItem, PutScene3dBindingItem, SaveChartRequest,
+    SavedChartRecord, Scene3dBindingRecord, Scene3dRow, UpdateDashboardRequest,
+    UpdateSavedChartRequest, UpdateWidgetRecordParams, ViewWriteNodeOutcome, ViewWriteNodeParams,
+    WidgetDeps, WidgetRecord,
 };
 use crate::{AppError, ExtractedTriple, FusedHit, SystemStats, TopologyGraph};
 
@@ -1044,6 +1048,16 @@ pub trait MetricStorePort: Send + Sync {
         &self,
         tenant_id: &str,
     ) -> impl Future<Output = Result<u64, AppError>> + Send;
+
+    /// Writes edge time-series observations into `xb_link_metric_series`, updates `xb_links.metrics`,
+    /// and triggers 4-path downstream metric propagation (`04-STEP26` §26.3).
+    fn write_link_metrics(
+        &self,
+        _tenant_id: &str,
+        _req: WriteLinkMetricsRequest,
+    ) -> impl Future<Output = Result<WriteLinkMetricsResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("LINK_METRICS_UNSUPPORTED")))
+    }
 }
 
 /// Graph traversal (`k`-hop neighbors, shortest path, subgraph) and `petgraph` algorithm port (Step 03).
@@ -1338,6 +1352,24 @@ pub trait AnalyticsQueryPort: Send + Sync {
         principal: &AnalyticsPrincipal,
         spec: PivotSpec,
     ) -> impl Future<Output = Result<PivotResult, AppError>> + Send;
+
+    /// Compiles a join-free `AxQL` statement into a guarded `DuckDB` SQL plan (`05-STEP27` §27.2).
+    fn compile_axql(
+        &self,
+        _principal: &AnalyticsPrincipal,
+        _req: AxqlQueryRequest,
+    ) -> impl Future<Output = Result<AxqlCompilePlan, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("AXQL_UNSUPPORTED")))
+    }
+
+    /// Compiles and executes a join-free `AxQL` statement with row/column governance (`05-STEP27` §27.2).
+    fn run_axql(
+        &self,
+        _principal: &AnalyticsPrincipal,
+        _req: AxqlQueryRequest,
+    ) -> impl Future<Output = Result<AxqlQueryResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("AXQL_UNSUPPORTED")))
+    }
 }
 
 /// Persistence port for `xBlueStudio` subgraphs, drafts, optimistic schema publication,
@@ -1593,6 +1625,30 @@ pub trait StudioRepository: Send + Sync {
     {
         std::future::ready(Ok(Vec::new()))
     }
+
+    /// Executes a published `ActionSpec` on `(type_name, node_key)` under `SELECT ... FOR UPDATE` CAS transaction (`04-STEP26` §26.2).
+    fn invoke_object_action(
+        &self,
+        _tenant_id: &str,
+        _actor_user_id: Option<Uuid>,
+        _type_name: &str,
+        _node_key: &str,
+        _action_name: &str,
+        _req: InvokeObjectActionRequest,
+    ) -> impl Future<Output = Result<InvokeObjectActionResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("OBJECT_ACTION_UNSUPPORTED")))
+    }
+
+    /// Evaluates L0–L4 runtime readiness, Dead Knowledge closure, and dev-sandbox `Trial Tick` certification (`04-STEP26` §26.4).
+    fn certify_subgraph_runtime(
+        &self,
+        _tenant_id: &str,
+        _subgraph_slug: &str,
+        _actor_user_id: Option<Uuid>,
+        _req: CertifySubgraphRequest,
+    ) -> impl Future<Output = Result<RuntimeCertReport, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("RUNTIME_CERT_UNSUPPORTED")))
+    }
 }
 
 /// Internal trusted query port for reading `DuckLake` tables and change feeds inside background workers (`06-STEP05-06` §06.2.1).
@@ -1661,6 +1717,16 @@ pub trait StudioExecutionPort: Send + Sync {
         node_id: Uuid,
         metric: &str,
     ) -> impl Future<Output = Result<MetricExplainResponse, AppError>> + Send;
+
+    /// Explains how edge `metric` on `link_id` was produced with 3-track provenance (`WHY`, `DELTA`, `INPUTS`, `04-STEP26` §26.3).
+    fn explain_link_metric(
+        &self,
+        _tenant_id: &str,
+        _link_id: Uuid,
+        _metric: &str,
+    ) -> impl Future<Output = Result<LinkMetricExplainResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("LINK_EXPLAIN_UNSUPPORTED")))
+    }
 
     /// Executes `KNOWLEDGE_SYNC` (upserting or deleting `xb_node:<node_id>` hypergraph dossiers and `EXACT_KEY` links).
     fn execute_knowledge_sync<E: TextEmbedderPort>(
@@ -2332,6 +2398,26 @@ pub trait AgentCapabilityPort: Send + Sync {
         pinned_snapshot: Option<&'a NodeTypeSpec>,
         payload: &'a serde_json::Value,
     ) -> BoxFuture<'a, serde_json::Value>;
+
+    /// Lists confirmed `ActionSpec` definitions across published `main` node types for controlled MCP write tool exposure (`04-STEP26` §26.0).
+    fn list_published_object_actions<'a>(
+        &'a self,
+        _tenant_id: &'a str,
+    ) -> BoxFuture<'a, Vec<PublishedObjectActionDescriptor>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    /// Invokes a published `ActionSpec` via controlled MCP tool execution (`04-STEP26` §26.2).
+    fn invoke_published_object_action<'a>(
+        &'a self,
+        _principal: &'a AnalyticsPrincipal,
+        _type_name: &'a str,
+        _node_key: &'a str,
+        _action_name: &'a str,
+        _req: InvokeObjectActionRequest,
+    ) -> BoxFuture<'a, InvokeObjectActionResponse> {
+        Box::pin(async { Err(AppError::Unsupported("OBJECT_ACTION_UNSUPPORTED")) })
+    }
 }
 
 /// Object-safe LLM provider lookup and daily token usage persistence port consumed by `axpoint-llm::router::LlmRouter` (`08-STEP09` §09.2).
@@ -3306,6 +3392,67 @@ pub trait ViewRepository: Send + Sync {
         tenant_id: &str,
         share_id: Uuid,
     ) -> impl Future<Output = Result<bool, AppError>> + Send;
+
+    /// Lists reusable visualization charts in `xv_charts` visible to `viewer_user_id` (`03-STEP25` §25.2).
+    fn list_saved_charts(
+        &self,
+        _tenant_id: &str,
+        _viewer_user_id: Uuid,
+        _include_all: bool,
+        _query: SimplePageQuery,
+    ) -> impl Future<Output = Result<PaginatedList<SavedChartRecord>, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
+
+    /// Fetches a single reusable visualization chart by UUID in `tenant_id` (`03-STEP25` §25.2).
+    fn get_saved_chart(
+        &self,
+        _tenant_id: &str,
+        _chart_id: Uuid,
+    ) -> impl Future<Output = Result<Option<SavedChartRecord>, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
+
+    /// Creates a reusable visualization chart in `xv_charts` (`03-STEP25` §25.2).
+    fn create_saved_chart(
+        &self,
+        _tenant_id: &str,
+        _created_by: Option<Uuid>,
+        _owner_dept: &str,
+        _req: SaveChartRequest,
+    ) -> impl Future<Output = Result<SavedChartRecord, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
+
+    /// Updates a reusable visualization chart in `xv_charts` (`03-STEP25` §25.2).
+    fn update_saved_chart(
+        &self,
+        _tenant_id: &str,
+        _chart_id: Uuid,
+        _req: UpdateSavedChartRequest,
+    ) -> impl Future<Output = Result<Option<SavedChartRecord>, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
+
+    /// Deletes a reusable visualization chart by UUID in `tenant_id` (`03-STEP25` §25.2).
+    fn delete_saved_chart(
+        &self,
+        _tenant_id: &str,
+        _chart_id: Uuid,
+    ) -> impl Future<Output = Result<bool, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
+
+    /// Atomically allocates a non-overlapping dashboard slot and mounts `chart_id` into `req.dashboard_id` (`03-STEP25` §25.2.2).
+    fn pin_saved_chart_to_dashboard(
+        &self,
+        _tenant_id: &str,
+        _chart_id: Uuid,
+        _req: PinChartToDashboardRequest,
+        _deps: WidgetDeps,
+    ) -> impl Future<Output = Result<PinChartToDashboardResponse, AppError>> + Send {
+        std::future::ready(Err(AppError::Unsupported("SAVED_CHARTS_UNSUPPORTED")))
+    }
 }
 
 /// Persistence port for `AxGuard` authentication, sessions, OIDC states, departments, users, roles,
@@ -4017,4 +4164,34 @@ pub trait SimPreflightPort: Send + Sync {
         subgraph_slug: &str,
         scope: &SandboxScope,
     ) -> impl Future<Output = Result<ScopePreflightSlice, AppError>> + Send;
+}
+
+/// Governance-aware `AxSim` visibility port enforcing state-driven row-level policies and property masking
+/// identically across sandbox preflight, baseline cloning, and sandbox graph reads (`05-STEP27` §27.3).
+pub trait SimVisibilityPort: Send + Sync {
+    /// Previews a `SandboxScope` slice filtered by the caller's compiled [`PolicyContext`].
+    fn preview_scope_slice_governed(
+        &self,
+        tenant_id: &str,
+        subgraph_slug: &str,
+        scope: &SandboxScope,
+        policy: &PolicyContext,
+    ) -> impl Future<Output = Result<ScopePreflightSlice, AppError>> + Send;
+
+    /// Clones a new `AxSim` sandbox containing only production nodes and incident links visible under `policy`.
+    fn create_sandbox_governed(
+        &self,
+        tenant_id: &str,
+        created_by: Option<Uuid>,
+        req: CreateAxSandboxRequest,
+        policy: &PolicyContext,
+    ) -> impl Future<Output = Result<AxSandboxRecord, AppError>> + Send;
+
+    /// Reads the merged Copy-on-Write sandbox graph filtered and masked under the caller's live `policy`.
+    fn get_sandbox_graph_governed(
+        &self,
+        tenant_id: &str,
+        sandbox_id: Uuid,
+        policy: &PolicyContext,
+    ) -> impl Future<Output = Result<SandboxGraphResponse, AppError>> + Send;
 }

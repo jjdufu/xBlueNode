@@ -204,6 +204,9 @@ pub struct BulkLinkInput {
     /// Arbitrary JSON link properties.
     #[serde(default)]
     pub properties: serde_json::Map<String, serde_json::Value>,
+    /// Numeric edge metrics snapshot (`04-STEP26` §26.3).
+    #[serde(default)]
+    pub metrics: BTreeMap<String, f64>,
     /// Optional validity start timestamp.
     #[serde(default)]
     pub valid_from: Option<DateTime<Utc>>,
@@ -358,7 +361,11 @@ pub struct NodeListResponse {
     pub next_cursor: Option<String>,
 }
 
-/// Full `xb_links` record returned by Step 03 link and graph APIs.
+const fn default_link_row_version() -> i64 {
+    1
+}
+
+/// Full `xb_links` record returned by Step 03 and Step 26 link and graph APIs.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinkRecord {
     /// Link UUID.
@@ -374,6 +381,12 @@ pub struct LinkRecord {
     /// Arbitrary JSON link properties.
     #[serde(default)]
     pub properties: serde_json::Map<String, serde_json::Value>,
+    /// Latest numeric edge metrics snapshot (`04-STEP26` §26.1 & §26.3).
+    #[serde(default)]
+    pub metrics: BTreeMap<String, f64>,
+    /// Optimistic concurrency version counter (`04-STEP26` §26.1).
+    #[serde(default = "default_link_row_version")]
+    pub row_version: i64,
     /// Optional source dataset UUID.
     #[serde(default)]
     pub source_dataset_id: Option<Uuid>,
@@ -405,12 +418,55 @@ pub struct UpsertLinkRequest {
     /// Link JSON properties.
     #[serde(default)]
     pub properties: serde_json::Map<String, serde_json::Value>,
+    /// Optional edge metrics map (`04-STEP26` §26.3).
+    #[serde(default)]
+    pub metrics: BTreeMap<String, f64>,
     /// Optional validity start timestamp.
     #[serde(default)]
     pub valid_from: Option<DateTime<Utc>>,
     /// Optional validity end timestamp.
     #[serde(default)]
     pub valid_to: Option<DateTime<Utc>>,
+}
+
+/// Single edge time-series observation inside [`WriteLinkMetricsRequest`] (`04-STEP26` §26.1 & §26.3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LinkMetricPointInput {
+    /// Target `xb_links.id`.
+    pub link_id: Uuid,
+    /// Edge metric identifier matching `^[a-z][a-z0-9_]{0,62}$`.
+    pub metric: String,
+    /// Observation timestamp.
+    pub ts: DateTime<Utc>,
+    /// Numeric value.
+    #[serde(default)]
+    pub value: Option<f64>,
+    /// Optional categorical/text value.
+    #[serde(default)]
+    pub value_text: Option<String>,
+}
+
+/// Request payload for `POST /api/xblue/links/metrics/write` (`04-STEP26` §26.3).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteLinkMetricsRequest {
+    /// Edge metric observations (`1..=10,000`).
+    pub points: Vec<LinkMetricPointInput>,
+    /// Provenance source tag (`INGEST` default).
+    #[serde(default)]
+    pub source_tag: Option<String>,
+}
+
+/// Response payload for `POST /api/xblue/links/metrics/write` (`04-STEP26` §26.3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WriteLinkMetricsResponse {
+    /// Count of written `xb_link_metric_series` points.
+    pub written: usize,
+    /// Count of updated `xb_links` rows.
+    pub updated_links: usize,
+    /// Count of downstream 4-path metric recomputations triggered synchronously or queued.
+    pub recomputed_metrics: usize,
 }
 
 /// Query filter for `GET /api/xblue/links`.

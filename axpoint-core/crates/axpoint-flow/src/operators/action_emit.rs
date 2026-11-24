@@ -275,7 +275,9 @@ where
             ActionKind::WriteNodeProperty => self.apply_write_property(&ctx.tenant_id, item).await,
             ActionKind::WorkItem => self.apply_work_item(ctx, item).await,
             ActionKind::Notify => Ok(()),
-            ActionKind::Http => Err(AppError::Unsupported("UNSUPPORTED_FORMAT")),
+            ActionKind::Http | ActionKind::ObjectAction => {
+                Err(AppError::Unsupported("UNSUPPORTED_FORMAT"))
+            }
         };
 
         match exec_res {

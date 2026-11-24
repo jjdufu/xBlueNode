@@ -847,6 +847,12 @@ define_str_enum! {
         StudioSnapshotRestore => "STUDIO_SNAPSHOT_RESTORE",
         /// External enterprise IM account bound to a platform user (`07-STEP21`).
         ImAccountBind => "IM_ACCOUNT_BIND",
+        /// Reusable `xv_charts` visualization asset saved or pinned (`03-STEP25`).
+        ChartPublish => "CHART_PUBLISH",
+        /// First-class `ActionSpec` invoked on a published domain object (`04-STEP26`).
+        ObjectActionInvoke => "OBJECT_ACTION_INVOKE",
+        /// Dev sandbox subgraph `Trial Tick` runtime readiness certification (`04-STEP26`).
+        TrialTickCertify => "TRIAL_TICK_CERTIFY",
     }
 }
 
@@ -1093,6 +1099,90 @@ define_str_enum! {
         Insight => "INSIGHT",
         /// Active alerts, scenario comparison, and writeback action controls.
         Decision => "DECISION",
+    }
+}
+
+define_str_enum! {
+    /// Grid compaction strategy in `xv_dashboards.canvas.compact_mode` (`03-STEP25` §25.2.1).
+    #[derive(Default)]
+    pub enum GridCompactMode {
+        /// Automatically compacts items upward when dragging or resizing.
+        #[default]
+        VerticalCompact => "VERTICAL_COMPACT",
+        /// Preserves exact `(x, y)` coordinates without pushing unrelated below-items upward.
+        FreeFloat => "FREE_FLOAT",
+    }
+}
+
+define_str_enum! {
+    /// Dual-mode canvas view perspective in `xBlueStudio` (`02-STEP24` §24.0).
+    #[derive(Default)]
+    pub enum StudioCanvasViewMode {
+        /// Domain object, relationship, and action topology canvas.
+        #[default]
+        OntologyTopology => "ONTOLOGY_TOPOLOGY",
+        /// Left-to-right dataset-to-mapping-to-object-to-rollup pipeline canvas.
+        MappingPipeline => "MAPPING_PIPELINE",
+    }
+}
+
+define_str_enum! {
+    /// Explicit mutation blast-radius classification declared on an `ActionSpec` (`04-STEP26` §26.2.1).
+    #[derive(Default)]
+    pub enum ActionSideEffectTier {
+        /// Modifies only properties or non-derived metrics on the target node instance itself.
+        #[default]
+        SelfOnly => "SELF_ONLY",
+        /// Atomically mutates both the target node and explicitly traversed 1-hop neighbor nodes/edges.
+        RelatedNodes => "RELATED_NODES",
+        /// Emits an external HTTP webhook, notification, or `AxFlow` trigger via transactional Outbox.
+        ExternalEffect => "EXTERNAL_EFFECT",
+    }
+}
+
+define_str_enum! {
+    /// Five-level runtime readiness certification tier in `xBlueStudio` (`04-STEP26` §26.4).
+    #[derive(Default)]
+    pub enum RuntimeCertLevel {
+        /// Contains at least one `ERROR`-severity schema syntax, type, or cycle diagnostic.
+        #[default]
+        L0Invalid => "L0_INVALID",
+        /// Valid syntax, but has unmapped node types or unconfirmed `PROPOSED` elements.
+        L1Configured => "L1_CONFIGURED",
+        /// Mappings, rules, and `ActionSpec` contracts are statically closed.
+        L2Runnable => "L2_RUNNABLE",
+        /// Passed an isolated dev-sandbox `Trial Tick` smoke materialization and propagation run.
+        L3Verified => "L3_VERIFIED",
+        /// `L3_VERIFIED` passed with zero undamped high-fanout edges, explicit side-effect tiers, and observable coverage.
+        L4Certified => "L4_CERTIFIED",
+    }
+}
+
+define_str_enum! {
+    /// Topological metric propagation path classification across vertices and edges (`04-STEP26` §26.3).
+    #[derive(Default)]
+    pub enum PropagationPathKind {
+        /// Vertex metric derived/aggregated into a vertex metric (`V->V`).
+        #[default]
+        VertexToVertex => "VERTEX_TO_VERTEX",
+        /// Incident source/destination vertex states computing an edge metric (`V->E`).
+        VertexToEdge => "VERTEX_TO_EDGE",
+        /// Incident edge metrics aggregated onto a target vertex (`E->V`).
+        EdgeToVertex => "EDGE_TO_VERTEX",
+        /// Intra-edge derived formula or edge-to-edge cascade (`E->E`).
+        EdgeToEdge => "EDGE_TO_EDGE",
+    }
+}
+
+define_str_enum! {
+    /// Evaluation mode of a row-level security policy in `sec_row_policies.policy_mode` (`05-STEP27` §27.1 & §27.3).
+    #[derive(Default)]
+    pub enum RowPolicyMode {
+        /// Evaluates static columns or static node attributes only.
+        #[default]
+        StaticAttr => "STATIC_ATTR",
+        /// Evaluates live node metrics (`metrics.*` / `node.metric.*`), properties, and optional TTL expiration.
+        StateDriven => "STATE_DRIVEN",
     }
 }
 

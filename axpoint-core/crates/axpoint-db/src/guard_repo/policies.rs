@@ -47,6 +47,13 @@ fn decode_row_policy(row: &PgRow) -> Result<RowPolicyRecord, AppError> {
     let raw_applies: serde_json::Value = row.get("applies_to");
     let applies_to: SubjectSelector = serde_json::from_value(raw_applies)
         .map_err(|err| AppError::Database(format!("decode applies_to JSON: {err}")))?;
+    let policy_mode = row
+        .try_get::<String, _>("policy_mode")
+        .ok()
+        .and_then(|s| s.parse::<axpoint_domain::enums::RowPolicyMode>().ok())
+        .unwrap_or_default();
+    let ttl_timestamp_field: Option<String> = row.try_get("ttl_timestamp_field").ok().flatten();
+    let ttl_max_age_hours: Option<i32> = row.try_get("ttl_max_age_hours").ok().flatten();
     Ok(RowPolicyRecord {
         id: row.get("id"),
         tenant_id: row.get("tenant_id"),
@@ -56,6 +63,9 @@ fn decode_row_policy(row: &PgRow) -> Result<RowPolicyRecord, AppError> {
         applies_to,
         predicate: row.get("predicate"),
         enabled: row.get("enabled"),
+        policy_mode,
+        ttl_timestamp_field,
+        ttl_max_age_hours,
         created_at: row.get("created_at"),
     })
 }

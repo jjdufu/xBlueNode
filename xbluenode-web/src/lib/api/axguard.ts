@@ -1,4 +1,8 @@
 import { requestBlob, requestJson } from "./client";
+import type { RowPolicyMode } from "./enums";
+import type { BlueNode } from "./xblue";
+
+export type { RowPolicyMode } from "./enums";
 
 export type Sensitivity = "PUBLIC" | "INTERNAL" | "CONFIDENTIAL" | "SECRET";
 export type AuthSource = "LOCAL" | "OIDC";
@@ -124,6 +128,9 @@ export interface RowPolicyRecord {
   applies_to: SubjectSelector;
   predicate: string;
   enabled: boolean;
+  policy_mode?: RowPolicyMode;
+  ttl_timestamp_field?: string | null;
+  ttl_max_age_hours?: number | null;
   created_at: string;
 }
 
@@ -134,6 +141,25 @@ export interface SaveRowPolicyRequest {
   applies_to?: SubjectSelector;
   predicate: string;
   enabled?: boolean;
+  policy_mode?: RowPolicyMode;
+  ttl_timestamp_field?: string | null;
+  ttl_max_age_hours?: number | null;
+}
+
+export interface StateRowPolicySimulateRequest {
+  user_id: string;
+  type_name: string;
+  predicate?: string;
+  ttl_timestamp_field?: string | null;
+  ttl_max_age_hours?: number | null;
+  limit?: number;
+}
+
+export interface StateRowPolicySimulateResponse {
+  compiled_pg_filter: string | null;
+  compiled_duckdb_filter: string | null;
+  matched_count: number;
+  sample_nodes: BlueNode[];
 }
 
 export interface RowPolicyDefaultRecord {
@@ -553,5 +579,18 @@ export const axguardApi = {
       by_user: Array.isArray(res?.by_user) ? res.by_user : [],
       by_day: Array.isArray(res?.by_day) ? res.by_day : [],
     };
+  },
+
+  simulateStateRowPolicy(
+    payload: StateRowPolicySimulateRequest
+  ): Promise<StateRowPolicySimulateResponse> {
+    return requestJson<StateRowPolicySimulateResponse>(
+      "/api/axguard/row-policies/simulate-state",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
+    );
   },
 };

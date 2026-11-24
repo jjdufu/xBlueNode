@@ -3,12 +3,8 @@ import {
   LayoutDashboard,
   Cable,
   BarChart3,
-  Database,
-  MessageSquare,
-  Share2,
   Blocks,
   Workflow,
-  Bell,
   Bot,
   GitBranch,
   Monitor,
@@ -23,41 +19,57 @@ import {
 import { DashboardPage } from "@/pages/DashboardPage";
 import { AxHubPage } from "@/pages/AxHubPage";
 import { AnalyticsStudioPage } from "@/pages/AnalyticsStudioPage";
-import { AxIngestPage } from "@/pages/AxIngestPage";
-import { AxQueryPage } from "@/pages/AxQueryPage";
-import { XBlueGraphPage } from "@/pages/XBlueGraphPage";
 import { XBlueStudioPage } from "@/pages/XBlueStudioPage";
 import { AxFlowPage } from "@/pages/AxFlowPage";
-import { AxAlertsPage } from "@/pages/AxAlertsPage";
 import { AxAgentPage } from "@/pages/AxAgentPage";
 import { AgentEmbedPage } from "@/pages/AgentEmbedPage";
 import { AxSimPage } from "@/pages/AxSimPage";
 import { XBlueViewPage } from "@/pages/XBlueViewPage";
 import { SharePage } from "@/pages/SharePage";
+import { GovernancePage } from "@/pages/GovernancePage";
 import { AxGuardPage } from "@/pages/AxGuardPage";
 import { AxOpsPage } from "@/pages/AxOpsPage";
 
 export type { NavGroupKey, TabKey } from "@/modules/meta";
 export { MODULE_META, NAV_GROUPS, useModuleTitle } from "@/modules/meta";
 
+export interface LegacyRedirectSpec {
+  readonly from: string;
+  readonly toPathname: string;
+  readonly defaultQuery: Readonly<Record<string, string>>;
+}
+
+/**
+ * Legacy URL compatibility map preserving existing bookmarks, deep links, and gate URLs (Step 23 §23.1.1).
+ */
+export const LEGACY_ROUTE_REDIRECTS: readonly LegacyRedirectSpec[] = [
+  { from: "/ingest", toPathname: "/hub", defaultQuery: { tab: "knowledge" } },
+  { from: "/query", toPathname: "/analytics", defaultQuery: { tab: "ask" } },
+  { from: "/graph", toPathname: "/studio", defaultQuery: { tab: "explorer" } },
+  { from: "/alerts", toPathname: "/flow", defaultQuery: { tab: "alerts" } },
+];
+
 export interface ModuleRouteSpec {
   key: TabKey;
   path: string;
   subPaths?: string[];
-  productTag?: string;
+  activeMatchPrefixes?: readonly string[];
   shortZh: string;
   shortEn: string;
   label: string;
   enLabel: string;
   group?: NavGroupKey;
+  keywords?: readonly string[];
   icon: typeof LayoutDashboard;
   component: ComponentType;
   public?: boolean;
+  sidebarHidden?: boolean;
   wideLayout?: boolean;
   fullBleed?: boolean;
   autoCollapseSidebar?: boolean;
   immersiveQueryParam?: string;
   requiredAnyPermissions?: readonly string[];
+  shortcutKey?: string;
 }
 
 export const MODULE_REGISTRY: ModuleRouteSpec[] = [
@@ -67,6 +79,7 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     icon: LayoutDashboard,
     component: DashboardPage,
     wideLayout: true,
+    shortcutKey: "G O",
   },
   {
     ...MODULE_META.axhub,
@@ -74,13 +87,7 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     icon: Cable,
     component: AxHubPage,
     wideLayout: true,
-  },
-  {
-    ...MODULE_META.axingest,
-    path: "/ingest",
-    icon: Database,
-    component: AxIngestPage,
-    wideLayout: true,
+    shortcutKey: "G D",
   },
   {
     ...MODULE_META.axanalytics,
@@ -89,31 +96,7 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     component: AnalyticsStudioPage,
     wideLayout: true,
     fullBleed: true,
-  },
-  {
-    ...MODULE_META.axquery,
-    path: "/query",
-    icon: MessageSquare,
-    component: AxQueryPage,
-    wideLayout: true,
-    fullBleed: true,
-  },
-  {
-    ...MODULE_META.xblueview,
-    path: "/view",
-    subPaths: ["/view/:slug"],
-    icon: Monitor,
-    component: XBlueViewPage,
-    wideLayout: true,
-    immersiveQueryParam: "screen",
-  },
-  {
-    ...MODULE_META.xbluegraph,
-    path: "/graph",
-    icon: Share2,
-    component: XBlueGraphPage,
-    wideLayout: true,
-    fullBleed: true,
+    shortcutKey: "G E",
   },
   {
     ...MODULE_META.xbluestudio,
@@ -122,6 +105,7 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     component: XBlueStudioPage,
     wideLayout: true,
     fullBleed: true,
+    shortcutKey: "G S",
   },
   {
     ...MODULE_META.axflow,
@@ -131,6 +115,7 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     wideLayout: true,
     fullBleed: true,
     autoCollapseSidebar: true,
+    shortcutKey: "G F",
   },
   {
     ...MODULE_META.axagent,
@@ -138,6 +123,7 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     icon: Bot,
     component: AxAgentPage,
     wideLayout: true,
+    shortcutKey: "G A",
   },
   {
     ...MODULE_META.axsim,
@@ -145,19 +131,40 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     icon: GitBranch,
     component: AxSimPage,
     wideLayout: true,
+    shortcutKey: "G M",
   },
   {
-    ...MODULE_META.axalerts,
-    path: "/alerts",
-    icon: Bell,
-    component: AxAlertsPage,
+    ...MODULE_META.xblueview,
+    path: "/view",
+    subPaths: ["/view/:slug"],
+    icon: Monitor,
+    component: XBlueViewPage,
     wideLayout: true,
+    immersiveQueryParam: "screen",
+    shortcutKey: "G V",
+  },
+  {
+    ...MODULE_META.governance,
+    path: "/governance",
+    activeMatchPrefixes: ["/guard", "/ops"],
+    icon: ShieldCheck,
+    component: GovernancePage,
+    wideLayout: true,
+    requiredAnyPermissions: [
+      "GUARD_ADMIN",
+      "AUDIT_READ",
+      "OPS_ADMIN",
+      "FLOW_RUN",
+      "DATA_READ",
+    ],
+    shortcutKey: "G G",
   },
   {
     ...MODULE_META.axguard,
     path: "/guard",
     icon: ShieldCheck,
     component: AxGuardPage,
+    sidebarHidden: true,
     wideLayout: true,
     requiredAnyPermissions: ["GUARD_ADMIN", "AUDIT_READ", "DATA_READ"],
   },
@@ -166,6 +173,7 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     path: "/ops",
     icon: ServerCog,
     component: AxOpsPage,
+    sidebarHidden: true,
     wideLayout: true,
     requiredAnyPermissions: ["OPS_ADMIN", "FLOW_RUN"],
   },

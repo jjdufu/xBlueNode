@@ -11,18 +11,22 @@ export PATH="$ROOT/axpoint-parser/.venv/bin:$PATH"
 mkdir -p "$ROOT/.gate/pids" "$ROOT/.gate/logs"
 
 start_parser() {
+  local parser_port="${PARSER_BASE_URL##*:}"
+  parser_port="${parser_port%%/*}"
+  [[ -z "$parser_port" ]] && parser_port=8001
   (
     cd "$ROOT/axpoint-parser"
-    nohup uvicorn main:app --host 127.0.0.1 --port 8001 > "$ROOT/.gate/logs/parser.log" 2>&1 &
+    nohup uvicorn main:app --host 127.0.0.1 --port "$parser_port" > "$ROOT/.gate/logs/parser.log" 2>&1 &
     echo $! > "$ROOT/.gate/pids/parser"
   )
 }
 
 start_core() {
+  local target_dir="${CARGO_TARGET_DIR:-$ROOT/axpoint-core/target}"
   (
     cd "$ROOT/axpoint-core"
     cargo build -q -p axpoint-server
-    nohup ./target/debug/axpoint-server > "$ROOT/.gate/logs/core.log" 2>&1 &
+    nohup "$target_dir/debug/axpoint-server" > "$ROOT/.gate/logs/core.log" 2>&1 &
     echo $! > "$ROOT/.gate/pids/core"
   )
 }

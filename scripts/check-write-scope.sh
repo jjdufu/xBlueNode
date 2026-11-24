@@ -34,10 +34,12 @@ is_allowed_for_role() {
       [[ "$file" =~ ^axpoint-core/crates/(axpoint-analytics|axpoint-security)/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(analytics|guard|grounding)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/algo/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(hub_repo|axhub_repo|graph_repo|graph_query|analytics_repo|rules_repo|guard_repo)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(hub_repo|axhub_repo|graph_repo|graph_query|analytics_repo|rules_repo|guard_repo|sim_visibility)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(rules_repo|guard_repo)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(rules_repo|step02_03_db|step04_analytics_db)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(rules_repo|step02_03_db|step04_analytics_db|step27_[a-z0-9_]+)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/(axhub|analytics|documents|axguard)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/axguard/ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/tests/step27_[a-z0-9_]+\.rs$ ]] && return 0
       [[ "$file" =~ ^tests/cassettes/ ]] && return 0
       return 1
       ;;
@@ -45,11 +47,13 @@ is_allowed_for_role() {
       [[ "$file" =~ ^axpoint-core/crates/(axpoint-llm|axpoint-flow|axpoint-agent)/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(agent|flow|graph|im|ops|rules|topology|view|view_zones)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(expr|rollup|sim|studio)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(studio_repo|flow_repo|agent_repo|im_repo|sim_repo|view_repo|ops_repo|tokens|nodes|topology|mapping_exec|aggregate_exec|entity_link|knowledge_sync)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/tests/(studio|expr_rollup|sim|step26_[a-z0-9_]+)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(studio_repo|flow_repo|agent_repo|im_repo|sim_repo|view_repo|ops_repo|tokens|nodes|metrics|topology|mapping_exec|aggregate_exec|action_exec|entity_link|knowledge_sync)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(agent_repo|im_repo|ops_repo)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(studio_repo|agent_repo|im_repo|sim_repo|view_repo|step06_exec)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(studio_repo|agent_repo|im_repo|sim_repo|view_repo|step06_exec|step26_[a-z0-9_]+)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/(ops|view)/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/(xblue|xblue_graphql|axflow|axagent|published|mcp|axsim|xblueview|axops)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/tests/step26_[a-z0-9_]+\.rs$ ]] && return 0
       [[ "$file" =~ ^templates/packs/ ]] && return 0
       [[ "$file" =~ ^scripts/ops/ ]] && return 0
       return 1
@@ -77,21 +81,52 @@ is_allowed_for_role() {
   esac
 }
 
+is_allowed_for_composite_role() {
+  local role_expr="$1"
+  local file="$2"
+  if [[ "$role_expr" == *"+"* ]]; then
+    local IFS='+'
+    local parts=($role_expr)
+    local sub_role
+    for sub_role in "${parts[@]}"; do
+      if [[ "$sub_role" == "orchestrator" || -z "$sub_role" ]]; then
+        echo "check-write-scope: 组合角色 '$role_expr' 禁止混入 orchestrator 或空项" >&2
+        exit 2
+      fi
+    done
+    for sub_role in "${parts[@]}"; do
+      if is_allowed_for_role "$sub_role" "$file"; then
+        return 0
+      fi
+    done
+    return 1
+  fi
+  is_allowed_for_role "$role_expr" "$file"
+}
+
 run_self_test() {
   # 正向断言
   is_allowed_for_role "orchestrator" "deploy/migrations/0015_llm_structured_grounding.sql"
   is_allowed_for_role "squad-data" "axpoint-parser/connectors/sql_family.py"
   is_allowed_for_role "squad-analytics-guard" "axpoint-core/crates/axpoint-analytics/src/nl2sql/mod.rs"
+  is_allowed_for_role "squad-analytics-guard" "axpoint-core/crates/axpoint-db/src/sim_visibility.rs"
   is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-agent/src/mcp_server.rs"
+  is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-db/src/action_exec.rs"
   is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-server/src/ops/templates.rs"
   is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-server/src/view/ai_gen.rs"
   is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-domain/src/view_zones.rs"
   is_allowed_for_role "squad-web" "xbluenode-web/src/pages/XBlueStudioPage.tsx"
   is_allowed_for_role "squad-qa" "scripts/gate/step16.sh"
+  is_allowed_for_composite_role "squad-web+squad-qa" "xbluenode-web/e2e/smoke.spec.ts"
+  is_allowed_for_composite_role "squad-web+squad-qa" "xbluenode-web/src/pages/XBlueStudioPage.tsx"
 
   # 越界阻断断言（期望返回非 0）
   if is_allowed_for_role "squad-web" "xbluenode-web/src/modules/registry.ts"; then
     echo "check-write-scope self-test FAILED: squad-web 不得修改 registry.ts" >&2
+    exit 1
+  fi
+  if is_allowed_for_composite_role "squad-web+squad-qa" "xbluenode-web/src/App.tsx"; then
+    echo "check-write-scope self-test FAILED: squad-web+squad-qa 不得修改 App.tsx" >&2
     exit 1
   fi
   if is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-domain/src/ports.rs"; then
@@ -136,7 +171,7 @@ fi
 
 VIOLATIONS=()
 for f in "${CHANGED_FILES[@]}"; do
-  if ! is_allowed_for_role "$ROLE" "$f"; then
+  if ! is_allowed_for_composite_role "$ROLE" "$f"; then
     VIOLATIONS+=("$f")
   fi
 done

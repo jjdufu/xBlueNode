@@ -11,7 +11,8 @@ use axpoint_domain::guard::{
     CedarPolicyRecord, ColumnPolicyRecord, PolicyTargetKind, PutCedarPolicyRequest,
     PutColumnPolicyRequest, PutRowPolicyDefaultRequest, ResourceRef, RowPolicyDefaultRecord,
     RowPolicyPreviewRequest, RowPolicyRecord, SaveRowPolicyRequest, SimulateCedarPolicyRequest,
-    SimulateCedarPolicyResponse, ValidateCedarPolicyRequest, ValidateCedarPolicyResponse,
+    SimulateCedarPolicyResponse, StateRowPolicySimulateRequest, StateRowPolicySimulateResponse,
+    ValidateCedarPolicyRequest, ValidateCedarPolicyResponse,
 };
 use axpoint_domain::ports::{DatasetRepository as _, GuardRepository as _, StudioRepository as _};
 use axpoint_security::AuthPrincipal;
@@ -564,4 +565,15 @@ pub(super) async fn delete_column_policy_handler(
     )
     .await;
     Ok(Json(DeleteResponse { deleted: true }))
+}
+
+pub(super) async fn simulate_state_row_policy_handler(
+    State(_state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiJson(_req): ApiJson<StateRowPolicySimulateRequest>,
+) -> Result<Json<StateRowPolicySimulateResponse>, HttpError> {
+    principal.require(Permission::GuardAdmin)?;
+    Err(HttpError(AppError::Unsupported(
+        "STATE_ROW_POLICY_SIMULATE_UNSUPPORTED",
+    )))
 }

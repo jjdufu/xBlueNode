@@ -848,6 +848,7 @@ mod tests {
                     maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                     semantic_layer_tier: None,
                     domain_group: None,
+                    actions: Vec::new(),
                 },
                 NodeTypeSpec {
                     id: None,
@@ -866,6 +867,7 @@ mod tests {
                     maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                     semantic_layer_tier: None,
                     domain_group: None,
+                    actions: Vec::new(),
                 },
             ],
             edge_types: vec![EdgeTypeSpec {
@@ -879,6 +881,8 @@ mod tests {
                 properties: Vec::new(),
                 propagation: serde_json::json!({}),
                 maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+                derived_rules: Vec::new(),
+                agg_rules: Vec::new(),
             }],
             mappings: Vec::new(),
         }

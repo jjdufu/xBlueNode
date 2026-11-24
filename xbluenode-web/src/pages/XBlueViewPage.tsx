@@ -788,7 +788,7 @@ export function XBlueViewPage() {
     return (
       <div className="space-y-5" data-testid="xblueview-gallery-page">
         <PageHeader
-          title={tx("xBlueView · 孪生驾驶舱", "xBlueView · Twin Cockpit")}
+          title={tx("孪生看板", "Twin Cockpits")}
           actions={
             <>
               <SegmentedControl<GalleryTab>

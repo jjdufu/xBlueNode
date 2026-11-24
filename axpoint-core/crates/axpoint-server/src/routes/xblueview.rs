@@ -24,9 +24,11 @@ use axpoint_domain::view::{
     CanvasConfig, CreateAssetParams, CreateDashboardRequest, CreateWidgetRecordParams,
     CreateWidgetRequest, DashboardDetail, DashboardPreflightReport, DashboardRecord,
     FloorPlacementRecord, InvokeWidgetActionRequest, InvokeWidgetActionResponse,
-    PutFloorPlacementsRequest, PutScene3dBindingsRequest, Scene3dBindingRecord,
-    UpdateDashboardRequest, UpdateLayoutRequest, UpdateWidgetRecordParams, UpdateWidgetRequest,
-    ViewEvent, WidgetDataRequest, WidgetDataResponse, WidgetPreviewRequest, WidgetRecord,
+    PinChartToDashboardRequest, PinChartToDashboardResponse, PutFloorPlacementsRequest,
+    PutScene3dBindingsRequest, SaveChartRequest, SavedChartRecord, Scene3dBindingRecord,
+    UpdateDashboardRequest, UpdateLayoutRequest, UpdateSavedChartRequest, UpdateWidgetRecordParams,
+    UpdateWidgetRequest, ViewEvent, WidgetDataRequest, WidgetDataResponse, WidgetPreviewRequest,
+    WidgetRecord,
 };
 use axpoint_security::AuthPrincipal;
 use axpoint_server::view::action::invoke_widget_action;
@@ -163,6 +165,17 @@ fn widget_and_asset_router() -> Router<AppState> {
             "/xblueview/assets/{id}/bindings3d",
             get(list_scene3d_bindings_handler).put(replace_scene3d_bindings_handler),
         )
+        .route(
+            "/xblueview/charts",
+            get(list_saved_charts_handler).post(create_saved_chart_handler),
+        )
+        .route(
+            "/xblueview/charts/{id}",
+            get(get_saved_chart_handler)
+                .put(update_saved_chart_handler)
+                .delete(delete_saved_chart_handler),
+        )
+        .route("/xblueview/charts/{id}/pin", post(pin_saved_chart_handler))
 }
 
 #[derive(Debug, Serialize)]
@@ -3102,6 +3115,116 @@ async fn shared_download_handler(
         "SHARE_NOT_FOUND",
     )
     .await
+}
+
+// ============================================================================
+// Saved Chart Assets (`xv_charts`, Step 25)
+// ============================================================================
+
+async fn list_saved_charts_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiQuery(query): ApiQuery<ListDashboardsQuery>,
+) -> Result<Json<PaginatedList<SavedChartRecord>>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    validate_page_limit(query.limit)?;
+    let include_all = principal.has(Permission::ViewEdit);
+    let page = state
+        .store
+        .list_saved_charts(
+            &principal.tenant_id,
+            principal.user_id,
+            include_all,
+            SimplePageQuery {
+                limit: query.limit,
+                cursor: query.cursor,
+            },
+        )
+        .await?;
+    Ok(Json(page))
+}
+
+async fn create_saved_chart_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiJson(req): ApiJson<SaveChartRequest>,
+) -> Result<(StatusCode, Json<SavedChartRecord>), HttpError> {
+    principal.require(Permission::ViewEdit)?;
+    let saved = state
+        .store
+        .create_saved_chart(
+            &principal.tenant_id,
+            actor_uuid(&principal),
+            &principal.dept_id,
+            req,
+        )
+        .await?;
+    Ok((StatusCode::CREATED, Json(saved)))
+}
+
+async fn get_saved_chart_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(chart_id): ApiPath<Uuid>,
+) -> Result<Json<SavedChartRecord>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let chart = state
+        .store
+        .get_saved_chart(&principal.tenant_id, chart_id)
+        .await?
+        .ok_or(AppError::NotFound("CHART_NOT_FOUND"))?;
+    Ok(Json(chart))
+}
+
+async fn update_saved_chart_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(chart_id): ApiPath<Uuid>,
+    ApiJson(req): ApiJson<UpdateSavedChartRequest>,
+) -> Result<Json<SavedChartRecord>, HttpError> {
+    principal.require(Permission::ViewEdit)?;
+    let updated = state
+        .store
+        .update_saved_chart(&principal.tenant_id, chart_id, req)
+        .await?
+        .ok_or(AppError::NotFound("CHART_NOT_FOUND"))?;
+    Ok(Json(updated))
+}
+
+async fn delete_saved_chart_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(chart_id): ApiPath<Uuid>,
+) -> Result<Json<DeleteStatus>, HttpError> {
+    principal.require(Permission::ViewEdit)?;
+    let deleted = state
+        .store
+        .delete_saved_chart(&principal.tenant_id, chart_id)
+        .await?;
+    if !deleted {
+        return Err(HttpError(AppError::NotFound("CHART_NOT_FOUND")));
+    }
+    Ok(Json(DeleteStatus { deleted: true }))
+}
+
+async fn pin_saved_chart_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    ApiPath(chart_id): ApiPath<Uuid>,
+    ApiJson(req): ApiJson<PinChartToDashboardRequest>,
+) -> Result<(StatusCode, Json<PinChartToDashboardResponse>), HttpError> {
+    principal.require(Permission::ViewEdit)?;
+    let chart = state
+        .store
+        .get_saved_chart(&principal.tenant_id, chart_id)
+        .await?
+        .ok_or(AppError::NotFound("CHART_NOT_FOUND"))?;
+    let deps = compute_widget_deps(&state.store, &principal.tenant_id, &chart.data_source).await?;
+    let res = state
+        .store
+        .pin_saved_chart_to_dashboard(&principal.tenant_id, chart_id, req, deps)
+        .await?;
+    Ok((StatusCode::CREATED, Json(res)))
 }
 
 #[cfg(test)]

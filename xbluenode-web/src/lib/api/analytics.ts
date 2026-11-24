@@ -618,4 +618,33 @@ export const analyticsApi = {
       `/api/analytics/history${suffix}`
     );
   },
+
+  compileAxql: (payload: AxqlQueryRequest) =>
+    jsonPost<AxqlCompilePlan>("/api/analytics/axql/compile", payload),
+
+  runAxql: (payload: AxqlQueryRequest) =>
+    jsonPost<AxqlQueryResponse>("/api/analytics/axql/run", payload),
 };
+
+export interface AxqlQueryRequest {
+  axql: string;
+  params?: Record<string, unknown>;
+  max_rows?: number;
+  timeout_ms?: number;
+  reveal_pii?: boolean;
+  subgraph_slug?: string;
+}
+
+export interface AxqlCompilePlan {
+  compiled_sql: string;
+  referenced_node_types: string[];
+  referenced_edge_types: string[];
+  referenced_datasets: string[];
+  dedup_entities: string[];
+  knowledge_recall_nodes: number;
+  fanout_protected: boolean;
+}
+
+export interface AxqlQueryResponse extends QueryResult {
+  plan: AxqlCompilePlan;
+}

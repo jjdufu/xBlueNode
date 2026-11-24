@@ -13,6 +13,7 @@ use crate::enums::{
     SemanticLayerTier, SubgraphMergeStrategy,
 };
 use crate::graph::GeoPoint;
+use crate::studio::cert::{ActionSpec, EdgeAggRuleSpec, EdgeDerivedRuleSpec};
 
 /// Complete `xBlueStudio` schema document exchanged across drafts, published versions,
 /// subgraph merges, AI generation, and template packs (`06-STEP05-06` §05.2).
@@ -299,6 +300,9 @@ pub struct NodeTypeSpec {
     /// Optional business domain group label (e.g. `"采购域"`, `"履约域"`, `04-STEP18` §18.2.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain_group: Option<String>,
+    /// First-class declarative business action contracts (`04-STEP26` §26.2.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ActionSpec>,
 }
 
 /// Compact `Np·Nm·Nr` element counts displayed on `NodeTypeCard` and `NodeLineageGraph` (`04-STEP18` §18.2.1, §18.4.1).
@@ -331,6 +335,7 @@ impl Default for NodeTypeSpec {
             maturity: DesignMaturity::Confirmed,
             semantic_layer_tier: None,
             domain_group: None,
+            actions: Vec::new(),
         }
     }
 }
@@ -376,6 +381,10 @@ impl NodeTypeSpec {
                 .derived_rules
                 .iter()
                 .any(|r| r.maturity == DesignMaturity::Proposed)
+            || self
+                .actions
+                .iter()
+                .any(|a| a.maturity == DesignMaturity::Proposed)
     }
 }
 
@@ -421,6 +430,12 @@ pub struct EdgeTypeSpec {
     /// Design sign-off maturity (`PROPOSED` vs `CONFIRMED`, defaults to `CONFIRMED`, `04-STEP18` §18.2.1).
     #[serde(default)]
     pub maturity: DesignMaturity,
+    /// Dynamic `V->E` and `E->E` derived metric rules on this relationship (`04-STEP26` §26.3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived_rules: Vec<EdgeDerivedRuleSpec>,
+    /// Dynamic `E->E` cascade aggregation rules on this relationship (`04-STEP26` §26.3).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub agg_rules: Vec<EdgeAggRuleSpec>,
 }
 
 impl Default for EdgeTypeSpec {
@@ -436,12 +451,14 @@ impl Default for EdgeTypeSpec {
             properties: Vec::new(),
             propagation: default_empty_object(),
             maturity: DesignMaturity::Confirmed,
+            derived_rules: Vec::new(),
+            agg_rules: Vec::new(),
         }
     }
 }
 
 impl SchemaDoc {
-    /// Counts all `PROPOSED` elements (`NodeTypeSpec`, `PropertySpec`, `EdgeTypeSpec`, `AggRuleSpec`, `DerivedRuleSpec`).
+    /// Counts all `PROPOSED` elements (`NodeTypeSpec`, `PropertySpec`, `EdgeTypeSpec`, `AggRuleSpec`, `DerivedRuleSpec`, `ActionSpec`).
     #[must_use]
     pub fn unconfirmed_proposal_count(&self) -> u32 {
         let mut count = 0_u32;
@@ -464,6 +481,11 @@ impl SchemaDoc {
                     count = count.saturating_add(1);
                 }
             }
+            for a in &nt.actions {
+                if a.maturity == DesignMaturity::Proposed {
+                    count = count.saturating_add(1);
+                }
+            }
         }
         for et in &self.edge_types {
             if et.maturity == DesignMaturity::Proposed {
@@ -471,6 +493,16 @@ impl SchemaDoc {
             }
             for p in &et.properties {
                 if p.maturity == DesignMaturity::Proposed {
+                    count = count.saturating_add(1);
+                }
+            }
+            for d in &et.derived_rules {
+                if d.maturity == DesignMaturity::Proposed {
+                    count = count.saturating_add(1);
+                }
+            }
+            for r in &et.agg_rules {
+                if r.maturity == DesignMaturity::Proposed {
                     count = count.saturating_add(1);
                 }
             }
@@ -499,6 +531,9 @@ impl SchemaDoc {
                 for d in &mut nt.derived_rules {
                     d.maturity = DesignMaturity::Confirmed;
                 }
+                for a in &mut nt.actions {
+                    a.maturity = DesignMaturity::Confirmed;
+                }
             }
         }
         for et in &mut self.edge_types {
@@ -506,6 +541,12 @@ impl SchemaDoc {
                 et.maturity = DesignMaturity::Confirmed;
                 for p in &mut et.properties {
                     p.maturity = DesignMaturity::Confirmed;
+                }
+                for d in &mut et.derived_rules {
+                    d.maturity = DesignMaturity::Confirmed;
+                }
+                for r in &mut et.agg_rules {
+                    r.maturity = DesignMaturity::Confirmed;
                 }
             }
         }

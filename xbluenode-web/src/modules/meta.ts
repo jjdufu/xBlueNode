@@ -15,14 +15,11 @@ export type TabKey =
   | "axsim"
   | "xblueview"
   | "xblueview_share"
+  | "governance"
   | "axguard"
   | "axops";
 
-export type NavGroupKey =
-  | "foundation"
-  | "analytics"
-  | "modeling"
-  | "governance";
+export type NavGroupKey = "overview" | "workspace" | "governance";
 
 export interface NavGroupMeta {
   readonly key: NavGroupKey;
@@ -31,166 +28,209 @@ export interface NavGroupMeta {
 }
 
 export const NAV_GROUPS: readonly NavGroupMeta[] = [
-  { key: "foundation", zh: "数据底座", en: "Data Foundation" },
-  { key: "analytics", zh: "分析洞察", en: "Analytics & Insight" },
-  { key: "modeling", zh: "建模与编排", en: "Modeling & AI" },
-  { key: "governance", zh: "推演与治理", en: "Simulation & Ops" },
+  { key: "overview", zh: "工作台", en: "Workspace" },
+  { key: "workspace", zh: "核心业务域", en: "Core Domains" },
+  { key: "governance", zh: "系统治理", en: "Governance" },
 ];
 
 export interface ModuleTitleMeta {
   readonly key: TabKey;
-  readonly productTag?: string;
   readonly shortZh: string;
   readonly shortEn: string;
   readonly label: string;
   readonly enLabel: string;
   readonly group?: NavGroupKey;
+  readonly keywords?: readonly string[];
 }
 
 /**
  * Single Source of Truth (G1) for sidebar navigation labels and page H1 titles.
+ * Enforces brand uniqueness and strict bilingual purity (Step 23 §23.1.2).
  */
 export const MODULE_META: Readonly<Record<TabKey, ModuleTitleMeta>> = {
   dashboard: {
     key: "dashboard",
-    shortZh: "系统概览",
+    shortZh: "概览",
     shortEn: "Overview",
-    label: "系统概览",
+    label: "概览",
     enLabel: "Overview",
-    group: "foundation",
+    group: "overview",
+    keywords: ["overview", "home", "onboarding", "template", "概览", "向导", "模板"],
   },
   axhub: {
     key: "axhub",
-    productTag: "AxHub",
-    shortZh: "数据接入与目录",
-    shortEn: "Data Fabric",
-    label: "AxHub · 数据接入与目录",
-    enLabel: "AxHub · Data Fabric",
-    group: "foundation",
-  },
-  axingest: {
-    key: "axingest",
-    productTag: "AxIngest",
-    shortZh: "知识入库",
-    shortEn: "Ingestion",
-    label: "AxIngest · 知识入库",
-    enLabel: "AxIngest · Ingestion",
-    group: "foundation",
+    shortZh: "数据与知识",
+    shortEn: "Data & Knowledge",
+    label: "数据与知识",
+    enLabel: "Data & Knowledge",
+    group: "workspace",
+    keywords: [
+      "connector",
+      "dataset",
+      "document",
+      "knowledge",
+      "lineage",
+      "upload",
+      "连接源",
+      "数据集",
+      "知识文档",
+      "血缘",
+    ],
   },
   axanalytics: {
     key: "axanalytics",
-    productTag: "AxAnalytics",
-    shortZh: "分析与问数",
-    shortEn: "Smart BI",
-    label: "AxAnalytics · 分析与问数",
-    enLabel: "AxAnalytics · Smart BI",
-    group: "analytics",
-  },
-  axquery: {
-    key: "axquery",
-    productTag: "AxQuery",
-    shortZh: "智能问答",
-    shortEn: "Hybrid Q&A",
-    label: "AxQuery · 智能问答",
-    enLabel: "AxQuery · Hybrid Q&A",
-    group: "analytics",
-  },
-  xblueview: {
-    key: "xblueview",
-    productTag: "xBlueView",
-    shortZh: "孪生驾驶舱",
-    shortEn: "Twin Cockpit",
-    label: "xBlueView · 孪生驾驶舱",
-    enLabel: "xBlueView · Twin Cockpit",
-    group: "analytics",
-  },
-  xbluegraph: {
-    key: "xbluegraph",
-    productTag: "xBlueGraph",
-    shortZh: "图浏览",
-    shortEn: "Explorer",
-    label: "xBlueGraph · 图浏览",
-    enLabel: "xBlueGraph · Explorer",
-    group: "modeling",
+    shortZh: "探索与制图",
+    shortEn: "Explore & Charts",
+    label: "探索与制图",
+    enLabel: "Explore & Charts",
+    group: "workspace",
+    keywords: [
+      "ask",
+      "sql",
+      "pivot",
+      "chart",
+      "metric",
+      "axql",
+      "智能问答",
+      "透视",
+      "制图",
+      "指标",
+    ],
   },
   xbluestudio: {
     key: "xbluestudio",
-    productTag: "xBlueStudio",
-    shortZh: "节点建模",
-    shortEn: "Ontology",
-    label: "xBlueStudio · 节点建模",
-    enLabel: "xBlueStudio · Ontology",
-    group: "modeling",
+    shortZh: "本体工作室",
+    shortEn: "Ontology Studio",
+    label: "本体工作室",
+    enLabel: "Ontology Studio",
+    group: "workspace",
+    keywords: [
+      "ontology",
+      "schema",
+      "node",
+      "edge",
+      "graph",
+      "explorer",
+      "action",
+      "本体",
+      "建模",
+      "图谱",
+      "动作",
+    ],
   },
   axflow: {
     key: "axflow",
-    productTag: "AxFlow",
-    shortZh: "编排",
-    shortEn: "Pipelines",
-    label: "AxFlow · 编排",
-    enLabel: "AxFlow · Pipelines",
-    group: "modeling",
+    shortZh: "编排与告警",
+    shortEn: "Automation & Alerts",
+    label: "编排与告警",
+    enLabel: "Automation & Alerts",
+    group: "workspace",
+    keywords: ["flow", "dag", "pipeline", "rule", "alert", "approval", "编排", "告警", "审批"],
   },
   axagent: {
     key: "axagent",
-    productTag: "AxAgent",
-    shortZh: "智能体与发布",
-    shortEn: "Agents & API",
-    label: "AxAgent · 智能体与发布",
-    enLabel: "AxAgent · Agents & API",
-    group: "modeling",
+    shortZh: "智能体中心",
+    shortEn: "Agents & APIs",
+    label: "智能体中心",
+    enLabel: "Agents & APIs",
+    group: "workspace",
+    keywords: ["agent", "mcp", "endpoint", "llm", "im", "bot", "智能体", "接口", "模型"],
   },
   axsim: {
     key: "axsim",
-    productTag: "AxSim",
-    shortZh: "因果推演",
+    shortZh: "推演沙盘",
     shortEn: "Simulation",
-    label: "AxSim · 因果推演",
-    enLabel: "AxSim · Simulation",
+    label: "推演沙盘",
+    enLabel: "Simulation",
+    group: "workspace",
+    keywords: ["simulation", "sandbox", "scenario", "what-if", "causal", "推演", "沙盘", "干预"],
+  },
+  xblueview: {
+    key: "xblueview",
+    shortZh: "孪生看板",
+    shortEn: "Twin Cockpits",
+    label: "孪生看板",
+    enLabel: "Twin Cockpits",
+    group: "workspace",
+    keywords: ["dashboard", "cockpit", "export", "3d", "twin", "看板", "驾驶舱", "出品"],
+  },
+  governance: {
+    key: "governance",
+    shortZh: "系统治理",
+    shortEn: "Governance & Ops",
+    label: "系统治理",
+    enLabel: "Governance & Ops",
     group: "governance",
+    keywords: [
+      "security",
+      "rbac",
+      "abac",
+      "masking",
+      "audit",
+      "backup",
+      "retention",
+      "权限",
+      "脱敏",
+      "审计",
+      "备份",
+      "运维",
+    ],
+  },
+  axingest: {
+    key: "axingest",
+    shortZh: "知识文档",
+    shortEn: "Knowledge Docs",
+    label: "知识文档",
+    enLabel: "Knowledge Docs",
+  },
+  axquery: {
+    key: "axquery",
+    shortZh: "智能问答",
+    shortEn: "Intelligent Q&A",
+    label: "智能问答",
+    enLabel: "Intelligent Q&A",
+  },
+  xbluegraph: {
+    key: "xbluegraph",
+    shortZh: "图谱浏览",
+    shortEn: "Graph Explorer",
+    label: "图谱浏览",
+    enLabel: "Graph Explorer",
   },
   axalerts: {
     key: "axalerts",
-    productTag: "AxAlerts",
-    shortZh: "告警中心",
-    shortEn: "Monitoring",
-    label: "AxAlerts · 告警中心",
-    enLabel: "AxAlerts · Monitoring",
-    group: "governance",
+    shortZh: "规则告警",
+    shortEn: "Rules & Alerts",
+    label: "规则告警",
+    enLabel: "Rules & Alerts",
   },
   axguard: {
     key: "axguard",
-    productTag: "AxGuard",
-    shortZh: "安全治理",
-    shortEn: "Governance",
-    label: "AxGuard · 安全治理",
-    enLabel: "AxGuard · Governance",
-    group: "governance",
+    shortZh: "权限与安全",
+    shortEn: "Access & Security",
+    label: "权限与安全",
+    enLabel: "Access & Security",
   },
   axops: {
     key: "axops",
-    productTag: "AxOps",
-    shortZh: "运维与交付",
-    shortEn: "Operations",
-    label: "AxOps · 运维与交付",
-    enLabel: "AxOps · Operations",
-    group: "governance",
+    shortZh: "运维与备份",
+    shortEn: "Operations & Backup",
+    label: "运维与备份",
+    enLabel: "Operations & Backup",
   },
   agent_embed: {
     key: "agent_embed",
-    productTag: "AxAgent",
-    shortZh: "嵌入对话",
+    shortZh: "智能对话",
     shortEn: "Assistant",
-    label: "AxAgent · 智能对话",
-    enLabel: "AxAgent · Assistant",
+    label: "智能对话",
+    enLabel: "Assistant",
   },
   xblueview_share: {
     key: "xblueview_share",
-    productTag: "xBlueView",
     shortZh: "安全分享",
-    shortEn: "Share",
-    label: "xBlueView · 安全分享",
-    enLabel: "xBlueView · Share",
+    shortEn: "Secure Share",
+    label: "安全分享",
+    enLabel: "Secure Share",
   },
 };
 

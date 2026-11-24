@@ -1618,6 +1618,64 @@ pub fn ds_column_embedding_id(dataset_id: Uuid, column_name: &str) -> Uuid {
     Uuid::new_v5(&dataset_id, column_name.as_bytes())
 }
 
+/// Declarative join-free ontology query request (`POST /api/analytics/axql/compile` and `POST /api/analytics/axql/run`, `05-STEP27` §27.2).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AxqlQueryRequest {
+    /// `AxQL` statement (`FROM OBJECT(...)`, `FROM MATCH (...)`, `SUM_BY_ENTITY(...)`, `MATCH_KNOWLEDGE(...)`).
+    pub axql: String,
+    /// Named `$param` / `:param` values substituted into parameter placeholders.
+    #[serde(default)]
+    pub params: BTreeMap<String, serde_json::Value>,
+    /// Optional row limit (`1..=50_000`, default `1_000`).
+    #[serde(default)]
+    pub max_rows: Option<u32>,
+    /// Optional timeout in milliseconds (`100..=60_000`, default `15_000`).
+    #[serde(default)]
+    pub timeout_ms: Option<u64>,
+    /// Explicit PII reveal request (`403` unless authorized).
+    #[serde(default)]
+    pub reveal_pii: bool,
+    /// Target ontology subgraph slug (`"main"` default).
+    #[serde(default)]
+    pub subgraph_slug: Option<String>,
+}
+
+/// Deterministic compilation plan produced by `axpoint-analytics::axql` (`POST /api/analytics/axql/compile`, `05-STEP27` §27.2).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AxqlCompilePlan {
+    /// Guarded `DuckDB` SQL statement after cross-tier `OBJECT(...)` folding, `MATCH` path expansion, and `SUM_BY_ENTITY` rewriting.
+    pub compiled_sql: String,
+    /// Referenced `NodeTypeSpec.name` identifiers verified against `SchemaDoc`.
+    #[serde(default)]
+    pub referenced_node_types: Vec<String>,
+    /// Referenced `EdgeTypeSpec.name` identifiers verified against `SchemaDoc`.
+    #[serde(default)]
+    pub referenced_edge_types: Vec<String>,
+    /// Underlying `ds_datasets.name` tables or `ax.*` platform views bound in the compiled plan.
+    #[serde(default)]
+    pub referenced_datasets: Vec<String>,
+    /// Aliases protected by `SUM_BY_ENTITY` / `AVG_BY_ENTITY` entity-key deduplication.
+    #[serde(default)]
+    pub dedup_entities: Vec<String>,
+    /// Count of `xb_nodes.id` candidates recalled via `MATCH_KNOWLEDGE(...)` hypergraph bridge.
+    #[serde(default)]
+    pub knowledge_recall_nodes: usize,
+    /// `true` when 1:1 pre-aggregated CTE folding or `*_BY_ENTITY` deduplication was applied to prevent fanout inflation.
+    #[serde(default)]
+    pub fanout_protected: bool,
+}
+
+/// Combined compilation plan and masked tabular execution result returned by `POST /api/analytics/axql/run` (`05-STEP27` §27.2).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AxqlQueryResponse {
+    /// Compilation plan metadata (`compiled_sql`, referenced ontology elements, fanout protection).
+    pub plan: AxqlCompilePlan,
+    /// Guarded `DuckDB` tabular result (flattened so `.columns` and `.rows` are accessible at top level as well as `.plan`).
+    #[serde(flatten)]
+    pub result: QueryResult,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

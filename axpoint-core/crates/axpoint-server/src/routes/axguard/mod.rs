@@ -122,6 +122,10 @@ fn policy_router() -> Router<AppState> {
             post(policies::preview_row_policy_handler),
         )
         .route(
+            "/axguard/row-policies/simulate-state",
+            post(policies::simulate_state_row_policy_handler),
+        )
+        .route(
             "/axguard/row-policies/{id}",
             put(policies::update_row_policy_handler).delete(policies::delete_row_policy_handler),
         )

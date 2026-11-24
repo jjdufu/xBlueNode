@@ -126,6 +126,11 @@ dev = ["pytest>=8", "pytest-asyncio>=0.24", "testcontainers>=4.8", "ruff>=0.8", 
 | 11 | `maplibre-gl` | 5 | 瓦片底图（设置 `AXPOINT_MAP_TILE_URL` 时） |
 | 11 | `react-markdown` | 10 | Markdown 组件（禁用原始 HTML） |
 | 11 | `three` / `@types/three` | 0.187 / 0.187 | 3D 空间数字孪生组件（`SCENE_3D`，glTF / `.glb` 加载与网格指标着色） |
+| 23 | `react-resizable-panels` | 4.x | 弹性可调分栏工作台原语（MIT） |
+| 23 | `cmdk` | 1.1.x | 全局 `⌘K / Ctrl+K` 无头命令搜索面板（MIT） |
+| 24 | `@antv/g6` / `@antv/g6-extension-react` | 5.x / 0.2.x | 因果传导与资产血缘图谱异步分包渲染（MIT） |
+| 24 | `zustand` / `zundo` | 5.x / 2.3.x | 画布状态与 50 步撤销重做栈（MIT） |
+| 25 | `@visactor/vtable` / `@visactor/react-vtable` | 1.16.x / 1.16.x | 高性能 Canvas 虚拟化多维透视表（MIT / Apache-2.0） |
 
 Sidecar 服务端图表（`axpoint-parser/charts/package.json`，Step 12，`lite` 与 `full` 镜像均内置）：`echarts` 6.1（与 Web 同版本）、`@resvg/resvg-js` 2.6。
 

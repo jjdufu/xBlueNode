@@ -690,7 +690,7 @@ pub struct SimulateCedarPolicyResponse {
     pub diagnostics: Vec<String>,
 }
 
-/// Stored row-level security policy (`sec_row_policies`, `§13.1`, `§13.6.2`).
+/// Stored row-level security policy (`sec_row_policies`, `§13.1`, `§13.6.2`, `05-STEP27` §27.1).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RowPolicyRecord {
     /// Policy UUID.
@@ -705,10 +705,19 @@ pub struct RowPolicyRecord {
     pub target_ref: String,
     /// Subject selector (`{}` = all subjects).
     pub applies_to: SubjectSelector,
-    /// Validated row predicate expression (`§13.6.2`).
+    /// Validated row predicate expression (`§13.6.2` & `05-STEP27` §27.3).
     pub predicate: String,
     /// Whether policy is active.
     pub enabled: bool,
+    /// Policy evaluation mode (`STATIC_ATTR` or `STATE_DRIVEN`, `05-STEP27` §27.1).
+    #[serde(default)]
+    pub policy_mode: crate::enums::RowPolicyMode,
+    /// Optional timestamp property/column name used for TTL active-window filtering (`05-STEP27` §27.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_timestamp_field: Option<String>,
+    /// Optional maximum age in hours (`1..=87_600`) before records age out of active views (`05-STEP27` §27.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_max_age_hours: Option<i32>,
     /// Creation timestamp.
     pub created_at: DateTime<Utc>,
 }
@@ -726,11 +735,20 @@ pub struct SaveRowPolicyRequest {
     /// Subject selector (`{}` = all subjects).
     #[serde(default)]
     pub applies_to: SubjectSelector,
-    /// Row predicate expression (`§13.6.2`).
+    /// Row predicate expression (`§13.6.2` & `05-STEP27` §27.3).
     pub predicate: String,
     /// Whether policy is active (defaults to `true`).
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Policy evaluation mode (`STATIC_ATTR` default, or `STATE_DRIVEN`, `05-STEP27` §27.1).
+    #[serde(default)]
+    pub policy_mode: crate::enums::RowPolicyMode,
+    /// Optional timestamp field name for TTL active-window filtering (`05-STEP27` §27.1).
+    #[serde(default)]
+    pub ttl_timestamp_field: Option<String>,
+    /// Optional maximum age in hours (`1..=87_600`) for TTL active-window filtering (`05-STEP27` §27.1).
+    #[serde(default)]
+    pub ttl_max_age_hours: Option<i32>,
 }
 
 /// Stored default-deny toggle (`sec_row_policy_defaults`, `§13.1`).
@@ -1108,4 +1126,39 @@ pub struct LlmEgressPreviewResponse {
     pub masked: String,
     /// Mapping from placeholder token (`⟨PHONE_1⟩`) to original matched substring.
     pub placeholders: BTreeMap<String, String>,
+}
+
+/// Request body for `POST /api/axguard/row-policies/simulate-state` (`05-STEP27` §27.3).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StateRowPolicySimulateRequest {
+    /// Simulated user UUID whose attributes, department, and roles are bound into `{{user.*}}`.
+    pub user_id: Uuid,
+    /// Target `NodeTypeSpec.name`.
+    pub type_name: String,
+    /// Optional candidate predicate expression (when omitted, evaluates currently saved policies for `user_id` on `type_name`).
+    #[serde(default)]
+    pub predicate: Option<String>,
+    /// Optional candidate TTL timestamp field name.
+    #[serde(default)]
+    pub ttl_timestamp_field: Option<String>,
+    /// Optional candidate TTL maximum age in hours (`1..=87_600`).
+    #[serde(default)]
+    pub ttl_max_age_hours: Option<i32>,
+    /// Maximum sample nodes returned (`1..=50`, default `20`).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+/// Response body returned by `POST /api/axguard/row-policies/simulate-state` (`05-STEP27` §27.3).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StateRowPolicySimulateResponse {
+    /// Compiled PostgreSQL `xb_nodes` boolean predicate (`None` = unrestricted).
+    pub compiled_pg_filter: Option<String>,
+    /// Compiled `DuckDB` `ax.nodes` boolean predicate (`None` = unrestricted).
+    pub compiled_duckdb_filter: Option<String>,
+    /// Number of visible sample nodes returned.
+    pub matched_count: usize,
+    /// Masked visible sample nodes under the simulated state policy.
+    pub sample_nodes: Vec<crate::topology::BlueNode>,
 }

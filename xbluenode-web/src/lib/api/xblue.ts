@@ -2,6 +2,7 @@ import { z } from "zod";
 import { getAccessToken } from "./auth";
 import { ApiError, ApiErrorBodySchema, requestJson } from "./client";
 import type {
+  ActionSideEffectTier,
   AggFn,
   Cardinality,
   CopilotActionMode,
@@ -13,7 +14,9 @@ import type {
   GroundingMode,
   MetricSourceTag,
   PiiCategory,
+  PropagationPathKind,
   RollupGrain,
+  RuntimeCertLevel,
   SemanticLayerTier,
   SubgraphMergeStrategy,
 } from "./enums";
@@ -111,6 +114,8 @@ export interface BlueLink {
 
 export interface LinkRecord extends BlueLink {
   properties: Record<string, unknown>;
+  metrics?: Record<string, number>;
+  row_version?: number;
   source_dataset_id?: string | null;
   valid_from?: string | null;
   valid_to?: string | null;
@@ -363,6 +368,54 @@ export interface DerivedRuleSpec {
   maturity?: DesignMaturity;
 }
 
+export interface ActionParamSpec {
+  name: string;
+  display_name?: string;
+  data_type: DataType;
+  required?: boolean;
+  default_value?: unknown;
+  description?: string;
+}
+
+export interface MutationStepSpec {
+  target: string;
+  expression: string;
+  filter?: string | null;
+}
+
+export interface ActionSpec {
+  name: string;
+  display_name: string;
+  description?: string;
+  parameters: ActionParamSpec[];
+  precondition_expr?: string | null;
+  side_effect_tier: ActionSideEffectTier;
+  mutations: MutationStepSpec[];
+  trigger_flow_slug?: string | null;
+  required_permission?: string;
+  require_approval?: boolean;
+  idempotency_key_template?: string | null;
+  maturity?: DesignMaturity;
+}
+
+export interface EdgeDerivedRuleSpec {
+  target_metric: string;
+  expression: string;
+  path_kind?: PropagationPathKind;
+  enabled: boolean;
+  maturity?: DesignMaturity;
+}
+
+export interface EdgeAggRuleSpec {
+  target_metric: string;
+  op: AggFn;
+  via_link_type: string;
+  direction: LinkDirection;
+  source_metric: string;
+  filter?: string | null;
+  maturity?: DesignMaturity;
+}
+
 export interface NodeTypeSpec {
   id?: string;
   name: string;
@@ -380,6 +433,7 @@ export interface NodeTypeSpec {
   maturity?: DesignMaturity;
   semantic_layer_tier?: SemanticLayerTier | null;
   domain_group?: string | null;
+  actions?: ActionSpec[];
 }
 
 export interface EdgeTypeSpec {
@@ -393,6 +447,8 @@ export interface EdgeTypeSpec {
   properties: PropertySpec[];
   propagation: Record<string, unknown>;
   maturity?: DesignMaturity;
+  derived_rules?: EdgeDerivedRuleSpec[];
+  agg_rules?: EdgeAggRuleSpec[];
 }
 
 export interface MappingGeoSpec {
@@ -1192,6 +1248,69 @@ export interface MetricExplainResponse {
   inputs: ExplainInputItem[];
   computed_at: string | null;
   warnings: EvalWarningCode[];
+  rule_chain?: string[];
+  previous_value?: number | null;
+  current_value?: number | null;
+  delta?: number | null;
+  input_snapshot?: Record<string, unknown>;
+}
+
+export interface LinkMetricExplainResponse {
+  link_id: string;
+  link_type: string;
+  metric: string;
+  value: number | null;
+  producer: MetricProducer;
+  path_kind: PropagationPathKind;
+  rule: unknown;
+  rule_chain: string[];
+  previous_value: number | null;
+  current_value: number | null;
+  delta: number | null;
+  input_snapshot: Record<string, unknown>;
+  computed_at: string | null;
+  warnings: EvalWarningCode[];
+}
+
+export interface DeadKnowledgeIssue {
+  owner_type: string;
+  metric: string;
+  producer_kind: string;
+  message: string;
+}
+
+export interface RuntimeCertReport {
+  id: string;
+  subgraph_slug: string;
+  schema_version?: number | null;
+  draft_id?: string | null;
+  cert_level: RuntimeCertLevel;
+  readiness_score: number;
+  dead_knowledge_cnt: number;
+  high_fanout_cnt: number;
+  trial_tick_passed: boolean;
+  triggered_rules_cnt: number;
+  dead_knowledge: DeadKnowledgeIssue[];
+  issues: ValidationIssue[];
+  created_at: string;
+}
+
+export interface InvokeObjectActionRequest {
+  inputs?: Record<string, unknown>;
+  idempotency_key: string;
+  expected_version?: number;
+  dry_run?: boolean;
+}
+
+export interface InvokeObjectActionResponse {
+  status: string;
+  node?: BlueNode | null;
+  mutated_nodes: number;
+  mutated_links: number;
+  recomputed_metrics: number;
+  action_log_id?: number | null;
+  approval_id?: string | null;
+  idempotency_replay: boolean;
 }
 
 export interface KnowledgeNodeCandidate {
@@ -1397,6 +1516,63 @@ export const DerivedRuleSpecSchema: z.ZodType<DerivedRuleSpec> = z.object({
   maturity: DesignMaturitySchema.optional(),
 });
 
+const ActionParamSpecSchema: z.ZodType<ActionParamSpec> = z.object({
+  name: z.string().default(""),
+  display_name: z.string().optional(),
+  data_type: DataTypeSchema,
+  required: z.boolean().optional(),
+  default_value: z.unknown().optional(),
+  description: z.string().optional(),
+});
+
+const MutationStepSpecSchema: z.ZodType<MutationStepSpec> = z.object({
+  target: z.string().default(""),
+  expression: z.string().default(""),
+  filter: z.string().nullable().optional(),
+});
+
+const ActionSpecSchema: z.ZodType<ActionSpec> = z.object({
+  name: z.string().default(""),
+  display_name: z.string().default(""),
+  description: z.string().optional(),
+  parameters: z.array(ActionParamSpecSchema).default([]),
+  precondition_expr: z.string().nullable().optional(),
+  side_effect_tier: z
+    .enum(["SELF_ONLY", "RELATED_NODES", "EXTERNAL_EFFECT"])
+    .default("SELF_ONLY"),
+  mutations: z.array(MutationStepSpecSchema).default([]),
+  trigger_flow_slug: z.string().nullable().optional(),
+  required_permission: z.string().optional(),
+  require_approval: z.boolean().optional(),
+  idempotency_key_template: z.string().nullable().optional(),
+  maturity: DesignMaturitySchema.optional(),
+});
+
+const EdgeDerivedRuleSpecSchema: z.ZodType<EdgeDerivedRuleSpec> = z.object({
+  target_metric: z.string().default(""),
+  expression: z.string().default(""),
+  path_kind: z
+    .enum([
+      "VERTEX_TO_VERTEX",
+      "VERTEX_TO_EDGE",
+      "EDGE_TO_VERTEX",
+      "EDGE_TO_EDGE",
+    ])
+    .optional(),
+  enabled: z.boolean().default(true),
+  maturity: DesignMaturitySchema.optional(),
+});
+
+const EdgeAggRuleSpecSchema: z.ZodType<EdgeAggRuleSpec> = z.object({
+  target_metric: z.string().default(""),
+  op: AggFnSchema,
+  via_link_type: z.string().default(""),
+  direction: LinkDirectionSchema,
+  source_metric: z.string().default(""),
+  filter: z.string().nullable().optional(),
+  maturity: DesignMaturitySchema.optional(),
+});
+
 export const NodeTypeSpecSchema: z.ZodType<NodeTypeSpec> = z.object({
   id: z.string().optional(),
   name: z.string().default(""),
@@ -1414,6 +1590,7 @@ export const NodeTypeSpecSchema: z.ZodType<NodeTypeSpec> = z.object({
   maturity: DesignMaturitySchema.optional(),
   semantic_layer_tier: SemanticLayerTierSchema.optional(),
   domain_group: z.string().nullable().optional(),
+  actions: z.array(ActionSpecSchema).optional(),
 });
 
 export const EdgeTypeSpecSchema: z.ZodType<EdgeTypeSpec> = z.object({
@@ -1427,6 +1604,8 @@ export const EdgeTypeSpecSchema: z.ZodType<EdgeTypeSpec> = z.object({
   properties: z.array(PropertySpecSchema).default([]),
   propagation: z.record(z.string(), z.unknown()).default({}),
   maturity: DesignMaturitySchema.optional(),
+  derived_rules: z.array(EdgeDerivedRuleSpecSchema).optional(),
+  agg_rules: z.array(EdgeAggRuleSpecSchema).optional(),
 });
 
 export const MappingGeoSpecSchema: z.ZodType<MappingGeoSpec> = z.object({
@@ -2128,6 +2307,9 @@ export function sanitizeSchemaDocForWire(doc: SchemaDoc): SchemaDoc {
       if (nt.domain_group && nt.domain_group.trim().length > 0) {
         cleaned.domain_group = nt.domain_group.trim();
       }
+      if (nt.actions && nt.actions.length > 0) {
+        cleaned.actions = nt.actions;
+      }
       return cleaned;
     }),
     edge_types: doc.edge_types.map((et) => {
@@ -2146,6 +2328,12 @@ export function sanitizeSchemaDocForWire(doc: SchemaDoc): SchemaDoc {
       }
       if (et.maturity) {
         cleaned.maturity = et.maturity;
+      }
+      if (et.derived_rules && et.derived_rules.length > 0) {
+        cleaned.derived_rules = et.derived_rules;
+      }
+      if (et.agg_rules && et.agg_rules.length > 0) {
+        cleaned.agg_rules = et.agg_rules;
       }
       return cleaned;
     }),
@@ -3358,5 +3546,38 @@ export const xblueApi = {
   ): Promise<SubgraphConsumptionResponse> =>
     requestJson<SubgraphConsumptionResponse>(
       `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/consumption`
+    ),
+  invokeObjectAction: (
+    typeName: string,
+    nodeKey: string,
+    actionName: string,
+    body: InvokeObjectActionRequest
+  ): Promise<InvokeObjectActionResponse> =>
+    requestJson<InvokeObjectActionResponse>(
+      `/api/xblue/objects/${encodeURIComponent(typeName)}/${encodeURIComponent(nodeKey)}/actions/${encodeURIComponent(actionName)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }
+    ),
+  certifySubgraph: (
+    subgraphSlug: string,
+    body?: { draft_id?: string; sample_limit?: number }
+  ): Promise<RuntimeCertReport> =>
+    requestJson<RuntimeCertReport>(
+      `/api/xblue/subgraphs/${encodeURIComponent(subgraphSlug)}/certify`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body ?? {}),
+      }
+    ),
+  explainLinkMetric: (
+    linkId: string,
+    metric: string
+  ): Promise<LinkMetricExplainResponse> =>
+    requestJson<LinkMetricExplainResponse>(
+      `/api/xblue/links/${encodeURIComponent(linkId)}/explain/${encodeURIComponent(metric)}`
     ),
 };

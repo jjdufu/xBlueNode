@@ -178,6 +178,7 @@ fn base_supply_doc(sync_wh_knowledge: bool) -> SchemaDoc {
                 maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                 semantic_layer_tier: None,
                 domain_group: None,
+                actions: Vec::new(),
             },
             NodeTypeSpec {
                 id: None,
@@ -196,6 +197,7 @@ fn base_supply_doc(sync_wh_knowledge: bool) -> SchemaDoc {
                 maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
                 semantic_layer_tier: None,
                 domain_group: None,
+                actions: Vec::new(),
             },
         ],
         edge_types: vec![EdgeTypeSpec {
@@ -209,6 +211,8 @@ fn base_supply_doc(sync_wh_knowledge: bool) -> SchemaDoc {
             properties: Vec::new(),
             propagation: serde_json::json!({}),
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            derived_rules: Vec::new(),
+            agg_rules: Vec::new(),
         }],
         mappings: Vec::new(),
     }
@@ -254,6 +258,7 @@ fn shipment_subgraph_doc() -> SchemaDoc {
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             semantic_layer_tier: None,
             domain_group: None,
+            actions: Vec::new(),
         }],
         edge_types: vec![EdgeTypeSpec {
             id: None,
@@ -266,6 +271,8 @@ fn shipment_subgraph_doc() -> SchemaDoc {
             properties: Vec::new(),
             propagation: serde_json::json!({}),
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
+            derived_rules: Vec::new(),
+            agg_rules: Vec::new(),
         }],
         mappings: Vec::new(),
     }

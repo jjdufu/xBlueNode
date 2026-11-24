@@ -21,6 +21,7 @@
 | C09 | 图算法（社区、中心性） | 03 | §03.6 | step03 “pagerank” |
 | C10 | 空间地理数据与地图态势 | 03 / 11 | §03.2（`geo_lng/geo_lat`）、[10](../../plans/completed/v1-foundation-step00-14/10-STEP11-12-XBLUEVIEW-TWIN-DASHBOARD-EXPORT.md) §11.4 | step03 “geo-bbox”；`e2e/xblueview.spec.ts` 地图组件渲染 |
 | C11 | 行级与子图级可见范围 | 13 | [11](../../plans/completed/v1-foundation-step00-14/11-STEP13-AXGUARD-SECURITY-GOVERNANCE.md) §13.6 | step13 “row-policy”、“row-policy-filter” |
+| C86 | 状态驱动动态行级视野（实时指标/属性阈值扩缩容与 TTL 退场）及 `AxSim` 沙盘同源继承 | 27 | [05-STEP27](../../plans/v3-craft-and-world-runtime/world-runtime/05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) §27.3 | step27 “state-visibility-escalate”、“sim-inherits-state-visibility” |
 | C12 | 敏感信息脱敏后协作 | 13 | §13.7、§13.8 | step13 “mask-phone”、“east-no-reveal”、“pii-egress”；step04 “pii-mask” |
 | C13 | 跨部门共享访问 | 13 | §13.9.1 | step13 “cedar-deny”、“grant-active” |
 | C14 | 第三方库全量 + 增量同步（含 Schema 演进） | 02 | [03](../../plans/completed/v1-foundation-step00-14/03-STEP02-AXHUB-CONNECTORS-AND-SYNC.md) §02.4、§02.9 | step02 “orders-rows”、“single-flight”；`tests/test_connectors_sql.py` |
@@ -40,6 +41,7 @@
 | C68 | `xBlueStudio` 焦点感知常驻 AI 助手与草案快照一键回退 | 18 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.3 | step18 “copilot-readonly-diag”、“copilot-mutate-rollback” |
 | C69 | 模型要素 `PROPOSED / CONFIRMED` 成熟度状态流与完备度通过项计数 | 18 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.2 | step18 “proposal-confirm-flow”、“pass-count-metrics” |
 | C70 | 单节点左→右全链路数据血缘管道图与自动生成模型全景规格书 | 18 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.4 | step18 “node-lineage-graph”、“subgraph-spec-doc” |
+| C84 | 孤立死指标（Dead Knowledge）静态闭包扫描与开发沙盒 `Trial Tick` L0–L4 运行时就绪认证 | 26 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.4 | step26 “dead-knowledge-detected”、“trial-tick-certified” |
 
 ### C 构建
 
@@ -61,6 +63,8 @@
 | C66 | `AxBuilder` 构建态 MCP 工具集（拉取/校验/推送模型、流程与看板草案并回传深链） | 17 | [03-STEP17](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2～§17.3 | step17 “mcp-axbuilder-preflight”、“mcp-push-draft”、“mcp-deeplink” |
 | C67 | 细粒度构建令牌预设与隔离开发子图试灌及一键清空 | 17 | [03-STEP17](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/03-STEP17-AXBUILDER-MCP-AND-DEV-SUBGRAPH.md) §17.2.2、§17.4 | step17 “builder-token-no-prod”、“dev-subgraph-reset” |
 | C72 | `xBlueStudio` 一键双态应用包装（领域智能体 + 孪生驾驶舱） | 19 | [05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.3 | step19 “studio-pack-agent”、“studio-pack-dashboard” |
+| C82 | 一等公民 `ActionSpec` 动作契约（前置断言、派生锁、多对象 CAS 原子回写、动态 GraphQL `Mutation` 与 MCP 暴露） | 26 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.2 | step26 “action-spec-precondition”、“graphql-action-mutation” |
+| C83 | 关系边时序指标与 `V→V / V→E / E→V / E→E` 四路径动力学拓扑传播及三轨溯源 | 26 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.3 | step26 “edge-metric-ingest”、“four-path-propagation” |
 
 ### D 智能
 
@@ -74,6 +78,7 @@
 | C60 | 云端与本地小模型 `json_schema` 受限解码及确定性零温采样 | 15 | [01-STEP15](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.2～§15.3 | step15 “schema-guided-ok”、“temp-zero-enforced” |
 | C62 | 本体与认证指标优先问数路由（零裸 SQL 确定性语义编译） | 16 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.2 | step16 “ontology-metric-route”、“slot-compile-exact” |
 | C63 | 多表问数本体外键路径守卫（拦截无映射依据的自由 `JOIN`） | 16 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.3 | step16 “ungrounded-join-rejected”、“mapped-join-ok” |
+| C85 | 免连接本体查询编译层 `AxQL`（跨三层侧面自动折叠、`SUM_BY_ENTITY` 防扇出膨胀与超图检索桥接） | 27 | [05-STEP27](../../plans/v3-craft-and-world-runtime/world-runtime/05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) §27.2 | step27 “axql-cross-tier-compile”、“sum-by-entity-exact” |
 | C64 | 知识问答段落引用角标核验与零召回确定性拒答 | 16 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.4 | step16 “phantom-citation-stripped”、“empty-recall-abstain” |
 | C65 | 云/端双轨 50 例反幻觉对抗基准 100% 拦截 | 16 / 22 | [02-STEP16](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/02-STEP16-ONTOLOGY-GROUNDED-ASK-AND-CITATION-GUARD.md) §16.5、[08-STEP22](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/08-STEP22-V2-E2E-BENCHMARKS-AND-ACCEPTANCE.md) §22.2 | step16 “hallucination-eval-100”；step22 “dual-track-cloud_flagship-100”、“dual-track-local_7b_qwen-100” |
 | C74 | 会话级显式上下文锁定问数、五区语义驾驶舱预设与发布前全组件健康自检 | 20 | [06-STEP20](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.2～§20.4 | step20 “scoped-ask-isolated”、“view-zone-preset”、“view-publish-preflight” |
@@ -115,6 +120,8 @@
 | C55 | 样例数据一键装载演示 | 14 | §14.6 | `POST /api/axops/demo/supply_chain/load` 后 `scripts/demo/supply_chain.md` 各步结果；`e2e/full-journey.spec.ts` |
 | C61 | 系统级只读模型与用户个人默认模型分级覆盖 | 15 | [01-STEP15](../../plans/completed/v2-ux-and-grounded-ai-step15-22/grounded-ai/01-STEP15-CONSTRAINED-DECODING-AND-LLM-CAPS.md) §15.3.4、§15.4 | step15 “user-default-provider”、“system-provider-readonly” |
 | C71 | 系统概览 5 步实时构建向导与免运维权限演练子图模板试用 | 19 | [05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.1～§19.2 | step19 “onboarding-progress”、“trial-template-clone” |
+| C76 | 8 域任务流导航收敛、历史路由无感兼容与全局 `⌘K` 命令直达 | 23 | [01-STEP23](../../plans/v3-craft-and-world-runtime/craft-ux/01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) §23.1～§23.2 | step23 “ia-8-domains”、“legacy-route-redirect”、“cmdk-jump-ok” |
+| C77 | 严格中英单语纯净度（零内部代号尾缀/零裸枚举）与可拖拽弹性分栏 | 23 | [01-STEP23](../../plans/v3-craft-and-world-runtime/craft-ux/01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) §23.3～§23.4 | step23 “zh-zero-codename”、“i18n-guard-ok”、“resizable-pane-persist” |
 
 ---
 

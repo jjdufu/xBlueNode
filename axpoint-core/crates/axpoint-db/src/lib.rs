@@ -1,6 +1,7 @@
 //! PostgreSQL (`pgvector` + hypergraph) persistence, five-way retrieval, and platform ports.
 #![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
+pub mod action_exec;
 pub mod agent_repo;
 pub mod aggregate_exec;
 pub mod analytics_repo;
@@ -21,6 +22,7 @@ pub mod outbox;
 pub mod rollup;
 pub mod rules_repo;
 pub mod sim_repo;
+pub mod sim_visibility;
 pub mod studio_repo;
 pub mod tenant;
 pub mod tokens;

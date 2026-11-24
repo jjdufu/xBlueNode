@@ -109,28 +109,28 @@ export function TriggerEditor({
           className="h-8 w-full font-mono-tech"
         >
           <option value="MANUAL">
-            {tx("手动 / API 触发 (MANUAL)", "Manual / API (MANUAL)")}
+            {tx("手动触发", "Manual / API")}
           </option>
           <option value="CRON">
-            {tx("定时调度 (CRON)", "Scheduled (CRON)")}
+            {tx("定时调度", "Scheduled")}
           </option>
           <option value="OUTBOX_EVENT">
-            {tx("事件总线订阅 (OUTBOX_EVENT)", "Event Bus (OUTBOX_EVENT)")}
+            {tx("事件总线订阅", "Event Bus")}
           </option>
           <option value="WEBHOOK">
-            {tx("外部回调 (WEBHOOK)", "HTTP Webhook (WEBHOOK)")}
+            {tx("外部回调", "HTTP Webhook")}
           </option>
           <option value="RULE">
-            {tx("告警规则联动 (RULE)", "Alert Rule (RULE)")}
+            {tx("告警规则联动", "Alert Rule")}
           </option>
           <option value="API">
-            {tx("数据服务接口 (API)", "Data Service (API)")}
+            {tx("数据服务接口", "Data Service")}
           </option>
           <option value="MCP">
-            {tx("智能体工具 (MCP)", "Agent Tool (MCP)")}
+            {tx("智能体工具", "Agent Tool")}
           </option>
           <option value="SIM_APPLY">
-            {tx("推演决策下发 (SIM_APPLY)", "Sim Decision (SIM_APPLY)")}
+            {tx("推演决策下发", "Sim Decision")}
           </option>
         </Select>
       </div>

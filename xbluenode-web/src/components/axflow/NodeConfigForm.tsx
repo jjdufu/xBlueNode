@@ -330,10 +330,10 @@ export function NodeConfigForm({
             className="h-8 w-full px-2 font-mono-tech"
           >
             <option value="FAIL_RUN">
-              {tx("终止流程 (FAIL_RUN)", "Abort Run (FAIL_RUN)")}
+              {tx("终止流程", "Abort Run")}
             </option>
             <option value="CONTINUE">
-              {tx("继续分支 (CONTINUE)", "Continue (CONTINUE)")}
+              {tx("继续分支", "Continue")}
             </option>
           </Select>
         </div>
@@ -351,16 +351,16 @@ export function NodeConfigForm({
                 join: e.target.value as JoinMode,
               })
             }
-            className="h-8 w-full px-2 font-mono-tech"
+            className="h-8 w-full px-2"
           >
             <option value="ALL_SUCCESS">
-              {tx("全部入边满足 (ALL_SUCCESS)", "All Active (ALL_SUCCESS)")}
+              {tx("全部入边满足", "All Active")}
             </option>
             <option value="ANY_SUCCESS">
-              {tx("任一入边满足 (ANY_SUCCESS)", "Any Active (ANY_SUCCESS)")}
+              {tx("任一入边满足", "Any Active")}
             </option>
             <option value="ALL_DONE">
-              {tx("全部前驱终态 (ALL_DONE)", "All Settled (ALL_DONE)")}
+              {tx("全部前驱终态", "All Settled")}
             </option>
           </Select>
         </div>

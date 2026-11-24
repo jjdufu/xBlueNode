@@ -86,6 +86,7 @@ const fn approval_source_kind_as_str(kind: ApprovalSourceKind) -> &'static str {
         ApprovalSourceKind::SimApply => "SIM_APPLY",
         ApprovalSourceKind::Agent => "AGENT",
         ApprovalSourceKind::Grant => "GRANT",
+        ApprovalSourceKind::ObjectAction => "OBJECT_ACTION",
     }
 }
 
@@ -95,6 +96,7 @@ fn parse_approval_source_kind(raw: &str) -> Result<ApprovalSourceKind, AppError>
         "SIM_APPLY" => Ok(ApprovalSourceKind::SimApply),
         "AGENT" => Ok(ApprovalSourceKind::Agent),
         "GRANT" => Ok(ApprovalSourceKind::Grant),
+        "OBJECT_ACTION" => Ok(ApprovalSourceKind::ObjectAction),
         _ => Err(AppError::bad(
             "INVALID_ARGUMENT",
             format!("unknown ApprovalSourceKind value: {raw}"),
@@ -131,6 +133,7 @@ const fn action_source_kind_as_str(kind: ActionSourceKind) -> &'static str {
         ActionSourceKind::Agent => "AGENT",
         ActionSourceKind::Rule => "RULE",
         ActionSourceKind::View => "VIEW",
+        ActionSourceKind::ObjectAction => "OBJECT_ACTION",
     }
 }
 
@@ -141,6 +144,7 @@ fn parse_action_source_kind(raw: &str) -> Result<ActionSourceKind, AppError> {
         "AGENT" => Ok(ActionSourceKind::Agent),
         "RULE" => Ok(ActionSourceKind::Rule),
         "VIEW" => Ok(ActionSourceKind::View),
+        "OBJECT_ACTION" => Ok(ActionSourceKind::ObjectAction),
         _ => Err(AppError::bad(
             "INVALID_ARGUMENT",
             format!("unknown ActionSourceKind value: {raw}"),
@@ -155,6 +159,7 @@ const fn action_kind_as_str(kind: ActionKind) -> &'static str {
         ActionKind::Http => "HTTP",
         ActionKind::Notify => "NOTIFY",
         ActionKind::WorkItem => "WORK_ITEM",
+        ActionKind::ObjectAction => "OBJECT_ACTION",
     }
 }
 
@@ -165,6 +170,7 @@ fn parse_action_kind(raw: &str) -> Result<ActionKind, AppError> {
         "HTTP" => Ok(ActionKind::Http),
         "NOTIFY" => Ok(ActionKind::Notify),
         "WORK_ITEM" => Ok(ActionKind::WorkItem),
+        "OBJECT_ACTION" => Ok(ActionKind::ObjectAction),
         _ => Err(AppError::bad(
             "INVALID_ARGUMENT",
             format!("unknown ActionKind value: {raw}"),

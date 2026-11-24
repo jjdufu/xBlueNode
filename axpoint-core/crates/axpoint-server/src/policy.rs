@@ -835,6 +835,7 @@ mod tests {
             maturity: axpoint_domain::enums::DesignMaturity::Confirmed,
             semantic_layer_tier: None,
             domain_group: None,
+            actions: Vec::new(),
         };
         let mut main_order = draft_order.clone();
         main_order.properties = vec![
