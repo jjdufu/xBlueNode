@@ -156,6 +156,8 @@ pub(crate) fn empty_sim_result() -> SimResult {
         reason: None,
         iterations: 0,
         checkpoints: Vec::new(),
+        fired_events: Vec::new(),
+        deadline_report: None,
     }
 }
 
@@ -949,6 +951,8 @@ fn assemble_steady_result(
         reason: numeric.reason.clone(),
         iterations: numeric.iterations,
         checkpoints,
+        fired_events: Vec::new(),
+        deadline_report: None,
     })
 }
 

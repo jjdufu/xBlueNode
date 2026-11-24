@@ -2251,6 +2251,7 @@ mod tests {
                 lat: 31.0,
                 metric_value: Some(50.0),
                 open_alerts: 1,
+                geo_shape: None,
             }],
             vec![NodesGeoLinkRow {
                 link_id: l1,

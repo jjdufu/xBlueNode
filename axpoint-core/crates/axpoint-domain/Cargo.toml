@@ -10,6 +10,7 @@ workspace = true
 
 [dependencies]
 chrono = { workspace = true }
+geo = { workspace = true }
 hex = { workspace = true }
 hyperloglogplus = { workspace = true }
 petgraph = { workspace = true }

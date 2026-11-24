@@ -188,6 +188,26 @@ fn decode_scenario_row(
         description: row.get("description"),
         actions,
         params,
+        scheduled_events: row
+            .try_get::<serde_json::Value, _>("scheduled_events")
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
+        goal_constraints: row
+            .try_get::<serde_json::Value, _>("goal_constraints")
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
+        fired_events: row
+            .try_get::<serde_json::Value, _>("fired_events")
+            .ok()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default(),
+        deadline_report: row
+            .try_get::<Option<serde_json::Value>, _>("deadline_report")
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_value(v).ok()),
         is_stale: overlay_hash != current_overlay_hash,
         overlay_hash,
         result,
@@ -544,6 +564,8 @@ async fn load_sandbox_nodes_merged_tx(
                 title: o_title.unwrap_or(base_title),
                 metrics,
                 properties,
+                geo: None,
+                geo_shape: None,
                 is_modified: has_overlay,
                 is_new: false,
             },
@@ -581,6 +603,8 @@ async fn load_sandbox_nodes_merged_tx(
                 title: row.get::<Option<String>, _>("title").unwrap_or_default(),
                 metrics,
                 properties,
+                geo: None,
+                geo_shape: None,
                 is_modified: false,
                 is_new: true,
             },
@@ -843,6 +867,8 @@ async fn load_effective_node_tx(
             title,
             metrics,
             properties,
+            geo: None,
+            geo_shape: None,
             is_modified: has_overlay,
             is_new: false,
         }));
@@ -862,6 +888,8 @@ async fn load_effective_node_tx(
             properties: ov
                 .get::<Option<serde_json::Value>, _>("properties")
                 .map_or_default(decode_json_object),
+            geo: None,
+            geo_shape: None,
             is_modified: false,
             is_new: true,
         }));
@@ -1936,6 +1964,8 @@ impl SimRepository for PgStore {
                 title: n.title,
                 metrics: n.metrics,
                 properties: n.properties,
+                geo: n.geo,
+                geo_shape: n.geo_shape,
                 row_version,
             })
             .collect();
@@ -2096,6 +2126,8 @@ impl SimRepository for PgStore {
             title: String::from(title),
             metrics: req.metrics,
             properties: req.properties,
+            geo: req.geo,
+            geo_shape: req.geo_shape,
             is_modified: false,
             is_new: true,
         })
@@ -2552,6 +2584,8 @@ impl SimRepository for PgStore {
             kpis: sim_res.kpis,
             warnings: sim_res.warnings,
             converged: sim_res.converged,
+            fired_events: sim_res.fired_events,
+            deadline_report: sim_res.deadline_report,
         };
 
         let actions_json = serde_json::to_value(&req.actions)
@@ -2758,6 +2792,8 @@ impl SimRepository for PgStore {
             converged: result.converged,
             reason: result.reason.clone(),
             iterations: result.iterations,
+            fired_events: result.fired_events.clone(),
+            deadline_report: result.deadline_report.clone(),
         };
         let summary_json = serde_json::to_value(&summary).map_err(|err| {
             AppError::Database(format!("serialize ScenarioSummary failed: {err}"))

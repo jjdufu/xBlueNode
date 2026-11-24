@@ -505,6 +505,8 @@ fn solve_governed_sandbox_quick(
         kpis: sim_res.kpis,
         warnings: sim_res.warnings,
         converged: sim_res.converged,
+        fired_events: sim_res.fired_events,
+        deadline_report: sim_res.deadline_report,
     })
 }
 
@@ -1474,6 +1476,8 @@ async fn execute_what_if_actions(
                     name: sc_name,
                     description: String::new(),
                     actions: actions.clone(),
+                    scheduled_events: Vec::new(),
+                    goal_constraints: Vec::new(),
                     params: sim_params.clone(),
                 },
             )
@@ -1757,6 +1761,8 @@ impl SimExecutionPort for ServerSimPort {
                         name: sc_name,
                         description: String::new(),
                         actions: actions.clone(),
+                        scheduled_events: Vec::new(),
+                        goal_constraints: Vec::new(),
                         params: params.clone(),
                     },
                 )

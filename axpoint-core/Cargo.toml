@@ -116,6 +116,7 @@ dotenvy = "0.15"
 duckdb = { version = "1.20000", features = ["bundled", "parquet", "json", "vtab-arrow", "vscalar", "vscalar-arrow"] }
 eventsource-stream = "0.2"
 futures = "0.3"
+geo = { version = "0.29", default-features = false, features = ["use-serde"] }
 hex = "0.4"
 hkdf = "0.12"
 hmac = "0.12"

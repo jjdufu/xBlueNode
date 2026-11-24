@@ -1001,6 +1001,9 @@ pub struct NodesGeoRow {
     pub metric_value: Option<f64>,
     /// Active open alert count on this node.
     pub open_alerts: i64,
+    /// Optional `GeoJSON` geometry (`Point`, `LineString`, or `Polygon`, `06-STEP28` §28.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_shape: Option<crate::geo_ops::GeoShapeDto>,
 }
 
 /// Floor-plan node row returned for `FLOOR_PLAN` widgets.
@@ -1318,6 +1321,11 @@ pub struct PinChartToDashboardRequest {
 /// Response payload returned by `POST /api/xblueview/charts/{id}/pin` (`03-STEP25` §25.2.2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PinChartToDashboardResponse {
+    /// Newly created widget UUID (`widget.id` convenience field for CLI/gate callers).
+    pub widget_id: Uuid,
+    /// Assigned semantic cockpit zone (`INSIGHT`, `KPI`, etc.), when target dashboard uses `STANDARD_FIVE_ZONE`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_zone: Option<SemanticZoneKind>,
     /// Newly created dashboard widget bound to the source chart (`options.source_chart_id`).
     pub widget: WidgetRecord,
     /// Target dashboard UUID.

@@ -791,14 +791,7 @@ async fn seed_glossary_node_and_embeddings(store: &PgStore, t1: &str, ds1: &Data
                 type_name: String::from("Warehouse"),
                 node_key: String::from("W-1"),
                 title: String::from("上海华东仓有限公司"),
-                properties: serde_json::Map::new(),
-                metrics: BTreeMap::new(),
-                metrics_merge: axpoint_domain::graph::MetricsMerge::Merge,
-                geo: None,
-                link_to_node_id: None,
-                link_type: None,
-                link_weight: None,
-                if_row_version: None,
+                ..UpsertBlueNodeRequest::default()
             },
         )
         .await?;

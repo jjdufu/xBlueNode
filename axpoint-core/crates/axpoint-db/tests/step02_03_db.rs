@@ -469,6 +469,7 @@ async fn verify_bulk_bbox_and_search(store: &PgStore, tenant: &str, w1_id: Uuid)
                         lng: 120.62,
                         lat: 31.30,
                     }),
+                    geo_shape: None,
                     source_dataset_id: None,
                     source_row_key: None,
                 }],
@@ -518,6 +519,7 @@ async fn verify_bulk_bbox_and_search(store: &PgStore, tenant: &str, w1_id: Uuid)
                 limit: None,
                 cursor: None,
                 reveal_pii: false,
+                ..NodeListQuery::default()
             },
         )
         .await?;

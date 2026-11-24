@@ -45,15 +45,15 @@ is_allowed_for_role() {
       ;;
     squad-domain-agent)
       [[ "$file" =~ ^axpoint-core/crates/(axpoint-llm|axpoint-flow|axpoint-agent)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(agent|flow|graph|im|ops|rules|topology|view|view_zones)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(agent|flow|geo_ops|graph|im|ops|rules|topology|view|view_zones)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(expr|rollup|sim|studio)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/tests/(studio|expr_rollup|sim|step26_[a-z0-9_]+)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/tests/(studio|expr_rollup|sim|step2[568]_[a-z0-9_]+)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(studio_repo|flow_repo|agent_repo|im_repo|sim_repo|view_repo|ops_repo|tokens|nodes|metrics|topology|mapping_exec|aggregate_exec|action_exec|entity_link|knowledge_sync)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(agent_repo|im_repo|ops_repo)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(studio_repo|agent_repo|im_repo|sim_repo|view_repo|step06_exec|step26_[a-z0-9_]+)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(studio_repo|agent_repo|im_repo|sim_repo|view_repo|step06_exec|step2[568]_[a-z0-9_]+)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/(ops|view)/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/(xblue|xblue_graphql|axflow|axagent|published|mcp|axsim|xblueview|axops)\.rs$ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/tests/step26_[a-z0-9_]+\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/tests/step2[568]_[a-z0-9_]+\.rs$ ]] && return 0
       [[ "$file" =~ ^templates/packs/ ]] && return 0
       [[ "$file" =~ ^scripts/ops/ ]] && return 0
       return 1
@@ -115,6 +115,7 @@ run_self_test() {
   is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-server/src/ops/templates.rs"
   is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-server/src/view/ai_gen.rs"
   is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-domain/src/view_zones.rs"
+  is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-domain/src/geo_ops.rs"
   is_allowed_for_role "squad-web" "xbluenode-web/src/pages/XBlueStudioPage.tsx"
   is_allowed_for_role "squad-qa" "scripts/gate/step16.sh"
   is_allowed_for_composite_role "squad-web+squad-qa" "xbluenode-web/e2e/smoke.spec.ts"

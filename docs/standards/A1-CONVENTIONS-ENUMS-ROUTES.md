@@ -136,6 +136,10 @@ Rust 中定义在 `axpoint-domain/src/enums.rs`（`#[serde(rename_all = "SCREAMI
 | `RuntimeCertLevel` | `L0_INVALID` `L1_CONFIGURED` `L2_RUNNABLE` `L3_VERIFIED` `L4_CERTIFIED` | `xb_runtime_certifications.cert_level`（Step 26） |
 | `PropagationPathKind` | `VERTEX_TO_VERTEX` `VERTEX_TO_EDGE` `EDGE_TO_VERTEX` `EDGE_TO_EDGE` | 四路径边动力学拓扑传播（Step 26） |
 | `RowPolicyMode` | `STATIC_ATTR` `STATE_DRIVEN` | `sec_row_policies.policy_mode`（Step 27） |
+| `SimEventTriggerKind` | `AT_STEP` `METRIC_THRESHOLD` | `ax_sim_scenarios.scheduled_events[].trigger_kind`（Step 28） |
+| `SimThresholdOp` | `LT` `LTE` `GT` `GTE` | `SimEventSpec.op`、`SimGoalConstraint.op`（Step 28） |
+| `GeoPredicateOp` | `BBOX` `GEO_WITHIN_POLYGON` `GEO_DWITHIN_METERS` | `GET /api/xblue/nodes`、`SpatialFilterSpec.op`（Step 28） |
+| `DeadlineWindowStatus` | `SATISFIED` `ACTIONABLE_WINDOW` `IMMEDIATE_BREACH_UNAVOIDABLE_BY_LAG` | `DeadlineDiagnostic.status`、`DeadlineReport.status`（Step 28） |
 
 ---
 
@@ -151,7 +155,7 @@ Rust 侧 `axpoint-domain::AppError` 枚举与 HTTP 状态码映射：
 
 | `AppError` 变体 | HTTP | 典型 `error_code` |
 | :--- | :--- | :--- |
-| `BadRequest(code, msg)` | 400 | `INVALID_ARGUMENT` `SQL_REJECTED` `JOIN_PATH_UNGROUNDED` `AXQL_UNMAPPED_SYMBOL` `CYCLE_DETECTED` `DIV_BY_ZERO` `LIMIT_OUT_OF_RANGE` `SCHEMA_INVALID` `UNCONFIRMED_PROPOSALS_REMAIN` `DERIVED_METRIC_WRITE_FORBIDDEN` `SIM_DIVERGENT` `BUILDER_SCOPE_FORBIDDEN` `DEV_SANDBOX_REQUIRED` |
+| `BadRequest(code, msg)` | 400 | `INVALID_ARGUMENT` `INVALID_GEOMETRY` `SQL_REJECTED` `JOIN_PATH_UNGROUNDED` `AXQL_UNMAPPED_SYMBOL` `CYCLE_DETECTED` `DIV_BY_ZERO` `LIMIT_OUT_OF_RANGE` `SCHEMA_INVALID` `UNCONFIRMED_PROPOSALS_REMAIN` `DERIVED_METRIC_WRITE_FORBIDDEN` `SIM_DIVERGENT` `BUILDER_SCOPE_FORBIDDEN` `DEV_SANDBOX_REQUIRED` |
 | `Unauthorized(code)` | 401 | `TOKEN_MISSING` `TOKEN_INVALID` `TOKEN_EXPIRED` `SIGNATURE_INVALID` |
 | `Forbidden(code)` | 403 | `PERMISSION_DENIED` `POLICY_DENIED` `BUILDER_TOKEN_PROD_FORBIDDEN` |
 | `NotFound(code)` | 404 | `ROUTE_NOT_FOUND` `DATASET_NOT_FOUND` `NODE_NOT_FOUND` `FLOW_NOT_FOUND` `JOB_NOT_FOUND` `SHARE_NOT_FOUND`（跨租户访问一律返回 404） |

@@ -605,6 +605,7 @@ async fn action_emit_work_item_records_dry_run_in_test_and_executes_idempotently
         properties: serde_json::Map::new(),
         metrics: std::collections::BTreeMap::new(),
         geo: None,
+        geo_shape: None,
         source_dataset_id: None,
         source_row_key: None,
         row_version: 1,

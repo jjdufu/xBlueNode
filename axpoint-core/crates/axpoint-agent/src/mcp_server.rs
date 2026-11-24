@@ -765,6 +765,7 @@ where
                         limit: Some(50),
                         cursor: None,
                         reveal_pii: false,
+                        ..NodeListQuery::default()
                     },
                 )
                 .await?;

@@ -64,6 +64,7 @@
 | 13 | `openidconnect` | 4.1 | OIDC 授权码 + PKCE |
 | 13 | `cedar-policy` | 4.14 | ABAC 策略求值 |
 | 13 | `hkdf` | 0.12 | 按租户派生脱敏密钥 |
+| 28 | `geo` | 0.29（`use-serde`） | 纯 Rust 多边形围栏包含判定、球面缓冲距离与凸包求解（MIT / Apache-2.0） |
 | 测试 | `testcontainers` / `testcontainers-modules` | 0.28 | Kafka、MinIO 等外部服务集成测试 |
 | 测试 | `insta` | 1 | 快照测试 |
 | 测试 | `proptest` | 1 | 表达式 AST 格式化与重解析往返属性测试（Step 06） |

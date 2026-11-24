@@ -866,6 +866,8 @@ export interface PinChartToDashboardRequest {
 }
 
 export interface PinChartToDashboardResponse {
+  widget_id: string;
+  semantic_zone?: SemanticZoneKind | null;
   widget: WidgetRecord;
   dashboard_id: string;
   dashboard_slug: string;

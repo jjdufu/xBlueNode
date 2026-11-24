@@ -42,6 +42,8 @@
 | C69 | 模型要素 `PROPOSED / CONFIRMED` 成熟度状态流与完备度通过项计数 | 18 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.2 | step18 “proposal-confirm-flow”、“pass-count-metrics” |
 | C70 | 单节点左→右全链路数据血缘管道图与自动生成模型全景规格书 | 18 | [04-STEP18](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/04-STEP18-STUDIO-COPILOT-LINEAGE-AND-SPEC-DOC.md) §18.4 | step18 “node-lineage-graph”、“subgraph-spec-doc” |
 | C84 | 孤立死指标（Dead Knowledge）静态闭包扫描与开发沙盒 `Trial Tick` L0–L4 运行时就绪认证 | 26 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.4 | step26 “dead-knowledge-detected”、“trial-tick-certified” |
+| C78 | `xBlueStudio` 正交避障多锚点连线、6 轴磁吸对齐线、业务域复合泳道与三层对象折叠及 50 步撤销 | 24 | [02-STEP24](../../plans/v3-craft-and-world-runtime/craft-ux/02-STEP24-ADVANCED-MODELING-FLOW-AND-CAUSAL-CANVASES.md) §24.1 | step24 “elk-orthogonal-no-overlap”、“compound-tier-fold”、“canvas-undo-redo” |
+| C88 | 纯 Rust `geo` 多边形地理围栏（`GEO_WITHIN_POLYGON`）、球面缓冲距离与轨迹凸包算子 | 28 | [06-STEP28](../../plans/v3-craft-and-world-runtime/world-runtime/06-STEP28-SIM-EVENT-QUEUE-DEADLINE-AND-RUST-GEOSHAPE.md) §28.3 | step28 “geo-polygon-within”、“geo-convex-hull” |
 
 ### C 构建
 
@@ -65,6 +67,7 @@
 | C72 | `xBlueStudio` 一键双态应用包装（领域智能体 + 孪生驾驶舱） | 19 | [05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.3 | step19 “studio-pack-agent”、“studio-pack-dashboard” |
 | C82 | 一等公民 `ActionSpec` 动作契约（前置断言、派生锁、多对象 CAS 原子回写、动态 GraphQL `Mutation` 与 MCP 暴露） | 26 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.2 | step26 “action-spec-precondition”、“graphql-action-mutation” |
 | C83 | 关系边时序指标与 `V→V / V→E / E→V / E→E` 四路径动力学拓扑传播及三轨溯源 | 26 | [04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.3 | step26 “edge-metric-ingest”、“four-path-propagation” |
+| C79 | `AxFlow` 边中点快捷插算子与 `@antv/g6` v5 嵌套折叠因果传导及全站血缘画布 | 24 | [02-STEP24](../../plans/v3-craft-and-world-runtime/craft-ux/02-STEP24-ADVANCED-MODELING-FLOW-AND-CAUSAL-CANVASES.md) §24.2～§24.3 | step24 “flow-edge-insert”、“g6-causal-combo-hull” |
 
 ### D 智能
 
@@ -95,6 +98,7 @@
 | C43 | AI 研判建议 | 10 | §10.7.2 | step10 “compare”（`briefing.recommended_scenario_id`） |
 | C44 | 决策落到动作（审批后执行） | 10 | §10.8 | step10 “applied”、“audit-sim-apply”、“conflict” |
 | C73 | 推演沙盘范围静态完整度预检（因果传导覆盖率、聚合闭合度与截断边诊断） | 20 | [06-STEP20](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/06-STEP20-SIM-PREFLIGHT-SCOPED-QUERY-AND-VIEW-ZONES.md) §20.1 | step20 “sim-preflight-warn”、“sim-preflight-closed” |
+| C87 | `AxSim` 定时事件与条件触发事件队列及红线约束最晚干预步（`deadline_step`）反推 | 28 | [06-STEP28](../../plans/v3-craft-and-world-runtime/world-runtime/06-STEP28-SIM-EVENT-QUEUE-DEADLINE-AND-RUST-GEOSHAPE.md) §28.2 | step28 “sim-scheduled-conditional-events”、“sim-deadline-step” |
 
 ### F 可视
 
@@ -109,6 +113,8 @@
 | C51 | 图可视化（筛选、属性、沿关系展开、检索） | 03 / 11 | §03.8、§11.6 | step03 “neighbors”；`graph-render-bench.mjs` |
 | C58 | AI 一句话生成孪生看板与页面级动作回写闭环 | 11 | §11.2、§11.6 | step11 “ai-dashboard”、“widget-action-loop”、“widget-action-log” |
 | C59 | 3D 空间数字孪生场景与实时指标驱动着色 | 11 | §11.1、§11.4 | step11 “scene-3d”；`e2e/xblueview.spec.ts` |
+| C80 | 一等公民可视化制图工作台（`xv_charts`）与问数结果 1 步钉入驾驶舱 | 25 | [03-STEP25](../../plans/v3-craft-and-world-runtime/craft-ux/03-STEP25-CHART-STUDIO-VTABLE-PIVOT-AND-MAGNETIC-GRID.md) §25.2 | step25 “chart-asset-crud”、“pin-chart-to-dashboard” |
+| C81 | `@visactor/react-vtable` 高性能多维透视表、KPI 火花线与驾驶舱可视轨道磁吸网格 | 25 | [03-STEP25](../../plans/v3-craft-and-world-runtime/craft-ux/03-STEP25-CHART-STUDIO-VTABLE-PIVOT-AND-MAGNETIC-GRID.md) §25.3～§25.4 | step25 “vtable-pivot-render”、“grid-float-tidy” |
 
 ### G 系统
 

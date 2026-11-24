@@ -2224,6 +2224,11 @@ impl ViewRepository for PgStore {
                 lat: r.get("lat"),
                 metric_value: r.get("metric_value"),
                 open_alerts: r.get("open_alerts"),
+                geo_shape: r
+                    .try_get::<Option<serde_json::Value>, _>("geo_shape")
+                    .ok()
+                    .flatten()
+                    .and_then(|v| serde_json::from_value(v).ok()),
             })
             .collect())
     }

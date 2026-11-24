@@ -53,7 +53,7 @@
 
 | 方法与路径 | 鉴权 | 定义 |
 | :--- | :--- | :--- |
-| `GET /nodes`、`POST /nodes`、`POST /nodes/bulk`、`GET /nodes/{id}`、`PATCH /nodes/{id}`、`DELETE /nodes/{id}`、`GET /nodes/search` | `DATA_READ` / `STUDIO_EDIT` | [04](../../plans/completed/v1-foundation-step00-14/04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md) §03.7 |
+| `GET /nodes`、`POST /nodes`、`POST /nodes/bulk`、`GET /nodes/{id}`、`PATCH /nodes/{id}`、`DELETE /nodes/{id}`、`GET /nodes/search`、`POST /geo/convex-hull` | `DATA_READ` / `STUDIO_EDIT` | [04](../../plans/completed/v1-foundation-step00-14/04-STEP03-AXGRAPH-STORAGE-AND-GRAPH-QUERY.md) §03.7、[06-STEP28](../../plans/v3-craft-and-world-runtime/world-runtime/06-STEP28-SIM-EVENT-QUEUE-DEADLINE-AND-RUST-GEOSHAPE.md) §28.3 |
 | `GET /nodes/{id}/documents`、`GET /nodes/{id}/metrics/{metric}` | `DATA_READ` | 同上 |
 | `GET /links`、`POST /links`、`DELETE /links/{id}`、`POST /links/metrics/write`、`GET /links/{id}/explain/{metric}` | `DATA_READ` / `STUDIO_EDIT` / `DATA_SYNC` | 同上、[04-STEP26](../../plans/v3-craft-and-world-runtime/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.3 |
 | `POST /metrics/write` | `DATA_SYNC` | 同上 |

@@ -945,6 +945,7 @@ mod tests {
             properties: props,
             metrics: BTreeMap::from([(String::from("inventory"), 500.0)]),
             geo: None,
+            geo_shape: None,
             source_dataset_id: None,
             source_row_key: None,
             row_version: 1,

@@ -339,6 +339,8 @@ fn sample_sim_result(seeded: &SeededSupplyGraph) -> SimResult {
                 changes: serde_json::json!({ seeded.warehouse.to_string(): { "inventory": 380.0 } }),
             },
         ],
+        fired_events: Vec::new(),
+        deadline_report: None,
     }
 }
 
@@ -463,6 +465,8 @@ async fn verify_overlay_node_and_link_edits(
                 title: Some(String::from("Sandbox Warehouse")),
                 metrics: Some(BTreeMap::from([(String::from("inventory"), 42.0)])),
                 properties: None,
+                geo: None,
+                geo_shape: None,
             },
         )
         .await?;
@@ -487,6 +491,8 @@ async fn verify_overlay_node_and_link_edits(
                 title: String::from("Virtual Backup Hub"),
                 metrics: BTreeMap::from([(String::from("inventory"), 300.0)]),
                 properties: serde_json::Map::new(),
+                geo: None,
+                geo_shape: None,
             },
         )
         .await?;
@@ -574,6 +580,8 @@ async fn sim_repo_overlay_cow_isolation_refresh_and_quick_sim() -> TestResult {
                     delta_ratio: Some(-0.2),
                     at_step: 0,
                 }],
+                scheduled_events: Vec::new(),
+                goal_constraints: Vec::new(),
                 params: None,
             },
         )
@@ -593,6 +601,8 @@ async fn sim_repo_overlay_cow_isolation_refresh_and_quick_sim() -> TestResult {
                     delta_ratio: Some(-0.2),
                     at_step: 0,
                 }],
+                scheduled_events: Vec::new(),
+                goal_constraints: Vec::new(),
                 params: None,
             },
         )
@@ -753,6 +763,8 @@ async fn sim_repo_scenarios_impacts_checkpoints_and_staleness() -> TestResult {
             delta_ratio: None,
             at_step: 0,
         }],
+        scheduled_events: Vec::new(),
+        goal_constraints: Vec::new(),
         params: SimParams {
             mode: SimMode::Stepped,
             horizon_steps: 2,
@@ -792,6 +804,8 @@ async fn sim_repo_scenarios_impacts_checkpoints_and_staleness() -> TestResult {
                 name: String::from("fail-sc"),
                 description: String::new(),
                 actions: Vec::new(),
+                scheduled_events: Vec::new(),
+                goal_constraints: Vec::new(),
                 params: SimParams::default(),
             },
         )
@@ -986,6 +1000,8 @@ async fn sim_repo_decisions_approval_conflict_rebase_and_writeback() -> TestResu
                     delta_ratio: Some(-0.3),
                     at_step: 0,
                 }],
+                scheduled_events: Vec::new(),
+                goal_constraints: Vec::new(),
                 params: SimParams::default(),
             },
         )

@@ -282,6 +282,11 @@ impl PgStore {
                     (Some(lng), Some(lat)) => Some(GeoPoint { lng, lat }),
                     _ => None,
                 };
+                let geo_shape = r
+                    .try_get::<Option<serde_json::Value>, _>("geo_shape")
+                    .ok()
+                    .flatten()
+                    .and_then(|v| serde_json::from_value(v).ok());
                 BlueNode {
                     id: r.get("id"),
                     type_name: r.get("type_name"),
@@ -290,6 +295,7 @@ impl PgStore {
                     properties,
                     metrics,
                     geo,
+                    geo_shape,
                     source_dataset_id: r.get("source_dataset_id"),
                     source_row_key: r.get("source_row_key"),
                     row_version: r.get("row_version"),

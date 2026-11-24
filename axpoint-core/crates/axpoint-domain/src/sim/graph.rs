@@ -7,6 +7,8 @@ use uuid::Uuid;
 
 use crate::AppError;
 use crate::enums::InterventionMode;
+use crate::geo_ops::GeoShapeDto;
+use crate::graph::GeoPoint;
 use crate::sim::{ImpactRow, SimKpiRow};
 
 /// Compact zero-based node index into [`IndexedSimGraph::nodes`].
@@ -138,6 +140,12 @@ pub struct SimNode {
     pub metrics: BTreeMap<String, f64>,
     /// Effective static properties.
     pub properties: serde_json::Map<String, serde_json::Value>,
+    /// Optional WGS-84 point coordinate (`06-STEP28` §28.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo: Option<GeoPoint>,
+    /// Optional `GeoJSON` geometry (`Point`, `LineString`, or `Polygon`, `06-STEP28` §28.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_shape: Option<GeoShapeDto>,
     /// Production `row_version` captured at baseline clone (`0` for sandbox-created nodes).
     pub row_version: i64,
 }
@@ -207,6 +215,10 @@ pub struct IndexedSimNode {
     pub metrics: HashMap<String, f64>,
     /// Optional per-metric `[min, max]` clamping bounds parsed from schema/node properties.
     pub metric_bounds: HashMap<String, PropagationClamp>,
+    /// Optional WGS-84 point coordinate (`06-STEP28` §28.3).
+    pub geo: Option<GeoPoint>,
+    /// Optional `GeoJSON` geometry (`06-STEP28` §28.3).
+    pub geo_shape: Option<GeoShapeDto>,
 }
 
 /// Compiled directed propagation rule edge between zero-indexed nodes.
@@ -274,6 +286,8 @@ impl IndexedSimGraph {
                 title: node.title.clone(),
                 metrics,
                 metric_bounds,
+                geo: node.geo,
+                geo_shape: node.geo_shape.clone(),
             });
         }
 

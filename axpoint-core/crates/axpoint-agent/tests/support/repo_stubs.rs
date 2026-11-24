@@ -1306,6 +1306,7 @@ impl GraphStorePort for MockStep09Store {
                 properties: n.properties.clone(),
                 metrics: n.metrics.clone(),
                 geo: n.geo,
+                geo_shape: n.geo_shape.clone(),
                 score: 0.95,
                 channels: vec![String::from("FTS")],
             })

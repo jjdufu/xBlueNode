@@ -10,6 +10,7 @@ use crate::enums::{FlowOperator, PiiCategory};
 use crate::flow::{
     FlowEdge, FlowIssue, FlowNode, JoinMode, OnFailure, Pos, RetryPolicy, TriggerCfg,
 };
+use crate::geo_ops::GeoShapeDto;
 use crate::graph::{GeoPoint, MetricsMerge};
 use crate::studio::{LinkDirection, PropertyKind};
 
@@ -182,6 +183,9 @@ pub struct BlueNode {
     /// Optional WGS-84 geographic coordinate.
     #[serde(default)]
     pub geo: Option<GeoPoint>,
+    /// Optional `GeoJSON` geometry (`Point`, `LineString`, or `Polygon`, `06-STEP28` §28.1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geo_shape: Option<GeoShapeDto>,
     /// Optional originating dataset UUID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_dataset_id: Option<Uuid>,
@@ -240,6 +244,9 @@ pub struct UpsertBlueNodeRequest {
     /// Optional WGS-84 coordinate (`{ lng, lat }`).
     #[serde(default)]
     pub geo: Option<GeoPoint>,
+    /// Optional `GeoJSON` geometry (`Point`, `LineString`, or `Polygon`, `06-STEP28` §28.1).
+    #[serde(default)]
+    pub geo_shape: Option<GeoShapeDto>,
     /// Optional optimistic concurrency check (`409 VERSION_CONFLICT` on mismatch).
     #[serde(default)]
     pub if_row_version: Option<i64>,
@@ -418,7 +425,7 @@ pub struct AxSimSnapshot {
 }
 
 /// A hypothetical "What-If" intervention applied inside `AxSim` (`09-STEP10` §10.3.1).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AxSimAction {
     /// Target node UUID.
@@ -450,7 +457,7 @@ pub struct CreateAxSandboxRequest {
     pub scope: Option<crate::sim::SandboxScope>,
 }
 
-/// Request to run quick causal simulation inside `AxSim` (`09-STEP10` §10.9).
+/// Request to run quick causal simulation inside `AxSim` (`09-STEP10` §10.9 & `06-STEP28` §28.0).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SimulateAxSandboxRequest {
@@ -459,6 +466,12 @@ pub struct SimulateAxSandboxRequest {
     /// Optional solver parameters (defaults to steady-state mode).
     #[serde(default)]
     pub params: Option<crate::sim::SimParams>,
+    /// Optional scheduled or metric-threshold events (`STEPPED` mode, `06-STEP28` §28.2).
+    #[serde(default)]
+    pub scheduled_events: Vec<crate::sim::SimEventSpec>,
+    /// Optional redline goal constraints evaluated for `deadline_step` diagnostics (`06-STEP28` §28.2.2).
+    #[serde(default)]
+    pub goal_constraints: Vec<crate::sim::SimGoalConstraint>,
 }
 
 /// Impact row comparing baseline vs. simulated metric for one node.
@@ -504,6 +517,12 @@ pub struct AxSimResult {
     /// Whether cyclic SCC iteration converged.
     #[serde(default = "default_sim_converged")]
     pub converged: bool,
+    /// Events activated during `STEPPED` simulation (`06-STEP28` §28.2.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fired_events: Vec<crate::sim::FiredEventRecord>,
+    /// Optional goal redline breach and `deadline_step` report (`06-STEP28` §28.2.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_report: Option<crate::sim::DeadlineReport>,
 }
 
 /// `AxSim` sandbox record returned to API clients (`09-STEP10` §10.1–§10.2).
@@ -567,6 +586,8 @@ pub fn simulate_causal_propagation(
                 title: n.title.clone(),
                 metrics: n.metrics.clone(),
                 properties: n.properties.clone(),
+                geo: n.geo,
+                geo_shape: n.geo_shape.clone(),
                 row_version: n.row_version,
             })
             .collect(),
@@ -609,6 +630,8 @@ pub fn simulate_causal_propagation(
                 kpis: res.kpis,
                 warnings: res.warnings,
                 converged: res.converged,
+                fired_events: res.fired_events,
+                deadline_report: res.deadline_report,
             }
         }
         Err(err) => AxSimResult {
@@ -621,6 +644,8 @@ pub fn simulate_causal_propagation(
                 message: err.client_message(),
             }],
             converged: false,
+            fired_events: Vec::new(),
+            deadline_report: None,
         },
     }
 }
@@ -654,6 +679,7 @@ mod tests {
                     properties: serde_json::Map::new(),
                     metrics: BTreeMap::from([(String::from("output"), 1000.0)]),
                     geo: None,
+                    geo_shape: None,
                     source_dataset_id: None,
                     source_row_key: None,
                     row_version: 1,
@@ -668,6 +694,7 @@ mod tests {
                     properties: serde_json::Map::new(),
                     metrics: BTreeMap::from([(String::from("output"), 500.0)]),
                     geo: None,
+                    geo_shape: None,
                     source_dataset_id: None,
                     source_row_key: None,
                     row_version: 1,
@@ -682,6 +709,7 @@ mod tests {
                     properties: serde_json::Map::new(),
                     metrics: BTreeMap::from([(String::from("output"), 200.0)]),
                     geo: None,
+                    geo_shape: None,
                     source_dataset_id: None,
                     source_row_key: None,
                     row_version: 1,
