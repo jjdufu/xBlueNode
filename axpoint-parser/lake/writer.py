@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import polars as pl
@@ -11,8 +12,16 @@ import pyarrow.parquet as pq
 import sqlglot
 from sqlglot import exp
 
-from connectors.base import arrow_table_to_preview, format_cursor_value
+from connectors.base import arrow_table_to_preview, format_cursor_value, records_to_arrow_table
+from connectors.cdc_pg import (
+    CdcChangeEvent,
+    canonical_pk_key,
+    normalize_cdc_scalar,
+    validate_cdc_ident,
+)
 from connectors.registry import create_connector
+from connectors.sql_family import MySqlConnector, PostgresConnector
+from connectors.stream_worker import drain_stream_microbatch
 from lake.catalog import (
     lake_connection,
     quote_lake_col,
@@ -468,6 +477,278 @@ def _write_df_to_ducklake(
         )
 
 
+def _delete_pk_rows_parameterized(
+    con: duckdb.DuckDBPyConnection,
+    full_tbl: str,
+    pk_cols: Sequence[str],
+    pk_dicts: Sequence[dict[str, Any]],
+) -> int:
+    """Delete matching PK rows inside an active DuckLake transaction via ? parameter binding."""
+    if not pk_dicts:
+        return 0
+    valid_pks = [validate_cdc_ident(pk) for pk in pk_cols]
+    deleted_total = 0
+
+    if len(valid_pks) == 1:
+        pk_col = valid_pks[0]
+        q_pk = quote_lake_col(pk_col)
+        values = [d[pk_col] for d in pk_dicts if pk_col in d and d[pk_col] is not None]
+        for start in range(0, len(values), 500):
+            chunk = values[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            cnt_row = con.execute(
+                f"SELECT count(*) FROM {full_tbl} WHERE {q_pk} IN ({placeholders})",
+                chunk,
+            ).fetchone()
+            cnt = int(cnt_row[0]) if cnt_row else 0
+            if cnt > 0:
+                con.execute(
+                    f"DELETE FROM {full_tbl} WHERE {q_pk} IN ({placeholders})",
+                    chunk,
+                )
+                deleted_total += cnt
+        return deleted_total
+
+    where_sql = " AND ".join(f"{quote_lake_col(pk)} = ?" for pk in valid_pks)
+    for item in pk_dicts:
+        params = [item.get(pk) for pk in valid_pks]
+        cnt_row = con.execute(
+            f"SELECT count(*) FROM {full_tbl} WHERE {where_sql}",
+            params,
+        ).fetchone()
+        cnt = int(cnt_row[0]) if cnt_row else 0
+        if cnt > 0:
+            con.execute(f"DELETE FROM {full_tbl} WHERE {where_sql}", params)
+            deleted_total += cnt
+    return deleted_total
+
+
+def apply_cdc_events(
+    *,
+    tenant_id: str,
+    dataset_id: str,
+    batch_id: str,
+    lake_table: str,
+    primary_key: Sequence[str],
+    schema_policy: SchemaPolicy,
+    expected_schema: Sequence[ColumnProfile],
+    quality_rules: Sequence[QualityRule],
+    events: Sequence[CdcChangeEvent],
+    cdc_slot_meta: dict[str, Any],
+    timezone_str: str = "Asia/Shanghai",
+    data_root: Path | None = None,
+    catalog_dsn: str | None = None,
+    raise_on_quality_block: bool = False,
+) -> SyncResult:
+    """Apply normalized (I, U, D) CDC events in a single atomic DuckLake transaction."""
+    valid_tenant = validate_tenant_id(tenant_id)
+    valid_table = validate_lake_table(lake_table)
+    if not primary_key:
+        raise SidecarError(400, "INVALID_ARGUMENT", "LOG_CDC mode requires non-empty primary_key")
+    pk_cols = [validate_cdc_ident(pk) for pk in primary_key]
+
+    s_raw = tenant_schema_name(valid_tenant)
+    s_q = tenant_schema(valid_tenant)
+    t_q = quote_lake_table(valid_table)
+    full_tbl = f"lake.{s_q}.{t_q}"
+
+    active_by_pk: dict[str, dict[str, Any]] = {}
+    hard_deletes_by_pk: dict[str, dict[str, Any]] = {}
+    upsert_pks_by_key: dict[str, dict[str, Any]] = {}
+
+    for ev in events:
+        pk_key = canonical_pk_key(pk_cols, ev.pk)
+        if ev.op == "D":
+            active_by_pk.pop(pk_key, None)
+            upsert_pks_by_key.pop(pk_key, None)
+            hard_deletes_by_pk[pk_key] = dict(ev.pk)
+        else:
+            hard_deletes_by_pk.pop(pk_key, None)
+            row_after = dict(ev.row_after or {})
+            for pk in pk_cols:
+                if pk not in row_after and pk in ev.pk:
+                    row_after[pk] = ev.pk[pk]
+            active_by_pk[pk_key] = row_after
+            upsert_pks_by_key[pk_key] = {pk: row_after[pk] for pk in pk_cols}
+
+    active_records = list(active_by_pk.values())
+    if active_records:
+        arrow_tbl = records_to_arrow_table(active_records)
+        active_df = pl.from_arrow(arrow_tbl)
+        assert isinstance(active_df, pl.DataFrame)
+    else:
+        active_df = pl.DataFrame()
+
+    user_cols = [c for c in active_df.columns if not c.startswith("_ax_")]
+    user_df = active_df.select(user_cols) if user_cols else pl.DataFrame()
+    incoming_profiles = (
+        profile_polars_df(user_df, timezone_str=timezone_str)
+        if user_cols
+        else list(expected_schema)
+    )
+
+    with lake_connection(data_root=data_root, catalog_dsn=catalog_dsn) as con:
+        con.execute(f"CREATE SCHEMA IF NOT EXISTS lake.{s_q}")
+        exists = _table_exists(con, s_raw, valid_table)
+
+        effective_expected = list(expected_schema)
+        if not effective_expected and exists:
+            existing_cols = _get_existing_lake_columns(con, s_raw, valid_table)
+            effective_expected = [
+                ColumnProfile(
+                    name=c_name,
+                    ordinal=idx,
+                    data_type=duckdb_type_to_datatype(c_type),
+                    nullable=True,
+                )
+                for idx, (c_name, c_type) in enumerate(existing_cols)
+                if not c_name.startswith("_ax_")
+            ]
+
+        if not events and exists:
+            total_cnt_row = con.execute(f"SELECT count(*) FROM {full_tbl}").fetchone()
+            total_rows_noop = int(total_cnt_row[0]) if total_cnt_row else 0
+            return SyncResult(
+                dataset_id=dataset_id,
+                rows_read=0,
+                rows_written=0,
+                rows_deleted=0,
+                total_rows=total_rows_noop,
+                cdc_slot_meta=cdc_slot_meta,
+                deleted_primary_keys=[],
+                snapshot_id=_current_snapshot_id(con),
+                schema=effective_expected,
+                schema_change=SchemaChange(),
+                quality=evaluate_quality(user_df, quality_rules),
+            )
+
+        schema_change, resolved_schema = evaluate_schema_evolution(
+            effective_expected, incoming_profiles, schema_policy
+        )
+        quality_report = evaluate_quality(user_df, quality_rules)
+        if quality_report.blocked:
+            if raise_on_quality_block:
+                raise SidecarError(422, "QUALITY_BLOCKED", "LOG_CDC quality block rule failed")
+            return SyncResult(
+                dataset_id=dataset_id,
+                rows_read=len(events),
+                rows_written=0,
+                rows_deleted=0,
+                cdc_slot_meta={},
+                deleted_primary_keys=[],
+                snapshot_id=_current_snapshot_id(con),
+                schema=effective_expected or resolved_schema,
+                schema_change=schema_change,
+                quality=quality_report,
+            )
+
+        existing_has_msg_id = False
+        if exists:
+            existing_col_names = {c[0] for c in _get_existing_lake_columns(con, s_raw, valid_table)}
+            existing_has_msg_id = "_ax_msg_id" in existing_col_names
+
+        rows_written = 0
+        rows_deleted = 0
+
+        con.execute("BEGIN")
+        try:
+            if not exists:
+                if active_df.height == 0 and not resolved_schema:
+                    con.execute(
+                        f"CREATE TABLE {full_tbl} "
+                        '("_ax_batch_id" VARCHAR, "_ax_synced_at" TIMESTAMPTZ)'
+                    )
+                elif active_df.height == 0:
+                    col_defs = [
+                        f"{quote_lake_col(c.name)} {datatype_to_duckdb_sql(c.data_type)}"
+                        for c in resolved_schema
+                    ]
+                    col_defs.extend(['"_ax_batch_id" VARCHAR', '"_ax_synced_at" TIMESTAMPTZ'])
+                    con.execute(f"CREATE TABLE {full_tbl} ({', '.join(col_defs)})")
+                else:
+                    con.register("_ax_cdc_init", active_df.to_arrow())
+                    try:
+                        _cols_q, sel_sql = _build_projection_select(
+                            "_ax_cdc_init",
+                            resolved_schema,
+                            set(active_df.columns),
+                            include_msg_id=existing_has_msg_id,
+                            batch_id=batch_id,
+                        )
+                        con.execute(f"CREATE TABLE {full_tbl} AS {sel_sql}")
+                    finally:
+                        con.unregister("_ax_cdc_init")
+                rows_written = active_df.height
+            else:
+                apply_ddl_evolution_to_table(con, full_tbl, schema_change, schema_policy)
+                if hard_deletes_by_pk:
+                    rows_deleted = _delete_pk_rows_parameterized(
+                        con, full_tbl, pk_cols, list(hard_deletes_by_pk.values())
+                    )
+                if upsert_pks_by_key:
+                    _delete_pk_rows_parameterized(
+                        con, full_tbl, pk_cols, list(upsert_pks_by_key.values())
+                    )
+                if active_df.height > 0:
+                    con.register("_ax_cdc_upsert", active_df.to_arrow())
+                    try:
+                        cols_q, sel_sql = _build_projection_select(
+                            "_ax_cdc_upsert",
+                            resolved_schema,
+                            set(active_df.columns),
+                            include_msg_id=existing_has_msg_id,
+                            batch_id=batch_id,
+                        )
+                        con.execute(f"INSERT INTO {full_tbl} ({', '.join(cols_q)}) {sel_sql}")
+                        rows_written = active_df.height
+                    finally:
+                        con.unregister("_ax_cdc_upsert")
+
+            con.execute("COMMIT")
+        except Exception:
+            try:
+                con.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+
+        snap_id = _current_snapshot_id(con)
+        total_cnt_row = con.execute(f"SELECT count(*) FROM {full_tbl}").fetchone()
+        total_rows = int(total_cnt_row[0]) if total_cnt_row else 0
+
+        if resolved_schema:
+            sel_user = ", ".join(quote_lake_col(c.name) for c in resolved_schema)
+            committed_arrow = (
+                con.cursor().sql(f"SELECT {sel_user} FROM {full_tbl} LIMIT 100000").to_arrow_table()
+            )
+            committed_pl = pl.from_arrow(committed_arrow)
+            assert isinstance(committed_pl, pl.DataFrame)
+            type_map = {c.name: c.data_type for c in resolved_schema}
+            final_profiles = profile_polars_df(
+                committed_pl, timezone_str=timezone_str, type_overrides=type_map
+            )
+        else:
+            final_profiles = []
+
+        deleted_pks_out: list[dict[str, Any]] = [
+            {pk: normalize_cdc_scalar(d.get(pk)) for pk in pk_cols}
+            for d in hard_deletes_by_pk.values()
+        ]
+        return SyncResult(
+            dataset_id=dataset_id,
+            rows_read=len(events),
+            rows_written=rows_written,
+            rows_deleted=rows_deleted,
+            total_rows=total_rows,
+            cdc_slot_meta=cdc_slot_meta,
+            deleted_primary_keys=deleted_pks_out,
+            snapshot_id=snap_id,
+            schema=final_profiles,
+            schema_change=schema_change,
+            quality=quality_report,
+        )
+
+
 def sync_dataset(
     req: SyncRequest,
     *,
@@ -485,20 +766,69 @@ def sync_dataset(
         allow_private_network=req.allow_private_network,
         tenant_id=valid_tenant,
     )
+
+    if req.sync_mode == "LOG_CDC":
+        try:
+            if isinstance(connector, (PostgresConnector, MySqlConnector)):
+                cdc_events, next_meta = connector.read_cdc(
+                    req.source_ref,
+                    list(req.primary_key),
+                    dict(req.cdc_slot_meta),
+                    batch_rows=req.batch_rows,
+                )
+            else:
+                raise SidecarError(
+                    400,
+                    "INVALID_ARGUMENT",
+                    f"connector {req.connector_type} does not support LOG_CDC mode",
+                )
+        finally:
+            connector.close()
+
+        return apply_cdc_events(
+            tenant_id=valid_tenant,
+            dataset_id=req.dataset_id,
+            batch_id=req.batch_id,
+            lake_table=req.lake_table,
+            primary_key=req.primary_key,
+            schema_policy=req.schema_policy,
+            expected_schema=req.expected_schema,
+            quality_rules=req.quality_rules,
+            events=cdc_events,
+            cdc_slot_meta=next_meta,
+            timezone_str=timezone_str,
+            data_root=data_root,
+            catalog_dsn=catalog_dsn,
+            raise_on_quality_block=raise_on_quality_block,
+        )
+
     batches: list[pa.RecordBatch] = []
     max_cursor_to: str | None = None
     merged_offsets: dict[str, str] = dict(req.stream_offsets)
     rows_read = 0
 
     try:
-        for rb_item in connector.read(
-            req.source_ref,
-            req.sync_mode,
-            req.cursor_column,
-            req.cursor_from,
-            batch_rows=req.batch_rows,
-            stream_offsets=req.stream_offsets,
-        ):
+        if req.continuous_stream and req.connector_type in {"KAFKA", "MQTT", "PULSAR"}:
+            rb_iterable = iter(
+                drain_stream_microbatch(
+                    connector,
+                    req.source_ref,
+                    req.stream_offsets,
+                    max_batch_rows=min(req.batch_rows, 2_000),
+                    flush_window_ms=1_000,
+                )
+            )
+        else:
+            rb_iterable = connector.read(
+                req.source_ref,
+                req.sync_mode,
+                req.cursor_column,
+                req.cursor_from,
+                batch_rows=req.batch_rows,
+                stream_offsets=req.stream_offsets,
+            )
+
+        for rb_item in rb_iterable:
             if rb_item.batch.num_rows > 0:
                 batches.append(rb_item.batch)
                 rows_read += rb_item.batch.num_rows

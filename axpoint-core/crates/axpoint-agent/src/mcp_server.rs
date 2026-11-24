@@ -377,6 +377,10 @@ where
         &self,
         principal: &AuthPrincipal,
     ) -> Result<Vec<McpToolDescriptor>, AppError> {
+        if principal.token_profile == axpoint_domain::enums::TokenProfile::Builder {
+            return Ok(crate::mcp_builder::visible_axbuilder_tools(principal));
+        }
+
         let mut tools = Vec::new();
         if principal.has(Permission::DataRead) {
             tools.extend(builtin_readonly_mcp_tools());

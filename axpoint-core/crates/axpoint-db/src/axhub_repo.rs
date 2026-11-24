@@ -2297,6 +2297,17 @@ impl DatasetRepository for PgStore {
                   WHERE dataset_id = $1
                     AND enabled = TRUE
                     AND COALESCE(spec->>'on_source_delete', 'KEEP') = 'DELETE'
+             ) OR EXISTS(
+                 SELECT 1
+                   FROM ds_datasets d
+                   JOIN xb_schema_versions sv ON sv.tenant_id = d.tenant_id
+                  WHERE d.id = $1
+                    AND EXISTS (
+                        SELECT 1
+                          FROM jsonb_array_elements(COALESCE(sv.doc->'mappings', '[]'::jsonb)) m
+                         WHERE m->>'dataset' = d.name
+                           AND COALESCE(m->>'on_source_delete', 'KEEP') = 'DELETE'
+                    )
              )",
         )
         .bind(dataset_id)

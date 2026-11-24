@@ -7,6 +7,7 @@ use hex as _;
 use sha2 as _;
 
 pub mod embed;
+pub mod harness;
 pub mod im_gateway;
 pub mod mcp_builder;
 pub mod mcp_client;
