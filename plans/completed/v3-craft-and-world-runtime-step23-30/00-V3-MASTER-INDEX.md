@@ -1,14 +1,14 @@
 # xBlueNode / AxPoint Phase 3 实施总蓝图：产品级交互重塑与可执行世界运行时（Step 23～30）
 
-本文件是 `plans/v3-craft-and-world-runtime/` 的**唯一总入口**，承接已完成归档的第一阶段基线（[Step 00～14](../completed/v1-foundation-step00-14/00-MASTER-INDEX.md)，迁移 `0001`～`0014`，能力项 `C01`～`C59`）与第二阶段基线（[Step 15～22](../completed/v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md)，迁移 `0015`～`0019`，能力项 `C60`～`C75`）。
+本文件是 `plans/v3-craft-and-world-runtime/` 的**唯一总入口**，承接已完成归档的第一阶段基线（[Step 00～14](../v1-foundation-step00-14/00-MASTER-INDEX.md)，迁移 `0001`～`0014`，能力项 `C01`～`C59`）与第二阶段基线（[Step 15～22](../v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md)，迁移 `0015`～`0019`，能力项 `C60`～`C75`）。
 
 本阶段围绕**专项一：信息架构精简、严格双语纯净度与高级画布/图表交互重塑（`craft-ux/`，Step 23～25）**与**专项二：可执行本体动作契约、免连接跨层查询、时空事件推演与自治构建验收闭环（`world-runtime/`，Step 26～29）**双轨并行推进，并在 Step 30 完成全链路收官验收。全阶段严守三容器极简私有化架构（PostgreSQL 16 + Rust `axpoint-core` + Python `axpoint-parser` Sidecar）与本体级无幻觉五条铁律。
 
 常驻工程约束、三级门禁与多团队/多代理并发规约见：
-- [IRON_RULES.md](../../IRON_RULES.md)
-- [QUALITY_GATES_AND_VERIFICATION.md](../../docs/QUALITY_GATES_AND_VERIFICATION.md)
-- [MULTI_AGENT_TEAM_WORKFLOW.md](../../docs/MULTI_AGENT_TEAM_WORKFLOW.md)
-- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
+- [IRON_RULES.md](../../../IRON_RULES.md)
+- [QUALITY_GATES_AND_VERIFICATION.md](../../../docs/QUALITY_GATES_AND_VERIFICATION.md)
+- [MULTI_AGENT_TEAM_WORKFLOW.md](../../../docs/MULTI_AGENT_TEAM_WORKFLOW.md)
+- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
 
 ---
 
@@ -115,7 +115,7 @@ flowchart TD
     S29 --> S30
 ```
 
-按 [MULTI_AGENT_TEAM_WORKFLOW.md](../../docs/MULTI_AGENT_TEAM_WORKFLOW.md) 三级代理规范，各依赖层内部文件修改路径互不重叠，可在独立 `git worktree` 与独立数据库端口槽位（`WT_SLOT=1..4`）上满负荷双轨并行推进（有迁移的契约 PR 严格按 `0020 → 0021 → 0022 → 0023 → 0024` 编号顺序由 `orchestrator` 先行合入）：
+按 [MULTI_AGENT_TEAM_WORKFLOW.md](../../../docs/MULTI_AGENT_TEAM_WORKFLOW.md) 三级代理规范，各依赖层内部文件修改路径互不重叠，可在独立 `git worktree` 与独立数据库端口槽位（`WT_SLOT=1..4`）上满负荷双轨并行推进（有迁移的契约 PR 严格按 `0020 → 0021 → 0022 → 0023 → 0024` 编号顺序由 `orchestrator` 先行合入）：
 
 | 依赖层 | 双轨并行 Step | 契约 PR 顺序 | 并行 Worktree 与多 Subagent 分队编组 |
 | :--- | :--- | :--- | :--- |

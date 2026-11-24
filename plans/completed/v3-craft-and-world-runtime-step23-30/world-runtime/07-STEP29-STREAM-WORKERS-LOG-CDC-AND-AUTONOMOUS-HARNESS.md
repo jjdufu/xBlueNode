@@ -2,7 +2,7 @@
 
 本步在不增加任何必选重型中间件容器的前提下，突破本平台在**实时流延迟、源库物理硬删除同步、超大规模子图算法内存上限以及构建态自治验收**四个工程维度的天花板：① 为高频消息流（Kafka / MQTT）提供可选常驻异步微批消费协程，将流式接入→物化→规则评估端到端延迟从分钟级定时轮询压降至秒级，并为 PostgreSQL / MySQL 增加可选日志级 CDC 连接器以捕获物理硬删除；② 为超过 `500,000` 条边的业务子图提供基于 DuckDB 迭代关系代数的图算法下推引擎；③ 将 `AxBuilder` 构建态 MCP 从 9 个工具扩充至 **22 个细粒度工程工具**，并建立基于黄金能力问答集（Competency Questions）的自动化回归验收与缺口回改闭环。
 
-总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[04-STEP26](./04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md)、[05-STEP27](./05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) 与 [IRON_RULES.md](../../../IRON_RULES.md)。
+总览索引与工程约束见 [00-V3-MASTER-INDEX.md](../00-V3-MASTER-INDEX.md)、[04-STEP26](./04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md)、[05-STEP27](./05-STEP27-AXQL-ONTOLOGY-COMPILER-AND-DYNAMIC-VISIBILITY.md) 与 [IRON_RULES.md](../../../../IRON_RULES.md)。
 
 ---
 
