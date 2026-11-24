@@ -11,6 +11,16 @@ import {
 import { useI18n } from "@/i18n";
 import type { ChartSuggestion, QueryColumn } from "@/lib/api/analytics";
 import type { DataType } from "@/lib/api/enums";
+import {
+  CHART_BAR_MAX_WIDTH,
+  CHART_LINE_SMOOTH,
+  CHART_SYMBOL_SIZE,
+  VERTICAL_BAR_BORDER_RADIUS,
+  buildLinearAreaGradient,
+  enhanceClientEChartsOption,
+  getChartPalette,
+  getChartSurfaceTokens,
+} from "@/lib/chartTheme";
 import { useTheme } from "@/lib/theme";
 import { Badge, Select } from "@/components/ui/primitives";
 
@@ -89,7 +99,7 @@ export function ChartPanel({
   suggestion = null,
   testId = "analytics-chart-panel",
 }: ChartPanelProps) {
-  const { tx, tEnum, fmtNum } = useI18n();
+  const { isZh, tx, tEnum, fmtNum } = useI18n();
   const { isDark } = useTheme();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
@@ -284,14 +294,9 @@ export function ChartPanel({
     const chart = chartRef.current;
     if (!chart || chart.isDisposed() || !isCanvasChart) return;
 
-    const fgColor = isDark ? "#fafafa" : "#09090b";
-    const mutedColor = isDark ? "#a1a1aa" : "#71717a";
-    const gridBorder = isDark ? "#27272a" : "#e4e4e7";
-    const cardBg = isDark ? "#18181b" : "#f4f4f5";
-    const accentBlue = isDark ? "#3b82f6" : "#2563eb";
-    const piePalette = isDark
-      ? ["#3b82f6", "#60a5fa", "#93c5fd", "#a1a1aa", "#71717a", "#52525b"]
-      : ["#2563eb", "#3b82f6", "#60a5fa", "#52525b", "#71717a", "#a1a1aa"];
+    const palette = getChartPalette(isDark);
+    const surface = getChartSurfaceTokens(isDark);
+    const accentBlue = palette[0] ?? (isDark ? "#3b82f6" : "#2563eb");
 
     const slicedRows = rows.slice(0, 50);
     const categories = slicedRows.map((r, i) => {
@@ -303,29 +308,25 @@ export function ChartPanel({
       return parseNumericCell(raw) ?? 0;
     });
 
-    let option: echarts.EChartsOption;
+    let baseOption: Record<string, unknown>;
 
     if (activeKind === "PIE_CHART") {
-      option = {
-        animation: false,
-        color: piePalette,
+      baseOption = {
+        color: palette,
         tooltip: {
           trigger: "item",
-          backgroundColor: cardBg,
-          borderColor: gridBorder,
-          textStyle: { color: fgColor, fontSize: 11 },
         },
         legend: {
           bottom: 0,
-          textStyle: { color: mutedColor, fontSize: 10 },
+          textStyle: { color: surface.subtext, fontSize: 10 },
         },
         series: [
           {
             name: yField || tx("指标", "Value"),
             type: "pie",
-            radius: ["36%", "66%"],
+            radius: ["40%", "68%"],
             center: ["50%", "44%"],
-            label: { color: fgColor, fontSize: 10 },
+            label: { color: surface.text, fontSize: 10 },
             data: categories.slice(0, 16).map((name, idx) => ({
               name,
               value: values[idx] ?? 0,
@@ -334,8 +335,7 @@ export function ChartPanel({
         ],
       };
     } else {
-      option = {
-        animation: false,
+      baseOption = {
         grid: {
           top: 24,
           right: 16,
@@ -344,16 +344,13 @@ export function ChartPanel({
         },
         tooltip: {
           trigger: "axis",
-          backgroundColor: cardBg,
-          borderColor: gridBorder,
-          textStyle: { color: fgColor, fontSize: 11 },
         },
         xAxis: {
           type: "category",
           data: categories,
-          axisLine: { lineStyle: { color: gridBorder } },
+          axisLine: { lineStyle: { color: surface.axisLine } },
           axisLabel: {
-            color: mutedColor,
+            color: surface.subtext,
             fontSize: 10,
             interval: "auto",
             rotate: categories.length > 10 ? 20 : 0,
@@ -361,38 +358,43 @@ export function ChartPanel({
         },
         yAxis: {
           type: "value",
-          splitLine: { lineStyle: { color: gridBorder, type: "dashed" } },
-          axisLabel: { color: mutedColor, fontSize: 10 },
+          splitLine: { lineStyle: { color: surface.splitLine, type: "dashed" } },
+          axisLabel: { color: surface.subtext, fontSize: 10 },
         },
         series: [
           activeKind === "LINE_CHART"
             ? {
                 name: yField || tx("指标", "Value"),
                 type: "line",
-                smooth: false,
-                symbolSize: 5,
+                smooth: CHART_LINE_SMOOTH,
+                symbolSize: CHART_SYMBOL_SIZE,
                 data: values,
                 lineStyle: { color: accentBlue, width: 2 },
                 itemStyle: { color: accentBlue },
-                areaStyle: { color: accentBlue, opacity: 0.08 },
+                areaStyle: { color: buildLinearAreaGradient(accentBlue) },
               }
             : {
                 name: yField || tx("指标", "Value"),
                 type: "bar",
-                barMaxWidth: 32,
+                barMaxWidth: CHART_BAR_MAX_WIDTH,
                 data: values,
                 itemStyle: {
                   color: accentBlue,
-                  borderRadius: [2, 2, 0, 0],
+                  borderRadius: [...VERTICAL_BAR_BORDER_RADIUS],
                 },
               },
         ],
       };
     }
 
-    chart.setOption(option, true);
+    const enhanced = enhanceClientEChartsOption(baseOption, {
+      isDark,
+      locale: isZh ? "zh" : "en",
+    });
+
+    chart.setOption(enhanced as echarts.EChartsOption, true);
     chart.resize();
-  }, [activeKind, isCanvasChart, isDark, rows, tx, xField, yField]);
+  }, [activeKind, isCanvasChart, isDark, isZh, rows, tx, xField, yField]);
 
   const kpiSummary = useMemo(() => {
     if (!hasData) return null;

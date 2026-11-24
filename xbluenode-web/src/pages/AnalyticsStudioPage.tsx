@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router";
-import { Award, Code2, Sparkles, TableProperties, Wand2 } from "lucide-react";
+import {
+  Award,
+  BarChart3,
+  Code2,
+  Sparkles,
+  TableProperties,
+  Wand2,
+} from "lucide-react";
 import { useI18n } from "@/i18n";
 import { MODULE_META } from "@/modules/meta";
 import {
@@ -16,7 +23,15 @@ import {
   type SavedQuery,
 } from "@/lib/api/analytics";
 import { ChartPanel } from "@/components/analytics/ChartPanel";
+import {
+  ChartStudioPanel,
+  type ChartStudioSeed,
+} from "@/components/analytics/ChartStudioPanel";
 import { MetricManager } from "@/components/analytics/MetricManager";
+import {
+  PinToDashboardModal,
+  type PinChartDraftSpec,
+} from "@/components/analytics/PinToDashboardModal";
 import { PivotBuilder } from "@/components/analytics/PivotBuilder";
 import { ResultGrid } from "@/components/analytics/ResultGrid";
 import { SchemaTree } from "@/components/analytics/SchemaTree";
@@ -31,12 +46,19 @@ import {
 } from "@/components/ui/primitives";
 import { AxQueryPage } from "@/pages/AxQueryPage";
 
-type StudioTab = "ask" | "sql" | "pivot" | "metrics" | "transform";
+type StudioTab = "ask" | "sql" | "chart" | "pivot" | "metrics" | "transform";
 
 function resolveAnalyticsTab(rawTab: string | null): StudioTab {
   const normalized = (rawTab ?? "").trim().toLowerCase();
   if (normalized === "ask" || normalized === "query" || normalized === "qa") {
     return "ask";
+  }
+  if (
+    normalized === "chart" ||
+    normalized === "studio" ||
+    normalized === "visualize"
+  ) {
+    return "chart";
   }
   if (normalized === "pivot") {
     return "pivot";
@@ -109,6 +131,9 @@ export function AnalyticsStudioPage() {
   const [resultTruncated, setResultTruncated] = useState<boolean>(false);
   const [resultDurationMs, setResultDurationMs] = useState<number | null>(null);
   const [resultExecutedSql, setResultExecutedSql] = useState<string>("");
+  const [chartStudioSeed, setChartStudioSeed] =
+    useState<ChartStudioSeed | null>(null);
+  const [pinDraft, setPinDraft] = useState<PinChartDraftSpec | null>(null);
 
   useEffect(() => {
     setActiveTab(resolveAnalyticsTab(tabParam));
@@ -306,6 +331,11 @@ export function AnalyticsStudioPage() {
     handleSwitchTab("pivot");
   };
 
+  const handleOpenChartStudio = (seed: ChartStudioSeed) => {
+    setChartStudioSeed(seed);
+    handleSwitchTab("chart");
+  };
+
   return (
     <div
       className="flex flex-1 min-h-0 flex-col gap-2.5 overflow-hidden"
@@ -349,6 +379,12 @@ export function AnalyticsStudioPage() {
                   testId: "analytics-tab-sql",
                 },
                 {
+                  key: "chart",
+                  label: tx("可视化制图", "Chart Studio"),
+                  icon: <BarChart3 className="h-3.5 w-3.5 text-xblue" />,
+                  testId: "analytics-tab-chart",
+                },
+                {
                   key: "pivot",
                   label: tx("透视表", "Pivot"),
                   icon: <TableProperties className="h-3.5 w-3.5" />,
@@ -373,7 +409,11 @@ export function AnalyticsStudioPage() {
       />
 
       {activeTab === "ask" ? (
-        <AxQueryPage embedded />
+        <AxQueryPage
+          embedded
+          onOpenChartStudio={handleOpenChartStudio}
+          onPinToDashboard={setPinDraft}
+        />
       ) : (
         <div className="flex flex-1 min-h-0 overflow-hidden">
           <ResizableWorkspace
@@ -467,6 +507,48 @@ export function AnalyticsStudioPage() {
                                     truncated={resultTruncated}
                                     durationMs={resultDurationMs}
                                     sql={resultExecutedSql}
+                                    onOpenChartStudio={() =>
+                                      handleOpenChartStudio({
+                                        title: tx(
+                                          "业务查询图表",
+                                          "SQL Result Chart"
+                                        ),
+                                        dataSource: {
+                                          kind: "SQL",
+                                          sql: (
+                                            resultExecutedSql || sqlText
+                                          ).trim(),
+                                        },
+                                        columns: resultColumns,
+                                        rows: resultRows,
+                                        suggestedKind:
+                                          resultRows.length <= 1 &&
+                                          resultColumns.length <= 2
+                                            ? "KPI_CARD"
+                                            : "BAR_CHART",
+                                      })
+                                    }
+                                    onPinToDashboard={() =>
+                                      setPinDraft({
+                                        name: tx(
+                                          "业务查询图表",
+                                          "SQL Result Chart"
+                                        ),
+                                        widgetKind:
+                                          resultRows.length <= 1 &&
+                                          resultColumns.length <= 2
+                                            ? "KPI_CARD"
+                                            : "BAR_CHART",
+                                        dataSource: {
+                                          kind: "SQL",
+                                          sql: (
+                                            resultExecutedSql || sqlText
+                                          ).trim(),
+                                        },
+                                        encoding: {},
+                                        options: {},
+                                      })
+                                    }
                                   />
                                 </div>
                                 <div className="xl:col-span-5 min-w-0 flex flex-col min-h-0">
@@ -479,6 +561,15 @@ export function AnalyticsStudioPage() {
                             ),
                           },
                         ]}
+                      />
+                    )}
+
+                    {activeTab === "chart" && (
+                      <ChartStudioPanel
+                        catalog={catalog}
+                        metrics={metrics}
+                        savedQueries={savedQueries}
+                        seed={chartStudioSeed}
                       />
                     )}
 
@@ -496,6 +587,8 @@ export function AnalyticsStudioPage() {
                         catalog={catalog}
                         metrics={metrics}
                         onRefreshMetrics={loadMetrics}
+                        onOpenChartStudio={handleOpenChartStudio}
+                        onPinToDashboard={setPinDraft}
                       />
                     )}
 
@@ -512,6 +605,12 @@ export function AnalyticsStudioPage() {
           />
         </div>
       )}
+
+      <PinToDashboardModal
+        open={Boolean(pinDraft)}
+        draft={pinDraft}
+        onClose={() => setPinDraft(null)}
+      />
     </div>
   );
 }

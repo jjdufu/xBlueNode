@@ -186,6 +186,12 @@ export function DashboardSettingsModal({
             360,
             Math.min(4320, Math.round(screenHeight) || 1080)
           ),
+          ...(dashboard.canvas.zone_layout
+            ? { zone_layout: dashboard.canvas.zone_layout }
+            : {}),
+          ...(dashboard.canvas.compact_mode
+            ? { compact_mode: dashboard.canvas.compact_mode }
+            : {}),
         },
         filters: normalizedFilters,
       });

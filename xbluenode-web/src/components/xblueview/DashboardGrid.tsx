@@ -1,8 +1,10 @@
-import { useMemo } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   GridLayout,
   useContainerWidth,
   verticalCompactor,
+  type Compactor,
+  type EventCallback,
   type Layout,
   type LayoutItem,
 } from "react-grid-layout";
@@ -11,11 +13,18 @@ import { useI18n } from "@/i18n";
 import type {
   CanvasConfig,
   DrillPathItem,
+  GridCompactMode,
   LayoutUpdateItem,
   SemanticZoneKind,
   WidgetDataResponse,
   WidgetRecord,
 } from "@/lib/api/xblueview";
+import {
+  computeMagneticSnapGuides,
+  resolveFreeFloatLayout,
+  type GridLayoutBox,
+  type MagneticSnapGuides,
+} from "./logic";
 import { formatSemanticZoneLabel } from "./PublishPreflightModal";
 import {
   extractKnownNodesFromWidgetDataMap,
@@ -26,6 +35,7 @@ import { WidgetFrame } from "./WidgetFrame";
 export interface DashboardGridProps {
   widgets: WidgetRecord[];
   canvas: CanvasConfig;
+  compactMode?: GridCompactMode;
   widgetDataMap: Record<string, WidgetDataResponse | null>;
   loadingMap: Record<string, boolean>;
   errorMap: Record<string, string | null>;
@@ -55,9 +65,13 @@ export interface DashboardGridProps {
   onActionSuccess?: () => void;
 }
 
+const GRID_MARGIN_X = 12;
+const GRID_MARGIN_Y = 12;
+
 export function DashboardGrid({
   widgets,
   canvas,
+  compactMode,
   widgetDataMap,
   loadingMap,
   errorMap,
@@ -81,10 +95,16 @@ export function DashboardGrid({
   onSelectNode,
   onActionSuccess,
 }: DashboardGridProps) {
-  const { isZh } = useI18n();
-  const { tx } = useI18n();
+  const { isZh, tx } = useI18n();
   const { width: measuredWidth, containerRef } = useContainerWidth({
     initialWidth: fixedWidth ?? 1200,
+  });
+
+  const activeItemIdRef = useRef<string | null>(null);
+  const dragBaselineRef = useRef<Map<string, GridLayoutBox>>(new Map());
+  const [snapGuides, setSnapGuides] = useState<MagneticSnapGuides>({
+    verticalCols: [],
+    horizontalRows: [],
   });
 
   const knownNodes = useMemo(
@@ -104,7 +124,7 @@ export function DashboardGrid({
     [hideActionWidgets, widgets]
   );
 
-  const activeWidth = fixedWidth ?? measuredWidth;
+  const activeWidth = Math.max(320, fixedWidth ?? measuredWidth);
   const isFiveZone = canvas.zone_layout === "STANDARD_FIVE_ZONE";
   const cols = isFiveZone
     ? canvas.cols > 0 && canvas.cols <= 12
@@ -114,6 +134,14 @@ export function DashboardGrid({
       ? canvas.cols
       : 24;
   const rowHeight = canvas.row_height > 0 ? canvas.row_height : 30;
+  const effectiveCompactMode: GridCompactMode =
+    compactMode ?? canvas.compact_mode ?? "VERTICAL_COMPACT";
+
+  const colUnitWidth = Math.max(
+    8,
+    (activeWidth - (cols - 1) * GRID_MARGIN_X) / cols
+  );
+  const rowPitchPx = rowHeight + GRID_MARGIN_Y;
 
   const fiveZoneRegions: ReadonlyArray<{
     zone: SemanticZoneKind;
@@ -169,9 +197,113 @@ export function DashboardGrid({
     [cols, isEditing, visibleWidgets]
   );
 
+  const freeFloatCompactor = useMemo<Compactor>(
+    () => ({
+      type: null,
+      allowOverlap: false,
+      preventCollision: true,
+      compact(nextLayout: Layout, gridCols: number): Layout {
+        return resolveFreeFloatLayout(
+          nextLayout,
+          gridCols,
+          activeItemIdRef.current,
+          dragBaselineRef.current
+        );
+      },
+    }),
+    []
+  );
+
+  const activeCompactor =
+    effectiveCompactMode === "FREE_FLOAT"
+      ? freeFloatCompactor
+      : verticalCompactor;
+
+  const captureBaseline = useCallback(
+    (curLayout: Layout, activeItem: LayoutItem | null) => {
+      activeItemIdRef.current = activeItem?.i ?? null;
+      const snap = new Map<string, GridLayoutBox>();
+      for (const item of curLayout) {
+        snap.set(item.i, {
+          i: item.i,
+          x: item.x,
+          y: item.y,
+          w: item.w,
+          h: item.h,
+        });
+      }
+      dragBaselineRef.current = snap;
+    },
+    []
+  );
+
+  const handleInteractionStart: EventCallback = useCallback(
+    (curLayout, oldItem, newItem) => {
+      captureBaseline(curLayout, oldItem ?? newItem);
+      const target = newItem ?? oldItem;
+      setSnapGuides(computeMagneticSnapGuides(target, curLayout));
+    },
+    [captureBaseline]
+  );
+
+  const handleInteractionMove: EventCallback = useCallback(
+    (curLayout, _oldItem, newItem, placeholder) => {
+      const target = placeholder ?? newItem;
+      if (target) {
+        activeItemIdRef.current = target.i;
+      }
+      setSnapGuides(computeMagneticSnapGuides(target, curLayout));
+    },
+    []
+  );
+
+  const clearInteraction = useCallback(() => {
+    activeItemIdRef.current = null;
+    dragBaselineRef.current = new Map();
+    setSnapGuides({ verticalCols: [], horizontalRows: [] });
+  }, []);
+
+  const handleInteractionStop: EventCallback = useCallback(
+    (curLayout) => {
+      const normalized =
+        effectiveCompactMode === "FREE_FLOAT"
+          ? resolveFreeFloatLayout(
+              curLayout,
+              cols,
+              activeItemIdRef.current,
+              dragBaselineRef.current
+            )
+          : curLayout;
+      clearInteraction();
+      if (isEditing && onLayoutChange) {
+        onLayoutChange(
+          normalized.map((item) => ({
+            id: item.i,
+            position: {
+              x: item.x,
+              y: item.y,
+              w: item.w,
+              h: item.h,
+            },
+          }))
+        );
+      }
+    },
+    [clearInteraction, cols, effectiveCompactMode, isEditing, onLayoutChange]
+  );
+
   const handleRglLayoutChange = (nextLayout: Layout) => {
     if (!isEditing || !onLayoutChange) return;
-    const updates: LayoutUpdateItem[] = nextLayout.map((item) => ({
+    const resolved =
+      effectiveCompactMode === "FREE_FLOAT"
+        ? resolveFreeFloatLayout(
+            nextLayout,
+            cols,
+            activeItemIdRef.current,
+            dragBaselineRef.current
+          )
+        : nextLayout;
+    const updates: LayoutUpdateItem[] = resolved.map((item) => ({
       id: item.i,
       position: {
         x: item.x,
@@ -200,56 +332,134 @@ export function DashboardGrid({
   }
 
   return (
-    <div ref={containerRef} className="w-full" data-testid="dashboard-grid">
+    <div
+      ref={containerRef}
+      className="w-full"
+      data-testid="dashboard-grid"
+      data-compact-mode={effectiveCompactMode}
+      data-cols={cols}
+    >
       {renderFiveZoneHeaderStrip()}
-      <GridLayout
-        width={activeWidth}
-        layout={layout}
-        gridConfig={{
-          cols,
-          rowHeight,
-          margin: [12, 12],
-          containerPadding: [0, 0],
-        }}
-        dragConfig={{
-          enabled: isEditing,
-          handle: ".widget-drag-handle",
-        }}
-        resizeConfig={{
-          enabled: isEditing,
-          handles: ["se", "e", "s"],
-        }}
-        compactor={verticalCompactor}
-        onLayoutChange={handleRglLayoutChange}
-      >
-        {visibleWidgets.map((w) => (
-          <div key={w.id} className="h-full w-full">
-            <WidgetFrame
-              widget={w}
-              data={widgetDataMap[w.id] ?? null}
-              loading={loadingMap[w.id] ?? false}
-              error={errorMap[w.id] ?? null}
-              isEditing={isEditing}
-              isDark={isDark}
-              isScreen={isScreen}
-              readOnly={readOnly}
-              drillPath={drillMap[w.id] ?? []}
-              selectedNodeId={selectedNodeId}
-              filterValues={filterValues}
-              knownNodes={knownNodes}
-              onRefresh={onRefreshWidget}
-              onEdit={onEditWidget}
-              onDelete={onDeleteWidget}
-              onExportWidget={onExportWidget}
-              onDrill={onDrill}
-              onPopDrill={onPopDrill}
-              onCrossFilter={onCrossFilter}
-              onSelectNode={onSelectNode}
-              onActionSuccess={onActionSuccess}
-            />
+
+      <div className="relative w-full min-h-[240px]">
+        {/* Visible 12/24-Column CSS Dashed Cell Tracks in Edit Mode */}
+        {isEditing && (
+          <div
+            aria-hidden="true"
+            data-testid="dashboard-grid-tracks"
+            data-track-cols={cols}
+            style={{
+              gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+              columnGap: `${GRID_MARGIN_X}px`,
+              backgroundImage: `linear-gradient(to bottom, transparent ${rowHeight}px, color-mix(in srgb, var(--color-border) 55%, transparent) ${rowHeight}px, color-mix(in srgb, var(--color-border) 55%, transparent) ${rowHeight + 1}px, transparent ${rowHeight + 1}px)`,
+              backgroundSize: `100% ${rowPitchPx}px`,
+            }}
+            className="pointer-events-none absolute inset-0 z-0 grid rounded-md"
+          >
+            {Array.from({ length: cols }, (_, colIdx) => (
+              <div
+                key={colIdx}
+                data-testid={`dashboard-grid-col-track-${colIdx}`}
+                className="h-full rounded-xs border border-dashed border-border/55 bg-muted/10"
+              />
+            ))}
           </div>
-        ))}
-      </GridLayout>
+        )}
+
+        {/* Magnetic Alignment Snap Lines (1.5px #2563eb) */}
+        {isEditing &&
+          snapGuides.verticalCols.map((colEdge) => {
+            const leftPx =
+              colEdge <= 0
+                ? 0
+                : colEdge >= cols
+                  ? Math.max(0, activeWidth - 1.5)
+                  : colEdge * (colUnitWidth + GRID_MARGIN_X) -
+                    GRID_MARGIN_X / 2;
+            return (
+              <div
+                key={`vsnap-${colEdge}`}
+                data-testid="grid-snap-line-vertical"
+                data-snap-col={colEdge}
+                style={{ left: `${leftPx}px`, width: "1.5px" }}
+                className="pointer-events-none absolute inset-y-0 z-30 bg-[#2563eb]"
+              />
+            );
+          })}
+
+        {isEditing &&
+          snapGuides.horizontalRows.map((rowEdge) => {
+            const topPx =
+              rowEdge <= 0
+                ? 0
+                : rowEdge * rowPitchPx - GRID_MARGIN_Y / 2;
+            return (
+              <div
+                key={`hsnap-${rowEdge}`}
+                data-testid="grid-snap-line-horizontal"
+                data-snap-row={rowEdge}
+                style={{ top: `${topPx}px`, height: "1.5px" }}
+                className="pointer-events-none absolute inset-x-0 z-30 bg-[#2563eb]"
+              />
+            );
+          })}
+
+        <GridLayout
+          className="relative z-10"
+          width={activeWidth}
+          layout={layout}
+          gridConfig={{
+            cols,
+            rowHeight,
+            margin: [GRID_MARGIN_X, GRID_MARGIN_Y],
+            containerPadding: [0, 0],
+          }}
+          dragConfig={{
+            enabled: isEditing,
+            handle: ".widget-drag-handle",
+          }}
+          resizeConfig={{
+            enabled: isEditing,
+            handles: ["n", "s", "e", "w", "ne", "nw", "se", "sw"],
+          }}
+          compactor={activeCompactor}
+          onDragStart={handleInteractionStart}
+          onDrag={handleInteractionMove}
+          onDragStop={handleInteractionStop}
+          onResizeStart={handleInteractionStart}
+          onResize={handleInteractionMove}
+          onResizeStop={handleInteractionStop}
+          onLayoutChange={handleRglLayoutChange}
+        >
+          {visibleWidgets.map((w) => (
+            <div key={w.id} className="h-full w-full">
+              <WidgetFrame
+                widget={w}
+                data={widgetDataMap[w.id] ?? null}
+                loading={loadingMap[w.id] ?? false}
+                error={errorMap[w.id] ?? null}
+                isEditing={isEditing}
+                isDark={isDark}
+                isScreen={isScreen}
+                readOnly={readOnly}
+                drillPath={drillMap[w.id] ?? []}
+                selectedNodeId={selectedNodeId}
+                filterValues={filterValues}
+                knownNodes={knownNodes}
+                onRefresh={onRefreshWidget}
+                onEdit={onEditWidget}
+                onDelete={onDeleteWidget}
+                onExportWidget={onExportWidget}
+                onDrill={onDrill}
+                onPopDrill={onPopDrill}
+                onCrossFilter={onCrossFilter}
+                onSelectNode={onSelectNode}
+                onActionSuccess={onActionSuccess}
+              />
+            </div>
+          ))}
+        </GridLayout>
+      </div>
     </div>
   );
 }

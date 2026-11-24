@@ -1,8 +1,10 @@
 import { useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
+  BarChart3,
   Clock,
   Code2,
+  Pin,
   ShieldCheck,
   Table2,
 } from "lucide-react";
@@ -21,6 +23,8 @@ export interface ResultGridProps {
   maxHeight?: number;
   testId?: string;
   emptyText?: string;
+  onOpenChartStudio?: () => void;
+  onPinToDashboard?: () => void;
 }
 
 const ROW_HEIGHT = 32;
@@ -59,6 +63,8 @@ export function ResultGrid({
   maxHeight = 340,
   testId = "analytics-result-grid",
   emptyText,
+  onOpenChartStudio,
+  onPinToDashboard,
 }: ResultGridProps) {
   const { tx, tEnum, fmtNum } = useI18n();
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
@@ -133,20 +139,46 @@ export function ResultGrid({
           )}
         </div>
 
-        {sql && (
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => setShowExecutedSql((prev) => !prev)}
-            data-testid="result-toggle-rewritten-sql"
-          >
-            <Code2 className="h-3 w-3" />
-            {showExecutedSql
-              ? tx("收起改写 SQL", "Hide SQL")
-              : tx("守卫改写 SQL", "Guarded SQL")}
-          </Button>
-        )}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {columns.length > 0 && onOpenChartStudio && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onOpenChartStudio}
+              data-testid="result-open-chart-studio-btn"
+            >
+              <BarChart3 className="h-3 w-3 text-xblue" />
+              {tx("制图", "Chart")}
+            </Button>
+          )}
+          {columns.length > 0 && onPinToDashboard && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onPinToDashboard}
+              data-testid="result-pin-dashboard-btn"
+            >
+              <Pin className="h-3 w-3 text-xblue" />
+              {tx("钉入看板", "Pin")}
+            </Button>
+          )}
+          {sql && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowExecutedSql((prev) => !prev)}
+              data-testid="result-toggle-rewritten-sql"
+            >
+              <Code2 className="h-3 w-3" />
+              {showExecutedSql
+                ? tx("收起改写 SQL", "Hide SQL")
+                : tx("守卫改写 SQL", "Guarded SQL")}
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Truncated Banner */}
