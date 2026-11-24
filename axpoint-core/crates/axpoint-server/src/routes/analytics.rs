@@ -370,8 +370,10 @@ fn error_http_status_i32(err: &AppError) -> i32 {
 }
 
 fn classify_history_status(err: &AppError) -> QueryHistoryStatus {
-    if matches!(err.error_code(), "SQL_REJECTED" | "JOIN_PATH_UNGROUNDED")
-        || matches!(err, AppError::Forbidden(_))
+    if matches!(
+        err.error_code(),
+        "SQL_REJECTED" | "JOIN_PATH_UNGROUNDED" | "AXQL_UNMAPPED_SYMBOL"
+    ) || matches!(err, AppError::Forbidden(_))
     {
         QueryHistoryStatus::Rejected
     } else if matches!(err, AppError::Timeout(_)) {
@@ -433,11 +435,21 @@ async fn build_caller_policy(
     caller: &CallerCtx<'_>,
     reveal_pii: bool,
 ) -> Result<axpoint_domain::guard::PolicyContext, AppError> {
+    build_caller_policy_for_subgraph(state, caller, "main", reveal_pii).await
+}
+
+async fn build_caller_policy_for_subgraph(
+    state: &AppState,
+    caller: &CallerCtx<'_>,
+    subgraph_slug: &str,
+    reveal_pii: bool,
+) -> Result<axpoint_domain::guard::PolicyContext, AppError> {
     if let Some(auth) = caller.auth {
-        return axpoint_server::policy::build_policy_context_for_store(
+        return axpoint_server::policy::build_policy_context_for_subgraph(
             &state.store,
             &state.cedar,
             auth,
+            subgraph_slug,
             reveal_pii,
             &caller.client_ip,
         )
@@ -445,10 +457,11 @@ async fn build_caller_policy(
     }
     if let Some(ap) = caller.analytics {
         let resolved = crate::agent_bridge::resolve_auth_principal(state, ap).await?;
-        return axpoint_server::policy::build_policy_context_for_store(
+        return axpoint_server::policy::build_policy_context_for_subgraph(
             &state.store,
             &state.cedar,
             &resolved,
+            subgraph_slug,
             reveal_pii,
             &caller.client_ip,
         )
@@ -2416,35 +2429,244 @@ async fn list_history_handler(
     Ok(Json(page))
 }
 
+fn normalize_axql_subgraph(raw: Option<&str>) -> &str {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("main")
+}
+
+async fn resolve_axql_knowledge_map(
+    state: &AppState,
+    tenant_id: &str,
+    subgraph_slug: &str,
+    calls: &[axpoint_analytics::ResolvedKnowledgeCall],
+) -> Result<BTreeMap<usize, Vec<Uuid>>, AppError> {
+    let mut map = BTreeMap::new();
+    for call in calls {
+        let para_ids: Vec<Uuid> = match crate::routes::documents::recall_knowledge_hits(
+            state,
+            tenant_id,
+            &call.query_text,
+            call.top_k,
+            None,
+        )
+        .await
+        {
+            Ok((hits, _)) => hits.into_iter().map(|h| h.para_id).collect(),
+            Err(AppError::Llm(_) | AppError::Upstream(_) | AppError::Config(_)) => state
+                .store
+                .recall_with_scope(
+                    tenant_id,
+                    &call.query_text,
+                    None,
+                    i64::try_from(call.top_k).unwrap_or(10),
+                    None,
+                )
+                .await?
+                .into_iter()
+                .map(|c| c.para_id)
+                .collect(),
+            Err(other) => return Err(other),
+        };
+        let related = state
+            .store
+            .list_related_nodes_in_subgraph(tenant_id, &para_ids, &[], subgraph_slug)
+            .await?;
+        let node_ids: Vec<Uuid> = related.into_iter().map(|n| n.id).collect();
+        map.insert(call.call_id, node_ids);
+    }
+    Ok(map)
+}
+
+async fn compile_axql_artifact_for_caller(
+    state: &AppState,
+    caller: &CallerCtx<'_>,
+    req: &AxqlQueryRequest,
+    catalog: &TenantCatalog,
+) -> Result<(axpoint_analytics::CompiledAxqlArtifact, bool), AppError> {
+    Box::pin(async move {
+        let (parsed, knowledge_calls) = axpoint_analytics::extract_axql_knowledge_requests(req)?;
+        let subgraph_slug = normalize_axql_subgraph(req.subgraph_slug.as_deref());
+        let (published, policy, knowledge_map) = tokio::try_join!(
+            state
+                .store
+                .get_published_schema(caller.tenant_id, subgraph_slug),
+            build_caller_policy_for_subgraph(state, caller, subgraph_slug, req.reveal_pii),
+            resolve_axql_knowledge_map(state, caller.tenant_id, subgraph_slug, &knowledge_calls),
+        )?;
+        let raw_pii = policy.reveal_pii_authorized;
+        let artifact = axpoint_analytics::compile_parsed_axql(
+            &parsed,
+            req,
+            &published.doc,
+            catalog,
+            Some(&policy),
+            caller.has_pii_raw || raw_pii,
+            &knowledge_map,
+        )?;
+        Ok((artifact, raw_pii))
+    })
+    .await
+}
+
+async fn compile_axql_with_caller(
+    state: &AppState,
+    caller: CallerCtx<'_>,
+    req: AxqlQueryRequest,
+) -> Result<AxqlCompilePlan, AppError> {
+    let (catalog, _, _, _) =
+        load_tenant_catalog_and_live(state, caller.tenant_id, caller.has_live).await?;
+    let (artifact, _) = compile_axql_artifact_for_caller(state, &caller, &req, &catalog).await?;
+    Ok(artifact.plan)
+}
+
+async fn execute_axql_with_telemetry(
+    state: &AppState,
+    caller: CallerCtx<'_>,
+    req: AxqlQueryRequest,
+) -> Result<AxqlQueryResponse, AppError> {
+    let started = Instant::now();
+    let (session, catalog) =
+        acquire_tenant_session(state, caller.tenant_id, caller.has_live).await?;
+
+    let outcome = async {
+        let (artifact, raw_pii) =
+            compile_axql_artifact_for_caller(state, &caller, &req, &catalog).await?;
+        let resp = axpoint_analytics::execute_compiled_axql(
+            &session,
+            artifact,
+            &catalog,
+            req.timeout_ms,
+            req.reveal_pii,
+            caller.has_pii_raw || raw_pii,
+        )
+        .await?;
+        Ok::<_, AppError>((resp, raw_pii))
+    }
+    .await;
+
+    match outcome {
+        Ok((resp, raw_pii)) => {
+            record_axql_history_and_audit_ok(state, &caller, &req, &resp, raw_pii).await;
+            Ok(resp)
+        }
+        Err(err) => {
+            let elapsed = i64::try_from(started.elapsed().as_millis()).ok();
+            record_axql_history_and_audit_err(state, &caller, &req.axql, elapsed, &err).await;
+            Err(err)
+        }
+    }
+}
+
+async fn record_axql_history_and_audit_ok(
+    state: &AppState,
+    caller: &CallerCtx<'_>,
+    req: &AxqlQueryRequest,
+    resp: &AxqlQueryResponse,
+    raw_pii: bool,
+) {
+    if let Err(err) = state
+        .store
+        .record_query_history(
+            caller.tenant_id,
+            NewQueryHistoryEntry {
+                user_id: (!caller.user_id.is_nil()).then_some(caller.user_id),
+                kind: QueryHistoryKind::Sql,
+                sql_text: req.axql.clone(),
+                status: QueryHistoryStatus::Succeeded,
+                row_count: i64::try_from(resp.result.row_count).ok(),
+                duration_ms: i64::try_from(resp.result.duration_ms).ok(),
+                error_code: None,
+            },
+        )
+        .await
+    {
+        tracing::warn!(error = %err, "record_query_history for axql failed");
+    }
+    record_audit_and_flush(
+        state,
+        caller,
+        AuditAction::QuerySql,
+        String::from("analytics:axql"),
+        200,
+        serde_json::json!({
+            "row_count": resp.result.row_count,
+            "truncated": resp.result.truncated,
+            "fanout_protected": resp.plan.fanout_protected,
+            "reveal_pii": req.reveal_pii,
+            "raw_pii": raw_pii,
+        }),
+    )
+    .await;
+}
+
+async fn record_axql_history_and_audit_err(
+    state: &AppState,
+    caller: &CallerCtx<'_>,
+    axql_text: &str,
+    elapsed_ms: Option<i64>,
+    err: &AppError,
+) {
+    if let Err(hist_err) = state
+        .store
+        .record_query_history(
+            caller.tenant_id,
+            NewQueryHistoryEntry {
+                user_id: (!caller.user_id.is_nil()).then_some(caller.user_id),
+                kind: QueryHistoryKind::Sql,
+                sql_text: String::from(axql_text),
+                status: classify_history_status(err),
+                row_count: None,
+                duration_ms: elapsed_ms,
+                error_code: Some(String::from(err.error_code())),
+            },
+        )
+        .await
+    {
+        tracing::warn!(error = %hist_err, "record_query_history for axql error failed");
+    }
+    record_audit_and_flush(
+        state,
+        caller,
+        AuditAction::QuerySql,
+        String::from("analytics:axql"),
+        error_http_status_i32(err),
+        serde_json::json!({ "error_code": err.error_code() }),
+    )
+    .await;
+}
+
 async fn compile_axql_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<AxqlQueryRequest>,
 ) -> Result<Json<AxqlCompilePlan>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let analytics_principal = AnalyticsPrincipal {
-        user_id: principal.user_id,
-        tenant_id: principal.tenant_id,
-        username: principal.username,
-        permissions: principal.permissions,
-    };
-    let plan = state.compile_axql(&analytics_principal, req).await?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let plan = compile_axql_with_caller(
+        &state,
+        CallerCtx::from_auth_with_ip(&principal, client_ip),
+        req,
+    )
+    .await?;
     Ok(Json(plan))
 }
 
 async fn run_axql_handler(
     State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
     principal: AuthPrincipal,
     ApiJson(req): ApiJson<AxqlQueryRequest>,
 ) -> Result<Json<AxqlQueryResponse>, HttpError> {
     principal.require(Permission::DataRead)?;
-    let analytics_principal = AnalyticsPrincipal {
-        user_id: principal.user_id,
-        tenant_id: principal.tenant_id,
-        username: principal.username,
-        permissions: principal.permissions,
-    };
-    let resp = state.run_axql(&analytics_principal, req).await?;
+    let client_ip = crate::routes::auth::extract_client_ip(&headers);
+    let resp = execute_axql_with_telemetry(
+        &state,
+        CallerCtx::from_auth_with_ip(&principal, client_ip),
+        req,
+    )
+    .await?;
     Ok(Json(resp))
 }
 
@@ -2494,6 +2716,28 @@ impl AnalyticsQueryPort for AppState {
             return Err(AppError::Forbidden("PERMISSION_DENIED"));
         }
         execute_pivot_with_telemetry(self, CallerCtx::from_analytics(principal), spec).await
+    }
+
+    async fn compile_axql(
+        &self,
+        principal: &AnalyticsPrincipal,
+        req: AxqlQueryRequest,
+    ) -> Result<AxqlCompilePlan, AppError> {
+        if !principal.has_permission(Permission::DataRead) {
+            return Err(AppError::Forbidden("PERMISSION_DENIED"));
+        }
+        compile_axql_with_caller(self, CallerCtx::from_analytics(principal), req).await
+    }
+
+    async fn run_axql(
+        &self,
+        principal: &AnalyticsPrincipal,
+        req: AxqlQueryRequest,
+    ) -> Result<AxqlQueryResponse, AppError> {
+        if !principal.has_permission(Permission::DataRead) {
+            return Err(AppError::Forbidden("PERMISSION_DENIED"));
+        }
+        execute_axql_with_telemetry(self, CallerCtx::from_analytics(principal), req).await
     }
 }
 

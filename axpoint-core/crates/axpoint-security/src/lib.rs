@@ -15,6 +15,8 @@ pub mod password;
 pub mod pii_local;
 pub mod principal;
 pub mod row_policy;
+mod row_policy_ast;
+mod row_policy_state;
 pub mod session;
 
 pub use audit::AuditWriter;
@@ -40,7 +42,9 @@ pub use pii_local::{
 pub use principal::{AuthPrincipal, TokenKind};
 pub use row_policy::{
     CompiledPredicate, DatasetPolicyInput, NodePropertyMeta, NodeTypePolicyInput,
-    compile_predicate, resolve_dataset_policy, resolve_node_type_policy, validate_predicate_syntax,
+    compile_predicate, compile_predicate_with_ttl, resolve_dataset_policy,
+    resolve_node_type_policy, validate_predicate_syntax, validate_predicate_syntax_for_target,
+    validate_ttl_config,
 };
 pub use session::{
     REFRESH_COOKIE_NAME, REFRESH_MAX_AGE_SECS, REFRESH_TTL_DAYS, build_clear_refresh_cookie,

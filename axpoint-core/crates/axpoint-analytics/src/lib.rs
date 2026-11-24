@@ -1,6 +1,7 @@
 //! `AxAnalytics` OLAP session pool, SQL AST guard, pivot engine, semantic layer, NL2SQL, and AI transforms (`05-STEP04`).
 #![doc(test(attr(deny(warnings), forbid(unsafe_code))))]
 
+pub mod axql;
 pub mod grounding_eval;
 pub mod nl2sql;
 pub(crate) mod ontology_join;
@@ -20,18 +21,19 @@ use axpoint_domain::AppError;
 pub use axpoint_domain::analytics::{
     AllowedDatasetJoinEdge, AnalyticsCatalogResponse, AnalyticsPrincipal, ApplyTransformResponse,
     AskContext, AskFeedbackKind, AskFeedbackRequest, AskIntent, AskRequest, AskResponse,
-    AskTurnRecord, CatalogDatasetNode, ChartSuggestion, CreateMetricRequest,
-    CreateSavedQueryRequest, CreateTransformDraftRequest, ExplainResult, FewShotTurn, FieldRef,
-    FilterOp, FilterSpec, GroundingEvalRunRecord, GroundingEvalRunResponse, GroundingEvalTrack,
-    LinkedColumnHit, LinkedMetricHit, LinkedObjects, LiveConnectionNode, MaterializeRequest,
-    MetricCompareMode, MetricDef, MetricDimension, MetricQuery, MetricQueryResult, MetricTimeRange,
-    MultiMetricQuery, NewAskTurnInput, NewGroundingEvalRunInput, NewQueryHistoryEntry,
-    NewTransformDraftInput, OntologySlotDraft, OntologySlotFilter, PivotResult, PivotRowKind,
-    PivotSpec, PlatformViewNode, QueryColumn, QueryHistoryEntry, QueryHistoryKind,
-    QueryHistoryListQuery, QueryHistoryStatus, QueryParamSpec, QueryRequest, QueryResult,
-    RunSavedQueryRequest, SavedQuery, SavedQueryKind, SchemaRecallBundle, SortDir, SortSpec,
-    TimeBucket, TransformDraft, TransformDraftStatus, TransformPreview, UpdateMetricRequest,
-    UpdateSavedQueryRequest, UpdateTransformDraftRequest, ValueSpec, ds_column_embedding_id,
+    AskTurnRecord, AxqlCompilePlan, AxqlQueryRequest, AxqlQueryResponse, CatalogDatasetNode,
+    ChartSuggestion, CreateMetricRequest, CreateSavedQueryRequest, CreateTransformDraftRequest,
+    ExplainResult, FewShotTurn, FieldRef, FilterOp, FilterSpec, GroundingEvalRunRecord,
+    GroundingEvalRunResponse, GroundingEvalTrack, LinkedColumnHit, LinkedMetricHit, LinkedObjects,
+    LiveConnectionNode, MaterializeRequest, MetricCompareMode, MetricDef, MetricDimension,
+    MetricQuery, MetricQueryResult, MetricTimeRange, MultiMetricQuery, NewAskTurnInput,
+    NewGroundingEvalRunInput, NewQueryHistoryEntry, NewTransformDraftInput, OntologySlotDraft,
+    OntologySlotFilter, PivotResult, PivotRowKind, PivotSpec, PlatformViewNode, QueryColumn,
+    QueryHistoryEntry, QueryHistoryKind, QueryHistoryListQuery, QueryHistoryStatus, QueryParamSpec,
+    QueryRequest, QueryResult, RunSavedQueryRequest, SavedQuery, SavedQueryKind,
+    SchemaRecallBundle, SortDir, SortSpec, TimeBucket, TransformDraft, TransformDraftStatus,
+    TransformPreview, UpdateMetricRequest, UpdateSavedQueryRequest, UpdateTransformDraftRequest,
+    ValueSpec, ds_column_embedding_id,
 };
 use axpoint_domain::enums::ConnectorType;
 use axpoint_security::Keyring;
@@ -45,6 +47,12 @@ use tokio::sync::Mutex;
 use tracing::debug;
 use uuid::Uuid;
 
+pub use axql::{
+    AXQL_DEFAULT_MAX_ROWS, AXQL_DEFAULT_TIMEOUT_MS, AXQL_MAX_ROWS_CAP, AXQL_MAX_TIMEOUT_MS,
+    CompiledAxqlArtifact, ParsedAxql, ResolvedKnowledgeCall, compile_axql_query,
+    compile_parsed_axql, execute_axql_conn, execute_compiled_axql, extract_axql_knowledge_requests,
+    parse_axql,
+};
 pub use grounding_eval::{
     GroundedDocSynthesis, GroundedHybridSynthesis, HybridGroundingInput, MIN_DOC_VECTOR_COSINE_SIM,
     candidate_has_substantive_term, filter_noise_recall_candidates, run_grounding_eval_suite,

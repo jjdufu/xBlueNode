@@ -1,23 +1,28 @@
 //! `Cedar` `ABAC` policy management, simulation, row-level policy CRUD & 20-row live preview,
 //! default-deny toggles, and column-masking policy handlers (`/api/axguard/*`, `11-STEP13` §13.6–§13.7, §13.10).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use axpoint_domain::AppError;
 use axpoint_domain::analytics::QueryRequest;
 use axpoint_domain::axhub::PaginatedList;
 use axpoint_domain::enums::{AuditAction, DataType, Permission, Sensitivity};
+use axpoint_domain::graph::NodeListQuery;
 use axpoint_domain::guard::{
-    CedarPolicyRecord, ColumnPolicyRecord, PolicyTargetKind, PutCedarPolicyRequest,
-    PutColumnPolicyRequest, PutRowPolicyDefaultRequest, ResourceRef, RowPolicyDefaultRecord,
-    RowPolicyPreviewRequest, RowPolicyRecord, SaveRowPolicyRequest, SimulateCedarPolicyRequest,
-    SimulateCedarPolicyResponse, StateRowPolicySimulateRequest, StateRowPolicySimulateResponse,
-    ValidateCedarPolicyRequest, ValidateCedarPolicyResponse,
+    CedarPolicyRecord, ColumnPolicyRecord, NodeTypePolicySpec, PolicyTargetKind,
+    PutCedarPolicyRequest, PutColumnPolicyRequest, PutRowPolicyDefaultRequest, ResourceRef,
+    RowPolicyDefaultRecord, RowPolicyPreviewRequest, RowPolicyRecord, SaveRowPolicyRequest,
+    SimulateCedarPolicyRequest, SimulateCedarPolicyResponse, StateRowPolicySimulateRequest,
+    StateRowPolicySimulateResponse, ValidateCedarPolicyRequest, ValidateCedarPolicyResponse,
 };
 use axpoint_domain::ports::{DatasetRepository as _, GuardRepository as _, StudioRepository as _};
 use axpoint_security::AuthPrincipal;
 use axpoint_security::cedar_authz::{CedarContext, dept_lineage};
-use axpoint_security::row_policy::validate_predicate_syntax;
+use axpoint_security::masking::mask_json_properties;
+use axpoint_security::row_policy::{
+    NodeTypePolicyInput, compile_predicate_with_ttl, resolve_node_type_policy,
+    validate_predicate_syntax_for_target, validate_ttl_config,
+};
 use axpoint_server::policy::{
     build_policy_context_for_profile, current_utc_hour, has_matching_grant,
 };
@@ -208,18 +213,19 @@ pub(super) async fn simulate_policy_handler(
 async fn validate_row_policy_target(
     state: &AppState,
     tenant_id: &str,
-    target_kind: PolicyTargetKind,
-    target_ref: &str,
-    predicate: &str,
+    req: &SaveRowPolicyRequest,
 ) -> Result<(), AppError> {
-    let clean_ref = target_ref.trim();
+    let clean_ref = req.target_ref.trim();
     if clean_ref.is_empty() {
         return Err(AppError::bad(
             "INVALID_ARGUMENT",
             "target_ref cannot be empty",
         ));
     }
-    match target_kind {
+    let ttl_field = req.ttl_timestamp_field.as_deref();
+    let ttl_hours = req.ttl_max_age_hours;
+
+    match req.target_kind {
         PolicyTargetKind::Dataset => {
             let ds = if let Ok(ds_uuid) = Uuid::parse_str(clean_ref) {
                 state.store.get_dataset(tenant_id, ds_uuid).await?
@@ -229,36 +235,55 @@ async fn validate_row_policy_target(
                     .get_dataset_by_name(tenant_id, clean_ref)
                     .await?
             };
-            if let Some(found) = ds {
+            let allowed_set = if let Some(found) = ds {
                 let cols = state.store.list_columns(tenant_id, found.id).await?;
-                let allowed: BTreeSet<String> = cols
-                    .iter()
+                cols.iter()
                     .map(|c| c.column_name.to_ascii_lowercase())
-                    .collect();
-                validate_predicate_syntax(predicate, (!allowed.is_empty()).then_some(&allowed))
+                    .collect()
             } else {
-                validate_predicate_syntax(predicate, None)
-            }
+                BTreeSet::new()
+            };
+            let allowed_opt = (!allowed_set.is_empty()).then_some(&allowed_set);
+            validate_predicate_syntax_for_target(
+                &req.predicate,
+                PolicyTargetKind::Dataset,
+                allowed_opt,
+            )?;
+            validate_ttl_config(PolicyTargetKind::Dataset, ttl_field, ttl_hours, allowed_opt)
         }
         PolicyTargetKind::NodeType => {
             let published = state.store.get_published_schema(tenant_id, "main").await?;
-            if let Some(nt) = published
+            let allowed_set = if let Some(nt) = published
                 .doc
                 .node_types
                 .iter()
                 .find(|n| n.name.eq_ignore_ascii_case(clean_ref))
             {
-                let mut allowed: BTreeSet<String> = nt
+                let mut set: BTreeSet<String> = nt
                     .properties
                     .iter()
                     .map(|p| p.name.to_ascii_lowercase())
                     .collect();
-                allowed.insert(String::from("node_key"));
-                allowed.insert(String::from("title"));
-                validate_predicate_syntax(predicate, Some(&allowed))
+                set.insert(String::from("node_key"));
+                set.insert(String::from("title"));
+                set.insert(String::from("type_name"));
+                set.insert(String::from("updated_at"));
+                set
             } else {
-                validate_predicate_syntax(predicate, None)
-            }
+                BTreeSet::new()
+            };
+            let allowed_opt = (!allowed_set.is_empty()).then_some(&allowed_set);
+            validate_predicate_syntax_for_target(
+                &req.predicate,
+                PolicyTargetKind::NodeType,
+                allowed_opt,
+            )?;
+            validate_ttl_config(
+                PolicyTargetKind::NodeType,
+                ttl_field,
+                ttl_hours,
+                allowed_opt,
+            )
         }
     }
 }
@@ -282,14 +307,7 @@ pub(super) async fn create_row_policy_handler(
     ApiJson(req): ApiJson<SaveRowPolicyRequest>,
 ) -> Result<(StatusCode, Json<RowPolicyRecord>), HttpError> {
     principal.require(Permission::GuardAdmin)?;
-    validate_row_policy_target(
-        &state,
-        &principal.tenant_id,
-        req.target_kind,
-        &req.target_ref,
-        &req.predicate,
-    )
-    .await?;
+    validate_row_policy_target(&state, &principal.tenant_id, &req).await?;
 
     let created = state
         .store
@@ -321,14 +339,7 @@ pub(super) async fn update_row_policy_handler(
     ApiJson(req): ApiJson<SaveRowPolicyRequest>,
 ) -> Result<Json<RowPolicyRecord>, HttpError> {
     principal.require(Permission::GuardAdmin)?;
-    validate_row_policy_target(
-        &state,
-        &principal.tenant_id,
-        req.target_kind,
-        &req.target_ref,
-        &req.predicate,
-    )
-    .await?;
+    validate_row_policy_target(&state, &principal.tenant_id, &req).await?;
 
     let updated = state
         .store
@@ -568,12 +579,142 @@ pub(super) async fn delete_column_policy_handler(
 }
 
 pub(super) async fn simulate_state_row_policy_handler(
-    State(_state): State<AppState>,
+    State(state): State<AppState>,
     principal: AuthPrincipal,
-    ApiJson(_req): ApiJson<StateRowPolicySimulateRequest>,
+    ApiJson(req): ApiJson<StateRowPolicySimulateRequest>,
 ) -> Result<Json<StateRowPolicySimulateResponse>, HttpError> {
     principal.require(Permission::GuardAdmin)?;
-    Err(HttpError(AppError::Unsupported(
-        "STATE_ROW_POLICY_SIMULATE_UNSUPPORTED",
-    )))
+    let clean_type = req.type_name.trim();
+    if clean_type.is_empty() {
+        return Err(HttpError(AppError::bad(
+            "INVALID_ARGUMENT",
+            "type_name cannot be empty",
+        )));
+    }
+    let limit = req.limit.unwrap_or(20);
+    if !(1..=50).contains(&limit) {
+        return Err(HttpError(AppError::bad(
+            "LIMIT_OUT_OF_RANGE",
+            format!("limit must be in 1..=50, got {limit}"),
+        )));
+    }
+
+    let (canon_type, resolved_spec) =
+        compile_simulated_node_policy(&state, &principal.tenant_id, clean_type, &req).await?;
+    let compiled_pg_filter = resolved_spec.pg_row_filter.clone();
+    let compiled_duckdb_filter = resolved_spec.duckdb_row_filter.clone();
+    let mut policy_map = BTreeMap::new();
+    policy_map.insert(canon_type.clone(), resolved_spec.clone());
+
+    let page = state
+        .store
+        .list_nodes_with_row_policies(
+            &principal.tenant_id,
+            NodeListQuery {
+                subgraph: Some(String::from("main")),
+                type_name: Some(canon_type),
+                limit: Some(limit),
+                ..NodeListQuery::default()
+            },
+            Some(&policy_map),
+        )
+        .await?;
+
+    let hmac_key = state.mask_keys.tenant_key(&principal.tenant_id);
+    let mut sample_nodes = page.items;
+    for node in &mut sample_nodes {
+        mask_json_properties(
+            &mut node.properties,
+            &resolved_spec.property_masks,
+            &hmac_key,
+        );
+    }
+
+    Ok(Json(StateRowPolicySimulateResponse {
+        compiled_pg_filter,
+        compiled_duckdb_filter,
+        matched_count: sample_nodes.len(),
+        sample_nodes,
+    }))
+}
+
+async fn compile_simulated_node_policy(
+    state: &AppState,
+    tenant_id: &str,
+    clean_type: &str,
+    req: &StateRowPolicySimulateRequest,
+) -> Result<(String, NodeTypePolicySpec), AppError> {
+    Box::pin(async move {
+        let profile = state
+            .store
+            .load_guard_principal(tenant_id, req.user_id)
+            .await?
+            .ok_or(AppError::NotFound("USER_NOT_FOUND"))?;
+        let (departments, published, row_policies, row_defaults, column_policies, active_grants) =
+            tokio::try_join!(
+                state.store.list_departments(tenant_id),
+                state.store.get_published_schema(tenant_id, "main"),
+                state.store.list_row_policies(tenant_id),
+                state.store.list_row_policy_defaults(tenant_id),
+                state.store.list_column_policies(tenant_id),
+                state.store.list_active_grants(tenant_id),
+            )?;
+
+        let nt_opt = published
+            .doc
+            .node_types
+            .iter()
+            .find(|n| n.name.eq_ignore_ascii_case(clean_type));
+        let canon_type = nt_opt.map_or_else(|| String::from(clean_type), |n| n.name.clone());
+        let props_slice = nt_opt.map_or(&[][..], |n| n.properties.as_slice());
+        let lineage = dept_lineage(&profile.dept_id, &departments);
+        let default_deny = row_defaults.iter().any(|d| {
+            d.target_kind == PolicyTargetKind::NodeType
+                && d.target_ref.eq_ignore_ascii_case(&canon_type)
+                && d.default_deny
+        });
+
+        let (mut resolved_spec, _) = resolve_node_type_policy(&NodeTypePolicyInput {
+            profile: &profile,
+            dept_lineage: &lineage,
+            type_name: &canon_type,
+            properties: props_slice,
+            row_policies: &row_policies,
+            default_deny,
+            column_policies: &column_policies,
+            active_grants: &active_grants,
+            reveal_pii: false,
+        })?;
+
+        if let Some(raw_pred) = req
+            .predicate
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let mut allowed_cols: BTreeSet<String> = props_slice
+                .iter()
+                .map(|p| p.name.to_ascii_lowercase())
+                .collect();
+            if !allowed_cols.is_empty() {
+                allowed_cols.insert(String::from("node_key"));
+                allowed_cols.insert(String::from("title"));
+                allowed_cols.insert(String::from("type_name"));
+                allowed_cols.insert(String::from("updated_at"));
+            }
+            let compiled = compile_predicate_with_ttl(
+                raw_pred,
+                PolicyTargetKind::NodeType,
+                (!allowed_cols.is_empty()).then_some(&allowed_cols),
+                &profile,
+                req.ttl_timestamp_field.as_deref(),
+                req.ttl_max_age_hours,
+            )?;
+            resolved_spec.duckdb_row_filter = Some(compiled.duckdb_sql);
+            resolved_spec.pg_row_filter = Some(compiled.pg_sql);
+        }
+
+        Ok((canon_type, resolved_spec))
+    })
+    .await
 }
