@@ -1698,3 +1698,114 @@ async fn embed_service_enforces_origin_rate_limit_and_404_after_revocation() -> 
     assert!(matches!(revoked, Err(AppError::NotFound(_))));
     Ok(())
 }
+
+#[tokio::test]
+async fn mcp_axbuilder_22_tools_eval_expr_and_main_isolation() -> Result<(), AppError> {
+    use axpoint_domain::builder::BUILDER_DEFAULT_SCOPES;
+    use axpoint_domain::enums::TokenProfile;
+
+    let stack = HarnessStack::build(
+        Arc::new(CassetteModelAdapter::from_entries(Vec::new())),
+        None,
+    )
+    .await?;
+
+    let mut builder = make_principal(TokenKind::ApiToken, BUILDER_DEFAULT_SCOPES);
+    builder.token_profile = TokenProfile::Builder;
+
+    let sid = stack
+        .mcp_hub
+        .handle_post(
+            &builder,
+            None,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": { "protocolVersion": "2025-03-26" }
+            }),
+            "127.0.0.1",
+            "tr-s29-1",
+        )
+        .await?
+        .session_id
+        .ok_or_else(|| AppError::Config(String::from("missing Mcp-Session-Id")))?;
+
+    let list_body = stack
+        .mcp_hub
+        .handle_post(
+            &builder,
+            Some(&sid),
+            serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
+            "127.0.0.1",
+            "tr-s29-2",
+        )
+        .await?
+        .body
+        .unwrap_or_default();
+    let tools = list_body
+        .pointer("/result/tools")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    assert_eq!(tools, 22);
+
+    // Deterministic expression evaluation without LLM
+    let eval_rpc = stack
+        .mcp_hub
+        .handle_post(
+            &builder,
+            Some(&sid),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "axbuilder_eval_expression",
+                    "arguments": {
+                        "expression": "stock_qty - safety_stock",
+                        "metrics": { "stock_qty": 120.0, "safety_stock": 45.0 }
+                    }
+                }
+            }),
+            "127.0.0.1",
+            "tr-s29-3",
+        )
+        .await?
+        .body
+        .unwrap_or_default();
+    let eval_val = decode_mcp_tool_text(&eval_rpc)?;
+    assert_eq!(eval_val.get("valid"), Some(&serde_json::json!(true)));
+    assert_eq!(eval_val.get("value"), Some(&serde_json::json!(75.0)));
+
+    // Reject dryrun_action_spec on PROD main subgraph
+    let main_dryrun = stack
+        .mcp_hub
+        .handle_post(
+            &builder,
+            Some(&sid),
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "axbuilder_dryrun_action_spec",
+                    "arguments": {
+                        "subgraph_slug": "main",
+                        "type_name": "Warehouse",
+                        "node_key": "W-1",
+                        "action_name": "restock"
+                    }
+                }
+            }),
+            "127.0.0.1",
+            "tr-s29-4",
+        )
+        .await?
+        .body
+        .unwrap_or_default();
+    assert_eq!(
+        main_dryrun.pointer("/result/isError"),
+        Some(&serde_json::json!(true))
+    );
+    Ok(())
+}

@@ -15,6 +15,7 @@ import {
   GitBranch,
   GitCompare,
   History,
+  ListChecks,
   Plus,
   RefreshCw,
   Save,
@@ -69,6 +70,7 @@ import { ResizableWorkspace } from "@/components/ui/ResizableWorkspace";
 import { XBlueGraphPage } from "@/pages/XBlueGraphPage";
 import { cn } from "@/lib/utils";
 import { AiDraftWizard } from "@/components/xbluestudio/AiDraftWizard";
+import { CompetencySuiteModal } from "@/components/xbluestudio/CompetencySuiteModal";
 import { DomainApiDrawer } from "@/components/xbluestudio/DomainApiDrawer";
 import { EdgeTypeEditor } from "@/components/xbluestudio/EdgeTypeEditor";
 import { IssueList } from "@/components/xbluestudio/IssueList";
@@ -194,6 +196,7 @@ export function XBlueStudioPage() {
   const [consumption, setConsumption] =
     useState<SubgraphConsumptionResponse | null>(null);
   const [aiWizardOpen, setAiWizardOpen] = useState<boolean>(false);
+  const [competencyModalOpen, setCompetencyModalOpen] = useState<boolean>(false);
   const [knowledgeCandidatesOpen, setKnowledgeCandidatesOpen] =
     useState<boolean>(false);
 
@@ -1360,6 +1363,15 @@ export function XBlueStudioPage() {
 
                 <Button
                   variant="outline"
+                  data-testid="open-competency-suite-btn"
+                  onClick={() => setCompetencyModalOpen(true)}
+                >
+                  <ListChecks className="h-3.5 w-3.5 text-xblue" />
+                  {tx("能力验收", "Competency QA")}
+                </Button>
+
+                <Button
+                  variant="outline"
                   data-testid="open-version-panel-btn"
                   onClick={() => setVersionPanelOpen(true)}
                 >
@@ -2248,6 +2260,14 @@ export function XBlueStudioPage() {
         docNodes={docNodes}
         onClose={() => setAiWizardOpen(false)}
         onGenerate={handleGenerateAiDraft}
+      />
+
+      <CompetencySuiteModal
+        open={competencyModalOpen}
+        subgraphSlug={activeSubgraph}
+        activeDraftId={activeDraft?.id ?? null}
+        canEdit={canEdit}
+        onClose={() => setCompetencyModalOpen(false)}
       />
 
       <SubgraphMergeDialog

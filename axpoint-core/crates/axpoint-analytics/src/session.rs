@@ -658,14 +658,14 @@ impl TenantDb {
         }
 
         let started = Instant::now();
+        let catalog_snap = self.catalog();
         let (schema, batches) = {
             let conn_guard = match self.conn.lock() {
                 Ok(g) => g,
                 Err(poisoned) => poisoned.into_inner(),
             };
-            let mut stmt = conn_guard
-                .prepare(trimmed)
-                .map_err(|err| map_duckdb_exec_error(&err.to_string()))?;
+            let mut stmt =
+                prepare_internal_stmt(&conn_guard, trimmed, &self.tenant_id, &catalog_snap)?;
             let arrow_stream = stmt
                 .query_arrow([])
                 .map_err(|err| map_duckdb_exec_error(&err.to_string()))?;
@@ -1053,6 +1053,58 @@ fn resolve_timeout_duration(timeout_ms: Option<u64>) -> Duration {
 
 fn is_interrupt_error(msg: &str) -> bool {
     msg.to_ascii_lowercase().contains("interrupt")
+}
+
+fn prepare_internal_stmt<'a>(
+    conn: &'a duckdb::Connection,
+    trimmed: &str,
+    tenant_id: &str,
+    catalog: &TenantCatalog,
+) -> Result<duckdb::Statement<'a>, AppError> {
+    match conn.prepare(trimmed) {
+        Ok(stmt) => Ok(stmt),
+        Err(first_err) => {
+            if let Some(rewritten) = fallback_internal_lake_select(trimmed, tenant_id, catalog)
+                && let Ok(stmt) = conn.prepare(&rewritten)
+            {
+                return Ok(stmt);
+            }
+            Err(map_duckdb_exec_error(&first_err.to_string()))
+        }
+    }
+}
+
+fn fallback_internal_lake_select(
+    trimmed: &str,
+    tenant_id: &str,
+    catalog: &TenantCatalog,
+) -> Option<String> {
+    let after_from = trimmed.strip_prefix("SELECT * FROM \"")?;
+    let (ident, suffix) = parse_double_quoted_ident(after_from)?;
+    if !suffix.is_empty() && !suffix.starts_with(" LIMIT ") {
+        return None;
+    }
+    let storage_tbl = catalog
+        .datasets
+        .get(&ident.to_ascii_lowercase())
+        .map_or_else(|| ident.clone(), |d| d.lake_table.clone());
+    let lake_ref = crate::profiling::format_tenant_lake_table(tenant_id, &storage_tbl).ok()?;
+    Some(format!("SELECT * FROM {lake_ref}{suffix}"))
+}
+
+fn parse_double_quoted_ident(mut rest: &str) -> Option<(String, &str)> {
+    let mut out = String::new();
+    while let Some(pos) = rest.find('"') {
+        out.push_str(rest.get(..pos)?);
+        let after = rest.get(pos.saturating_add(1)..)?;
+        if let Some(escaped) = after.strip_prefix('"') {
+            out.push('"');
+            rest = escaped;
+        } else {
+            return Some((out, after));
+        }
+    }
+    None
 }
 
 fn map_duckdb_exec_error(msg: &str) -> AppError {

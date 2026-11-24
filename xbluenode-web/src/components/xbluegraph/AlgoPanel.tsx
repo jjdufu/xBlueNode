@@ -53,7 +53,7 @@ export function AlgoPanel({
   onApplyVisualMapping,
   onSelectNodeId,
 }: AlgoPanelProps) {
-  const { tx, fmtNum } = useI18n();
+  const { tx, tEnum, fmtNum } = useI18n();
   const [algo, setAlgo] = useState<GraphAlgo>("PAGERANK");
   const [damping, setDamping] = useState("0.85");
   const [maxIter, setMaxIter] = useState("100");
@@ -100,6 +100,7 @@ export function AlgoPanel({
       const safeTop = Array.isArray(res?.top) ? res.top : [];
       const normalized: AlgoRunResponse = {
         algo: res.algo ?? algo,
+        backend: res.backend ?? "PETGRAPH_MEMORY",
         params_hash: res.params_hash ?? "",
         node_count: res.node_count ?? 0,
         edge_count: res.edge_count ?? 0,
@@ -263,7 +264,12 @@ export function AlgoPanel({
               {tx("节点", "Nodes")} {fmtNum(runResult.node_count, 0)} ·{" "}
               {tx("关系", "Edges")} {fmtNum(runResult.edge_count, 0)}
             </span>
-            <Badge variant="xblue">{runResult.duration_ms} ms</Badge>
+            <div className="flex items-center gap-1">
+              <Badge variant="outline" data-testid="algo-backend-badge">
+                {tEnum(runResult.backend ?? "PETGRAPH_MEMORY")}
+              </Badge>
+              <Badge variant="xblue">{runResult.duration_ms} ms</Badge>
+            </div>
           </div>
 
           <div className="flex flex-wrap gap-1.5">

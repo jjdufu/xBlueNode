@@ -1,0 +1,9 @@
+{"response_schema_name":"axpoint_ontology_slots","match_all":["第29步履约"],"kind":"chat","response":"{\"route\":\"FALLBACK_SQL\",\"metric_names\":[],\"target_node_type\":null,\"dimensions\":[],\"filters\":[],\"time_from\":null,\"time_to\":null,\"grain\":null,\"compare\":null,\"include_links\":[],\"clarification\":\"\"}"}
+{"match_all":["### 当前问题\n统计第29步履约单有效记录总数"],"kind":"chat","response":"{\"sql\":\"SELECT COUNT(*) AS active_orders FROM step29_cdc_orders\",\"explanation\":\"统计履约单有效记录总数\",\"used_metrics\":[]}"}
+{"match_all":["问题: 统计第29步履约单有效记录总数"],"kind":"chat","response":"有效记录总数为 2 条。"}
+{"match_all":["### 当前问题\n汇总第29步履约单在库件数总和"],"kind":"chat","response":"{\"sql\":\"SELECT SUM(qty) AS total_qty FROM step29_cdc_orders\",\"explanation\":\"汇总履约单在库件数总和\",\"used_metrics\":[]}"}
+{"match_all":["问题: 汇总第29步履约单在库件数总和"],"kind":"chat","response":"在库件数总和为 400 件。"}
+{"match_all":["### 当前问题\n查询第29步履约单单仓最高件数"],"kind":"chat","response":"{\"sql\":\"SELECT MAX(qty) AS max_qty FROM step29_cdc_orders\",\"explanation\":\"查询履约单单仓最高件数\",\"used_metrics\":[]}"}
+{"match_all":["问题: 查询第29步履约单单仓最高件数"],"kind":"chat","response":"单仓最高件数为 300 件。"}
+{"match_all":["### 当前问题\n计算第29步履约枢纽目标周转件数"],"kind":"chat","response":"{\"sql\":\"SELECT SUM(qty) * 0.5 AS turnover_qty FROM step29_cdc_orders\",\"explanation\":\"按 0.5 系数汇总目标周转件数\",\"used_metrics\":[]}"}
+{"match_all":["问题: 计算第29步履约枢纽目标周转件数"],"kind":"chat","response":"目标周转件数为 200 件。"}

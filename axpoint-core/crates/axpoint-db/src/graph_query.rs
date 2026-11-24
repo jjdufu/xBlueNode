@@ -358,76 +358,37 @@ impl GraphQueryPort for PgStore {
         req: AlgoRunRequest,
     ) -> Result<AlgoRunResponse, AppError> {
         let started = Instant::now();
-        let params_hash = compute_params_hash(algo, &req.type_names, &req.link_types, &req.params);
+        let subgraph_slug = req
+            .subgraph
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("main");
+        let params_hash = compute_subgraph_algo_hash(algo, subgraph_slug, &req);
 
         let mut tx = begin_tenant_tx(self.pool(), tenant_id).await?;
-        let type_filter = (!req.type_names.is_empty()).then_some(&req.type_names);
-        let link_filter = (!req.link_types.is_empty()).then_some(&req.link_types);
+        let type_filter = (!req.type_names.is_empty()).then_some(req.type_names.as_slice());
+        let link_filter = (!req.link_types.is_empty()).then_some(req.link_types.as_slice());
+        let (metas, edges) =
+            load_algo_subgraph_tx(&mut tx, subgraph_slug, type_filter, link_filter).await?;
 
-        let node_rows = sqlx::query(
-            "SELECT id, title
-               FROM xb_nodes
-              WHERE subgraph_slug = 'main'
-                AND ($1::text[] IS NULL OR type_name = ANY($1))
-              ORDER BY id ASC",
-        )
-        .bind(type_filter)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(|err| AppError::Database(format!("load algorithm nodes failed: {err}")))?;
-
-        let metas: Vec<AlgoNodeMeta> = node_rows
-            .into_iter()
-            .map(|r| AlgoNodeMeta {
-                id: r.get("id"),
-                title: r.get("title"),
-            })
-            .collect();
-
-        let node_ids: Vec<Uuid> = metas.iter().map(|m| m.id).collect();
-        let edge_rows = if node_ids.is_empty() {
-            Vec::new()
-        } else {
-            sqlx::query(
-                "SELECT src_node_id, dst_node_id, weight
-                   FROM xb_links
-                  WHERE subgraph_slug = 'main'
-                    AND src_node_id = ANY($1)
-                    AND dst_node_id = ANY($1)
-                    AND ($2::text[] IS NULL OR link_type = ANY($2))
-                  ORDER BY src_node_id ASC, dst_node_id ASC, id ASC
-                  LIMIT 500001",
-            )
-            .bind(&node_ids)
-            .bind(link_filter)
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(|err| AppError::Database(format!("load algorithm edges failed: {err}")))?
-        };
-
-        if edge_rows.len() > 500_000 {
+        if edges.len() > crate::graph_algo_duckdb::DUCKDB_PUSHDOWN_MAX_EDGES {
             return Err(AppError::bad(
                 "LIMIT_OUT_OF_RANGE",
-                "subgraph exceeds 500,000 edges limit for algorithm execution",
+                "subgraph exceeds 10,000,000 edges limit for algorithm execution",
             ));
         }
 
-        let mut graph = DiGraph::<Uuid, f64>::with_capacity(metas.len(), edge_rows.len());
-        let mut idx_by_uuid: HashMap<Uuid, NodeIndex> = HashMap::with_capacity(metas.len());
-        for m in &metas {
-            let idx = graph.add_node(m.id);
-            idx_by_uuid.insert(m.id, idx);
-        }
-        for r in &edge_rows {
-            let src: Uuid = r.get("src_node_id");
-            let dst: Uuid = r.get("dst_node_id");
-            let w: f64 = r.get("weight");
-            if let (Some(&u), Some(&v)) = (idx_by_uuid.get(&src), idx_by_uuid.get(&dst)) {
-                graph.add_edge(u, v, w.max(1e-9));
-            }
-        }
+        let edge_count = edges.len();
+        let node_count = metas.len();
+        let (backend, outcomes) = if edge_count <= crate::graph_algo_duckdb::PETGRAPH_MAX_EDGES {
+            let out = solve_petgraph_in_memory(algo, &metas, &edges, &req.params)?;
+            (axpoint_domain::enums::GraphAlgoBackend::PetgraphMemory, out)
+        } else {
+            let out = solve_duckdb_pushdown_worker(algo, &metas, edges, req.params.clone())?;
+            (axpoint_domain::enums::GraphAlgoBackend::DuckdbPushdown, out)
+        };
 
-        let outcomes = execute_graph_algorithm(algo, &metas, &graph, &req.params)?;
         let computed_at = Utc::now();
         persist_algo_outcomes_tx(
             &mut tx,
@@ -448,10 +409,10 @@ impl GraphQueryPort for PgStore {
 
         Ok(AlgoRunResponse {
             algo,
-            backend: axpoint_domain::enums::GraphAlgoBackend::PetgraphMemory,
+            backend,
             params_hash,
-            node_count: metas.len(),
-            edge_count: edge_rows.len(),
+            node_count,
+            edge_count,
             duration_ms,
             top,
         })
@@ -525,7 +486,7 @@ impl GraphQueryPort for PgStore {
             "SELECT r.params_hash, r.node_id, n.title, r.score, r.community, r.computed_at
                FROM xb_graph_algo_results r
                JOIN xb_nodes n ON n.id = r.node_id
-              WHERE n.subgraph_slug = 'main' AND r.algo = $1 AND r.params_hash = $2
+              WHERE r.algo = $1 AND r.params_hash = $2
               ORDER BY r.score DESC NULLS LAST, r.community ASC NULLS LAST, r.node_id ASC
               LIMIT $3 OFFSET $4",
         )
@@ -1126,6 +1087,152 @@ async fn load_consecutive_links_tx(
         }
     }
     Ok(links)
+}
+
+fn compute_subgraph_algo_hash(
+    algo: GraphAlgo,
+    subgraph_slug: &str,
+    req: &AlgoRunRequest,
+) -> String {
+    if subgraph_slug == "main" {
+        return compute_params_hash(algo, &req.type_names, &req.link_types, &req.params);
+    }
+    let mut scoped_params = match req.params.as_object() {
+        Some(obj) => obj.clone(),
+        None => serde_json::Map::new(),
+    };
+    scoped_params.insert(
+        String::from("__subgraph"),
+        serde_json::Value::String(String::from(subgraph_slug)),
+    );
+    compute_params_hash(
+        algo,
+        &req.type_names,
+        &req.link_types,
+        &serde_json::Value::Object(scoped_params),
+    )
+}
+
+async fn load_algo_subgraph_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    subgraph_slug: &str,
+    type_filter: Option<&[String]>,
+    link_filter: Option<&[String]>,
+) -> Result<(Vec<AlgoNodeMeta>, Vec<(Uuid, Uuid, f64)>), AppError> {
+    let node_rows = sqlx::query(
+        "SELECT id, title
+           FROM xb_nodes
+          WHERE subgraph_slug = $1
+            AND ($2::text[] IS NULL OR type_name = ANY($2))
+          ORDER BY id ASC",
+    )
+    .bind(subgraph_slug)
+    .bind(type_filter)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| AppError::Database(format!("load algorithm nodes failed: {err}")))?;
+
+    let metas: Vec<AlgoNodeMeta> = node_rows
+        .into_iter()
+        .map(|r| AlgoNodeMeta {
+            id: r.get("id"),
+            title: r.get("title"),
+        })
+        .collect();
+    if metas.is_empty() {
+        return Ok((metas, Vec::new()));
+    }
+
+    let fetch_cap =
+        i64::try_from(crate::graph_algo_duckdb::DUCKDB_PUSHDOWN_MAX_EDGES.saturating_add(1))
+            .unwrap_or(10_000_001);
+
+    let edge_rows = if type_filter.is_some() {
+        let node_ids: Vec<Uuid> = metas.iter().map(|m| m.id).collect();
+        sqlx::query(
+            "SELECT src_node_id, dst_node_id, weight
+               FROM xb_links
+              WHERE subgraph_slug = $1
+                AND src_node_id = ANY($2)
+                AND dst_node_id = ANY($2)
+                AND ($3::text[] IS NULL OR link_type = ANY($3))
+              LIMIT $4",
+        )
+        .bind(subgraph_slug)
+        .bind(&node_ids)
+        .bind(link_filter)
+        .bind(fetch_cap)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("load filtered algorithm edges failed: {err}")))?
+    } else {
+        sqlx::query(
+            "SELECT src_node_id, dst_node_id, weight
+               FROM xb_links
+              WHERE subgraph_slug = $1
+                AND ($2::text[] IS NULL OR link_type = ANY($2))
+              LIMIT $3",
+        )
+        .bind(subgraph_slug)
+        .bind(link_filter)
+        .bind(fetch_cap)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|err| AppError::Database(format!("load algorithm edges failed: {err}")))?
+    };
+
+    let mut edges: Vec<(Uuid, Uuid, f64)> = edge_rows
+        .into_iter()
+        .map(|r| (r.get("src_node_id"), r.get("dst_node_id"), r.get("weight")))
+        .collect();
+    if edges.len() <= crate::graph_algo_duckdb::PETGRAPH_MAX_EDGES {
+        edges.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    }
+    Ok((metas, edges))
+}
+
+fn solve_petgraph_in_memory(
+    algo: GraphAlgo,
+    metas: &[AlgoNodeMeta],
+    edges: &[(Uuid, Uuid, f64)],
+    params: &serde_json::Value,
+) -> Result<Vec<ComputedNodeOutcome>, AppError> {
+    let mut graph = DiGraph::<Uuid, f64>::with_capacity(metas.len(), edges.len());
+    let mut idx_by_uuid: HashMap<Uuid, NodeIndex> = HashMap::with_capacity(metas.len());
+    for m in metas {
+        let idx = graph.add_node(m.id);
+        idx_by_uuid.insert(m.id, idx);
+    }
+    for &(src, dst, w) in edges {
+        if let (Some(&u), Some(&v)) = (idx_by_uuid.get(&src), idx_by_uuid.get(&dst)) {
+            graph.add_edge(u, v, w.max(1e-9));
+        }
+    }
+    execute_graph_algorithm(algo, metas, &graph, params)
+}
+
+fn solve_duckdb_pushdown_worker(
+    algo: GraphAlgo,
+    metas: &[AlgoNodeMeta],
+    edges: Vec<(Uuid, Uuid, f64)>,
+    params: serde_json::Value,
+) -> Result<Vec<ComputedNodeOutcome>, AppError> {
+    let nodes_vec: Vec<(Uuid, String)> = metas.iter().map(|m| (m.id, m.title.clone())).collect();
+    let pushed = std::thread::spawn(move || {
+        crate::graph_algo_duckdb::execute_duckdb_pushdown_all(algo, &nodes_vec, &edges, &params)
+    })
+    .join()
+    .map_err(|_| AppError::Database(String::from("duckdb pushdown worker thread panicked")))??;
+
+    Ok(pushed
+        .into_iter()
+        .map(|p| ComputedNodeOutcome {
+            node_id: p.node_id,
+            title: p.title,
+            score: p.score,
+            community: p.community,
+        })
+        .collect())
 }
 
 fn execute_graph_algorithm(

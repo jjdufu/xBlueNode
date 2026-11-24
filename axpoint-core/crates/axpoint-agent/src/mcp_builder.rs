@@ -39,20 +39,128 @@ use crate::mcp_server::{
 };
 use crate::publish::validate_instance_against_schema;
 
-/// Ordered list of all 9 Step 17 `AxBuilder` build-plane `MCP` tool names (`03-STEP17` §17.3.2).
+/// Ordered list of all 22 `AxBuilder` build-plane `MCP` tool names (`03-STEP17` §17.3.2 & `07-STEP29` §29.4).
 pub const ALL_AXBUILDER_TOOL_NAMES: &[&str] = &[
+    // 1. Environment & Source Data Profiling (5)
     "axbuilder_preflight",
     "axbuilder_pull_workspace",
+    "axbuilder_list_datasets",
+    "axbuilder_inspect_dataset_profile",
+    "axbuilder_sample_dataset_rows",
+    // 2. Ontology, Actions & Flow Construction (7)
+    "axbuilder_clone_template",
     "axbuilder_validate_schema",
     "axbuilder_push_schema_draft",
-    "axbuilder_clone_template",
+    "axbuilder_diff_schema_draft",
+    "axbuilder_eval_expression",
     "axbuilder_upsert_flow_draft",
+    "axbuilder_dryrun_action_spec",
+    // 3. Dev Sandbox Materialization & L4 Certification (5)
     "axbuilder_run_dev_subgraph",
     "axbuilder_reset_dev_subgraph",
+    "axbuilder_certify_subgraph",
+    "axbuilder_compile_axql",
+    "axbuilder_sim_trial_run",
+    // 4. Charts, Dashboards & Competency QA Harness (5)
+    "axbuilder_upsert_chart_draft",
     "axbuilder_upsert_dashboard_draft",
+    "axbuilder_preflight_dashboard",
+    "axbuilder_upsert_competency_suite",
+    "axbuilder_verify_competency_suite",
 ];
 
-/// Returns `true` if `name` is one of the 9 built-in `AxBuilder` build-plane `MCP` tools.
+const AXBUILDER_TOOL_DESCRIPTIONS: &[(&str, &str)] = &[
+    (
+        "axbuilder_preflight",
+        "检查核心库、数据湖与大模型提供方就绪状态，返回当前令牌档位、有效权限、子图与行业模板清单及前端深链",
+    ),
+    (
+        "axbuilder_pull_workspace",
+        "拉取目标子图已发布 SchemaDoc、当前 DRAFT 草案、脱敏数据集列画像及流程/看板摘要",
+    ),
+    (
+        "axbuilder_list_datasets",
+        "分页探查租户数据湖资产目录（主键、同步模式、常驻流状态、行数与敏感列摘要）",
+    ),
+    (
+        "axbuilder_inspect_dataset_profile",
+        "读取指定数据集列统计画像（空值率、基数估算、PII 分类）并推导跨表外键关联候选",
+    ),
+    (
+        "axbuilder_sample_dataset_rows",
+        "采样指定数据集前 20 行记录（强制执行 PII 动态脱敏，严禁绕过 PII_RAW_READ）",
+    ),
+    (
+        "axbuilder_clone_template",
+        "将内置行业模板包克隆为独立开发沙盒子图（is_dev_sandbox = true）与 DRAFT 草案",
+    ),
+    (
+        "axbuilder_validate_schema",
+        "零落盘静态校验 SchemaDoc（标识符、基数、派生表达式 AST、跨边聚合环路与映射列结构）",
+    ),
+    (
+        "axbuilder_push_schema_draft",
+        "在 xb_schema_drafts 新建或更新 DRAFT 模型草案（绝不修改已发布版本）并返回深链",
+    ),
+    (
+        "axbuilder_diff_schema_draft",
+        "对比目标子图已发布版本与当前 DRAFT 草案的结构差异（新增/移除/变更对象、关系与映射）",
+    ),
+    (
+        "axbuilder_eval_expression",
+        "使用确定性表达式引擎单步解析并试算派生指标或前置条件公式（严禁语言模型心算）",
+    ),
+    (
+        "axbuilder_upsert_flow_draft",
+        "静态校验 DAG 后新建或更新 DRAFT 编排流程（不触碰 PROD 部署绑定）",
+    ),
+    (
+        "axbuilder_dryrun_action_spec",
+        "在非 main 开发沙盒子图上干跑 ActionSpec 动作契约（dry_run = true，零生产副作用）",
+    ),
+    (
+        "axbuilder_run_dev_subgraph",
+        "在开发沙盒子图命名空间内试灌映射数据并计算派生与聚合指标（严禁污染企业主图 main）",
+    ),
+    (
+        "axbuilder_reset_dev_subgraph",
+        "清空开发沙盒子图的运行态节点、关系与时序点（保留模型定义与草案，企业主图 main 拒绝清空）",
+    ),
+    (
+        "axbuilder_certify_subgraph",
+        "对目标子图或草案执行孤立死指标静态闭包扫描与 Trial Tick L0–L4 运行时就绪认证",
+    ),
+    (
+        "axbuilder_compile_axql",
+        "将免连接本体查询语句 AxQL 编译为受控 SQL 计划并返回跨层路径与防扇出聚合诊断",
+    ),
+    (
+        "axbuilder_sim_trial_run",
+        "在非 main 开发沙盒子图上试跑单轮因果策略推演沙盘（零生产主图副作用）",
+    ),
+    (
+        "axbuilder_upsert_chart_draft",
+        "新建或更新未共享的可复用图表草稿资产（xv_charts，不直接发布公共看板）",
+    ),
+    (
+        "axbuilder_upsert_dashboard_draft",
+        "校验 24 列栅格坐标与数据源绑定后新建或更新 DRAFT 数字孪生看板草稿",
+    ),
+    (
+        "axbuilder_preflight_dashboard",
+        "对数字孪生看板草稿执行全组件数据源、指标引用与权限健康自检",
+    ),
+    (
+        "axbuilder_upsert_competency_suite",
+        "登记或更新目标子图的黄金能力问答验收套件（xb_competency_suites）",
+    ),
+    (
+        "axbuilder_verify_competency_suite",
+        "一键执行开发沙盒试灌与黄金能力问数回归核验，输出结构化模型/数据缺口诊断单",
+    ),
+];
+
+/// Returns `true` if `name` is one of the 22 built-in `AxBuilder` build-plane `MCP` tools.
 #[must_use]
 pub fn is_axbuilder_mcp_tool(name: &str) -> bool {
     ALL_AXBUILDER_TOOL_NAMES.contains(&name)
@@ -62,16 +170,34 @@ pub fn is_axbuilder_mcp_tool(name: &str) -> bool {
 #[must_use]
 pub fn has_axbuilder_tool_permissions(principal: &AuthPrincipal, tool_name: &str) -> bool {
     match tool_name {
-        "axbuilder_preflight" | "axbuilder_pull_workspace" => principal.has(Permission::DataRead),
+        "axbuilder_preflight"
+        | "axbuilder_pull_workspace"
+        | "axbuilder_list_datasets"
+        | "axbuilder_inspect_dataset_profile"
+        | "axbuilder_sample_dataset_rows"
+        | "axbuilder_compile_axql" => principal.has(Permission::DataRead),
         "axbuilder_validate_schema"
         | "axbuilder_push_schema_draft"
+        | "axbuilder_diff_schema_draft"
+        | "axbuilder_eval_expression"
         | "axbuilder_clone_template"
-        | "axbuilder_reset_dev_subgraph" => principal.has(Permission::StudioEdit),
+        | "axbuilder_reset_dev_subgraph"
+        | "axbuilder_certify_subgraph"
+        | "axbuilder_upsert_competency_suite" => principal.has(Permission::StudioEdit),
+        "axbuilder_verify_competency_suite" => {
+            principal.has(Permission::StudioEdit) && principal.has(Permission::DataRead)
+        }
         "axbuilder_run_dev_subgraph" => {
             principal.has(Permission::StudioEdit) && principal.has(Permission::DataSync)
         }
+        "axbuilder_dryrun_action_spec" => {
+            principal.has(Permission::StudioEdit) && principal.has(Permission::FlowRun)
+        }
         "axbuilder_upsert_flow_draft" => principal.has(Permission::FlowEdit),
-        "axbuilder_upsert_dashboard_draft" => principal.has(Permission::ViewEdit),
+        "axbuilder_sim_trial_run" => principal.has(Permission::SimRun),
+        "axbuilder_upsert_chart_draft"
+        | "axbuilder_upsert_dashboard_draft"
+        | "axbuilder_preflight_dashboard" => principal.has(Permission::ViewEdit),
         _ => false,
     }
 }
@@ -80,69 +206,22 @@ fn require_axbuilder_permissions(
     principal: &AuthPrincipal,
     tool_name: &str,
 ) -> Result<(), AppError> {
-    match tool_name {
-        "axbuilder_preflight" | "axbuilder_pull_workspace" => {
-            principal.require(Permission::DataRead)
-        }
-        "axbuilder_validate_schema"
-        | "axbuilder_push_schema_draft"
-        | "axbuilder_clone_template"
-        | "axbuilder_reset_dev_subgraph" => principal.require(Permission::StudioEdit),
-        "axbuilder_run_dev_subgraph" => {
-            principal.require(Permission::StudioEdit)?;
-            principal.require(Permission::DataSync)
-        }
-        "axbuilder_upsert_flow_draft" => principal.require(Permission::FlowEdit),
-        "axbuilder_upsert_dashboard_draft" => principal.require(Permission::ViewEdit),
-        _ => Err(AppError::bad(
+    if !is_axbuilder_mcp_tool(tool_name) {
+        return Err(AppError::bad(
             "INVALID_ARGUMENT",
             format!("unknown AxBuilder MCP tool: {tool_name}"),
-        )),
+        ));
     }
+    if !has_axbuilder_tool_permissions(principal, tool_name) {
+        return Err(AppError::Forbidden("PERMISSION_DENIED"));
+    }
+    Ok(())
 }
 
 pub(crate) fn visible_axbuilder_tools(principal: &AuthPrincipal) -> Vec<McpToolDescriptor> {
-    let specs = [
-        (
-            "axbuilder_preflight",
-            "检查核心库、数据湖与大模型提供方就绪状态，返回当前令牌档位、有效权限、子图与行业模板清单及前端深链",
-        ),
-        (
-            "axbuilder_pull_workspace",
-            "拉取目标子图已发布 SchemaDoc、当前 DRAFT 草案、脱敏数据集列画像及流程/看板摘要",
-        ),
-        (
-            "axbuilder_validate_schema",
-            "零落盘静态校验 SchemaDoc（标识符、基数、派生表达式 AST、跨边聚合环路与映射列结构）",
-        ),
-        (
-            "axbuilder_push_schema_draft",
-            "在 xb_schema_drafts 新建或更新 DRAFT 模型草案（绝不修改已发布版本）并返回深链",
-        ),
-        (
-            "axbuilder_clone_template",
-            "将内置行业模板包克隆为独立开发沙盒子图（is_dev_sandbox = true）与 DRAFT 草案",
-        ),
-        (
-            "axbuilder_upsert_flow_draft",
-            "静态校验 DAG 后新建或更新 DRAFT 编排流程（不触碰 PROD 部署绑定）",
-        ),
-        (
-            "axbuilder_run_dev_subgraph",
-            "在开发沙盒子图命名空间内试灌映射数据并计算派生与聚合指标（严禁污染企业主图 main）",
-        ),
-        (
-            "axbuilder_reset_dev_subgraph",
-            "清空开发沙盒子图的运行态节点、关系与时序点（保留模型定义与草案，企业主图 main 拒绝清空）",
-        ),
-        (
-            "axbuilder_upsert_dashboard_draft",
-            "校验 24 列栅格坐标与数据源绑定后新建或更新 DRAFT 数字孪生看板草稿",
-        ),
-    ];
-
-    specs
-        .into_iter()
+    AXBUILDER_TOOL_DESCRIPTIONS
+        .iter()
+        .copied()
         .filter(|(name, _)| has_axbuilder_tool_permissions(principal, name))
         .map(|(name, desc)| McpToolDescriptor {
             name: String::from(name),
@@ -248,7 +327,8 @@ pub fn axbuilder_tool_schema(name: &str) -> serde_json::Value {
             },
             "additionalProperties": false
         }),
-        _ => serde_json::json!({ "type": "object" }),
+        other => crate::harness::step29_axbuilder_tool_schema(other)
+            .unwrap_or_else(|| serde_json::json!({ "type": "object" })),
     }
 }
 
@@ -269,7 +349,7 @@ pub(crate) fn axbuilder_resource_templates() -> Vec<McpResourceTemplateDescripto
     ]
 }
 
-fn optional_slug_or_main(args: &serde_json::Value) -> &str {
+pub(crate) fn optional_slug_or_main(args: &serde_json::Value) -> &str {
     args.get("subgraph_slug")
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
@@ -277,14 +357,17 @@ fn optional_slug_or_main(args: &serde_json::Value) -> &str {
         .unwrap_or("main")
 }
 
-fn optional_str_arg<'a>(args: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+pub(crate) fn optional_str_arg<'a>(args: &'a serde_json::Value, key: &str) -> Option<&'a str> {
     args.get(key)
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|s| !s.is_empty())
 }
 
-fn optional_uuid_arg(args: &serde_json::Value, key: &str) -> Result<Option<Uuid>, AppError> {
+pub(crate) fn optional_uuid_arg(
+    args: &serde_json::Value,
+    key: &str,
+) -> Result<Option<Uuid>, AppError> {
     let Some(raw) = optional_str_arg(args, key) else {
         return Ok(None);
     };
@@ -293,7 +376,7 @@ fn optional_uuid_arg(args: &serde_json::Value, key: &str) -> Result<Option<Uuid>
     Ok(Some(parsed))
 }
 
-fn non_nil_uid(uid: Uuid) -> Option<Uuid> {
+pub(crate) fn non_nil_uid(uid: Uuid) -> Option<Uuid> {
     (!uid.is_nil()).then_some(uid)
 }
 
@@ -305,17 +388,20 @@ fn mode_rank(mode: StructuredOutputMode) -> u8 {
     }
 }
 
-fn to_json_val<T: Serialize>(value: &T, label: &str) -> Result<serde_json::Value, AppError> {
+pub(crate) fn to_json_val<T: Serialize>(
+    value: &T,
+    label: &str,
+) -> Result<serde_json::Value, AppError> {
     serde_json::to_value(value)
         .map_err(|err| AppError::Config(format!("serialize {label} failed: {err}")))
 }
 
-struct BuilderMutateAudit<'a> {
-    tool_name: &'a str,
-    resource_ref: String,
-    draft_id: Option<Uuid>,
-    summary: serde_json::Value,
-    meta: McpCallMeta<'a>,
+pub(crate) struct BuilderMutateAudit<'a> {
+    pub(crate) tool_name: &'a str,
+    pub(crate) resource_ref: String,
+    pub(crate) draft_id: Option<Uuid>,
+    pub(crate) summary: serde_json::Value,
+    pub(crate) meta: McpCallMeta<'a>,
 }
 
 impl<R> McpServerHub<R>
@@ -329,14 +415,17 @@ where
         + GraphQueryPort
         + 'static,
 {
-    fn effective_web_base<'a>(&'a self, principal: &'a AuthPrincipal) -> Option<&'a str> {
+    pub(crate) fn effective_web_base<'a>(
+        &'a self,
+        principal: &'a AuthPrincipal,
+    ) -> Option<&'a str> {
         principal
             .web_base_url
             .as_deref()
             .or(self.public_host.as_deref())
     }
 
-    fn build_deep_links(
+    pub(crate) fn build_deep_links(
         &self,
         principal: &AuthPrincipal,
         subgraph_slug: &str,
@@ -354,7 +443,7 @@ where
         )
     }
 
-    async fn emit_builder_mutate_audit(
+    pub(crate) async fn emit_builder_mutate_audit(
         &self,
         principal: &AuthPrincipal,
         event: BuilderMutateAudit<'_>,
@@ -418,10 +507,10 @@ where
                 self.tool_upsert_dashboard_draft(principal, args, meta)
                     .await
             }
-            _ => Err(AppError::bad(
-                "INVALID_ARGUMENT",
-                format!("unknown AxBuilder MCP tool: {tool_name}"),
-            )),
+            other => {
+                self.execute_step29_axbuilder_tool(principal, other, args, meta)
+                    .await
+            }
         }
     }
 

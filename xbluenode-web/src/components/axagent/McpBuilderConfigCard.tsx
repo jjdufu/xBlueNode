@@ -38,6 +38,64 @@ export const BUILDER_FORBIDDEN_PROD_PERMISSIONS: readonly Permission[] = [
   "PII_RAW_READ",
 ];
 
+export const AXBUILDER_TOOL_STAGES: readonly {
+  key: string;
+  zh: string;
+  en: string;
+  tools: readonly string[];
+}[] = [
+  {
+    key: "source",
+    zh: "源数据探查",
+    en: "Source Profiling",
+    tools: [
+      "axbuilder_preflight",
+      "axbuilder_pull_workspace",
+      "axbuilder_list_datasets",
+      "axbuilder_inspect_dataset_profile",
+      "axbuilder_sample_dataset_rows",
+    ],
+  },
+  {
+    key: "model",
+    zh: "模型与动作",
+    en: "Ontology & Actions",
+    tools: [
+      "axbuilder_clone_template",
+      "axbuilder_validate_schema",
+      "axbuilder_push_schema_draft",
+      "axbuilder_diff_schema_draft",
+      "axbuilder_eval_expression",
+      "axbuilder_upsert_flow_draft",
+      "axbuilder_dryrun_action_spec",
+    ],
+  },
+  {
+    key: "sandbox",
+    zh: "沙盒与认证",
+    en: "Sandbox & Cert",
+    tools: [
+      "axbuilder_run_dev_subgraph",
+      "axbuilder_reset_dev_subgraph",
+      "axbuilder_certify_subgraph",
+      "axbuilder_compile_axql",
+      "axbuilder_sim_trial_run",
+    ],
+  },
+  {
+    key: "qa",
+    zh: "看板与验收",
+    en: "Dashboards & QA",
+    tools: [
+      "axbuilder_upsert_chart_draft",
+      "axbuilder_upsert_dashboard_draft",
+      "axbuilder_preflight_dashboard",
+      "axbuilder_upsert_competency_suite",
+      "axbuilder_verify_competency_suite",
+    ],
+  },
+];
+
 export type McpBuilderClientKey =
   | "antigravity"
   | "cursor"
@@ -209,6 +267,9 @@ export function McpBuilderConfigCard({
           <Badge variant="xblue" data-testid="mcp-builder-endpoint-badge">
             {mcpEndpointUrl}
           </Badge>
+          <Badge variant="outline" data-testid="mcp-builder-tool-count-badge">
+            {tx("22 工具", "22 Tools")}
+          </Badge>
         </div>
         {issuedToken ? (
           <Badge variant="success" data-testid="mcp-builder-token-ready-badge">
@@ -324,6 +385,36 @@ export function McpBuilderConfigCard({
             {copied ? tx("已复制", "Copied") : tx("复制配置", "Copy Config")}
           </Button>
         </div>
+      </div>
+
+      {/* 4-Stage 22-Tool Engineering Catalog */}
+      <div
+        data-testid="mcp-builder-22-tools"
+        className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-1 text-xs"
+      >
+        {AXBUILDER_TOOL_STAGES.map((stage) => (
+          <div
+            key={stage.key}
+            className="rounded-md border border-border bg-muted/15 p-2.5 space-y-1.5"
+          >
+            <div className="flex items-center justify-between font-medium">
+              <span>{tx(stage.zh, stage.en)}</span>
+              <Badge variant="outline" className="font-mono-tech">
+                {stage.tools.length}
+              </Badge>
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {stage.tools.map((toolName) => (
+                <span
+                  key={toolName}
+                  className="rounded border border-border bg-background px-1.5 py-0.5 font-mono-tech text-[10px] text-muted-foreground"
+                >
+                  {toolName}
+                </span>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
     </Card>
   );

@@ -47,6 +47,7 @@ import {
   Modal,
   Select,
   StatusBadge,
+  Switch,
   Tabs,
 } from "@/components/ui/primitives";
 
@@ -315,6 +316,20 @@ export function DatasetTable({
     }
   };
 
+  const handleToggleContinuousStream = useCallback(
+    async (ds: Dataset, next: boolean) => {
+      if (!canSync) return;
+      setErrorMsg(null);
+      try {
+        await axhubApi.updateDataset(ds.id, { continuous_stream: next });
+        await onRefreshDatasets();
+      } catch (err) {
+        setErrorMsg(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [canSync, onRefreshDatasets]
+  );
+
   const columns = useMemo(
     () =>
       columnHelper.columns([
@@ -354,11 +369,32 @@ export function DatasetTable({
         }),
         columnHelper.accessor("sync_mode", {
           header: tx("同步模式", "Sync Mode"),
-          cell: (info) => (
-            <span className="text-muted-foreground">
-              {tEnum(info.getValue())}
-            </span>
-          ),
+          cell: (info) => {
+            const ds = info.row.original;
+            const mode = info.getValue();
+            return (
+              <div className="flex flex-wrap items-center gap-1.5">
+                {mode === "LOG_CDC" ? (
+                  <Badge
+                    variant="xblue"
+                    data-testid={`dataset-cdc-badge-${ds.name}`}
+                  >
+                    {tEnum(mode)}
+                  </Badge>
+                ) : (
+                  <span className="text-muted-foreground">{tEnum(mode)}</span>
+                )}
+                {ds.continuous_stream && (
+                  <Badge
+                    variant="success"
+                    data-testid={`dataset-stream-badge-${ds.name}`}
+                  >
+                    {tx("秒级常驻", "Sub-second")}
+                  </Badge>
+                )}
+              </div>
+            );
+          },
         }),
         columnHelper.accessor("row_count", {
           header: tx("行数 / 版本", "Rows / Version"),
@@ -931,6 +967,28 @@ export function DatasetTable({
               <Badge variant="outline">
                 {tEnum(selectedDataset.schema_policy)}
               </Badge>
+              {selectedDataset.sync_mode === "LOG_CDC" && (
+                <Badge variant="xblue" data-testid="inspector-cdc-badge">
+                  {tEnum("LOG_CDC")}
+                </Badge>
+              )}
+              {selectedDataset.source_kind === "STREAM" && (
+                <label
+                  onClick={(e) => e.stopPropagation()}
+                  className="inline-flex items-center gap-1.5 text-xs font-normal text-muted-foreground"
+                >
+                  <Switch
+                    checked={Boolean(selectedDataset.continuous_stream)}
+                    disabled={!canSync}
+                    onCheckedChange={(next) =>
+                      void handleToggleContinuousStream(selectedDataset, next)
+                    }
+                    aria-label={tx("常驻流消费", "Continuous Stream")}
+                    data-testid="inspector-continuous-stream-switch"
+                  />
+                  <span>{tx("常驻流消费", "Continuous Stream")}</span>
+                </label>
+              )}
               {selectedDataset.last_snapshot_id !== null && (
                 <span className="font-mono-tech text-[11px] font-normal text-muted-foreground">
                   #{fmtNum(selectedDataset.last_snapshot_id, 0)}

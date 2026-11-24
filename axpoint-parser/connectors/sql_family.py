@@ -45,7 +45,7 @@ POSTGRES_SPEC = ConnectorSpecModel(
         },
     },
     secret_fields=["password"],
-    supports_modes=["SNAPSHOT", "APPEND", "UPSERT"],
+    supports_modes=["SNAPSHOT", "APPEND", "UPSERT", "LOG_CDC"],
     supports_discover=True,
     image_tier="lite",
 )
@@ -67,7 +67,7 @@ MYSQL_SPEC = ConnectorSpecModel(
         },
     },
     secret_fields=["password"],
-    supports_modes=["SNAPSHOT", "APPEND", "UPSERT"],
+    supports_modes=["SNAPSHOT", "APPEND", "UPSERT", "LOG_CDC"],
     supports_discover=True,
     image_tier="lite",
 )
@@ -413,12 +413,62 @@ class PostgresConnector(SqlAlchemyFamilyConnector):
     default_port = 5432
     default_schema_name = "public"
 
+    def read_cdc(
+        self,
+        ref: dict[str, Any],
+        primary_key: list[str],
+        cdc_slot_meta: dict[str, Any],
+        batch_rows: int = 50_000,
+    ) -> tuple[list[Any], dict[str, Any]]:
+        """Extract bounded PostgreSQL LOG_CDC events (logical slot or PK state diff)."""
+        from connectors.cdc_pg import read_postgres_cdc
+
+        default_s = str(self.config.get("schema") or "").strip() or self.default_schema_name
+        schema, table, query = extract_schema_and_table(ref, default_s)
+        if query or not table:
+            raise SidecarError(
+                400, "INVALID_ARGUMENT", "PostgreSQL LOG_CDC requires a physical source table"
+            )
+        return read_postgres_cdc(
+            self._get_engine(),
+            schema=schema,
+            table=table,
+            primary_key=primary_key,
+            cdc_slot_meta=cdc_slot_meta,
+            batch_rows=batch_rows,
+        )
+
 
 class MySqlConnector(SqlAlchemyFamilyConnector):
     spec = MYSQL_SPEC
     dialect_name = "mysql"
     default_port = 3306
     default_schema_name = None
+
+    def read_cdc(
+        self,
+        ref: dict[str, Any],
+        primary_key: list[str],
+        cdc_slot_meta: dict[str, Any],
+        batch_rows: int = 50_000,
+    ) -> tuple[list[Any], dict[str, Any]]:
+        """Extract bounded MySQL ROW binlog / LOG_CDC events."""
+        from connectors.cdc_mysql import read_mysql_cdc
+
+        schema, table, query = extract_schema_and_table(ref, None)
+        if query or not table:
+            raise SidecarError(
+                400, "INVALID_ARGUMENT", "MySQL LOG_CDC requires a physical source table"
+            )
+        db_name = schema or str(self.config.get("database") or "").strip() or None
+        return read_mysql_cdc(
+            self._get_engine(),
+            database=db_name,
+            table=table,
+            primary_key=primary_key,
+            cdc_slot_meta=cdc_slot_meta,
+            batch_rows=batch_rows,
+        )
 
 
 class MsSqlConnector(SqlAlchemyFamilyConnector):

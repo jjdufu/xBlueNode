@@ -22,8 +22,10 @@ use crate::view::{DashboardPreflightReport, FilterDef, WidgetDataSource, WidgetP
 /// Default permissions granted to a `TokenProfile::Builder` personal access token when `scopes` is omitted.
 pub const BUILDER_DEFAULT_SCOPES: &[Permission] = &[
     Permission::DataRead,
+    Permission::DataSync,
     Permission::StudioEdit,
     Permission::FlowEdit,
+    Permission::FlowRun,
     Permission::ViewEdit,
     Permission::AgentRun,
     Permission::SimRun,
