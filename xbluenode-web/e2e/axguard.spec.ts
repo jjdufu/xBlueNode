@@ -768,11 +768,11 @@ test("AxGuard login, single-flight silent refresh, all 8 governance tabs, Cedar 
   await page.getByTestId("login-submit-btn").click();
   await expect(page).toHaveURL(/\/$/);
 
-  // 2. Navigate to /governance — forceNextUsers401 triggers single-flight /api/auth/refresh transparently!
-  await page.getByRole("link", { name: "系统治理" }).click();
-  await expect(page).toHaveURL(/\/governance/);
+  // 2. Navigate to /settings — forceNextUsers401 triggers single-flight /api/auth/refresh transparently!
+  await page.getByRole("link", { name: "系统设置" }).click();
+  await expect(page).toHaveURL(/\/settings/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "系统治理" })
+    page.getByRole("heading", { level: 1, name: "系统设置" })
   ).toBeVisible();
 
   // Tab 1: 用户管理 (loaded after transparent 401 -> refresh retry!)
@@ -792,6 +792,9 @@ test("AxGuard login, single-flight silent refresh, all 8 governance tabs, Cedar 
   await expect(page.getByTestId("axguard-depts-panel")).toContainText(
     "华东大区"
   );
+
+  // Switch settings group to 安全与脱敏 for ABAC / Row / Column / Grants
+  await page.getByTestId("governance-tab-security").click();
 
   // Tab 4: ABAC 策略 — Validate & Simulate Cedar policy
   await page.getByRole("tab", { name: "ABAC 策略" }).click();

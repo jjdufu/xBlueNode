@@ -36,7 +36,7 @@ export function AiDraftWizard({
   const { can } = usePrincipal();
   const canEdit = can("STUDIO_EDIT");
 
-  const [title, setTitle] = useState("AI 供应链本体草案");
+  const [title, setTitle] = useState("AI 供应链模型草案");
   const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
   const [selectedDocIds, setSelectedDocIds] = useState<string[]>([]);
   const [datasetFilter, setDatasetFilter] = useState("");

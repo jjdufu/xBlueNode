@@ -1207,7 +1207,7 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
 
   await expect(page).toHaveURL(/\/$/, { timeout: 20_000 });
   await expect(
-    page.getByRole("heading", { level: 1, name: "概览" })
+    page.getByRole("heading", { level: 1, name: "总控看板" })
   ).toBeVisible();
 
   // -------------------------------------------------------------------------
@@ -1235,11 +1235,11 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   // -------------------------------------------------------------------------
   // 3. Navigate to /studio, publish model draft (SchemaDoc)
   // -------------------------------------------------------------------------
-  await page.getByRole("link", { name: "本体工作室" }).click();
+  await page.getByRole("link", { name: "建模工作室" }).click();
   await expect(
     page.getByRole("heading", {
       level: 1,
-      name: "本体工作室",
+      name: "建模工作室",
     })
   ).toBeVisible();
   await expect(page.getByTestId("xbluestudio-canvas")).toBeVisible();
@@ -1286,7 +1286,7 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   // -------------------------------------------------------------------------
   await page.getByTestId("studio-mode-explorer").click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "本体工作室" })
+    page.getByRole("heading", { level: 1, name: "建模工作室" })
   ).toBeVisible();
   await expect(
     page.getByTestId("xbluegraph-canvas").locator("canvas").first()
@@ -1303,11 +1303,11 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   // -------------------------------------------------------------------------
   // 5. Navigate to /analytics, run guarded SQL query and verify result table
   // -------------------------------------------------------------------------
-  await page.getByRole("link", { name: "探索与制图" }).click();
+  await page.getByRole("link", { name: "查询与制图" }).click();
   await expect(
     page.getByRole("heading", {
       level: 1,
-      name: "探索与制图",
+      name: "查询与制图",
     })
   ).toBeVisible();
 
@@ -1354,9 +1354,9 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   // -------------------------------------------------------------------------
   // 7. Navigate to /view, verify dashboard widgets & XLSX export download
   // -------------------------------------------------------------------------
-  await page.getByRole("link", { name: "孪生看板" }).click();
+  await page.getByRole("link", { name: "数字看板" }).click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "孪生看板" })
+    page.getByRole("heading", { level: 1, name: "数字看板" })
   ).toBeVisible();
 
   const overviewCard = page.getByTestId("dashboard-card-supply-overview");
@@ -1391,11 +1391,11 @@ test("Step 14 full-journey acceptance: login ops_admin -> upload supply_chain.xl
   await expect(page.getByTestId("export-list-drawer")).toHaveCount(0);
 
   // -------------------------------------------------------------------------
-  // 8. Navigate to /governance -> 运维与备份, verify health & work-item board render
+  // 8. Navigate to /settings -> 任务与备份, verify health & work-item board render
   // -------------------------------------------------------------------------
-  await page.getByRole("link", { name: "系统治理" }).click();
+  await page.getByRole("link", { name: "系统设置" }).click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "系统治理" })
+    page.getByRole("heading", { level: 1, name: "系统设置" })
   ).toBeVisible();
   await page.getByTestId("governance-tab-ops").click();
   await expect(page.getByTestId("axops-health-panel")).toBeVisible({

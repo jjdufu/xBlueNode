@@ -215,7 +215,7 @@ export const ENUM_LABELS: Readonly<Record<string, BilingualLabel>> = {
   GUARD_ADMIN: { zh: "安全策略治理", en: "Security Admin" },
   OPS_ADMIN: { zh: "系统运维管理", en: "Operations Admin" },
 
-  // Ontology Cardinality, Merge, Graph Algos & Directions
+  // Model Cardinality, Merge, Graph Algos & Directions
   ONE_TO_ONE: { zh: "一对一", en: "One-to-One" },
   ONE_TO_MANY: { zh: "一对多", en: "One-to-Many" },
   MANY_TO_ONE: { zh: "多对一", en: "Many-to-One" },

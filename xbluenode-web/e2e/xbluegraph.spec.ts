@@ -436,7 +436,7 @@ test("xBlueGraph /graph locates 华东仓 (W-1), expands 1-hop neighbors on doub
   await page.goto("/graph");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "本体工作室" })
+    page.getByRole("heading", { level: 1, name: "建模工作室" })
   ).toBeVisible();
 
   // Verify main force graph canvas is mounted and non-empty

@@ -58,8 +58,8 @@ export const AXBUILDER_TOOL_STAGES: readonly {
   },
   {
     key: "model",
-    zh: "模型与动作",
-    en: "Ontology & Actions",
+    zh: "业务模型与动作",
+    en: "Models & Actions",
     tools: [
       "axbuilder_clone_template",
       "axbuilder_validate_schema",

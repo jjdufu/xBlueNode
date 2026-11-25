@@ -35,8 +35,8 @@ export const PERMISSION_DOMAIN_GROUPS: readonly PermissionDomainGroup[] = [
   {
     domain: "图谱与仿真",
     enDomain: "Graph & Simulation",
-    description: "多子图节点建模发布、写时复制因果推演与孪生驾驶舱构建分享",
-    enDescription: "Subgraph ontology modeling, copy-on-write simulation, and twin dashboards",
+    description: "多子图业务建模、沙盘推演与数字看板",
+    enDescription: "Subgraph business modeling, simulation, and cockpits",
     permissions: [
       { code: "STUDIO_EDIT", label: "建模草稿编辑" },
       { code: "STUDIO_PUBLISH", label: "模型版本发布" },

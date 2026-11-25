@@ -412,7 +412,7 @@ export const FALLBACK_OPERATOR_SPECS: readonly OperatorSpecDto[] = [
   {
     kind: "XBLUE_MAP",
     display_name: "业务节点映射",
-    description: "将湖表数据按本体映射规则物化为图谱节点与关系",
+    description: "将湖表数据按业务模型映射规则物化为节点与关系",
     config_schema: {
       type: "object",
       required: ["mapping_id"],

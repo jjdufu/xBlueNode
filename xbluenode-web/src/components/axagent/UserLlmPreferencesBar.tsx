@@ -89,7 +89,7 @@ export function UserLlmPreferencesBar({
         },
       ];
       for (const p of personalProviders) {
-        if (p.purposes.includes(purpose)) {
+        if (Array.isArray(p.purposes) && p.purposes.includes(purpose)) {
           const text = `${p.name} · ${p.model}`;
           opts.push({
             value: p.id,
@@ -100,7 +100,7 @@ export function UserLlmPreferencesBar({
         }
       }
       for (const p of systemProviders) {
-        if (p.purposes.includes(purpose)) {
+        if (Array.isArray(p.purposes) && p.purposes.includes(purpose)) {
           const text = `${p.name} · ${p.model}`;
           opts.push({
             value: p.id,

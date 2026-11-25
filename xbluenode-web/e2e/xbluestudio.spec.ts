@@ -478,7 +478,7 @@ async function installStudioMocks(page: Page): Promise<void> {
       const generatedDraft = {
         id: AI_DRAFT_ID,
         subgraph_slug: subgraph,
-        title: body.title || "AI 供应链本体草案",
+        title: body.title || "AI 供应链模型草案",
         source: "AI",
         base_version: 2,
         schema_doc: {
@@ -1007,7 +1007,7 @@ test("xBlueStudio /studio renders canvas cards & edges, switches subgraph for me
   await page.goto("/studio");
 
   await expect(
-    page.getByRole("heading", { level: 1, name: "本体工作室" })
+    page.getByRole("heading", { level: 1, name: "建模工作室" })
   ).toBeVisible();
 
   // 1. Assert top status bar & @xyflow/react canvas renders Warehouse, Order, and FULFILLS
@@ -1069,7 +1069,7 @@ test("xBlueStudio /studio renders canvas cards & edges, switches subgraph for me
   if (!isLive) {
     await expect(page.getByTestId("canvas-node-Supplier")).toBeVisible();
     await expect(page.getByTestId("studio-active-draft-label")).toContainText(
-      "AI 供应链本体草案"
+      "AI 供应链模型草案"
     );
   }
 
