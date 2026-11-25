@@ -2,7 +2,7 @@
 
 本步是 Phase 4（Step 31～35）的合流收官节点：将四大跨行业可执行世界整合为一键/秒级向量化装载套件 `scripts/seed-showcase.sh` 与后台接口 `POST /api/axops/demo/showcase/load`；通过端到端浏览器套件 `xbluenode-web/e2e/v4-modeling-and-worlds.spec.ts` 完整走查「平实建模导航 → 真数据总控看板 → 电力/风控/半导体/急诊四大行业画布、VTable 6 万行透视、凸包地图与沙盘推演」全链路；将能力追踪矩阵升级至 **98 项（`C01`～`C98`）**，跑通 `bash scripts/gate/all.sh`（`Step 00～35` 全绿）与实机 Chrome DevTools 浏览器巡检后完成方案封存归档及 `v0.4.0` 版本发布。
 
-总览索引与门禁准则见 [00-V4-MASTER-INDEX.md](../00-V4-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md) 与 [QUALITY_GATES_AND_VERIFICATION.md](../../../docs/QUALITY_GATES_AND_VERIFICATION.md)。
+总览索引与门禁准则见 [00-V4-MASTER-INDEX.md](../00-V4-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md) 与 [QUALITY_GATES_AND_VERIFICATION.md](../../../../docs/QUALITY_GATES_AND_VERIFICATION.md)。
 
 ---
 
@@ -87,4 +87,4 @@ gate_pass step35
 
 ### 收官封存动作
 
-当 `bash scripts/gate/all.sh`（覆盖 `Step 00～35`）与 GitHub Actions 全作业绿灯合入 `main`，且通过 `chrome-devtools-mcp` 完成 `http://192.168.50.50:9995` 实机浏览器截图巡检后，由 `orchestrator` 提交归档 PR：将 `plans/v4-modeling-console-and-industry-worlds/` 移入 `plans/completed/v4-modeling-console-and-industry-worlds-step31-35/` 只读封存，同步更新 [plans/README.md](../../README.md) 与全栈版本号至 `v0.4.0`。
+当 `bash scripts/gate/all.sh`（覆盖 `Step 00～35`）与 GitHub Actions 全作业绿灯合入 `main`，且通过 `chrome-devtools-mcp` 完成 `http://192.168.50.50:9995` 实机浏览器截图巡检后，由 `orchestrator` 提交归档 PR：将 `plans/v4-modeling-console-and-industry-worlds/` 移入 `plans/completed/v4-modeling-console-and-industry-worlds-step31-35/` 只读封存，同步更新 [plans/README.md](../../../README.md) 与全栈版本号至 `v0.4.0`。

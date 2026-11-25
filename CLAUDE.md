@@ -10,7 +10,7 @@
 - **门禁与验证总则**：[docs/QUALITY_GATES_AND_VERIFICATION.md](./docs/QUALITY_GATES_AND_VERIFICATION.md)
 - **多团队 / 多分支 Worktree / 多 Subagent 协同规范**：[docs/MULTI_AGENT_TEAM_WORKFLOW.md](./docs/MULTI_AGENT_TEAM_WORKFLOW.md)
 - **接口与契约基准**：[docs/API_CONTRACT.md](./docs/API_CONTRACT.md) 及 `docs/standards/A1～A7`
-- **实施方案目录**：[plans/README.md](./plans/README.md)（第一阶段 Step 00～14 归档于 `plans/completed/v1-foundation-step00-14/`；第二阶段 Step 15～22 归档于 `plans/completed/v2-ux-and-grounded-ai-step15-22/`；第三阶段 Step 23～30 交互重塑与可执行世界运行时归档于 `plans/completed/v3-craft-and-world-runtime-step23-30/`）。
+- **实施方案目录**：[plans/README.md](./plans/README.md)（第一阶段 Step 00～14 归档于 `plans/completed/v1-foundation-step00-14/`；第二阶段 Step 15～22 归档于 `plans/completed/v2-ux-and-grounded-ai-step15-22/`；第三阶段 Step 23～30 归档于 `plans/completed/v3-craft-and-world-runtime-step23-30/`；第四阶段 Step 31～35 平实建模台与四大跨行业世界归档于 `plans/completed/v4-modeling-console-and-industry-worlds-step31-35/`）。
 
 ---
 

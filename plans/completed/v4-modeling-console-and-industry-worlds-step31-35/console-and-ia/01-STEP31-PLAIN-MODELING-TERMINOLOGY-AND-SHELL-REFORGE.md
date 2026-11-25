@@ -2,7 +2,7 @@
 
 本步作为 Phase 4 壳层与信息架构重塑（Track A）的首发步骤，聚焦三项核心工程收口：① 将全站用户可见界面与产品文档统一收敛为平实直白的工程建模词汇（消除生硬学术术语外露）；② 顺着「看全局 → 接数据 → 建模型 → 查数制图 → 跑推演 → 配自动化 → 看板与智能体」的真实工程动线重排一级导航，将 **`建模工作室`** 提至核心前排；③ 移除侧栏底部多余的单元素折叠套娃，收敛为干净利落的底部单行 **`系统设置`** 入口。
 
-总览索引与工程约束见 [00-V4-MASTER-INDEX.md](../00-V4-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md)、[xbluenode-web/AGENTS.md](../../../xbluenode-web/AGENTS.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
+总览索引与工程约束见 [00-V4-MASTER-INDEX.md](../00-V4-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md)、[xbluenode-web/AGENTS.md](../../../../xbluenode-web/AGENTS.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
 
 ---
 
@@ -13,7 +13,7 @@
   2. **建模优先 8 域导航重排**：主导航区按真实业务构建闭环顺序排列为 8 项，将 `建模工作室`（`/studio`）紧随 `数据与知识`（`/hub`）排在第 3 位；全部历史路径（`/ingest`、`/query`、`/graph`、`/alerts`、`/governance`、`/guard`、`/ops`）保持带查询参数的前端无感重定向兼容。
   3. **底栏单行 `系统设置` 收敛**：删除 `App.tsx` 底栏外层可折叠分组按钮与重复子项套娃，固定渲染单行齿轮图标入口 `系统设置`（`Settings`，路由 `/settings`，内聚 `成员与权限`、`安全与脱敏`、`模型通道`、`任务与备份`、`审计日志`）。
   4. **静态守卫与历史门禁同步**：在 `scripts/web-guard.py` 增加 `check_plain_modeling_terminology` 规则防止学术黑话重回可见文案；同步更新既有 E2E 用例与 `step23.sh` 中的导航顺序及标题断言，保证 `Step 00～31` 全绿。
-- **前置**：[Step 30](../../completed/v3-craft-and-world-runtime-step23-30/world-runtime/08-STEP30-V3-E2E-CRAFT-BENCHMARKS-AND-ACCEPTANCE.md) 已完成合入（**本步无数据库迁移与后端协议破坏性变更**）。
+- **前置**：[Step 30](../../v3-craft-and-world-runtime-step23-30/world-runtime/08-STEP30-V3-E2E-CRAFT-BENCHMARKS-AND-ACCEPTANCE.md) 已完成合入（**本步无数据库迁移与后端协议破坏性变更**）。
 - **覆盖能力项**：
   - `C93`：`step31` `"ui-zero-ontology-jargon"`、`"nav-modeling-promoted"`、`"settings-flat-entry"`
 

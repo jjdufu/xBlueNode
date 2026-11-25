@@ -15,6 +15,7 @@
   - 已完成基线归档（Step 00～14）：`plans/completed/v1-foundation-step00-14/`（只读封存）
   - 已完成二期归档（Step 15～22）：`plans/completed/v2-ux-and-grounded-ai-step15-22/`（只读封存）
   - 已完成三期归档（Step 23～30）：`plans/completed/v3-craft-and-world-runtime-step23-30/`（只读封存）
+  - 已完成四期归档（Step 31～35）：`plans/completed/v4-modeling-console-and-industry-worlds-step31-35/`（只读封存）
 - **严禁重新创建遗留混合目录 `docs/blueprint/`**（`docs/` 只放跨阶段宪章与活标准，`plans/` 只放分阶段实施方案）。
 
 ---
