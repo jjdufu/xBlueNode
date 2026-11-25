@@ -24,6 +24,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
+import { MODULE_META } from "@/modules/meta";
 import {
   xblueviewApi,
   type CockpitZoneLayout,
@@ -852,7 +853,10 @@ export function XBlueViewPage() {
     return (
       <div className="space-y-5" data-testid="xblueview-gallery-page">
         <PageHeader
-          title={tx("孪生看板", "Twin Cockpits")}
+          title={tx(
+            MODULE_META.xblueview.label,
+            MODULE_META.xblueview.enLabel
+          )}
           actions={
             <>
               <SegmentedControl<GalleryTab>

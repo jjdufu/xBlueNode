@@ -4,7 +4,7 @@
 
 技术栈：Rust `1.100.0`（`edition = "2024"`）+ PostgreSQL 16（`pgvector`）+ DuckDB / DuckLake + Python 3.11 FastAPI Sidecar（AxParser / AxHub）+ Vite / React 19。
 
-完整的阶段实施方案归档与演进路线见 **[plans/README.md](./plans/README.md)**（第一阶段 Step 00～14 归档于 [plans/completed/v1-foundation-step00-14/00-MASTER-INDEX.md](./plans/completed/v1-foundation-step00-14/00-MASTER-INDEX.md)，第二阶段 Step 15～22 智能体验与本体无幻觉演进归档于 [plans/completed/v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md](./plans/completed/v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md)，第三阶段 Step 23～30 交互重塑与可执行世界运行时归档于 [plans/completed/v3-craft-and-world-runtime-step23-30/00-V3-MASTER-INDEX.md](./plans/completed/v3-craft-and-world-runtime-step23-30/00-V3-MASTER-INDEX.md)）。常驻工程标准、门禁与多团队/多代理协作规范见 **[docs/QUALITY_GATES_AND_VERIFICATION.md](./docs/QUALITY_GATES_AND_VERIFICATION.md)** 与 **[docs/MULTI_AGENT_TEAM_WORKFLOW.md](./docs/MULTI_AGENT_TEAM_WORKFLOW.md)**。
+完整的阶段实施方案归档与演进路线见 **[plans/README.md](./plans/README.md)**（第一阶段 Step 00～14 归档于 [plans/completed/v1-foundation-step00-14/00-MASTER-INDEX.md](./plans/completed/v1-foundation-step00-14/00-MASTER-INDEX.md)，第二阶段 Step 15～22 智能体验与语义受控无幻觉演进归档于 [plans/completed/v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md](./plans/completed/v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md)，第三阶段 Step 23～30 交互重塑与可执行世界运行时归档于 [plans/completed/v3-craft-and-world-runtime-step23-30/00-V3-MASTER-INDEX.md](./plans/completed/v3-craft-and-world-runtime-step23-30/00-V3-MASTER-INDEX.md)）。常驻工程标准、门禁与多团队/多代理协作规范见 **[docs/QUALITY_GATES_AND_VERIFICATION.md](./docs/QUALITY_GATES_AND_VERIFICATION.md)** 与 **[docs/MULTI_AGENT_TEAM_WORKFLOW.md](./docs/MULTI_AGENT_TEAM_WORKFLOW.md)**。
 
 ---
 
@@ -16,7 +16,7 @@
 | **AxHub** | 连接器与同步：关系库、国产库、分析型库、NoSQL、时序库、对象存储、REST / GraphQL / Webhook、Kafka / MQTT / Pulsar，DuckLake 入湖与资产目录 |
 | **AxGraph** | 超图（`hg_*`）+ 业务节点（`xb_*`）+ 时序指标 + 图查询与图算法 |
 | **AxAnalytics / AxQuery** | DuckDB OLAP、透视制表、指标语义层、智能问数；五路召回 + RRF 知识问答 |
-| **xBlueStudio / xBlueGraph** | 多子图隔离建模、跨部门本体融合、模型版本与发布、映射物化、派生与动态聚合、领域对象 REST / 动态 GraphQL；业务图浏览 |
+| **xBlueStudio / xBlueGraph** | 多子图隔离建模、跨部门模型对齐融合、模型版本与发布、映射物化、派生与动态聚合、动作契约、领域对象 REST / 动态 GraphQL；业务图浏览 |
 | **AxFlow** | DAG 编排、持久化执行、测试 / 正式部署、规则引擎与告警中心 |
 | **AxAgent** | 发布端点（API / Skill / MCP / 领域对象）、MCP Client、多模型路由、智能体与多轮工作台 |
 | **AxSim** | 范围克隆沙盘、写时复制、因果传导、检查点回放、方案对比、决策下发 |

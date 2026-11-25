@@ -8,6 +8,7 @@ import {
   Bot,
   GitBranch,
   Monitor,
+  Settings,
   ShieldCheck,
   ServerCog,
 } from "lucide-react";
@@ -40,13 +41,14 @@ export interface LegacyRedirectSpec {
 }
 
 /**
- * Legacy URL compatibility map preserving existing bookmarks, deep links, and gate URLs (Step 23 §23.1.1).
+ * Legacy URL compatibility map preserving existing bookmarks, deep links, and gate URLs (Step 23 & Step 31).
  */
 export const LEGACY_ROUTE_REDIRECTS: readonly LegacyRedirectSpec[] = [
   { from: "/ingest", toPathname: "/hub", defaultQuery: { tab: "knowledge" } },
   { from: "/query", toPathname: "/analytics", defaultQuery: { tab: "ask" } },
   { from: "/graph", toPathname: "/studio", defaultQuery: { tab: "explorer" } },
   { from: "/alerts", toPathname: "/flow", defaultQuery: { tab: "alerts" } },
+  { from: "/governance", toPathname: "/settings", defaultQuery: {} },
 ];
 
 export interface ModuleRouteSpec {
@@ -90,6 +92,15 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     shortcutKey: "G D",
   },
   {
+    ...MODULE_META.xbluestudio,
+    path: "/studio",
+    icon: Blocks,
+    component: XBlueStudioPage,
+    wideLayout: true,
+    fullBleed: true,
+    shortcutKey: "G S",
+  },
+  {
     ...MODULE_META.axanalytics,
     path: "/analytics",
     icon: BarChart3,
@@ -99,13 +110,12 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     shortcutKey: "G E",
   },
   {
-    ...MODULE_META.xbluestudio,
-    path: "/studio",
-    icon: Blocks,
-    component: XBlueStudioPage,
+    ...MODULE_META.axsim,
+    path: "/sim",
+    icon: GitBranch,
+    component: AxSimPage,
     wideLayout: true,
-    fullBleed: true,
-    shortcutKey: "G S",
+    shortcutKey: "G M",
   },
   {
     ...MODULE_META.axflow,
@@ -118,22 +128,6 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     shortcutKey: "G F",
   },
   {
-    ...MODULE_META.axagent,
-    path: "/agents",
-    icon: Bot,
-    component: AxAgentPage,
-    wideLayout: true,
-    shortcutKey: "G A",
-  },
-  {
-    ...MODULE_META.axsim,
-    path: "/sim",
-    icon: GitBranch,
-    component: AxSimPage,
-    wideLayout: true,
-    shortcutKey: "G M",
-  },
-  {
     ...MODULE_META.xblueview,
     path: "/view",
     subPaths: ["/view/:slug"],
@@ -144,10 +138,18 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     shortcutKey: "G V",
   },
   {
+    ...MODULE_META.axagent,
+    path: "/agents",
+    icon: Bot,
+    component: AxAgentPage,
+    wideLayout: true,
+    shortcutKey: "G A",
+  },
+  {
     ...MODULE_META.governance,
-    path: "/governance",
-    activeMatchPrefixes: ["/guard", "/ops"],
-    icon: ShieldCheck,
+    path: "/settings",
+    activeMatchPrefixes: ["/governance", "/guard", "/ops"],
+    icon: Settings,
     component: GovernancePage,
     wideLayout: true,
     requiredAnyPermissions: [

@@ -23,7 +23,7 @@ export function GroundingBadge({ mode, className }: GroundingBadgeProps) {
       variant = "xblue";
       break;
     case "DOMAIN_OBJECT":
-      label = tx("本体对象", "Ontology");
+      label = tx("业务对象", "Domain Object");
       variant = "xblue";
       break;
     case "GUARDED_SQL":

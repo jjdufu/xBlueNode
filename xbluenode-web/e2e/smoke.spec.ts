@@ -28,21 +28,22 @@ function makeSmokeJwt(): string {
 }
 
 const SHELL_SMOKE_ROUTES: readonly SmokeRouteAssertion[] = [
-  { path: "/", sidebarLabel: "概览", heading: "概览" },
+  { path: "/", sidebarLabel: "总控看板", heading: "总控看板" },
   { path: "/hub", sidebarLabel: "数据与知识", heading: "数据与知识" },
-  { path: "/analytics", sidebarLabel: "探索与制图", heading: "探索与制图" },
-  { path: "/studio", sidebarLabel: "本体工作室", heading: "本体工作室" },
-  { path: "/flow", sidebarLabel: "编排与告警", heading: "编排与告警" },
-  { path: "/agents", sidebarLabel: "智能体中心", heading: "智能体中心" },
+  { path: "/studio", sidebarLabel: "建模工作室", heading: "建模工作室" },
+  { path: "/analytics", sidebarLabel: "查询与制图", heading: "查询与制图" },
   { path: "/sim", sidebarLabel: "推演沙盘", heading: "推演沙盘" },
-  { path: "/view", sidebarLabel: "孪生看板", heading: "孪生看板" },
-  { path: "/governance", sidebarLabel: "系统治理", heading: "系统治理" },
+  { path: "/flow", sidebarLabel: "编排与告警", heading: "编排与告警" },
+  { path: "/view", sidebarLabel: "数字看板", heading: "数字看板" },
+  { path: "/agents", sidebarLabel: "智能体与接口", heading: "智能体与接口" },
+  { path: "/settings", sidebarLabel: "系统设置", heading: "系统设置" },
+  { path: "/governance", sidebarLabel: "系统设置", heading: "系统设置" },
   { path: "/ingest", sidebarLabel: "数据与知识", heading: "数据与知识" },
-  { path: "/query", sidebarLabel: "探索与制图", heading: "探索与制图" },
-  { path: "/graph", sidebarLabel: "本体工作室", heading: "本体工作室" },
+  { path: "/query", sidebarLabel: "查询与制图", heading: "查询与制图" },
+  { path: "/graph", sidebarLabel: "建模工作室", heading: "建模工作室" },
   { path: "/alerts", sidebarLabel: "编排与告警", heading: "编排与告警" },
-  { path: "/guard", sidebarLabel: "系统治理", heading: "权限与安全" },
-  { path: "/ops", sidebarLabel: "系统治理", heading: "运维与备份" },
+  { path: "/guard", sidebarLabel: "系统设置", heading: "权限与安全" },
+  { path: "/ops", sidebarLabel: "系统设置", heading: "运维与备份" },
 ];
 
 async function installDeterministicApiMocks(
@@ -517,7 +518,7 @@ test("all registered routes and /login (password + OIDC + PAT accordion) render 
   await page.getByTestId("login-submit-btn").click();
   await expect(page).toHaveURL(/\/$/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "概览" })
+    page.getByRole("heading", { level: 1, name: "总控看板" })
   ).toBeVisible();
 
   // 2. Collapsible PAT login flow
@@ -527,7 +528,7 @@ test("all registered routes and /login (password + OIDC + PAT accordion) render 
   await page.getByTestId("pat-submit-btn").click();
   await expect(page).toHaveURL(/\/$/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "概览" })
+    page.getByRole("heading", { level: 1, name: "总控看板" })
   ).toBeVisible();
 
   expect(leakedTenantUrls).toEqual([]);

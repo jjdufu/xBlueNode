@@ -59,6 +59,17 @@ TX_CALL_FIRST_ARG_RE = re.compile(
     r"""\btx\(\s*([`"'])((?:\\.|(?!\1).)*)\1""",
     re.DOTALL,
 )
+TX_CALL_BOTH_ARGS_RE = re.compile(
+    r"""\btx\(\s*([`"'])((?:\\.|(?!\1).)*)\1\s*,\s*([`"'])((?:\\.|(?!\3).)*)\3""",
+    re.DOTALL,
+)
+META_DISPLAY_FIELD_RE = re.compile(
+    r"""\b(?:shortZh|shortEn|label|enLabel)\s*:\s*([`"'])((?:\\.|(?!\1).)*)\1"""
+)
+ENUM_DISPLAY_FIELD_RE = re.compile(
+    r"""\b(?:zh|en)\s*:\s*([`"'])((?:\\.|(?!\1).)*)\1"""
+)
+PLAIN_MODELING_JARGON_RE = re.compile(r"本体|\bontology\b", re.IGNORECASE)
 TEMPLATE_INTERPOLATION_RE = re.compile(r"\$\{[^}]*\}")
 
 I18N_PURITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -176,6 +187,49 @@ def check_i18n_purity(path: Path, raw: str, errors: list[str]) -> None:
                 )
 
 
+def check_plain_modeling_terminology(path: Path, raw: str, errors: list[str]) -> None:
+    """阻断用户可见文案出现学术黑话 `本体` 或 `Ontology`（Step 31 §31.3）。"""
+    for match in TX_CALL_BOTH_ARGS_RE.finditer(raw):
+        zh_quote, zh_lit, en_quote, en_lit = (
+            match.group(1),
+            match.group(2),
+            match.group(3),
+            match.group(4),
+        )
+        if zh_quote == "`":
+            zh_lit = TEMPLATE_INTERPOLATION_RE.sub("", zh_lit)
+        if en_quote == "`":
+            en_lit = TEMPLATE_INTERPOLATION_RE.sub("", en_lit)
+        lineno = raw.count("\n", 0, match.start()) + 1
+        for lang_tag, candidate in (("zh", zh_lit), ("en", en_lit)):
+            hit = PLAIN_MODELING_JARGON_RE.search(candidate)
+            if hit:
+                errors.append(
+                    f"{rel(path)}:{lineno}: 可见 tx({lang_tag}) 文案禁止出现学术术语 {hit.group(0)!r} "
+                    "[plain-modeling-terminology]"
+                )
+
+    if path == SRC_ROOT / "modules" / "meta.ts":
+        for lineno, line in enumerate(raw.splitlines(), 1):
+            for field_match in META_DISPLAY_FIELD_RE.finditer(line):
+                hit = PLAIN_MODELING_JARGON_RE.search(field_match.group(2))
+                if hit:
+                    errors.append(
+                        f"{rel(path)}:{lineno}: meta.ts 导航与标题字段禁止出现学术术语 {hit.group(0)!r} "
+                        "[plain-modeling-terminology]"
+                    )
+
+    if path == SRC_ROOT / "i18n" / "enums.ts":
+        for lineno, line in enumerate(raw.splitlines(), 1):
+            for field_match in ENUM_DISPLAY_FIELD_RE.finditer(line):
+                hit = PLAIN_MODELING_JARGON_RE.search(field_match.group(2))
+                if hit:
+                    errors.append(
+                        f"{rel(path)}:{lineno}: ENUM_LABELS 显示值禁止出现学术术语 {hit.group(0)!r} "
+                        "[plain-modeling-terminology]"
+                    )
+
+
 def scan_source_file(path: Path, errors: list[str]) -> None:
     raw = path.read_text(encoding="utf-8")
     raw_lines = raw.splitlines()
@@ -191,6 +245,7 @@ def scan_source_file(path: Path, errors: list[str]) -> None:
                 )
 
     check_i18n_purity(path, raw, errors)
+    check_plain_modeling_terminology(path, raw, errors)
 
     stripped = strip_ts_comments_and_strings(raw)
     for lineno, line in enumerate(stripped.splitlines(), 1):

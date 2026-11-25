@@ -280,7 +280,7 @@ export function TemplateHubModal({
                     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2">
                       <span className="text-xs font-semibold flex items-center gap-1.5">
                         <GitBranch className="h-3.5 w-3.5 text-xblue" />
-                        {tx("本体拓扑摘要", "Topology Summary")}
+                        {tx("模型拓扑摘要", "Model Topology")}
                       </span>
                       <div className="flex flex-wrap items-center gap-1.5">
                         <Badge variant="outline">

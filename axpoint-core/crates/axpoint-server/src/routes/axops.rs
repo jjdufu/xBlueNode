@@ -7,10 +7,10 @@ use axpoint_domain::enums::{JobKind, Permission, RetentionTarget};
 use axpoint_domain::ops::{
     BackupRecord, CreateBackupRequest, CreateWorkItemCommentRequest, CreateWorkItemRequest,
     DeepHealthReport, DemoLoadResponse, DemoScenario, InstallTemplateRequest,
-    OnboardingStatusResponse, OutboxStats, PatchWorkItemRequest, PutRetentionPolicyRequest,
-    RetentionPolicyRecord, SystemInfoResponse, TemplateInstallRecord, TemplateManifest,
-    TemplatePackDetail, TemplatePlanRequest, TemplatePreviewResponse, TemplateUninstallResponse,
-    WorkItem, WorkItemDetail, WorkItemEvent, WorkItemListQuery,
+    OnboardingStatusResponse, OutboxStats, PatchWorkItemRequest, PlatformPulseResponse,
+    PutRetentionPolicyRequest, RetentionPolicyRecord, SystemInfoResponse, TemplateInstallRecord,
+    TemplateManifest, TemplatePackDetail, TemplatePlanRequest, TemplatePreviewResponse,
+    TemplateUninstallResponse, WorkItem, WorkItemDetail, WorkItemEvent, WorkItemListQuery,
 };
 use axpoint_domain::platform::{JobListQuery, JobListResponse, JobRecord, NewJob};
 use axpoint_domain::ports::{
@@ -39,7 +39,7 @@ struct BackupsListQuery {
     cursor: Option<String>,
 }
 
-/// Builds the `/axops/*` sub-router mounted under `/api` (26 routes per `A4` §11).
+/// Builds the `/axops/*` sub-router mounted under `/api` (27 routes per `A4` §11).
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .merge(jobs_and_health_router())
@@ -50,6 +50,7 @@ pub(crate) fn router() -> Router<AppState> {
 
 fn jobs_and_health_router() -> Router<AppState> {
     Router::new()
+        .route("/axops/pulse", get(pulse_handler))
         .route("/axops/onboarding-status", get(onboarding_status_handler))
         .route("/axops/jobs", get(list_jobs_handler))
         .route("/axops/jobs/rollup-now", post(rollup_now_handler))
@@ -133,6 +134,18 @@ where
     }
     serde_json::from_slice::<T>(body)
         .map_err(|err| HttpError(AppError::bad("INVALID_ARGUMENT", err.to_string())))
+}
+
+async fn pulse_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+) -> Result<Json<PlatformPulseResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let resp = state
+        .store
+        .fetch_platform_pulse(&principal.tenant_id)
+        .await?;
+    Ok(Json(resp))
 }
 
 async fn list_jobs_handler(

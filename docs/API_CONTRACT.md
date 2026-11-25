@@ -248,9 +248,10 @@
   - Cedar ABAC 与行列级策略（`GUARD_ADMIN`）：`GET /api/axguard/policies`、`PUT|DELETE /api/axguard/policies/{name}`、`POST /api/axguard/policies/validate`、`POST /api/axguard/policies/simulate`；`GET|POST /api/axguard/row-policies`、`PUT|DELETE /api/axguard/row-policies/{id}`、`GET|PUT /api/axguard/row-policy-defaults`、`POST /api/axguard/row-policies/preview`、`POST /api/axguard/row-policies/simulate-state`（支持 `policy_mode: "STATIC_ATTR"|"STATE_DRIVEN"`、`metrics.*` / `properties.*` 实时状态谓词与 `ttl_timestamp_field` / `ttl_max_age_hours` 活跃期过滤，并在 `AxSim` 沙盘克隆与读取中同源继承，Step 13 / Step 27）；`GET|PUT /api/axguard/column-policies`、`DELETE /api/axguard/column-policies/{id}`。
   - 跨部门授权与防篡改审计链：`GET|POST /api/axguard/grants`、`DELETE /api/axguard/grants/{id}`（`DATA_READ` / `GUARD_ADMIN`，关联 `ax_approvals(source_kind='GRANT')`）；`GET /api/axguard/audit`、`GET /api/axguard/audit/export.csv`、`GET /api/axguard/audit/verify`、`GET /api/axguard/audit/stats`（`GUARD_ADMIN`）。
 
-### `AxOps` 运维监控、备份恢复、行业模板包与工作项（`/api/axops/*`，Step 14）
+### `AxOps` 运维监控、备份恢复、行业模板包与工作项（`/api/axops/*`，Step 14 / Step 32）
 
-- 任务队列、构建引导、深度健康与保留策略：
+- 全域运行脉冲、任务队列、构建引导、深度健康与保留策略：
+  - `GET /api/axops/pulse`（`DATA_READ` → `200 PlatformPulseResponse`）：在租户 RLS 事务内单次聚合全域业务规模（`totals`：生产子图、对象类型、业务节点、关系边、数据集与湖表总行数、近 24h 时序指标点、常驻流、活跃告警与待审批数）、近 24 小时整点吞吐序列 `hourly_series`、各业务子图模型健康矩阵 `subgraphs`（含 `L0`～`L4` 认证等级、就绪评分、业务域、异常告警计数与关联看板/沙盘深链）、未关闭告警 `active_alerts`、待决策审批 `pending_approvals` 及近期推演场景 `deadline_step` 预警 `recent_simulations`（Step 32）。
   - `GET /api/axops/onboarding-status`（`DATA_READ` → `200 OnboardingStatusResponse`）：单次只读租户事务实时统计 `DATA_INGEST`、`NODE_MODELING`、`MAPPING_AND_FLOW`、`SIM_VERIFICATION`、`COCKPIT_AND_AGENT` 五阶段资产计数、完成百分比 `progress_pct`、首个未完成阶段推荐路由与演练沙盒子图标记（Step 19）。
   - `GET /api/axops/jobs`、`GET /api/axops/jobs/{id}`（`DATA_READ`）；`POST /api/axops/jobs/{id}/retry`、`POST /api/axops/jobs/{id}/cancel`、`POST /api/axops/jobs/rollup-now`（`OPS_ADMIN`）。
   - `GET /api/axops/health/deep`、`GET /api/axops/outbox/stats`、`GET /api/axops/system/info`（`OPS_ADMIN`）：每项探针独立 `3s` 超时，返回 `DeepHealthReport {database, parser, lake, llm, embed, disk, jobs, outbox, migrations, version}`。

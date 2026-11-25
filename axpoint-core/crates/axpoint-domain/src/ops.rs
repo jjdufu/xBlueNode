@@ -10,7 +10,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::AppError;
-use crate::enums::{Cardinality, RetentionTarget, SyncMode};
+use crate::enums::{
+    AlertStatus, Cardinality, DeadlineWindowStatus, RetentionTarget, RuntimeCertLevel, Severity,
+    SyncMode,
+};
 
 macro_rules! ops_str_enum {
     (
@@ -1072,6 +1075,167 @@ pub struct InstallTemplateRequest {
     /// Conflict resolution policy (`RENAME` default, or `SKIP`).
     #[serde(default)]
     pub on_conflict: TemplateConflictStrategy,
+}
+
+/// Top-level 10-counter operational scale summary inside [`PlatformPulseResponse`] (`02-STEP32` §32.1.1).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PulseTotals {
+    /// Count of production (`is_dev_sandbox = false`) subgraphs in the tenant.
+    pub subgraph_count: i64,
+    /// Count of node types across production subgraphs.
+    pub node_type_count: i64,
+    /// Count of materialized `xb_nodes` across production subgraphs.
+    pub node_count: i64,
+    /// Count of materialized `xb_links` across production subgraphs.
+    pub link_count: i64,
+    /// Count of `ds_datasets` in the tenant.
+    pub dataset_count: i64,
+    /// Sum of `ds_datasets.row_count` across the tenant.
+    pub lake_total_rows: i64,
+    /// Count of `xb_metric_series` (plus link metric series) points written in the last 24 hours.
+    pub metric_points_24h: i64,
+    /// Count of continuous stream / `LOG_CDC` datasets enabled in the tenant.
+    pub active_stream_count: i64,
+    /// Count of unresolved (`OPEN` or `ACK`) alerts in `ax_alerts`.
+    pub open_alert_count: i64,
+    /// Count of `PENDING` approvals in `ax_approvals`.
+    pub pending_approval_count: i64,
+}
+
+/// Hourly throughput bucket over the trailing 24-hour window (`02-STEP32` §32.1.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PulseHourlyBucket {
+    /// Truncated UTC hour start timestamp.
+    pub hour_utc: DateTime<Utc>,
+    /// Time-series metric points written during this hour.
+    pub metric_points: i64,
+    /// Dataset rows synchronized into `DuckLake` during this hour.
+    pub synced_rows: i64,
+}
+
+/// Per-subgraph model readiness and runtime scale summary card (`02-STEP32` §32.1.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SubgraphPulseCard {
+    /// Subgraph machine slug (`main`, `power_grid`, `fin_risk`, etc.).
+    pub slug: String,
+    /// Human-readable subgraph title.
+    pub display_name: String,
+    /// Optional subgraph description.
+    pub description: Option<String>,
+    /// Whether this subgraph is an isolated dev/builder trial sandbox.
+    pub is_dev_sandbox: bool,
+    /// Current published schema version (`0` when unpublished).
+    pub schema_version: i32,
+    /// Defined `xb_node_types` count in this subgraph.
+    pub node_type_count: i64,
+    /// Defined `xb_edge_types` count in this subgraph.
+    pub edge_type_count: i64,
+    /// Materialized `xb_nodes` count in this subgraph.
+    pub node_count: i64,
+    /// Materialized `xb_links` count in this subgraph.
+    pub link_count: i64,
+    /// Count of unresolved (`OPEN` / `ACK`) alerts referencing nodes in this subgraph.
+    #[serde(default)]
+    pub alert_count: i64,
+    /// Latest runtime certification level (`L0_INVALID`..`L4_CERTIFIED`), if certified.
+    pub cert_level: Option<RuntimeCertLevel>,
+    /// Latest runtime readiness score (`0..=100`), if certified.
+    pub readiness_score: Option<i32>,
+    /// Distinct `business_domain` labels declared on node types in this subgraph.
+    #[serde(default)]
+    pub business_domains: Vec<String>,
+    /// Primary `xBlueView` cockpit slug associated with this subgraph, if any.
+    pub primary_dashboard_slug: Option<String>,
+    /// Most recent `AxSim` sandbox UUID scoped to this subgraph, if any.
+    pub latest_sandbox_id: Option<Uuid>,
+}
+
+/// Active (`OPEN` or `ACK`) alert item inside [`PlatformPulseResponse`] (`02-STEP32` §32.1.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PulseAlertItem {
+    /// Alert UUID.
+    pub id: Uuid,
+    /// Alert severity (`INFO`, `WARN`, `CRITICAL`).
+    pub severity: Severity,
+    /// Current alert status (`OPEN` or `ACK`).
+    pub status: AlertStatus,
+    /// Alert summary title.
+    pub title: String,
+    /// Linked `BlueNode` UUID, if node-scoped.
+    pub node_id: Option<Uuid>,
+    /// Subgraph slug of the linked `BlueNode`, if resolved.
+    pub subgraph_slug: Option<String>,
+    /// Latest observed numeric value triggering the rule.
+    pub last_value: Option<f64>,
+    /// Cumulative trigger occurrence count.
+    pub occurrences: i32,
+    /// Timestamp of the most recent occurrence.
+    pub last_seen_at: DateTime<Utc>,
+}
+
+/// Pending human approval item inside [`PlatformPulseResponse`] (`02-STEP32` §32.1.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PulseApprovalItem {
+    /// Approval UUID.
+    pub id: Uuid,
+    /// Originating subsystem (`FLOW`, `SIM_APPLY`, `AGENT`, `GRANT`, `OBJECT_ACTION`).
+    pub source_kind: String,
+    /// Originating reference identifier.
+    pub source_ref: String,
+    /// Human-readable approval title.
+    pub title: String,
+    /// Optional `AxFlow` run UUID.
+    pub run_id: Option<Uuid>,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Optional expiration timestamp.
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// Recent `AxSim` scenario and `deadline_step` redline warning item (`02-STEP32` §32.1.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PulseSimulationItem {
+    /// Scenario UUID.
+    pub scenario_id: Uuid,
+    /// Parent sandbox UUID.
+    pub sandbox_id: Uuid,
+    /// Parent sandbox display name.
+    pub sandbox_name: String,
+    /// Subgraph slug scoped by the sandbox.
+    pub subgraph_slug: String,
+    /// Scenario name.
+    pub name: String,
+    /// Scenario execution status (`PENDING`, `RUNNING`, `SUCCEEDED`, `FAILED`).
+    pub status: String,
+    /// Count of impacted `(node, metric)` entries recorded on the scenario.
+    pub affected_count: i64,
+    /// Earliest redline breach step across goal constraints, if breached.
+    pub earliest_breach_step: Option<u32>,
+    /// Earliest latest-intervention `deadline_step` across goal constraints, if breached.
+    pub earliest_deadline_step: Option<i32>,
+    /// Worst-case deadline actionability status across goal constraints, if evaluated.
+    pub deadline_status: Option<DeadlineWindowStatus>,
+    /// Scenario creation timestamp.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Single-tenant live operational pulse snapshot returned by `GET /api/axops/pulse` (`02-STEP32` §32.1.1).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PlatformPulseResponse {
+    /// Snapshot generation UTC timestamp.
+    pub generated_at: DateTime<Utc>,
+    /// Top-level scale and throughput totals.
+    pub totals: PulseTotals,
+    /// Trailing 24-hour hourly metric-point and dataset-row buckets (24 buckets ordered ascending).
+    pub hourly_series: Vec<PulseHourlyBucket>,
+    /// Subgraph readiness and scale matrix ordered by production status and node count descending.
+    pub subgraphs: Vec<SubgraphPulseCard>,
+    /// Latest unresolved (`OPEN` / `ACK`) alerts (up to 10 items).
+    pub active_alerts: Vec<PulseAlertItem>,
+    /// Pending human approvals across flows, decisions, grants, and object actions (up to 10 items).
+    pub pending_approvals: Vec<PulseApprovalItem>,
+    /// Recent simulation scenarios and `deadline_step` redline warnings (up to 8 items).
+    pub recent_simulations: Vec<PulseSimulationItem>,
 }
 
 #[cfg(test)]
