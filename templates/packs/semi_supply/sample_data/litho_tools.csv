@@ -1,0 +1,6 @@
+tool_id,tool_code,tool_vendor,chamber_id,oee_pct,chamber_temp_c,particle_defect_rate,fab_id
+LT-01,LITHO-DUV-01,华芯光刻装备,CH-A01,91.5,22.3,0.42,FAB-01
+LT-02,ETCH-ICP-02,北方微纳刻蚀,CH-B04,89.2,23.1,0.65,FAB-01
+LT-03,LITHO-ARFI-03,华芯光刻装备,CH-C02,87.8,24.6,1.25,FAB-02
+LT-04,ETCH-CCP-04,中微等离子装备,CH-D01,93.4,22.1,0.31,FAB-03
+LT-05,LITHO-DUV-05,华芯光刻装备,CH-E03,90.6,22.8,0.54,FAB-04

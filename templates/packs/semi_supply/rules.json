@@ -1,0 +1,73 @@
+{
+  "rules": [
+    {
+      "name": "semi_litho_thermal_drift_warn",
+      "description": "光刻或刻蚀机台腔体热漂移风险指数超阈值时触发工艺预警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "LithoTool",
+        "metric": "thermal_drift_risk"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GT",
+        "value": 18.0,
+        "for_minutes": 0
+      },
+      "severity": "WARN",
+      "title_template": "机台热漂移预警：{{node.title}}",
+      "body_template": "机台 {{node.title}} 当前热漂移风险指数为 {{value}} 分，高于工艺控制线 {{threshold}} 分，请核查真空腔体恒温与微粒过滤状态。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    },
+    {
+      "name": "semi_port_clearance_delay",
+      "description": "清关口岸平均查验转关耗时超过24小时触发航空包机快通告警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "CustomsPort",
+        "metric": "clearance_hours"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GT",
+        "value": 24.0,
+        "for_minutes": 0
+      },
+      "severity": "CRITICAL",
+      "title_template": "口岸清关拥堵告警：{{node.title}}",
+      "body_template": "清关口岸 {{node.title}} 当前平均清关耗时达 {{value}} 小时，超出上限 {{threshold}} 小时，建议评估启用恒温包机绿色通道。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    },
+    {
+      "name": "semi_hub_days_of_supply_low",
+      "description": "区域恒温分拨仓芯片可支撑天数跌破安全红线",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "RegionalHub",
+        "metric": "days_of_supply"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "LT",
+        "value": 6.0,
+        "for_minutes": 0
+      },
+      "severity": "CRITICAL",
+      "title_template": "分拨仓芯片库存告急：{{node.title}}",
+      "body_template": "区域分拨仓 {{node.title}} 当前库存可支撑天数仅剩 {{value}} 天，低于安全水位 {{threshold}} 天。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    }
+  ]
+}

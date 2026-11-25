@@ -1,0 +1,190 @@
+{
+  "key": "cockpit",
+  "name": "城市急诊与医疗床位调度驾驶舱",
+  "slug": "med-dispatch-cockpit",
+  "description": "全市三甲院区急诊负荷、120急救车实时空间轨迹与覆盖凸包、重症床位占用率趋势及应急加床协同五区驾驶舱",
+  "theme": "light",
+  "canvas": {
+    "cols": 12,
+    "row_height": 32,
+    "screen_width": 1920,
+    "screen_height": 1080,
+    "zone_layout": "STANDARD_FIVE_ZONE",
+    "compact_mode": "VERTICAL_COMPACT"
+  },
+  "widgets": [
+    {
+      "widget_kind": "MARKDOWN_NOTE",
+      "title": "全局控制",
+      "position": { "x": 0, "y": 0, "w": 12, "h": 2 },
+      "data_source": { "kind": "STATIC", "columns": [], "rows": [] },
+      "encoding": {},
+      "options": {
+        "semantic_zone": "CONTROL",
+        "markdown": "**城市急诊与医疗床位实时调度（med_dispatch）** · 院前急救域 → 院区统筹域 → 临床救治域全域联动"
+      },
+      "drill": [],
+      "refresh_mode": "MANUAL",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "全市可用空床总数",
+      "position": { "x": 0, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "HospitalCampus",
+        "metric": "total_free_beds",
+        "agg": "SUM",
+        "grain": "DAY",
+        "time_range": "LAST_7_DAYS"
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "KPI", "unit": "张", "decimals": 0 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "急诊平均候诊时长",
+      "position": { "x": 3, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "HospitalCampus",
+        "metric": "ed_wait_minutes",
+        "agg": "AVG",
+        "grain": "DAY",
+        "time_range": "LAST_7_DAYS"
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "KPI", "unit": "分钟", "decimals": 1 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "科室平均床位占用率",
+      "position": { "x": 6, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "ClinicalDept",
+        "metric": "bed_occupancy_pct",
+        "agg": "AVG",
+        "grain": "HOUR",
+        "time_range": "LAST_7_DAYS"
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "KPI", "unit": "%", "decimals": 1 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "120急救车平均抵院ETA",
+      "position": { "x": 9, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "AmbulanceUnit",
+        "metric": "eta_minutes",
+        "agg": "AVG",
+        "grain": "DAY",
+        "time_range": "LAST_7_DAYS"
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "KPI", "unit": "分钟", "decimals": 1 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "MAP",
+      "title": "全市三甲院区与120急救车空间态势",
+      "position": { "x": 0, "y": 5, "w": 7, "h": 9 },
+      "data_source": {
+        "kind": "NODES_GEO",
+        "type_names": ["HospitalCampus", "AmbulanceUnit"],
+        "color_metric": "eta_minutes",
+        "link_types": ["TRANSPORTS_TO_CAMPUS"]
+      },
+      "encoding": {},
+      "options": {
+        "semantic_zone": "SCENE",
+        "show_convex_hull": false
+      },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 30
+    },
+    {
+      "widget_kind": "LINE_CHART",
+      "title": "临床科室床位占用率趋势",
+      "position": { "x": 7, "y": 5, "w": 5, "h": 4 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "ClinicalDept",
+        "metric": "bed_occupancy_pct",
+        "agg": "AVG",
+        "grain": "HOUR",
+        "time_range": "LAST_7_DAYS",
+        "group_by": "time"
+      },
+      "encoding": { "x": "ts", "y": "value" },
+      "options": { "semantic_zone": "INSIGHT", "unit": "%" },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "BAR_CHART",
+      "title": "各院区当前可用空床对比",
+      "position": { "x": 7, "y": 9, "w": 5, "h": 5 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "HospitalCampus",
+        "metric": "total_free_beds",
+        "agg": "LAST",
+        "grain": "DAY",
+        "time_range": "LAST_7_DAYS",
+        "group_by": "node"
+      },
+      "encoding": { "x": "group_key", "y": "value" },
+      "options": { "semantic_zone": "INSIGHT", "unit": "张" },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "ALERT_LIST",
+      "title": "急诊饱和与重症分诊告警",
+      "position": { "x": 0, "y": 14, "w": 8, "h": 5 },
+      "data_source": {
+        "kind": "ALERTS",
+        "status": ["OPEN", "ACK"],
+        "severity": ["WARN", "CRITICAL"],
+        "limit": 20
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "DECISION" },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 30
+    },
+    {
+      "widget_kind": "MARKDOWN_NOTE",
+      "title": "应急加床与分流",
+      "position": { "x": 8, "y": 14, "w": 4, "h": 5 },
+      "data_source": { "kind": "STATIC", "columns": [], "rows": [] },
+      "encoding": {},
+      "options": {
+        "semantic_zone": "DECISION",
+        "markdown": "- **启用应急加床**：调用 `activate_surge_beds` 释放机动病区床位\n- **院前分流改派**：对 `eta_minutes <= 35` 在途救护车调用 `divert_ambulance`"
+      },
+      "drill": [],
+      "refresh_mode": "MANUAL",
+      "refresh_seconds": 60
+    }
+  ]
+}

@@ -1,0 +1,79 @@
+{
+  "id": "semi_supply",
+  "name": "半导体全球多级供应链",
+  "version": "1.0.0",
+  "industry": "精密制造 / 半导体",
+  "description": "覆盖特种材料采购、晶圆流片与光刻机台效率、跨国恒温清关及车企大单履约的四域协同模型",
+  "contents": {
+    "schema": "schema.json",
+    "datasets": [
+      {
+        "key": "semi_vendors",
+        "name": "semi_vendors",
+        "file": "sample_data/vendors.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "semi_wafer_fabs",
+        "name": "semi_wafer_fabs",
+        "file": "sample_data/wafer_fabs.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "semi_litho_tools",
+        "name": "semi_litho_tools",
+        "file": "sample_data/litho_tools.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "semi_wafer_lots",
+        "name": "semi_wafer_lots",
+        "file": "sample_data/wafer_lots.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "semi_customs_ports",
+        "name": "semi_customs_ports",
+        "file": "sample_data/customs_ports.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "semi_regional_hubs",
+        "name": "semi_regional_hubs",
+        "file": "sample_data/regional_hubs.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "semi_oem_orders",
+        "name": "semi_oem_orders",
+        "file": "sample_data/oem_orders.csv",
+        "sync_mode": "SNAPSHOT"
+      }
+    ],
+    "mappings": "mappings.json",
+    "metrics": "metrics.json",
+    "rules": "rules.json",
+    "flows": [],
+    "dashboards": [
+      "dashboards/cockpit.json"
+    ],
+    "agents": [],
+    "export_templates": []
+  },
+  "sha256": {
+    "README.md": "1a04ed31e122f5b5c6ff9c4320558eee65d225c79ec52991a03c01ab96deb212",
+    "competency.json": "6cd828489a7e14c5266506cf6ac8189438583cbfaea870bf5ca69e52415f4f7e",
+    "dashboards/cockpit.json": "607d42c281c3ee027aec5a8f84d8e2d246ab222cef5a500b41b57825226f1874",
+    "mappings.json": "8e6d30fa93511ee8487da5639e52232a2b458bdc6e42b5fbf32cb6f217589f95",
+    "metrics.json": "58070f12b3aa3a69bc86e27e5d2169dd6376f1e8cd059c05b855ad09b1a10d32",
+    "rules.json": "3e7109074cc963412428b0520970787540b998f87632e19e67b2bb0f84a6045b",
+    "sample_data/customs_ports.csv": "138b2047f9da677854d498548e13da5be9c1b59d50fdc03914c4e593e4ebaa03",
+    "sample_data/litho_tools.csv": "0e19cde2688799ef4da71908dc54fd7d9b446d1354bbbcc4431457a94c1356b4",
+    "sample_data/oem_orders.csv": "e174def76021d1ac36b6a564bc0afde3b334d8f329e809abba53409bae4a5577",
+    "sample_data/regional_hubs.csv": "31e01edd344a05b7c9d83560d1fed3e9286d6f9c0cb46462633d7a2d000d44d2",
+    "sample_data/vendors.csv": "24f0cb7c2c85ac0f8f34d3382f5ff662f71242dd2ebbe4112e4ca04859138c84",
+    "sample_data/wafer_fabs.csv": "dd6558db062052009160b6a6dd19f1ab43b55a34f9c6c66ec469edfe59803233",
+    "sample_data/wafer_lots.csv": "3dc4b7d9e30408d1b916309ceb314acbfee8b9925ce4015efdd3c9b4a8617309",
+    "schema.json": "ec28c9543d7257a69a6382f0acf4c5f6adfa32b74c775f504eaf75c340ac94d3"
+  }
+}

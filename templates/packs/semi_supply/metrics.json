@@ -1,0 +1,49 @@
+{
+  "metrics": [
+    {
+      "name": "semi_good_die_total",
+      "display_name": "晶圆批次良品裸片总量",
+      "description": "全网晶圆批次探针测试通过的良品裸片总数",
+      "dataset_id": { "$ref": "dataset:semi_wafer_lots" },
+      "expression": "SUM(die_good_cnt)",
+      "time_column": "recorded_date",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "step_recipe",
+          "column": "step_recipe",
+          "display_name": "制程配方"
+        },
+        {
+          "name": "fab_id",
+          "column": "fab_id",
+          "display_name": "晶圆厂编码"
+        }
+      ],
+      "unit": "颗",
+      "format": "0,0",
+      "synonyms": ["良品裸片总数", "晶圆良片总量"],
+      "certified": true
+    },
+    {
+      "name": "semi_oem_ordered_total_k",
+      "display_name": "车企芯片订购总量",
+      "description": "车企核心芯片大单累计订购总量（千颗）",
+      "dataset_id": { "$ref": "dataset:semi_oem_orders" },
+      "expression": "SUM(ordered_qty_k)",
+      "time_column": "order_date",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "priority_tier",
+          "column": "priority_tier",
+          "display_name": "保供等级"
+        }
+      ],
+      "unit": "千颗",
+      "format": "0,0.0",
+      "synonyms": ["车企芯片需求总量", "车规订单总量"],
+      "certified": true
+    }
+  ]
+}

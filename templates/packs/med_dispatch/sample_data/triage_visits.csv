@@ -1,0 +1,6 @@
+visit_id,visit_no,acuity_level,chief_complaint,door_to_doctor_min,dept_id,visit_date
+TV-0001,ED2605-0001,I级濒危,急性胸痛,3.5,DEPT-03,2026-05-19
+TV-0002,ED2605-0002,II级危重,卒中偏瘫,6.2,DEPT-04,2026-05-19
+TV-0003,ED2605-0003,I级濒危,重症呼衰,4.0,DEPT-02,2026-05-19
+TV-0004,ED2605-0004,II级危重,多发创伤,7.5,DEPT-05,2026-05-20
+TV-0005,ED2605-0005,III级急症,高热惊厥,14.8,DEPT-01,2026-05-20

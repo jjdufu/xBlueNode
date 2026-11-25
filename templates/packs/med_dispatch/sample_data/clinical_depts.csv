@@ -1,0 +1,6 @@
+dept_id,dept_name,specialty,on_duty_physicians,bed_occupancy_pct,free_icu_beds,critical_queue_cnt,campus_id
+DEPT-01,总院急诊抢救科,急诊抢救,12,88.5,5,9,HOSP-01
+DEPT-02,总院综合重症ICU,重症ICU,10,92.0,3,6,HOSP-01
+DEPT-03,浦东胸痛绿色通道中心,胸痛中心,9,81.4,7,4,HOSP-02
+DEPT-04,徐汇神经卒中抢救中心,卒中中心,11,94.2,2,11,HOSP-03
+DEPT-05,虹桥多发创伤急救科,创伤中心,10,84.0,6,5,HOSP-05

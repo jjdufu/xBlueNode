@@ -1,0 +1,842 @@
+{
+  "node_types": [
+    {
+      "name": "SpecialtyVendor",
+      "display_name": "特种气体与硅片商",
+      "description": "提供电子级高纯特种气体、光刻胶与大直径硅片的上游核心材料商",
+      "icon": "flask-conical",
+      "color": "#0891b2",
+      "title_template": "{prop.vendor_name}",
+      "domain_group": "采购域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "vendor_name",
+          "display_name": "供应商名称",
+          "description": "特种材料供应商标准简称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "country",
+          "display_name": "国家或地区",
+          "description": "供应商产地所在国家或地区",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "material_grade",
+          "display_name": "材料纯度等级",
+          "description": "电子级纯度标准（如 6N / 9N / 11N）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "supply_index",
+          "display_name": "供应保障指数",
+          "description": "综合产能与船期稳定度评分",
+          "unit": "分",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "lead_time_days",
+          "display_name": "交付周期",
+          "description": "特种材料跨国采购标准交付天数",
+          "unit": "天",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "actions": [],
+      "sync_to_knowledge": true,
+      "pos_x": 80.0,
+      "pos_y": 220.0
+    },
+    {
+      "name": "WaferFab",
+      "display_name": "晶圆制造厂",
+      "description": "车规与高性能计算晶圆前道流片制造基地",
+      "icon": "factory",
+      "color": "#2563eb",
+      "title_template": "{prop.fab_name}",
+      "domain_group": "制造域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "fab_name",
+          "display_name": "晶圆厂名称",
+          "description": "晶圆制造基地标准名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "process_nm",
+          "display_name": "制程节点",
+          "description": "主力工艺制程节点（纳米）",
+          "unit": "nm",
+          "data_type": "INT64",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "cleanroom_class",
+          "display_name": "洁净室等级",
+          "description": "核心黄光区洁净室标准等级（ISO-1 / Class-1）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "wafer_starts_wpm",
+          "display_name": "月投片产能",
+          "description": "等效 12 英寸晶圆月投片量",
+          "unit": "片/月",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "fab_yield_pct",
+          "display_name": "综合良率",
+          "description": "前道晶圆流片综合良率百分比",
+          "unit": "%",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "safety_wafer_stock",
+          "display_name": "安全晶圆库存",
+          "description": "厂内可跨线调配的战略储备裸硅片与半成品晶圆数",
+          "unit": "片",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "avg_tool_oee",
+          "display_name": "产线机台平均OEE",
+          "description": "下辖关键光刻与刻蚀机台平均综合效率",
+          "unit": "%",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "effective_good_wpm",
+          "display_name": "折合良片月产出",
+          "description": "结合月投片量、综合良率与机台效率折算的有效良片产出",
+          "unit": "片/月",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [
+        {
+          "target_metric": "avg_tool_oee",
+          "op": "AVG",
+          "via_link_type": "EQUIPPED_WITH",
+          "direction": "OUT",
+          "source_type_name": "LithoTool",
+          "source_metric": "oee_pct",
+          "weight_by_link": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "derived_rules": [
+        {
+          "target_metric": "effective_good_wpm",
+          "expression": "wafer_starts_wpm * (fab_yield_pct / 100.0) * if(avg_tool_oee > 0, avg_tool_oee / 100.0, 0.9)",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "actions": [
+        {
+          "name": "reallocate_safety_wafer",
+          "display_name": "调配安全晶圆",
+          "description": "动用厂内安全储备晶圆补充紧急流片投产需求",
+          "parameters": [
+            {
+              "name": "qty",
+              "display_name": "调配晶圆片数",
+              "data_type": "FLOAT64",
+              "required": false,
+              "default_value": 500.0,
+              "description": "本次投入紧急排产的安全储备晶圆数量"
+            }
+          ],
+          "precondition_expr": "safety_wafer_stock >= param.qty and param.qty > 0",
+          "side_effect_tier": "SELF_ONLY",
+          "mutations": [
+            {
+              "target": "self.safety_wafer_stock",
+              "expression": "safety_wafer_stock - param.qty"
+            },
+            {
+              "target": "self.wafer_starts_wpm",
+              "expression": "wafer_starts_wpm + param.qty"
+            }
+          ],
+          "required_permission": "ACTION_EXECUTE",
+          "require_approval": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "sync_to_knowledge": true,
+      "pos_x": 540.0,
+      "pos_y": 120.0
+    },
+    {
+      "name": "LithoTool",
+      "display_name": "关键光刻/刻蚀机台",
+      "description": "负责核心图形化曝光与等离子体刻蚀工序的精密半导体机台",
+      "icon": "cog",
+      "color": "#4f46e5",
+      "title_template": "{prop.tool_code}",
+      "domain_group": "制造域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "tool_code",
+          "display_name": "机台编号",
+          "description": "产线机台唯一资产编码",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "tool_vendor",
+          "display_name": "装备厂商",
+          "description": "核心半导体装备制造厂商简称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "chamber_id",
+          "display_name": "反应腔编号",
+          "description": "真空曝光或刻蚀反应腔体标识",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "oee_pct",
+          "display_name": "设备综合效率",
+          "description": "机台实时稼动与综合效率百分比",
+          "unit": "%",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "chamber_temp_c",
+          "display_name": "腔体温度",
+          "description": "反应腔体恒温控制实时摄氏温度",
+          "unit": "℃",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "particle_defect_rate",
+          "display_name": "颗粒缺陷率",
+          "description": "每百万平方毫米晶圆表面微粒缺陷率",
+          "unit": "ppm",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "thermal_drift_risk",
+          "display_name": "热漂移风险指数",
+          "description": "由腔体温度偏移与颗粒缺陷率合成的工艺异常风险分",
+          "unit": "分",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [
+        {
+          "target_metric": "thermal_drift_risk",
+          "expression": "max(0.0, (chamber_temp_c - 22.0) * 3.5 + particle_defect_rate * 8.0)",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "actions": [],
+      "sync_to_knowledge": false,
+      "pos_x": 540.0,
+      "pos_y": 420.0
+    },
+    {
+      "name": "WaferLotEvent",
+      "display_name": "晶圆批次流片记录",
+      "description": "挂载于晶圆制造厂下的单批次流片工序与良品裸片计量事件",
+      "icon": "layers",
+      "color": "#0284c7",
+      "title_template": "{prop.lot_code}",
+      "domain_group": "制造域",
+      "semantic_layer_tier": "EVENT_DYNAMIC",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "lot_code",
+          "display_name": "晶圆批次号",
+          "description": "25 片标准 FOUP 晶圆批次追踪码",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "step_recipe",
+          "display_name": "制程配方步骤",
+          "description": "当前所在光刻/刻蚀/薄膜沉积工艺配方名",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "die_good_cnt",
+          "display_name": "良品裸片数",
+          "description": "CP 晶圆探针测试通过的良品裸片总数",
+          "unit": "颗",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "actions": [],
+      "sync_to_knowledge": false,
+      "pos_x": 540.0,
+      "pos_y": 720.0
+    },
+    {
+      "name": "YieldRollupCube",
+      "display_name": "制程良率汇总块",
+      "description": "按晶圆厂聚合的月度平均良率与异常报废成本汇总块",
+      "icon": "bar-chart-3",
+      "color": "#7c3aed",
+      "title_template": "{prop.cube_period}",
+      "domain_group": "制造域",
+      "semantic_layer_tier": "CUBE_ROLLUP",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "cube_period",
+          "display_name": "汇总周期",
+          "description": "制程良率月度核算窗口标识",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "monthly_avg_yield",
+          "display_name": "月均良率",
+          "description": "所属晶圆厂月度平均综合良率",
+          "unit": "%",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "scrap_cost_usd",
+          "display_name": "报废成本",
+          "description": "当期晶圆微粒缺陷与热漂移导致的累计报废成本",
+          "unit": "USD",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [
+        {
+          "target_metric": "monthly_avg_yield",
+          "op": "AVG",
+          "via_link_type": "SUMMARIZES_YIELD",
+          "direction": "IN",
+          "source_type_name": "WaferFab",
+          "source_metric": "fab_yield_pct",
+          "weight_by_link": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "derived_rules": [],
+      "actions": [],
+      "sync_to_knowledge": false,
+      "pos_x": 540.0,
+      "pos_y": 1020.0
+    },
+    {
+      "name": "CustomsPort",
+      "display_name": "清关口岸与航站",
+      "description": "承担跨国晶圆与封测成品恒温通关转运的国际航空港与保税口岸",
+      "icon": "plane",
+      "color": "#0d9488",
+      "title_template": "{prop.port_name}",
+      "domain_group": "物流域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "port_name",
+          "display_name": "口岸名称",
+          "description": "国际航空港或保税清关口岸名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "port_code",
+          "display_name": "口岸代码",
+          "description": "国际空港三字码或关区代码",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "transport_mode",
+          "display_name": "运输方式",
+          "description": "主干恒温运输方式（恒温宽体货机 / 保税陆运快线）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "clearance_hours",
+          "display_name": "清关耗时",
+          "description": "口岸平均查验与恒温冷链转关小时数",
+          "unit": "小时",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "backlog_lots",
+          "display_name": "待放行批次数",
+          "description": "当前滞留口岸恒温监管库的晶圆与芯片批次数",
+          "unit": "批",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "actions": [
+        {
+          "name": "expedite_air_charter",
+          "display_name": "启用包机快通",
+          "description": "启用恒温航空包机与AEO绿色预申报通道，压缩口岸清关耗时",
+          "parameters": [
+            {
+              "name": "hours_saved",
+              "display_name": "缩短清关小时",
+              "data_type": "FLOAT64",
+              "required": false,
+              "default_value": 12.0,
+              "description": "启用绿色包机通道预计缩短的清关小时数"
+            }
+          ],
+          "precondition_expr": "clearance_hours >= 4 and param.hours_saved > 0",
+          "side_effect_tier": "SELF_ONLY",
+          "mutations": [
+            {
+              "target": "self.clearance_hours",
+              "expression": "max(2.0, clearance_hours - param.hours_saved)"
+            },
+            {
+              "target": "self.backlog_lots",
+              "expression": "max(0.0, backlog_lots * 0.65)"
+            }
+          ],
+          "required_permission": "ACTION_EXECUTE",
+          "require_approval": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "sync_to_knowledge": true,
+      "pos_x": 1000.0,
+      "pos_y": 120.0
+    },
+    {
+      "name": "RegionalHub",
+      "display_name": "区域恒温分拨仓",
+      "description": "衔接清关口岸与整车厂产线的防潮恒温芯片分拨中心仓",
+      "icon": "warehouse",
+      "color": "#16a34a",
+      "title_template": "{prop.hub_name}",
+      "domain_group": "物流域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "hub_name",
+          "display_name": "分拨仓名称",
+          "description": "区域恒温分拨仓标准名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "region",
+          "display_name": "覆盖大区",
+          "description": "分拨仓辐射的汽车制造产业集群大区",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "chip_inventory_k",
+          "display_name": "可用芯片库存",
+          "description": "当前可随时齐套发运的车规芯片现货数量（千颗）",
+          "unit": "千颗",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "outbound_rate_k",
+          "display_name": "日出库速率",
+          "description": "向下游整车厂JIT日均发运芯片数量（千颗/日）",
+          "unit": "千颗/日",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "days_of_supply",
+          "display_name": "库存可支撑天数",
+          "description": "当前可用芯片库存按日出库速率折算的可维持供应天数",
+          "unit": "天",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [
+        {
+          "target_metric": "days_of_supply",
+          "expression": "if(outbound_rate_k > 0, chip_inventory_k / outbound_rate_k, 15.0)",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "actions": [],
+      "sync_to_knowledge": true,
+      "pos_x": 1000.0,
+      "pos_y": 420.0
+    },
+    {
+      "name": "AutoOemOrder",
+      "display_name": "车企核心芯片大单",
+      "description": "下游新能源与智能驾驶整车厂签发的车规主控/功率芯片年度与季度交付大单",
+      "icon": "shopping-cart",
+      "color": "#d97706",
+      "title_template": "{prop.order_title}",
+      "domain_group": "履约域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "order_title",
+          "display_name": "大单标题",
+          "description": "车企芯片保供订单摘要标识",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "oem_customer",
+          "display_name": "车企客户",
+          "description": "整车厂或一级电控总成客户名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "priority_tier",
+          "display_name": "保供等级",
+          "description": "战略保供优先级（P0_STRATEGIC / P1_KEY / P2_STANDARD）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "ordered_qty_k",
+          "display_name": "订购芯片量",
+          "description": "本批次协议交付车规芯片数量（千颗）",
+          "unit": "千颗",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "on_time_prob",
+          "display_name": "准时交付概率",
+          "description": "按整车厂总装节拍准时齐套交付概率",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "actions": [],
+      "sync_to_knowledge": false,
+      "pos_x": 1460.0,
+      "pos_y": 260.0
+    }
+  ],
+  "edge_types": [
+    {
+      "name": "SUPPLIES_MATERIAL",
+      "src_type_name": "SpecialtyVendor",
+      "dst_type_name": "WaferFab",
+      "impact_weight": 0.8,
+      "cardinality": "MANY_TO_MANY",
+      "description": "上游特气与硅片商向晶圆制造厂供应关键电子材料",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "supply_index",
+            "to_metric": "wafer_starts_wpm",
+            "coefficient": 120.0,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "EQUIPPED_WITH",
+      "src_type_name": "WaferFab",
+      "dst_type_name": "LithoTool",
+      "impact_weight": 0.75,
+      "cardinality": "ONE_TO_MANY",
+      "description": "晶圆制造厂配置并运行关键光刻与刻蚀机台",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "thermal_drift_risk",
+            "to_metric": "oee_pct",
+            "coefficient": -0.3,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "RUNS_LOT",
+      "src_type_name": "WaferFab",
+      "dst_type_name": "WaferLotEvent",
+      "impact_weight": 0.7,
+      "cardinality": "ONE_TO_MANY",
+      "description": "晶圆制造厂排产并流转晶圆批次记录",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "wafer_starts_wpm",
+            "to_metric": "die_good_cnt",
+            "coefficient": 0.25,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "SUMMARIZES_YIELD",
+      "src_type_name": "WaferFab",
+      "dst_type_name": "YieldRollupCube",
+      "impact_weight": 0.65,
+      "cardinality": "ONE_TO_ONE",
+      "description": "晶圆制造厂沉淀月度制程良率与报废成本汇总块",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "effective_good_wpm",
+            "to_metric": "monthly_avg_yield",
+            "coefficient": 0.001,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "SHIPS_VIA_PORT",
+      "src_type_name": "WaferFab",
+      "dst_type_name": "CustomsPort",
+      "impact_weight": 0.85,
+      "cardinality": "MANY_TO_MANY",
+      "description": "晶圆厂产出的晶圆与车规裸片经国际口岸恒温报关发运",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "effective_good_wpm",
+            "to_metric": "backlog_lots",
+            "coefficient": -0.002,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "DISPATCHES_TO_HUB",
+      "src_type_name": "CustomsPort",
+      "dst_type_name": "RegionalHub",
+      "impact_weight": 0.85,
+      "cardinality": "MANY_TO_MANY",
+      "description": "清关放行后的车规芯片转运补货至各区域恒温分拨仓",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "clearance_hours",
+            "to_metric": "chip_inventory_k",
+            "coefficient": -2.5,
+            "lag_steps": 2
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "DELIVERS_ORDER",
+      "src_type_name": "RegionalHub",
+      "dst_type_name": "AutoOemOrder",
+      "impact_weight": 0.85,
+      "cardinality": "ONE_TO_MANY",
+      "description": "区域恒温分拨仓向下游车企核心芯片大单齐套发运",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "days_of_supply",
+            "to_metric": "on_time_prob",
+            "coefficient": 0.03,
+            "lag_steps": 1
+          },
+          {
+            "from_metric": "chip_inventory_k",
+            "to_metric": "on_time_prob",
+            "coefficient": 0.001,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    }
+  ],
+  "mappings": []
+}

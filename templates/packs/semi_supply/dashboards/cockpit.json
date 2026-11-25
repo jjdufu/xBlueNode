@@ -1,0 +1,201 @@
+{
+  "key": "cockpit",
+  "name": "半导体全球供应链协同驾驶舱",
+  "slug": "semi-supply-cockpit",
+  "description": "覆盖采购、制造、物流、履约四域泳道的晶圆良率、机台效率、口岸清关与车企芯片保供五区驾驶舱",
+  "theme": "light",
+  "canvas": {
+    "cols": 12,
+    "row_height": 32,
+    "screen_width": 1920,
+    "screen_height": 1080,
+    "zone_layout": "STANDARD_FIVE_ZONE",
+    "compact_mode": "VERTICAL_COMPACT"
+  },
+  "widgets": [
+    {
+      "widget_kind": "MARKDOWN_NOTE",
+      "title": "全局控制",
+      "position": { "x": 0, "y": 0, "w": 12, "h": 2 },
+      "data_source": { "kind": "STATIC", "columns": [], "rows": [] },
+      "encoding": {},
+      "options": {
+        "semantic_zone": "CONTROL",
+        "markdown": "**半导体全球多级供应链（semi_supply）** · 采购域 → 制造域 → 物流域 → 履约域实时联动监控"
+      },
+      "drill": [],
+      "refresh_mode": "MANUAL",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "晶圆月投片产能",
+      "position": { "x": 0, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "WaferFab",
+        "metric": "wafer_starts_wpm",
+        "agg": "SUM",
+        "grain": "DAY",
+        "time_range": "LAST_7_DAYS"
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "KPI", "unit": "片/月", "decimals": 0 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "前道平均良率",
+      "position": { "x": 3, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "WaferFab",
+        "metric": "fab_yield_pct",
+        "agg": "AVG",
+        "grain": "DAY",
+        "time_range": "LAST_7_DAYS"
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "KPI", "unit": "%", "decimals": 2 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "光刻机台平均OEE",
+      "position": { "x": 6, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "LithoTool",
+        "metric": "oee_pct",
+        "agg": "AVG",
+        "grain": "HOUR",
+        "time_range": "LAST_7_DAYS"
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "KPI", "unit": "%", "decimals": 1 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "口岸平均清关耗时",
+      "position": { "x": 9, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "CustomsPort",
+        "metric": "clearance_hours",
+        "agg": "AVG",
+        "grain": "DAY",
+        "time_range": "LAST_7_DAYS"
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "KPI", "unit": "小时", "decimals": 1 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "GRAPH_TOPOLOGY",
+      "title": "四域供应链协同拓扑",
+      "position": { "x": 0, "y": 5, "w": 7, "h": 9 },
+      "data_source": {
+        "kind": "GRAPH",
+        "type_names": [
+          "SpecialtyVendor",
+          "WaferFab",
+          "LithoTool",
+          "CustomsPort",
+          "RegionalHub",
+          "AutoOemOrder"
+        ],
+        "link_types": [
+          "SUPPLIES_MATERIAL",
+          "EQUIPPED_WITH",
+          "SHIPS_VIA_PORT",
+          "DISPATCHES_TO_HUB",
+          "DELIVERS_ORDER"
+        ],
+        "color_metric": "fab_yield_pct",
+        "limit": 240
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "SCENE" },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "LINE_CHART",
+      "title": "关键机台OEE实时曲线",
+      "position": { "x": 7, "y": 5, "w": 5, "h": 4 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "LithoTool",
+        "metric": "oee_pct",
+        "agg": "AVG",
+        "grain": "HOUR",
+        "time_range": "LAST_7_DAYS",
+        "group_by": "time"
+      },
+      "encoding": { "x": "ts", "y": "value" },
+      "options": { "semantic_zone": "INSIGHT", "unit": "%" },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "BAR_CHART",
+      "title": "区域分拨仓可用芯片库存",
+      "position": { "x": 7, "y": 9, "w": 5, "h": 5 },
+      "data_source": {
+        "kind": "NODE_METRIC",
+        "type_name": "RegionalHub",
+        "metric": "chip_inventory_k",
+        "agg": "LAST",
+        "grain": "DAY",
+        "time_range": "LAST_7_DAYS",
+        "group_by": "node"
+      },
+      "encoding": { "x": "group_key", "y": "value" },
+      "options": { "semantic_zone": "INSIGHT", "unit": "千颗" },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "ALERT_LIST",
+      "title": "制程与通关异常告警",
+      "position": { "x": 0, "y": 14, "w": 8, "h": 5 },
+      "data_source": {
+        "kind": "ALERTS",
+        "status": ["OPEN", "ACK"],
+        "severity": ["WARN", "CRITICAL"],
+        "limit": 20
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "DECISION" },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "MARKDOWN_NOTE",
+      "title": "应急调度预案",
+      "position": { "x": 8, "y": 14, "w": 4, "h": 5 },
+      "data_source": { "kind": "STATIC", "columns": [], "rows": [] },
+      "encoding": {},
+      "options": {
+        "semantic_zone": "DECISION",
+        "markdown": "- **安全晶圆调配**：针对高优车规大单执行 `reallocate_safety_wafer`\n- **航空包机快通**：口岸滞留超 24h 执行 `expedite_air_charter`"
+      },
+      "drill": [],
+      "refresh_mode": "MANUAL",
+      "refresh_seconds": 60
+    }
+  ]
+}
