@@ -533,10 +533,29 @@ async fn load_edge_specs_tx(
     tenant_id: &str,
 ) -> Result<BTreeMap<String, PropagationSpec>, AppError> {
     let rows = sqlx::query(
-        "SELECT name, propagation
-           FROM xb_edge_types
-          WHERE tenant_id = $1 AND subgraph_slug = 'main'
-          ORDER BY created_at ASC, name ASC",
+        "SELECT dedup.name, dedup.propagation
+           FROM (
+               SELECT DISTINCT ON (et.name, et.src_type_name, et.dst_type_name)
+                      et.name,
+                      et.src_type_name,
+                      et.dst_type_name,
+                      et.propagation,
+                      et.subgraph_slug,
+                      et.created_at
+                 FROM xb_edge_types et
+                 LEFT JOIN xb_subgraphs sg
+                   ON sg.tenant_id = et.tenant_id AND sg.slug = et.subgraph_slug
+                WHERE et.tenant_id = $1
+                  AND COALESCE(sg.is_dev_sandbox, FALSE) = FALSE
+                ORDER BY et.name ASC,
+                         et.src_type_name ASC,
+                         et.dst_type_name ASC,
+                         CASE WHEN et.subgraph_slug = 'main' THEN 0 ELSE 1 END,
+                         et.created_at ASC
+           ) dedup
+          ORDER BY CASE WHEN dedup.subgraph_slug = 'main' THEN 0 ELSE 1 END,
+                   dedup.created_at ASC,
+                   dedup.name ASC",
     )
     .bind(tenant_id)
     .fetch_all(&mut **tx)

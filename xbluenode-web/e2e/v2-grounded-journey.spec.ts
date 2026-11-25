@@ -832,6 +832,50 @@ async function installV2JourneyMocks(
     }
 
     // Stage 1: Onboarding & Template Hub
+    if (pathname === "/api/axops/pulse" && method === "GET") {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          generated_at: "2026-08-22T08:00:00Z",
+          totals: {
+            subgraph_count: 1,
+            node_type_count: 4,
+            node_count: 14,
+            link_count: 12,
+            dataset_count: 2,
+            lake_total_rows: 1200,
+            metric_points_24h: 480,
+            published_dashboard_count: 1,
+            open_alert_count: 0,
+            active_agent_count: 1,
+          },
+          subgraphs: [
+            {
+              slug: "main",
+              display_name: "企业主图",
+              is_dev_sandbox: false,
+              node_type_count: 4,
+              edge_type_count: 2,
+              node_count: 14,
+              link_count: 12,
+              cert_level: "L2_MAPPED",
+              certified_at: null,
+            },
+          ],
+          hourly_series: Array.from({ length: 24 }, (_, idx) => ({
+            bucket_start: new Date(
+              Date.UTC(2026, 7, 21, 9 + idx, 0, 0)
+            ).toISOString(),
+            metric_points: 20,
+            synced_rows: 50,
+          })),
+          recent_datasets: [],
+        }),
+      });
+      return;
+    }
+
     if (pathname === "/api/axops/onboarding-status" && method === "GET") {
       await route.fulfill({
         status: 200,
@@ -2586,12 +2630,40 @@ test.describe("Step 22 Phase 2 Grounded AI & Builder UX Full Journey", () => {
       await page.getByTestId("login-tenant-input").fill("default");
       await page.getByTestId("login-username-input").fill("ops_admin");
       await page.getByTestId("login-password-input").fill(opsPassword);
+      const pulseSettled = page
+        .waitForResponse(
+          (res) =>
+            res.url().includes("/api/axops/pulse") &&
+            res.request().method() === "GET",
+          { timeout: 15_000 }
+        )
+        .catch(() => null);
+      const onboardingSettled = page
+        .waitForResponse(
+          (res) =>
+            res.url().includes("/api/axops/onboarding-status") &&
+            res.request().method() === "GET",
+          { timeout: 15_000 }
+        )
+        .catch(() => null);
       await page.getByTestId("login-submit-btn").click();
 
       await expect(page).toHaveURL(/\/$/);
       await expect(page.getByTestId("dashboard-page")).toBeVisible();
+      await Promise.all([pulseSettled, onboardingSettled]);
+      await expect(page.getByTestId("dashboard-refresh-btn")).toBeEnabled();
 
       const onboardingStrip = page.getByTestId("onboarding-strip");
+      const compactOnboardingToggle = page.getByTestId(
+        "dashboard-onboarding-compact-toggle"
+      );
+      await expect(onboardingStrip.or(compactOnboardingToggle)).toBeVisible();
+      if (
+        (await compactOnboardingToggle.isVisible()) &&
+        !(await onboardingStrip.isVisible())
+      ) {
+        await compactOnboardingToggle.click();
+      }
       await expect(onboardingStrip).toBeVisible();
       await expect(
         page.getByTestId("onboarding-completion-badge")

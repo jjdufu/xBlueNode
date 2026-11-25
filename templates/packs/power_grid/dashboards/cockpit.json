@@ -105,7 +105,7 @@
       "position": { "x": 7, "y": 5, "w": 5, "h": 5 },
       "data_source": {
         "kind": "SQL",
-        "sql": "SELECT date_trunc('hour', ts) AS bucket_hr, ROUND(SUM(active_mw), 2) AS total_mw, ROUND(SUM(line_loss_mw), 2) AS loss_mw FROM grid_feeder_telemetry GROUP BY 1 ORDER BY 1"
+        "sql": "SELECT date_trunc('hour', CAST(ts AS TIMESTAMP)) AS bucket_hr, ROUND(SUM(active_mw), 2) AS total_mw, ROUND(SUM(line_loss_mw), 2) AS loss_mw FROM grid_feeder_telemetry GROUP BY 1 ORDER BY 1"
       },
       "encoding": { "x": "bucket_hr", "y": ["total_mw", "loss_mw"] },
       "options": { "semantic_zone": "INSIGHT", "unit": "MW" },

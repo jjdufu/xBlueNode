@@ -378,6 +378,38 @@ def bulk_replace_subgraph_graph_pg(
     )
 
 
+def cleanup_orphan_main_edges(
+    cur: psycopg.Cursor[tuple[Any, ...]],
+    *,
+    tenant_id: str,
+) -> None:
+    """Remove any legacy orphan edge types in `main` missing `src`/`dst` node types."""
+    cur.execute(
+        """
+        DELETE FROM xb_edge_types et
+         WHERE et.tenant_id = %s
+           AND et.subgraph_slug = 'main'
+           AND (
+               NOT EXISTS (
+                   SELECT 1
+                     FROM xb_node_types nt
+                    WHERE nt.tenant_id = et.tenant_id
+                      AND nt.subgraph_slug = 'main'
+                      AND nt.name = et.src_type_name
+               )
+               OR NOT EXISTS (
+                   SELECT 1
+                     FROM xb_node_types nt
+                    WHERE nt.tenant_id = et.tenant_id
+                      AND nt.subgraph_slug = 'main'
+                      AND nt.name = et.dst_type_name
+               )
+           )
+        """,
+        (tenant_id,),
+    )
+
+
 def generate_series_and_rollups_in_pg(
     cur: psycopg.Cursor[tuple[Any, ...]],
     *,
@@ -943,33 +975,13 @@ def seed_power_grid_world(
         )
         with conn.cursor() as cur:
             cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
+            cleanup_orphan_main_edges(cur, tenant_id=tenant_id)
             bulk_replace_subgraph_graph_pg(
                 cur,
                 tenant_id=tenant_id,
                 subgraph_slug=sub_slug,
                 nodes=nodes,
                 links=links,
-            )
-            # Sync edge propagation specs to main xb_edge_types for AxSim lag solver
-            cur.execute(
-                """
-                INSERT INTO xb_edge_types (
-                    tenant_id, subgraph_slug, name, src_type_name, dst_type_name,
-                    impact_weight, cardinality, description, properties, propagation
-                )
-                SELECT tenant_id, 'main', name, src_type_name, dst_type_name,
-                       impact_weight, cardinality, description, properties, propagation
-                  FROM xb_edge_types
-                 WHERE tenant_id = %s AND subgraph_slug = %s
-                ON CONFLICT (tenant_id, subgraph_slug, name, src_type_name, dst_type_name)
-                DO UPDATE SET
-                    impact_weight = EXCLUDED.impact_weight,
-                    cardinality = EXCLUDED.cardinality,
-                    properties = EXCLUDED.properties,
-                    propagation = EXCLUDED.propagation,
-                    updated_at = NOW()
-                """,
-                (tenant_id, sub_slug),
             )
             series_cnt = generate_series_and_rollups_in_pg(
                 cur,
@@ -1479,6 +1491,7 @@ def seed_fin_risk_world(
         )
         with conn.cursor() as cur:
             cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant_id,))
+            cleanup_orphan_main_edges(cur, tenant_id=tenant_id)
             bulk_replace_subgraph_graph_pg(
                 cur,
                 tenant_id=tenant_id,
