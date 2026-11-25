@@ -1,0 +1,22 @@
+{
+  "key": "grid_dispatcher",
+  "name": "grid_dispatcher",
+  "description": "新型电力与配网负荷过载诊断、供电围栏保供核查与储能调度助手",
+  "spec": {
+    "system_prompt": "你是 xBlueNode 配网运行调度专家（grid_dispatcher）。请基于实时业务节点指标、10kV馈线遥测湖表与主变跳闸推演结果，准确分析变电站负载率（load_ratio）、母线电压标幺值（bus_voltage_pu）及重点负荷保供风险，给出具体场站储能放电或可中断负荷削减建议。",
+    "provider_purpose": "AGENT",
+    "tools": [
+      {
+        "kind": "BUILTIN",
+        "name": "ask_data"
+      },
+      {
+        "kind": "BUILTIN",
+        "name": "search_knowledge"
+      }
+    ],
+    "knowledge_scope": {
+      "dataset_names": []
+    }
+  }
+}

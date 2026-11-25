@@ -1,0 +1,25 @@
+{
+  "questions": [
+    {
+      "id": "cq_grid_substation_load",
+      "question": "查询全网变电站当前有功负荷总和",
+      "expected_node_types": ["Substation"],
+      "expected_metrics": ["active_load_mw"],
+      "must_not_abstain": true
+    },
+    {
+      "id": "cq_grid_max_load_ratio",
+      "question": "查找主变负载率最高的变电站",
+      "expected_node_types": ["Substation"],
+      "expected_metrics": ["load_ratio"],
+      "must_not_abstain": true
+    },
+    {
+      "id": "cq_grid_critical_voltage",
+      "question": "核查重点负荷用户受电端最低母线电压",
+      "expected_node_types": ["CriticalLoad"],
+      "expected_metrics": ["bus_voltage_pu"],
+      "must_not_abstain": true
+    }
+  ]
+}

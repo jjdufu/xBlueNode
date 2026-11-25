@@ -1,0 +1,73 @@
+{
+  "rules": [
+    {
+      "name": "substation_overload_alert",
+      "description": "220kV/110kV变电站主变负载率超过90%时触发重过载告警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "Substation",
+        "metric": "load_ratio"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GT",
+        "value": 0.9,
+        "for_minutes": 0
+      },
+      "severity": "CRITICAL",
+      "title_template": "主变重过载告警：{{node.title}}",
+      "body_template": "变电站 {{node.title}} 当前负载率为 {{value}}，超过安全上限 {{threshold}}，请立即核查转供方案或投入储能放电。",
+      "cooldown_minutes": 15,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    },
+    {
+      "name": "transformer_overload_warn",
+      "description": "10kV台区配变综合过载风险指数突破0.80时触发柔性切负荷预警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "DistTransformer",
+        "metric": "overload_risk"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GT",
+        "value": 0.8,
+        "for_minutes": 0
+      },
+      "severity": "WARN",
+      "title_template": "台区配变过载预警：{{node.title}}",
+      "body_template": "台区配变 {{node.title}} 综合过载风险指数达 {{value}}，高于阈值 {{threshold}}，建议下发可中断负荷柔性削减指令。",
+      "cooldown_minutes": 20,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    },
+    {
+      "name": "grid_zone_margin_low",
+      "description": "供电分区高峰供电裕度率低于15%时触发迎峰度夏保供预警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "GridZoneSummary",
+        "metric": "peak_margin_ratio"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "LT",
+        "value": 0.15,
+        "for_minutes": 0
+      },
+      "severity": "WARN",
+      "title_template": "分区供电裕度不足：{{node.title}}",
+      "body_template": "供电分区 {{node.title}} 当前高峰裕度率为 {{value}}，低于安全线 {{threshold}}。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 15,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    }
+  ]
+}

@@ -1,0 +1,755 @@
+{
+  "node_types": [
+    {
+      "name": "PowerPlant",
+      "display_name": "发电场站",
+      "description": "火电、风电、集中式光伏与电网侧电化学储能场站",
+      "icon": "zap",
+      "color": "#2563eb",
+      "title_template": "{prop.plant_name}",
+      "domain_group": "电源域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "plant_name",
+          "display_name": "场站名称",
+          "description": "发电或储能场站标准名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "plant_kind",
+          "display_name": "电源类型",
+          "description": "场站能源类型（火电 / 风电 / 光伏 / 储能）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "allowed_values": ["火电", "风电", "光伏", "储能"],
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "rated_mw",
+          "display_name": "额定装机容量",
+          "description": "场站核定装机容量（MW）",
+          "unit": "MW",
+          "data_type": "FLOAT64",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "generation_mw",
+          "display_name": "实时出力功率",
+          "description": "当前并网有功出力功率",
+          "unit": "MW",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "spinning_reserve_mw",
+          "display_name": "旋转备用容量",
+          "description": "可快速调用顶峰备用容量",
+          "unit": "MW",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "actions": [
+        {
+          "name": "dispatch_ess_discharge",
+          "display_name": "储能顶峰放电",
+          "description": "在晚高峰或主变N-1跳闸期间调用场站旋转备用/储能顶峰放电",
+          "parameters": [
+            {
+              "name": "discharge_mw",
+              "display_name": "放电功率",
+              "data_type": "FLOAT64",
+              "required": true,
+              "description": "本次投入顶峰放电的有功功率（MW）"
+            }
+          ],
+          "precondition_expr": "spinning_reserve_mw >= param.discharge_mw and param.discharge_mw > 0",
+          "side_effect_tier": "SELF_ONLY",
+          "mutations": [
+            {
+              "target": "self.generation_mw",
+              "expression": "generation_mw + param.discharge_mw"
+            },
+            {
+              "target": "self.spinning_reserve_mw",
+              "expression": "spinning_reserve_mw - param.discharge_mw"
+            }
+          ],
+          "required_permission": "ACTION_EXECUTE",
+          "require_approval": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "sync_to_knowledge": true,
+      "pos_x": 80.0,
+      "pos_y": 160.0
+    },
+    {
+      "name": "Substation",
+      "display_name": "变电站",
+      "description": "220kV / 110kV 枢纽及区域变电站（含空间多边形供电围栏）",
+      "icon": "cpu",
+      "color": "#0891b2",
+      "title_template": "{prop.station_name}",
+      "domain_group": "输变电域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "station_name",
+          "display_name": "变电站名称",
+          "description": "变电站标准调度名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "voltage_kv",
+          "display_name": "电压等级",
+          "description": "主变高压侧电压等级（220 / 110）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "allowed_values": ["220", "110"],
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "grid_zone",
+          "display_name": "所属供电分区",
+          "description": "变电站归属供电网格分区编码",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "rated_capacity_mw",
+          "display_name": "主变额定容量",
+          "description": "变电站主变总额定有功容量",
+          "unit": "MW",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "active_load_mw",
+          "display_name": "实时有功负荷",
+          "description": "变电站当前下网有功总负荷",
+          "unit": "MW",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "load_ratio",
+          "display_name": "主变负载率",
+          "description": "实时有功负荷占额定容量比例",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "bus_voltage_pu",
+          "display_name": "母线电压标幺值",
+          "description": "中压母线实时运行电压标幺值",
+          "unit": "p.u.",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "feeder_loss_total_mw",
+          "display_name": "出线总网损",
+          "description": "下辖10kV馈线实时有功线损汇总",
+          "unit": "MW",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [
+        {
+          "target_metric": "feeder_loss_total_mw",
+          "op": "SUM",
+          "via_link_type": "FEEDS_TRANSFORMER",
+          "direction": "OUT",
+          "source_type_name": "FEEDS_TRANSFORMER",
+          "source_metric": "line_loss_mw",
+          "weight_by_link": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "derived_rules": [
+        {
+          "target_metric": "load_ratio",
+          "expression": "if(rated_capacity_mw > 0, active_load_mw / rated_capacity_mw, 0.0)",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "actions": [],
+      "sync_to_knowledge": true,
+      "pos_x": 380.0,
+      "pos_y": 160.0
+    },
+    {
+      "name": "DistTransformer",
+      "display_name": "台区配变",
+      "description": "10kV 馈线挂接公用与专用配电变压器台区",
+      "icon": "git-branch",
+      "color": "#16a34a",
+      "title_template": "{prop.transformer_name}",
+      "domain_group": "配电域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "transformer_name",
+          "display_name": "台区名称",
+          "description": "10kV 配变台区运行名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "feeder_code",
+          "display_name": "馈线编号",
+          "description": "所属10kV出线馈线编码",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "capacity_kva",
+          "display_name": "配变额定容量",
+          "description": "配电变压器铭牌容量（kVA）",
+          "unit": "kVA",
+          "data_type": "FLOAT64",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "demand_mw",
+          "display_name": "台区实时负荷",
+          "description": "台区低压侧当前用电有功功率",
+          "unit": "MW",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "oil_temp_c",
+          "display_name": "顶层油温",
+          "description": "配变油箱顶层实时温度",
+          "unit": "℃",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "feeder_load_in",
+          "display_name": "上游馈线负载率",
+          "description": "由供电馈线边传导的最高线路负载率",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "overload_risk",
+          "display_name": "过载风险指数",
+          "description": "融合馈线负载率与油温计算的综合重过载风险",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [
+        {
+          "target_metric": "feeder_load_in",
+          "op": "MAX",
+          "via_link_type": "FEEDS_TRANSFORMER",
+          "direction": "IN",
+          "source_type_name": "FEEDS_TRANSFORMER",
+          "source_metric": "line_load_ratio",
+          "weight_by_link": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "derived_rules": [
+        {
+          "target_metric": "overload_risk",
+          "expression": "feeder_load_in * 0.65 + if(oil_temp_c > 75.0, 0.35, 0.1)",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "actions": [
+        {
+          "name": "shed_noncritical_load",
+          "display_name": "可中断负荷柔性削减",
+          "description": "对台区下辖空调与充电桩等非核心负荷执行柔性降功率响应",
+          "parameters": [
+            {
+              "name": "shed_mw",
+              "display_name": "削减功率",
+              "data_type": "FLOAT64",
+              "required": true,
+              "description": "柔性削减有功负荷量（MW）"
+            }
+          ],
+          "precondition_expr": "overload_risk >= 0.0 and demand_mw >= param.shed_mw and param.shed_mw > 0",
+          "side_effect_tier": "SELF_ONLY",
+          "mutations": [
+            {
+              "target": "self.demand_mw",
+              "expression": "demand_mw - param.shed_mw"
+            },
+            {
+              "target": "self.oil_temp_c",
+              "expression": "oil_temp_c - param.shed_mw * 1.2"
+            }
+          ],
+          "required_permission": "ACTION_EXECUTE",
+          "require_approval": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "sync_to_knowledge": false,
+      "pos_x": 680.0,
+      "pos_y": 160.0
+    },
+    {
+      "name": "CriticalLoad",
+      "display_name": "重点负荷用户",
+      "description": "三甲医院、晶圆厂、交通枢纽及大型商业综合体等重要保供用户",
+      "icon": "shield",
+      "color": "#d97706",
+      "title_template": "{prop.load_name}",
+      "domain_group": "用电域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "load_name",
+          "display_name": "用户名称",
+          "description": "重点保供用电户名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "load_category",
+          "display_name": "保供行业类别",
+          "description": "重点负荷分类（三甲医院 / 晶圆厂 / 交通枢纽 / 商业综合体）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "allowed_values": ["三甲医院", "晶圆厂", "交通枢纽", "商业综合体"],
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "interruptible",
+          "display_name": "可中断签约标志",
+          "description": "是否参与需求侧可中断负荷响应",
+          "data_type": "BOOLEAN",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "power_draw_mw",
+          "display_name": "实时受电功率",
+          "description": "用户计量点当前有功受电功率",
+          "unit": "MW",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "backup_hours",
+          "display_name": "自备应急续航",
+          "description": "UPS及柴发剩余可独立供电时长",
+          "unit": "h",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "bus_voltage_pu",
+          "display_name": "受电端母线电压",
+          "description": "重点用户并网点母线电压标幺值",
+          "unit": "p.u.",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "actions": [],
+      "sync_to_knowledge": true,
+      "pos_x": 980.0,
+      "pos_y": 160.0
+    },
+    {
+      "name": "SwitchOrder",
+      "display_name": "倒闸与跳闸事件",
+      "description": "主变跳闸、备自投动作及计划倒闸操作动态记录",
+      "icon": "activity",
+      "color": "#dc2626",
+      "title_template": "{prop.order_code}",
+      "domain_group": "输变电域",
+      "semantic_layer_tier": "EVENT_DYNAMIC",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "order_code",
+          "display_name": "操作票号",
+          "description": "调度操作票或跳闸事件流水号",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "event_type",
+          "display_name": "事件类型",
+          "description": "主变跳闸 / 母联备自投 / 负荷转供",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "operator_team",
+          "display_name": "值班班组",
+          "description": "负责处置的调控及运维班组",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "tripped_mw",
+          "display_name": "损失或转供负荷",
+          "description": "事件涉及的有功功率变化量",
+          "unit": "MW",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "actions": [],
+      "sync_to_knowledge": false,
+      "pos_x": 380.0,
+      "pos_y": 420.0
+    },
+    {
+      "name": "GridZoneSummary",
+      "display_name": "供电分区负荷汇总",
+      "description": "按城市供电网格聚合的区域总负荷与高峰供电裕度指标层",
+      "icon": "layers",
+      "color": "#4f46e5",
+      "title_template": "{prop.zone_name}",
+      "domain_group": "用电域",
+      "semantic_layer_tier": "CUBE_ROLLUP",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "zone_name",
+          "display_name": "供电分区名称",
+          "description": "城市配网供电分区名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "zone_total_load_mw",
+          "display_name": "分区总有功负荷",
+          "description": "供电分区内全部变电站实时有功负荷总和",
+          "unit": "MW",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "peak_margin_ratio",
+          "display_name": "高峰供电裕度率",
+          "description": "分区极限供电能力相对当前总负荷的安全裕度比例",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [
+        {
+          "target_metric": "zone_total_load_mw",
+          "op": "SUM",
+          "via_link_type": "SUMMARIZES_ZONE",
+          "direction": "IN",
+          "source_type_name": "Substation",
+          "source_metric": "active_load_mw",
+          "weight_by_link": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "derived_rules": [
+        {
+          "target_metric": "peak_margin_ratio",
+          "expression": "if(zone_total_load_mw > 0, (1200.0 - zone_total_load_mw) / 1200.0, 1.0)",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "actions": [],
+      "sync_to_knowledge": false,
+      "pos_x": 680.0,
+      "pos_y": 420.0
+    }
+  ],
+  "edge_types": [
+    {
+      "name": "SUPPLIES_SUBSTATION",
+      "src_type_name": "PowerPlant",
+      "dst_type_name": "Substation",
+      "impact_weight": 0.85,
+      "cardinality": "MANY_TO_MANY",
+      "description": "发电与储能场站通过高压输电通道向枢纽变电站送电",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "generation_mw",
+            "to_metric": "active_load_mw",
+            "coefficient": 0.4,
+            "lag_steps": 1
+          },
+          {
+            "from_metric": "generation_mw",
+            "to_metric": "bus_voltage_pu",
+            "coefficient": 0.25,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "FEEDS_TRANSFORMER",
+      "src_type_name": "Substation",
+      "dst_type_name": "DistTransformer",
+      "impact_weight": 0.85,
+      "cardinality": "ONE_TO_MANY",
+      "description": "变电站10kV馈线向台区配变供电并实时监测电流、负载率与线损",
+      "properties": [
+        {
+          "name": "current_amp",
+          "display_name": "馈线实时电流",
+          "description": "10kV出线开关CT采集相电流",
+          "unit": "A",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "line_load_ratio",
+          "display_name": "馈线负载率",
+          "description": "结合主变负载率、台区负荷与电流派生的线路负载率",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "line_loss_mw",
+          "display_name": "馈线有功线损",
+          "description": "10kV供电馈线实时有功损耗功率",
+          "unit": "MW",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "derived_rules": [
+        {
+          "target_metric": "line_load_ratio",
+          "expression": "src.load_ratio * 0.65 + dst.demand_mw * 0.08 + current_amp * 0.0005",
+          "path_kind": "VERTEX_TO_EDGE",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        },
+        {
+          "target_metric": "line_loss_mw",
+          "expression": "line_load_ratio * dst.demand_mw * 0.04",
+          "path_kind": "VERTEX_TO_EDGE",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "bus_voltage_pu",
+            "to_metric": "oil_temp_c",
+            "coefficient": -1.2,
+            "lag_steps": 1
+          },
+          {
+            "from_metric": "active_load_mw",
+            "to_metric": "demand_mw",
+            "coefficient": 0.05,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "SERVES_LOAD",
+      "src_type_name": "DistTransformer",
+      "dst_type_name": "CriticalLoad",
+      "impact_weight": 0.85,
+      "cardinality": "ONE_TO_MANY",
+      "description": "台区配变向供电围栏内重点保供负荷用户供电",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "oil_temp_c",
+            "to_metric": "bus_voltage_pu",
+            "coefficient": -0.3,
+            "lag_steps": 1
+          },
+          {
+            "from_metric": "demand_mw",
+            "to_metric": "power_draw_mw",
+            "coefficient": 0.6,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "RECORDS_SWITCH",
+      "src_type_name": "Substation",
+      "dst_type_name": "SwitchOrder",
+      "impact_weight": 0.7,
+      "cardinality": "ONE_TO_MANY",
+      "description": "变电站挂接倒闸操作票与主变跳闸事件明细",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "active_load_mw",
+            "to_metric": "tripped_mw",
+            "coefficient": 0.1,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "SUMMARIZES_ZONE",
+      "src_type_name": "Substation",
+      "dst_type_name": "GridZoneSummary",
+      "impact_weight": 0.8,
+      "cardinality": "MANY_TO_ONE",
+      "description": "变电站实时负荷向上归集至所属城市供电分区汇总层",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "active_load_mw",
+            "to_metric": "zone_total_load_mw",
+            "coefficient": 1.0,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    }
+  ],
+  "mappings": []
+}

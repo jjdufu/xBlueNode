@@ -1,0 +1,171 @@
+{
+  "mappings": [
+    {
+      "name": "map_power_plants",
+      "dataset": { "$ref": "dataset:power_plants" },
+      "node_type": "PowerPlant",
+      "key_column": "plant_id",
+      "title": "{plant_name}",
+      "attributes": {
+        "plant_name": "plant_name",
+        "plant_kind": "plant_kind",
+        "rated_mw": "rated_mw"
+      },
+      "metrics": {
+        "generation_mw": "generation_mw",
+        "spinning_reserve_mw": "spinning_reserve_mw"
+      },
+      "geo": {
+        "lng_column": "lng",
+        "lat_column": "lat"
+      },
+      "links": [],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_grid_zones",
+      "dataset": { "$ref": "dataset:grid_zones" },
+      "node_type": "GridZoneSummary",
+      "key_column": "zone_id",
+      "title": "{zone_name}",
+      "attributes": {
+        "zone_name": "zone_name"
+      },
+      "metrics": {
+        "zone_total_load_mw": "zone_total_load_mw"
+      },
+      "links": [],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_substations",
+      "dataset": { "$ref": "dataset:substations" },
+      "node_type": "Substation",
+      "key_column": "substation_id",
+      "title": "{station_name}",
+      "attributes": {
+        "station_name": "station_name",
+        "voltage_kv": "voltage_kv",
+        "grid_zone": "grid_zone"
+      },
+      "metrics": {
+        "rated_capacity_mw": "rated_capacity_mw",
+        "active_load_mw": "active_load_mw",
+        "bus_voltage_pu": "bus_voltage_pu"
+      },
+      "geo": {
+        "lng_column": "lng",
+        "lat_column": "lat"
+      },
+      "links": [
+        {
+          "link_type": "SUPPLIES_SUBSTATION",
+          "direction": "IN",
+          "target_type": "PowerPlant",
+          "target_key_column": "plant_id",
+          "create_missing_target": true
+        },
+        {
+          "link_type": "SUMMARIZES_ZONE",
+          "direction": "OUT",
+          "target_type": "GridZoneSummary",
+          "target_key_column": "zone_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_dist_transformers",
+      "dataset": { "$ref": "dataset:dist_transformers" },
+      "node_type": "DistTransformer",
+      "key_column": "transformer_id",
+      "title": "{transformer_name}",
+      "attributes": {
+        "transformer_name": "transformer_name",
+        "feeder_code": "feeder_code",
+        "capacity_kva": "capacity_kva"
+      },
+      "metrics": {
+        "demand_mw": "demand_mw",
+        "oil_temp_c": "oil_temp_c"
+      },
+      "geo": {
+        "lng_column": "lng",
+        "lat_column": "lat"
+      },
+      "links": [
+        {
+          "link_type": "FEEDS_TRANSFORMER",
+          "direction": "IN",
+          "target_type": "Substation",
+          "target_key_column": "substation_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_critical_loads",
+      "dataset": { "$ref": "dataset:critical_loads" },
+      "node_type": "CriticalLoad",
+      "key_column": "load_id",
+      "title": "{load_name}",
+      "attributes": {
+        "load_name": "load_name",
+        "load_category": "load_category",
+        "interruptible": "interruptible"
+      },
+      "metrics": {
+        "power_draw_mw": "power_draw_mw",
+        "backup_hours": "backup_hours",
+        "bus_voltage_pu": "bus_voltage_pu"
+      },
+      "geo": {
+        "lng_column": "lng",
+        "lat_column": "lat"
+      },
+      "links": [
+        {
+          "link_type": "SERVES_LOAD",
+          "direction": "IN",
+          "target_type": "DistTransformer",
+          "target_key_column": "transformer_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_switch_orders",
+      "dataset": { "$ref": "dataset:switch_orders" },
+      "node_type": "SwitchOrder",
+      "key_column": "order_id",
+      "title": "{order_code}",
+      "attributes": {
+        "order_code": "order_code",
+        "event_type": "event_type",
+        "operator_team": "operator_team"
+      },
+      "metrics": {
+        "tripped_mw": "tripped_mw"
+      },
+      "links": [
+        {
+          "link_type": "RECORDS_SWITCH",
+          "direction": "IN",
+          "target_type": "Substation",
+          "target_key_column": "substation_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "key": "ess_dispatch",
+  "name": "储能协同放电与配网负载重算",
+  "slug": "power-grid-ess-dispatch",
+  "description": "迎峰度夏期间一键触发储能顶峰支撑并重算变电站及馈线过载指标",
+  "nodes": [
+    {
+      "id": "agg_grid",
+      "kind": "AGG_TRIGGER",
+      "label": "重算配网四路径指标",
+      "pos": {
+        "x": 140,
+        "y": 140
+      },
+      "config": {
+        "full": true
+      }
+    }
+  ],
+  "edges": [],
+  "trigger_cfg": {
+    "type": "MANUAL"
+  }
+}

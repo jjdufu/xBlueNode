@@ -1,0 +1,5 @@
+facility_id,facility_code,product_kind,maturity_date,principal_amt,days_past_due,entity_id
+CF-01,LN-2026-0001,流动资金贷款,2027-03-15,3800.0,0.0,LE-01
+CF-02,BA-2026-0002,银行承兑汇票,2026-11-20,5200.0,36.0,LE-02
+CF-03,LC-2026-0003,国内信用证,2026-10-10,3400.0,52.0,LE-03
+CF-04,LN-2026-0004,流动资金贷款,2027-06-30,4500.0,0.0,LE-04

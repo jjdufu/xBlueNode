@@ -1,0 +1,73 @@
+{
+  "rules": [
+    {
+      "name": "legal_entity_overdue_alert",
+      "description": "关联法人贷款逾期率突破5%红线时触发跨分行互保联防告警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "LegalEntity",
+        "metric": "overdue_ratio"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GTE",
+        "value": 0.05,
+        "for_minutes": 0
+      },
+      "severity": "CRITICAL",
+      "title_template": "法人逾期率越界：{{node.title}}",
+      "body_template": "关联法人 {{node.title}} 当前贷款逾期率达 {{value}}，突破 {{threshold}} 跨分行联防阈值，请立即核查互保链并评估冻结未用授信额度。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 15,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    },
+    {
+      "name": "corp_group_contagion_alert",
+      "description": "集团系违约传染评分高于70分时触发统一授信限额预警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "CorpGroup",
+        "metric": "contagion_score"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GT",
+        "value": 70.0,
+        "for_minutes": 0
+      },
+      "severity": "WARN",
+      "title_template": "集团传染风险偏高：{{node.title}}",
+      "body_template": "集团系 {{node.title}} 违约传染评分为 {{value}}，高于警戒线 {{threshold}}。",
+      "cooldown_minutes": 60,
+      "resolve_after_minutes": 30,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    },
+    {
+      "name": "industry_npl_ratio_alert",
+      "description": "行业敞口不良逾期率超过4%时触发行业信贷投向审慎提示",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "IndustryExposureCube",
+        "metric": "npl_ratio"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GT",
+        "value": 0.04,
+        "for_minutes": 0
+      },
+      "severity": "WARN",
+      "title_template": "行业不良率预警：{{node.title}}",
+      "body_template": "行业板块 {{node.title}} 当前不良逾期率为 {{value}}，超过投向控制线 {{threshold}}。",
+      "cooldown_minutes": 60,
+      "resolve_after_minutes": 30,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    }
+  ]
+}

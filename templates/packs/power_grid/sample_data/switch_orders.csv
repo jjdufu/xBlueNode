@@ -1,0 +1,4 @@
+order_id,order_code,event_type,operator_team,tripped_mw,substation_id
+SW-01,SW-202607-001,主变N-1跳闸演练,城北调控一班,42.0,SUB-01
+SW-02,SW-202607-002,母联备自投合闸,钱塘运维二班,18.5,SUB-02
+SW-03,SW-202607-003,10kV联络线负荷转供,高新抢修一班,12.0,SUB-03

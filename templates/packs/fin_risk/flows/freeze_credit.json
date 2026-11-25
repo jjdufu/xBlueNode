@@ -1,0 +1,24 @@
+{
+  "key": "freeze_credit",
+  "name": "高危互保圈额度冻结与敞口重算",
+  "slug": "fin-risk-freeze-credit",
+  "description": "针对逾期率越界法人执行紧急授信额度冻结并重算集团及行业传染风险敞口",
+  "nodes": [
+    {
+      "id": "agg_fin",
+      "kind": "AGG_TRIGGER",
+      "label": "重算集团与互保风险敞口",
+      "pos": {
+        "x": 140,
+        "y": 140
+      },
+      "config": {
+        "full": true
+      }
+    }
+  ],
+  "edges": [],
+  "trigger_cfg": {
+    "type": "MANUAL"
+  }
+}

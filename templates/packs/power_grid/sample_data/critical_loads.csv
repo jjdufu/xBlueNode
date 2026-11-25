@@ -1,0 +1,5 @@
+load_id,load_name,load_category,interruptible,power_draw_mw,backup_hours,bus_voltage_pu,transformer_id,lng,lat
+CL-01,市第一三甲医院本部,三甲医院,false,0.68,12.0,0.965,DT-01,120.146,30.319
+CL-02,城北商业综合体空调群,商业综合体,true,0.52,2.0,0.962,DT-02,120.155,30.323
+CL-03,钱塘十二寸晶圆一厂,晶圆厂,false,0.92,8.0,0.984,DT-03,120.287,30.279
+CL-04,高新高铁枢纽站房,交通枢纽,false,0.64,10.0,0.979,DT-04,120.089,30.229
