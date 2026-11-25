@@ -1,5 +1,16 @@
+import { z } from "zod";
 import { requestJson } from "./client";
-import type { Cardinality, JobKind, JobStatus, RetentionTarget, SyncMode } from "./enums";
+import type {
+  AlertStatus,
+  Cardinality,
+  DeadlineWindowStatus,
+  JobKind,
+  JobStatus,
+  RetentionTarget,
+  RuntimeCertLevel,
+  Severity,
+  SyncMode,
+} from "./enums";
 
 export type WorkItemKind = "TASK" | "ISSUE" | "CHANGE";
 export type WorkItemStatus = "OPEN" | "IN_PROGRESS" | "BLOCKED" | "DONE" | "CANCELED";
@@ -390,6 +401,157 @@ export interface PatchWorkItemPayload {
   due_at?: string | null;
 }
 
+const RuntimeCertLevelSchema: z.ZodType<RuntimeCertLevel> = z.enum([
+  "L0_INVALID",
+  "L1_CONFIGURED",
+  "L2_RUNNABLE",
+  "L3_VERIFIED",
+  "L4_CERTIFIED",
+]);
+
+const SeveritySchema: z.ZodType<Severity> = z.enum([
+  "INFO",
+  "WARN",
+  "CRITICAL",
+]);
+
+const AlertStatusSchema: z.ZodType<AlertStatus> = z.enum([
+  "OPEN",
+  "ACK",
+  "RESOLVED",
+]);
+
+const DeadlineWindowStatusSchema: z.ZodType<DeadlineWindowStatus> = z.enum([
+  "SATISFIED",
+  "ACTIONABLE_WINDOW",
+  "IMMEDIATE_BREACH_UNAVOIDABLE_BY_LAG",
+]);
+
+export const PulseTotalsSchema = z.object({
+  subgraph_count: z.number(),
+  node_type_count: z.number(),
+  node_count: z.number(),
+  link_count: z.number(),
+  dataset_count: z.number(),
+  lake_total_rows: z.number(),
+  metric_points_24h: z.number(),
+  active_stream_count: z.number(),
+  open_alert_count: z.number(),
+  pending_approval_count: z.number(),
+});
+
+export type PulseTotals = z.infer<typeof PulseTotalsSchema>;
+
+export const PulseHourlyBucketSchema = z.object({
+  hour_utc: z.string(),
+  metric_points: z.number(),
+  synced_rows: z.number(),
+});
+
+export type PulseHourlyBucket = z.infer<typeof PulseHourlyBucketSchema>;
+
+export const SubgraphPulseCardSchema = z.object({
+  slug: z.string(),
+  display_name: z.string(),
+  description: z.string().nullable().optional().transform((v) => v ?? null),
+  is_dev_sandbox: z.boolean(),
+  schema_version: z.number(),
+  node_type_count: z.number(),
+  edge_type_count: z.number(),
+  node_count: z.number(),
+  link_count: z.number(),
+  alert_count: z.number().optional().default(0),
+  cert_level: RuntimeCertLevelSchema.nullable()
+    .optional()
+    .transform((v) => v ?? null),
+  readiness_score: z.number().nullable().optional().transform((v) => v ?? null),
+  business_domains: z.array(z.string()).optional().default([]),
+  primary_dashboard_slug: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((v) => v ?? null),
+  latest_sandbox_id: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((v) => v ?? null),
+});
+
+export type SubgraphPulseCard = z.infer<typeof SubgraphPulseCardSchema>;
+
+export const PulseAlertItemSchema = z.object({
+  id: z.string(),
+  severity: SeveritySchema,
+  status: AlertStatusSchema,
+  title: z.string(),
+  node_id: z.string().nullable().optional().transform((v) => v ?? null),
+  subgraph_slug: z.string().nullable().optional().transform((v) => v ?? null),
+  last_value: z.number().nullable().optional().transform((v) => v ?? null),
+  occurrences: z.number(),
+  last_seen_at: z.string(),
+});
+
+export type PulseAlertItem = z.infer<typeof PulseAlertItemSchema>;
+
+export const PulseApprovalItemSchema = z.object({
+  id: z.string(),
+  source_kind: z.string(),
+  source_ref: z.string(),
+  title: z.string(),
+  run_id: z.string().nullable().optional().transform((v) => v ?? null),
+  created_at: z.string(),
+  expires_at: z.string().nullable().optional().transform((v) => v ?? null),
+});
+
+export type PulseApprovalItem = z.infer<typeof PulseApprovalItemSchema>;
+
+export const PulseSimulationItemSchema = z.object({
+  scenario_id: z.string(),
+  sandbox_id: z.string(),
+  sandbox_name: z.string(),
+  subgraph_slug: z.string(),
+  name: z.string(),
+  status: z.string(),
+  affected_count: z.number(),
+  earliest_breach_step: z
+    .number()
+    .nullable()
+    .optional()
+    .transform((v) => v ?? null),
+  earliest_deadline_step: z
+    .number()
+    .nullable()
+    .optional()
+    .transform((v) => v ?? null),
+  deadline_status: DeadlineWindowStatusSchema.nullable()
+    .optional()
+    .transform((v) => v ?? null),
+  created_at: z.string(),
+});
+
+export type PulseSimulationItem = z.infer<typeof PulseSimulationItemSchema>;
+
+export const PlatformPulseResponseSchema = z.object({
+  generated_at: z.string(),
+  totals: PulseTotalsSchema,
+  hourly_series: z.array(PulseHourlyBucketSchema),
+  subgraphs: z.array(SubgraphPulseCardSchema),
+  active_alerts: z.array(PulseAlertItemSchema),
+  pending_approvals: z.array(PulseApprovalItemSchema),
+  recent_simulations: z.array(PulseSimulationItemSchema),
+});
+
+export type PlatformPulseResponse = z.infer<typeof PlatformPulseResponseSchema>;
+
+export interface ShowcaseLoadResponse {
+  loaded_subgraphs?: string[];
+  node_count?: number;
+  link_count?: number;
+  dataset_count?: number;
+  [key: string]: unknown;
+}
+
 function buildQuery(params: Record<string, string | number | undefined | null>): string {
   const sp = new URLSearchParams();
   for (const [key, val] of Object.entries(params)) {
@@ -452,6 +614,21 @@ export const axopsApi = {
 
   getOnboardingStatus(): Promise<OnboardingStatusResponse> {
     return requestJson<OnboardingStatusResponse>("/api/axops/onboarding-status");
+  },
+
+  async getPulse(): Promise<PlatformPulseResponse> {
+    const raw = await requestJson<unknown>("/api/axops/pulse");
+    return PlatformPulseResponseSchema.parse(raw);
+  },
+
+  loadShowcase(): Promise<ShowcaseLoadResponse> {
+    return requestJson<ShowcaseLoadResponse>(
+      "/api/axops/demo/showcase/load",
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      }
+    );
   },
 
   listRetentionPolicies(): Promise<RetentionListResponse> {

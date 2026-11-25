@@ -4,6 +4,7 @@
 mod backups_templates;
 mod health_retention;
 mod onboarding;
+mod pulse;
 mod work_items;
 
 #[cfg(test)]
@@ -17,9 +18,9 @@ use axpoint_domain::enums::RetentionTarget;
 use axpoint_domain::ops::{
     BackupKind, BackupRecord, CreateWorkItemRequest, DatabaseHealth, JobsHealthStats,
     MigrationsHealth, NewTemplateInstallInput, OnboardingStatusResponse, OutboxStats,
-    PatchWorkItemRequest, RetentionPolicyRecord, TemplateCreatedObject, TemplateInstallRecord,
-    TemplateInstallStatus, WorkItem, WorkItemDetail, WorkItemEvent, WorkItemEventKind,
-    WorkItemListQuery,
+    PatchWorkItemRequest, PlatformPulseResponse, RetentionPolicyRecord, TemplateCreatedObject,
+    TemplateInstallRecord, TemplateInstallStatus, WorkItem, WorkItemDetail, WorkItemEvent,
+    WorkItemEventKind, WorkItemListQuery,
 };
 use axpoint_domain::ports::{OnboardingAndPackagingPort, OpsRepository};
 use axpoint_domain::studio::SubgraphConsumptionResponse;
@@ -198,6 +199,13 @@ impl OpsRepository for PgStore {
         alert_id: Uuid,
     ) -> Result<u64, AppError> {
         work_items::link_resolved_alert_work_items_impl(self, tenant_id, alert_id).await
+    }
+
+    async fn fetch_platform_pulse(
+        &self,
+        tenant_id: &str,
+    ) -> Result<PlatformPulseResponse, AppError> {
+        pulse::fetch_platform_pulse_impl(self, tenant_id).await
     }
 }
 
