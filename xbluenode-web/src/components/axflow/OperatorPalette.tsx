@@ -52,8 +52,8 @@ export const OPERATOR_I18N: Readonly<
   XBLUE_MAP: {
     zh: "图谱节点映射",
     en: "Graph Mapping",
-    descZh: "执行已发布映射规则物化业务节点与关系边",
-    descEn: "Materialize lakehouse rows into graph nodes and edges",
+    descZh: "将湖表数据按业务模型映射规则物化为节点与关系",
+    descEn: "Materialize lake tables into nodes and links via model mappings",
   },
   AGG_TRIGGER: {
     zh: "动态指标重算",

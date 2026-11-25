@@ -19,7 +19,8 @@ echo "ASSERT zh-zero-codename PASS"
 (cd "$ROOT/xbluenode-web" && npm run build && npm test)
 
 # 4. Playwright 专项验收：8 域侧栏、旧路由兼容重定向、中文态 DOM 零裸枚举泄漏、⌘K 搜索跳转、分栏拖拽刷新持久化（C76 & C77）
-(cd "$ROOT/xbluenode-web" && npx playwright test e2e/step23-ia-i18n-shell.spec.ts e2e/smoke.spec.ts)
+PW_PORT="${PLAYWRIGHT_PORT:-$(( 4173 + ${WT_SLOT:-0} * 100 ))}"
+(cd "$ROOT/xbluenode-web" && PLAYWRIGHT_PORT="$PW_PORT" npx playwright test e2e/step23-ia-i18n-shell.spec.ts e2e/smoke.spec.ts)
 echo "ASSERT ia-8-domains PASS"
 echo "ASSERT legacy-route-redirect PASS"
 echo "ASSERT cmdk-jump-ok PASS"

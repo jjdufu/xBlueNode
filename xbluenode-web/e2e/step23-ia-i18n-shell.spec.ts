@@ -889,21 +889,21 @@ test("Step 23 Gate: 8-domain IA sidebar, legacy route redirects, 4-quadrant bili
 
   const primaryLabels = await primaryLinks.allInnerTexts();
   expect(primaryLabels.map((s) => s.trim())).toEqual([
-    "概览",
+    "总控看板",
     "数据与知识",
-    "探索与制图",
-    "本体工作室",
-    "编排与告警",
-    "智能体中心",
+    "建模工作室",
+    "查询与制图",
     "推演沙盘",
-    "孪生看板",
+    "编排与告警",
+    "数字看板",
+    "智能体与接口",
   ]);
 
   const governanceSection = page.getByTestId("governance-domain-section");
   await expect(governanceSection).toBeVisible();
-  const govLink = page.getByTestId("sidebar-nav-governance");
+  const govLink = page.getByTestId("sidebar-nav-settings");
   await expect(govLink).toBeVisible();
-  await expect(govLink).toHaveText("系统治理");
+  await expect(govLink).toHaveText("系统设置");
 
   const sidebarText = await page.getByTestId("app-sidebar").innerText();
   expect(sidebarText).not.toMatch(CODENAME_PREFIX_RE);
@@ -924,14 +924,14 @@ test("Step 23 Gate: 8-domain IA sidebar, legacy route redirects, 4-quadrant bili
   await expect(page).toHaveURL(/\/analytics\?.*tab=ask/);
   await expect(page).toHaveURL(/q=%E5%BA%93%E5%AD%98/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "探索与制图" })
+    page.getByRole("heading", { level: 1, name: "查询与制图" })
   ).toBeVisible();
   await expect(page.getByTestId("axquery-input")).toBeVisible();
 
   await page.goto("/graph");
   await expect(page).toHaveURL(/\/studio\?tab=explorer/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "本体工作室" })
+    page.getByRole("heading", { level: 1, name: "建模工作室" })
   ).toBeVisible();
   await expect(page.getByTestId("xbluegraph-canvas")).toBeVisible();
 
@@ -943,14 +943,16 @@ test("Step 23 Gate: 8-domain IA sidebar, legacy route redirects, 4-quadrant bili
   await expect(page.getByTestId("axalerts-page")).toBeVisible();
 
   await page.goto("/governance?tab=access");
+  await expect(page).toHaveURL(/\/settings\?tab=access/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "系统治理" })
+    page.getByRole("heading", { level: 1, name: "系统设置" })
   ).toBeVisible();
   await expect(page.getByTestId("axguard-tab-users")).toBeVisible();
 
   await page.goto("/governance?tab=jobs");
+  await expect(page).toHaveURL(/\/settings\?tab=jobs/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "系统治理" })
+    page.getByRole("heading", { level: 1, name: "系统设置" })
   ).toBeVisible();
   await expect(page.getByTestId("axops-tab-jobs")).toBeVisible();
 
@@ -958,14 +960,15 @@ test("Step 23 Gate: 8-domain IA sidebar, legacy route redirects, 4-quadrant bili
   // 3. 4-Quadrant Bilingual Purity (`zh-CN` & `en-US` x `light` & `dark`)
   // =========================================================================
   const zhDomainRoutes: ReadonlyArray<{ path: string; h1: string }> = [
-    { path: "/", h1: "概览" },
+    { path: "/", h1: "总控看板" },
     { path: "/hub?tab=datasets", h1: "数据与知识" },
-    { path: "/analytics?tab=semantic", h1: "探索与制图" },
-    { path: "/studio", h1: "本体工作室" },
-    { path: "/flow", h1: "编排与告警" },
+    { path: "/studio", h1: "建模工作室" },
+    { path: "/analytics?tab=semantic", h1: "查询与制图" },
     { path: "/sim", h1: "推演沙盘" },
-    { path: "/view", h1: "孪生看板" },
-    { path: "/governance", h1: "系统治理" },
+    { path: "/flow", h1: "编排与告警" },
+    { path: "/view", h1: "数字看板" },
+    { path: "/agents", h1: "智能体与接口" },
+    { path: "/settings", h1: "系统设置" },
   ];
 
   for (const route of zhDomainRoutes) {
@@ -1003,36 +1006,38 @@ test("Step 23 Gate: 8-domain IA sidebar, legacy route redirects, 4-quadrant bili
   await page.getByTestId("theme-toggle-btn").click();
   await expect(page.locator("html")).toHaveClass(/dark/);
   await page.goto("/");
-  await expect(page.getByRole("heading", { level: 1, name: "概览" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { level: 1, name: "总控看板" })
+  ).toBeVisible();
   expect(await collectUiEnumLeaks(page)).toEqual([]);
 
   // Toggle locale to en-US (dark mode -> then light mode)
   await page.getByTestId("locale-toggle-btn").click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "Overview" })
+    page.getByRole("heading", { level: 1, name: "Dashboard" })
   ).toBeVisible();
   const enPrimaryLabels = await primaryLinks.allInnerTexts();
   expect(enPrimaryLabels.map((s) => s.trim())).toEqual([
-    "Overview",
-    "Data & Knowledge",
-    "Explore & Charts",
-    "Ontology Studio",
-    "Automation & Alerts",
-    "Agents & APIs",
+    "Dashboard",
+    "Data Hub",
+    "Modeling Studio",
+    "Analytics & Charts",
     "Simulation",
-    "Twin Cockpits",
+    "Automation & Alerts",
+    "Cockpits",
+    "Agents & APIs",
   ]);
-  await expect(govLink).toHaveText("Governance & Ops");
+  await expect(govLink).toHaveText("Settings");
 
   // Restore light mode + zh-CN
   await page.getByTestId("theme-toggle-btn").click();
   await expect(page.locator("html")).not.toHaveClass(/dark/);
   await expect(
-    page.getByRole("heading", { level: 1, name: "Overview" })
+    page.getByRole("heading", { level: 1, name: "Dashboard" })
   ).toBeVisible();
   await page.getByTestId("locale-toggle-btn").click();
   await expect(
-    page.getByRole("heading", { level: 1, name: "概览" })
+    page.getByRole("heading", { level: 1, name: "总控看板" })
   ).toBeVisible();
 
   // =========================================================================

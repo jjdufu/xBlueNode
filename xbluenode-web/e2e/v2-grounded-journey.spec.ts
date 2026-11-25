@@ -857,8 +857,8 @@ async function installV2JourneyMocks(
             {
               step_no: 2,
               step_key: "NODE_MODELING",
-              label_zh: "构建本体",
-              label_en: "Model Ontology",
+              label_zh: "节点建模",
+              label_en: "Node Modeling",
               completed: true,
               count_primary: 4,
               count_secondary: 2,

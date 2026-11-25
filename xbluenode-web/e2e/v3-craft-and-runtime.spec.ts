@@ -2555,17 +2555,17 @@ test.describe("Step 30 Phase 3 Craft UX & World Runtime Full Journey", () => {
         s.trim()
       );
       expect(navLabels).toEqual([
-        "概览",
+        "总控看板",
         "数据与知识",
-        "探索与制图",
-        "本体工作室",
-        "编排与告警",
-        "智能体中心",
+        "建模工作室",
+        "查询与制图",
         "推演沙盘",
-        "孪生看板",
+        "编排与告警",
+        "数字看板",
+        "智能体与接口",
       ]);
-      await expect(page.getByTestId("sidebar-nav-governance")).toHaveText(
-        "系统治理"
+      await expect(page.getByTestId("sidebar-nav-settings")).toHaveText(
+        "系统设置"
       );
 
       const sidebarText = await page.getByTestId("app-sidebar").innerText();
@@ -2584,20 +2584,20 @@ test.describe("Step 30 Phase 3 Craft UX & World Runtime Full Journey", () => {
       await page.goto("/graph");
       await expect(page).toHaveURL(/\/studio\?tab=explorer/);
       await expect(
-        page.getByRole("heading", { level: 1, name: "本体工作室" })
+        page.getByRole("heading", { level: 1, name: "建模工作室" })
       ).toBeVisible();
 
       // Traverse primary routes & assert zh-CN monolingual purity (0 codename prefixes, 0 raw SCREAMING_SNAKE_CASE)
       for (const route of [
-        { path: "/", h1: "概览" },
+        { path: "/", h1: "总控看板" },
         { path: "/hub?tab=datasets", h1: "数据与知识" },
-        { path: "/analytics", h1: "探索与制图" },
-        { path: "/studio", h1: "本体工作室" },
-        { path: "/flow", h1: "编排与告警" },
-        { path: "/agents", h1: "智能体中心" },
+        { path: "/studio", h1: "建模工作室" },
+        { path: "/analytics", h1: "查询与制图" },
         { path: "/sim", h1: "推演沙盘" },
-        { path: "/view", h1: "孪生看板" },
-        { path: "/governance", h1: "系统治理" },
+        { path: "/flow", h1: "编排与告警" },
+        { path: "/view", h1: "数字看板" },
+        { path: "/agents", h1: "智能体与接口" },
+        { path: "/settings", h1: "系统设置" },
       ]) {
         await page.goto(route.path);
         await expect(
@@ -2613,7 +2613,7 @@ test.describe("Step 30 Phase 3 Craft UX & World Runtime Full Journey", () => {
       await expect(page.locator("html")).toHaveClass(/dark/);
       await page.getByTestId("locale-toggle-btn").click();
       await expect(
-        page.getByRole("heading", { level: 1, name: "Governance & Ops" })
+        page.getByRole("heading", { level: 1, name: "Settings" })
       ).toBeVisible();
       await page.getByTestId("locale-toggle-btn").click();
       await page.getByTestId("theme-toggle-btn").click();

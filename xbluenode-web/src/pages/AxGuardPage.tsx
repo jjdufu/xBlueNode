@@ -109,6 +109,16 @@ const AXGUARD_TABS: readonly AxGuardTabSpec[] = [
   },
 ];
 
+export type AxGuardEmbeddedGroup = "members" | "security" | "audit";
+
+const GUARD_GROUP_TABS: Readonly<
+  Record<AxGuardEmbeddedGroup, readonly AxGuardTabKey[]>
+> = {
+  members: ["users", "roles", "depts"],
+  security: ["policies", "row_policies", "column_policies", "grants"],
+  audit: ["audit"],
+};
+
 function mapRequestedGuardTab(raw: string | null): AxGuardTabKey | null {
   const val = (raw ?? "").trim().toLowerCase();
   if (val === "access" || val === "users") return "users";
@@ -122,35 +132,55 @@ function mapRequestedGuardTab(raw: string | null): AxGuardTabKey | null {
   return null;
 }
 
+function resolveScopedGuardTab(
+  group: AxGuardEmbeddedGroup | undefined,
+  requestedTab: AxGuardTabKey | null,
+  perms: readonly string[],
+  roles: readonly string[]
+): AxGuardTabKey {
+  if (!group) {
+    if (requestedTab) return requestedTab;
+    return resolveDefaultAxGuardTab(perms, roles);
+  }
+  const allowedKeys = GUARD_GROUP_TABS[group];
+  if (requestedTab && allowedKeys.includes(requestedTab)) {
+    return requestedTab;
+  }
+  if (group === "audit") {
+    return "audit";
+  }
+  if (group === "security") {
+    const isAdmin = roles.includes("ADMIN") || perms.includes("GUARD_ADMIN");
+    return isAdmin ? "policies" : "grants";
+  }
+  return "users";
+}
+
 export function AxGuardPage({
   embedded = false,
+  group,
 }: {
   readonly embedded?: boolean;
+  readonly group?: AxGuardEmbeddedGroup;
 } = {}) {
   const { isZh, tx } = useI18n();
   const [searchParams, setSearchParams] = useSearchParams();
+  const effectiveGroup = embedded ? group : undefined;
   const requestedTab = mapRequestedGuardTab(searchParams.get("tab"));
   const [me, setMe] = useState<MeResponse | null>(() => getCachedMe());
   const [meResolved, setMeResolved] = useState<boolean>(
     () => getCachedMe() !== null
   );
   const [activeTab, setActiveTab] = useState<AxGuardTabKey>(() => {
-    if (requestedTab) return requestedTab;
     const cached = getCachedMe();
-    if (cached && Array.isArray(cached.permissions)) {
-      return resolveDefaultAxGuardTab(
-        cached.permissions as readonly string[],
-        cached.roles ?? []
-      );
-    }
-    return "users";
+    const perms =
+      cached && Array.isArray(cached.permissions)
+        ? (cached.permissions as readonly string[])
+        : ["GUARD_ADMIN", "AUDIT_READ", "DATA_READ"];
+    const roles =
+      cached && Array.isArray(cached.roles) ? cached.roles : ["ADMIN"];
+    return resolveScopedGuardTab(effectiveGroup, requestedTab, perms, roles);
   });
-
-  useEffect(() => {
-    if (requestedTab) {
-      setActiveTab(requestedTab);
-    }
-  }, [requestedTab]);
 
   const handleTabChange = (next: AxGuardTabKey) => {
     setActiveTab(next);
@@ -192,6 +222,28 @@ export function AxGuardPage({
   const hasGrantsAccess = hasGuardAdmin || effectivePerms.includes("DATA_READ");
 
   useEffect(() => {
+    if (effectiveGroup) {
+      const allowedKeys = GUARD_GROUP_TABS[effectiveGroup];
+      if (requestedTab && allowedKeys.includes(requestedTab)) {
+        setActiveTab(requestedTab);
+      } else if (!allowedKeys.includes(activeTab)) {
+        setActiveTab(
+          resolveScopedGuardTab(
+            effectiveGroup,
+            requestedTab,
+            effectivePerms,
+            effectiveRoles
+          )
+        );
+      }
+      return;
+    }
+    if (requestedTab) {
+      setActiveTab(requestedTab);
+    }
+  }, [activeTab, effectiveGroup, effectivePerms, effectiveRoles, requestedTab]);
+
+  useEffect(() => {
     let cancelled = false;
     void fetchMe()
       .then((profile) => {
@@ -199,10 +251,21 @@ export function AxGuardPage({
         if (profile && Array.isArray(profile.permissions)) {
           setMe(profile);
           setActiveTab((prev) => {
-            const preferred = resolveDefaultAxGuardTab(
-              profile.permissions as readonly string[],
-              profile.roles ?? []
-            );
+            const perms = profile.permissions as readonly string[];
+            const profRoles = profile.roles ?? [];
+            if (effectiveGroup) {
+              const allowedKeys = GUARD_GROUP_TABS[effectiveGroup];
+              if (allowedKeys.includes(prev)) {
+                return prev;
+              }
+              return resolveScopedGuardTab(
+                effectiveGroup,
+                requestedTab,
+                perms,
+                profRoles
+              );
+            }
+            const preferred = resolveDefaultAxGuardTab(perms, profRoles);
             return prev === "users" ? preferred : prev;
           });
         }
@@ -216,7 +279,7 @@ export function AxGuardPage({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [effectiveGroup, requestedTab]);
 
   const loadCoreGovernanceData = useCallback(async () => {
     if (hasGuardAdmin) {
@@ -291,9 +354,15 @@ export function AxGuardPage({
     [hasAuditRead, hasGrantsAccess, hasGuardAdmin]
   );
 
+  const visibleSpecs = useMemo(() => {
+    if (!effectiveGroup) return AXGUARD_TABS;
+    const allowedKeys = GUARD_GROUP_TABS[effectiveGroup];
+    return AXGUARD_TABS.filter((tab) => allowedKeys.includes(tab.key));
+  }, [effectiveGroup]);
+
   const tabItems = useMemo(
     () =>
-      AXGUARD_TABS.map((tab) => {
+      visibleSpecs.map((tab) => {
         const Icon = tab.icon;
         const allowed = canAccessTab(tab);
         return {
@@ -309,7 +378,7 @@ export function AxGuardPage({
           testId: `axguard-tab-${tab.key}`,
         };
       }),
-    [canAccessTab, isZh]
+    [canAccessTab, isZh, visibleSpecs]
   );
 
   if (!hasGuardAdmin && !hasAuditRead && !hasGrantsAccess) {
@@ -354,8 +423,9 @@ export function AxGuardPage({
         />
       )}
 
-      {/* 8-Panel Tab Bar */}
-      <Tabs items={tabItems} value={activeTab} onChange={handleTabChange} />
+      {effectiveGroup !== "audit" && (
+        <Tabs items={tabItems} value={activeTab} onChange={handleTabChange} />
+      )}
 
       {/* Active Sub-Panel */}
       <section>
