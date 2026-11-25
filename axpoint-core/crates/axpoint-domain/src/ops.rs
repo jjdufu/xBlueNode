@@ -575,6 +575,25 @@ pub struct DemoLoadResponse {
     pub dashboard_slug: String,
 }
 
+/// Response returned by `POST /api/axops/demo/showcase/load` (`05-STEP35` §35.0).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShowcaseLoadResponse {
+    /// Industry subgraph slugs loaded (`["power_grid", "fin_risk", "semi_supply", "med_dispatch"]`).
+    pub loaded_subgraphs: Vec<String>,
+    /// Total production business nodes in the tenant after loading.
+    pub node_count: i64,
+    /// Total production relationship links in the tenant after loading.
+    pub link_count: i64,
+    /// Total datasets registered in the tenant after loading.
+    pub dataset_count: i64,
+    /// Total `DuckLake` rows across all datasets in the tenant after loading.
+    pub lake_total_rows: i64,
+    /// Time-series metric points written in the trailing 24 hours.
+    pub metric_points_24h: i64,
+    /// End-to-end showcase seeding duration in milliseconds.
+    pub elapsed_ms: u64,
+}
+
 /// Platform backup record (`ax_backups`, `§14.1`, `§14.3`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BackupRecord {

@@ -8,9 +8,10 @@ use axpoint_domain::ops::{
     BackupRecord, CreateBackupRequest, CreateWorkItemCommentRequest, CreateWorkItemRequest,
     DeepHealthReport, DemoLoadResponse, DemoScenario, InstallTemplateRequest,
     OnboardingStatusResponse, OutboxStats, PatchWorkItemRequest, PlatformPulseResponse,
-    PutRetentionPolicyRequest, RetentionPolicyRecord, SystemInfoResponse, TemplateInstallRecord,
-    TemplateManifest, TemplatePackDetail, TemplatePlanRequest, TemplatePreviewResponse,
-    TemplateUninstallResponse, WorkItem, WorkItemDetail, WorkItemEvent, WorkItemListQuery,
+    PutRetentionPolicyRequest, RetentionPolicyRecord, ShowcaseLoadResponse, SystemInfoResponse,
+    TemplateInstallRecord, TemplateManifest, TemplatePackDetail, TemplatePlanRequest,
+    TemplatePreviewResponse, TemplateUninstallResponse, WorkItem, WorkItemDetail, WorkItemEvent,
+    WorkItemListQuery,
 };
 use axpoint_domain::platform::{JobListQuery, JobListResponse, JobRecord, NewJob};
 use axpoint_domain::ports::{
@@ -18,6 +19,7 @@ use axpoint_domain::ports::{
 };
 use axpoint_security::AuthPrincipal;
 use axpoint_server::ops::backup::BackupAuditContext;
+use axpoint_server::ops::demo::ShowcaseLoadContext;
 use axpoint_server::ops::templates::TemplateAuditContext;
 use axum::body::Bytes;
 use axum::extract::State;
@@ -39,7 +41,7 @@ struct BackupsListQuery {
     cursor: Option<String>,
 }
 
-/// Builds the `/axops/*` sub-router mounted under `/api` (27 routes per `A4` §11).
+/// Builds the `/axops/*` sub-router mounted under `/api` (28 routes per `A4` §11).
 pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .merge(jobs_and_health_router())
@@ -101,6 +103,10 @@ fn templates_and_demo_router() -> Router<AppState> {
         .route(
             "/axops/templates/installs/{id}/uninstall",
             post(uninstall_template_handler),
+        )
+        .route(
+            "/axops/demo/showcase/load",
+            post(load_showcase_demo_handler),
         )
         .route("/axops/demo/{scenario}/load", post(load_demo_handler))
 }
@@ -510,6 +516,74 @@ async fn load_demo_handler(
                 trace_id: &trace_id,
             },
             scenario,
+        )
+        .await?;
+    Ok(Json(res))
+}
+
+fn extract_bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let raw = headers
+        .get(axum::http::header::AUTHORIZATION)?
+        .to_str()
+        .ok()?
+        .trim();
+    raw.strip_prefix("Bearer ")
+        .or_else(|| raw.strip_prefix("bearer "))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+fn resolve_local_core_base_url(headers: &HeaderMap) -> String {
+    if let Ok(bind_raw) = std::env::var("AXPOINT_BIND_ADDR")
+        && let Ok(addr) = bind_raw.trim().parse::<std::net::SocketAddr>()
+        && addr.port() != 0
+    {
+        return format!("http://127.0.0.1:{}", addr.port());
+    }
+    if let Ok(env_url) = std::env::var("CORE_BASE_URL") {
+        let trimmed = env_url.trim().trim_end_matches('/');
+        if !trimmed.is_empty() {
+            return String::from(trimmed);
+        }
+    }
+    if let Some(host_val) = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if let Some((_, port_str)) = host_val.rsplit_once(':')
+            && let Ok(port) = port_str.parse::<u16>()
+            && port != 0
+        {
+            return format!("http://127.0.0.1:{port}");
+        }
+        return format!("http://{host_val}");
+    }
+    String::from("http://127.0.0.1:9995")
+}
+
+async fn load_showcase_demo_handler(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    principal: AuthPrincipal,
+) -> Result<Json<ShowcaseLoadResponse>, HttpError> {
+    principal.enforce_no_prod_mutation()?;
+    principal.require(Permission::OpsAdmin)?;
+    let client_ip = extract_client_ip(&headers);
+    let trace_id = current_trace_id();
+    let core_base_url = resolve_local_core_base_url(&headers);
+    let caller_token = extract_bearer_token(&headers);
+    let res = state
+        .ops
+        .load_showcase_demo(
+            &principal,
+            ShowcaseLoadContext {
+                client_ip: &client_ip,
+                trace_id: &trace_id,
+                core_base_url: &core_base_url,
+                caller_bearer_token: caller_token,
+            },
         )
         .await?;
     Ok(Json(res))

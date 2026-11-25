@@ -1,14 +1,21 @@
-//! One-click industry demo scenario loader (`POST /api/axops/demo/{scenario}/load`, `§14.6`).
+//! One-click industry demo scenario & multi-world showcase loaders
+//! (`POST /api/axops/demo/{scenario}/load`, `POST /api/axops/demo/showcase/load`).
+
+use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use std::time::{Duration as StdDuration, Instant};
 
 use axpoint_domain::AppError;
-use axpoint_domain::enums::{Environment, InterventionMode, MetricSourceTag, TriggerType};
+use axpoint_domain::enums::{
+    AuditAction, Environment, InterventionMode, MetricSourceTag, TriggerType,
+};
 use axpoint_domain::flow::StartRunParams;
 use axpoint_domain::graph::{MetricPointInput, NodeListQuery, WriteMetricsRequest};
 use axpoint_domain::ops::{
-    DemoLoadResponse, DemoScenario, TemplateConflictStrategy, TemplateInstallRecord,
-    TemplateInstallStatus,
+    DemoLoadResponse, DemoScenario, ShowcaseLoadResponse, TemplateConflictStrategy,
+    TemplateInstallRecord, TemplateInstallStatus,
 };
-use axpoint_domain::platform::BoxFuture;
+use axpoint_domain::platform::{AuditRecord, BoxFuture};
 use axpoint_domain::ports::{
     AgentRepository, AnalyticsRepository, DatasetRepository, FlowRepository, GraphStorePort,
     MetricStorePort, OpsRepository, RulesRepository, SidecarPort, SimRepository,
@@ -18,6 +25,7 @@ use axpoint_domain::sim::{CreateScenarioRequest, SandboxScope, SimGraph, SimNode
 use axpoint_domain::topology::{AxSimAction, BlueNode, CreateAxSandboxRequest};
 use axpoint_security::AuthPrincipal;
 use chrono::{DateTime, Duration, Utc};
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
 use super::OpsServices;
@@ -25,6 +33,54 @@ use super::templates::TemplateAuditContext;
 
 const SYNTHETIC_HISTORY_DAYS: u32 = 30;
 const METRIC_WRITE_CHUNK_SIZE: usize = 25_000;
+const SHOWCASE_TIMEOUT_SECS: u64 = 60;
+
+/// Canonical four Phase 4 industry world subgraph slugs loaded by `scripts/seed-showcase.sh` (`05-STEP35`).
+pub const SHOWCASE_SUBGRAPHS: &[&str] = &["power_grid", "fin_risk", "semi_supply", "med_dispatch"];
+
+static SHOWCASE_LOAD_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+/// Execution and audit context passed to [`OpsServices::load_showcase_demo`] (`05-STEP35` §35.0).
+#[derive(Debug, Clone, Copy)]
+pub struct ShowcaseLoadContext<'a> {
+    /// Originating client IP address.
+    pub client_ip: &'a str,
+    /// Active `W3C` trace identifier.
+    pub trace_id: &'a str,
+    /// Local loopback or host base URL targeting this `AxPoint` Core instance.
+    pub core_base_url: &'a str,
+    /// Optional `Bearer` credential extracted from the caller's `Authorization` header.
+    pub caller_bearer_token: Option<&'a str>,
+}
+
+/// Resolves the canonical filesystem path to `scripts/seed-showcase.sh` (`05-STEP35` §35.0).
+#[must_use]
+pub fn resolve_showcase_seed_script() -> Option<PathBuf> {
+    if let Some(explicit) = std::env::var("AXPOINT_SHOWCASE_SEED_SCRIPT")
+        .ok()
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+    {
+        let candidate = PathBuf::from(explicit);
+        if candidate.is_file() {
+            return Some(std::fs::canonicalize(&candidate).unwrap_or(candidate));
+        }
+    }
+
+    let candidates = [
+        PathBuf::from("./scripts/seed-showcase.sh"),
+        PathBuf::from("../scripts/seed-showcase.sh"),
+        PathBuf::from("/app/scripts/seed-showcase.sh"),
+        PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../scripts/seed-showcase.sh"
+        )),
+    ];
+    candidates
+        .into_iter()
+        .find(|p| p.is_file())
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+}
 
 /// Preset configuration describing the `AxSim` sandbox and scenario created for a [`DemoScenario`].
 #[derive(Debug, Clone)]
@@ -390,6 +446,129 @@ where
                     .await;
                 Ok((Some(sandbox.id), Some(created.id)))
             }
+        }
+    }
+}
+
+impl<S, P> OpsServices<S, P>
+where
+    S: OpsRepository + Sync,
+    P: SidecarPort + Sync,
+{
+    /// Executes `scripts/seed-showcase.sh` idempotently for `principal.tenant_id`, records a
+    /// hash-chained `TEMPLATE_INSTALL` (`v4_industry_showcase`) audit entry, and returns the
+    /// tenant's post-load [`ShowcaseLoadResponse`] scale summary (`05-STEP35` §35.0).
+    pub fn load_showcase_demo<'a>(
+        &'a self,
+        principal: &'a AuthPrincipal,
+        ctx: ShowcaseLoadContext<'a>,
+    ) -> BoxFuture<'a, ShowcaseLoadResponse> {
+        Box::pin(async move {
+            let lock_guard = SHOWCASE_LOAD_MUTEX.lock().await;
+            let script_path = resolve_showcase_seed_script().ok_or_else(|| {
+                AppError::Config(String::from("scripts/seed-showcase.sh not found"))
+            })?;
+            let repo_root = script_path
+                .parent()
+                .and_then(Path::parent)
+                .unwrap_or_else(|| Path::new("."));
+
+            let started = Instant::now();
+            let mut cmd = tokio::process::Command::new("bash");
+            cmd.arg(&script_path)
+                .current_dir(repo_root)
+                .env("SHOWCASE_TENANT_ID", &principal.tenant_id)
+                .env("CORE_BASE_URL", ctx.core_base_url)
+                .env("PARSER_BASE_URL", &self.parser_base_url)
+                .env("AXPOINT_DATA_ROOT", &self.data_root)
+                .kill_on_drop(true);
+            if let Some(tok) = ctx
+                .caller_bearer_token
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                cmd.env("AXPOINT_DEV_TOKEN", tok);
+            }
+
+            let output =
+                tokio::time::timeout(StdDuration::from_secs(SHOWCASE_TIMEOUT_SECS), cmd.output())
+                    .await
+                    .map_err(|_| AppError::Timeout("SHOWCASE_LOAD_TIMEOUT"))?
+                    .map_err(|err| {
+                        AppError::Config(format!("failed to execute seed-showcase.sh: {err}"))
+                    })?;
+
+            let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+            drop(lock_guard);
+
+            if !output.status.success() {
+                let stderr_text = String::from_utf8_lossy(&output.stderr);
+                let stdout_text = String::from_utf8_lossy(&output.stdout);
+                let detail = if stderr_text.trim().is_empty() {
+                    stdout_text.trim()
+                } else {
+                    stderr_text.trim()
+                };
+                tracing::error!(
+                    tenant_id = %principal.tenant_id,
+                    status = %output.status,
+                    detail = %detail,
+                    "seed-showcase.sh failed"
+                );
+                return Err(AppError::Config(format!(
+                    "seed-showcase.sh exited with {}: {detail}",
+                    output.status
+                )));
+            }
+
+            self.emit_showcase_install_audit(principal, ctx, elapsed_ms)
+                .await;
+
+            let pulse = self
+                .store
+                .fetch_platform_pulse(&principal.tenant_id)
+                .await?;
+            Ok(ShowcaseLoadResponse {
+                loaded_subgraphs: SHOWCASE_SUBGRAPHS
+                    .iter()
+                    .map(|slug| (*slug).to_owned())
+                    .collect(),
+                node_count: pulse.totals.node_count,
+                link_count: pulse.totals.link_count,
+                dataset_count: pulse.totals.dataset_count,
+                lake_total_rows: pulse.totals.lake_total_rows,
+                metric_points_24h: pulse.totals.metric_points_24h,
+                elapsed_ms,
+            })
+        })
+    }
+
+    async fn emit_showcase_install_audit(
+        &self,
+        principal: &AuthPrincipal,
+        ctx: ShowcaseLoadContext<'_>,
+        elapsed_ms: u64,
+    ) {
+        let actor_id = (!principal.user_id.is_nil()).then_some(principal.user_id);
+        self.audit.record(AuditRecord {
+            tenant_id: principal.tenant_id.clone(),
+            user_id: actor_id,
+            username: principal.username.clone(),
+            action: AuditAction::TemplateInstall,
+            resource_ref: String::from("TEMPLATE:v4_industry_showcase"),
+            status_code: 200,
+            client_ip: String::from(ctx.client_ip),
+            trace_id: String::from(ctx.trace_id),
+            detail_json: serde_json::json!({
+                "resource_kind": "TEMPLATE",
+                "resource_id": "v4_industry_showcase",
+                "loaded_subgraphs": SHOWCASE_SUBGRAPHS,
+                "elapsed_ms": elapsed_ms,
+            }),
+            created_at: Utc::now(),
+        });
+        if let Err(err) = self.audit.flush().await {
+            tracing::warn!(error = %err, "showcase install audit flush failed");
         }
     }
 }

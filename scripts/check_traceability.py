@@ -69,13 +69,13 @@ def verify_traceability(matrix_path: Path, gate_dir: Path) -> list[str]:
         for step_name, assertion_name in _extract_step_assertions(acceptance_cell):
             required_assertions.append((item_id, step_name, assertion_name))
 
-    expected_caps = {f"C{i:02d}" for i in range(1, 93)}
+    expected_caps = {f"C{i:02d}" for i in range(1, 99)}
     missing_caps = sorted(expected_caps - set(cap_ids))
-    if len(cap_ids) < 92 or len(set(cap_ids)) != len(cap_ids) or missing_caps:
+    if len(cap_ids) < 98 or len(set(cap_ids)) != len(cap_ids) or missing_caps:
         errors.append(
             f"capability count/uniqueness/contiguity mismatch: total={len(cap_ids)} "
             f"unique={len(set(cap_ids))} missing={missing_caps} "
-            "(expected >= 92 unique contiguous items C01..C92)"
+            "(expected >= 98 unique contiguous items C01..C98)"
         )
     if len(ds_ids) < 26 or len(set(ds_ids)) != len(ds_ids):
         errors.append(
