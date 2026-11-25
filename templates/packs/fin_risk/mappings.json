@@ -1,0 +1,131 @@
+{
+  "mappings": [
+    {
+      "name": "map_corp_groups",
+      "dataset": { "$ref": "dataset:corp_groups" },
+      "node_type": "CorpGroup",
+      "key_column": "group_id",
+      "title": "{group_name}",
+      "attributes": {
+        "group_name": "group_name",
+        "industry": "industry",
+        "credit_rating": "credit_rating"
+      },
+      "metrics": {
+        "group_total_exposure": "group_total_exposure"
+      },
+      "links": [],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_industry_exposures",
+      "dataset": { "$ref": "dataset:industry_exposures" },
+      "node_type": "IndustryExposureCube",
+      "key_column": "sector_id",
+      "title": "{sector_name}",
+      "attributes": {
+        "sector_name": "sector_name"
+      },
+      "metrics": {
+        "sector_exposure_sum": "sector_exposure_sum",
+        "sector_overdue_sum": "sector_overdue_sum"
+      },
+      "links": [],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_legal_entities",
+      "dataset": { "$ref": "dataset:legal_entities" },
+      "node_type": "LegalEntity",
+      "key_column": "entity_id",
+      "title": "{entity_name}",
+      "attributes": {
+        "entity_name": "entity_name",
+        "unified_code": "unified_code",
+        "branch_dept": "branch_dept",
+        "reg_capital": "reg_capital"
+      },
+      "metrics": {
+        "credit_limit": "credit_limit",
+        "frozen_amount": "frozen_amount",
+        "loan_balance": "loan_balance",
+        "overdue_amount": "overdue_amount"
+      },
+      "links": [
+        {
+          "link_type": "CONTROLS",
+          "direction": "IN",
+          "target_type": "CorpGroup",
+          "target_key_column": "group_id",
+          "create_missing_target": true
+        },
+        {
+          "link_type": "BELONGS_TO_SECTOR",
+          "direction": "OUT",
+          "target_type": "IndustryExposureCube",
+          "target_key_column": "sector_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_beneficial_owners",
+      "dataset": { "$ref": "dataset:beneficial_owners" },
+      "node_type": "BeneficialOwner",
+      "key_column": "owner_id",
+      "title": "实控人·{owner_id}",
+      "attributes": {
+        "full_name": "full_name",
+        "mobile_phone": "mobile_phone",
+        "national_id": "national_id",
+        "settlement_card": "settlement_card"
+      },
+      "metrics": {
+        "controlled_exposure": "controlled_exposure"
+      },
+      "links": [
+        {
+          "link_type": "HOLDS_EQUITY",
+          "direction": "OUT",
+          "target_type": "LegalEntity",
+          "target_key_column": "primary_entity_id",
+          "weight_column": "equity_ratio",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_credit_facilities",
+      "dataset": { "$ref": "dataset:credit_facilities" },
+      "node_type": "CreditFacility",
+      "key_column": "facility_id",
+      "title": "{facility_code}",
+      "attributes": {
+        "facility_code": "facility_code",
+        "product_kind": "product_kind",
+        "maturity_date": "maturity_date"
+      },
+      "metrics": {
+        "principal_amt": "principal_amt",
+        "days_past_due": "days_past_due"
+      },
+      "links": [
+        {
+          "link_type": "DRAWS_FACILITY",
+          "direction": "IN",
+          "target_type": "LegalEntity",
+          "target_key_column": "entity_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    }
+  ]
+}

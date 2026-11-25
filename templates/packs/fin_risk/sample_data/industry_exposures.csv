@@ -1,0 +1,5 @@
+sector_id,sector_name,sector_exposure_sum,sector_overdue_sum
+SEC-01,高端制造,6800.0,120.0
+SEC-02,基础设施,9600.0,680.0
+SEC-03,大宗流通,5400.0,450.0
+SEC-04,化工新材,7200.0,90.0

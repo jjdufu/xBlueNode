@@ -1,0 +1,5 @@
+substation_id,station_name,voltage_kv,grid_zone,rated_capacity_mw,active_load_mw,bus_voltage_pu,plant_id,zone_id,lng,lat
+SUB-01,220kV城北变电站,220,城北分区,240.0,218.0,0.972,PP-01,GZ-01,120.150,30.320
+SUB-02,220kV钱塘变电站,220,钱塘分区,240.0,186.0,0.988,PP-02,GZ-02,120.290,30.280
+SUB-03,110kV高新变电站,110,高新分区,126.0,98.0,0.981,PP-04,GZ-03,120.090,30.230
+SUB-04,110kV临港变电站,110,临港分区,126.0,92.0,0.992,PP-03,GZ-04,120.390,30.205

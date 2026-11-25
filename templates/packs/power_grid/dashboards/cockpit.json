@@ -1,0 +1,173 @@
+{
+  "key": "cockpit",
+  "name": "新型电力与配网调度看板",
+  "slug": "power-grid-cockpit",
+  "description": "覆盖电源、输变电、配电与重点保供负荷五区态势监控、多边形供电围栏及应急调度操作",
+  "theme": "light",
+  "canvas": {
+    "cols": 12,
+    "row_height": 32,
+    "screen_width": 1920,
+    "screen_height": 1080,
+    "zone_layout": "STANDARD_FIVE_ZONE",
+    "compact_mode": "VERTICAL_COMPACT"
+  },
+  "widgets": [
+    {
+      "widget_kind": "MARKDOWN_NOTE",
+      "title": "调度控制栏",
+      "position": { "x": 0, "y": 0, "w": 12, "h": 2 },
+      "data_source": { "kind": "STATIC", "columns": [], "rows": [] },
+      "encoding": {},
+      "options": {
+        "semantic_zone": "CONTROL",
+        "markdown": "**新型电力与配网调度监控** · 实时跟踪 220kV/110kV 供电多边形围栏、10kV 馈线电流负载率与重点保供负荷电压红线"
+      },
+      "drill": [],
+      "refresh_mode": "MANUAL",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "馈线平均负载率",
+      "position": { "x": 0, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "SQL",
+        "sql": "SELECT ROUND(AVG(line_load_ratio), 3) AS value FROM grid_feeder_telemetry"
+      },
+      "encoding": { "y": "value" },
+      "options": { "semantic_zone": "KPI", "unit": "ratio", "decimals": 3 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "馈线峰值电流",
+      "position": { "x": 3, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "SQL",
+        "sql": "SELECT ROUND(MAX(current_amp), 1) AS value FROM grid_feeder_telemetry"
+      },
+      "encoding": { "y": "value" },
+      "options": { "semantic_zone": "KPI", "unit": "A", "decimals": 1 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "最低母线电压",
+      "position": { "x": 6, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "SQL",
+        "sql": "SELECT ROUND(MIN(bus_voltage_pu), 3) AS value FROM grid_feeder_telemetry"
+      },
+      "encoding": { "y": "value" },
+      "options": { "semantic_zone": "KPI", "unit": "p.u.", "decimals": 3 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "KPI_CARD",
+      "title": "24h遥测点数",
+      "position": { "x": 9, "y": 2, "w": 3, "h": 3 },
+      "data_source": {
+        "kind": "SQL",
+        "sql": "SELECT COUNT(*) AS value FROM grid_feeder_telemetry"
+      },
+      "encoding": { "y": "value" },
+      "options": { "semantic_zone": "KPI", "unit": "点", "decimals": 0 },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "MAP",
+      "title": "变电站供电围栏与重点负荷地图",
+      "position": { "x": 0, "y": 5, "w": 7, "h": 9 },
+      "data_source": {
+        "kind": "NODES_GEO",
+        "type_names": ["PowerPlant", "Substation", "DistTransformer", "CriticalLoad"],
+        "color_metric": "load_ratio",
+        "link_types": ["SUPPLIES_SUBSTATION", "FEEDS_TRANSFORMER", "SERVES_LOAD"]
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "SCENE", "show_geo_shapes": true },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "LINE_CHART",
+      "title": "24h有功负荷与线损趋势",
+      "position": { "x": 7, "y": 5, "w": 5, "h": 5 },
+      "data_source": {
+        "kind": "SQL",
+        "sql": "SELECT date_trunc('hour', ts) AS bucket_hr, ROUND(SUM(active_mw), 2) AS total_mw, ROUND(SUM(line_loss_mw), 2) AS loss_mw FROM grid_feeder_telemetry GROUP BY 1 ORDER BY 1"
+      },
+      "encoding": { "x": "bucket_hr", "y": ["total_mw", "loss_mw"] },
+      "options": { "semantic_zone": "INSIGHT", "unit": "MW" },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "BAR_CHART",
+      "title": "各供电分区峰值负载对比",
+      "position": { "x": 7, "y": 10, "w": 5, "h": 4 },
+      "data_source": {
+        "kind": "SQL",
+        "sql": "SELECT grid_zone, ROUND(MAX(line_load_ratio), 3) AS peak_ratio FROM grid_feeder_telemetry GROUP BY grid_zone ORDER BY peak_ratio DESC"
+      },
+      "encoding": { "x": "grid_zone", "y": "peak_ratio" },
+      "options": { "semantic_zone": "INSIGHT", "unit": "ratio" },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "ALERT_LIST",
+      "title": "主变与台区过载告警",
+      "position": { "x": 0, "y": 14, "w": 8, "h": 5 },
+      "data_source": {
+        "kind": "ALERTS",
+        "status": ["OPEN", "ACK"],
+        "severity": ["WARN", "CRITICAL"],
+        "limit": 20
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "DECISION" },
+      "drill": [],
+      "refresh_mode": "LIVE",
+      "refresh_seconds": 60
+    },
+    {
+      "widget_kind": "ACTION_BUTTON",
+      "title": "投入储能顶峰放电",
+      "position": { "x": 8, "y": 14, "w": 4, "h": 5 },
+      "data_source": {
+        "kind": "ACTION",
+        "action_type": "RUN_FLOW",
+        "flow_id": null,
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "discharge_mw": {
+              "type": "number",
+              "title": "放电功率(MW)",
+              "default": 35
+            }
+          }
+        },
+        "confirm_text": "确认调用储能场站执行顶峰放电并同步重算配网负载？"
+      },
+      "encoding": {},
+      "options": { "semantic_zone": "DECISION" },
+      "drill": [],
+      "refresh_mode": "MANUAL",
+      "refresh_seconds": 60
+    }
+  ]
+}

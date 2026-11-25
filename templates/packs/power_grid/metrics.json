@@ -1,0 +1,47 @@
+{
+  "metrics": [
+    {
+      "name": "grid_total_active_load_mw",
+      "display_name": "全网变电站总有功负荷",
+      "description": "各电压等级变电站当前下网有功功率汇总",
+      "dataset_id": { "$ref": "dataset:substations" },
+      "expression": "SUM(active_load_mw)",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "voltage_kv",
+          "column": "voltage_kv",
+          "display_name": "电压等级"
+        },
+        {
+          "name": "grid_zone",
+          "column": "grid_zone",
+          "display_name": "供电分区"
+        }
+      ],
+      "unit": "MW",
+      "format": "0,0.0",
+      "synonyms": ["全网总负荷", "变电总负荷"],
+      "certified": true
+    },
+    {
+      "name": "grid_avg_bus_voltage_pu",
+      "display_name": "平均母线电压标幺值",
+      "description": "枢纽及区域变电站母线运行电压标幺均值",
+      "dataset_id": { "$ref": "dataset:substations" },
+      "expression": "AVG(bus_voltage_pu)",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "grid_zone",
+          "column": "grid_zone",
+          "display_name": "供电分区"
+        }
+      ],
+      "unit": "p.u.",
+      "format": "0.000",
+      "synonyms": ["平均母线电压", "电压标幺均值"],
+      "certified": true
+    }
+  ]
+}

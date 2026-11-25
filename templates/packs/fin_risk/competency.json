@@ -1,0 +1,24 @@
+{
+  "questions": [
+    {
+      "id": "cq_fin_group_exposure",
+      "question": "统计集团系主体并表总敞口最高的前三名",
+      "expected_node_types": ["CorpGroup"],
+      "expected_metrics": ["group_total_exposure"],
+      "must_not_abstain": true
+    },
+    {
+      "id": "cq_fin_overdue_entities",
+      "question": "查询贷款逾期率超过5%的关联法人企业",
+      "expected_node_types": ["LegalEntity"],
+      "expected_metrics": ["overdue_ratio"],
+      "must_not_abstain": true
+    },
+    {
+      "id": "cq_fin_wire_volume",
+      "question": "汇总对公资金划转流水总笔数与划转总额",
+      "expected_grounding_mode": "GUARDED_SQL",
+      "must_not_abstain": true
+    }
+  ]
+}

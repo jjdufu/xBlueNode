@@ -1,0 +1,71 @@
+{
+  "id": "fin_risk",
+  "name": "集团授信与互保风控",
+  "version": "1.0.0",
+  "industry": "金融 / 银行风控",
+  "description": "集团母体—关联法人—实控人—授信借据—行业敞口可执行风控模型，含三道敏感脱敏、逾期动态视野、6万行对公流水透视与互保传染看板",
+  "contents": {
+    "schema": "schema.json",
+    "datasets": [
+      {
+        "key": "corp_groups",
+        "name": "corp_groups",
+        "file": "sample_data/corp_groups.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "industry_exposures",
+        "name": "industry_exposures",
+        "file": "sample_data/industry_exposures.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "legal_entities",
+        "name": "legal_entities",
+        "file": "sample_data/legal_entities.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "beneficial_owners",
+        "name": "beneficial_owners",
+        "file": "sample_data/beneficial_owners.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "credit_facilities",
+        "name": "credit_facilities",
+        "file": "sample_data/credit_facilities.csv",
+        "sync_mode": "SNAPSHOT"
+      }
+    ],
+    "mappings": "mappings.json",
+    "metrics": "metrics.json",
+    "rules": "rules.json",
+    "flows": [
+      "flows/freeze_credit.json"
+    ],
+    "dashboards": [
+      "dashboards/cockpit.json"
+    ],
+    "agents": [
+      "agents/risk_investigator.json"
+    ],
+    "export_templates": []
+  },
+  "sha256": {
+    "README.md": "1a7ed4cb597019dddce0c503c14586ce72840a567b311e6e0f55579e858d20c7",
+    "agents/risk_investigator.json": "4e4a7c8337d1ce8180fc99a230e9ceeab057653f78893dff5aedeaff20b008bb",
+    "competency.json": "1b82e3806b75b3c9efad818eafbe9a2e66a518bed2cf79a1f980e02595cc6630",
+    "dashboards/cockpit.json": "71f205fdac6bfda9d090ca2e3799c72dc7bb749f765f4fe1a5b31fe8fa155778",
+    "flows/freeze_credit.json": "0190c7981cc5857860592c85ab35c2d868f185f1f3eaad19c3a3c96863903612",
+    "mappings.json": "b96f49962fbad8ab83c82d25364c18b1b83750aef9986ab77f7dfb86dac00b8f",
+    "metrics.json": "421449061c2df262fce5cc0a6b5d1d1046e44b883eb609d32a1f4feda9d4c776",
+    "rules.json": "6caa618c41a1e9d3fed28f5f5ee833ba5603ed25235c0a4ed7331a39df17d8d1",
+    "sample_data/beneficial_owners.csv": "c64f39f8d6bcc445521c0fd627935e3e5a098c251b4b44a3b4acd694c4f97482",
+    "sample_data/corp_groups.csv": "71fd9c0b2c9d3d662cac8d3c8a4b53b44395f5712c5d2e4a2d33ec512ac47b50",
+    "sample_data/credit_facilities.csv": "75555521149533ddb215f63290e3f28804946fdd404d65eb0a277c6569a61251",
+    "sample_data/industry_exposures.csv": "e78e9342c06b56c5b421bf165f61c255f0d6c6e8224aa43b265376f61f7d7237",
+    "sample_data/legal_entities.csv": "2aa99bdfd02fd66da9e1b719066ad1948379b720be1b1a9555b54b172ab7bf61",
+    "schema.json": "fc907ba6921df92585554a9fb017df48a2e75d5f78e59e331cd6b7486e71324c"
+  }
+}

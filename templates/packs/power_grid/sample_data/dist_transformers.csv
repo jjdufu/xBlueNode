@@ -1,0 +1,5 @@
+transformer_id,transformer_name,feeder_code,capacity_kva,demand_mw,oil_temp_c,substation_id,lng,lat
+DT-01,城北一号线01号配变,FD-N01,1250.0,1.08,78.5,SUB-01,120.145,30.318
+DT-02,城北二号线02号配变,FD-N02,1000.0,0.86,71.2,SUB-01,120.156,30.324
+DT-03,钱塘一号线01号配变,FD-Q01,1600.0,1.24,74.0,SUB-02,120.286,30.278
+DT-04,高新一号线01号配变,FD-G01,1250.0,0.95,69.8,SUB-03,120.088,30.228

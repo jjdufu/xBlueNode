@@ -1,0 +1,709 @@
+{
+  "node_types": [
+    {
+      "name": "CorpGroup",
+      "display_name": "集团系主体",
+      "description": "统一授信管控的大型企业集团及关联产业系母体",
+      "icon": "building",
+      "color": "#2563eb",
+      "title_template": "{prop.group_name}",
+      "domain_group": "集团授信域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "group_name",
+          "display_name": "集团简称",
+          "description": "集团系授信客户标准简称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "industry",
+          "display_name": "主营行业",
+          "description": "集团核心主业所属行业门类",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "credit_rating",
+          "display_name": "内部信用评级",
+          "description": "行内对公客户信用等级（AAA ~ B）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "group_total_exposure",
+          "display_name": "集团并表总敞口",
+          "description": "集团下辖关联法人贷款余额汇总",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "contagion_score",
+          "display_name": "违约传染评分",
+          "description": "按集团总敞口测算的系统性传染风险分值",
+          "unit": "score",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [
+        {
+          "target_metric": "group_total_exposure",
+          "op": "SUM",
+          "via_link_type": "CONTROLS",
+          "direction": "OUT",
+          "source_type_name": "LegalEntity",
+          "source_metric": "loan_balance",
+          "weight_by_link": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "derived_rules": [
+        {
+          "target_metric": "contagion_score",
+          "expression": "if(group_total_exposure > 0, min(100.0, group_total_exposure / 500.0), 0.0)",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "actions": [],
+      "sync_to_knowledge": true,
+      "pos_x": 80.0,
+      "pos_y": 160.0
+    },
+    {
+      "name": "LegalEntity",
+      "display_name": "关联法人企业",
+      "description": "办理对公授信、对外提供连带责任担保及资金往来的独立法人企业",
+      "icon": "briefcase",
+      "color": "#0891b2",
+      "title_template": "{prop.entity_name}",
+      "domain_group": "集团授信域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "entity_name",
+          "display_name": "企业名称",
+          "description": "工商登记法人全称或标准简称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "unified_code",
+          "display_name": "统一社会信用代码",
+          "description": "18位统一社会信用代码",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "branch_dept",
+          "display_name": "管户分行部门",
+          "description": "授信主办分行部门编码（用于动态行级视野管控）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "reg_capital",
+          "display_name": "注册资本",
+          "description": "企业实缴注册资本（万元）",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "credit_limit",
+          "display_name": "可用授信额度",
+          "description": "当前可提款敞口授信额度",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "frozen_amount",
+          "display_name": "已冻结授信额",
+          "description": "因风险预警冻结控制的授信额度",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "loan_balance",
+          "display_name": "表内外用信余额",
+          "description": "企业当前存续贷款及银承敞口余额",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "overdue_amount",
+          "display_name": "逾期垫款本金",
+          "description": "已逾期或发生保证金垫款的金额",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "overdue_ratio",
+          "display_name": "贷款逾期率",
+          "description": "逾期垫款金额占表内外用信余额比例",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "guarantee_out_total",
+          "display_name": "对外互保总额",
+          "description": "沿交叉互保边对外提供连带担保金额总计",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "inbound_contagion_risk",
+          "display_name": "输入型互保传染额",
+          "description": "上游担保人逾期向本企业传导的风险敞口汇总",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [
+        {
+          "target_metric": "guarantee_out_total",
+          "op": "SUM",
+          "via_link_type": "CROSS_GUARANTEES",
+          "direction": "OUT",
+          "source_type_name": "CROSS_GUARANTEES",
+          "source_metric": "guarantee_amt",
+          "weight_by_link": false,
+          "maturity": "CONFIRMED"
+        },
+        {
+          "target_metric": "inbound_contagion_risk",
+          "op": "SUM",
+          "via_link_type": "CROSS_GUARANTEES",
+          "direction": "IN",
+          "source_type_name": "CROSS_GUARANTEES",
+          "source_metric": "contagion_flux",
+          "weight_by_link": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "derived_rules": [
+        {
+          "target_metric": "overdue_ratio",
+          "expression": "if(loan_balance > 0, overdue_amount / loan_balance, 0.0)",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "actions": [
+        {
+          "name": "freeze_credit_line",
+          "display_name": "冻结授信额度",
+          "description": "针对逾期越界或互保圈高危法人立即扣减可用授信额度并转入冻结台账",
+          "parameters": [
+            {
+              "name": "freeze_amt",
+              "display_name": "冻结额度",
+              "data_type": "FLOAT64",
+              "required": true,
+              "description": "本次紧急冻结的授信额度（万元）"
+            }
+          ],
+          "precondition_expr": "overdue_ratio >= 0.0 and credit_limit >= param.freeze_amt and param.freeze_amt > 0",
+          "side_effect_tier": "SELF_ONLY",
+          "mutations": [
+            {
+              "target": "self.credit_limit",
+              "expression": "credit_limit - param.freeze_amt"
+            },
+            {
+              "target": "self.frozen_amount",
+              "expression": "frozen_amount + param.freeze_amt"
+            }
+          ],
+          "required_permission": "ACTION_EXECUTE",
+          "require_approval": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "sync_to_knowledge": true,
+      "pos_x": 420.0,
+      "pos_y": 160.0
+    },
+    {
+      "name": "BeneficialOwner",
+      "display_name": "实际控制人",
+      "description": "穿透多层股权识别的自然人最终受益人与实际控制人（含三道强制脱敏字段）",
+      "icon": "user-check",
+      "color": "#d97706",
+      "title_template": "实控人·{node_key}",
+      "domain_group": "穿透核查域",
+      "semantic_layer_tier": "STATIC_FACT",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "full_name",
+          "display_name": "实控人姓名",
+          "description": "自然人真实姓名（受 NAME 脱敏策略保护）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NAME",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "mobile_phone",
+          "display_name": "联系手机号",
+          "description": "实控人预留手机号码（受 PHONE 脱敏策略保护）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "PHONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "national_id",
+          "display_name": "居民身份证号",
+          "description": "18位居民身份证件号码（受 ID_CARD 脱敏策略保护）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "ID_CARD",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "settlement_card",
+          "display_name": "个人结算银行卡",
+          "description": "关联资金穿透核查银行卡号（受 BANK_CARD 脱敏策略保护）",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "BANK_CARD",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "controlled_exposure",
+          "display_name": "穿透控制总敞口",
+          "description": "按持股权重汇总的控制企业用信敞口",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [
+        {
+          "target_metric": "controlled_exposure",
+          "op": "SUM",
+          "via_link_type": "HOLDS_EQUITY",
+          "direction": "OUT",
+          "source_type_name": "LegalEntity",
+          "source_metric": "loan_balance",
+          "weight_by_link": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "derived_rules": [],
+      "actions": [],
+      "sync_to_knowledge": false,
+      "pos_x": 80.0,
+      "pos_y": 430.0
+    },
+    {
+      "name": "CreditFacility",
+      "display_name": "授信借据明细",
+      "description": "流贷、银承、保函及供应链贸易融资单笔放款借据台账",
+      "icon": "file-text",
+      "color": "#16a34a",
+      "title_template": "{prop.facility_code}",
+      "domain_group": "信贷台账域",
+      "semantic_layer_tier": "EVENT_DYNAMIC",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "facility_code",
+          "display_name": "借据编号",
+          "description": "核心信贷系统放款借据唯一编号",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "product_kind",
+          "display_name": "授信品种",
+          "description": "流动资金贷款 / 银行承兑汇票 / 国内信用证",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "maturity_date",
+          "display_name": "到期日",
+          "description": "借据合同约定到期日期",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "principal_amt",
+          "display_name": "借据本金",
+          "description": "单笔放款本金余额",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "days_past_due",
+          "display_name": "逾期天数",
+          "description": "本息逾期累计自然日天数",
+          "unit": "天",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [],
+      "derived_rules": [],
+      "actions": [],
+      "sync_to_knowledge": false,
+      "pos_x": 760.0,
+      "pos_y": 160.0
+    },
+    {
+      "name": "IndustryExposureCube",
+      "display_name": "行业敞口汇总",
+      "description": "按国民经济行业门类归集的全行对公授信敞口与不良率监测立方",
+      "icon": "pie-chart",
+      "color": "#4f46e5",
+      "title_template": "{prop.sector_name}",
+      "domain_group": "风险监测域",
+      "semantic_layer_tier": "CUBE_ROLLUP",
+      "maturity": "CONFIRMED",
+      "properties": [
+        {
+          "name": "sector_name",
+          "display_name": "行业板块名称",
+          "description": "授信投向行业板块标准名称",
+          "data_type": "STRING",
+          "kind": "ATTRIBUTE",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "sector_exposure_sum",
+          "display_name": "行业用信总额",
+          "description": "该行业全部关联法人用信余额汇总",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "sector_overdue_sum",
+          "display_name": "行业逾期总额",
+          "description": "该行业全部关联法人逾期垫款本金汇总",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "npl_ratio",
+          "display_name": "行业不良逾期率",
+          "description": "行业逾期总额占行业用信总额比例",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "agg_rules": [
+        {
+          "target_metric": "sector_exposure_sum",
+          "op": "SUM",
+          "via_link_type": "BELONGS_TO_SECTOR",
+          "direction": "IN",
+          "source_type_name": "LegalEntity",
+          "source_metric": "loan_balance",
+          "weight_by_link": false,
+          "maturity": "CONFIRMED"
+        },
+        {
+          "target_metric": "sector_overdue_sum",
+          "op": "SUM",
+          "via_link_type": "BELONGS_TO_SECTOR",
+          "direction": "IN",
+          "source_type_name": "LegalEntity",
+          "source_metric": "overdue_amount",
+          "weight_by_link": false,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "derived_rules": [
+        {
+          "target_metric": "npl_ratio",
+          "expression": "if(sector_exposure_sum > 0, sector_overdue_sum / sector_exposure_sum, 0.0)",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "actions": [],
+      "sync_to_knowledge": false,
+      "pos_x": 760.0,
+      "pos_y": 430.0
+    }
+  ],
+  "edge_types": [
+    {
+      "name": "CONTROLS",
+      "src_type_name": "CorpGroup",
+      "dst_type_name": "LegalEntity",
+      "impact_weight": 0.85,
+      "cardinality": "ONE_TO_MANY",
+      "description": "集团母体对下属成员法人企业的股权或协议控制关系",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "contagion_score",
+            "to_metric": "overdue_amount",
+            "coefficient": 0.5,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "HOLDS_EQUITY",
+      "src_type_name": "BeneficialOwner",
+      "dst_type_name": "LegalEntity",
+      "impact_weight": 0.8,
+      "cardinality": "MANY_TO_MANY",
+      "description": "实际控制人对关联法人企业的直接或间接穿透持股关系",
+      "properties": [
+        {
+          "name": "equity_ratio",
+          "display_name": "穿透持股比例",
+          "description": "最终受益持股权重",
+          "unit": "ratio",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "controlled_exposure",
+            "to_metric": "loan_balance",
+            "coefficient": 0.1,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "CROSS_GUARANTEES",
+      "src_type_name": "LegalEntity",
+      "dst_type_name": "LegalEntity",
+      "impact_weight": 0.75,
+      "cardinality": "MANY_TO_MANY",
+      "description": "关联或同业法人之间的连带责任交叉互保与环形担保链",
+      "properties": [
+        {
+          "name": "guarantee_amt",
+          "display_name": "连带担保金额",
+          "description": "生效担保合同本金限额",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        },
+        {
+          "name": "contagion_flux",
+          "display_name": "违约传染敞口",
+          "description": "结合担保人逾期率与担保额派生的代偿传染风险额",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "derived_rules": [
+        {
+          "target_metric": "contagion_flux",
+          "expression": "guarantee_amt * src.overdue_ratio",
+          "path_kind": "VERTEX_TO_EDGE",
+          "enabled": true,
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "overdue_amount",
+            "to_metric": "overdue_amount",
+            "coefficient": 0.35,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "TRANSFERS_FUNDS",
+      "src_type_name": "LegalEntity",
+      "dst_type_name": "LegalEntity",
+      "impact_weight": 0.65,
+      "cardinality": "MANY_TO_MANY",
+      "description": "对公结算账户间大额高频资金划转与贸易回流链路",
+      "properties": [
+        {
+          "name": "transfer_amt",
+          "display_name": "累计划转金额",
+          "description": "周期内大额对公划转汇总金额",
+          "unit": "万元",
+          "data_type": "FLOAT64",
+          "kind": "METRIC",
+          "required": false,
+          "pii_category": "NONE",
+          "maturity": "CONFIRMED"
+        }
+      ],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "loan_balance",
+            "to_metric": "loan_balance",
+            "coefficient": 0.12,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "DRAWS_FACILITY",
+      "src_type_name": "LegalEntity",
+      "dst_type_name": "CreditFacility",
+      "impact_weight": 0.8,
+      "cardinality": "ONE_TO_MANY",
+      "description": "授信法人名下提款生成的单笔信贷借据挂接关系",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "overdue_amount",
+            "to_metric": "days_past_due",
+            "coefficient": 0.2,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    },
+    {
+      "name": "BELONGS_TO_SECTOR",
+      "src_type_name": "LegalEntity",
+      "dst_type_name": "IndustryExposureCube",
+      "impact_weight": 0.7,
+      "cardinality": "MANY_TO_ONE",
+      "description": "关联法人授信敞口归集至对应行业风险监测立方",
+      "properties": [],
+      "propagation": {
+        "rules": [
+          {
+            "from_metric": "loan_balance",
+            "to_metric": "sector_exposure_sum",
+            "coefficient": 1.0,
+            "lag_steps": 1
+          }
+        ]
+      },
+      "maturity": "CONFIRMED"
+    }
+  ],
+  "mappings": []
+}

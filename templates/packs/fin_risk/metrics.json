@@ -1,0 +1,42 @@
+{
+  "metrics": [
+    {
+      "name": "fin_total_loan_balance",
+      "display_name": "关联法人总用信余额",
+      "description": "全行集团关联法人表内外贷款及敞口余额汇总",
+      "dataset_id": { "$ref": "dataset:legal_entities" },
+      "expression": "SUM(loan_balance)",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "branch_dept",
+          "column": "branch_dept",
+          "display_name": "管户分行"
+        }
+      ],
+      "unit": "万元",
+      "format": "0,0.00",
+      "synonyms": ["总用信余额", "集团授信敞口"],
+      "certified": true
+    },
+    {
+      "name": "fin_total_overdue_amount",
+      "display_name": "关联法人总逾期本金",
+      "description": "关联法人已发生逾期或垫款本金合计",
+      "dataset_id": { "$ref": "dataset:legal_entities" },
+      "expression": "SUM(overdue_amount)",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "branch_dept",
+          "column": "branch_dept",
+          "display_name": "管户分行"
+        }
+      ],
+      "unit": "万元",
+      "format": "0,0.00",
+      "synonyms": ["逾期总额", "不良垫款额"],
+      "certified": true
+    }
+  ]
+}

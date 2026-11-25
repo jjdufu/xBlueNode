@@ -1,0 +1,78 @@
+{
+  "id": "power_grid",
+  "name": "新型电力与配网调度",
+  "version": "1.0.0",
+  "industry": "电力 / 能源",
+  "description": "电源—输变电—配电—重点负荷四域三层配网模型，含多边形供电围栏、馈线边四路径过载传导、主变跳闸推演与五区调度看板",
+  "contents": {
+    "schema": "schema.json",
+    "datasets": [
+      {
+        "key": "power_plants",
+        "name": "power_plants",
+        "file": "sample_data/power_plants.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "grid_zones",
+        "name": "grid_zones",
+        "file": "sample_data/grid_zones.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "substations",
+        "name": "substations",
+        "file": "sample_data/substations.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "dist_transformers",
+        "name": "dist_transformers",
+        "file": "sample_data/dist_transformers.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "critical_loads",
+        "name": "critical_loads",
+        "file": "sample_data/critical_loads.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "switch_orders",
+        "name": "switch_orders",
+        "file": "sample_data/switch_orders.csv",
+        "sync_mode": "SNAPSHOT"
+      }
+    ],
+    "mappings": "mappings.json",
+    "metrics": "metrics.json",
+    "rules": "rules.json",
+    "flows": [
+      "flows/ess_dispatch.json"
+    ],
+    "dashboards": [
+      "dashboards/cockpit.json"
+    ],
+    "agents": [
+      "agents/grid_dispatcher.json"
+    ],
+    "export_templates": []
+  },
+  "sha256": {
+    "README.md": "5230469c31f591d0f32405508beb359e89d39c33c95a1d5fbf24a3cb8a71ab41",
+    "agents/grid_dispatcher.json": "68dfbe3d254e0da31a94559327bdc8436504bc50508b67f31a16780ff39e717f",
+    "competency.json": "f7ad6a2ea655afae5b86ad9bd786cee0e0285ffabd193ef729aeae0bfedc772a",
+    "dashboards/cockpit.json": "609d31f69058c1a6f4d75a904ac23cf1a7f1283b03d1a54cd1c8ea5e70e065ee",
+    "flows/ess_dispatch.json": "716f7c5f79485a2848fa0ee9b85c3c8d41e2ef311e08da720b1fbd6f34a4686c",
+    "mappings.json": "006b5def749d3da12cd9890a768c732bc2c05aa830a2dade5fc18f0df5a26947",
+    "metrics.json": "1f7acf2c5e23a12c6c34988bc545afa9c7bd1b4bdac3151cc2000b535236c49d",
+    "rules.json": "a26d4ab6974b8a6212108ec1b62afe513a1021fff638a58b64af3e7ee17b9c09",
+    "sample_data/critical_loads.csv": "e6619e96b12435bd1a45ff047a6d720aee884f420470a88166ef40dfde4479a2",
+    "sample_data/dist_transformers.csv": "abff919232cffb7ed018cdd82821db9883dc9b66580b8f49aac9fca93ceb704d",
+    "sample_data/grid_zones.csv": "97cd78db249b4db11c3f67df86f995f74a88e2f4a528af14d16a0bd79811e74b",
+    "sample_data/power_plants.csv": "2a055283a9747296604fd231addcfd4d10d072ddde34b64faa97cf744db6aa7f",
+    "sample_data/substations.csv": "0c95e06d406913ea83e849c7429b34dfdaa981d942b1adfd9473e2a6912f13ed",
+    "sample_data/switch_orders.csv": "04940f6dd61c8c0f8f0f32bc8922e85c85ff9fc96ba66d326a221a572080bfdc",
+    "schema.json": "ea19ace647bc8c08e12c121e11e189ec916095b9695d60591d6541e5a6a919e6"
+  }
+}
