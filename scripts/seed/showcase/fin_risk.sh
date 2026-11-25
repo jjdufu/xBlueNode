@@ -122,47 +122,50 @@ trap 'rm -rf "$SEED_TMP"' EXIT
 # 0. 严格真数据校验的幂等快路径（SHOWCASE_FORCE_REBUILD=1 时强制全量重建）
 if [[ "${SHOWCASE_FORCE_REBUILD:-0}" != "1" ]]; then
   FP_PIDS=()
-  api_ok GET /api/axops/pulse > "$SEED_TMP/fp_pulse.json" & FP_PIDS+=("$!")
-  api_ok GET "/api/xblue/schema?subgraph=main" > "$SEED_TMP/fp_main.json" & FP_PIDS+=("$!")
-  api_try_get /api/xblueview/dashboards/by-slug/fin-risk-cockpit > "$SEED_TMP/fp_dash.json" & FP_PIDS+=("$!")
-  api_ok GET "/api/axhub/datasets?limit=200" > "$SEED_TMP/fp_ds.json" & FP_PIDS+=("$!")
-  api_ok GET /api/axguard/users > "$SEED_TMP/fp_users.json" & FP_PIDS+=("$!")
-  api_ok GET /api/axguard/row-policies > "$SEED_TMP/fp_rp.json" & FP_PIDS+=("$!")
-  if wait_pids "${FP_PIDS[@]}" 2>/dev/null; then
-    if jq -ne \
-      --arg u "$FIN_ANALYST_SH_USERNAME" \
-      --slurpfile pulse "$SEED_TMP/fp_pulse.json" \
-      --slurpfile main "$SEED_TMP/fp_main.json" \
-      --slurpfile dash "$SEED_TMP/fp_dash.json" \
-      --slurpfile ds "$SEED_TMP/fp_ds.json" \
-      --slurpfile users "$SEED_TMP/fp_users.json" \
-      --slurpfile rp "$SEED_TMP/fp_rp.json" \
-      --slurpfile pack "$PACK_DIR/schema.json" '
-      ($pulse[0].subgraphs | map(select(.slug == "fin_risk"))[0]) as $fn
-      | ($main[0].node_types | map(.name)) as $mn
-      | ($main[0].edge_types | map(.name)) as $me
-      | ((if ($ds[0] | type) == "array" then $ds[0] else ($ds[0].items // []) end) | map(select(.name == "fin_corp_wire_transfers"))[0]) as $fds
-      | ((if ($users[0] | type) == "array" then $users[0] else ($users[0].items // []) end) | map(select(.username == $u))[0]) as $usr
-      | ((if ($rp[0] | type) == "array" then $rp[0] else ($rp[0].items // []) end) | map(select(.name == "fin_risk_cross_branch_overdue_escalate" and .enabled == true))[0]) as $pol
-      | ($fn != null and $fn.cert_level == "L4_CERTIFIED" and $fn.node_count == 1210 and $fn.link_count >= 4260)
-      and ($fds != null and ($fds.row_count // 0) >= 60000)
-      and ($usr != null)
-      and ($pol != null)
-      and ($dash[0].status == "PUBLISHED")
-      and ([ $pack[0].node_types[].name ] | all(. as $n | ($mn | index($n)) != null))
-      and ([ $pack[0].edge_types[].name ] | all(. as $e | ($me | index($e)) != null))
-      and ([ $main[0].edge_types[] | ((.src_type_name as $s | $mn | index($s)) != null and (.dst_type_name as $d | $mn | index($d)) != null) ] | all)
-    ' >/dev/null 2>&1; then
-      FP_DS_ID=$(jq -r '(if type == "array" then . else (.items // []) end) | map(select(.name == "fin_corp_wire_transfers"))[0].id' "$SEED_TMP/fp_ds.json")
-      FP_DASH_ID=$(jq -r '.id' "$SEED_TMP/fp_dash.json")
-      if [[ "$SHOWCASE_TENANT_ID" == "default" ]]; then
-        upsert_ids_env "FIN_RISK_DATASET_ID" "$FP_DS_ID"
-        upsert_ids_env "FIN_RISK_DASHBOARD_ID" "$FP_DASH_ID"
-        upsert_ids_env "FIN_ANALYST_SH_USERNAME" "$FIN_ANALYST_SH_USERNAME"
-        upsert_ids_env "FIN_ANALYST_SH_PASSWORD" "$FIN_ANALYST_SH_PASSWORD"
+  api_try_get /api/xblueview/dashboards/by-slug/fin-risk-cockpit > "$SEED_TMP/fp_dash.json" || echo '{}' > "$SEED_TMP/fp_dash.json"
+  if jq -e '.status == "PUBLISHED"' "$SEED_TMP/fp_dash.json" >/dev/null 2>&1; then
+    FP_PIDS=()
+    api_ok GET /api/axops/pulse > "$SEED_TMP/fp_pulse.json" & FP_PIDS+=("$!")
+    api_ok GET "/api/xblue/schema?subgraph=main" > "$SEED_TMP/fp_main.json" & FP_PIDS+=("$!")
+    api_ok GET "/api/axhub/datasets?limit=200" > "$SEED_TMP/fp_ds.json" & FP_PIDS+=("$!")
+    api_ok GET /api/axguard/users > "$SEED_TMP/fp_users.json" & FP_PIDS+=("$!")
+    api_ok GET /api/axguard/row-policies > "$SEED_TMP/fp_rp.json" & FP_PIDS+=("$!")
+    if wait_pids "${FP_PIDS[@]}" 2>/dev/null; then
+      if jq -ne \
+        --arg u "$FIN_ANALYST_SH_USERNAME" \
+        --slurpfile pulse "$SEED_TMP/fp_pulse.json" \
+        --slurpfile main "$SEED_TMP/fp_main.json" \
+        --slurpfile dash "$SEED_TMP/fp_dash.json" \
+        --slurpfile ds "$SEED_TMP/fp_ds.json" \
+        --slurpfile users "$SEED_TMP/fp_users.json" \
+        --slurpfile rp "$SEED_TMP/fp_rp.json" \
+        --slurpfile pack "$PACK_DIR/schema.json" '
+        ($pulse[0].subgraphs | map(select(.slug == "fin_risk"))[0]) as $fn
+        | ($main[0].node_types | map(.name)) as $mn
+        | ($main[0].edge_types | map(.name)) as $me
+        | ((if ($ds[0] | type) == "array" then $ds[0] else ($ds[0].items // []) end) | map(select(.name == "fin_corp_wire_transfers"))[0]) as $fds
+        | ((if ($users[0] | type) == "array" then $users[0] else ($users[0].items // []) end) | map(select(.username == $u))[0]) as $usr
+        | ((if ($rp[0] | type) == "array" then $rp[0] else ($rp[0].items // []) end) | map(select(.name == "fin_risk_cross_branch_overdue_escalate" and .enabled == true))[0]) as $pol
+        | ($fn != null and $fn.cert_level == "L4_CERTIFIED" and $fn.node_count == 1210 and $fn.link_count >= 4260)
+        and ($fds != null and ($fds.row_count // 0) >= 60000)
+        and ($usr != null)
+        and ($pol != null)
+        and ($dash[0].status == "PUBLISHED")
+        and ([ $pack[0].node_types[].name ] | all(. as $n | ($mn | index($n)) != null))
+        and ([ $pack[0].edge_types[].name ] | all(. as $e | ($me | index($e)) != null))
+        and ([ $main[0].edge_types[] | ((.src_type_name as $s | $mn | index($s)) != null and (.dst_type_name as $d | $mn | index($d)) != null) ] | all)
+      ' >/dev/null 2>&1; then
+        FP_DS_ID=$(jq -r '(if type == "array" then . else (.items // []) end) | map(select(.name == "fin_corp_wire_transfers"))[0].id' "$SEED_TMP/fp_ds.json")
+        FP_DASH_ID=$(jq -r '.id' "$SEED_TMP/fp_dash.json")
+        if [[ "$SHOWCASE_TENANT_ID" == "default" ]]; then
+          upsert_ids_env "FIN_RISK_DATASET_ID" "$FP_DS_ID"
+          upsert_ids_env "FIN_RISK_DASHBOARD_ID" "$FP_DASH_ID"
+          upsert_ids_env "FIN_ANALYST_SH_USERNAME" "$FIN_ANALYST_SH_USERNAME"
+          upsert_ids_env "FIN_ANALYST_SH_PASSWORD" "$FIN_ANALYST_SH_PASSWORD"
+        fi
+        echo "FIN_RISK_DATASET_ID=$FP_DS_ID"
+        exit 0
       fi
-      echo "FIN_RISK_DATASET_ID=$FP_DS_ID"
-      exit 0
     fi
   fi
 fi

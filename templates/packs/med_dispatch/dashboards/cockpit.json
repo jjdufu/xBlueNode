@@ -39,7 +39,7 @@
         "grain": "DAY",
         "time_range": "LAST_7_DAYS"
       },
-      "encoding": {},
+      "encoding": { "y": "value", "value": "value" },
       "options": { "semantic_zone": "KPI", "unit": "张", "decimals": 0 },
       "drill": [],
       "refresh_mode": "LIVE",
@@ -57,7 +57,7 @@
         "grain": "DAY",
         "time_range": "LAST_7_DAYS"
       },
-      "encoding": {},
+      "encoding": { "y": "value", "value": "value" },
       "options": { "semantic_zone": "KPI", "unit": "分钟", "decimals": 1 },
       "drill": [],
       "refresh_mode": "LIVE",
@@ -75,7 +75,7 @@
         "grain": "HOUR",
         "time_range": "LAST_7_DAYS"
       },
-      "encoding": {},
+      "encoding": { "y": "value", "value": "value" },
       "options": { "semantic_zone": "KPI", "unit": "%", "decimals": 1 },
       "drill": [],
       "refresh_mode": "LIVE",
@@ -93,7 +93,7 @@
         "grain": "DAY",
         "time_range": "LAST_7_DAYS"
       },
-      "encoding": {},
+      "encoding": { "y": "value", "value": "value" },
       "options": { "semantic_zone": "KPI", "unit": "分钟", "decimals": 1 },
       "drill": [],
       "refresh_mode": "LIVE",

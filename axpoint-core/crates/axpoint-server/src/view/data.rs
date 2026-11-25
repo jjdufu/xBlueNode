@@ -17,7 +17,10 @@ use axpoint_domain::axhub::{DatasetListQuery, DatasetStatus};
 use axpoint_domain::enums::{
     AggFn, AlertStatus, DataType, Permission, PiiCategory, RollupGrain, Severity, WidgetKind,
 };
-use axpoint_domain::graph::{SubgraphQuery, WindowGroupBy, WindowKind, WindowQuery, WindowSpec};
+use axpoint_domain::graph::{
+    SubgraphQuery, SubgraphResponse, WindowBucketItem, WindowGroupBy, WindowKind, WindowQuery,
+    WindowSpec,
+};
 use axpoint_domain::ports::{
     AnalyticsRepository, ConnectionRepository, DatasetRepository, GraphQueryPort, MetricStorePort,
     RulesRepository, SimRepository, StudioRepository, ViewRepository,
@@ -296,7 +299,8 @@ where
                 time_range: time_range.as_deref(),
                 group_by: group_by.as_deref(),
             };
-            execute_node_metric_widget(env, &input, drill_level).await
+            execute_node_metric_widget(env, &input, spec.widget_kind, spec.encoding, drill_level)
+                .await
         }
         WidgetDataSource::Graph {
             type_names,
@@ -998,46 +1002,144 @@ fn resolve_node_metric_window_size(grain: Option<&str>) -> Result<String, AppErr
     ))
 }
 
+async fn query_best_production_subgraph<S>(
+    env: &WidgetExecEnv<'_, S>,
+    type_names_csv: Option<String>,
+    link_types_csv: Option<String>,
+    limit: u32,
+) -> Result<SubgraphResponse, AppError>
+where
+    S: GraphQueryPort + StudioRepository + ?Sized,
+{
+    let mut best = env
+        .store
+        .query_subgraph(
+            &env.principal.tenant_id,
+            SubgraphQuery {
+                subgraph: None,
+                type_names: type_names_csv.clone(),
+                link_types: link_types_csv.clone(),
+                limit,
+                ..SubgraphQuery::default()
+            },
+        )
+        .await?;
+
+    if type_names_csv.is_none() {
+        return Ok(best);
+    }
+
+    let Ok(subgraphs) = env.store.list_subgraphs(&env.principal.tenant_id).await else {
+        return Ok(best);
+    };
+    for sg in subgraphs {
+        if sg.is_dev_sandbox || sg.slug == "main" {
+            continue;
+        }
+        let Ok(candidate) = env
+            .store
+            .query_subgraph(
+                &env.principal.tenant_id,
+                SubgraphQuery {
+                    subgraph: Some(sg.slug),
+                    type_names: type_names_csv.clone(),
+                    link_types: link_types_csv.clone(),
+                    limit,
+                    ..SubgraphQuery::default()
+                },
+            )
+            .await
+        else {
+            continue;
+        };
+        if (candidate.nodes.len(), candidate.links.len()) > (best.nodes.len(), best.links.len()) {
+            best = candidate;
+        }
+    }
+    Ok(best)
+}
+
 async fn resolve_node_group_labels<S>(
     env: &WidgetExecEnv<'_, S>,
     type_name: &str,
 ) -> HashMap<String, String>
 where
-    S: GraphQueryPort + ?Sized,
+    S: GraphQueryPort + StudioRepository + ?Sized,
 {
     let mut labels = HashMap::new();
-    if let Ok(sub) = env
-        .store
-        .query_subgraph(
-            &env.principal.tenant_id,
-            SubgraphQuery {
-                type_names: Some(type_name.to_owned()),
-                link_types: None,
-                limit: 2_000,
-                ..SubgraphQuery::default()
-            },
-        )
-        .await
-    {
-        for n in sub.nodes {
-            let text = if n.title.trim().is_empty() || n.title == n.node_key {
-                n.node_key
-            } else {
-                format!("{} ({})", n.title.trim(), n.node_key)
-            };
-            labels.insert(n.id.to_string(), text);
+    let mut candidate_slugs: Vec<Option<String>> = vec![None];
+    if let Ok(subgraphs) = env.store.list_subgraphs(&env.principal.tenant_id).await {
+        for sg in subgraphs {
+            if !sg.is_dev_sandbox && sg.slug != "main" {
+                candidate_slugs.push(Some(sg.slug));
+            }
+        }
+    }
+
+    for slug_opt in candidate_slugs {
+        if let Ok(sub) = env
+            .store
+            .query_subgraph(
+                &env.principal.tenant_id,
+                SubgraphQuery {
+                    subgraph: slug_opt,
+                    type_names: Some(type_name.to_owned()),
+                    link_types: None,
+                    limit: 2_000,
+                    ..SubgraphQuery::default()
+                },
+            )
+            .await
+        {
+            for n in sub.nodes {
+                let text = if n.title.trim().is_empty() || n.title == n.node_key {
+                    n.node_key
+                } else {
+                    format!("{} ({})", n.title.trim(), n.node_key)
+                };
+                labels.insert(n.id.to_string(), text);
+            }
         }
     }
     labels
 }
 
+fn filter_node_metric_bucket_items(
+    items: Vec<WindowBucketItem>,
+    widget_kind: WidgetKind,
+    group_by: WindowGroupBy,
+    encoding: &serde_json::Value,
+) -> Vec<WindowBucketItem> {
+    let mut non_null: Vec<WindowBucketItem> =
+        items.into_iter().filter(|it| it.value.is_some()).collect();
+
+    let x_enc = encoding.get("x").and_then(serde_json::Value::as_str);
+    let collapse_by_node = group_by == WindowGroupBy::Node
+        && (widget_kind == WidgetKind::BarChart || x_enc == Some("group_key"));
+    if collapse_by_node {
+        let mut latest_by_group: BTreeMap<String, WindowBucketItem> = BTreeMap::new();
+        for item in non_null {
+            let key = item.group_key.clone().unwrap_or_default();
+            latest_by_group.insert(key, item);
+        }
+        return latest_by_group.into_values().collect();
+    }
+
+    if widget_kind == WidgetKind::KpiCard {
+        non_null.reverse();
+    }
+    non_null
+}
+
 async fn execute_node_metric_widget<S>(
     env: &WidgetExecEnv<'_, S>,
     input: &NodeMetricInput<'_>,
+    widget_kind: WidgetKind,
+    encoding: &serde_json::Value,
     drill_level: usize,
 ) -> Result<WidgetDataResponse, AppError>
 where
-    S: MetricStorePort + GraphQueryPort + ?Sized,
+    S: MetricStorePort + GraphQueryPort + StudioRepository + ?Sized,
 {
     let range = parse_metric_time_range_opt(input.time_range)?.unwrap_or_else(|| {
         let to = Utc::now();
@@ -1100,8 +1202,9 @@ where
             data_type: DataType::Float64,
         },
     ];
-    let mut rows: Vec<Vec<serde_json::Value>> = resp
-        .items
+    let filtered_items =
+        filter_node_metric_bucket_items(resp.items, widget_kind, parsed_group_by, encoding);
+    let mut rows: Vec<Vec<serde_json::Value>> = filtered_items
         .into_iter()
         .map(|item| {
             let resolved_group = item
@@ -1129,21 +1232,16 @@ async fn execute_graph_widget<S>(
     drill_level: usize,
 ) -> Result<WidgetDataResponse, AppError>
 where
-    S: GraphQueryPort + ?Sized,
+    S: GraphQueryPort + StudioRepository + ?Sized,
 {
     let lim = u32::try_from(limit.unwrap_or(2_000).clamp(1, 2_000)).unwrap_or(2_000);
-    let sub = env
-        .store
-        .query_subgraph(
-            &env.principal.tenant_id,
-            SubgraphQuery {
-                type_names: (!type_names.is_empty()).then(|| type_names.join(",")),
-                link_types: (!link_types.is_empty()).then(|| link_types.join(",")),
-                limit: lim,
-                ..SubgraphQuery::default()
-            },
-        )
-        .await?;
+    let sub = query_best_production_subgraph(
+        env,
+        (!type_names.is_empty()).then(|| type_names.join(",")),
+        (!link_types.is_empty()).then(|| link_types.join(",")),
+        lim,
+    )
+    .await?;
 
     let columns = vec![
         col_def("record_kind", DataType::String),
@@ -2329,5 +2427,72 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("[REDACTED]")
         );
+    }
+
+    #[test]
+    fn filter_node_metric_items_handles_kpi_and_bar_latest_buckets() {
+        let t0 = Utc::now() - ChronoDuration::hours(48);
+        let t1 = Utc::now() - ChronoDuration::hours(24);
+        let t2 = Utc::now() - ChronoDuration::hours(1);
+        let raw_kpi = vec![
+            WindowBucketItem {
+                ts: t0,
+                group_key: None,
+                value: None,
+            },
+            WindowBucketItem {
+                ts: t1,
+                group_key: None,
+                value: Some(42.0),
+            },
+            WindowBucketItem {
+                ts: t2,
+                group_key: None,
+                value: Some(68.5),
+            },
+        ];
+        let kpi_filtered = filter_node_metric_bucket_items(
+            raw_kpi.clone(),
+            WidgetKind::KpiCard,
+            WindowGroupBy::None,
+            &serde_json::json!({"y": "value"}),
+        );
+        assert_eq!(kpi_filtered.len(), 2);
+        assert_eq!(kpi_filtered.first().and_then(|i| i.value), Some(68.5));
+
+        let line_filtered = filter_node_metric_bucket_items(
+            raw_kpi,
+            WidgetKind::LineChart,
+            WindowGroupBy::None,
+            &serde_json::json!({"x": "ts", "y": "value"}),
+        );
+        assert_eq!(line_filtered.len(), 2);
+        assert_eq!(line_filtered.first().and_then(|i| i.value), Some(42.0));
+
+        let raw_bar = vec![
+            WindowBucketItem {
+                ts: t0,
+                group_key: Some(String::from("n1")),
+                value: None,
+            },
+            WindowBucketItem {
+                ts: t1,
+                group_key: Some(String::from("n1")),
+                value: Some(30.0),
+            },
+            WindowBucketItem {
+                ts: t2,
+                group_key: Some(String::from("n1")),
+                value: Some(45.0),
+            },
+        ];
+        let bar_filtered = filter_node_metric_bucket_items(
+            raw_bar,
+            WidgetKind::BarChart,
+            WindowGroupBy::Node,
+            &serde_json::json!({"x": "group_key", "y": "value"}),
+        );
+        assert_eq!(bar_filtered.len(), 1);
+        assert_eq!(bar_filtered.first().and_then(|i| i.value), Some(45.0));
     }
 }

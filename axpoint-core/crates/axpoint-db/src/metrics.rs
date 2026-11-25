@@ -345,28 +345,13 @@ impl MetricStorePort for PgStore {
         }
 
         let target_ids: Vec<Uuid> = node_types.keys().copied().collect();
-        let use_hour_grain = size_dur.num_seconds() % 3600 == 0
-            && step_dur.num_seconds() % 3600 == 0
-            && req.from.minute() == 0
-            && req.from.second() == 0;
-        let source_grain = if use_hour_grain {
-            RollupGrain::Hour
-        } else {
-            RollupGrain::Minute
-        };
-
-        let scan_start = match req.window.kind {
-            WindowKind::Tumbling => req.from,
-            WindowKind::Sliding => req.from - size_dur,
-        };
-
-        let rollup_rows = load_window_rollups_tx(
+        let (source_grain, rollup_rows) = fetch_window_rollups_with_fallback_tx(
             &mut tx,
             &target_ids,
             metric_clean,
-            source_grain,
-            scan_start,
-            req.to,
+            &req,
+            size_dur,
+            step_dur,
         )
         .await?;
 
@@ -396,8 +381,10 @@ impl MetricStorePort for PgStore {
                     MIN(s.ts) AS min_ts,
                     MAX(s.ts) AS max_ts
                FROM xb_metric_series s
-               JOIN xb_nodes n ON n.id = s.node_id
-              WHERE n.subgraph_slug = 'main'
+               JOIN xb_nodes n ON n.id = s.node_id AND n.tenant_id = s.tenant_id
+               LEFT JOIN xb_subgraphs sg
+                 ON sg.tenant_id = n.tenant_id AND sg.slug = n.subgraph_slug
+              WHERE COALESCE(sg.is_dev_sandbox, FALSE) = FALSE
               GROUP BY n.type_name, s.metric
               ORDER BY n.type_name ASC, s.metric ASC",
         )
@@ -942,8 +929,30 @@ async fn load_target_nodes_tx(
 ) -> Result<BTreeMap<Uuid, String>, AppError> {
     let rows = match node_ids.filter(|ids| !ids.is_empty()) {
         None => sqlx::query(
-            "SELECT id, type_name FROM xb_nodes
-              WHERE subgraph_slug = 'main' AND ($1::text IS NULL OR type_name = $1)",
+            "SELECT dedup.id, dedup.type_name
+               FROM (
+                   SELECT DISTINCT ON (n.type_name, n.node_key)
+                          n.id,
+                          n.type_name
+                     FROM xb_nodes n
+                     LEFT JOIN xb_subgraphs sg
+                       ON sg.tenant_id = n.tenant_id AND sg.slug = n.subgraph_slug
+                    WHERE COALESCE(sg.is_dev_sandbox, FALSE) = FALSE
+                      AND ($1::text IS NULL OR n.type_name = $1)
+                    ORDER BY n.type_name ASC,
+                             n.node_key ASC,
+                             CASE
+                                 WHEN EXISTS (
+                                     SELECT 1
+                                       FROM xb_metric_rollups mr
+                                      WHERE mr.tenant_id = n.tenant_id
+                                        AND mr.node_id = n.id
+                                 ) THEN 0
+                                 ELSE 1
+                             END ASC,
+                             CASE WHEN n.subgraph_slug = 'main' THEN 1 ELSE 0 END ASC,
+                             n.id ASC
+               ) dedup",
         )
         .bind(type_name)
         .fetch_all(&mut **tx)
@@ -964,6 +973,54 @@ async fn load_target_nodes_tx(
         .into_iter()
         .map(|r| (r.get("id"), r.get("type_name")))
         .collect())
+}
+
+async fn fetch_window_rollups_with_fallback_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    target_ids: &[Uuid],
+    metric: &str,
+    req: &WindowQuery,
+    size_dur: Duration,
+    step_dur: Duration,
+) -> Result<(RollupGrain, Vec<RollupRow>), AppError> {
+    let use_hour_grain = size_dur.num_seconds() % 3600 == 0
+        && step_dur.num_seconds() % 3600 == 0
+        && req.from.minute() == 0
+        && req.from.second() == 0;
+    let mut source_grain = if use_hour_grain {
+        RollupGrain::Hour
+    } else {
+        RollupGrain::Minute
+    };
+    let scan_start = match req.window.kind {
+        WindowKind::Tumbling => req.from,
+        WindowKind::Sliding => req.from - size_dur,
+    };
+
+    let mut rows =
+        load_window_rollups_tx(tx, target_ids, metric, source_grain, scan_start, req.to).await?;
+    if rows.is_empty()
+        && source_grain == RollupGrain::Minute
+        && size_dur.num_seconds() % 3600 == 0
+        && step_dur.num_seconds() % 3600 == 0
+    {
+        let hour_scan_start = scan_start
+            .with_minute(0)
+            .and_then(|dt| dt.with_second(0))
+            .and_then(|dt| dt.with_nanosecond(0))
+            .unwrap_or(scan_start);
+        source_grain = RollupGrain::Hour;
+        rows = load_window_rollups_tx(
+            tx,
+            target_ids,
+            metric,
+            source_grain,
+            hour_scan_start,
+            req.to,
+        )
+        .await?;
+    }
+    Ok((source_grain, rows))
 }
 
 async fn load_window_rollups_tx(

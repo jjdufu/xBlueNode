@@ -107,6 +107,10 @@ with psycopg.connect(dsn) as conn:
     with conn.cursor() as cur:
         cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant,))
         cur.execute(stmt)
+        if cur.description is not None:
+            row = cur.fetchone()
+            if row is not None:
+                print(row[0])
     conn.commit()
 PY
   fi
@@ -132,10 +136,11 @@ trap 'rm -rf "$SEED_TMP"' EXIT
 
 # 0. 严格真数据校验的幂等快路径（SHOWCASE_FORCE_REBUILD=1 时强制全量重建）
 if [[ "${SHOWCASE_FORCE_REBUILD:-0}" != "1" ]]; then
+  api_try_get /api/xblueview/dashboards/by-slug/med-dispatch-cockpit > "$SEED_TMP/fp_dash.json" || echo '{}' > "$SEED_TMP/fp_dash.json"
+  if jq -e '.status == "PUBLISHED"' "$SEED_TMP/fp_dash.json" >/dev/null 2>&1; then
   FP_PIDS=()
   api_ok GET /api/axops/pulse > "$SEED_TMP/fp_pulse.json" & FP_PIDS+=("$!")
   api_ok GET "/api/xblue/schema?subgraph=main" > "$SEED_TMP/fp_main.json" & FP_PIDS+=("$!")
-  api_try_get /api/xblueview/dashboards/by-slug/med-dispatch-cockpit > "$SEED_TMP/fp_dash.json" & FP_PIDS+=("$!")
   api_ok GET /api/axsim/sandboxes > "$SEED_TMP/fp_sb.json" & FP_PIDS+=("$!")
   api_ok GET "/api/axhub/datasets?limit=200" > "$SEED_TMP/fp_ds.json" & FP_PIDS+=("$!")
   api_ok GET "/api/xblue/nodes?subgraph=main&type_name=ClinicalDept&limit=20" > "$SEED_TMP/fp_dept.json" & FP_PIDS+=("$!")
@@ -159,11 +164,24 @@ if [[ "${SHOWCASE_FORCE_REBUILD:-0}" != "1" ]]; then
       and ($msb != null and ($msb.id // "") != "")
       and ($dept01 != null and ($dept01.id // "") != "")
       and ($dash[0].status == "PUBLISHED")
+      and (([ $dash[0].widgets[]? | select(.widget_kind == "KPI_CARD" and (.encoding.y // "") != "value") ] | length) == 0)
       and ([ $pack[0].node_types[].name ] | all(. as $n | ($mn | index($n)) != null))
       and ([ $pack[0].edge_types[].name ] | all(. as $e | ($me | index($e)) != null))
       and ([ $main[0].edge_types[] | ((.src_type_name as $s | $mn | index($s)) != null and (.dst_type_name as $d | $mn | index($d)) != null) ] | all)
     ' >/dev/null 2>&1; then
-      exec_tenant_sql "$SHOWCASE_TENANT_ID" "
+      MED_ROLLUP_OK=$(exec_tenant_sql "$SHOWCASE_TENANT_ID" "
+SELECT CASE
+         WHEN COUNT(DISTINCT mr.grain) = 2
+          AND COUNT(DISTINCT CASE WHEN n.type_name = 'HospitalCampus' THEN n.id END) >= 12
+         THEN 1 ELSE 0
+       END
+  FROM xb_metric_rollups mr
+  JOIN xb_nodes n ON n.id = mr.node_id AND n.tenant_id = mr.tenant_id
+ WHERE mr.tenant_id = '${SHOWCASE_TENANT_ID}'
+   AND n.subgraph_slug = 'med_dispatch'
+   AND mr.grain IN ('MINUTE', 'HOUR')" | head -n 1 || echo "0")
+      if [[ "${MED_ROLLUP_OK:-0}" == "1" ]]; then
+        exec_tenant_sql "$SHOWCASE_TENANT_ID" "
 UPDATE xb_nodes
    SET metrics = jsonb_set(jsonb_set(metrics, '{total_free_beds}', '38.0'::jsonb, true), '{surge_level}', '1.0'::jsonb, true),
        updated_at = NOW()
@@ -171,19 +189,21 @@ UPDATE xb_nodes
    AND type_name = 'HospitalCampus'
    AND node_key = 'HOSP-01';
 " >/dev/null
-      FP_SB_ID=$(jq -r '(if type == "array" then . else (.items // []) end) | map(select(.name == "冬季急诊重症高峰床位挤兑沙盘"))[0].id' "$SEED_TMP/fp_sb.json")
-      FP_DASH_ID=$(jq -r '.id' "$SEED_TMP/fp_dash.json")
-      FP_DEPT01_ID=$(jq -r '(.items // []) | map(select(.node_key == "DEPT-01"))[0].id' "$SEED_TMP/fp_dept.json")
-      if [[ "$SHOWCASE_TENANT_ID" == "default" ]]; then
-        upsert_ids_env "MED_DISPATCH_SANDBOX_ID" "$FP_SB_ID"
-        upsert_ids_env "MED_DISPATCH_DASHBOARD_ID" "$FP_DASH_ID"
-        upsert_ids_env "MED_DISPATCH_DEPT01_ID" "$FP_DEPT01_ID"
+        FP_SB_ID=$(jq -r '(if type == "array" then . else (.items // []) end) | map(select(.name == "冬季急诊重症高峰床位挤兑沙盘"))[0].id' "$SEED_TMP/fp_sb.json")
+        FP_DASH_ID=$(jq -r '.id' "$SEED_TMP/fp_dash.json")
+        FP_DEPT01_ID=$(jq -r '(.items // []) | map(select(.node_key == "DEPT-01"))[0].id' "$SEED_TMP/fp_dept.json")
+        if [[ "$SHOWCASE_TENANT_ID" == "default" ]]; then
+          upsert_ids_env "MED_DISPATCH_SANDBOX_ID" "$FP_SB_ID"
+          upsert_ids_env "MED_DISPATCH_DASHBOARD_ID" "$FP_DASH_ID"
+          upsert_ids_env "MED_DISPATCH_DEPT01_ID" "$FP_DEPT01_ID"
+        fi
+        echo "MED_DISPATCH_SANDBOX_ID=${FP_SB_ID}"
+        echo "MED_DISPATCH_DASHBOARD_ID=${FP_DASH_ID}"
+        echo "MED_DISPATCH_DEPT01_ID=${FP_DEPT01_ID}"
+        exit 0
       fi
-      echo "MED_DISPATCH_SANDBOX_ID=${FP_SB_ID}"
-      echo "MED_DISPATCH_DASHBOARD_ID=${FP_DASH_ID}"
-      echo "MED_DISPATCH_DEPT01_ID=${FP_DEPT01_ID}"
-      exit 0
     fi
+  fi
   fi
 fi
 
@@ -319,7 +339,8 @@ SB_PID=$!
   EXISTING_DASH=$(api_try_get /api/xblueview/dashboards/by-slug/med-dispatch-cockpit)
   MED_DASH_ID=$(printf '%s' "$EXISTING_DASH" | jq -r 'if type == "object" then (.id // empty) else empty end' 2>/dev/null || true)
   MED_DASH_STATUS=$(printf '%s' "$EXISTING_DASH" | jq -r 'if type == "object" then (.status // empty) else empty end' 2>/dev/null || true)
-  if [[ -z "$MED_DASH_ID" || "$MED_DASH_ID" == "null" || "$MED_DASH_STATUS" != "PUBLISHED" || "${SHOWCASE_FORCE_REBUILD:-0}" == "1" ]]; then
+  MED_LEGACY_KPI=$(printf '%s' "$EXISTING_DASH" | jq -r '([.widgets[]? | select(.widget_kind == "KPI_CARD" and (.encoding.y // "") != "value")] | length) > 0' 2>/dev/null || echo "false")
+  if [[ -z "$MED_DASH_ID" || "$MED_DASH_ID" == "null" || "$MED_DASH_STATUS" != "PUBLISHED" || "$MED_LEGACY_KPI" == "true" || "${SHOWCASE_FORCE_REBUILD:-0}" == "1" ]]; then
     if [[ -n "$MED_DASH_ID" && "$MED_DASH_ID" != "null" ]]; then
       api_ok DELETE "/api/xblueview/dashboards/${MED_DASH_ID}" >/dev/null
     fi

@@ -130,52 +130,54 @@ upsert_ids_env() {
 SEED_TMP=$(mktemp -d)
 trap 'rm -rf "$SEED_TMP"' EXIT
 
-# 0. 严格真数据校验的幂等快路径（SHOWCASE_FORCE_REBUILD=1 时强制全量重建）
+# 0. 严格真数据校验的幂等快路径（SHOWCASE_FORCE_REBUILD=1 时强制全量重建；冷启动先 2ms 探测看板避免重查询）
 if [[ "${SHOWCASE_FORCE_REBUILD:-0}" != "1" ]]; then
-  FP_PIDS=()
-  api_ok GET /api/axops/pulse > "$SEED_TMP/fp_pulse.json" & FP_PIDS+=("$!")
-  api_ok GET "/api/xblue/schema?subgraph=main" > "$SEED_TMP/fp_main.json" & FP_PIDS+=("$!")
-  api_try_get /api/xblueview/dashboards/by-slug/power-grid-cockpit > "$SEED_TMP/fp_dash.json" & FP_PIDS+=("$!")
-  api_ok GET /api/axsim/sandboxes > "$SEED_TMP/fp_sb.json" & FP_PIDS+=("$!")
-  api_ok GET "/api/axhub/datasets?limit=200" > "$SEED_TMP/fp_ds.json" & FP_PIDS+=("$!")
-  if wait_pids "${FP_PIDS[@]}" 2>/dev/null; then
-    if jq -ne \
-      --slurpfile pulse "$SEED_TMP/fp_pulse.json" \
-      --slurpfile main "$SEED_TMP/fp_main.json" \
-      --slurpfile dash "$SEED_TMP/fp_dash.json" \
-      --slurpfile sb "$SEED_TMP/fp_sb.json" \
-      --slurpfile ds "$SEED_TMP/fp_ds.json" \
-      --slurpfile pack "$PACK_DIR/schema.json" '
-      ($pulse[0].subgraphs | map(select(.slug == "power_grid"))[0]) as $pg
-      | ($main[0].node_types | map(.name)) as $mn
-      | ($main[0].edge_types | map(.name)) as $me
-      | ((if ($ds[0] | type) == "array" then $ds[0] else ($ds[0].items // []) end) | map(select(.name == "grid_feeder_telemetry"))[0]) as $gds
-      | ((if ($sb[0] | type) == "array" then $sb[0] else ($sb[0].items // []) end) | map(select(.name == "迎峰度夏配网调度推演沙盘"))[0]) as $gsb
-      | ($pg != null and $pg.cert_level == "L4_CERTIFIED" and $pg.node_count == 324 and $pg.link_count >= 548)
-      and ($gds != null and ($gds.row_count // 0) >= 43200)
-      and ($gsb != null and ($gsb.id // "") != "")
-      and ($dash[0].status == "PUBLISHED")
-      and (([ $dash[0].widgets[]? | select((.data_source.sql // "") | contains("date_trunc(\u0027hour\u0027, ts)")) ] | length) == 0)
-      and ([ $pack[0].node_types[].name ] | all(. as $n | ($mn | index($n)) != null))
-      and ([ $pack[0].edge_types[].name ] | all(. as $e | ($me | index($e)) != null))
-      and ([ $main[0].edge_types[] | ((.src_type_name as $s | $mn | index($s)) != null and (.dst_type_name as $d | $mn | index($d)) != null) ] | all)
-    ' >/dev/null 2>&1; then
-      FP_SB_ID=$(jq -r '(if type == "array" then . else (.items // []) end) | map(select(.name == "迎峰度夏配网调度推演沙盘"))[0].id' "$SEED_TMP/fp_sb.json")
-      FP_SCEN=$(api_ok GET "/api/axsim/sandboxes/${FP_SB_ID}/scenarios")
-      if printf '%s' "$FP_SCEN" | jq -e '
-        (if type == "array" then . else (.items // []) end)
-        | map(select(.status == "SUCCEEDED" and .deadline_report.earliest_deadline_step != null and .deadline_report.earliest_breach_step != null))
-        | length >= 1
+  api_try_get /api/xblueview/dashboards/by-slug/power-grid-cockpit > "$SEED_TMP/fp_dash.json" || echo '{}' > "$SEED_TMP/fp_dash.json"
+  if jq -e '.status == "PUBLISHED"' "$SEED_TMP/fp_dash.json" >/dev/null 2>&1; then
+    FP_PIDS=()
+    api_ok GET /api/axops/pulse > "$SEED_TMP/fp_pulse.json" & FP_PIDS+=("$!")
+    api_ok GET "/api/xblue/schema?subgraph=main" > "$SEED_TMP/fp_main.json" & FP_PIDS+=("$!")
+    api_ok GET /api/axsim/sandboxes > "$SEED_TMP/fp_sb.json" & FP_PIDS+=("$!")
+    api_ok GET "/api/axhub/datasets?limit=200" > "$SEED_TMP/fp_ds.json" & FP_PIDS+=("$!")
+    if wait_pids "${FP_PIDS[@]}" 2>/dev/null; then
+      if jq -ne \
+        --slurpfile pulse "$SEED_TMP/fp_pulse.json" \
+        --slurpfile main "$SEED_TMP/fp_main.json" \
+        --slurpfile dash "$SEED_TMP/fp_dash.json" \
+        --slurpfile sb "$SEED_TMP/fp_sb.json" \
+        --slurpfile ds "$SEED_TMP/fp_ds.json" \
+        --slurpfile pack "$PACK_DIR/schema.json" '
+        ($pulse[0].subgraphs | map(select(.slug == "power_grid"))[0]) as $pg
+        | ($main[0].node_types | map(.name)) as $mn
+        | ($main[0].edge_types | map(.name)) as $me
+        | ((if ($ds[0] | type) == "array" then $ds[0] else ($ds[0].items // []) end) | map(select(.name == "grid_feeder_telemetry"))[0]) as $gds
+        | ((if ($sb[0] | type) == "array" then $sb[0] else ($sb[0].items // []) end) | map(select(.name == "迎峰度夏配网调度推演沙盘"))[0]) as $gsb
+        | ($pg != null and $pg.cert_level == "L4_CERTIFIED" and $pg.node_count == 324 and $pg.link_count >= 548)
+        and ($gds != null and ($gds.row_count // 0) >= 43200)
+        and ($gsb != null and ($gsb.id // "") != "")
+        and ($dash[0].status == "PUBLISHED")
+        and (([ $dash[0].widgets[]? | select((.data_source.sql // "") | contains("date_trunc(\u0027hour\u0027, ts)")) ] | length) == 0)
+        and ([ $pack[0].node_types[].name ] | all(. as $n | ($mn | index($n)) != null))
+        and ([ $pack[0].edge_types[].name ] | all(. as $e | ($me | index($e)) != null))
+        and ([ $main[0].edge_types[] | ((.src_type_name as $s | $mn | index($s)) != null and (.dst_type_name as $d | $mn | index($d)) != null) ] | all)
       ' >/dev/null 2>&1; then
-        FP_DS_ID=$(jq -r '(if type == "array" then . else (.items // []) end) | map(select(.name == "grid_feeder_telemetry"))[0].id' "$SEED_TMP/fp_ds.json")
-        FP_DASH_ID=$(jq -r '.id' "$SEED_TMP/fp_dash.json")
-        if [[ "$SHOWCASE_TENANT_ID" == "default" ]]; then
-          upsert_ids_env "POWER_GRID_SANDBOX_ID" "$FP_SB_ID"
-          upsert_ids_env "POWER_GRID_DATASET_ID" "$FP_DS_ID"
-          upsert_ids_env "POWER_GRID_DASHBOARD_ID" "$FP_DASH_ID"
+        FP_SB_ID=$(jq -r '(if type == "array" then . else (.items // []) end) | map(select(.name == "迎峰度夏配网调度推演沙盘"))[0].id' "$SEED_TMP/fp_sb.json")
+        FP_SCEN=$(api_ok GET "/api/axsim/sandboxes/${FP_SB_ID}/scenarios")
+        if printf '%s' "$FP_SCEN" | jq -e '
+          (if type == "array" then . else (.items // []) end)
+          | map(select(.status == "SUCCEEDED" and .deadline_report.earliest_deadline_step != null and .deadline_report.earliest_breach_step != null))
+          | length >= 1
+        ' >/dev/null 2>&1; then
+          FP_DS_ID=$(jq -r '(if type == "array" then . else (.items // []) end) | map(select(.name == "grid_feeder_telemetry"))[0].id' "$SEED_TMP/fp_ds.json")
+          FP_DASH_ID=$(jq -r '.id' "$SEED_TMP/fp_dash.json")
+          if [[ "$SHOWCASE_TENANT_ID" == "default" ]]; then
+            upsert_ids_env "POWER_GRID_SANDBOX_ID" "$FP_SB_ID"
+            upsert_ids_env "POWER_GRID_DATASET_ID" "$FP_DS_ID"
+            upsert_ids_env "POWER_GRID_DASHBOARD_ID" "$FP_DASH_ID"
+          fi
+          echo "POWER_GRID_SANDBOX_ID=$FP_SB_ID"
+          exit 0
         fi
-        echo "POWER_GRID_SANDBOX_ID=$FP_SB_ID"
-        exit 0
       fi
     fi
   fi
