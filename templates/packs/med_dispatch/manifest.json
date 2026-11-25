@@ -1,0 +1,65 @@
+{
+  "id": "med_dispatch",
+  "name": "城市急诊与医疗床位调度",
+  "version": "1.0.0",
+  "industry": "公共卫生 / 医疗急救",
+  "description": "三甲院区统筹、急诊重症床位与生命支持设备监控、120急救车空间轨迹凸包及应急加床调度模型",
+  "contents": {
+    "schema": "schema.json",
+    "datasets": [
+      {
+        "key": "med_campuses",
+        "name": "med_campuses",
+        "file": "sample_data/campuses.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "med_clinical_depts",
+        "name": "med_clinical_depts",
+        "file": "sample_data/clinical_depts.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "med_life_support",
+        "name": "med_life_support",
+        "file": "sample_data/life_support.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "med_ambulances",
+        "name": "med_ambulances",
+        "file": "sample_data/ambulances.csv",
+        "sync_mode": "SNAPSHOT"
+      },
+      {
+        "key": "med_triage_visits",
+        "name": "med_triage_visits",
+        "file": "sample_data/triage_visits.csv",
+        "sync_mode": "SNAPSHOT"
+      }
+    ],
+    "mappings": "mappings.json",
+    "metrics": "metrics.json",
+    "rules": "rules.json",
+    "flows": [],
+    "dashboards": [
+      "dashboards/cockpit.json"
+    ],
+    "agents": [],
+    "export_templates": []
+  },
+  "sha256": {
+    "README.md": "ee40497ffd635e3f56990e0687a037c7b7092575853c71b2937e492c361c4239",
+    "competency.json": "3e5fd0b70f4f46c5dcd168e111efbb64f17b6f329ea7d12e305a1524f1e41499",
+    "dashboards/cockpit.json": "7593b348df7aced46ddbcf6a10a21719607317d3fce9d987f8ff97e2c19ce338",
+    "mappings.json": "0da96e364487c975cba09ea16cd8fd165a9632f7f740a69203bb4d8643ac1b64",
+    "metrics.json": "a3756f5e7a4d4cc1654ed2b4cfb666e583504fd2d531d308596b4ac47db13e5f",
+    "rules.json": "01e536f05772d2d882f1e8b462f9d47dc9d0a7976bf04b81106ce3d4cd8ac867",
+    "sample_data/ambulances.csv": "08fc03872fd5ea0cf182adb102f4717247e7968771a553061ac80f92b98c92ce",
+    "sample_data/campuses.csv": "a5743a0f288671b369544c30e93cccaf2ecb3ecdffdca0492ce04a378195bc50",
+    "sample_data/clinical_depts.csv": "97ff6c06cbd7ed334df3be5ae077c34027d853fdae492c3f17b5e7a4584f9003",
+    "sample_data/life_support.csv": "ec7759526aa4bb92957652b140cee828d3ced40d7090afe903976867fc10812b",
+    "sample_data/triage_visits.csv": "5d6ee91dbc32a43ef668413da9372cad83094c1c4c398d78ffa25731aa018c4d",
+    "schema.json": "86e959135ace84223a3882f2d2ec2880a71b1868fc5ec8f0345494062175c8e2"
+  }
+}

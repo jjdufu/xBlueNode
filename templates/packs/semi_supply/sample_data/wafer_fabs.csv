@@ -1,0 +1,5 @@
+fab_id,fab_name,process_nm,cleanroom_class,wafer_starts_wpm,fab_yield_pct,safety_wafer_stock,vendor_id
+FAB-01,张江车规晶圆一厂,28,ISO-1,45000,94.6,8200,SV-01
+FAB-02,临港先进制程二厂,14,ISO-1,35000,92.4,6400,SV-02
+FAB-03,无锡功率半导体三厂,40,ISO-2,52000,96.1,9500,SV-04
+FAB-04,合肥车控晶圆四厂,28,ISO-1,38000,93.8,7100,SV-03

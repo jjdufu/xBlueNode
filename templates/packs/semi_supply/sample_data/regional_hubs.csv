@@ -1,0 +1,5 @@
+hub_id,hub_name,region,chip_inventory_k,outbound_rate_k,port_id
+HUB-01,上海嘉定车规分拨仓,华东大区,680,45,PORT-01
+HUB-02,广州南沙智驾芯片仓,华南大区,420,38,PORT-02
+HUB-03,重庆两江车电前置仓,西南大区,195,42,PORT-03
+HUB-04,长春汽开恒温中心仓,东北大区,310,28,PORT-04

@@ -1,0 +1,5 @@
+order_id,order_title,oem_customer,priority_tier,ordered_qty_k,on_time_prob,hub_id,order_date
+OEM-01,星途智驾域控SoC季度单,星途新能源汽车,P0_STRATEGIC,320,0.96,HUB-01,2026-05-15
+OEM-02,华南纯电平台MCU保供单,岭南智造车企,P0_STRATEGIC,260,0.93,HUB-02,2026-05-16
+OEM-03,西南增程电驱功率芯片单,山城智能汽车,P1_KEY,210,0.78,HUB-03,2026-05-17
+OEM-04,北国底盘线控MCU年度单,北国汽车集团,P1_KEY,180,0.91,HUB-04,2026-05-18

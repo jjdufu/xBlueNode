@@ -1,0 +1,48 @@
+{
+  "metrics": [
+    {
+      "name": "med_avg_door_to_doctor_min",
+      "display_name": "急诊首诊平均响应分钟",
+      "description": "急诊患者抵院分诊至专科医师首诊处置平均分钟数",
+      "dataset_id": { "$ref": "dataset:med_triage_visits" },
+      "expression": "AVG(door_to_doctor_min)",
+      "time_column": "visit_date",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "acuity_level",
+          "column": "acuity_level",
+          "display_name": "危重分级"
+        },
+        {
+          "name": "chief_complaint",
+          "column": "chief_complaint",
+          "display_name": "主诉症候群"
+        }
+      ],
+      "unit": "分钟",
+      "format": "0.0",
+      "synonyms": ["首诊耗时", "急诊响应时间"],
+      "certified": true
+    },
+    {
+      "name": "med_city_free_beds_sum",
+      "display_name": "全市院区可用空床总数",
+      "description": "全市三甲医疗院区当前可立即调配的急诊与住院空床总数",
+      "dataset_id": { "$ref": "dataset:med_campuses" },
+      "expression": "SUM(total_free_beds)",
+      "default_grain": "DAY",
+      "dimensions": [
+        {
+          "name": "district",
+          "column": "district",
+          "display_name": "行政片区"
+        }
+      ],
+      "unit": "张",
+      "format": "0,0",
+      "synonyms": ["全市空床数", "可用医疗床位"],
+      "certified": true
+    }
+  ]
+}

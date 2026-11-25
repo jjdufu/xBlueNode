@@ -1,0 +1,73 @@
+{
+  "rules": [
+    {
+      "name": "med_campus_saturation_critical",
+      "description": "医疗院区急诊饱和指数突破80分触发红色扩容与救护车分流预警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "HospitalCampus",
+        "metric": "campus_saturation_idx"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GT",
+        "value": 80.0,
+        "for_minutes": 0
+      },
+      "severity": "CRITICAL",
+      "title_template": "院区急诊饱和红线告警：{{node.title}}",
+      "body_template": "医疗院区 {{node.title}} 当前急诊饱和指数达 {{value}} 分，超过安全阈值 {{threshold}} 分，请立即启用应急机动病区加床并分流在途 120 急救车。",
+      "cooldown_minutes": 15,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    },
+    {
+      "name": "med_dept_strain_high",
+      "description": "急诊与重症科室救治承压指数超限预警",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "ClinicalDept",
+        "metric": "dept_strain_score"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "GT",
+        "value": 82.0,
+        "for_minutes": 0
+      },
+      "severity": "WARN",
+      "title_template": "重症科室高负荷预警：{{node.title}}",
+      "body_template": "临床科室 {{node.title}} 当前救治承压指数为 {{value}} 分，高于警戒值 {{threshold}} 分，请关注危重待收治队列与生命支持设备余量。",
+      "cooldown_minutes": 20,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    },
+    {
+      "name": "med_ecmo_filter_life_low",
+      "description": "生命支持设备耗材剩余安全寿命低于8小时提醒备件更换",
+      "scope_kind": "METRIC",
+      "target": {
+        "type_name": "LifeSupportUnit",
+        "metric": "remaining_filter_hours"
+      },
+      "condition": {
+        "kind": "THRESHOLD",
+        "op": "LT",
+        "value": 8.0,
+        "for_minutes": 0
+      },
+      "severity": "WARN",
+      "title_template": "生命支持耗材临期提醒：{{node.title}}",
+      "body_template": "设备 {{node.title}} 膜肺/滤器耗材剩余寿命仅 {{value}} 小时，低于安全更换线 {{threshold}} 小时。",
+      "cooldown_minutes": 30,
+      "resolve_after_minutes": 10,
+      "channel_ids": [],
+      "escalation_channel_ids": [],
+      "enabled": true
+    }
+  ]
+}

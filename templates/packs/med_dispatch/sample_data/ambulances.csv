@@ -1,0 +1,6 @@
+ambulance_id,plate_no,crew_level,eta_minutes,dispatch_load,lng,lat,campus_id
+AMB-01,沪A-12001急救,重症移动ICU,14.5,2,121.4580,31.2210,HOSP-01
+AMB-02,沪A-12002急救,高级生命支持ALS,19.0,1,121.5420,31.2480,HOSP-02
+AMB-03,沪A-12003急救,高级生命支持ALS,24.5,2,121.4120,31.1820,HOSP-03
+AMB-04,沪A-12004急救,基础生命支持BLS,11.0,1,121.4610,31.2920,HOSP-04
+AMB-05,沪A-12005急救,重症移动ICU,16.5,2,121.3080,31.2090,HOSP-05

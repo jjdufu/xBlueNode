@@ -1,0 +1,40 @@
+{
+  "questions": [
+    {
+      "id": "cq_semi_wafer_starts",
+      "question": "当前所有晶圆制造厂的月投片产能总和与综合良率是多少？",
+      "expected_grounding_mode": "DOMAIN_OBJECT",
+      "expected_node_types": ["WaferFab"],
+      "expected_metrics": ["wafer_starts_wpm", "fab_yield_pct"],
+      "tolerance": 0.01,
+      "must_not_abstain": true
+    },
+    {
+      "id": "cq_semi_litho_oee",
+      "question": "关键光刻与刻蚀机台的设备综合效率与热漂移风险情况如何？",
+      "expected_grounding_mode": "DOMAIN_OBJECT",
+      "expected_node_types": ["LithoTool"],
+      "expected_metrics": ["oee_pct", "thermal_drift_risk"],
+      "tolerance": 0.01,
+      "must_not_abstain": true
+    },
+    {
+      "id": "cq_semi_port_clearance",
+      "question": "各清关口岸当前的平均清关耗时和待放行批次数是多少？",
+      "expected_grounding_mode": "DOMAIN_OBJECT",
+      "expected_node_types": ["CustomsPort"],
+      "expected_metrics": ["clearance_hours", "backlog_lots"],
+      "tolerance": 0.01,
+      "must_not_abstain": true
+    },
+    {
+      "id": "cq_semi_oem_fulfillment",
+      "question": "车企核心芯片大单的订购芯片量与准时交付概率分布如何？",
+      "expected_grounding_mode": "DOMAIN_OBJECT",
+      "expected_node_types": ["AutoOemOrder"],
+      "expected_metrics": ["ordered_qty_k", "on_time_prob"],
+      "tolerance": 0.01,
+      "must_not_abstain": true
+    }
+  ]
+}

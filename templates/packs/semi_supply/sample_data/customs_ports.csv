@@ -1,0 +1,5 @@
+port_id,port_name,port_code,transport_mode,clearance_hours,backlog_lots,fab_id
+PORT-01,浦东空港恒温货站,PVG,恒温宽体货机,14.5,18,FAB-01
+PORT-02,苏南硕放保税航站,WUX,恒温包机快线,11.0,9,FAB-03
+PORT-03,仁川保税转运空港,ICN,跨国冷链货机,28.5,46,FAB-02
+PORT-04,法兰克福航空保税港,FRA,洲际恒温货机,31.0,52,FAB-04

@@ -1,0 +1,6 @@
+device_id,device_code,device_kind,status,utilization_pct,remaining_filter_hours,dept_id
+LSU-01,ECMO-SH-001,ECMO,IN_USE,91.0,28.5,DEPT-02
+LSU-02,VENT-SH-014,有创呼吸机,IN_USE,85.5,42.0,DEPT-01
+LSU-03,CRRT-SH-008,CRRT,IN_USE,88.0,6.5,DEPT-04
+LSU-04,ECMO-PD-003,ECMO,STANDBY,45.0,64.0,DEPT-03
+LSU-05,VENT-HQ-021,有创呼吸机,IN_USE,79.5,36.0,DEPT-05

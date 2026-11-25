@@ -1,0 +1,139 @@
+{
+  "mappings": [
+    {
+      "name": "map_med_campuses",
+      "dataset": { "$ref": "dataset:med_campuses" },
+      "node_type": "HospitalCampus",
+      "key_column": "campus_id",
+      "title": "{campus_name}",
+      "attributes": {
+        "campus_name": "campus_name",
+        "hospital_grade": "hospital_grade",
+        "district": "district"
+      },
+      "metrics": {
+        "ed_wait_minutes": "ed_wait_minutes",
+        "total_free_beds": "total_free_beds",
+        "surge_level": "surge_level"
+      },
+      "geo": {
+        "lng_column": "lng",
+        "lat_column": "lat"
+      },
+      "links": [],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_med_clinical_depts",
+      "dataset": { "$ref": "dataset:med_clinical_depts" },
+      "node_type": "ClinicalDept",
+      "key_column": "dept_id",
+      "title": "{dept_name}",
+      "attributes": {
+        "dept_name": "dept_name",
+        "specialty": "specialty",
+        "on_duty_physicians": "on_duty_physicians"
+      },
+      "metrics": {
+        "bed_occupancy_pct": "bed_occupancy_pct",
+        "free_icu_beds": "free_icu_beds",
+        "critical_queue_cnt": "critical_queue_cnt"
+      },
+      "links": [
+        {
+          "link_type": "HAS_CLINICAL_DEPT",
+          "direction": "IN",
+          "target_type": "HospitalCampus",
+          "target_key_column": "campus_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_med_life_support",
+      "dataset": { "$ref": "dataset:med_life_support" },
+      "node_type": "LifeSupportUnit",
+      "key_column": "device_id",
+      "title": "{device_code}",
+      "attributes": {
+        "device_code": "device_code",
+        "device_kind": "device_kind",
+        "status": "status"
+      },
+      "metrics": {
+        "utilization_pct": "utilization_pct",
+        "remaining_filter_hours": "remaining_filter_hours"
+      },
+      "links": [
+        {
+          "link_type": "OPERATES_DEVICE",
+          "direction": "IN",
+          "target_type": "ClinicalDept",
+          "target_key_column": "dept_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_med_ambulances",
+      "dataset": { "$ref": "dataset:med_ambulances" },
+      "node_type": "AmbulanceUnit",
+      "key_column": "ambulance_id",
+      "title": "{plate_no}",
+      "attributes": {
+        "plate_no": "plate_no",
+        "crew_level": "crew_level"
+      },
+      "metrics": {
+        "eta_minutes": "eta_minutes",
+        "dispatch_load": "dispatch_load"
+      },
+      "geo": {
+        "lng_column": "lng",
+        "lat_column": "lat"
+      },
+      "links": [
+        {
+          "link_type": "TRANSPORTS_TO_CAMPUS",
+          "direction": "OUT",
+          "target_type": "HospitalCampus",
+          "target_key_column": "campus_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_med_triage_visits",
+      "dataset": { "$ref": "dataset:med_triage_visits" },
+      "node_type": "TriageVisit",
+      "key_column": "visit_id",
+      "title": "{visit_no}",
+      "attributes": {
+        "visit_no": "visit_no",
+        "acuity_level": "acuity_level",
+        "chief_complaint": "chief_complaint"
+      },
+      "metrics": {
+        "door_to_doctor_min": "door_to_doctor_min"
+      },
+      "links": [
+        {
+          "link_type": "RECORDS_TRIAGE",
+          "direction": "IN",
+          "target_type": "ClinicalDept",
+          "target_key_column": "dept_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    }
+  ]
+}

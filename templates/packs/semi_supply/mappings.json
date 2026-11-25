@@ -1,0 +1,184 @@
+{
+  "mappings": [
+    {
+      "name": "map_semi_vendors",
+      "dataset": { "$ref": "dataset:semi_vendors" },
+      "node_type": "SpecialtyVendor",
+      "key_column": "vendor_id",
+      "title": "{vendor_name}",
+      "attributes": {
+        "vendor_name": "vendor_name",
+        "country": "country",
+        "material_grade": "material_grade"
+      },
+      "metrics": {
+        "supply_index": "supply_index",
+        "lead_time_days": "lead_time_days"
+      },
+      "links": [],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_semi_wafer_fabs",
+      "dataset": { "$ref": "dataset:semi_wafer_fabs" },
+      "node_type": "WaferFab",
+      "key_column": "fab_id",
+      "title": "{fab_name}",
+      "attributes": {
+        "fab_name": "fab_name",
+        "process_nm": "process_nm",
+        "cleanroom_class": "cleanroom_class"
+      },
+      "metrics": {
+        "wafer_starts_wpm": "wafer_starts_wpm",
+        "fab_yield_pct": "fab_yield_pct",
+        "safety_wafer_stock": "safety_wafer_stock"
+      },
+      "links": [
+        {
+          "link_type": "SUPPLIES_MATERIAL",
+          "direction": "IN",
+          "target_type": "SpecialtyVendor",
+          "target_key_column": "vendor_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_semi_litho_tools",
+      "dataset": { "$ref": "dataset:semi_litho_tools" },
+      "node_type": "LithoTool",
+      "key_column": "tool_id",
+      "title": "{tool_code}",
+      "attributes": {
+        "tool_code": "tool_code",
+        "tool_vendor": "tool_vendor",
+        "chamber_id": "chamber_id"
+      },
+      "metrics": {
+        "oee_pct": "oee_pct",
+        "chamber_temp_c": "chamber_temp_c",
+        "particle_defect_rate": "particle_defect_rate"
+      },
+      "links": [
+        {
+          "link_type": "EQUIPPED_WITH",
+          "direction": "IN",
+          "target_type": "WaferFab",
+          "target_key_column": "fab_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_semi_wafer_lots",
+      "dataset": { "$ref": "dataset:semi_wafer_lots" },
+      "node_type": "WaferLotEvent",
+      "key_column": "lot_id",
+      "title": "{lot_code}",
+      "attributes": {
+        "lot_code": "lot_code",
+        "step_recipe": "step_recipe"
+      },
+      "metrics": {
+        "die_good_cnt": "die_good_cnt"
+      },
+      "links": [
+        {
+          "link_type": "RUNS_LOT",
+          "direction": "IN",
+          "target_type": "WaferFab",
+          "target_key_column": "fab_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_semi_customs_ports",
+      "dataset": { "$ref": "dataset:semi_customs_ports" },
+      "node_type": "CustomsPort",
+      "key_column": "port_id",
+      "title": "{port_name}",
+      "attributes": {
+        "port_name": "port_name",
+        "port_code": "port_code",
+        "transport_mode": "transport_mode"
+      },
+      "metrics": {
+        "clearance_hours": "clearance_hours",
+        "backlog_lots": "backlog_lots"
+      },
+      "links": [
+        {
+          "link_type": "SHIPS_VIA_PORT",
+          "direction": "IN",
+          "target_type": "WaferFab",
+          "target_key_column": "fab_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_semi_regional_hubs",
+      "dataset": { "$ref": "dataset:semi_regional_hubs" },
+      "node_type": "RegionalHub",
+      "key_column": "hub_id",
+      "title": "{hub_name}",
+      "attributes": {
+        "hub_name": "hub_name",
+        "region": "region"
+      },
+      "metrics": {
+        "chip_inventory_k": "chip_inventory_k",
+        "outbound_rate_k": "outbound_rate_k"
+      },
+      "links": [
+        {
+          "link_type": "DISPATCHES_TO_HUB",
+          "direction": "IN",
+          "target_type": "CustomsPort",
+          "target_key_column": "port_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    },
+    {
+      "name": "map_semi_oem_orders",
+      "dataset": { "$ref": "dataset:semi_oem_orders" },
+      "node_type": "AutoOemOrder",
+      "key_column": "order_id",
+      "title": "{order_title}",
+      "attributes": {
+        "order_title": "order_title",
+        "oem_customer": "oem_customer",
+        "priority_tier": "priority_tier"
+      },
+      "metrics": {
+        "ordered_qty_k": "ordered_qty_k",
+        "on_time_prob": "on_time_prob"
+      },
+      "links": [
+        {
+          "link_type": "DELIVERS_ORDER",
+          "direction": "IN",
+          "target_type": "RegionalHub",
+          "target_key_column": "hub_id",
+          "create_missing_target": true
+        }
+      ],
+      "on_source_delete": "KEEP",
+      "mode": "FULL"
+    }
+  ]
+}

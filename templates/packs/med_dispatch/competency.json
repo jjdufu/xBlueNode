@@ -1,0 +1,40 @@
+{
+  "questions": [
+    {
+      "id": "cq_med_campus_beds",
+      "question": "全市各医疗院区的全院可用空床总数与急诊平均候诊时长是多少？",
+      "expected_grounding_mode": "DOMAIN_OBJECT",
+      "expected_node_types": ["HospitalCampus"],
+      "expected_metrics": ["total_free_beds", "ed_wait_minutes"],
+      "tolerance": 0.01,
+      "must_not_abstain": true
+    },
+    {
+      "id": "cq_med_icu_occupancy",
+      "question": "急诊与重症科室的床位占用率、可用重症床位与危重待收治人数是多少？",
+      "expected_grounding_mode": "DOMAIN_OBJECT",
+      "expected_node_types": ["ClinicalDept"],
+      "expected_metrics": ["bed_occupancy_pct", "free_icu_beds", "critical_queue_cnt"],
+      "tolerance": 0.01,
+      "must_not_abstain": true
+    },
+    {
+      "id": "cq_med_ecmo_utilization",
+      "question": "生命支持设备的设备负荷率与耗材剩余寿命情况如何？",
+      "expected_grounding_mode": "DOMAIN_OBJECT",
+      "expected_node_types": ["LifeSupportUnit"],
+      "expected_metrics": ["utilization_pct", "remaining_filter_hours"],
+      "tolerance": 0.01,
+      "must_not_abstain": true
+    },
+    {
+      "id": "cq_med_ambulance_eta",
+      "question": "当前在途 120 急救转运车的预计抵院分钟和当班转运负荷是多少？",
+      "expected_grounding_mode": "DOMAIN_OBJECT",
+      "expected_node_types": ["AmbulanceUnit"],
+      "expected_metrics": ["eta_minutes", "dispatch_load"],
+      "tolerance": 0.01,
+      "must_not_abstain": true
+    }
+  ]
+}
