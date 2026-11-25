@@ -156,7 +156,7 @@ export function AiDraftWizard({
             data-testid="ai-draft-title-input"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder={tx("AI 供应链本体草案", "AI Supply Chain Draft")}
+            placeholder={tx("AI 供应链模型草案", "AI Supply Chain Draft")}
             className="h-8 text-xs"
           />
         </div>

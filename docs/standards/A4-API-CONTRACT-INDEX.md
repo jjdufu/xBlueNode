@@ -187,6 +187,7 @@
 | `GET /health/deep`、`GET /outbox/stats`、`GET /system/info` | `OPS_ADMIN` | 14 | §14.4.3 |
 | `GET /retention`、`PUT /retention/{target}`、`POST /retention/run-now` | `OPS_ADMIN` | 14 | §14.4.1 |
 | `GET /backups`、`POST /backups`、`GET /backups/{id}` | `OPS_ADMIN`（`default` 租户） | 14 | §14.3 |
+| `GET /pulse` | `DATA_READ` | 32 | [02-STEP32](../../plans/v4-modeling-console-and-industry-worlds/console-and-ia/02-STEP32-LIVE-OPERATIONAL-DASHBOARD-AND-PULSE-API.md) §32.1 |
 | `GET /onboarding-status` | `DATA_READ` | 19 | [05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.1.1 |
 | `GET /templates`、`GET /templates/{pack_id}`、`GET /templates/{pack_id}/preview`、`POST /templates/{pack_id}/plan`、`POST /templates/{pack_id}/install`、`GET /templates/installs`、`POST /templates/installs/{id}/apply`、`POST /templates/installs/{id}/uninstall` | `DATA_READ` / `OPS_ADMIN` | 14 / 19 | §14.5、[05-STEP19](../../plans/completed/v2-ux-and-grounded-ai-step15-22/builder-and-ux/05-STEP19-ONBOARDING-TEMPLATE-HUB-AND-APP-PACKAGING.md) §19.2 |
 | `POST /demo/{scenario}/load` | `OPS_ADMIN` | 14 | §14.6 |

@@ -86,9 +86,9 @@ use crate::im::{
 use crate::ops::{
     BackupKind, BackupRecord, CreateWorkItemRequest, DatabaseHealth, FlowWorkItemInput,
     JobsHealthStats, MigrationsHealth, NewTemplateInstallInput, OnboardingStatusResponse,
-    OutboxStats, PatchWorkItemRequest, RetentionPolicyRecord, TemplateCreatedObject,
-    TemplateInstallRecord, TemplateInstallStatus, WorkItem, WorkItemDetail, WorkItemEvent,
-    WorkItemEventKind, WorkItemListQuery,
+    OutboxStats, PatchWorkItemRequest, PlatformPulseResponse, RetentionPolicyRecord,
+    TemplateCreatedObject, TemplateInstallRecord, TemplateInstallStatus, WorkItem, WorkItemDetail,
+    WorkItemEvent, WorkItemEventKind, WorkItemListQuery,
 };
 use crate::platform::{
     ApiTokenRecord, AuditRecord, BoxFuture, JobListQuery, JobListResponse, JobRecord, LeasedJob,
@@ -4009,6 +4009,18 @@ pub trait OpsRepository: Send + Sync {
         tenant_id: &str,
         alert_id: Uuid,
     ) -> impl Future<Output = Result<u64, AppError>> + Send;
+
+    /// Aggregates single-tenant operational scale, 24-hour throughput buckets, subgraph readiness matrix,
+    /// active alerts, pending approvals, and recent `AxSim` `deadline_step` warnings (`02-STEP32` §32.1).
+    fn fetch_platform_pulse(
+        &self,
+        _tenant_id: &str,
+    ) -> impl Future<Output = Result<PlatformPulseResponse, AppError>> + Send {
+        std::future::ready(Ok(PlatformPulseResponse {
+            generated_at: chrono::Utc::now(),
+            ..PlatformPulseResponse::default()
+        }))
+    }
 }
 
 /// Object-safe build-plane port allowing `axpoint-agent` (`AxBuilder` MCP) to list/upsert `DRAFT`

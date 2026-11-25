@@ -7,7 +7,6 @@ import {
 } from "react";
 import {
   ChevronDown,
-  ChevronRight,
   KeyRound,
   Languages,
   LogOut,
@@ -112,7 +111,6 @@ function ShellLayout() {
   const [userSidebarOverride, setUserSidebarOverride] = useState<
     boolean | null
   >(null);
-  const [governanceOpen, setGovernanceOpen] = useState(true);
   const [cmdkOpen, setCmdkOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
@@ -291,6 +289,10 @@ function ShellLayout() {
     const active = matchesModulePath(item, location.pathname);
     const fullNavLabel = isZh ? item.label : item.enLabel;
     const coreLabel = isZh ? item.shortZh : item.shortEn;
+    const navTestId =
+      item.key === "governance"
+        ? "sidebar-nav-settings"
+        : `sidebar-nav-${item.key}`;
     return (
       <NavLink
         key={item.key}
@@ -298,7 +300,7 @@ function ShellLayout() {
         end={item.path === "/"}
         aria-label={fullNavLabel}
         title={fullNavLabel}
-        data-testid={`sidebar-nav-${item.key}`}
+        data-testid={navTestId}
         className={cn(
           "relative w-full flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-[13px] transition-colors cursor-pointer",
           sidebarCollapsed && "justify-center px-0 py-2",
@@ -566,24 +568,7 @@ function ShellLayout() {
                 data-testid="governance-domain-section"
                 className="pt-2 border-t border-border/60 space-y-0.5"
               >
-                {!sidebarCollapsed && (
-                  <button
-                    type="button"
-                    data-testid="governance-section-toggle"
-                    onClick={() => setGovernanceOpen((v) => !v)}
-                    className="w-full flex items-center justify-between px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:text-foreground cursor-pointer"
-                  >
-                    <span>{tx("系统治理", "Governance")}</span>
-                    <ChevronRight
-                      className={cn(
-                        "h-3.5 w-3.5 transition-transform",
-                        governanceOpen && "rotate-90"
-                      )}
-                    />
-                  </button>
-                )}
-                {(sidebarCollapsed || governanceOpen) &&
-                  governanceNavItems.map((item) => renderSidebarLink(item))}
+                {governanceNavItems.map((item) => renderSidebarLink(item))}
               </div>
             )}
 

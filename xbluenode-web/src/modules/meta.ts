@@ -30,7 +30,7 @@ export interface NavGroupMeta {
 export const NAV_GROUPS: readonly NavGroupMeta[] = [
   { key: "overview", zh: "工作台", en: "Workspace" },
   { key: "workspace", zh: "核心业务域", en: "Core Domains" },
-  { key: "governance", zh: "系统治理", en: "Governance" },
+  { key: "governance", zh: "系统设置", en: "Settings" },
 ];
 
 export interface ModuleTitleMeta {
@@ -45,24 +45,36 @@ export interface ModuleTitleMeta {
 
 /**
  * Single Source of Truth (G1) for sidebar navigation labels and page H1 titles.
- * Enforces brand uniqueness and strict bilingual purity (Step 23 §23.1.2).
+ * Enforces brand uniqueness, bilingual purity, and plain engineering modeling terminology (Step 23 & Step 31).
  */
 export const MODULE_META: Readonly<Record<TabKey, ModuleTitleMeta>> = {
   dashboard: {
     key: "dashboard",
-    shortZh: "概览",
-    shortEn: "Overview",
-    label: "概览",
-    enLabel: "Overview",
+    shortZh: "总控看板",
+    shortEn: "Dashboard",
+    label: "总控看板",
+    enLabel: "Dashboard",
     group: "overview",
-    keywords: ["overview", "home", "onboarding", "template", "概览", "向导", "模板"],
+    keywords: [
+      "dashboard",
+      "overview",
+      "home",
+      "pulse",
+      "onboarding",
+      "template",
+      "总控看板",
+      "概览",
+      "态势",
+      "向导",
+      "模板",
+    ],
   },
   axhub: {
     key: "axhub",
     shortZh: "数据与知识",
-    shortEn: "Data & Knowledge",
+    shortEn: "Data Hub",
     label: "数据与知识",
-    enLabel: "Data & Knowledge",
+    enLabel: "Data Hub",
     group: "workspace",
     keywords: [
       "connector",
@@ -79,10 +91,10 @@ export const MODULE_META: Readonly<Record<TabKey, ModuleTitleMeta>> = {
   },
   axanalytics: {
     key: "axanalytics",
-    shortZh: "探索与制图",
-    shortEn: "Explore & Charts",
-    label: "探索与制图",
-    enLabel: "Explore & Charts",
+    shortZh: "查询与制图",
+    shortEn: "Analytics & Charts",
+    label: "查询与制图",
+    enLabel: "Analytics & Charts",
     group: "workspace",
     keywords: [
       "ask",
@@ -92,6 +104,7 @@ export const MODULE_META: Readonly<Record<TabKey, ModuleTitleMeta>> = {
       "metric",
       "axql",
       "智能问答",
+      "查询",
       "透视",
       "制图",
       "指标",
@@ -99,12 +112,14 @@ export const MODULE_META: Readonly<Record<TabKey, ModuleTitleMeta>> = {
   },
   xbluestudio: {
     key: "xbluestudio",
-    shortZh: "本体工作室",
-    shortEn: "Ontology Studio",
-    label: "本体工作室",
-    enLabel: "Ontology Studio",
+    shortZh: "建模工作室",
+    shortEn: "Modeling Studio",
+    label: "建模工作室",
+    enLabel: "Modeling Studio",
     group: "workspace",
     keywords: [
+      "modeling",
+      "model",
       "ontology",
       "schema",
       "node",
@@ -112,6 +127,8 @@ export const MODULE_META: Readonly<Record<TabKey, ModuleTitleMeta>> = {
       "graph",
       "explorer",
       "action",
+      "业务模型",
+      "建模工作室",
       "本体",
       "建模",
       "图谱",
@@ -129,9 +146,9 @@ export const MODULE_META: Readonly<Record<TabKey, ModuleTitleMeta>> = {
   },
   axagent: {
     key: "axagent",
-    shortZh: "智能体中心",
+    shortZh: "智能体与接口",
     shortEn: "Agents & APIs",
-    label: "智能体中心",
+    label: "智能体与接口",
     enLabel: "Agents & APIs",
     group: "workspace",
     keywords: ["agent", "mcp", "endpoint", "llm", "im", "bot", "智能体", "接口", "模型"],
@@ -147,21 +164,23 @@ export const MODULE_META: Readonly<Record<TabKey, ModuleTitleMeta>> = {
   },
   xblueview: {
     key: "xblueview",
-    shortZh: "孪生看板",
-    shortEn: "Twin Cockpits",
-    label: "孪生看板",
-    enLabel: "Twin Cockpits",
+    shortZh: "数字看板",
+    shortEn: "Cockpits",
+    label: "数字看板",
+    enLabel: "Cockpits",
     group: "workspace",
-    keywords: ["dashboard", "cockpit", "export", "3d", "twin", "看板", "驾驶舱", "出品"],
+    keywords: ["dashboard", "cockpit", "export", "3d", "twin", "数字看板", "看板", "驾驶舱", "出品"],
   },
   governance: {
     key: "governance",
-    shortZh: "系统治理",
-    shortEn: "Governance & Ops",
-    label: "系统治理",
-    enLabel: "Governance & Ops",
+    shortZh: "系统设置",
+    shortEn: "Settings",
+    label: "系统设置",
+    enLabel: "Settings",
     group: "governance",
     keywords: [
+      "settings",
+      "governance",
       "security",
       "rbac",
       "abac",
@@ -169,6 +188,9 @@ export const MODULE_META: Readonly<Record<TabKey, ModuleTitleMeta>> = {
       "audit",
       "backup",
       "retention",
+      "系统设置",
+      "设置",
+      "系统治理",
       "权限",
       "脱敏",
       "审计",

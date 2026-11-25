@@ -15,7 +15,7 @@
 | **AxGraph** | 存储 | 超图（`hg_*`）+ 业务节点（`xb_*`）+ 时序 + 图查询 | `axpoint-db` |
 | **AxAnalytics** | 分析 | DuckDB / DuckLake OLAP、透视制表、指标语义层、智能问数 | `axpoint-analytics` |
 | **AxQuery** | 问答 | 五路超图召回 + RRF + 意图路由（文档 / 数值 / 混合） | `routes/documents.rs`、`axpoint-analytics::nl2sql` |
-| **xBlueStudio** | 建模 | 多子图部门建模 / 本体融合 / 节点与关系类型 / 映射 / 派生与聚合规则 / 领域对象 REST 与动态 GraphQL | `routes/xblue.rs`、`routes/xblue_graphql.rs`、`XBlueStudioPage.tsx` |
+| **xBlueStudio** | 建模 | 多子图部门建模 / 模型对齐融合 / 节点与关系类型 / 映射 / 派生与动态聚合规则 / 领域对象 REST 与动态 GraphQL | `routes/xblue.rs`、`routes/xblue_graphql.rs`、`XBlueStudioPage.tsx` |
 | **xBlueGraph** | 图浏览 | 业务图与超图浏览、邻居展开、路径、图算法结果展示 | `XBlueGraphPage.tsx` |
 | **AxFlow** | 编排 | DAG 流程、持久化任务队列、触发器、规则与告警 | `axpoint-flow` |
 | **AxAgent** | 智能体 | 发布（API / Skill / MCP）、MCP Client、多模型路由、智能体与会话 | `axpoint-agent` |
@@ -60,19 +60,19 @@ Sidecar（`axpoint-parser`，端口 `8001`，只在内部网络暴露）：`/hea
 
 ## 3. 页面注册表（前端唯一来源）
 
-`xbluenode-web/src/modules/registry.ts` 按本表生成 8 个高频业务工作域侧栏 + 底部折叠系统治理入口、兼容重定向与公开路由；`App.tsx` 使用 `react-router` 的 `createBrowserRouter` 生成路由树并挂载全局 `⌘K / Ctrl+K` 命令直达面板（Step 23）。侧栏与内页一级标题遵循无品牌前缀单语纯净规范。
+`xbluenode-web/src/modules/registry.ts` 按本表生成建模优先的 8 个高频业务工作域侧栏 + 底栏固定单行 `系统设置` 入口、兼容重定向与公开路由；`App.tsx` 使用 `react-router` 的 `createBrowserRouter` 生成路由树并挂载全局 `⌘K / Ctrl+K` 命令直达面板（Step 23 / Step 31）。侧栏与内页一级标题遵循无品牌前缀单语纯净与平实工程建模术语规范。
 
 | key | 页面文件 | 主路由 | 兼容旧路由映射 | 中文侧栏与 H1 | 英文侧栏与 H1 | 所属 Step |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `dashboard` | `DashboardPage.tsx` | `/` | — | 概览 | Overview | 仓库已有 / Step 19 / Step 23 |
-| `axhub` | `AxHubPage.tsx` | `/hub` | `/ingest` → `/hub?tab=knowledge` | 数据与知识 | Data & Knowledge | Step 02 / Step 23 |
-| `axanalytics` | `AnalyticsStudioPage.tsx` | `/analytics` | `/query` → `/analytics?tab=ask` | 探索与制图 | Explore & Charts | Step 04 / Step 23 / Step 25 |
-| `xbluestudio` | `XBlueStudioPage.tsx` | `/studio` | `/graph` → `/studio?tab=explorer` | 本体工作室 | Ontology Studio | Step 05 / Step 18 / Step 23 |
-| `axflow` | `AxFlowPage.tsx` | `/flow` | `/alerts` → `/flow?tab=alerts` | 编排与告警 | Automation & Alerts | Step 07 / Step 08 / Step 23 |
-| `axagent` | `AxAgentPage.tsx` | `/agents` | — | 智能体中心 | Agents & APIs | Step 09 / Step 21 / Step 23 |
-| `axsim` | `AxSimPage.tsx` | `/sim` | — | 推演沙盘 | Simulation | Step 10 / Step 20 / Step 23 |
-| `xblueview` | `XBlueViewPage.tsx` | `/view`（`/view/:slug`） | — | 孪生看板 | Twin Cockpits | Step 11 / Step 20 / Step 23 |
-| `governance` | `GovernancePage.tsx`（含 `AxGuardPage` / `AxOpsPage`） | `/governance` | 保留 `/guard`、`/ops` 直接渲染 | 系统治理 | Governance & Ops | Step 13 / Step 14 / Step 23 |
+| `dashboard` | `DashboardPage.tsx` | `/` | — | 总控看板 | Dashboard | 仓库已有 / Step 19 / Step 23 / Step 31 / Step 32 |
+| `axhub` | `AxHubPage.tsx` | `/hub` | `/ingest` → `/hub?tab=knowledge` | 数据与知识 | Data Hub | Step 02 / Step 23 / Step 31 |
+| `xbluestudio` | `XBlueStudioPage.tsx` | `/studio` | `/graph` → `/studio?tab=explorer` | 建模工作室 | Modeling Studio | Step 05 / Step 18 / Step 23 / Step 31 |
+| `axanalytics` | `AnalyticsStudioPage.tsx` | `/analytics` | `/query` → `/analytics?tab=ask` | 查询与制图 | Analytics & Charts | Step 04 / Step 23 / Step 25 / Step 31 |
+| `axsim` | `AxSimPage.tsx` | `/sim` | — | 推演沙盘 | Simulation | Step 10 / Step 20 / Step 23 / Step 31 |
+| `axflow` | `AxFlowPage.tsx` | `/flow` | `/alerts` → `/flow?tab=alerts` | 编排与告警 | Automation & Alerts | Step 07 / Step 08 / Step 23 / Step 31 |
+| `xblueview` | `XBlueViewPage.tsx` | `/view`（`/view/:slug`） | — | 数字看板 | Cockpits | Step 11 / Step 20 / Step 23 / Step 31 |
+| `axagent` | `AxAgentPage.tsx` | `/agents` | — | 智能体与接口 | Agents & APIs | Step 09 / Step 21 / Step 23 / Step 31 |
+| `governance` | `GovernancePage.tsx`（含 `AxGuardPage` / `AxOpsPage`） | `/settings` | `/governance` → `/settings`，保留 `/guard`、`/ops` 兼容路由 | 系统设置 | Settings | Step 13 / Step 14 / Step 23 / Step 31 |
 | —（公开，无侧栏） | `LoginPage.tsx` | `/login` | — | 登录 | Sign In | Step 00 / Step 13 / Step 23 |
 | —（公开，无侧栏） | `SharePage.tsx` | `/share/:token` | — | 安全分享 | Secure Share | Step 12 |
 | —（公开，无侧栏） | `AgentEmbedPage.tsx` | `/share/agent/:token` | — | 智能对话 | Assistant | Step 09 |

@@ -36,10 +36,10 @@ is_allowed_for_role() {
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/algo/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(hub_repo|axhub_repo|graph_repo|graph_query|graph_algo_duckdb|analytics_repo|rules_repo|guard_repo|sim_visibility)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(rules_repo|guard_repo)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(rules_repo|step02_03_db|step04_analytics_db|step2[79]_[a-z0-9_]+)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(rules_repo|step02_03_db|step04_analytics_db|step(2[79]|3[1-5])_[a-z0-9_]+)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/(axhub|analytics|documents|axguard)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/axguard/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/tests/step2[79]_[a-z0-9_]+\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/tests/step(2[79]|3[1-5])_[a-z0-9_]+\.rs$ ]] && return 0
       [[ "$file" =~ ^tests/cassettes/ ]] && return 0
       return 1
       ;;
@@ -47,13 +47,13 @@ is_allowed_for_role() {
       [[ "$file" =~ ^axpoint-core/crates/(axpoint-llm|axpoint-flow|axpoint-agent)/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(agent|builder|flow|geo_ops|graph|im|ops|rules|topology|view|view_zones)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/src/(expr|rollup|sim|studio)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/tests/(studio|expr_rollup|sim|step2[5689]_[a-z0-9_]+)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-domain/tests/(studio|expr_rollup|sim|step(2[5689]|3[1-5])_[a-z0-9_]+)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(studio_repo|flow_repo|agent_repo|im_repo|sim_repo|view_repo|ops_repo|tokens|nodes|metrics|topology|mapping_exec|aggregate_exec|action_exec|entity_link|knowledge_sync)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-db/src/(agent_repo|im_repo|ops_repo)/ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(studio_repo|agent_repo|im_repo|sim_repo|view_repo|step06_exec|step2[5689]_[a-z0-9_]+)\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-db/tests/(studio_repo|agent_repo|im_repo|sim_repo|view_repo|step06_exec|step(2[5689]|3[1-5])_[a-z0-9_]+)\.rs$ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/(ops|view)/ ]] && return 0
       [[ "$file" =~ ^axpoint-core/crates/axpoint-server/src/routes/(xblue|xblue_graphql|axflow|axagent|published|mcp|axsim|xblueview|axops)\.rs$ ]] && return 0
-      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/tests/step2[5689]_[a-z0-9_]+\.rs$ ]] && return 0
+      [[ "$file" =~ ^axpoint-core/crates/axpoint-server/tests/step(2[5689]|3[1-5])_[a-z0-9_]+\.rs$ ]] && return 0
       [[ "$file" =~ ^templates/packs/ ]] && return 0
       [[ "$file" =~ ^scripts/ops/ ]] && return 0
       return 1
@@ -118,6 +118,10 @@ run_self_test() {
   is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-server/src/view/ai_gen.rs"
   is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-domain/src/view_zones.rs"
   is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-domain/src/geo_ops.rs"
+  is_allowed_for_role "squad-domain-agent" "axpoint-core/crates/axpoint-server/tests/step32_pulse_api.rs"
+  is_allowed_for_composite_role "squad-data+squad-domain-agent+squad-qa" "axpoint-parser/scripts/gen_worlds_grid_fin.py"
+  is_allowed_for_composite_role "squad-data+squad-domain-agent+squad-qa" "templates/packs/power_grid/manifest.json"
+  is_allowed_for_composite_role "squad-data+squad-domain-agent+squad-qa" "scripts/seed/showcase/power_grid.sh"
   is_allowed_for_role "squad-web" "xbluenode-web/src/pages/XBlueStudioPage.tsx"
   is_allowed_for_role "squad-qa" "scripts/gate/step16.sh"
   is_allowed_for_composite_role "squad-web+squad-qa" "xbluenode-web/e2e/smoke.spec.ts"
