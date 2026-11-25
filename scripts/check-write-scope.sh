@@ -71,6 +71,7 @@ is_allowed_for_role() {
       [[ "$file" =~ ^scripts/gate/step[0-9]+\.sh$ ]] && return 0
       [[ "$file" =~ ^scripts/gate/tools/ ]] && return 0
       [[ "$file" =~ ^scripts/(seed|bench|demo)/ ]] && return 0
+      [[ "$file" == "scripts/seed-showcase.sh" ]] && return 0
       [[ "$file" =~ ^tests/ ]] && return 0
       return 1
       ;;
@@ -122,6 +123,7 @@ run_self_test() {
   is_allowed_for_composite_role "squad-data+squad-domain-agent+squad-qa" "axpoint-parser/scripts/gen_worlds_grid_fin.py"
   is_allowed_for_composite_role "squad-data+squad-domain-agent+squad-qa" "templates/packs/power_grid/manifest.json"
   is_allowed_for_composite_role "squad-data+squad-domain-agent+squad-qa" "scripts/seed/showcase/power_grid.sh"
+  is_allowed_for_composite_role "squad-domain-agent+squad-qa" "scripts/seed-showcase.sh"
   is_allowed_for_role "squad-web" "xbluenode-web/src/pages/XBlueStudioPage.tsx"
   is_allowed_for_role "squad-qa" "scripts/gate/step16.sh"
   is_allowed_for_composite_role "squad-web+squad-qa" "xbluenode-web/e2e/smoke.spec.ts"

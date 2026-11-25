@@ -1,6 +1,6 @@
 # A7 · 需求追踪矩阵
 
-本附录把全部能力项（92 项，按 A 底座、B 设计、C 构建、D 智能、E 推演、F 可视、G 系统分组，能力范围参照对标产品官网公开的功能说明整理）与全部数据源类别（26 类）映射到负责的 Step、实现小节与可执行的验收用例。“验收”列中带引号的名称是该 Step 门禁脚本 `scripts/gate/stepNN.sh` 中的断言名；其余为测试文件或端到端用例。每一项都有唯一负责的 Step。
+本附录把全部能力项（98 项，按 A 底座、B 设计、C 构建、D 智能、E 推演、F 可视、G 系统分组，能力范围参照对标产品官网公开的功能说明整理）与全部数据源类别（26 类）映射到负责的 Step、实现小节与可执行的验收用例。“验收”列中带引号的名称是该 Step 门禁脚本 `scripts/gate/stepNN.sh` 中的断言名；其余为测试文件或端到端用例。每一项都有唯一负责的 Step。
 
 ---
 
@@ -30,6 +30,7 @@
 | C90 | 超 50 万边大规模子图的 DuckDB 迭代关系代数下推求解 | 29 | [07-STEP29](../../plans/completed/v3-craft-and-world-runtime-step23-30/world-runtime/07-STEP29-STREAM-WORKERS-LOG-CDC-AND-AUTONOMOUS-HARNESS.md) §29.3 | step29 “duckdb-graph-algo-pushdown” |
 | C16 | 私有化部署、轻量起步、规模扩展 | 00 / 14 | §00.9、§14.2 | step14 “health-deep”；`all.sh` |
 | C17 | 备份恢复 | 14 | §14.3 | `restore-drill.sh` 输出 `restore-drill: OK` |
+| C96 | 集团授信与互保风控世界模型（1,200+ 节点、4,200+ 互保边、6 万行对公流水 VTable 透视、三道 PII 脱敏与逾期状态动态视野） | 33 | [03-STEP33](../../plans/v4-modeling-console-and-industry-worlds/industry-worlds/03-STEP33-POWER-GRID-AND-FIN-RISK-WORLDS.md) §33.2 | step33 “fin-risk-60k-lake-rows”、“fin-risk-pii-and-dynamic-rls” |
 
 ### B 设计
 
@@ -46,6 +47,8 @@
 | C84 | 孤立死指标（Dead Knowledge）静态闭包扫描与开发沙盒 `Trial Tick` L0–L4 运行时就绪认证 | 26 | [04-STEP26](../../plans/completed/v3-craft-and-world-runtime-step23-30/world-runtime/04-STEP26-ACTION-CONTRACTS-EDGE-DYNAMICS-AND-L4-CERT.md) §26.4 | step26 “dead-knowledge-detected”、“trial-tick-certified” |
 | C78 | `xBlueStudio` 正交避障多锚点连线、6 轴磁吸对齐线、业务域复合泳道与三层对象折叠及 50 步撤销 | 24 | [02-STEP24](../../plans/completed/v3-craft-and-world-runtime-step23-30/craft-ux/02-STEP24-ADVANCED-MODELING-FLOW-AND-CAUSAL-CANVASES.md) §24.1 | step24 “elk-orthogonal-no-overlap”、“compound-tier-fold”、“canvas-undo-redo” |
 | C88 | 纯 Rust `geo` 多边形地理围栏（`GEO_WITHIN_POLYGON`）、球面缓冲距离与轨迹凸包算子 | 28 | [06-STEP28](../../plans/completed/v3-craft-and-world-runtime-step23-30/world-runtime/06-STEP28-SIM-EVENT-QUEUE-DEADLINE-AND-RUST-GEOSHAPE.md) §28.3 | step28 “geo-polygon-within”、“geo-convex-hull” |
+| C95 | 新型电力与配网调度世界模型（320+ 节点、多边形供电围栏、馈线边负载四路径传导、4 万+ 时序点与跳闸 `deadline_step` 沙盘） | 33 | [03-STEP33](../../plans/v4-modeling-console-and-industry-worlds/industry-worlds/03-STEP33-POWER-GRID-AND-FIN-RISK-WORLDS.md) §33.1 | step33 “power-grid-l4-certified”、“power-grid-feeder-deadline” |
+| C97 | 半导体全球供应链（四域复合泳道 + 三层折叠 + 3 万行批次传感）与城市急诊床位调度（120 车辆轨迹凸包 + 急诊看板）双行业世界 | 34 | [04-STEP34](../../plans/v4-modeling-console-and-industry-worlds/industry-worlds/04-STEP34-SEMI-SUPPLY-AND-MED-DISPATCH-WORLDS.md) §34.1～§34.2 | step34 “semi-supply-l4-and-swimlanes”、“med-dispatch-convex-hull-and-l4” |
 
 ### C 构建
 
@@ -118,6 +121,7 @@
 | C59 | 3D 空间数字孪生场景与实时指标驱动着色 | 11 | §11.1、§11.4 | step11 “scene-3d”；`e2e/xblueview.spec.ts` |
 | C80 | 一等公民可视化制图工作台（`xv_charts`）与问数结果 1 步钉入驾驶舱 | 25 | [03-STEP25](../../plans/completed/v3-craft-and-world-runtime-step23-30/craft-ux/03-STEP25-CHART-STUDIO-VTABLE-PIVOT-AND-MAGNETIC-GRID.md) §25.2 | step25 “chart-asset-crud”、“pin-chart-to-dashboard” |
 | C81 | `@visactor/react-vtable` 高性能多维透视表、KPI 火花线与驾驶舱可视轨道磁吸网格 | 25 | [03-STEP25](../../plans/completed/v3-craft-and-world-runtime-step23-30/craft-ux/03-STEP25-CHART-STUDIO-VTABLE-PIVOT-AND-MAGNETIC-GRID.md) §25.3～§25.4 | step25 “vtable-pivot-render”、“grid-float-tidy” |
+| C94 | 全域运行态势脉冲接口（`/api/axops/pulse`）与真数据多行业矩阵总控看板 | 32 | [02-STEP32](../../plans/v4-modeling-console-and-industry-worlds/console-and-ia/02-STEP32-LIVE-OPERATIONAL-DASHBOARD-AND-PULSE-API.md) §32.1～§32.2 | step32 “pulse-rls-isolated”、“dashboard-live-pulse”、“dashboard-subgraph-matrix” |
 
 ### G 系统
 
@@ -132,6 +136,8 @@
 | C76 | 8 域任务流导航收敛、历史路由无感兼容与全局 `⌘K` 命令直达 | 23 | [01-STEP23](../../plans/completed/v3-craft-and-world-runtime-step23-30/craft-ux/01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) §23.1～§23.2 | step23 “ia-8-domains”、“legacy-route-redirect”、“cmdk-jump-ok” |
 | C77 | 严格中英单语纯净度（零内部代号尾缀/零裸枚举）与可拖拽弹性分栏 | 23 | [01-STEP23](../../plans/completed/v3-craft-and-world-runtime-step23-30/craft-ux/01-STEP23-IA-CONVERGENCE-I18N-PURITY-AND-RESIZABLE-SHELL.md) §23.3～§23.4 | step23 “zh-zero-codename”、“i18n-guard-ok”、“resizable-pane-persist” |
 | C92 | Phase 3 双轨全旅程端到端验收、画布/大图性能基准与 92 项能力溯源总门禁 | 30 | [08-STEP30](../../plans/completed/v3-craft-and-world-runtime-step23-30/world-runtime/08-STEP30-V3-E2E-CRAFT-BENCHMARKS-AND-ACCEPTANCE.md) §30.1～§30.2 | step30 “v3-journey-pass”、“traceability-92-ok” |
+| C93 | 全站平实业务建模语言（界面零玄学术语）、建模工作室置前导航与单行系统设置入口 | 31 | [01-STEP31](../../plans/v4-modeling-console-and-industry-worlds/console-and-ia/01-STEP31-PLAIN-MODELING-TERMINOLOGY-AND-SHELL-REFORGE.md) §31.1～§31.3 | step31 “ui-zero-ontology-jargon”、“nav-modeling-promoted”、“settings-flat-entry” |
+| C98 | 十万级多行业秒级向量化装载器（`< 8s`）、Phase 4 全旅程端到端验收与 98 项能力溯源总门禁 | 35 | [05-STEP35](../../plans/v4-modeling-console-and-industry-worlds/industry-worlds/05-STEP35-SHOWCASE-VECTOR-SEEDER-E2E-AND-ACCEPTANCE.md) §35.1～§35.2 | step35 “showcase-145k-seeded-fast”、“v4-journey-pass”、“traceability-98-ok” |
 
 ---
 
@@ -172,7 +178,7 @@
 
 ```bash
 # 每个能力项与数据源类别都在本表出现且只出现一次
-grep -cE '^\| C[0-9]{2} ' docs/standards/A7-REQUIREMENTS-TRACEABILITY.md   # 92
+grep -cE '^\| C[0-9]{2} ' docs/standards/A7-REQUIREMENTS-TRACEABILITY.md   # 98
 grep -cE '^\| D[0-9]{2} ' docs/standards/A7-REQUIREMENTS-TRACEABILITY.md   # 26
 
 # 表中引用的门禁断言名都存在于对应门禁脚本（输出缺失项，期望为空）
