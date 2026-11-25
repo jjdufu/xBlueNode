@@ -1800,8 +1800,12 @@ test.describe("Step 35 Phase 4 Modeling Console & Four Industry Worlds Full Jour
             });
             return;
           }
-          const upstream = await route.fetch({ url: targetUrl });
-          await route.fulfill({ response: upstream });
+          try {
+            const upstream = await route.fetch({ url: targetUrl });
+            await route.fulfill({ response: upstream });
+          } catch {
+            // Ignore in-flight requests aborted when test finishes tearing down
+          }
         });
       }
 
@@ -2270,6 +2274,25 @@ test.describe("Step 35 Phase 4 Modeling Console & Four Industry Worlds Full Jour
     }
     await expect(hullToggle).toHaveClass(/border-xblue/);
 
+    if (isLive) {
+      await expect(page.getByTestId("kpi-value")).toHaveCount(4, {
+        timeout: 20_000,
+      });
+      await expect
+        .poll(
+          async () => {
+            const texts = await page.getByTestId("kpi-value").allInnerTexts();
+            return (
+              texts.length === 4 &&
+              texts.every((t) => t.trim().length > 0 && t.trim() !== "—")
+            );
+          },
+          { timeout: 15_000 }
+        )
+        .toBe(true);
+      await expect(page.getByText("暂无图表数据")).toHaveCount(0);
+    }
+
     // =========================================================================
     // Stage 6: Action Writeback (`启用应急加床`) & Live Pulse Refresh Loop
     // =========================================================================
@@ -2303,5 +2326,6 @@ test.describe("Step 35 Phase 4 Modeling Console & Four Industry Worlds Full Jour
     expect(leakedTenantUrls).toEqual([]);
     expect(pageErrors).toEqual([]);
     expect(consoleErrors).toEqual([]);
+    await page.unrouteAll({ behavior: "ignoreErrors" }).catch(() => null);
   });
 });

@@ -433,7 +433,7 @@ def _batch_replace_metric_series(
         "DELETE FROM xb_metric_series WHERE tenant_id = %s AND batch_id = %s",
         (tenant_id, batch_id),
     )
-    chunk_size = 10_000
+    chunk_size = 25_000
     written = 0
     for offset in range(0, len(points), chunk_size):
         chunk = points[offset : offset + chunk_size]
@@ -462,6 +462,57 @@ def _batch_replace_metric_series(
             ),
         )
         written += len(chunk)
+
+    distinct_node_ids = sorted({str(p.node_id) for p in points})
+    if distinct_node_ids:
+        cur.execute(
+            "DELETE FROM xb_metric_rollups WHERE tenant_id = %s AND node_id = ANY(%s::uuid[])",
+            (tenant_id, distinct_node_ids),
+        )
+        cur.execute(
+            """
+            WITH bucketed AS (
+                SELECT ms.tenant_id,
+                       ms.node_id,
+                       ms.metric,
+                       g.grain_name,
+                       date_trunc(g.trunc_unit, ms.ts) AS bucket_start,
+                       ms.ts,
+                       ms.value
+                  FROM xb_metric_series ms
+                 CROSS JOIN (
+                     VALUES ('MINUTE', 'minute'), ('HOUR', 'hour')
+                 ) AS g(grain_name, trunc_unit)
+                 WHERE ms.tenant_id = %s
+                   AND ms.batch_id = %s
+            )
+            INSERT INTO xb_metric_rollups (
+                tenant_id, node_id, metric, grain, bucket_start,
+                cnt, sum_v, min_v, max_v, last_v, last_ts
+            )
+            SELECT tenant_id,
+                   node_id,
+                   metric,
+                   grain_name,
+                   bucket_start,
+                   COUNT(*),
+                   SUM(value),
+                   MIN(value),
+                   MAX(value),
+                   (array_agg(value ORDER BY ts DESC))[1],
+                   MAX(ts)
+              FROM bucketed
+             GROUP BY tenant_id, node_id, metric, grain_name, bucket_start
+            ON CONFLICT (tenant_id, node_id, metric, grain, bucket_start) DO UPDATE SET
+                cnt = EXCLUDED.cnt,
+                sum_v = EXCLUDED.sum_v,
+                min_v = EXCLUDED.min_v,
+                max_v = EXCLUDED.max_v,
+                last_v = EXCLUDED.last_v,
+                last_ts = EXCLUDED.last_ts
+            """,
+            (tenant_id, batch_id),
+        )
     return written
 
 
@@ -1305,6 +1356,26 @@ def seed_semi_supply(conn: psycopg.Connection[Any], tenant_id: str) -> dict[str,
             series_pts.append(MetricPointRow(m_port1, "clearance_hours", ts, clr_pt, "SYNC"))
             series_pts.append(MetricPointRow(m_hub1, "chip_inventory_k", ts, inv_pt, "SYNC"))
 
+        # Populate production subgraph fleet metrics across all 14 WaferFabs, 16 Ports & 18 Hubs
+        fab_snap_ts = now_utc - timedelta(minutes=10)
+        for f_idx, fid in enumerate(fab_ids):
+            wpm_val = 38000.0 + f_idx * 1800.0
+            yld_val = round(92.6 + (f_idx % 6) * 0.55, 2)
+            series_pts.append(
+                MetricPointRow(fid, "wafer_starts_wpm", fab_snap_ts, wpm_val, "SYNC")
+            )
+            series_pts.append(MetricPointRow(fid, "fab_yield_pct", fab_snap_ts, yld_val, "SYNC"))
+        for p_idx, pid in enumerate(port_ids):
+            for step in range(4):
+                ts = now_utc - timedelta(hours=step * 5, minutes=12)
+                clr_val = round(14.5 + (p_idx % 7) * 2.4 + (step % 3) * 0.6, 1)
+                series_pts.append(MetricPointRow(pid, "clearance_hours", ts, clr_val, "SYNC"))
+        for h_idx, hid in enumerate(hub_ids):
+            for step in range(4):
+                ts = now_utc - timedelta(hours=step * 5, minutes=8)
+                inv_val = round(240.0 + (h_idx % 9) * 26.5 + (step % 3) * 4.0, 1)
+                series_pts.append(MetricPointRow(hid, "chip_inventory_k", ts, inv_val, "SYNC"))
+
         series_written = _batch_replace_metric_series(
             cur,
             tenant_id=tenant_id,
@@ -1920,6 +1991,23 @@ def seed_med_dispatch(conn: psycopg.Connection[Any], tenant_id: str) -> dict[str
             )
             series_pts.append(MetricPointRow(m_hosp1, "ed_wait_minutes", ts, wait_m, "SYNC"))
             series_pts.append(MetricPointRow(m_amb1, "eta_minutes", ts, eta_m, "SYNC"))
+
+        # Populate production subgraph fleet metrics across all 12 Campuses & 64 AmbulanceUnits
+        hosp_snap_ts = now_utc - timedelta(minutes=10)
+        for c_idx, cid in enumerate(campus_ids):
+            beds_val = 38.0 if c_idx == 0 else float(32 + (c_idx % 7) * 4)
+            series_pts.append(
+                MetricPointRow(cid, "total_free_beds", hosp_snap_ts, beds_val, "SYNC")
+            )
+            for step in range(4):
+                ts = now_utc - timedelta(hours=step * 5, minutes=12)
+                ed_val = round(24.5 + (c_idx % 6) * 3.6 + (step % 3) * 0.8, 1)
+                series_pts.append(MetricPointRow(cid, "ed_wait_minutes", ts, ed_val, "SYNC"))
+        for a_idx, aid in enumerate(amb_ids):
+            for step in range(2):
+                ts = now_utc - timedelta(hours=step * 6, minutes=15)
+                eta_val = round(11.5 + (a_idx % 9) * 1.6 + step * 0.5, 1)
+                series_pts.append(MetricPointRow(aid, "eta_minutes", ts, eta_val, "SYNC"))
 
         series_written = _batch_replace_metric_series(
             cur,

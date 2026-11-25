@@ -51,7 +51,7 @@
   "sha256": {
     "README.md": "ee40497ffd635e3f56990e0687a037c7b7092575853c71b2937e492c361c4239",
     "competency.json": "3e5fd0b70f4f46c5dcd168e111efbb64f17b6f329ea7d12e305a1524f1e41499",
-    "dashboards/cockpit.json": "7593b348df7aced46ddbcf6a10a21719607317d3fce9d987f8ff97e2c19ce338",
+    "dashboards/cockpit.json": "ecbfe1b2245bb889ba7871d3d076fd598cccb28f9310eb5e81a2e2aab79c2591",
     "mappings.json": "0da96e364487c975cba09ea16cd8fd165a9632f7f740a69203bb4d8643ac1b64",
     "metrics.json": "a3756f5e7a4d4cc1654ed2b4cfb666e583504fd2d531d308596b4ac47db13e5f",
     "rules.json": "01e536f05772d2d882f1e8b462f9d47dc9d0a7976bf04b81106ce3d4cd8ac867",

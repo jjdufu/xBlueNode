@@ -61,6 +61,63 @@ expect_json "showcase-main-schema-no-orphan-edges" "$MAIN_SCHEMA" '
   and ([ .edge_types[] | ((.src_type_name as $s | $mn | index($s)) != null and (.dst_type_name as $d | $mn | index($d)) != null) ] | all)
 '
 
+# 3.1 核验四套行业五区驾驶舱真实 /api/xblueview/widgets/:id/data 零空值（KPI 非空数值、拓扑图非空完整子图、趋势/对比图表 > 0）
+FIN_DASH_DETAIL=$(api GET /api/xblueview/dashboards/by-slug/fin-risk-cockpit)
+FIN_GRAPH_WID=$(printf '%s' "$FIN_DASH_DETAIL" | jq -r '.widgets[] | select(.widget_kind == "GRAPH_TOPOLOGY") | .id' | head -n 1)
+FIN_GRAPH_DATA=$(api POST "/api/xblueview/widgets/${FIN_GRAPH_WID}/data" '{}')
+expect_json "showcase-fin-risk-graph-widget-nonempty" "$FIN_GRAPH_DATA" '
+  (.rows | length) >= 200
+  and (([ .rows[] | select(.[0] == "NODE") ] | length) >= 100)
+  and (([ .rows[] | select(.[0] == "LINK") ] | length) >= 100)
+'
+
+SEMI_DASH_DETAIL=$(api GET /api/xblueview/dashboards/by-slug/semi-supply-cockpit)
+SEMI_GRAPH_WID=$(printf '%s' "$SEMI_DASH_DETAIL" | jq -r '.widgets[] | select(.widget_kind == "GRAPH_TOPOLOGY") | .id' | head -n 1)
+SEMI_GRAPH_DATA=$(api POST "/api/xblueview/widgets/${SEMI_GRAPH_WID}/data" '{}')
+expect_json "showcase-semi-supply-graph-widget-full-subgraph" "$SEMI_GRAPH_DATA" '
+  (([ .rows[] | select(.[0] == "NODE") ] | length) > 50)
+  and (([ .rows[] | select(.[0] == "LINK") ] | length) > 50)
+'
+
+for WID in $(printf '%s' "$SEMI_DASH_DETAIL" | jq -r '.widgets[] | select(.widget_kind == "KPI_CARD") | .id'); do
+  W_DATA=$(api POST "/api/xblueview/widgets/${WID}/data" '{}')
+  expect_json "showcase-semi-kpi-${WID}" "$W_DATA" '
+    (.rows | length) > 0
+    and ((.rows[0][2] | type) == "number")
+    and (.rows[0][2] > 0)
+  '
+done
+SEMI_LINE_WID=$(printf '%s' "$SEMI_DASH_DETAIL" | jq -r '.widgets[] | select(.widget_kind == "LINE_CHART") | .id' | head -n 1)
+SEMI_BAR_WID=$(printf '%s' "$SEMI_DASH_DETAIL" | jq -r '.widgets[] | select(.widget_kind == "BAR_CHART") | .id' | head -n 1)
+expect_json "showcase-semi-line-nonempty" "$(api POST "/api/xblueview/widgets/${SEMI_LINE_WID}/data" '{}')" '
+  (.rows | length) >= 10 and ([ .rows[][2] | select(type == "number" and . > 0) ] | length) >= 10
+'
+expect_json "showcase-semi-bar-nonempty" "$(api POST "/api/xblueview/widgets/${SEMI_BAR_WID}/data" '{}')" '
+  (.rows | length) >= 18 and ([ .rows[][2] | select(type == "number" and . > 0) ] | length) >= 18
+'
+
+MED_DASH_DETAIL=$(api GET /api/xblueview/dashboards/by-slug/med-dispatch-cockpit)
+for WID in $(printf '%s' "$MED_DASH_DETAIL" | jq -r '.widgets[] | select(.widget_kind == "KPI_CARD") | .id'); do
+  W_DATA=$(api POST "/api/xblueview/widgets/${WID}/data" '{}')
+  expect_json "showcase-med-kpi-${WID}" "$W_DATA" '
+    (.rows | length) > 0
+    and ((.rows[0][2] | type) == "number")
+    and (.rows[0][2] > 0)
+  '
+done
+MED_LINE_WID=$(printf '%s' "$MED_DASH_DETAIL" | jq -r '.widgets[] | select(.widget_kind == "LINE_CHART") | .id' | head -n 1)
+MED_BAR_WID=$(printf '%s' "$MED_DASH_DETAIL" | jq -r '.widgets[] | select(.widget_kind == "BAR_CHART") | .id' | head -n 1)
+MED_MAP_WID=$(printf '%s' "$MED_DASH_DETAIL" | jq -r '.widgets[] | select(.widget_kind == "MAP") | .id' | head -n 1)
+expect_json "showcase-med-line-nonempty" "$(api POST "/api/xblueview/widgets/${MED_LINE_WID}/data" '{}')" '
+  (.rows | length) >= 10 and ([ .rows[][2] | select(type == "number" and . > 0) ] | length) >= 10
+'
+expect_json "showcase-med-bar-nonempty" "$(api POST "/api/xblueview/widgets/${MED_BAR_WID}/data" '{}')" '
+  (.rows | length) >= 12 and ([ .rows[][2] | select(type == "number" and . > 0) ] | length) >= 12
+'
+expect_json "showcase-med-map-nonempty" "$(api POST "/api/xblueview/widgets/${MED_MAP_WID}/data" '{}')" '
+  (.rows | length) >= 70
+'
+
 # 核验 POST /api/axops/demo/showcase/load 二次幂等调用 HTTP 200、< 8s 返回与 TEMPLATE_INSTALL 审计落库
 T_API_0=$(python3 -c 'import time; print(int(time.time() * 1000))')
 SHOWCASE_API_RAW=$(curl -sS -w '\n%{http_code}' -X POST \

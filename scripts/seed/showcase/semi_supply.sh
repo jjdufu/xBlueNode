@@ -94,6 +94,25 @@ wait_pids() {
   done
 }
 
+exec_tenant_sql_scalar() {
+  local tenant="$1" sql_stmt="$2"
+  if command -v psql >/dev/null 2>&1 && declare -F sql_app >/dev/null 2>&1; then
+    sql_app "$tenant" "$sql_stmt" | head -n 1
+  else
+    "$PY_BIN" - "$tenant" "$sql_stmt" <<'PY'
+import os, sys, psycopg
+tenant, stmt = sys.argv[1], sys.argv[2]
+dsn = os.environ.get("DATABASE_URL") or os.environ.get("MIGRATION_DATABASE_URL") or ""
+with psycopg.connect(dsn) as conn:
+    with conn.cursor() as cur:
+        cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant,))
+        cur.execute(stmt)
+        row = cur.fetchone()
+        print(row[0] if row else 0)
+PY
+  fi
+}
+
 upsert_ids_env() {
   local key="$1" val="$2" env_file="$ROOT/.gate/ids.env"
   local lock_dir="${env_file}.lock"
@@ -114,10 +133,11 @@ trap 'rm -rf "$SEED_TMP"' EXIT
 
 # 0. 严格真数据校验的幂等快路径（SHOWCASE_FORCE_REBUILD=1 时强制全量重建）
 if [[ "${SHOWCASE_FORCE_REBUILD:-0}" != "1" ]]; then
+  api_try_get /api/xblueview/dashboards/by-slug/semi-supply-cockpit > "$SEED_TMP/fp_dash.json" || echo '{}' > "$SEED_TMP/fp_dash.json"
+  if jq -e '.status == "PUBLISHED"' "$SEED_TMP/fp_dash.json" >/dev/null 2>&1; then
   FP_PIDS=()
   api_ok GET /api/axops/pulse > "$SEED_TMP/fp_pulse.json" & FP_PIDS+=("$!")
   api_ok GET "/api/xblue/schema?subgraph=main" > "$SEED_TMP/fp_main.json" & FP_PIDS+=("$!")
-  api_try_get /api/xblueview/dashboards/by-slug/semi-supply-cockpit > "$SEED_TMP/fp_dash.json" & FP_PIDS+=("$!")
   api_ok GET /api/axsim/sandboxes > "$SEED_TMP/fp_sb.json" & FP_PIDS+=("$!")
   api_ok GET "/api/axhub/datasets?limit=200" > "$SEED_TMP/fp_ds.json" & FP_PIDS+=("$!")
   api_ok GET "/api/xblue/nodes?subgraph=main&type_name=AutoOemOrder&limit=20" > "$SEED_TMP/fp_oem.json" & FP_PIDS+=("$!")
@@ -141,23 +161,38 @@ if [[ "${SHOWCASE_FORCE_REBUILD:-0}" != "1" ]]; then
       and ($ssb != null and ($ssb.id // "") != "")
       and ($oem01 != null and ($oem01.id // "") != "")
       and ($dash[0].status == "PUBLISHED")
+      and (([ $dash[0].widgets[]? | select(.widget_kind == "KPI_CARD" and (.encoding.y // "") != "value") ] | length) == 0)
       and ([ $pack[0].node_types[].name ] | all(. as $n | ($mn | index($n)) != null))
       and ([ $pack[0].edge_types[].name ] | all(. as $e | ($me | index($e)) != null))
       and ([ $main[0].edge_types[] | ((.src_type_name as $s | $mn | index($s)) != null and (.dst_type_name as $d | $mn | index($d)) != null) ] | all)
     ' >/dev/null 2>&1; then
-      FP_SB_ID=$(jq -r '(if type == "array" then . else (.items // []) end) | map(select(.name == "半导体晶圆断供与清关延误沙盘"))[0].id' "$SEED_TMP/fp_sb.json")
-      FP_DASH_ID=$(jq -r '.id' "$SEED_TMP/fp_dash.json")
-      FP_OEM01_ID=$(jq -r '(.items // []) | map(select(.node_key == "OEM-001"))[0].id' "$SEED_TMP/fp_oem.json")
-      if [[ "$SHOWCASE_TENANT_ID" == "default" ]]; then
-        upsert_ids_env "SEMI_SUPPLY_SANDBOX_ID" "$FP_SB_ID"
-        upsert_ids_env "SEMI_SUPPLY_DASHBOARD_ID" "$FP_DASH_ID"
-        upsert_ids_env "SEMI_SUPPLY_OEM01_ID" "$FP_OEM01_ID"
+      SEMI_ROLLUP_OK=$(exec_tenant_sql_scalar "$SHOWCASE_TENANT_ID" "
+SELECT CASE
+         WHEN COUNT(DISTINCT mr.grain) = 2
+          AND COUNT(DISTINCT CASE WHEN n.type_name = 'RegionalHub' THEN n.id END) >= 18
+         THEN 1 ELSE 0
+       END
+  FROM xb_metric_rollups mr
+  JOIN xb_nodes n ON n.id = mr.node_id AND n.tenant_id = mr.tenant_id
+ WHERE mr.tenant_id = '${SHOWCASE_TENANT_ID}'
+   AND n.subgraph_slug = 'semi_supply'
+   AND mr.grain IN ('MINUTE', 'HOUR')" || echo "0")
+      if [[ "${SEMI_ROLLUP_OK:-0}" == "1" ]]; then
+        FP_SB_ID=$(jq -r '(if type == "array" then . else (.items // []) end) | map(select(.name == "半导体晶圆断供与清关延误沙盘"))[0].id' "$SEED_TMP/fp_sb.json")
+        FP_DASH_ID=$(jq -r '.id' "$SEED_TMP/fp_dash.json")
+        FP_OEM01_ID=$(jq -r '(.items // []) | map(select(.node_key == "OEM-001"))[0].id' "$SEED_TMP/fp_oem.json")
+        if [[ "$SHOWCASE_TENANT_ID" == "default" ]]; then
+          upsert_ids_env "SEMI_SUPPLY_SANDBOX_ID" "$FP_SB_ID"
+          upsert_ids_env "SEMI_SUPPLY_DASHBOARD_ID" "$FP_DASH_ID"
+          upsert_ids_env "SEMI_SUPPLY_OEM01_ID" "$FP_OEM01_ID"
+        fi
+        echo "SEMI_SUPPLY_SANDBOX_ID=${FP_SB_ID}"
+        echo "SEMI_SUPPLY_DASHBOARD_ID=${FP_DASH_ID}"
+        echo "SEMI_SUPPLY_OEM01_ID=${FP_OEM01_ID}"
+        exit 0
       fi
-      echo "SEMI_SUPPLY_SANDBOX_ID=${FP_SB_ID}"
-      echo "SEMI_SUPPLY_DASHBOARD_ID=${FP_DASH_ID}"
-      echo "SEMI_SUPPLY_OEM01_ID=${FP_OEM01_ID}"
-      exit 0
     fi
+  fi
   fi
 fi
 
@@ -294,7 +329,8 @@ SB_PID=$!
   EXISTING_DASH=$(api_try_get /api/xblueview/dashboards/by-slug/semi-supply-cockpit)
   SEMI_DASH_ID=$(printf '%s' "$EXISTING_DASH" | jq -r 'if type == "object" then (.id // empty) else empty end' 2>/dev/null || true)
   SEMI_DASH_STATUS=$(printf '%s' "$EXISTING_DASH" | jq -r 'if type == "object" then (.status // empty) else empty end' 2>/dev/null || true)
-  if [[ -z "$SEMI_DASH_ID" || "$SEMI_DASH_ID" == "null" || "$SEMI_DASH_STATUS" != "PUBLISHED" || "${SHOWCASE_FORCE_REBUILD:-0}" == "1" ]]; then
+  SEMI_LEGACY_KPI=$(printf '%s' "$EXISTING_DASH" | jq -r '([.widgets[]? | select(.widget_kind == "KPI_CARD" and (.encoding.y // "") != "value")] | length) > 0' 2>/dev/null || echo "false")
+  if [[ -z "$SEMI_DASH_ID" || "$SEMI_DASH_ID" == "null" || "$SEMI_DASH_STATUS" != "PUBLISHED" || "$SEMI_LEGACY_KPI" == "true" || "${SHOWCASE_FORCE_REBUILD:-0}" == "1" ]]; then
     if [[ -n "$SEMI_DASH_ID" && "$SEMI_DASH_ID" != "null" ]]; then
       api_ok DELETE "/api/xblueview/dashboards/${SEMI_DASH_ID}" >/dev/null
     fi

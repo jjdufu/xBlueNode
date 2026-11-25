@@ -2198,7 +2198,10 @@ impl ViewRepository for PgStore {
                            AND a.status IN ('OPEN', 'ACK')
                     ) AS open_alerts
                FROM xb_nodes n
+               LEFT JOIN xb_subgraphs sg
+                 ON sg.tenant_id = n.tenant_id AND sg.slug = n.subgraph_slug
               WHERE n.tenant_id = $1
+                AND COALESCE(sg.is_dev_sandbox, FALSE) = FALSE
                 AND n.geo_lng IS NOT NULL
                 AND n.geo_lat IS NOT NULL
                 AND ($2::text[] IS NULL OR n.type_name = ANY($2))

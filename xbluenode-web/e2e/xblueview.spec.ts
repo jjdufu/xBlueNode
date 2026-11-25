@@ -1546,8 +1546,12 @@ if (process.env.AXPOINT_E2E_LIVE === "1") {
           });
           return;
         }
-        const upstream = await route.fetch({ url: targetUrl });
-        await route.fulfill({ response: upstream });
+        try {
+          const upstream = await route.fetch({ url: targetUrl });
+          await route.fulfill({ response: upstream });
+        } catch {
+          // Ignore in-flight requests aborted when test finishes tearing down
+        }
       });
     }
 
@@ -1586,5 +1590,6 @@ if (process.env.AXPOINT_E2E_LIVE === "1") {
       .evaluate((el) => getComputedStyle(el).transform);
     expect(stageTransform).not.toBe("none");
     expect(pageErrors).toEqual([]);
+    await page.unrouteAll({ behavior: "ignoreErrors" }).catch(() => null);
   });
 }

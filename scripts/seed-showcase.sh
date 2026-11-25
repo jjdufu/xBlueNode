@@ -112,6 +112,10 @@ with psycopg.connect(dsn) as conn:
     with conn.cursor() as cur:
         cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant,))
         cur.execute(stmt)
+        if cur.description is not None:
+            row = cur.fetchone()
+            if row is not None:
+                print(row[0])
     conn.commit()
 PY
   fi
@@ -161,11 +165,14 @@ trap 'rm -rf "$SEED_TMP"' EXIT
 # Stage 0: 严格真数据校验的二次幂等快路径（< 1.5s，SHOWCASE_FORCE_REBUILD=1 强制全量重建）
 # =============================================================================
 if [[ "${SHOWCASE_FORCE_REBUILD:-0}" != "1" ]]; then
+  api_try_get /api/xblueview/dashboards/by-slug/med-dispatch-cockpit > "$SEED_TMP/fp_med_dash.json" || echo '{}' > "$SEED_TMP/fp_med_dash.json"
+  if jq -e '.status == "PUBLISHED"' "$SEED_TMP/fp_med_dash.json" >/dev/null 2>&1; then
   FP_PIDS=()
   api_ok GET /api/axops/pulse > "$SEED_TMP/fp_pulse.json" & FP_PIDS+=("$!")
   api_ok GET "/api/xblue/schema?subgraph=main" > "$SEED_TMP/fp_main.json" & FP_PIDS+=("$!")
   api_ok GET /api/xblueview/dashboards > "$SEED_TMP/fp_dashes.json" & FP_PIDS+=("$!")
   api_try_get /api/xblueview/dashboards/by-slug/power-grid-cockpit > "$SEED_TMP/fp_pg_dash.json" & FP_PIDS+=("$!")
+  api_try_get /api/xblueview/dashboards/by-slug/semi-supply-cockpit > "$SEED_TMP/fp_semi_dash.json" & FP_PIDS+=("$!")
   api_ok GET /api/axsim/sandboxes > "$SEED_TMP/fp_sb.json" & FP_PIDS+=("$!")
   api_ok GET "/api/axhub/datasets?limit=200" > "$SEED_TMP/fp_ds.json" & FP_PIDS+=("$!")
   api_ok GET /api/axguard/users > "$SEED_TMP/fp_users.json" & FP_PIDS+=("$!")
@@ -178,6 +185,8 @@ if [[ "${SHOWCASE_FORCE_REBUILD:-0}" != "1" ]]; then
       --slurpfile main "$SEED_TMP/fp_main.json" \
       --slurpfile dashes "$SEED_TMP/fp_dashes.json" \
       --slurpfile pgdash "$SEED_TMP/fp_pg_dash.json" \
+      --slurpfile semidash "$SEED_TMP/fp_semi_dash.json" \
+      --slurpfile meddash "$SEED_TMP/fp_med_dash.json" \
       --slurpfile sb "$SEED_TMP/fp_sb.json" \
       --slurpfile ds "$SEED_TMP/fp_ds.json" \
       --slurpfile users "$SEED_TMP/fp_users.json" \
@@ -203,6 +212,8 @@ if [[ "${SHOWCASE_FORCE_REBUILD:-0}" != "1" ]]; then
       and (($dl | map(select(.status == "PUBLISHED")) | length) >= 5)
       and ([ "power-grid-cockpit", "fin-risk-cockpit", "semi-supply-cockpit", "med-dispatch-cockpit" ] | all(. as $slug | (($dl | map(select(.slug == $slug and .status == "PUBLISHED")) | length) == 1)))
       and (([ $pgdash[0].widgets[]? | select((.data_source.sql // "") | contains("date_trunc(\u0027hour\u0027, ts)")) ] | length) == 0)
+      and (([ $semidash[0].widgets[]? | select(.widget_kind == "KPI_CARD" and (.encoding.y // "") != "value") ] | length) == 0)
+      and (([ $meddash[0].widgets[]? | select(.widget_kind == "KPI_CARD" and (.encoding.y // "") != "value") ] | length) == 0)
       and ([ "迎峰度夏配网调度推演沙盘", "半导体晶圆断供与清关延误沙盘", "冬季急诊重症高峰床位挤兑沙盘" ] | all(. as $sn | (($sbl | map(select(.name == $sn)) | length) >= 1)))
       and ([ "grid_feeder_telemetry", "fin_corp_wire_transfers", "semi_lot_telemetry", "med_triage_events" ] | all(. as $dn | (($dsl | map(select(.name == $dn)) | length) >= 1)))
       and (($ul | map(select(.username == $u)) | length) >= 1)
@@ -212,9 +223,36 @@ if [[ "${SHOWCASE_FORCE_REBUILD:-0}" != "1" ]]; then
       and ($req_edges | all(. as $e | ($me | index($e)) != null))
       and ([ $main[0].edge_types[] | ((.src_type_name as $s | $mn | index($s)) != null and (.dst_type_name as $d | $mn | index($d)) != null) ] | all)
     ' >/dev/null 2>&1; then
+      FP_ROLLUP_OK=$("$PY_BIN" - "$SHOWCASE_TENANT_ID" <<'PY' || echo "0"
+import os, sys, psycopg
+tenant = sys.argv[1]
+dsn = os.environ.get("DATABASE_URL") or os.environ.get("MIGRATION_DATABASE_URL") or ""
+with psycopg.connect(dsn) as conn:
+    with conn.cursor() as cur:
+        cur.execute("SELECT set_config('app.tenant_id', %s, true)", (tenant,))
+        cur.execute(
+            """
+            SELECT CASE
+                     WHEN COUNT(DISTINCT CASE WHEN n.subgraph_slug = 'semi_supply' THEN mr.grain END) = 2
+                      AND COUNT(DISTINCT CASE WHEN n.subgraph_slug = 'med_dispatch' THEN mr.grain END) = 2
+                      AND COUNT(DISTINCT CASE WHEN n.subgraph_slug = 'semi_supply' AND n.type_name = 'RegionalHub' THEN n.id END) >= 18
+                      AND COUNT(DISTINCT CASE WHEN n.subgraph_slug = 'med_dispatch' AND n.type_name = 'HospitalCampus' THEN n.id END) >= 12
+                     THEN 1 ELSE 0
+                   END
+              FROM xb_metric_rollups mr
+              JOIN xb_nodes n ON n.id = mr.node_id AND n.tenant_id = mr.tenant_id
+             WHERE mr.tenant_id = %s
+               AND mr.grain IN ('MINUTE', 'HOUR')
+            """,
+            (tenant,),
+        )
+        row = cur.fetchone()
+        print(row[0] if row else 0)
+PY
+)
       FP_PG_SB=$(jq -r '(if type == "array" then . else (.items // []) end) | map(select(.name == "迎峰度夏配网调度推演沙盘"))[0].id' "$SEED_TMP/fp_sb.json")
       FP_PG_SCEN=$(api_ok GET "/api/axsim/sandboxes/${FP_PG_SB}/scenarios")
-      if printf '%s' "$FP_PG_SCEN" | jq -e '
+      if [[ "${FP_ROLLUP_OK:-0}" == "1" ]] && printf '%s' "$FP_PG_SCEN" | jq -e '
         (if type == "array" then . else (.items // []) end)
         | map(select(.status == "SUCCEEDED" and .deadline_report.earliest_deadline_step != null and .deadline_report.earliest_breach_step != null))
         | length >= 1
@@ -268,6 +306,7 @@ UPDATE xb_nodes
         exit 0
       fi
     fi
+  fi
   fi
 fi
 
@@ -428,20 +467,23 @@ def _ingest_fin():
         return gf.seed_fin_risk_world(conn, tenant_id=tenant_id, data_root=data_root, catalog_dsn=cat_dsn)
 
 
-def _ingest_semi_med():
+def _ingest_semi():
     with psycopg.connect(dsn_sm) as conn:
-        return [
-            sm.seed_semi_supply(conn, tenant_id),
-            sm.seed_med_dispatch(conn, tenant_id),
-        ]
+        return sm.seed_semi_supply(conn, tenant_id)
 
 
-with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+def _ingest_med():
+    with psycopg.connect(dsn_sm) as conn:
+        return sm.seed_med_dispatch(conn, tenant_id)
+
+
+with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
     fut_pg = pool.submit(_ingest_grid)
     fut_fn = pool.submit(_ingest_fin)
-    fut_sm = pool.submit(_ingest_semi_med)
+    fut_semi = pool.submit(_ingest_semi)
+    fut_med = pool.submit(_ingest_med)
     res_gf = [fut_pg.result(), fut_fn.result()]
-    res_sm = fut_sm.result()
+    res_sm = [fut_semi.result(), fut_med.result()]
 
 (seed_tmp / "grid_fin.json").write_text(json.dumps({"worlds": res_gf}, ensure_ascii=False), encoding="utf-8")
 (seed_tmp / "semi_med.json").write_text(json.dumps({"worlds": res_sm}, ensure_ascii=False), encoding="utf-8")
@@ -890,7 +932,8 @@ UPDATE ax_sandboxes
   EXISTING_DASH=$(api_try_get /api/xblueview/dashboards/by-slug/semi-supply-cockpit)
   SEMI_DASH_ID=$(printf '%s' "$EXISTING_DASH" | jq -r 'if type == "object" then (.id // empty) else empty end' 2>/dev/null || true)
   SEMI_DASH_STATUS=$(printf '%s' "$EXISTING_DASH" | jq -r 'if type == "object" then (.status // empty) else empty end' 2>/dev/null || true)
-  if [[ -z "$SEMI_DASH_ID" || "$SEMI_DASH_ID" == "null" || "$SEMI_DASH_STATUS" != "PUBLISHED" || "${SHOWCASE_FORCE_REBUILD:-0}" == "1" ]]; then
+  SEMI_LEGACY_KPI=$(printf '%s' "$EXISTING_DASH" | jq -r '([.widgets[]? | select(.widget_kind == "KPI_CARD" and (.encoding.y // "") != "value")] | length) > 0' 2>/dev/null || echo "false")
+  if [[ -z "$SEMI_DASH_ID" || "$SEMI_DASH_ID" == "null" || "$SEMI_DASH_STATUS" != "PUBLISHED" || "$SEMI_LEGACY_KPI" == "true" || "${SHOWCASE_FORCE_REBUILD:-0}" == "1" ]]; then
     if [[ -n "$SEMI_DASH_ID" && "$SEMI_DASH_ID" != "null" ]]; then
       api_ok DELETE "/api/xblueview/dashboards/${SEMI_DASH_ID}" >/dev/null
     fi
@@ -936,7 +979,8 @@ UPDATE ax_sandboxes
   EXISTING_DASH=$(api_try_get /api/xblueview/dashboards/by-slug/med-dispatch-cockpit)
   MED_DASH_ID=$(printf '%s' "$EXISTING_DASH" | jq -r 'if type == "object" then (.id // empty) else empty end' 2>/dev/null || true)
   MED_DASH_STATUS=$(printf '%s' "$EXISTING_DASH" | jq -r 'if type == "object" then (.status // empty) else empty end' 2>/dev/null || true)
-  if [[ -z "$MED_DASH_ID" || "$MED_DASH_ID" == "null" || "$MED_DASH_STATUS" != "PUBLISHED" || "${SHOWCASE_FORCE_REBUILD:-0}" == "1" ]]; then
+  MED_LEGACY_KPI=$(printf '%s' "$EXISTING_DASH" | jq -r '([.widgets[]? | select(.widget_kind == "KPI_CARD" and (.encoding.y // "") != "value")] | length) > 0' 2>/dev/null || echo "false")
+  if [[ -z "$MED_DASH_ID" || "$MED_DASH_ID" == "null" || "$MED_DASH_STATUS" != "PUBLISHED" || "$MED_LEGACY_KPI" == "true" || "${SHOWCASE_FORCE_REBUILD:-0}" == "1" ]]; then
     if [[ -n "$MED_DASH_ID" && "$MED_DASH_ID" != "null" ]]; then
       api_ok DELETE "/api/xblueview/dashboards/${MED_DASH_ID}" >/dev/null
     fi
