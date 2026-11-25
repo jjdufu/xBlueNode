@@ -12,7 +12,7 @@ Activate this skill whenever implementing or reviewing a Step defined under `pla
 
 ## 1. Pre-Flight Context Check
 
-1. Read [IRON_RULES.md](../../../IRON_RULES.md), [AGENTS.md](../../../AGENTS.md), and the active phase master index ([00-V4-MASTER-INDEX.md](../../../plans/v4-modeling-console-and-industry-worlds/00-V4-MASTER-INDEX.md); see [00-V3-MASTER-INDEX.md](../../../plans/completed/v3-craft-and-world-runtime-step23-30/00-V3-MASTER-INDEX.md) for the Phase 3 reference baseline).
+1. Read [IRON_RULES.md](../../../IRON_RULES.md), [AGENTS.md](../../../AGENTS.md), and the active phase master index ([00-V4-MASTER-INDEX.md](../../../plans/completed/v4-modeling-console-and-industry-worlds-step31-35/00-V4-MASTER-INDEX.md); see [00-V3-MASTER-INDEX.md](../../../plans/completed/v3-craft-and-world-runtime-step23-30/00-V3-MASTER-INDEX.md) for the Phase 3 reference baseline).
 2. Read the target Step blueprint file completely (objectives, prerequisites, file-change manifest, migration DDL, Rust/Python/Web contracts, and gate assertions).
 3. Verify prerequisite Steps are already merged into `main`.
 

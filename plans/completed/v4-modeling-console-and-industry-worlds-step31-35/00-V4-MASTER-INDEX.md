@@ -1,17 +1,17 @@
 # xBlueNode / AxPoint Phase 4 实施总蓝图：平实建模语言、真数据总控台与四大行业十万级仿真世界（Step 31～35）
 
-本文件是 `plans/v4-modeling-console-and-industry-worlds/` 的**唯一总入口**，承接已完成归档的三期基线：
-- **Phase 1**（[Step 00～14](../completed/v1-foundation-step00-14/00-MASTER-INDEX.md)，迁移 `0001`～`0014`，能力项 `C01`～`C59`）
-- **Phase 2**（[Step 15～22](../completed/v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md)，迁移 `0015`～`0019`，能力项 `C60`～`C75`）
-- **Phase 3**（[Step 23～30](../completed/v3-craft-and-world-runtime-step23-30/00-V3-MASTER-INDEX.md)，迁移 `0020`～`0024`，能力项 `C76`～`C92`，基线版本 `v0.3.0`）
+本文件是 `plans/completed/v4-modeling-console-and-industry-worlds-step31-35/` 的**唯一总入口**，承接已完成归档的三期基线：
+- **Phase 1**（[Step 00～14](../v1-foundation-step00-14/00-MASTER-INDEX.md)，迁移 `0001`～`0014`，能力项 `C01`～`C59`）
+- **Phase 2**（[Step 15～22](../v2-ux-and-grounded-ai-step15-22/00-V2-MASTER-INDEX.md)，迁移 `0015`～`0019`，能力项 `C60`～`C75`）
+- **Phase 3**（[Step 23～30](../v3-craft-and-world-runtime-step23-30/00-V3-MASTER-INDEX.md)，迁移 `0020`～`0024`，能力项 `C76`～`C92`，基线版本 `v0.3.0`）
 
 本阶段聚焦三大核心产品工程目标——**专项一：去玄学术语、建模优先导航重排与真数据总控看板（`console-and-ia/`，Step 31～32）**与**专项二：四大跨行业可执行世界模型与十万级向量化仿真数据底座（`industry-worlds/`，Step 33～35）**。全阶段复用已有三容器私有化架构（PostgreSQL 16 + Rust `axpoint-core` + Python `axpoint-parser` Sidecar），**零新增外部中间件、零新增数据库迁移文件**（100% 驱动已有 `xb_*`、时序分区表、DuckLake、`xv_*`、`ax_sim_*` 与 `sec_row_policies` 表结构发挥工业级实效）。
 
 常驻工程约束、三级门禁与多团队/多代理并发规约见：
-- [IRON_RULES.md](../../IRON_RULES.md)
-- [QUALITY_GATES_AND_VERIFICATION.md](../../docs/QUALITY_GATES_AND_VERIFICATION.md)
-- [MULTI_AGENT_TEAM_WORKFLOW.md](../../docs/MULTI_AGENT_TEAM_WORKFLOW.md)
-- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
+- [IRON_RULES.md](../../../IRON_RULES.md)
+- [QUALITY_GATES_AND_VERIFICATION.md](../../../docs/QUALITY_GATES_AND_VERIFICATION.md)
+- [MULTI_AGENT_TEAM_WORKFLOW.md](../../../docs/MULTI_AGENT_TEAM_WORKFLOW.md)
+- [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)
 
 ---
 
@@ -37,7 +37,7 @@
    - **`med_dispatch`（城市急诊与医疗床位调度，260+ 节点 / 480+ 边 / 18,000 行分诊湖表 + 20,000 时序点）**：建模院区、急诊/重症临床科室、生命支持设备（ECMO/呼吸机）、120 急救车（多点空间分布支撑 `convex_hull` 覆盖包络与球面距离查询）、急诊分诊接诊事件与床位周转汇总，配套救护车改派与应急加床 `ActionSpec` 及急诊调度看板。
 3. **十万级秒级向量化装载引擎、全栈 E2E 与 `v0.4.0` 验收归档（Step 35）**：
    - 交付幂等向量化装载器 `scripts/seed-showcase.sh` 与受 `OPS_ADMIN` 管控的 `POST /api/axops/demo/showcase/load`，采用 DuckDB 原生向量化表生成与 PostgreSQL `UNNEST` 批量写入，在 **`< 8s`** 内完成四大行业子图 **>= 2,300 业务节点、>= 6,500 关系边、>= 145,000 湖表明细行、>= 80,000 时序指标点**灌装，且全部 4 套行业子图通过 `/certify` 达成 **`L4_CERTIFIED`**（保持 `scripts/seed-demo.sh` 轻量快速，不拖慢单测门禁）；
-   - 落地 `xbluenode-web/e2e/v4-modeling-and-worlds.spec.ts`、`scripts/gate/step35.sh`，将 [A7-REQUIREMENTS-TRACEABILITY.md](../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md) 能力追踪扩充至 **`C01`～`C98`（98 项）**，跑通 `bash scripts/gate/all.sh`（`Step 00～35` 全绿）与 Chrome DevTools 实机浏览器巡检后归档发布 `v0.4.0`。
+   - 落地 `xbluenode-web/e2e/v4-modeling-and-worlds.spec.ts`、`scripts/gate/step35.sh`，将 [A7-REQUIREMENTS-TRACEABILITY.md](../../../docs/standards/A7-REQUIREMENTS-TRACEABILITY.md) 能力追踪扩充至 **`C01`～`C98`（98 项）**，跑通 `bash scripts/gate/all.sh`（`Step 00～35` 全绿）与 Chrome DevTools 实机浏览器巡检后归档发布 `v0.4.0`。
 
 ---
 
@@ -102,7 +102,7 @@ flowchart TD
     WT4 --> L21
 ```
 
-按 [MULTI_AGENT_TEAM_WORKFLOW.md](../../docs/MULTI_AGENT_TEAM_WORKFLOW.md) 规范，**L20 四条轨道物理写入集合完全互不相交**，通过 4 个独立 `git worktree` 与 `.50` 远程测试机 4 套隔离槽位（`WT_SLOT=1..4`）并行编码与独立审查：
+按 [MULTI_AGENT_TEAM_WORKFLOW.md](../../../docs/MULTI_AGENT_TEAM_WORKFLOW.md) 规范，**L20 四条轨道物理写入集合完全互不相交**，通过 4 个独立 `git worktree` 与 `.50` 远程测试机 4 套隔离槽位（`WT_SLOT=1..4`）并行编码与独立审查：
 
 | 阶段层 | 分支 / Worktree | 槽位与数据库 | 派发角色（`check-write-scope.sh`） | 独占写入边界（`ALLOWED_PATHS`） | 独立验收官 |
 | :--- | :--- | :--- | :--- | :--- | :--- |

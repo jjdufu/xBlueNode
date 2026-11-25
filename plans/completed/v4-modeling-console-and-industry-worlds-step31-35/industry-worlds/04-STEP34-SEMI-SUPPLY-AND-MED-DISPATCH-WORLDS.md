@@ -4,7 +4,7 @@
 1. **`semi_supply`（半导体全球多级供应链）**：完整呈现 **4 大业务域复合泳道（采购域 / 制造域 / 物流域 / 履约域）+ 三层从属对象抽屉折叠 + 光刻/刻蚀机台 OEE 与良率传导 + 30,000 行批次传感湖表 + 应急航空包机与晶圆调拨 `ActionSpec`**；
 2. **`med_dispatch`（城市急诊与医疗床位调度）**：彻底打破“工业平台只能建工厂仓库”的思维定势，将 **院区、临床重症科室、ECMO/呼吸机紧缺设备、120 急救车空间分布（轨迹与覆盖凸包 `convex_hull`）及 18,000 条急诊分诊流转事件** 纳入同一张可执行业务模型。
 
-总览索引与工程约束见 [00-V4-MASTER-INDEX.md](../00-V4-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
+总览索引与工程约束见 [00-V4-MASTER-INDEX.md](../00-V4-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
 
 ---
 

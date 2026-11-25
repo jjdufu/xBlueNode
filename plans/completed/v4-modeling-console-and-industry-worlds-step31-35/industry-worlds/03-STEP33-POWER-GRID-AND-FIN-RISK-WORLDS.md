@@ -4,7 +4,7 @@
 1. **`power_grid`（新型电力与配网调度）**：重点展现**空间多边形供电围栏（`geo_shape`）+ 输配电馈线边时序指标与四路径（`V↔E`）过载传导 + 43,200 点 15 分钟级负荷时序 + 主变跳闸 `deadline_step` 最晚干预反推**；
 2. **`fin_risk`（集团授信与互保风控）**：重点展现**1,200+ 节点与 4,200+ 持股/互保/资金边的高密度图算法（PageRank / 连通分量 / 社区发现）+ 60,000 行对公流水湖表驱动 `@visactor/react-vtable` 多维透视 + 实际控制人三道强制 PII 脱敏 + 逾期状态驱动动态行级视野（`STATE_DRIVEN`）**。
 
-总览索引与工程约束见 [00-V4-MASTER-INDEX.md](../00-V4-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
+总览索引与工程约束见 [00-V4-MASTER-INDEX.md](../00-V4-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md) 与 [A1-CONVENTIONS-ENUMS-ROUTES.md](../../../../docs/standards/A1-CONVENTIONS-ENUMS-ROUTES.md)。
 
 ---
 

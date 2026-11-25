@@ -2,7 +2,7 @@
 
 本步彻底重塑平台首屏 `/`（`总控看板 / Dashboard`）：淘汰早期遗留的检索算法静态说明卡，在后端构建单次往返、毫秒级响应、严格遵循租户 RLS 隔离的全域态势聚合接口 `GET /api/axops/pulse`，并在前端打造集 **核心态势火花线指标卡、多行业业务模型工作台矩阵、24h 时序吞吐与风险分布 ECharts 图表、实时告警/待批动作与沙盘红线预警** 于一体的工业级总控台。
 
-总览索引与工程约束见 [00-V4-MASTER-INDEX.md](../00-V4-MASTER-INDEX.md)、[IRON_RULES.md](../../../IRON_RULES.md)、[API_CONTRACT.md](../../../docs/API_CONTRACT.md) 与 [A4-API-CONTRACT-INDEX.md](../../../docs/standards/A4-API-CONTRACT-INDEX.md)。
+总览索引与工程约束见 [00-V4-MASTER-INDEX.md](../00-V4-MASTER-INDEX.md)、[IRON_RULES.md](../../../../IRON_RULES.md)、[API_CONTRACT.md](../../../../docs/API_CONTRACT.md) 与 [A4-API-CONTRACT-INDEX.md](../../../../docs/standards/A4-API-CONTRACT-INDEX.md)。
 
 ---
 
