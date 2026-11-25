@@ -313,7 +313,8 @@ def bulk_replace_subgraph_graph_pg(
             geo_lat = EXCLUDED.geo_lat,
             geo_shape = EXCLUDED.geo_shape,
             updated_at = NOW()
-        WHERE xb_nodes.metrics IS DISTINCT FROM EXCLUDED.metrics
+        WHERE xb_nodes.title IS DISTINCT FROM EXCLUDED.title
+           OR xb_nodes.metrics IS DISTINCT FROM EXCLUDED.metrics
            OR xb_nodes.properties IS DISTINCT FROM EXCLUDED.properties
            OR xb_nodes.geo_shape IS DISTINCT FROM EXCLUDED.geo_shape
         """,
@@ -1295,7 +1296,7 @@ def seed_fin_risk_world(
                 node_id=bid,
                 type_name="BeneficialOwner",
                 node_key=key,
-                title=fname,
+                title=f"实控人·{key}",
                 properties_json=json.dumps(
                     {
                         "full_name": fname,

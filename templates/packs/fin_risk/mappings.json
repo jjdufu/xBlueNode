@@ -77,7 +77,7 @@
       "dataset": { "$ref": "dataset:beneficial_owners" },
       "node_type": "BeneficialOwner",
       "key_column": "owner_id",
-      "title": "{full_name}",
+      "title": "实控人·{owner_id}",
       "attributes": {
         "full_name": "full_name",
         "mobile_phone": "mobile_phone",

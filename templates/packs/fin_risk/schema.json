@@ -290,7 +290,7 @@
       "description": "穿透多层股权识别的自然人最终受益人与实际控制人（含三道强制脱敏字段）",
       "icon": "user-check",
       "color": "#d97706",
-      "title_template": "{prop.full_name}",
+      "title_template": "实控人·{node_key}",
       "domain_group": "穿透核查域",
       "semantic_layer_tier": "STATIC_FACT",
       "maturity": "CONFIRMED",

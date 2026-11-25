@@ -58,7 +58,7 @@
     "competency.json": "1b82e3806b75b3c9efad818eafbe9a2e66a518bed2cf79a1f980e02595cc6630",
     "dashboards/cockpit.json": "71f205fdac6bfda9d090ca2e3799c72dc7bb749f765f4fe1a5b31fe8fa155778",
     "flows/freeze_credit.json": "0190c7981cc5857860592c85ab35c2d868f185f1f3eaad19c3a3c96863903612",
-    "mappings.json": "ec079874cc149a14a09a312b1c2794b80a11060f9330bc08c77c8a3b5336c0d1",
+    "mappings.json": "b96f49962fbad8ab83c82d25364c18b1b83750aef9986ab77f7dfb86dac00b8f",
     "metrics.json": "421449061c2df262fce5cc0a6b5d1d1046e44b883eb609d32a1f4feda9d4c776",
     "rules.json": "6caa618c41a1e9d3fed28f5f5ee833ba5603ed25235c0a4ed7331a39df17d8d1",
     "sample_data/beneficial_owners.csv": "c64f39f8d6bcc445521c0fd627935e3e5a098c251b4b44a3b4acd694c4f97482",
@@ -66,6 +66,6 @@
     "sample_data/credit_facilities.csv": "75555521149533ddb215f63290e3f28804946fdd404d65eb0a277c6569a61251",
     "sample_data/industry_exposures.csv": "e78e9342c06b56c5b421bf165f61c255f0d6c6e8224aa43b265376f61f7d7237",
     "sample_data/legal_entities.csv": "2aa99bdfd02fd66da9e1b719066ad1948379b720be1b1a9555b54b172ab7bf61",
-    "schema.json": "daedbecc84ac28d91a16049997ba2003a6b19ee254d450b1158accc3c2083712"
+    "schema.json": "fc907ba6921df92585554a9fb017df48a2e75d5f78e59e331cd6b7486e71324c"
   }
 }

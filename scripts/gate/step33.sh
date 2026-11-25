@@ -135,7 +135,8 @@ PII_RLS_SUMMARY=$(jq -n \
   | {
       bo_cnt: ($b.items | length),
       bo_all_masked: ($b.items | all(
-        ((.properties.full_name | tostring) | contains("*"))
+        ((.title | tostring) == ("实控人·" + (.node_key | tostring)))
+        and ((.properties.full_name | tostring) | contains("*"))
         and ((.properties.mobile_phone | tostring) | contains("*"))
         and ((.properties.national_id | tostring) | contains("*"))
         and ((.properties.settlement_card | tostring) | contains("*"))
