@@ -386,8 +386,8 @@ export function AgentEmbedPage() {
         </IconButton>
       </div>
 
-      <div className="flex-1 flex items-center justify-center px-3 pb-4 sm:px-6 sm:pb-6">
-        <Card className="w-full max-w-3xl h-[82vh] min-h-[500px] flex flex-col overflow-hidden shadow-xs">
+      <div className="flex-1 min-h-0 flex items-center justify-center px-3 pb-3 sm:px-6 sm:pb-4">
+        <Card className="w-full max-w-3xl h-full max-h-[calc(100dvh-56px)] min-h-[360px] flex flex-col overflow-hidden shadow-xs">
           {/* Minimalist Standalone Embed Header */}
           <header className="border-b border-border px-4 py-3 flex items-center justify-between gap-2 bg-muted/20">
             <div className="flex items-center gap-2 min-w-0">

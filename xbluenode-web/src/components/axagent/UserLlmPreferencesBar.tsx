@@ -25,6 +25,15 @@ const ALL_PURPOSES: readonly LlmPurpose[] = [
   "EMBED",
 ];
 
+const PURPOSE_LABELS: Record<LlmPurpose, { zh: string; en: string }> = {
+  AGENT: { zh: "智能体推理", en: "Agent Reasoning" },
+  CHAT: { zh: "多轮对话", en: "Chat" },
+  NL2SQL: { zh: "自然语言转 SQL", en: "NL2SQL" },
+  SUMMARIZE: { zh: "文档摘要", en: "Summarization" },
+  EXTRACT: { zh: "结构化抽取", en: "Extraction" },
+  EMBED: { zh: "向量嵌入", en: "Embeddings" },
+};
+
 export interface UserLlmPreferencesBarProps {
   providers: LlmProviderRecord[];
   preferences: UserLlmPreferenceRecord[];
@@ -189,8 +198,11 @@ export function UserLlmPreferencesBar({
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
         {ALL_PURPOSES.map((purpose) => (
           <div key={purpose} className="space-y-1">
-            <label className="block font-mono-tech text-[11px] font-medium text-muted-foreground">
-              {purpose}
+            <label className="block text-[11px] font-medium text-muted-foreground">
+              {tx(PURPOSE_LABELS[purpose].zh, PURPOSE_LABELS[purpose].en)}{" "}
+              <span className="font-mono-tech text-[10px] opacity-75">
+                ({purpose})
+              </span>
             </label>
             <Select
               className="w-full"

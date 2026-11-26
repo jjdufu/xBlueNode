@@ -964,6 +964,66 @@ export function buildEChartsOption(
       }
 
       const displayCategories = categories.map(formatAxisTimestampLabel);
+      const collapseManyBarSeries = !isLineLike && seriesKeys.length > 6;
+
+      if (collapseManyBarSeries) {
+        const singleBarData = categories.map((c, idx) => {
+          let sum = 0;
+          for (const sk of seriesKeys) {
+            sum += matrix.get(`${sk}::${c}`) ?? 0;
+          }
+          return {
+            value: sum,
+            itemStyle: {
+              color: palette[idx % palette.length] ?? "#2563eb",
+              borderRadius: [4, 4, 0, 0],
+            },
+          };
+        });
+
+        return {
+          clickField: xField,
+          option: {
+            animation: false,
+            color: palette,
+            textStyle: rootTextStyle,
+            tooltip: baseTooltip,
+            grid: { ...baseGrid, top: 20 },
+            xAxis: {
+              type: "category",
+              data: displayCategories,
+              axisLabel: {
+                color: tokens.subtext,
+                fontFamily,
+                fontSize: 11,
+                width: 96,
+                overflow: "truncate",
+                hideOverlap: true,
+              },
+              axisLine: { lineStyle: { color: tokens.axisLine } },
+            },
+            yAxis: {
+              type: "value",
+              splitNumber: 4,
+              axisLabel: {
+                color: tokens.subtext,
+                fontFamily,
+                fontSize: 11,
+                hideOverlap: true,
+              },
+              splitLine: { lineStyle: { color: tokens.splitLine, type: "dashed" } },
+            },
+            series: [
+              {
+                name: seriesLabelMap.get(seriesKeys[0] ?? "") ?? yName,
+                type: "bar",
+                barMaxWidth: 28,
+                data: singleBarData,
+              },
+            ],
+          },
+        };
+      }
 
       return {
         clickField: xField,
@@ -985,6 +1045,8 @@ export function buildEChartsOption(
               color: tokens.subtext,
               fontFamily,
               fontSize: 11,
+              width: 96,
+              overflow: "truncate",
               hideOverlap: true,
             },
             axisLine: { lineStyle: { color: tokens.axisLine } },
@@ -1008,7 +1070,7 @@ export function buildEChartsOption(
               name: sLabel,
               type: isLineLike ? "line" : "bar",
               smooth: isLineLike,
-              barMaxWidth: 36,
+              barMaxWidth: 28,
               itemStyle: { color: seriesColor },
               ...(isLineLike
                 ? { lineStyle: { color: seriesColor, width: 2 } }
@@ -1038,6 +1100,7 @@ export function buildEChartsOption(
         color: tokens.subtext,
         fontFamily,
         fontSize: 11,
+        ...(!isHorizontalBar ? { width: 96, overflow: "truncate" } : {}),
         hideOverlap: true,
       },
       axisLine: { lineStyle: { color: tokens.axisLine } },
@@ -1605,12 +1668,17 @@ export function buildEChartsOption(
     tooltip: baseTooltip,
     series: [
       {
+        name: "节点",
         type: "graph",
         layout: "force",
-        roam: true,
+        roam: "move",
+        top: catList.length > 1 ? 58 : 16,
+        bottom: 24,
+        left: 20,
+        right: 20,
         edgeSymbol: ["none", "arrow"],
         edgeSymbolSize: [4, 8],
-        force: { repulsion: 160, edgeLength: 70 },
+        force: { repulsion: 130, edgeLength: 60, gravity: 0.15 },
         categories: catList.map((name) => ({ name })),
         label: {
           show: parsedGraph.nodes.length <= 60,
@@ -1651,7 +1719,10 @@ export function buildEChartsOption(
   };
   if (catList.length > 1) {
     graphOption.legend = {
-      top: 0,
+      top: 4,
+      left: 8,
+      right: 8,
+      type: "scroll",
       textStyle: { color: tokens.subtext, fontFamily, fontSize: 10 },
     };
   }

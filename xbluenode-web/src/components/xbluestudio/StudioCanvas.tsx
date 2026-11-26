@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BaseEdge,
+  ControlButton,
   Controls,
   EdgeLabelRenderer,
   MarkerType,
@@ -12,6 +13,7 @@ import {
   applyNodeChanges,
   getSmoothStepPath,
   useNodesInitialized,
+  useReactFlow,
   type Connection,
   type Edge,
   type EdgeProps,
@@ -19,6 +21,7 @@ import {
   type NodeTypes,
   type OnNodeDrag,
   type OnNodesChange,
+  type Viewport,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import {
@@ -28,6 +31,9 @@ import {
   Layers,
   LayoutGrid,
   Link2,
+  LocateFixed,
+  Maximize2,
+  Minimize2,
   MousePointerSquareDashed,
   Plus,
   Redo2,
@@ -88,9 +94,12 @@ export interface StudioEdgeData extends Record<string, unknown> {
   spec: EdgeTypeSpec;
   edgeIndex: number;
   selected: boolean;
+  highlighted?: boolean;
+  dimmed?: boolean;
   isDark: boolean;
   labelCenter?: { x: number; y: number };
   onSelectEdge: (index: number) => void;
+  onHoverEdge?: (index: number | null) => void;
 }
 
 export type StudioFlowEdge = Edge<StudioEdgeData, "studioEdge">;
@@ -127,13 +136,16 @@ function StudioRelationshipEdge({
 
   const spec = data?.spec;
   const selected = Boolean(data?.selected);
+  const highlighted = Boolean(data?.highlighted);
+  const isActive = selected || highlighted;
+  const dimmed = Boolean(data?.dimmed) && !isActive;
   const isDark = Boolean(data?.isDark);
   const resolvedX = data?.labelCenter?.x ?? defaultLabelX;
   const resolvedY = data?.labelCenter?.y ?? defaultLabelY;
   const badgeText = spec
     ? CARDINALITY_SHORT[spec.cardinality] ?? "M:N"
     : "M:N";
-  const strokeColor = selected
+  const strokeColor = isActive
     ? isDark
       ? "#3b82f6"
       : "#2563eb"
@@ -149,7 +161,9 @@ function StudioRelationshipEdge({
         markerEnd={markerEnd}
         style={{
           stroke: strokeColor,
-          strokeWidth: selected ? 2.2 : 1.6,
+          strokeWidth: isActive ? 2.3 : 1.5,
+          opacity: dimmed ? 0.14 : 1,
+          transition: "opacity 150ms ease, stroke-width 150ms ease, stroke 150ms ease",
         }}
       />
       {spec && (
@@ -160,11 +174,13 @@ function StudioRelationshipEdge({
               transform: `translate(-50%, -50%) translate(${resolvedX}px,${resolvedY}px)`,
               pointerEvents: "all",
             }}
-            className="nodrag nopan"
+            className={cn("nodrag nopan transition-opacity duration-150", dimmed && "opacity-20")}
           >
             <button
               type="button"
               data-testid={`canvas-edge-${spec.name}`}
+              onMouseEnter={() => data?.onHoverEdge?.(data.edgeIndex)}
+              onMouseLeave={() => data?.onHoverEdge?.(null)}
               onClick={(e) => {
                 e.stopPropagation();
                 data?.onSelectEdge(data.edgeIndex);
@@ -173,9 +189,11 @@ function StudioRelationshipEdge({
                 "inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[10px] font-mono-tech shadow-xs backdrop-blur-xs transition-colors cursor-pointer whitespace-nowrap",
                 selected
                   ? "border-xblue bg-xblue text-white"
-                  : spec.maturity === "PROPOSED"
-                    ? "border-dashed border-amber-500/70 bg-card/95 text-foreground hover:border-xblue"
-                    : "border-border bg-card/95 text-foreground hover:border-xblue"
+                  : highlighted
+                    ? "border-xblue bg-xblue-soft text-xblue font-semibold"
+                    : spec.maturity === "PROPOSED"
+                      ? "border-dashed border-amber-500/70 bg-card/95 text-foreground hover:border-xblue"
+                      : "border-border bg-card/95 text-foreground hover:border-xblue"
               )}
             >
               <span className="font-semibold">{spec.name}</span>
@@ -207,6 +225,7 @@ const EDGE_TYPES: EdgeTypes = {
 };
 
 export interface StudioCanvasProps {
+  subgraphKey?: string;
   nodeTypes: NodeTypeSpec[];
   edgeTypes: EdgeTypeSpec[];
   workingDoc?: SchemaDoc;
@@ -233,9 +252,14 @@ export interface StudioCanvasProps {
   onConfirmNode?: (nodeName: string) => void;
   onOpenLineage?: (nodeName: string) => void;
   onOpenAppPackaging?: (nodeName: string) => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
+const studioViewportCache = new Map<string, Viewport>();
+
 function StudioCanvasInner({
+  subgraphKey = "default",
   nodeTypes,
   edgeTypes,
   workingDoc,
@@ -260,13 +284,58 @@ function StudioCanvasInner({
   onConfirmNode,
   onOpenLineage,
   onOpenAppPackaging,
+  isFullscreen = false,
+  onToggleFullscreen,
 }: StudioCanvasProps) {
   const { tx, tEnum } = useI18n();
   const { isDark } = useTheme();
   const { can } = usePrincipal();
   const canEdit = can("STUDIO_EDIT");
   const nodesInitialized = useNodesInitialized();
+  const { fitView, setViewport } = useReactFlow();
+  const canvasWrapperRef = useRef<HTMLDivElement | null>(null);
+  const initializedSubgraphRef = useRef<string>("");
+  const viewportReadyRef = useRef(false);
   const { animatePositions } = useAnimatedNodes(240);
+
+  const nodeNamesKey = useMemo(
+    () => nodeTypes.map((n) => n.name).sort().join(","),
+    [nodeTypes]
+  );
+
+  useEffect(() => {
+    if (initializedSubgraphRef.current !== subgraphKey) {
+      viewportReadyRef.current = false;
+    }
+  }, [subgraphKey]);
+
+  useEffect(() => {
+    if (!nodesInitialized || !nodeNamesKey) return;
+    if (initializedSubgraphRef.current === subgraphKey) return;
+    initializedSubgraphRef.current = subgraphKey;
+    const cached = studioViewportCache.get(subgraphKey);
+    const t = setTimeout(() => {
+      if (cached) {
+        void setViewport(cached, { duration: 0 });
+      } else {
+        void fitView({ padding: 0.22, minZoom: 0.15, maxZoom: 0.95, duration: 0 });
+      }
+      viewportReadyRef.current = true;
+    }, 40);
+    return () => clearTimeout(t);
+  }, [fitView, nodeNamesKey, nodesInitialized, setViewport, subgraphKey]);
+
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [hoveredEdgeIdx, setHoveredEdgeIdx] = useState<number | null>(null);
+  const [pinnedNodeId, setPinnedNodeId] = useState<string | null>(null);
+  const [pinnedEdgeIdx, setPinnedEdgeIdx] = useState<number | null>(null);
+
+  useEffect(() => {
+    setHoveredNodeId(null);
+    setHoveredEdgeIdx(null);
+    setPinnedNodeId(null);
+    setPinnedEdgeIdx(null);
+  }, [nodeNamesKey]);
 
   const [viewMode, setViewMode] =
     useState<StudioCanvasViewMode>("ONTOLOGY_TOPOLOGY");
@@ -401,18 +470,64 @@ function StudioCanvasInner({
     [activeEdgeInputs, visibleNodeSpecs]
   );
 
-  // Build initial collision-free positions + optional compound domain swimlanes
+  const focusHighlight = useMemo(() => {
+    const nodes = new Set<string>();
+    const edgeIndices = new Set<number>();
+    const targetNode =
+      hoveredNodeId ?? (hoveredEdgeIdx === null ? pinnedNodeId : null);
+    const targetEdgeIdx =
+      hoveredEdgeIdx ?? (hoveredNodeId === null ? pinnedEdgeIdx : null);
+
+    if (targetNode) {
+      nodes.add(targetNode);
+      for (const { et, idx } of activeEdgeInputs) {
+        if (et.src_type_name === targetNode || et.dst_type_name === targetNode) {
+          nodes.add(et.src_type_name);
+          nodes.add(et.dst_type_name);
+          edgeIndices.add(idx);
+        }
+      }
+      return { active: true, nodes, edgeIndices };
+    }
+
+    if (targetEdgeIdx !== null) {
+      const hit = activeEdgeInputs.find((e) => e.idx === targetEdgeIdx);
+      if (hit) {
+        nodes.add(hit.et.src_type_name);
+        nodes.add(hit.et.dst_type_name);
+        edgeIndices.add(hit.idx);
+        return { active: true, nodes, edgeIndices };
+      }
+    }
+
+    return { active: false, nodes, edgeIndices };
+  }, [
+    activeEdgeInputs,
+    hoveredEdgeIdx,
+    hoveredNodeId,
+    pinnedEdgeIdx,
+    pinnedNodeId,
+  ]);
+
+  // Preserve saved finite node coordinates verbatim so dragging one node never pushes sibling nodes
   const computedRfNodes: AnyStudioRfNode[] = useMemo(() => {
     const CARD_MIN_DX = 384;
     const CARD_MIN_DY = 224;
     const placed: Array<{ x: number; y: number }> = [];
     const absPositions = new Map<string, { x: number; y: number }>();
 
+    for (const nt of visibleNodeSpecs) {
+      if (Number.isFinite(nt.pos_x) && Number.isFinite(nt.pos_y)) {
+        const pos = { x: nt.pos_x, y: nt.pos_y };
+        placed.push(pos);
+        absPositions.set(nt.name, pos);
+      }
+    }
+
     visibleNodeSpecs.forEach((nt, idx) => {
-      let x = Number.isFinite(nt.pos_x) ? nt.pos_x : 96 + (idx % 3) * 420;
-      let y = Number.isFinite(nt.pos_y)
-        ? nt.pos_y
-        : 96 + Math.floor(idx / 3) * 244;
+      if (absPositions.has(nt.name)) return;
+      let x = 96 + (idx % 3) * 420;
+      let y = 96 + Math.floor(idx / 3) * 244;
       let shiftStep = 0;
       while (
         placed.some(
@@ -514,6 +629,8 @@ function StudioCanvasInner({
         data: {
           spec: nt,
           selected: selectedNodeName === nt.name,
+          highlighted: focusHighlight.active && focusHighlight.nodes.has(nt.name),
+          dimmed: focusHighlight.active && !focusHighlight.nodes.has(nt.name),
           issueCount: st.count,
           hasError: st.hasError,
           inPorts: alloc.inPorts,
@@ -538,6 +655,7 @@ function StudioCanvasInner({
     collapsedDomains,
     consumptionByNodeType,
     dependentsByMaster,
+    focusHighlight,
     foldedMasters,
     groupByDomain,
     issueStatsByNode,
@@ -554,6 +672,8 @@ function StudioCanvasInner({
   ]);
 
   const [liveNodes, setLiveNodes] = useState<AnyStudioRfNode[]>(computedRfNodes);
+  const liveNodesRef = useRef<AnyStudioRfNode[]>(computedRfNodes);
+  liveNodesRef.current = liveNodes;
 
   useEffect(() => {
     setLiveNodes((prev) => {
@@ -687,6 +807,11 @@ function StudioCanvasInner({
       const binding = edgeBindings[id];
       const usePortHandles =
         sourceId === et.src_type_name && targetId === et.dst_type_name;
+      const isSelectedEdge = selectedEdgeIndex === idx;
+      const isHighlightedEdge =
+        focusHighlight.active && focusHighlight.edgeIndices.has(idx);
+      const isDimmedEdge =
+        focusHighlight.active && !isHighlightedEdge && !isSelectedEdge;
       return {
         id,
         source: sourceId,
@@ -698,19 +823,27 @@ function StudioCanvasInner({
             }
           : {}),
         type: "studioEdge",
+        zIndex: isSelectedEdge || isHighlightedEdge ? 10 : 0,
         markerEnd: {
           type: MarkerType.ArrowClosed,
-          color: selectedEdgeIndex === idx ? activeStroke : idleStroke,
+          color: isSelectedEdge || isHighlightedEdge ? activeStroke : idleStroke,
         },
         data: {
           spec: et,
           edgeIndex: idx,
-          selected: selectedEdgeIndex === idx,
+          selected: isSelectedEdge,
+          highlighted: isHighlightedEdge,
+          dimmed: isDimmedEdge,
           isDark,
           labelCenter: labelCenters[id],
           onSelectEdge: (edgeIdx: number) => {
             onSelectNode(null);
             onSelectEdge(edgeIdx);
+          },
+          onHoverEdge: (edgeIdx: number | null) => {
+            if (!draggingNodeIdRef.current) {
+              setHoveredEdgeIdx(edgeIdx);
+            }
           },
         },
       };
@@ -720,6 +853,7 @@ function StudioCanvasInner({
     activeEdgeInputs,
     collapsedDomains,
     edgeBindings,
+    focusHighlight,
     groupByDomain,
     isDark,
     liveNodes,
@@ -869,18 +1003,29 @@ function StudioCanvasInner({
   const handleNodeDrag: OnNodeDrag<AnyStudioRfNode> = useCallback(
     (_event, draggedNode) => {
       if (draggedNode.type !== "studioNode") return;
+      const curNodes = liveNodesRef.current;
       const parentOrigin = draggedNode.parentId
-        ? liveNodes.find((n) => n.id === draggedNode.parentId)?.position
+        ? curNodes.find((n) => n.id === draggedNode.parentId)?.position
         : undefined;
       const absX = (parentOrigin?.x ?? 0) + draggedNode.position.x;
       const absY = (parentOrigin?.y ?? 0) + draggedNode.position.y;
       const w = draggedNode.measured?.width ?? 240;
       const h = draggedNode.measured?.height ?? 192;
 
-      const others: MeasuredBox[] = liveNodes
-        .filter((n) => n.type === "studioNode" && n.id !== draggedNode.id)
-        .map((n) => absoluteNodeBoxes.get(n.id))
-        .filter((b): b is MeasuredBox => Boolean(b));
+      const others: MeasuredBox[] = [];
+      for (const n of curNodes) {
+        if (n.type !== "studioNode" || n.id === draggedNode.id) continue;
+        const pOrigin = n.parentId
+          ? curNodes.find((p) => p.id === n.parentId)?.position
+          : undefined;
+        others.push({
+          id: n.id,
+          x: (pOrigin?.x ?? 0) + n.position.x,
+          y: (pOrigin?.y ?? 0) + n.position.y,
+          width: n.measured?.width ?? 240,
+          height: n.measured?.height ?? 196,
+        });
+      }
 
       const snap = computeAlignmentGuides(
         { id: draggedNode.id, x: absX, y: absY, width: w, height: h },
@@ -909,7 +1054,7 @@ function StudioCanvasInner({
         );
       }
     },
-    [absoluteNodeBoxes, liveNodes]
+    []
   );
 
   const crossSubgraphEdges = useMemo(
@@ -929,16 +1074,9 @@ function StudioCanvasInner({
       className="relative flex flex-col flex-1 min-h-[360px] w-full rounded-md border border-border bg-muted/15 overflow-hidden"
       data-testid="xbluestudio-canvas"
     >
-      {/* Top Floating / Header Dock */}
-      <div
-        className={cn(
-          "z-10 flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5",
-          viewMode === "ONTOLOGY_TOPOLOGY"
-            ? "absolute top-2.5 left-2.5 right-2.5 pointer-events-none"
-            : "border-b border-border bg-card/95 shrink-0"
-        )}
-      >
-        <div className="pointer-events-auto flex flex-wrap items-center gap-1.5 rounded-md border border-border bg-card/95 px-2 py-1 shadow-xs backdrop-blur-xs">
+      {/* Docked Canvas Header Toolbar (Zero Card Occlusion) */}
+      <div className="z-10 flex items-center justify-between gap-2 px-2.5 py-1.5 border-b border-border bg-card/95 shrink-0">
+        <div className="flex-1 min-w-0 flex flex-nowrap items-center gap-1.5 overflow-x-auto">
           <SegmentedControl<StudioCanvasViewMode>
             value={viewMode}
             onChange={setViewMode}
@@ -1074,11 +1212,39 @@ function StudioCanvasInner({
           )}
         </div>
 
-        {viewMode === "ONTOLOGY_TOPOLOGY" && canEdit && (
-          <SelectionAlignToolbar
-            selectedCount={selectedStudioNodes.length}
-            onAlign={handleAlignSelection}
-          />
+        {viewMode === "ONTOLOGY_TOPOLOGY" && (
+          <div className="flex items-center gap-1.5 shrink-0">
+            {canEdit && (
+              <SelectionAlignToolbar
+                selectedCount={selectedStudioNodes.length}
+                onAlign={handleAlignSelection}
+              />
+            )}
+            {onToggleFullscreen && (
+              <IconButton
+                size="sm"
+                active={isFullscreen}
+                data-testid="canvas-fullscreen-btn"
+                onClick={onToggleFullscreen}
+                title={
+                  isFullscreen
+                    ? tx("退出沉浸全屏 (Esc)", "Exit Fullscreen (Esc)")
+                    : tx("沉浸式全屏画布", "Fullscreen Canvas")
+                }
+                aria-label={
+                  isFullscreen
+                    ? tx("退出沉浸全屏", "Exit Fullscreen")
+                    : tx("沉浸式全屏画布", "Fullscreen Canvas")
+                }
+              >
+                {isFullscreen ? (
+                  <Minimize2 className="h-3.5 w-3.5 text-xblue" />
+                ) : (
+                  <Maximize2 className="h-3.5 w-3.5" />
+                )}
+              </IconButton>
+            )}
+          </div>
         )}
       </div>
 
@@ -1199,7 +1365,7 @@ function StudioCanvasInner({
             </div>
           )}
 
-          <div className="relative flex-1 min-h-0 w-full">
+          <div ref={canvasWrapperRef} className="relative flex-1 min-h-0 w-full">
             <ReactFlow
               nodes={liveNodes}
               edges={flowEdges}
@@ -1208,13 +1374,45 @@ function StudioCanvasInner({
               onNodesChange={handleNodesChange}
               nodesDraggable={canEdit}
               nodesConnectable={canEdit}
+              minZoom={0.12}
+              maxZoom={2.5}
+              zoomOnScroll
+              zoomOnPinch
+              zoomOnDoubleClick={false}
+              panOnScroll={false}
               selectionOnDrag={marqueeMode}
               panOnDrag={marqueeMode ? [1, 2] : true}
               selectionMode={SelectionMode.Partial}
               multiSelectionKeyCode="Shift"
+              onMoveEnd={(_event, viewport) => {
+                if (viewportReadyRef.current) {
+                  studioViewportCache.set(subgraphKey, viewport);
+                }
+              }}
+              onNodeMouseEnter={(_event, node) => {
+                if (node.type === "studioNode" && !draggingNodeIdRef.current) {
+                  setHoveredNodeId(node.id);
+                }
+              }}
+              onNodeMouseLeave={() => {
+                setHoveredNodeId(null);
+              }}
+              onEdgeMouseEnter={(_event, edge) => {
+                if (
+                  typeof edge.data?.edgeIndex === "number" &&
+                  !draggingNodeIdRef.current
+                ) {
+                  setHoveredEdgeIdx(edge.data.edgeIndex);
+                }
+              }}
+              onEdgeMouseLeave={() => {
+                setHoveredEdgeIdx(null);
+              }}
               onNodeClick={(event, node) => {
                 if (node.type !== "studioNode") return;
                 if (event.shiftKey) return;
+                setPinnedEdgeIdx(null);
+                setPinnedNodeId((prev) => (prev === node.id ? null : node.id));
                 onSelectEdge(null);
                 onSelectNode(node.id);
               }}
@@ -1226,25 +1424,35 @@ function StudioCanvasInner({
               }}
               onEdgeClick={(_event, edge) => {
                 if (typeof edge.data?.edgeIndex === "number") {
+                  const edgeIdx = edge.data.edgeIndex;
+                  setPinnedNodeId(null);
+                  setPinnedEdgeIdx((prev) => (prev === edgeIdx ? null : edgeIdx));
                   onSelectNode(null);
-                  onSelectEdge(edge.data.edgeIndex);
+                  onSelectEdge(edgeIdx);
                 }
               }}
               onPaneClick={() => {
+                setHoveredNodeId(null);
+                setHoveredEdgeIdx(null);
+                setPinnedNodeId(null);
+                setPinnedEdgeIdx(null);
                 onSelectNode(null);
                 onSelectEdge(null);
               }}
               onNodeDragStart={(_event, node) => {
                 draggingNodeIdRef.current = node.id;
                 snappedPosRef.current = null;
+                setHoveredNodeId(null);
+                setHoveredEdgeIdx(null);
               }}
               onNodeDrag={handleNodeDrag}
               onNodeDragStop={(_event, node) => {
                 draggingNodeIdRef.current = null;
                 setHelperGuides({ verticalLines: [], horizontalLines: [] });
                 if (!canEdit || node.type !== "studioNode") return;
+                const curNodes = liveNodesRef.current;
                 const parentOrigin = node.parentId
-                  ? liveNodes.find((n) => n.id === node.parentId)?.position
+                  ? curNodes.find((n) => n.id === node.parentId)?.position
                   : undefined;
                 const finalX =
                   snappedPosRef.current?.x ??
@@ -1260,8 +1468,7 @@ function StudioCanvasInner({
                 );
               }}
               onConnect={handleConnect}
-              fitView
-              fitViewOptions={{ padding: 0.24, maxZoom: 0.95 }}
+              defaultViewport={studioViewportCache.get(subgraphKey)}
               proOptions={{ hideAttribution: true }}
             >
               <Background
@@ -1273,18 +1480,63 @@ function StudioCanvasInner({
                 verticalLines={helperGuides.verticalLines}
                 horizontalLines={helperGuides.horizontalLines}
               />
-              <Controls showInteractive={false} />
+              <Controls showInteractive={false} showFitView={false}>
+                <ControlButton
+                  onClick={() =>
+                    void fitView({
+                      padding: 0.22,
+                      minZoom: 0.15,
+                      maxZoom: 0.95,
+                      duration: 200,
+                    })
+                  }
+                  title={tx("适应画布居中", "Fit View")}
+                  aria-label={tx("适应画布居中", "Fit View")}
+                >
+                  <LocateFixed className="h-3.5 w-3.5" />
+                </ControlButton>
+                {onToggleFullscreen && (
+                  <ControlButton
+                    onClick={onToggleFullscreen}
+                    title={
+                      isFullscreen
+                        ? tx("退出全屏 (Esc)", "Exit Fullscreen (Esc)")
+                        : tx("沉浸式全屏画布", "Fullscreen Canvas")
+                    }
+                    aria-label={
+                      isFullscreen
+                        ? tx("退出全屏", "Exit Fullscreen")
+                        : tx("沉浸式全屏画布", "Fullscreen Canvas")
+                    }
+                  >
+                    {isFullscreen ? (
+                      <Minimize2 className="h-3.5 w-3.5" />
+                    ) : (
+                      <Maximize2 className="h-3.5 w-3.5" />
+                    )}
+                  </ControlButton>
+                )}
+              </Controls>
               {visibleNodeSpecs.length > 5 && (
                 <MiniMap
                   pannable
                   zoomable
-                  style={{ width: 120, height: 80 }}
+                  style={{
+                    width: 132,
+                    height: 84,
+                    backgroundColor: isDark ? "#11141d" : "#ffffff",
+                  }}
+                  maskColor={
+                    isDark
+                      ? "rgba(9, 11, 16, 0.72)"
+                      : "rgba(241, 245, 249, 0.72)"
+                  }
                   nodeColor={(n) => {
                     const spec = (n.data as StudioFlowNode["data"] | undefined)
                       ?.spec;
                     return spec?.color || (isDark ? "#3b82f6" : "#2563eb");
                   }}
-                  className="!bg-card !border !border-border !rounded"
+                  className="!bg-card !border !border-border !rounded-md"
                 />
               )}
             </ReactFlow>

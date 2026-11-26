@@ -21,16 +21,20 @@ import { cn } from "@/lib/utils";
 
 export interface OnboardingStripProps {
   status: OnboardingStatusResponse | null;
+  defaultExpanded?: boolean;
+  hideTemplateAction?: boolean;
   onOpenTemplateHub: () => void;
 }
 
 export function OnboardingStrip({
   status,
+  defaultExpanded = false,
+  hideTemplateAction = false,
   onOpenTemplateHub,
 }: OnboardingStripProps) {
   const navigate = useNavigate();
   const { isZh, tx } = useI18n();
-  const [expandedWhenComplete, setExpandedWhenComplete] = useState(false);
+  const [expandedWhenComplete, setExpandedWhenComplete] = useState(defaultExpanded);
 
   const steps = Array.isArray(status?.steps) ? status.steps : [];
   const totalSteps =
@@ -184,16 +188,18 @@ export function OnboardingStrip({
             <ArrowRight className="h-3.5 w-3.5" />
           </Button>
         )}
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          data-testid="onboarding-try-template-btn"
-          onClick={onOpenTemplateHub}
-        >
-          <Package className="h-3.5 w-3.5 text-xblue" />
-          {tx("试用模板", "Try Template")}
-        </Button>
+        {!hideTemplateAction && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-testid="onboarding-try-template-btn"
+            onClick={onOpenTemplateHub}
+          >
+            <Package className="h-3.5 w-3.5 text-xblue" />
+            {tx("试用模板", "Try Template")}
+          </Button>
+        )}
         {allComplete && expandedWhenComplete && (
           <Button
             type="button"

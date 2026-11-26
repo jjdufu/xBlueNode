@@ -194,7 +194,7 @@ export function UploadDropzone({
       )}
 
       {/* Upload Options */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3 text-xs items-start">
         <div className="space-y-1">
           <label className="text-muted-foreground block">
             {tx("数据集前缀", "Dataset Prefix")}
@@ -226,48 +226,58 @@ export function UploadDropzone({
           </Select>
         </div>
 
-        <div className="flex flex-col justify-center gap-1.5 pt-2">
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={toDatasets}
-              disabled={!canSync}
-              onChange={(e) => setToDatasets(e.target.checked)}
-              data-testid="upload-to-datasets"
-            />
-            <span>{tx("写入结构化数据集", "Create Lake Datasets")}</span>
-          </label>
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={toKnowledge}
-              disabled={!canSync}
-              onChange={(e) => setToKnowledge(e.target.checked)}
-              data-testid="upload-to-knowledge"
-            />
-            <span>{tx("写入超图知识库", "Ingest Knowledge Graph")}</span>
-          </label>
+        <div className="space-y-1">
+          <span className="text-muted-foreground block">
+            {tx("入湖去向", "Destinations")}
+          </span>
+          <div className="flex flex-col justify-center gap-1.5 min-h-8">
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={toDatasets}
+                disabled={!canSync}
+                onChange={(e) => setToDatasets(e.target.checked)}
+                data-testid="upload-to-datasets"
+              />
+              <span>{tx("写入结构化数据集", "Create Lake Datasets")}</span>
+            </label>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={toKnowledge}
+                disabled={!canSync}
+                onChange={(e) => setToKnowledge(e.target.checked)}
+                data-testid="upload-to-knowledge"
+              />
+              <span>{tx("写入超图知识库", "Ingest Knowledge Graph")}</span>
+            </label>
+          </div>
         </div>
 
-        <div className="flex flex-col justify-center gap-1.5 pt-2">
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={jsonExplode}
-              disabled={!canSync}
-              onChange={(e) => setJsonExplode(e.target.checked)}
-            />
-            <span>{tx("嵌套数组拆分子表", "Explode Nested Arrays")}</span>
-          </label>
-          <label className="inline-flex items-center gap-2 cursor-pointer">
-            <input
-              type="checkbox"
-              checked={ocrEnabled}
-              disabled={!canSync}
-              onChange={(e) => setOcrEnabled(e.target.checked)}
-            />
-            <span>{tx("启用光学字符识别", "Enable OCR")}</span>
-          </label>
+        <div className="space-y-1">
+          <span className="text-muted-foreground block">
+            {tx("解析选项", "Parser Options")}
+          </span>
+          <div className="flex flex-col justify-center gap-1.5 min-h-8">
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={jsonExplode}
+                disabled={!canSync}
+                onChange={(e) => setJsonExplode(e.target.checked)}
+              />
+              <span>{tx("嵌套数组拆分子表", "Explode Nested Arrays")}</span>
+            </label>
+            <label className="inline-flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={ocrEnabled}
+                disabled={!canSync}
+                onChange={(e) => setOcrEnabled(e.target.checked)}
+              />
+              <span>{tx("启用光学字符识别", "Enable OCR")}</span>
+            </label>
+          </div>
         </div>
       </div>
 
@@ -332,17 +342,34 @@ export function UploadDropzone({
         />
         <FileUp className="h-6 w-6 mx-auto text-xblue mb-2" />
         <div className="text-xs font-medium">
-          {uploading
-            ? tx("上传解析中…", "Uploading & parsing…")
-            : tx("拖拽文件至此，或浏览本地文件", "Drop files here or browse")}
+          {uploading ? (
+            tx("上传解析中…", "Uploading & parsing…")
+          ) : (
+            <>
+              {tx("拖拽文件至此，或", "Drop files here, or ")}
+              <span className="text-xblue underline underline-offset-2">
+                {tx("浏览本地文件", "browse local files")}
+              </span>
+            </>
+          )}
         </div>
         <div className="text-[11px] text-muted-foreground mt-1">
-          {tx("SHA-256 哈希自动幂等去重", "Automatic SHA-256 deduplication")}
+          {tx(
+            "支持单文件 ≤ 50MB · SHA-256 哈希自动幂等去重",
+            "Max 50MB per file · Automatic SHA-256 deduplication"
+          )}
         </div>
       </div>
 
       {/* Upload Records */}
-      {uploads.length > 0 && (
+      {uploads.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border/80 py-6 text-center text-xs text-muted-foreground">
+          {tx(
+            "尚无本次会话文件入湖记录；上传后将在此展示解析表与文档关联状态",
+            "No uploads in this session yet; parsed datasets and documents will appear here"
+          )}
+        </div>
+      ) : (
         <div className="space-y-2" data-testid="upload-records-list">
           <div className="text-xs font-medium">
             {tx("入湖任务记录", "Upload Tasks")} ({fmtNum(uploads.length, 0)})

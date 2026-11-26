@@ -22,9 +22,9 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDialog,
   Modal,
   Select,
-  StatusBadge,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
@@ -67,6 +67,32 @@ export function EndpointList({
     doc: Record<string, unknown>;
   } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [confirmDeleteEp, setConfirmDeleteEp] = useState<EndpointSpec | null>(
+    null
+  );
+
+  const copyJson = async (key: string, data: unknown) => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+      setCopiedId(key);
+      setTimeout(() => setCopiedId(null), 1600);
+    } catch {
+      // Ignore clipboard failure in headless browsers.
+    }
+  };
+
+  const copyEndpointUrl = async (ep: EndpointSpec) => {
+    const path = `/api/published/${ep.environment.toLowerCase()}/${ep.tenant_id}/${ep.slug}`;
+    const origin =
+      typeof window !== "undefined" ? window.location.origin : "http://127.0.0.1:9995";
+    try {
+      await navigator.clipboard.writeText(`${origin}${path}`);
+      setCopiedId(`url-${ep.id}`);
+      setTimeout(() => setCopiedId(null), 1600);
+    } catch {
+      // Ignore clipboard failure in headless browsers.
+    }
+  };
 
   const filteredEndpoints = useMemo(
     () =>
@@ -130,6 +156,7 @@ export function EndpointList({
     setErrorMsg(null);
     try {
       await deleteEndpoint(ep.id);
+      setConfirmDeleteEp(null);
       await onRefresh();
     } catch (err) {
       setErrorMsg(
@@ -300,18 +327,42 @@ export function EndpointList({
                     data-testid={`endpoint-row-${ep.slug}-${ep.environment}`}
                     className="hover:bg-muted/20"
                   >
-                    <td className="px-4 py-3 space-y-0.5">
+                    <td className="px-4 py-3 space-y-1">
                       <div className="font-semibold text-foreground">
                         {ep.title}
                       </div>
-                      <div className="font-mono-tech text-[11px] text-muted-foreground">
-                        /api/published/{ep.environment.toLowerCase()}/
-                        {ep.tenant_id}/{ep.slug}
+                      <div className="flex items-center gap-1.5 font-mono-tech text-[11px] text-muted-foreground">
+                        <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                          POST
+                        </Badge>
+                        <span className="truncate max-w-[540px]" title={`/api/published/${ep.environment.toLowerCase()}/${ep.tenant_id}/${ep.slug}`}>
+                          /api/published/{ep.environment.toLowerCase()}/
+                          {ep.tenant_id}/{ep.slug}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void copyEndpointUrl(ep)}
+                          className="text-muted-foreground hover:text-foreground cursor-pointer p-0.5 rounded"
+                          title={tx("复制完整路径", "Copy full URL")}
+                          aria-label={tx("复制完整路径", "Copy full URL")}
+                        >
+                          {copiedId === `url-${ep.id}` ? (
+                            <Check className="h-3 w-3 text-xblue" />
+                          ) : (
+                            <Copy className="h-3 w-3" />
+                          )}
+                        </button>
                       </div>
                     </td>
                     <td className="px-3 py-3 whitespace-nowrap">
                       <div className="flex items-center gap-1.5">
-                        <StatusBadge status={ep.environment} />
+                        <Badge
+                          variant={
+                            ep.environment === "PROD" ? "success" : "outline"
+                          }
+                        >
+                          {ep.environment}
+                        </Badge>
                         <Badge variant="outline">
                           {ep.target_version !== null
                             ? `v${ep.target_version}`
@@ -418,15 +469,19 @@ export function EndpointList({
                           )}
                         </Button>
                         {canEdit && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            size="sm"
-                            disabled={busyId === ep.id}
-                            onClick={() => void handleDelete(ep)}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                          <div className="pl-1.5 ml-0.5 border-l border-border">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              disabled={busyId === ep.id}
+                              onClick={() => setConfirmDeleteEp(ep)}
+                              className="text-red-600 dark:text-red-400 hover:bg-red-500/10"
+                              title={tx("删除端点", "Delete endpoint")}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                         )}
                       </div>
                     </td>
@@ -453,14 +508,33 @@ export function EndpointList({
       <Modal
         open={Boolean(skillModal)}
         onClose={() => setSkillModal(null)}
-        maxWidthClass="max-w-xl"
+        maxWidthClass="max-w-2xl"
         testId="skill-manifest-modal"
         title={`Skill JSON · ${skillModal?.endpoint.slug ?? ""}`}
       >
         {skillModal && (
-          <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono-tech text-[11px] overflow-x-auto max-h-80">
-            {JSON.stringify(skillModal.manifest, null, 2)}
-          </pre>
+          <div className="space-y-3">
+            <div className="flex items-center justify-end">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  void copyJson(`skill-${skillModal.endpoint.id}`, skillModal.manifest)
+                }
+              >
+                {copiedId === `skill-${skillModal.endpoint.id}` ? (
+                  <Check className="h-3.5 w-3.5 text-xblue" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" />
+                )}
+                {tx("复制 JSON", "Copy JSON")}
+              </Button>
+            </div>
+            <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono-tech text-[11px] overflow-x-auto max-h-[65vh]">
+              {JSON.stringify(skillModal.manifest, null, 2)}
+            </pre>
+          </div>
         )}
       </Modal>
 
@@ -475,7 +549,22 @@ export function EndpointList({
       >
         {openApiModal && (
           <div className="space-y-3">
-            <div className="flex items-center justify-end">
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  void copyJson(`openapi-${openApiModal.env}`, openApiModal.doc)
+                }
+              >
+                {copiedId === `openapi-${openApiModal.env}` ? (
+                  <Check className="h-3.5 w-3.5 text-xblue" />
+                ) : (
+                  <Copy className="h-3.5 w-3.5" />
+                )}
+                {tx("复制 JSON", "Copy JSON")}
+              </Button>
               <Button
                 type="button"
                 variant="outline"
@@ -491,12 +580,27 @@ export function EndpointList({
                   : tx("查看生产环境", "Switch to Production")}
               </Button>
             </div>
-            <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono-tech text-[11px] overflow-x-auto max-h-96">
+            <pre className="rounded-md border border-border bg-muted/40 p-3 font-mono-tech text-[11px] overflow-x-auto max-h-[65vh]">
               {JSON.stringify(openApiModal.doc, null, 2)}
             </pre>
           </div>
         )}
       </Modal>
+
+      <ConfirmDialog
+        open={Boolean(confirmDeleteEp)}
+        onClose={() => setConfirmDeleteEp(null)}
+        onConfirm={() =>
+          confirmDeleteEp ? void handleDelete(confirmDeleteEp) : undefined
+        }
+        loading={Boolean(confirmDeleteEp && busyId === confirmDeleteEp.id)}
+        title={tx("确认删除端点", "Confirm Endpoint Deletion")}
+        description={tx(
+          `确定删除端点「${confirmDeleteEp?.title ?? ""}」吗？外部调用将立即失效。`,
+          `Delete endpoint "${confirmDeleteEp?.title ?? ""}"? External callers will immediately receive 404.`
+        )}
+        confirmLabel={tx("确认删除", "Delete")}
+      />
     </div>
   );
 }

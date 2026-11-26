@@ -151,14 +151,9 @@ export const MODULE_REGISTRY: ModuleRouteSpec[] = [
     activeMatchPrefixes: ["/governance", "/guard", "/ops"],
     icon: Settings,
     component: GovernancePage,
+    sidebarHidden: true,
     wideLayout: true,
-    requiredAnyPermissions: [
-      "GUARD_ADMIN",
-      "AUDIT_READ",
-      "OPS_ADMIN",
-      "FLOW_RUN",
-      "DATA_READ",
-    ],
+    requiredAnyPermissions: ["GUARD_ADMIN", "AUDIT_READ", "OPS_ADMIN"],
     shortcutKey: "G G",
   },
   {

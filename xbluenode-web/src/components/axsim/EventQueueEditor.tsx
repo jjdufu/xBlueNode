@@ -411,8 +411,27 @@ export function EventQueueEditor({
               data-testid={`sim-event-row-${idx}`}
               className="rounded border border-border bg-background p-2.5 space-y-2"
             >
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
-                <div className="md:col-span-3 space-y-1">
+              <div className="flex items-center justify-between gap-2 pb-1 border-b border-border/50">
+                <span className="text-[11px] font-medium text-muted-foreground font-mono-tech truncate">
+                  #{idx + 1} · {ev.name || ev.id}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1.5 shrink-0"
+                  disabled={disabled}
+                  onClick={() =>
+                    onChangeEvents(events.filter((r) => r.id !== ev.id))
+                  }
+                  aria-label={tx("删除", "Delete")}
+                  data-testid={`remove-sim-event-${idx}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                </Button>
+              </div>
+              <div className="grid grid-cols-1 @[320px]:grid-cols-2 @[540px]:grid-cols-12 gap-2 items-end">
+                <div className="min-w-0 @[540px]:col-span-4 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("事件名称", "Event Name")}
                   </label>
@@ -426,7 +445,7 @@ export function EventQueueEditor({
                   />
                 </div>
 
-                <div className="md:col-span-3 space-y-1">
+                <div className="min-w-0 @[540px]:col-span-4 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("触发类型", "Trigger")}
                   </label>
@@ -449,7 +468,7 @@ export function EventQueueEditor({
                 </div>
 
                 {ev.trigger_kind === "AT_STEP" ? (
-                  <div className="md:col-span-5 space-y-1">
+                  <div className="min-w-0 @[320px]:col-span-2 @[540px]:col-span-4 space-y-1">
                     <label className="text-[11px] text-muted-foreground">
                       {tx("生效步", "Step")}
                     </label>
@@ -469,7 +488,7 @@ export function EventQueueEditor({
                   </div>
                 ) : (
                   <>
-                    <div className="md:col-span-3 space-y-1">
+                    <div className="min-w-0 @[320px]:col-span-2 @[540px]:col-span-2 space-y-1">
                       <label className="text-[11px] text-muted-foreground">
                         {tx("监控节点", "Watch Node")}
                       </label>
@@ -488,7 +507,7 @@ export function EventQueueEditor({
                         ))}
                       </Select>
                     </div>
-                    <div className="md:col-span-2 space-y-1">
+                    <div className="min-w-0 @[320px]:col-span-2 @[540px]:col-span-2 space-y-1">
                       <label className="text-[11px] text-muted-foreground">
                         {tx("监控指标", "Metric")}
                       </label>
@@ -521,27 +540,11 @@ export function EventQueueEditor({
                     </div>
                   </>
                 )}
-
-                <div className="md:col-span-1 flex justify-end">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={disabled}
-                    onClick={() =>
-                      onChangeEvents(events.filter((r) => r.id !== ev.id))
-                    }
-                    aria-label={tx("删除", "Delete")}
-                    data-testid={`remove-sim-event-${idx}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-                  </Button>
-                </div>
               </div>
 
               {ev.trigger_kind === "METRIC_THRESHOLD" && (
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-                  <div className="space-y-1">
+                <div className="grid grid-cols-2 @[540px]:grid-cols-4 gap-2">
+                  <div className="min-w-0 space-y-1">
                     <label className="text-[11px] text-muted-foreground">
                       {tx("比较算子", "Operator")}
                     </label>
@@ -562,7 +565,7 @@ export function EventQueueEditor({
                       ))}
                     </Select>
                   </div>
-                  <div className="space-y-1">
+                  <div className="min-w-0 space-y-1">
                     <label className="text-[11px] text-muted-foreground">
                       {tx("阈值", "Threshold")}
                     </label>
@@ -578,7 +581,7 @@ export function EventQueueEditor({
                       className="h-8"
                     />
                   </div>
-                  <div className="space-y-1">
+                  <div className="min-w-0 space-y-1">
                     <label className="text-[11px] text-muted-foreground">
                       {tx("冷却步", "Cooldown")}
                     </label>
@@ -594,7 +597,7 @@ export function EventQueueEditor({
                       className="h-8"
                     />
                   </div>
-                  <div className="space-y-1">
+                  <div className="min-w-0 space-y-1">
                     <label className="text-[11px] text-muted-foreground">
                       {tx("上限次数", "Max Fires")}
                     </label>
@@ -613,8 +616,8 @@ export function EventQueueEditor({
                 </div>
               )}
 
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-2 pt-1 border-t border-border/60">
-                <div className="md:col-span-5 space-y-1">
+              <div className="grid grid-cols-1 @[320px]:grid-cols-2 @[540px]:grid-cols-12 gap-2 pt-1 border-t border-border/60">
+                <div className="min-w-0 @[320px]:col-span-2 @[540px]:col-span-5 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("作用节点", "Action Node")}
                   </label>
@@ -633,7 +636,7 @@ export function EventQueueEditor({
                     ))}
                   </Select>
                 </div>
-                <div className="md:col-span-3 space-y-1">
+                <div className="min-w-0 @[320px]:col-span-2 @[540px]:col-span-3 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("作用指标", "Action Metric")}
                   </label>
@@ -664,7 +667,7 @@ export function EventQueueEditor({
                     />
                   )}
                 </div>
-                <div className="md:col-span-2 space-y-1">
+                <div className="min-w-0 @[540px]:col-span-2 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("模式", "Mode")}
                   </label>
@@ -685,7 +688,7 @@ export function EventQueueEditor({
                     ))}
                   </Select>
                 </div>
-                <div className="md:col-span-2 space-y-1">
+                <div className="min-w-0 @[540px]:col-span-2 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("变动值", "Value")}
                   </label>
@@ -742,8 +745,27 @@ export function EventQueueEditor({
               data-testid={`sim-goal-row-${idx}`}
               className="rounded border border-border bg-background p-2.5 space-y-2"
             >
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
-                <div className="md:col-span-3 space-y-1">
+              <div className="flex items-center justify-between gap-2 pb-1 border-b border-border/50">
+                <span className="text-[11px] font-medium text-muted-foreground font-mono-tech truncate">
+                  #{idx + 1} · {g.name || g.id}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-1.5 shrink-0"
+                  disabled={disabled}
+                  onClick={() =>
+                    onChangeGoals(goals.filter((r) => r.id !== g.id))
+                  }
+                  aria-label={tx("删除", "Delete")}
+                  data-testid={`remove-sim-goal-${idx}`}
+                >
+                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+                </Button>
+              </div>
+              <div className="grid grid-cols-1 @[320px]:grid-cols-2 @[540px]:grid-cols-12 gap-2 items-end">
+                <div className="min-w-0 @[540px]:col-span-3 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("红线名称", "Goal Name")}
                   </label>
@@ -757,7 +779,7 @@ export function EventQueueEditor({
                   />
                 </div>
 
-                <div className="md:col-span-2 space-y-1">
+                <div className="min-w-0 @[540px]:col-span-3 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("范围模式", "Scope")}
                   </label>
@@ -776,7 +798,7 @@ export function EventQueueEditor({
                   </Select>
                 </div>
 
-                <div className="md:col-span-3 space-y-1">
+                <div className="min-w-0 @[320px]:col-span-2 @[540px]:col-span-3 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {g.scope === "NODE"
                       ? tx("目标节点", "Target Node")
@@ -825,7 +847,7 @@ export function EventQueueEditor({
                   )}
                 </div>
 
-                <div className="md:col-span-3 space-y-1">
+                <div className="min-w-0 @[320px]:col-span-2 @[540px]:col-span-3 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("考核指标", "Metric")}
                   </label>
@@ -856,26 +878,10 @@ export function EventQueueEditor({
                     />
                   )}
                 </div>
-
-                <div className="md:col-span-1 flex justify-end">
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={disabled}
-                    onClick={() =>
-                      onChangeGoals(goals.filter((r) => r.id !== g.id))
-                    }
-                    aria-label={tx("删除", "Delete")}
-                    data-testid={`remove-sim-goal-${idx}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-                  </Button>
-                </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-12 gap-2 pt-1 border-t border-border/60">
-                <div className="md:col-span-2 space-y-1">
+              <div className="grid grid-cols-2 @[540px]:grid-cols-12 gap-2 pt-1 border-t border-border/60">
+                <div className="min-w-0 @[540px]:col-span-2 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("比较算子", "Operator")}
                   </label>
@@ -895,7 +901,7 @@ export function EventQueueEditor({
                   </Select>
                 </div>
 
-                <div className="md:col-span-2 space-y-1">
+                <div className="min-w-0 @[540px]:col-span-2 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("红线阈值", "Threshold")}
                   </label>
@@ -912,7 +918,7 @@ export function EventQueueEditor({
                   />
                 </div>
 
-                <div className="md:col-span-4 space-y-1">
+                <div className="min-w-0 col-span-2 @[540px]:col-span-4 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("可控源头", "Controllable Source")}
                   </label>
@@ -933,7 +939,7 @@ export function EventQueueEditor({
                   </Select>
                 </div>
 
-                <div className="md:col-span-4 space-y-1">
+                <div className="min-w-0 col-span-2 @[540px]:col-span-4 space-y-1">
                   <label className="text-[11px] text-muted-foreground">
                     {tx("空间过滤", "Spatial Filter")}
                   </label>

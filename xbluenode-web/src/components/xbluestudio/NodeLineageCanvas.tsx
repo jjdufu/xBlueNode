@@ -6,7 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { ArrowLeft, GitBranch, Loader2, RefreshCw } from "lucide-react";
+import { ArrowLeft, GitBranch, Loader2, LocateFixed, RefreshCw, ZoomIn, ZoomOut } from "lucide-react";
 import { useI18n } from "@/i18n";
 import {
   computeNodeBadgeCounts,
@@ -248,8 +248,10 @@ export function NodeLineageCanvas({
   const [loading, setLoading] = useState<boolean>(false);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [curves, setCurves] = useState<RenderedCurve[]>([]);
+  const [lineageZoom, setLineageZoom] = useState<number>(1);
 
   const boardRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
   const itemRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const loadLineage = useCallback(async () => {
@@ -293,10 +295,11 @@ export function NodeLineageCanvas({
   }, [effectiveGraph.stages]);
 
   const recomputeCurves = useCallback(() => {
-    const board = boardRef.current;
-    if (!board) return;
-    const boardRect = board.getBoundingClientRect();
-    if (boardRect.width <= 0 || boardRect.height <= 0) return;
+    const stage = stageRef.current;
+    if (!stage) return;
+    const stageRect = stage.getBoundingClientRect();
+    if (stageRect.width <= 0 || stageRect.height <= 0) return;
+    const scale = lineageZoom > 0 ? lineageZoom : 1;
 
     const nextCurves: RenderedCurve[] = [];
     for (let i = 0; i < effectiveGraph.edges.length; i += 1) {
@@ -311,23 +314,19 @@ export function NodeLineageCanvas({
       if (srcRect.width <= 0 || dstRect.width <= 0) continue;
 
       const forward = srcRect.left <= dstRect.left;
-      const x1 = forward
-        ? srcRect.right - boardRect.left + board.scrollLeft
-        : srcRect.left - boardRect.left + board.scrollLeft;
+      const x1 =
+        (forward
+          ? srcRect.right - stageRect.left
+          : srcRect.left - stageRect.left) / scale;
       const y1 =
-        srcRect.top -
-        boardRect.top +
-        board.scrollTop +
-        srcRect.height / 2 +
+        (srcRect.top - stageRect.top + srcRect.height / 2) / scale +
         (forward ? 0 : 4);
-      const x2 = forward
-        ? dstRect.left - boardRect.left + board.scrollLeft
-        : dstRect.right - boardRect.left + board.scrollLeft;
+      const x2 =
+        (forward
+          ? dstRect.left - stageRect.left
+          : dstRect.right - stageRect.left) / scale;
       const y2 =
-        dstRect.top -
-        boardRect.top +
-        board.scrollTop +
-        dstRect.height / 2 +
+        (dstRect.top - stageRect.top + dstRect.height / 2) / scale +
         (forward ? 0 : 4);
 
       const dx = Math.max(28, Math.abs(x2 - x1) * 0.44);
@@ -345,11 +344,11 @@ export function NodeLineageCanvas({
       });
     }
     setCurves(nextCurves);
-  }, [effectiveGraph.edges]);
+  }, [effectiveGraph.edges, lineageZoom]);
 
   useLayoutEffect(() => {
     recomputeCurves();
-  }, [recomputeCurves, effectiveGraph]);
+  }, [recomputeCurves, effectiveGraph, lineageZoom]);
 
   useEffect(() => {
     const board = boardRef.current;
@@ -497,6 +496,49 @@ export function NodeLineageCanvas({
         </div>
 
         <div className="flex items-center gap-1.5 shrink-0">
+          <div className="inline-flex items-center gap-0.5 rounded-md border border-border bg-background px-1 py-0.5">
+            <IconButton
+              size="sm"
+              data-testid="lineage-zoom-out"
+              onClick={() =>
+                setLineageZoom((z) =>
+                  Math.max(0.5, Number((z - 0.1).toFixed(2)))
+                )
+              }
+              title={tx("缩小", "Zoom out")}
+              aria-label={tx("缩小", "Zoom out")}
+            >
+              <ZoomOut className="h-3.5 w-3.5" />
+            </IconButton>
+            <span
+              data-testid="lineage-zoom-label"
+              className="px-1 font-mono-tech text-[11px] tabular-nums text-muted-foreground min-w-10 text-center"
+            >
+              {Math.round(lineageZoom * 100)}%
+            </span>
+            <IconButton
+              size="sm"
+              data-testid="lineage-zoom-in"
+              onClick={() =>
+                setLineageZoom((z) =>
+                  Math.min(1.5, Number((z + 0.1).toFixed(2)))
+                )
+              }
+              title={tx("放大", "Zoom in")}
+              aria-label={tx("放大", "Zoom in")}
+            >
+              <ZoomIn className="h-3.5 w-3.5" />
+            </IconButton>
+            <IconButton
+              size="sm"
+              data-testid="lineage-zoom-reset"
+              onClick={() => setLineageZoom(1)}
+              title={tx("重置缩放 (100%)", "Reset zoom (100%)")}
+              aria-label={tx("重置缩放", "Reset zoom")}
+            >
+              <LocateFixed className="h-3.5 w-3.5" />
+            </IconButton>
+          </div>
           <IconButton
             size="sm"
             onClick={() => void loadLineage()}
@@ -522,8 +564,26 @@ export function NodeLineageCanvas({
       <div
         ref={boardRef}
         onScroll={recomputeCurves}
+        onWheel={(e) => {
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            const delta = e.deltaY < 0 ? 0.08 : -0.08;
+            setLineageZoom((z) =>
+              Math.min(1.5, Math.max(0.5, Number((z + delta).toFixed(2))))
+            );
+          }
+        }}
         className="relative flex-1 min-h-0 overflow-auto p-4 bg-muted/10"
       >
+        <div
+          ref={stageRef}
+          style={{
+            transform: `scale(${lineageZoom})`,
+            transformOrigin: "0 0",
+            width: lineageZoom < 1 ? `${100 / lineageZoom}%` : undefined,
+          }}
+          className="relative min-w-[920px]"
+        >
         <svg
           data-testid="lineage-svg-edges"
           className="pointer-events-none absolute inset-0 h-full w-full min-w-[920px]"
@@ -662,6 +722,7 @@ export function NodeLineageCanvas({
               </div>
             );
           })}
+        </div>
         </div>
       </div>
     </Card>

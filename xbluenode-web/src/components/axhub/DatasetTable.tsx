@@ -397,14 +397,16 @@ export function DatasetTable({
           },
         }),
         columnHelper.accessor("row_count", {
-          header: tx("行数 / 版本", "Rows / Version"),
+          header: () => (
+            <div className="text-right pr-6">{tx("行数 / 版本", "Rows / Version")}</div>
+          ),
           cell: (info) => {
             const ds = info.row.original;
             return (
-              <span className="font-mono-tech tabular-nums">
+              <div className="text-right pr-6 font-mono-tech tabular-nums whitespace-nowrap">
                 {fmtNum(ds.row_count, 0)} {tx("行", "rows")} · v
                 {ds.schema_version}
-              </span>
+              </div>
             );
           },
         }),
@@ -419,11 +421,13 @@ export function DatasetTable({
         }),
         columnHelper.display({
           id: "actions",
-          header: tx("操作", "Actions"),
+          header: () => (
+            <div className="text-right pr-2">{tx("操作", "Actions")}</div>
+          ),
           cell: (info) => {
             const ds = info.row.original;
             return (
-              <div className="flex items-center gap-1">
+              <div className="flex items-center justify-end gap-1 whitespace-nowrap">
                 <button
                   type="button"
                   onClick={(e) => {
@@ -451,21 +455,23 @@ export function DatasetTable({
                   )}
                   {tx("同步", "Sync")}
                 </button>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  disabled={!canAdmin}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setPendingDeleteDs(ds);
-                  }}
-                  aria-label={tx("删除", "Delete")}
-                  className="hover:text-red-600 hover:bg-red-500/10"
-                  data-testid={`delete-dataset-btn-${ds.name}`}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
+                <span className="ml-1 pl-1 border-l border-border inline-flex">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    disabled={!canAdmin}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setPendingDeleteDs(ds);
+                    }}
+                    aria-label={tx("删除", "Delete")}
+                    className="hover:text-red-600 hover:bg-red-500/10"
+                    data-testid={`delete-dataset-btn-${ds.name}`}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </span>
               </div>
             );
           },
@@ -1073,7 +1079,7 @@ export function DatasetTable({
                 </div>
 
                 {previewLoading ? (
-                  <div className="py-10 text-center text-xs text-muted-foreground">
+                  <div className="flex-1 min-h-[260px] flex items-center justify-center text-xs text-muted-foreground">
                     {tx("读取预览中…", "Loading sample rows…")}
                   </div>
                 ) : !previewData || previewData.columns.length === 0 ? (
@@ -1081,11 +1087,23 @@ export function DatasetTable({
                     title={tx("暂无可预览数据", "No preview rows available")}
                   />
                 ) : (
-                  <div className="max-h-[calc(100vh-14rem)] overflow-auto rounded border border-border">
-                    <table
-                      className="w-full border-collapse text-left text-xs"
-                      data-testid="dataset-preview-table"
-                    >
+                  <div className="flex-1 min-h-0 flex flex-col gap-1.5">
+                    <div className="flex items-center justify-between text-[11px] text-muted-foreground px-0.5">
+                      <span>
+                        {tx(
+                          `共 ${previewData.columns.length} 列 · 展示前 ${previewData.rows.length} 行`,
+                          `${previewData.columns.length} columns · ${previewData.rows.length} rows`
+                        )}
+                      </span>
+                      {previewData.columns.length > 5 && (
+                        <span>{tx("支持横向滚动 ↔", "Scroll horizontally ↔")}</span>
+                      )}
+                    </div>
+                    <div className="flex-1 min-h-[260px] max-h-[calc(100vh-14.5rem)] overflow-auto rounded border border-border">
+                      <table
+                        className="w-full border-collapse text-left text-xs"
+                        data-testid="dataset-preview-table"
+                      >
                       <thead className="sticky top-0 z-10 bg-muted border-b border-border">
                         <tr>
                           {previewData.columns.map((col) => {
@@ -1095,7 +1113,10 @@ export function DatasetTable({
                               col.name.endsWith("_no");
                             const isNumCol =
                               !isIdCol &&
-                              NUMERIC_PREVIEW_TYPES.has(col.data_type);
+                              (NUMERIC_PREVIEW_TYPES.has(col.data_type) ||
+                                previewData.rows.some(
+                                  (r) => typeof r[col.name] === "number"
+                                ));
                             return (
                               <th
                                 key={col.name}
@@ -1105,7 +1126,7 @@ export function DatasetTable({
                               >
                                 <div
                                   className={`inline-flex items-center gap-1.5 ${
-                                    isNumCol ? "justify-end" : ""
+                                    isNumCol ? "justify-end w-full" : ""
                                   }`}
                                 >
                                   <span>{col.name}</span>
@@ -1166,6 +1187,7 @@ export function DatasetTable({
                         ))}
                       </tbody>
                     </table>
+                    </div>
                   </div>
                 )}
               </div>

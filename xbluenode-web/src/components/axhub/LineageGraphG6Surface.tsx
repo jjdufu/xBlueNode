@@ -99,6 +99,10 @@ export function LineageGraphG6Surface({
       focusedNodeId ? computeLineageClosure(focusedNodeId, edges) : null,
     [edges, focusedNodeId]
   );
+  const closureRef = useRef(closure);
+  closureRef.current = closure;
+  const focusedNodeIdRef = useRef(focusedNodeId);
+  focusedNodeIdRef.current = focusedNodeId;
 
   const nodeMap = useMemo(
     () => new Map(nodes.map((n) => [n.id, n])),
@@ -124,8 +128,9 @@ export function LineageGraphG6Surface({
     const idleStroke = isDark ? "#71717a" : "#94a3b8";
 
     const g6Edges: EdgeData[] = edges.map((e) => {
-      const inClosure = closure ? closure.edgeIds.has(e.id) : false;
-      const dimmed = closure !== null && !inClosure;
+      const curClosure = closureRef.current;
+      const inClosure = curClosure ? curClosure.edgeIds.has(e.id) : false;
+      const dimmed = curClosure !== null && !inClosure;
       return {
         id: e.id,
         source: e.source,
@@ -147,7 +152,7 @@ export function LineageGraphG6Surface({
       width,
       height,
       animation: false,
-      autoFit: "view",
+      autoFit: nodes.length > 1 ? "view" : "center",
       padding: [20, 24, 20, 24],
       layout: {
         type: "antv-dagre",
@@ -168,8 +173,10 @@ export function LineageGraphG6Surface({
           component: (datum: NodeData) => {
             const item = nodeMap.get(String(datum.id));
             if (!item) return <div />;
-            const inClosure = closure ? closure.nodeIds.has(item.id) : true;
-            const isFocused = focusedNodeId === item.id;
+            const curClosure = closureRef.current;
+            const curFocusId = focusedNodeIdRef.current;
+            const inClosure = curClosure ? curClosure.nodeIds.has(item.id) : true;
+            const isFocused = curFocusId === item.id;
             return (
               <div
                 data-testid={`lineage-node-${item.id}`}
@@ -177,7 +184,7 @@ export function LineageGraphG6Surface({
                 onClick={(ev) => {
                   ev.stopPropagation();
                   onSelectRef.current(
-                    focusedNodeId === item.id ? null : item.id
+                    focusedNodeIdRef.current === item.id ? null : item.id
                   );
                 }}
                 onDoubleClick={(ev) => {
@@ -225,9 +232,25 @@ export function LineageGraphG6Surface({
       }
     });
 
-    const renderPromise = graph.render().catch(() => {
-      // Ignore if unmounted mid-render
-    });
+    const renderPromise = graph
+      .render()
+      .then(() => {
+        try {
+          if (nodes.length <= 1) {
+            void graph.zoomTo(1);
+          } else {
+            const z = graph.getZoom();
+            if (typeof z === "number" && z > 1.05) {
+              void graph.zoomTo(1);
+            }
+          }
+        } catch {
+          // Ignore zoom guard errors
+        }
+      })
+      .catch(() => {
+        // Ignore if unmounted mid-render
+      });
 
     const ro = new ResizeObserver((entries) => {
       const entry = entries[0];
@@ -255,7 +278,34 @@ export function LineageGraphG6Surface({
         }
       });
     };
-  }, [closure, edges, focusedNodeId, isDark, nodeMap, nodes]);
+  }, [edges, isDark, nodeMap, nodes]);
+
+  // Incrementally update selection/closure styles without destroying G6 instance or calling zoomTo(1)
+  useEffect(() => {
+    const g = graphRef.current;
+    if (!g) return;
+    const accentStroke = isDark ? "#3b82f6" : "#2563eb";
+    const idleStroke = isDark ? "#71717a" : "#94a3b8";
+    try {
+      g.updateEdgeData(
+        edges.map((e) => {
+          const inClosure = closure ? closure.edgeIds.has(e.id) : false;
+          const dimmed = closure !== null && !inClosure;
+          return {
+            id: e.id,
+            style: {
+              stroke: inClosure ? accentStroke : idleStroke,
+              lineWidth: inClosure ? 2.2 : 1.4,
+              strokeOpacity: dimmed ? 0.25 : 0.9,
+            },
+          };
+        })
+      );
+      void g.draw().catch(() => {});
+    } catch {
+      // Ignore transient G6 updates during teardown
+    }
+  }, [closure, edges, focusedNodeId, isDark]);
 
   return (
     <div

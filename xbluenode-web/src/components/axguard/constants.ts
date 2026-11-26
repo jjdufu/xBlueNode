@@ -111,7 +111,7 @@ export const MASK_RULE_OPTIONS: ReadonlyArray<{
     value: "NONE",
     label: "不脱敏（显式豁免）",
     enLabel: "Unmasked (Exempt)",
-    sample: "13800138000",
+    sample: "原文明文 (Raw Value)",
   },
   {
     value: "MASK_PHONE",

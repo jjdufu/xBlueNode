@@ -172,13 +172,13 @@ export function ScenarioCompare({
           <Input
             value={typeFilter}
             onChange={(e) => setTypeFilter(e.target.value)}
-            placeholder="Order / Warehouse"
+            placeholder={tx("过滤节点类型…", "Filter node types…")}
             className="h-8 w-44 text-xs font-mono-tech"
           />
           <Input
             value={metricsFilter}
             onChange={(e) => setMetricsFilter(e.target.value)}
-            placeholder="fulfillment,inventory"
+            placeholder={tx("过滤指标键（逗号分隔）…", "Filter metrics (comma-separated)…")}
             className="h-8 w-48 text-xs font-mono-tech"
           />
         </div>

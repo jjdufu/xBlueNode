@@ -253,24 +253,24 @@ export function AlertTable({
             <label className="block text-[11px] text-muted-foreground mb-1">
               {tx("节点类型", "Node Type")}
             </label>
-            <Input
-              list="axalerts-known-type-names"
+            <Select
               data-testid="alert-filter-type-name"
-              placeholder="Warehouse"
               value={filters.type_name ?? ""}
               onChange={(e) =>
                 onFiltersChange({
                   ...filters,
-                  type_name: e.target.value.trim() || undefined,
+                  type_name: e.target.value || undefined,
                 })
               }
-              className="h-8 text-xs"
-            />
-            <datalist id="axalerts-known-type-names">
+              className="h-8 w-full"
+            >
+              <option value="">{tx("全部节点类型", "All Node Types")}</option>
               {knownTypeNames.map((tn) => (
-                <option key={tn} value={tn} />
+                <option key={tn} value={tn}>
+                  {tn}
+                </option>
               ))}
-            </datalist>
+            </Select>
           </div>
         </div>
 
@@ -347,7 +347,7 @@ export function AlertTable({
               <th className="py-2.5 px-3 whitespace-nowrap">
                 {tx("最近触发时间", "Last Triggered")}
               </th>
-              <th className="py-2.5 px-3 text-right whitespace-nowrap">
+              <th className="py-2.5 px-3 text-right whitespace-nowrap w-64">
                 {tx("处置动作", "Actions")}
               </th>
             </tr>

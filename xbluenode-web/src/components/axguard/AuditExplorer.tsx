@@ -477,17 +477,43 @@ export function AuditExplorer({
             </div>
           ) : (
             <svg
-              viewBox="0 0 260 110"
-              className="w-full h-28 overflow-visible"
+              viewBox="0 0 280 120"
+              className="w-full h-32 overflow-visible"
               role="img"
               aria-label={tx("日度审计事件趋势", "Daily audit event trend")}
             >
+              {[0, 0.5, 1].map((ratio) => {
+                const gy = Math.round(92 - ratio * 66);
+                const val = Math.round(maxDayVal * ratio);
+                return (
+                  <g key={ratio}>
+                    <line
+                      x1={28}
+                      x2={272}
+                      y1={gy}
+                      y2={gy}
+                      stroke="var(--border)"
+                      strokeDasharray={ratio === 0 ? undefined : "2 2"}
+                      strokeWidth={1}
+                    />
+                    <text
+                      x={24}
+                      y={gy + 3}
+                      textAnchor="end"
+                      fontSize="8"
+                      fill="var(--muted-foreground)"
+                    >
+                      {val}
+                    </text>
+                  </g>
+                );
+              })}
               {stats.by_day.slice(-10).map(([day, count], idx, arr) => {
                 const slotW = 240 / Math.max(1, arr.length);
-                const barW = Math.max(8, Math.min(22, slotW - 6));
-                const barH = Math.max(4, Math.round((count / maxDayVal) * 76));
-                const x = 10 + idx * slotW + (slotW - barW) / 2;
-                const y = 86 - barH;
+                const barW = Math.max(10, Math.min(24, slotW - 6));
+                const barH = Math.max(4, Math.round((count / maxDayVal) * 66));
+                const x = 30 + idx * slotW + (slotW - barW) / 2;
+                const y = 92 - barH;
                 return (
                   <g key={day}>
                     <rect
@@ -500,7 +526,16 @@ export function AuditExplorer({
                     />
                     <text
                       x={x + barW / 2}
-                      y={102}
+                      y={Math.max(10, y - 4)}
+                      textAnchor="middle"
+                      fontSize="8"
+                      fill="var(--foreground)"
+                    >
+                      {fmtNum(count, 0)}
+                    </text>
+                    <text
+                      x={x + barW / 2}
+                      y={108}
                       textAnchor="middle"
                       fontSize="8"
                       fill="var(--muted-foreground)"
@@ -518,7 +553,7 @@ export function AuditExplorer({
       {/* Multi-Dimensional Filter Bar + Export CSV */}
       <Card className="p-3.5 flex flex-wrap items-end gap-2.5">
         <div className="space-y-1">
-          <label className="text-[11px] text-muted-foreground">
+          <label className="block text-[11px] text-muted-foreground">
             {tx("动作类型", "Action")}
           </label>
           <Select
@@ -536,7 +571,7 @@ export function AuditExplorer({
         </div>
 
         <div className="space-y-1">
-          <label className="text-[11px] text-muted-foreground">
+          <label className="block text-[11px] text-muted-foreground">
             {tx("操作账号", "Username")}
           </label>
           <Input

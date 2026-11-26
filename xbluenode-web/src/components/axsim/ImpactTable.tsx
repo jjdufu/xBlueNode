@@ -313,7 +313,7 @@ export function ImpactTable({
           list="impact-type-options"
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value)}
-          placeholder="Order / Warehouse"
+          placeholder={tx("按节点类型筛选", "Filter by node type")}
           className="h-8 text-xs font-mono-tech"
           data-testid="impact-filter-type"
         />
@@ -327,7 +327,7 @@ export function ImpactTable({
           list="impact-metric-options"
           value={metricFilter}
           onChange={(e) => setMetricFilter(e.target.value)}
-          placeholder="fulfillment / inventory"
+          placeholder={tx("按指标键筛选", "Filter by metric key")}
           className="h-8 text-xs font-mono-tech"
           data-testid="impact-filter-metric"
         />

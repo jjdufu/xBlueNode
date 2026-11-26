@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
+  ControlButton,
   Controls,
   Handle,
   MarkerType,
@@ -15,6 +16,7 @@ import {
   type NodeTypes,
   type OnNodesChange,
   type ReactFlowInstance,
+  type Viewport,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import ELK from "elkjs/lib/elk.bundled.js";
@@ -25,6 +27,9 @@ import {
   LayoutGrid,
   Link2,
   Loader2,
+  LocateFixed,
+  Maximize2,
+  Minimize2,
   PauseCircle,
   Redo2,
   Slash,
@@ -82,6 +87,8 @@ export interface NodeStepRuntimeBadge {
 export interface AxFlowCanvasNodeData extends Record<string, unknown> {
   node: FlowNodeDef;
   selected: boolean;
+  highlighted?: boolean;
+  dimmed?: boolean;
   issueCount: number;
   hasError: boolean;
   runtime: NodeStepRuntimeBadge | null;
@@ -181,7 +188,7 @@ function renderStepStatusBadge(
 
 function AxFlowCanvasNodeCard({ data }: NodeProps<AxFlowRfNode>) {
   const { isZh, tx, tEnum } = useI18n();
-  const { node, selected, issueCount, hasError, runtime } = data;
+  const { node, selected, highlighted = false, dimmed = false, issueCount, hasError, runtime } = data;
   const opMeta = OPERATOR_I18N[node.kind];
   const opLabel = opMeta
     ? isZh
@@ -201,10 +208,13 @@ function AxFlowCanvasNodeCard({ data }: NodeProps<AxFlowRfNode>) {
     <div
       data-testid={`flow-node-${node.id}`}
       className={cn(
-        "w-56 rounded-md border bg-card text-card-foreground shadow-xs transition-shadow select-none overflow-hidden",
+        "w-56 rounded-md border bg-card text-card-foreground shadow-xs transition-[opacity,box-shadow,filter,border-color] duration-150 select-none overflow-hidden",
         selected
           ? "border-xblue ring-2 ring-xblue/30 shadow-md"
-          : "border-border hover:border-foreground/40",
+          : highlighted
+            ? "border-xblue/75 ring-1 ring-xblue/25"
+            : "border-border hover:border-foreground/40",
+        dimmed && "opacity-25 saturate-50",
         hasError && "border-red-500"
       )}
     >
@@ -212,7 +222,7 @@ function AxFlowCanvasNodeCard({ data }: NodeProps<AxFlowRfNode>) {
       <Handle
         type="target"
         position={Position.Left}
-        className="!h-2.5 !w-2.5 !border-2 !border-background !bg-foreground"
+        className="!h-3 !w-3 !border-2 !border-background !bg-foreground before:absolute before:-inset-2.5 before:content-['']"
       />
 
       <div className="p-2.5 space-y-2">
@@ -291,7 +301,7 @@ function AxFlowCanvasNodeCard({ data }: NodeProps<AxFlowRfNode>) {
       <Handle
         type="source"
         position={Position.Right}
-        className="!h-2.5 !w-2.5 !border-2 !border-background !bg-xblue"
+        className="!h-3 !w-3 !border-2 !border-background !bg-xblue before:absolute before:-inset-2.5 before:content-['']"
       />
     </div>
   );
@@ -324,6 +334,7 @@ type PopoverContext =
     };
 
 export interface FlowCanvasProps {
+  flowId?: string;
   nodes: FlowNodeDef[];
   edges: FlowEdgeDef[];
   operators?: readonly OperatorSpecDto[];
@@ -353,9 +364,14 @@ export interface FlowCanvasProps {
     kind: FlowOperator,
     pos: { x: number; y: number }
   ) => void;
+  isFullscreen?: boolean;
+  onToggleFullscreen?: () => void;
 }
 
+const flowViewportCache = new Map<string, Viewport>();
+
 export function FlowCanvas({
+  flowId = "default",
   nodes,
   edges,
   operators = FALLBACK_OPERATOR_SPECS,
@@ -377,6 +393,8 @@ export function FlowCanvas({
   onDropOperator,
   onSpliceOperatorOnEdge,
   onCreateAndConnectOperator,
+  isFullscreen = false,
+  onToggleFullscreen,
 }: FlowCanvasProps) {
   const { isZh, tx } = useI18n();
   const { isDark } = useTheme();
@@ -415,6 +433,65 @@ export function FlowCanvas({
   const [connectTo, setConnectTo] = useState("");
   const [connectWhen, setConnectWhen] = useState("");
   const [layoutRunning, setLayoutRunning] = useState(false);
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null);
+  const [pinnedNodeId, setPinnedNodeId] = useState<string | null>(null);
+  const initializedFlowKeyRef = useRef<string>("");
+  const viewportReadyRef = useRef(false);
+
+  useEffect(() => {
+    if (initializedFlowKeyRef.current !== flowId) {
+      viewportReadyRef.current = false;
+    }
+  }, [flowId]);
+
+  useEffect(() => {
+    if (!rfInstance || nodes.length === 0) return;
+    if (initializedFlowKeyRef.current === flowId) return;
+    initializedFlowKeyRef.current = flowId;
+    const cached = flowViewportCache.get(flowId);
+    const t = setTimeout(() => {
+      if (cached) {
+        void rfInstance.setViewport(cached, { duration: 0 });
+      } else {
+        void rfInstance.fitView({
+          padding: 0.28,
+          minZoom: 0.15,
+          maxZoom: 1.0,
+          duration: 0,
+        });
+      }
+      viewportReadyRef.current = true;
+    }, 40);
+    return () => clearTimeout(t);
+  }, [flowId, nodes.length, rfInstance]);
+
+  const flowNodesKey = useMemo(
+    () => nodes.map((n) => n.id).sort().join(","),
+    [nodes]
+  );
+
+  useEffect(() => {
+    setHoveredNodeId(null);
+    setPinnedNodeId(null);
+  }, [flowNodesKey]);
+
+  const focusHighlight = useMemo(() => {
+    const activeNode = hoveredNodeId ?? pinnedNodeId;
+    const nodeIds = new Set<string>();
+    const edgeIndices = new Set<number>();
+    if (!activeNode) {
+      return { active: false, nodeIds, edgeIndices };
+    }
+    nodeIds.add(activeNode);
+    edges.forEach((e, idx) => {
+      if (e.from === activeNode || e.to === activeNode) {
+        nodeIds.add(e.from);
+        nodeIds.add(e.to);
+        edgeIndices.add(idx);
+      }
+    });
+    return { active: true, nodeIds, edgeIndices };
+  }, [edges, hoveredNodeId, pinnedNodeId]);
 
   const issueStatsByNode = useMemo(() => {
     const stats: Record<string, { count: number; hasError: boolean }> = {};
@@ -444,13 +521,15 @@ export function FlowCanvas({
           data: {
             node,
             selected: selectedNodeId === node.id,
+            highlighted: focusHighlight.active && focusHighlight.nodeIds.has(node.id),
+            dimmed: focusHighlight.active && !focusHighlight.nodeIds.has(node.id),
             issueCount: st.count,
             hasError: st.hasError,
             runtime: stepStatusByNodeId[node.id] ?? null,
           },
         };
       }),
-    [nodes, selectedNodeId, issueStatsByNode, stepStatusByNodeId]
+    [focusHighlight, issueStatsByNode, nodes, selectedNodeId, stepStatusByNodeId]
   );
 
   const [liveNodes, setLiveNodes] = useState<AxFlowRfNode[]>(rfNodes);
@@ -554,15 +633,20 @@ export function FlowCanvas({
       .map(({ edgeDef, idx }) => {
         const dstStatus = stepStatusByNodeId[edgeDef.to]?.status;
         const isRunningFlow = dstStatus === "RUNNING";
+        const isHighlightedEdge =
+          focusHighlight.active && focusHighlight.edgeIndices.has(idx);
+        const isDimmedEdge =
+          focusHighlight.active && !isHighlightedEdge && selectedEdgeIndex !== idx;
         return {
           id: `axflow-edge-${idx}-${edgeDef.from}-${edgeDef.to}`,
           source: edgeDef.from,
           target: edgeDef.to,
           type: "axflowEdge",
+          zIndex: isHighlightedEdge || selectedEdgeIndex === idx ? 10 : 0,
           markerEnd: {
             type: MarkerType.ArrowClosed,
             color:
-              selectedEdgeIndex === idx || isRunningFlow
+              selectedEdgeIndex === idx || isRunningFlow || isHighlightedEdge
                 ? activeStroke
                 : idleStroke,
           },
@@ -570,6 +654,8 @@ export function FlowCanvas({
             edgeDef,
             edgeIndex: idx,
             selected: selectedEdgeIndex === idx,
+            highlighted: isHighlightedEdge,
+            dimmed: isDimmedEdge,
             isDark,
             canEdit,
             isRunningFlow,
@@ -589,6 +675,7 @@ export function FlowCanvas({
     canEdit,
     dropInsertLabel,
     edges,
+    focusHighlight,
     handleOpenInsertPopover,
     hoveredDropEdgeIndex,
     insertAriaLabel,
@@ -847,9 +934,35 @@ export function FlowCanvas({
           </Button>
         </div>
 
-        <div className="pointer-events-auto rounded-md border border-border bg-card/95 px-2.5 py-1 text-[11px] font-mono-tech text-muted-foreground">
-          {tx("节点", "Nodes")} {nodes.length} · {tx("边", "Edges")}{" "}
-          {edges.length}
+        <div className="pointer-events-auto flex items-center gap-1.5">
+          <div className="rounded-md border border-border bg-card/95 px-2.5 py-1 text-[11px] font-mono-tech text-muted-foreground">
+            {tx("节点", "Nodes")} {nodes.length} · {tx("边", "Edges")}{" "}
+            {edges.length}
+          </div>
+          {onToggleFullscreen && (
+            <IconButton
+              size="sm"
+              active={isFullscreen}
+              data-testid="axflow-fullscreen-btn"
+              onClick={onToggleFullscreen}
+              title={
+                isFullscreen
+                  ? tx("退出沉浸全屏 (Esc)", "Exit Fullscreen (Esc)")
+                  : tx("沉浸式全屏画布", "Fullscreen Canvas")
+              }
+              aria-label={
+                isFullscreen
+                  ? tx("退出沉浸全屏", "Exit Fullscreen")
+                  : tx("沉浸式全屏画布", "Fullscreen Canvas")
+              }
+            >
+              {isFullscreen ? (
+                <Minimize2 className="h-3.5 w-3.5 text-xblue" />
+              ) : (
+                <Maximize2 className="h-3.5 w-3.5" />
+              )}
+            </IconButton>
+          )}
         </div>
       </div>
 
@@ -981,11 +1094,11 @@ export function FlowCanvas({
         </div>
       )}
 
-      {/* Selected Edge Inline `when` Guard Bar */}
+      {/* Selected Edge Inline `when` Guard Bar (clear of bottom-left Controls) */}
       {selectedEdge && selectedEdgeIndex !== null && (
         <div
           data-testid="axflow-edge-inline-editor"
-          className="absolute bottom-3 left-3 right-36 z-20 flex flex-wrap items-center gap-2 rounded-md border border-xblue/40 bg-card/95 px-3 py-2 shadow-md text-xs"
+          className="absolute bottom-3 left-14 right-40 z-20 flex flex-wrap items-center gap-2 rounded-md border border-xblue/40 bg-card/95 px-3 py-2 shadow-md text-xs"
         >
           <span className="font-mono-tech font-semibold text-xblue">
             {selectedEdge.from} → {selectedEdge.to}
@@ -1023,10 +1136,24 @@ export function FlowCanvas({
         edges={rfEdges}
         nodeTypes={NODE_TYPES}
         edgeTypes={EDGE_TYPES}
+        minZoom={0.12}
+        maxZoom={2.5}
+        zoomOnScroll
+        zoomOnPinch
+        zoomOnDoubleClick={false}
         onInit={setRfInstance}
+        onMoveEnd={(_event, viewport) => {
+          if (viewportReadyRef.current) {
+            flowViewportCache.set(flowId, viewport);
+          }
+        }}
         onNodesChange={handleNodesChange}
         nodesDraggable={canEdit}
         nodesConnectable={canEdit}
+        onNodeMouseEnter={(_event, node) => {
+          if (!draggingNodeIdRef.current) setHoveredNodeId(node.id);
+        }}
+        onNodeMouseLeave={() => setHoveredNodeId(null)}
         onConnectStart={(_event, params) => {
           connectStartNodeRef.current = params.nodeId ?? null;
           connectedDuringDragRef.current = false;
@@ -1069,6 +1196,7 @@ export function FlowCanvas({
           });
         }}
         onNodeClick={(_, node) => {
+          setPinnedNodeId((prev) => (prev === node.id ? null : node.id));
           setPopoverCtx(null);
           onSelectEdge(null);
           onSelectNode(node.id);
@@ -1136,12 +1264,13 @@ export function FlowCanvas({
           });
         }}
         onPaneClick={() => {
+          setHoveredNodeId(null);
+          setPinnedNodeId(null);
           setPopoverCtx(null);
           onSelectNode(null);
           onSelectEdge(null);
         }}
-        fitView
-        fitViewOptions={{ padding: 0.28, maxZoom: 1.0 }}
+        defaultViewport={flowViewportCache.get(flowId)}
         proOptions={{ hideAttribution: true }}
       >
         <Background
@@ -1153,7 +1282,43 @@ export function FlowCanvas({
           verticalLines={helperGuides.verticalLines}
           horizontalLines={helperGuides.horizontalLines}
         />
-        <Controls showInteractive={false} />
+        <Controls showInteractive={false} showFitView={false}>
+          <ControlButton
+            onClick={() =>
+              void rfInstance?.fitView({
+                padding: 0.28,
+                minZoom: 0.15,
+                maxZoom: 1.0,
+                duration: 200,
+              })
+            }
+            title={tx("适应画布居中", "Fit View")}
+            aria-label={tx("适应画布居中", "Fit View")}
+          >
+            <LocateFixed className="h-3.5 w-3.5" />
+          </ControlButton>
+          {onToggleFullscreen && (
+            <ControlButton
+              onClick={onToggleFullscreen}
+              title={
+                isFullscreen
+                  ? tx("退出全屏 (Esc)", "Exit Fullscreen (Esc)")
+                  : tx("沉浸式全屏画布", "Fullscreen Canvas")
+              }
+              aria-label={
+                isFullscreen
+                  ? tx("退出全屏", "Exit Fullscreen")
+                  : tx("沉浸式全屏画布", "Fullscreen Canvas")
+              }
+            >
+              {isFullscreen ? (
+                <Minimize2 className="h-3.5 w-3.5" />
+              ) : (
+                <Maximize2 className="h-3.5 w-3.5" />
+              )}
+            </ControlButton>
+          )}
+        </Controls>
         {nodes.length > 6 && (
           <MiniMap
             pannable

@@ -35,6 +35,7 @@ import {
   SegmentedControl,
 } from "@/components/ui/primitives";
 import { ResizableWorkspace } from "@/components/ui/ResizableWorkspace";
+import { CanvasEdgeToggle } from "@/components/canvas/CanvasEdgeToggle";
 import { AlgoLegend } from "@/components/graph/AlgoLegend";
 import { GraphToolbar } from "@/components/graph/GraphToolbar";
 import { PathPanel } from "@/components/graph/PathPanel";
@@ -156,6 +157,7 @@ export function XBlueGraphPage({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [activeSubgraph, setActiveSubgraph] = useState("main");
   const [summaryOpen, setSummaryOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
 
   const loadInitialGraph = useCallback(async () => {
     setLoading(true);
@@ -662,77 +664,83 @@ export function XBlueGraphPage({
 
           {/* Resizable Split: Left Canvas & Right Inspector */}
           <div className="flex flex-1 min-h-0 overflow-hidden">
-            <ResizableWorkspace
-              storageKey="axpoint.layout.studio-explorer"
-              panes={[
-                {
-                  id: "canvas",
-                  defaultSize: 70,
-                  minSize: 40,
-                  handleTestId: "resizable-handle-right",
-                  className: "pr-1",
-                  children: (
-                    <div className="flex flex-col flex-1 min-h-0 h-full gap-2.5 overflow-hidden">
-                      <GraphPatternBar
-                        subgraph={activeSubgraph}
-                        onSubgraphChange={setActiveSubgraph}
-                        fallbackNodeTypes={distinctTypes}
-                        fallbackEdgeTypes={knownLinkTypes}
-                        loading={loading}
-                        onApplyPattern={(pat) => void handleApplyPattern(pat)}
-                        onResetPattern={handleResetPattern}
-                      />
+            {(() => {
+              const canvasPaneContent = (
+                <div className="flex flex-col flex-1 min-h-0 h-full gap-2.5 overflow-hidden">
+                  <GraphPatternBar
+                    subgraph={activeSubgraph}
+                    onSubgraphChange={setActiveSubgraph}
+                    fallbackNodeTypes={distinctTypes}
+                    fallbackEdgeTypes={knownLinkTypes}
+                    loading={loading}
+                    onApplyPattern={(pat) => void handleApplyPattern(pat)}
+                    onResetPattern={handleResetPattern}
+                  />
 
-                      <Card className="flex-1 min-h-0 p-0 overflow-hidden relative flex flex-col">
-                        <SigmaCanvas
-                          nodes={visibleNodes}
-                          edges={visibleEdges}
-                          selectedNodeId={selectedNodeId}
-                          highlightedPathIds={highlightedPathIds}
-                          colorMode={colorMode}
-                          colorMetricKey={colorMetricKey}
-                          algoMode={algoMode}
-                          algoEntries={algoEntries}
-                          fa2Running={fa2Running}
-                          isDark={isDark}
-                          onSelectNode={handleSelectNode}
-                          onExpandNode={(id) => void handleExpandOneHop(id)}
-                          onSetPathEndpoint={(role, nodeId) => {
-                            if (role === "from") setPresetPathFrom(nodeId);
-                            else setPresetPathTo(nodeId);
-                            setSideTab("path");
-                          }}
-                        />
-                        {visibleNodes.length === 0 && !loading && (
-                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs text-muted-foreground">
-                            {tx("暂无业务节点", "No business nodes")}
-                          </div>
-                        )}
-                        <AlgoLegend
-                          colorMode={colorMode}
-                          colorMetricKey={colorMetricKey}
-                          distinctTypes={distinctTypes}
-                          algoMode={algoMode}
-                          algoEntries={algoEntries}
-                          isDark={isDark}
-                        />
-                      </Card>
+                  <Card className="flex-1 min-h-0 p-0 overflow-hidden relative flex flex-col">
+                    <SigmaCanvas
+                      nodes={visibleNodes}
+                      edges={visibleEdges}
+                      selectedNodeId={selectedNodeId}
+                      highlightedPathIds={highlightedPathIds}
+                      colorMode={colorMode}
+                      colorMetricKey={colorMetricKey}
+                      algoMode={algoMode}
+                      algoEntries={algoEntries}
+                      fa2Running={fa2Running}
+                      isDark={isDark}
+                      onSelectNode={handleSelectNode}
+                      onExpandNode={(id) => void handleExpandOneHop(id)}
+                      onSetPathEndpoint={(role, nodeId) => {
+                        if (role === "from") setPresetPathFrom(nodeId);
+                        else setPresetPathTo(nodeId);
+                        setSideTab("path");
+                        setInspectorOpen(true);
+                      }}
+                    />
+                    {visibleNodes.length === 0 && !loading && (
+                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none text-xs text-muted-foreground">
+                        {tx("暂无业务节点", "No business nodes")}
+                      </div>
+                    )}
+                    <AlgoLegend
+                      colorMode={colorMode}
+                      colorMetricKey={colorMetricKey}
+                      distinctTypes={distinctTypes}
+                      algoMode={algoMode}
+                      algoEntries={algoEntries}
+                      isDark={isDark}
+                    />
+                    <CanvasEdgeToggle
+                      side="right"
+                      open={inspectorOpen}
+                      topOffsetClass="top-3"
+                      collapsedLabel={tx("详情", "Details")}
+                      label={
+                        inspectorOpen
+                          ? tx("收起详情面板", "Collapse panel")
+                          : tx("展开详情面板", "Expand panel")
+                      }
+                      testId="graph-inspector-edge-toggle-btn"
+                      onToggle={() => setInspectorOpen((v) => !v)}
+                    />
+                  </Card>
 
-                      {/* Collapsible Bottom Summary Drawer */}
-                      <Card
-                        className="shrink-0 overflow-hidden"
-                        data-testid="graph-summary-drawer"
-                      >
-                        <div
-                          className="flex items-center justify-between gap-2 px-3 py-1.5 bg-muted/20 text-xs cursor-pointer select-none"
-                          onClick={() => setSummaryOpen((v) => !v)}
-                        >
-                          <div className="flex items-center gap-2">
-                            <Table2 className="h-3.5 w-3.5 text-xblue" />
-                            <span className="font-semibold">
-                              {tx("汇总表", "Summary")}
-                            </span>
-                            <Badge
+                  {/* Collapsible Bottom Summary Drawer */}
+                  <Card
+                    className="shrink-0 overflow-hidden"
+                    data-testid="graph-summary-drawer"
+                  >
+                    <div
+                      className="flex items-center justify-between gap-2 px-3 py-1.5 bg-muted/20 text-xs cursor-pointer select-none"
+                      onClick={() => setSummaryOpen((v) => !v)}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Table2 className="h-3.5 w-3.5 text-xblue" />
+                        <span className="font-semibold">
+                          {tx("汇总表", "Summary")}
+                        </span>
+                        <Badge
                               variant="outline"
                               data-testid="graph-summary-badge"
                             >
@@ -916,95 +924,118 @@ export function XBlueGraphPage({
                         </Card>
                       )}
                     </div>
-                  ),
-                },
-                {
-                  id: "inspector",
-                  defaultSize: 30,
-                  minSize: 18,
-                  collapsible: true,
-                  className: "pl-1",
-                  children: (
-                    <Card className="h-full min-h-0 p-3 flex flex-col gap-3 overflow-hidden">
-                      <SegmentedControl<SideTab>
-                        className="w-full grid grid-cols-4 shrink-0"
-                        value={sideTab}
-                        onChange={setSideTab}
-                        items={[
-                          {
-                            key: "inspector",
-                            label: tx("详情", "Details"),
-                            icon: <Info className="h-3 w-3" />,
-                            testId: "side-tab-inspector",
-                          },
-                          {
-                            key: "neighbors",
-                            label: tx("扩展", "Expand"),
-                            icon: <Share2 className="h-3 w-3" />,
-                            testId: "side-tab-neighbors",
-                          },
-                          {
-                            key: "path",
-                            label: tx("路径", "Path"),
-                            icon: <Route className="h-3 w-3" />,
-                            testId: "side-tab-path",
-                          },
-                          {
-                            key: "algo",
-                            label: tx("算法", "Algo"),
-                            icon: <Cpu className="h-3 w-3" />,
-                            testId: "side-tab-algo",
-                          },
-                        ]}
-                      />
+                  );
 
-                      <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
-                        {sideTab === "inspector" && (
-                          <NodeInspector
-                            node={selectedNode}
-                            selectedMetric={activeMetric}
-                            onSelectMetric={(m) =>
-                              setActiveMetric((prev) => (prev === m ? null : m))
-                            }
-                            onExpandOneHop={handleExpandOneHop}
-                          />
-                        )}
+              return (
+                <ResizableWorkspace
+                  storageKey="axpoint.layout.studio-explorer"
+                  panes={[
+                    {
+                      id: "canvas",
+                      defaultSize: inspectorOpen ? 70 : 100,
+                      minSize: 40,
+                      handleTestId: "resizable-handle-right",
+                      className: inspectorOpen ? "pr-1" : undefined,
+                      children: canvasPaneContent,
+                    },
+                    ...(inspectorOpen
+                      ? [
+                          {
+                            id: "inspector",
+                            defaultSize: 30,
+                            minSize: 18,
+                            className: "pl-1",
+                            children: (
+                              <Card className="h-full min-h-0 p-3 flex flex-col gap-3 overflow-hidden">
+                                <SegmentedControl<SideTab>
+                                  className="w-full grid grid-cols-4 shrink-0"
+                                  value={sideTab}
+                                  onChange={setSideTab}
+                                  items={[
+                                    {
+                                      key: "inspector",
+                                      label: tx("详情", "Details"),
+                                      icon: <Info className="h-3 w-3" />,
+                                      testId: "side-tab-inspector",
+                                    },
+                                    {
+                                      key: "neighbors",
+                                      label: tx("扩展", "Expand"),
+                                      icon: <Share2 className="h-3 w-3" />,
+                                      testId: "side-tab-neighbors",
+                                    },
+                                    {
+                                      key: "path",
+                                      label: tx("路径", "Path"),
+                                      icon: <Route className="h-3 w-3" />,
+                                      testId: "side-tab-path",
+                                    },
+                                    {
+                                      key: "algo",
+                                      label: tx("算法", "Algo"),
+                                      icon: <Cpu className="h-3 w-3" />,
+                                      testId: "side-tab-algo",
+                                    },
+                                  ]}
+                                />
 
-                        {sideTab === "neighbors" && (
-                          <NeighborExpand
-                            nodes={nodes}
-                            selectedNodeId={selectedNodeId}
-                            knownLinkTypes={knownLinkTypes}
-                            onMergeSubgraph={mergeSubgraphIntoCanvas}
-                          />
-                        )}
+                                <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
+                                  {sideTab === "inspector" && (
+                                    <NodeInspector
+                                      node={selectedNode}
+                                      selectedMetric={activeMetric}
+                                      onSelectMetric={(m) =>
+                                        setActiveMetric((prev) =>
+                                          prev === m ? null : m
+                                        )
+                                      }
+                                      onExpandOneHop={handleExpandOneHop}
+                                    />
+                                  )}
 
-                        {sideTab === "path" && (
-                          <PathPanel
-                            nodes={nodes}
-                            presetFromId={presetPathFrom}
-                            presetToId={presetPathTo}
-                            onPathFound={handlePathFound}
-                            onClearHighlight={() => setHighlightedPathIds([])}
-                          />
-                        )}
+                                  {sideTab === "neighbors" && (
+                                    <NeighborExpand
+                                      nodes={nodes}
+                                      selectedNodeId={selectedNodeId}
+                                      knownLinkTypes={knownLinkTypes}
+                                      onMergeSubgraph={mergeSubgraphIntoCanvas}
+                                    />
+                                  )}
 
-                        {sideTab === "algo" && (
-                          <AlgoPanel
-                            onApplyVisualMapping={(mode, entries) => {
-                              setAlgoMode(mode);
-                              setAlgoEntries(entries);
-                              if (mode !== "NONE") setColorMode("ALGO");
-                            }}
-                            onSelectNodeId={(id) => handleSelectNode(id)}
-                          />
-                        )}
-                      </div>
-                    </Card>
-                  ),
-                },
-              ]}
-            />
+                                  {sideTab === "path" && (
+                                    <PathPanel
+                                      nodes={nodes}
+                                      presetFromId={presetPathFrom}
+                                      presetToId={presetPathTo}
+                                      onPathFound={handlePathFound}
+                                      onClearHighlight={() =>
+                                        setHighlightedPathIds([])
+                                      }
+                                    />
+                                  )}
+
+                                  {sideTab === "algo" && (
+                                    <AlgoPanel
+                                      onApplyVisualMapping={(mode, entries) => {
+                                        setAlgoMode(mode);
+                                        setAlgoEntries(entries);
+                                        if (mode !== "NONE") setColorMode("ALGO");
+                                      }}
+                                      onSelectNodeId={(id) =>
+                                        handleSelectNode(id)
+                                      }
+                                    />
+                                  )}
+                                </div>
+                              </Card>
+                            ),
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
+              );
+            })()}
           </div>
         </>
       ) : (

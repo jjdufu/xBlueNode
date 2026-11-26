@@ -285,6 +285,9 @@ export interface FlowHookSecretResponse {
 
 export interface JsonSchemaPropertySpec {
   type?: string | string[];
+  anyOf?: JsonSchemaPropertySpec[];
+  oneOf?: JsonSchemaPropertySpec[];
+  pattern?: string;
   title?: string;
   description?: string;
   default?: unknown;
@@ -1084,6 +1087,37 @@ const ActionLogRecordSchema: z.ZodType<ActionLogRecord> = z
     };
   });
 
+function parseJsonSchemaPropertySpec(raw: unknown): JsonSchemaPropertySpec {
+  const p = toRecord(raw);
+  const spec: JsonSchemaPropertySpec = {};
+  if (typeof p.type === "string" || Array.isArray(p.type)) {
+    spec.type = p.type as string | string[];
+  }
+  if (Array.isArray(p.anyOf)) {
+    spec.anyOf = p.anyOf.map(parseJsonSchemaPropertySpec);
+  }
+  if (Array.isArray(p.oneOf)) {
+    spec.oneOf = p.oneOf.map(parseJsonSchemaPropertySpec);
+  }
+  if (typeof p.pattern === "string") spec.pattern = p.pattern;
+  if (typeof p.title === "string") spec.title = p.title;
+  if (typeof p.description === "string") spec.description = p.description;
+  if (p.default !== undefined) spec.default = p.default;
+  if (Array.isArray(p.enum)) {
+    spec.enum = p.enum.filter(
+      (item): item is string | number | boolean =>
+        typeof item === "string" ||
+        typeof item === "number" ||
+        typeof item === "boolean"
+    );
+  }
+  if (typeof p.minimum === "number") spec.minimum = p.minimum;
+  if (typeof p.maximum === "number") spec.maximum = p.maximum;
+  if (isPlainRecord(p.items)) spec.items = p.items;
+  if (isPlainRecord(p.properties)) spec.properties = p.properties;
+  return spec;
+}
+
 const OperatorSpecDtoSchema: z.ZodType<OperatorSpecDto> = z
   .unknown()
   .transform((raw): OperatorSpecDto => {
@@ -1093,27 +1127,7 @@ const OperatorSpecDtoSchema: z.ZodType<OperatorSpecDto> = z
     const propsRec = toRecord(schemaRec.properties);
     const properties: Record<string, JsonSchemaPropertySpec> = {};
     for (const [k, v] of Object.entries(propsRec)) {
-      const p = toRecord(v);
-      const spec: JsonSchemaPropertySpec = {};
-      if (typeof p.type === "string" || Array.isArray(p.type)) {
-        spec.type = p.type as string | string[];
-      }
-      if (typeof p.title === "string") spec.title = p.title;
-      if (typeof p.description === "string") spec.description = p.description;
-      if (p.default !== undefined) spec.default = p.default;
-      if (Array.isArray(p.enum)) {
-        spec.enum = p.enum.filter(
-          (item): item is string | number | boolean =>
-            typeof item === "string" ||
-            typeof item === "number" ||
-            typeof item === "boolean"
-        );
-      }
-      if (typeof p.minimum === "number") spec.minimum = p.minimum;
-      if (typeof p.maximum === "number") spec.maximum = p.maximum;
-      if (isPlainRecord(p.items)) spec.items = p.items;
-      if (isPlainRecord(p.properties)) spec.properties = p.properties;
-      properties[k] = spec;
+      properties[k] = parseJsonSchemaPropertySpec(v);
     }
 
     return {

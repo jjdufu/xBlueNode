@@ -5,6 +5,7 @@ import {
   FlaskConical,
   GitBranch,
   LayoutDashboard,
+  Plus,
   ShieldCheck,
 } from "lucide-react";
 import { useI18n } from "@/i18n";
@@ -93,7 +94,7 @@ export function SubgraphMatrixGrid({ subgraphs }: SubgraphMatrixGridProps) {
                 key={sg.slug}
                 data-testid={`subgraph-card-${sg.slug}`}
                 className={cn(
-                  "rounded-md border p-3 flex flex-col justify-between gap-2.5 transition-colors",
+                  "rounded-md border p-2.5 flex flex-col justify-between gap-2 transition-colors",
                   sg.is_dev_sandbox
                     ? "border-dashed border-border bg-muted/25"
                     : "border-border bg-background/60 hover:border-xblue/45"
@@ -101,7 +102,7 @@ export function SubgraphMatrixGrid({ subgraphs }: SubgraphMatrixGridProps) {
               >
                 <div className="space-y-2">
                   <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
+                    <div className="min-w-0" title={`${sg.display_name} (${sg.slug})`}>
                       <div className="flex items-center gap-1.5">
                         <span className="text-xs font-semibold text-foreground truncate">
                           {sg.display_name}
@@ -113,7 +114,7 @@ export function SubgraphMatrixGrid({ subgraphs }: SubgraphMatrixGridProps) {
                         )}
                       </div>
                       <div className="text-[11px] font-mono-tech text-muted-foreground truncate">
-                        {sg.slug} · v{sg.schema_version}
+                        {tx(`发布版本 v${sg.schema_version}`, `Published v${sg.schema_version}`)}
                       </div>
                     </div>
 
@@ -174,12 +175,12 @@ export function SubgraphMatrixGrid({ subgraphs }: SubgraphMatrixGridProps) {
                   )}
                 </div>
 
-                <div className="flex items-center gap-1.5 pt-2 border-t border-border/70">
+                <div className="flex items-center gap-1.5 pt-2 border-t border-border/60">
                   <Button
                     type="button"
-                    variant="outline"
+                    variant="ghost"
                     size="sm"
-                    className="flex-1 h-7 px-2 text-[11px]"
+                    className="flex-1 h-7 px-2 text-[11px] bg-muted/60 hover:bg-muted text-foreground"
                     data-testid={`subgraph-model-btn-${sg.slug}`}
                     onClick={() => void navigate(studioHref)}
                   >
@@ -188,9 +189,9 @@ export function SubgraphMatrixGrid({ subgraphs }: SubgraphMatrixGridProps) {
                   </Button>
                   <Button
                     type="button"
-                    variant="outline"
+                    variant="ghost"
                     size="sm"
-                    className="flex-1 h-7 px-2 text-[11px]"
+                    className="flex-1 h-7 px-2 text-[11px] bg-muted/60 hover:bg-muted text-foreground"
                     data-testid={`subgraph-sim-btn-${sg.slug}`}
                     onClick={() => void navigate(simHref)}
                   >
@@ -199,9 +200,9 @@ export function SubgraphMatrixGrid({ subgraphs }: SubgraphMatrixGridProps) {
                   </Button>
                   <Button
                     type="button"
-                    variant="outline"
+                    variant="ghost"
                     size="sm"
-                    className="flex-1 h-7 px-2 text-[11px]"
+                    className="flex-1 h-7 px-2 text-[11px] bg-muted/60 hover:bg-muted text-foreground"
                     data-testid={`subgraph-view-btn-${sg.slug}`}
                     onClick={() => void navigate(viewHref)}
                   >
@@ -212,6 +213,23 @@ export function SubgraphMatrixGrid({ subgraphs }: SubgraphMatrixGridProps) {
               </div>
             );
           })}
+          {subgraphs.length % 2 === 1 && (
+            <button
+              type="button"
+              onClick={() => void navigate("/studio")}
+              className="rounded-md border border-dashed border-border/80 bg-muted/15 hover:bg-muted/35 hover:border-xblue/45 p-3 flex flex-col items-center justify-center gap-1.5 text-center transition-colors cursor-pointer min-h-[116px]"
+            >
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-full bg-xblue-soft text-xblue">
+                <Plus className="h-4 w-4" />
+              </span>
+              <span className="text-xs font-medium text-foreground">
+                {tx("新建或扩展业务子图", "Create or Extend Subgraph")}
+              </span>
+              <span className="text-[11px] text-muted-foreground">
+                {tx("前往建模工作室设计模型", "Design models in Studio")}
+              </span>
+            </button>
+          )}
         </div>
       )}
     </Card>

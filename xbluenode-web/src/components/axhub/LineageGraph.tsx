@@ -165,7 +165,7 @@ export function LineageGraph({ dataset, connectionNames }: LineageGraphProps) {
   const handleNavigateAsset = useCallback(
     (kind: string, rawId: string) => {
       if (kind === "DASHBOARD") {
-        void navigate(`/view?dashboard=${encodeURIComponent(rawId)}`);
+        void navigate(`/view/${encodeURIComponent(rawId)}`);
       } else if (kind === "NODE_TYPE") {
         void navigate(`/studio?node=${encodeURIComponent(rawId)}`);
       } else if (kind === "FLOW") {
@@ -247,7 +247,9 @@ export function LineageGraph({ dataset, connectionNames }: LineageGraphProps) {
       )}
 
       <div
-        className="h-72 w-full rounded border border-border bg-background overflow-hidden"
+        className={`${
+          graphElements.links.length === 0 ? "h-44" : "h-72"
+        } w-full rounded border border-border bg-background overflow-hidden`}
         data-testid="lineage-graph-canvas"
       >
         <Suspense

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import {
   Activity,
   AlertTriangle,
@@ -99,11 +99,20 @@ export function AxAlertsPage({
     () => initialTab ?? "alerts"
   );
 
+  const [searchParams] = useSearchParams();
+  const deepLinkedAlertId = searchParams.get("alertId");
+
   useEffect(() => {
     if (initialTab) {
       setActiveTab(initialTab);
     }
   }, [initialTab]);
+
+  useEffect(() => {
+    if (deepLinkedAlertId) {
+      setSelectedAlertId(deepLinkedAlertId);
+    }
+  }, [deepLinkedAlertId]);
   const [filters, setFilters] = useState<AlertListQuery>({});
   const [selectedAlertId, setSelectedAlertId] = useState<string | null>(null);
   const [selectedAlertSnapshot, setSelectedAlertSnapshot] =

@@ -635,12 +635,25 @@ export function AssetManagerPanel() {
                     "File (2D/GeoJSON/Icon ≤ 20MB, .glb ≤ 50MB)"
                   )}
                 </label>
-                <input
-                  type="file"
-                  onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
-                  className="block w-full text-xs file:mr-2 file:rounded file:border file:border-border file:bg-muted file:px-2.5 file:py-1 file:text-xs"
-                  data-testid="asset-upload-file"
-                />
+                <label className="flex items-center justify-between gap-2 rounded-md border border-dashed border-border bg-background/60 px-3 py-2 cursor-pointer hover:border-xblue/60 hover:bg-muted/30 transition-colors">
+                  <span className="inline-flex items-center gap-2 min-w-0 text-xs">
+                    <Upload className="h-3.5 w-3.5 text-xblue shrink-0" />
+                    <span className="truncate text-foreground">
+                      {uploadFile
+                        ? uploadFile.name
+                        : tx("选择本地资产文件…", "Choose local asset file…")}
+                    </span>
+                  </span>
+                  <span className="text-[11px] font-medium text-xblue shrink-0">
+                    {tx("浏览", "Browse")}
+                  </span>
+                  <input
+                    type="file"
+                    onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+                    className="sr-only"
+                    data-testid="asset-upload-file"
+                  />
+                </label>
               </div>
 
               <Button type="submit" disabled={uploading} className="w-full">
@@ -734,11 +747,14 @@ export function AssetManagerPanel() {
         )}
 
         {!selectedAsset ? (
-          <div className="py-16 text-center text-muted-foreground">
-            {tx(
-              "从左侧资产列表选定平面图或三维模型以配置节点绑定",
-              "Select a 2D floor plan or 3D model on the left to configure node bindings"
-            )}
+          <div className="flex flex-col items-center justify-center min-h-[320px] gap-2.5 text-center text-muted-foreground">
+            <Layers className="h-8 w-8 text-muted-foreground/45" />
+            <p className="max-w-xs text-xs leading-relaxed">
+              {tx(
+                "从左侧资产列表选定平面图或三维模型以配置节点绑定",
+                "Select a 2D floor plan or 3D model on the left to configure node bindings"
+              )}
+            </p>
           </div>
         ) : selectedAsset.asset_kind === "FLOOR_PLAN_IMAGE" ? (
           <div className="space-y-3">

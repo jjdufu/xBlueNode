@@ -7,16 +7,18 @@ import {
 } from "react";
 import {
   ChevronDown,
+  ChevronsLeft,
+  ChevronsRight,
   KeyRound,
   Languages,
   LogOut,
+  Monitor,
   Moon,
-  PanelLeftClose,
-  PanelLeftOpen,
   Search,
+  Settings,
   ShieldOff,
+  Sparkles,
   Sun,
-  UserCheck,
 } from "lucide-react";
 import {
   createBrowserRouter,
@@ -42,14 +44,15 @@ import {
 } from "@/lib/api";
 import { validateLocalPassword } from "@/components/axguard/logic";
 import { CommandPalette } from "@/components/ui/CommandPalette";
+import { FloatingAiCopilot } from "@/components/ui/FloatingAiCopilot";
 import {
-  Badge,
   Button,
   IconButton,
   Modal,
   PasswordInput,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
+import { toggleFloatingCopilot, useCopilotBridge } from "@/lib/copilotBridge";
 import { useTheme } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import {
@@ -59,6 +62,29 @@ import {
   type ModuleRouteSpec,
 } from "@/modules/registry";
 import { LoginPage } from "@/pages/LoginPage";
+
+function HeaderAiCopilotButton({ tx }: { tx: (zh: string, en: string) => string }) {
+  const bridge = useCopilotBridge();
+  return (
+    <button
+      type="button"
+      data-testid="floating-ai-trigger"
+      onClick={toggleFloatingCopilot}
+      aria-label={tx("打开 AI 助手", "Open AI Copilot")}
+      aria-expanded={bridge.open}
+      title={tx("AI 助手（全局上下文对话）", "AI Copilot (Context-aware)")}
+      className={cn(
+        "inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors cursor-pointer",
+        bridge.open
+          ? "border-xblue bg-xblue-soft text-xblue"
+          : "border-border/80 bg-muted/35 text-foreground hover:bg-muted hover:border-xblue/60"
+      )}
+    >
+      <Sparkles className="h-3.5 w-3.5 text-xblue shrink-0" />
+      <span className="hidden sm:inline">{tx("AI 助手", "AI")}</span>
+    </button>
+  );
+}
 
 function matchesModulePath(spec: ModuleRouteSpec, pathname: string): boolean {
   if (spec.path === "/") {
@@ -91,7 +117,7 @@ function LegacyRouteRedirect({ spec }: { readonly spec: LegacyRedirectSpec }) {
 function ShellLayout() {
   const location = useLocation();
   const navigate = useNavigate();
-  const { isDark, toggleTheme } = useTheme();
+  const { preference, toggleTheme } = useTheme();
   const { isZh, toggleLocale, tx, tEnum } = useI18n();
 
   const token = useSyncExternalStore(
@@ -108,9 +134,56 @@ function ShellLayout() {
   const [bootRefreshDone, setBootRefreshDone] = useState(
     () => getAccessToken() !== null
   );
-  const [userSidebarOverride, setUserSidebarOverride] = useState<
-    boolean | null
-  >(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("axpoint.sidebar.collapsed");
+      if (saved === "1") return true;
+      if (saved === "0") return false;
+    } catch {
+      // ignore
+    }
+    return false;
+  });
+  const toggleSidebarCollapsed = () => {
+    setSidebarCollapsed((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("axpoint.sidebar.collapsed", next ? "1" : "0");
+      } catch {
+        // ignore
+      }
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === "b") {
+        ev.preventDefault();
+        toggleSidebarCollapsed();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    let saved: string | null = null;
+    try {
+      saved = localStorage.getItem("axpoint.sidebar.collapsed");
+    } catch {
+      // ignore
+    }
+    if (saved === "1" || saved === "0") return;
+    const matched = MODULE_REGISTRY.find((m) =>
+      matchesModulePath(m, location.pathname)
+    );
+    const isNarrow =
+      typeof window !== "undefined" && window.innerWidth < 1440;
+    if (isNarrow && (matched?.autoCollapseSidebar || matched?.fullBleed)) {
+      setSidebarCollapsed(true);
+    }
+  }, [location.pathname]);
   const [cmdkOpen, setCmdkOpen] = useState(false);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
@@ -152,7 +225,6 @@ function ShellLayout() {
   }, [token, bootRefreshDone, cachedMe]);
 
   useEffect(() => {
-    setUserSidebarOverride(null);
     setAccountMenuOpen(false);
   }, [location.pathname]);
 
@@ -211,14 +283,11 @@ function ShellLayout() {
 
   const navItems = permittedModules.filter((m) => !m.sidebarHidden);
   const primaryNavItems = navItems.filter((m) => m.group !== "governance");
-  const governanceNavItems = navItems.filter((m) => m.group === "governance");
+  const canOpenSettings = permittedModules.some((m) => m.key === "governance");
 
   const activeModule = permittedModules.find(
     (m) => !m.sidebarHidden && matchesModulePath(m, location.pathname)
   ) ?? permittedModules.find((m) => matchesModulePath(m, location.pathname));
-
-  const sidebarCollapsed =
-    userSidebarOverride ?? Boolean(activeModule?.autoCollapseSidebar);
 
   const searchParams = new URLSearchParams(location.search);
   const isImmersive = Boolean(
@@ -283,6 +352,13 @@ function ShellLayout() {
 
   const primaryRole = cachedMe?.roles?.[0] ?? "";
   const isFullBleed = Boolean(activeModule?.fullBleed);
+  const userInitial = (cachedMe?.username?.trim().charAt(0) || "A").toUpperCase();
+  const themeTooltip =
+    preference === "auto"
+      ? tx("主题：跟随系统（点击切换）", "Theme: Auto (click to switch)")
+      : preference === "dark"
+        ? tx("主题：暗色（点击切换）", "Theme: Dark (click to switch)")
+        : tx("主题：亮色（点击切换）", "Theme: Light (click to switch)");
 
   const renderSidebarLink = (item: ModuleRouteSpec) => {
     const Icon = item.icon;
@@ -322,118 +398,116 @@ function ShellLayout() {
         isFullBleed ? "h-screen overflow-hidden" : "min-h-screen"
       )}
     >
-      {/* Global Sticky Top Header */}
+      {/* Global Sticky Top Header: 3-zone layout (Left Brand + SidebarTrigger | Centered Search | Right Actions) */}
       <header
         data-testid="app-top-header"
-        className="sticky top-0 z-30 h-12 border-b border-border bg-card/95 backdrop-blur-xs flex items-center justify-between shrink-0"
+        className="sticky top-0 z-30 h-12 border-b border-border bg-card/95 backdrop-blur-xs flex items-center justify-between gap-2 shrink-0"
       >
-        {/* Top-Left Brand Zone: Strictly aligned with left sidebar width */}
+        {/* Top-Left Brand Zone + Fixed-Position Minimal Sidebar Toggle */}
         <div className="h-full flex items-center shrink-0">
           <div
             className={cn(
-              "h-full flex items-center justify-between border-r border-border transition-all shrink-0",
-              sidebarCollapsed ? "w-14 px-2 justify-center" : "w-52 px-3.5"
+              "h-full flex items-center border-r border-border transition-all shrink-0",
+              sidebarCollapsed ? "px-3.5 justify-start" : "w-52 justify-start px-3.5"
             )}
           >
-            {!sidebarCollapsed && (
-              <div className="flex items-center gap-2 min-w-0 select-none">
-                <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-xblue text-white text-xs font-bold tracking-tight shrink-0">
-                  xB
-                </span>
-                <span className="text-[15px] font-semibold tracking-tight text-foreground truncate">
-                  xBlueNode
-                </span>
-              </div>
-            )}
-
-            <IconButton
-              size="sm"
-              onClick={() => setUserSidebarOverride(!sidebarCollapsed)}
-              aria-label={
-                sidebarCollapsed
-                  ? tx("展开导航栏", "Expand sidebar")
-                  : tx("收起导航栏", "Collapse sidebar")
-              }
-              title={
-                sidebarCollapsed
-                  ? tx("展开导航栏", "Expand sidebar")
-                  : tx("收起导航栏", "Collapse sidebar")
-              }
-            >
-              {sidebarCollapsed ? (
-                <PanelLeftOpen className="h-4 w-4" />
-              ) : (
-                <PanelLeftClose className="h-4 w-4" />
-              )}
-            </IconButton>
-          </div>
-
-          {sidebarCollapsed && (
-            <div className="flex items-center gap-2 pl-3 select-none">
-              <span className="inline-flex h-6 w-6 items-center justify-center rounded-md bg-xblue text-white text-xs font-bold tracking-tight shrink-0">
+            <div className="flex items-center gap-2 min-w-0 select-none">
+              <span className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-xblue text-white text-xs font-bold tracking-tight shrink-0">
                 xB
               </span>
-              <span className="text-[15px] font-semibold tracking-tight text-foreground">
+              <span className="text-[15px] font-semibold tracking-tight text-foreground truncate">
                 xBlueNode
               </span>
             </div>
-          )}
+          </div>
+
+          <div className="pl-2 flex items-center">
+            <IconButton
+              size="sm"
+              data-testid="sidebar-collapse-btn"
+              onClick={toggleSidebarCollapsed}
+              className="text-muted-foreground hover:text-foreground"
+              aria-label={
+                sidebarCollapsed
+                  ? tx("展开导航栏 (⌘B)", "Expand sidebar (⌘B)")
+                  : tx("收起导航栏 (⌘B)", "Collapse sidebar (⌘B)")
+              }
+              title={
+                sidebarCollapsed
+                  ? tx("展开导航栏 (⌘B)", "Expand sidebar (⌘B)")
+                  : tx("收起导航栏 (⌘B)", "Collapse sidebar (⌘B)")
+              }
+            >
+              {sidebarCollapsed ? (
+                <ChevronsRight className="h-4 w-4" />
+              ) : (
+                <ChevronsLeft className="h-4 w-4" />
+              )}
+            </IconButton>
+          </div>
         </div>
 
-        {/* Top-Right: Command Palette Trigger + Preferences + Unified Account Dropdown */}
-        <div className="flex items-center gap-1.5 px-3 md:px-4 ml-auto shrink-0">
+        {/* Top-Center: Global Command Palette Trigger */}
+        <div className="flex-1 flex justify-center px-2 md:px-4 min-w-0">
           <button
             type="button"
             data-testid="global-cmdk-trigger"
             onClick={() => setCmdkOpen(true)}
             aria-label={tx("打开命令面板", "Open command palette")}
-            className="inline-flex h-8 items-center gap-2 rounded-lg border border-border/80 bg-muted/40 px-2.5 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
+            className="inline-flex h-8 w-full max-w-md items-center justify-between gap-2 rounded-lg border border-border/80 bg-muted/40 px-3 text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors cursor-pointer"
           >
-            <Search className="h-3.5 w-3.5 text-xblue shrink-0" />
-            <span className="hidden sm:inline">
-              {tx("搜索视图、模型与图表…", "Search views, models, charts…")}
+            <span className="inline-flex items-center gap-2 min-w-0">
+              <Search className="h-3.5 w-3.5 text-xblue shrink-0" />
+              <span className="hidden sm:inline truncate">
+                {tx(
+                  "搜索视图、模型、数据集、指标与看板…",
+                  "Search views, models, datasets, metrics, cockpits…"
+                )}
+              </span>
             </span>
-            <kbd className="rounded border border-border bg-card px-1.5 py-0.5 text-[10px] font-mono-tech text-muted-foreground">
+            <kbd className="rounded border border-border bg-card px-1.5 py-0.5 text-[10px] font-mono-tech text-muted-foreground shrink-0">
               ⌘K
             </kbd>
           </button>
+        </div>
 
-          <button
-            type="button"
+        {/* Top-Right: AI Copilot + Language Icon + Theme Tri-State Icon + Compact User Avatar */}
+        <div className="flex items-center gap-1.5 px-3 md:px-4 shrink-0">
+          <HeaderAiCopilotButton tx={tx} />
+
+          <IconButton
             data-testid="locale-toggle-btn"
             onClick={toggleLocale}
-            aria-label={tx("切换语言", "Switch language")}
-            title={tx("切换为 English", "Switch to 简体中文")}
-            className="inline-flex h-8 items-center gap-1 rounded-md px-2 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors shrink-0 cursor-pointer"
+            aria-label={tx(
+              "当前语言：中文（点击切换 English）",
+              "Language: English (Switch to 中文)"
+            )}
+            title={tx(
+              "当前语言：中文（点击切换 English）",
+              "Language: English (Switch to 中文)"
+            )}
           >
-            <Languages className="h-3.5 w-3.5 text-xblue" />
-            <span>{isZh ? "中文" : "EN"}</span>
-          </button>
+            <Languages className="h-4 w-4 text-xblue" />
+          </IconButton>
 
           <IconButton
             data-testid="theme-toggle-btn"
             onClick={toggleTheme}
-            aria-label={
-              isDark
-                ? tx("切换亮色模式", "Switch to light mode")
-                : tx("切换暗色模式", "Switch to dark mode")
-            }
-            title={
-              isDark
-                ? tx("亮色模式", "Light mode")
-                : tx("暗色模式", "Dark mode")
-            }
+            aria-label={themeTooltip}
+            title={themeTooltip}
           >
-            {isDark ? (
-              <Sun className="h-4 w-4" />
-            ) : (
+            {preference === "auto" ? (
+              <Monitor className="h-4 w-4 text-xblue" />
+            ) : preference === "dark" ? (
               <Moon className="h-4 w-4" />
+            ) : (
+              <Sun className="h-4 w-4" />
             )}
           </IconButton>
 
           <div className="h-4 w-px bg-border mx-0.5" />
 
-          {/* Unified User Account Dropdown */}
+          {/* Unified Compact User Avatar Dropdown */}
           <div ref={accountMenuRef} className="relative">
             <button
               type="button"
@@ -441,29 +515,16 @@ function ShellLayout() {
               aria-expanded={accountMenuOpen}
               aria-haspopup="menu"
               onClick={() => setAccountMenuOpen((v) => !v)}
-              className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs hover:bg-muted transition-colors cursor-pointer"
+              className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border/70 bg-muted/35 pl-1 pr-2 text-xs hover:bg-muted transition-colors cursor-pointer"
             >
-              <UserCheck className="h-3.5 w-3.5 text-xblue shrink-0" />
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-xblue-soft text-xblue text-[11px] font-semibold shrink-0">
+                {userInitial}
+              </span>
               <span
                 data-testid="shell-user-badge"
-                className="inline-flex items-center gap-1.5"
+                className="hidden sm:inline font-medium max-w-[96px] truncate"
               >
-                <span className="font-medium">
-                  {cachedMe?.username ?? tx("账号", "Account")}
-                </span>
-                {cachedMe?.dept_id && (
-                  <span className="hidden sm:inline text-muted-foreground">
-                    · {cachedMe.dept_id}
-                  </span>
-                )}
-                {primaryRole && (
-                  <Badge
-                    variant="xblue"
-                    className="hidden md:inline-flex ml-0.5 text-[11px]"
-                  >
-                    {tEnum(primaryRole)}
-                  </Badge>
-                )}
+                {cachedMe?.username ?? tx("账号", "Account")}
               </span>
               <ChevronDown
                 className={cn(
@@ -476,7 +537,7 @@ function ShellLayout() {
             {accountMenuOpen && (
               <div
                 role="menu"
-                className="absolute right-0 top-full mt-1.5 w-52 rounded-lg border border-border bg-card text-card-foreground shadow-lg py-1 z-50"
+                className="absolute right-0 top-full mt-1.5 w-56 rounded-lg border border-border bg-card text-card-foreground shadow-lg py-1 z-50"
               >
                 {cachedMe && (
                   <div className="px-3 py-2 border-b border-border space-y-0.5">
@@ -496,6 +557,21 @@ function ShellLayout() {
                 )}
 
                 <div className="p-1 space-y-0.5">
+                  {canOpenSettings && (
+                    <button
+                      type="button"
+                      role="menuitem"
+                      data-testid="shell-settings-menu-btn"
+                      onClick={() => {
+                        setAccountMenuOpen(false);
+                        void navigate("/settings");
+                      }}
+                      className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-xs text-foreground hover:bg-muted transition-colors cursor-pointer"
+                    >
+                      <Settings className="h-3.5 w-3.5 text-xblue" />
+                      <span>{tx("系统设置", "Settings")}</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     role="menuitem"
@@ -552,7 +628,7 @@ function ShellLayout() {
           data-testid="app-sidebar"
           className={cn(
             "sticky top-12 h-[calc(100vh-3rem)] border-r border-border bg-card/35 flex flex-col justify-between shrink-0 transition-all overflow-y-auto",
-            sidebarCollapsed ? "w-14 px-2 py-2.5" : "w-52 px-2.5 py-3"
+            sidebarCollapsed ? "w-16 px-2 py-2.5" : "w-52 px-2.5 py-3"
           )}
         >
           <nav
@@ -563,26 +639,20 @@ function ShellLayout() {
           </nav>
 
           <div className="mt-3 space-y-2">
-            {governanceNavItems.length > 0 && (
-              <div
-                data-testid="governance-domain-section"
-                className="pt-2 border-t border-border/60 space-y-0.5"
-              >
-                {governanceNavItems.map((item) => renderSidebarLink(item))}
-              </div>
-            )}
-
             {/* Subtle version anchor at sidebar bottom */}
             <div
+              title={`xBlueNode v${__APP_VERSION__}`}
               className={cn(
                 "pt-2 border-t border-border/60 text-[11px] text-muted-foreground/70 select-none",
                 sidebarCollapsed
-                  ? "text-center font-mono-tech"
+                  ? "flex items-center justify-center font-mono-tech"
                   : "px-2.5 flex items-center justify-between"
               )}
             >
               {sidebarCollapsed ? (
-                <span>v{__APP_VERSION__}</span>
+                <span className="text-[10px] font-mono-tech tracking-tight text-muted-foreground">
+                  v{__APP_VERSION__.split(".").slice(0, 2).join(".")}
+                </span>
               ) : (
                 <>
                   <span>xBlueNode</span>
@@ -598,7 +668,7 @@ function ShellLayout() {
             "flex-1 min-w-0 w-full",
             isFullBleed
               ? "h-[calc(100vh-3rem)] overflow-hidden flex flex-col p-2.5 md:p-3"
-              : "max-w-[1760px] mx-auto p-4 md:p-6"
+              : "max-w-[1920px] mx-auto p-4 md:p-6"
           )}
         >
           <Outlet />
@@ -606,6 +676,8 @@ function ShellLayout() {
       </div>
 
       <CommandPalette open={cmdkOpen} onOpenChange={setCmdkOpen} />
+
+      <FloatingAiCopilot isFullBleed={isFullBleed} />
 
       {/* Password Change Modal */}
       <Modal

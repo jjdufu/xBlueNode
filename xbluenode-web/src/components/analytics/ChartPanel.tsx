@@ -52,6 +52,14 @@ const TEMPORAL_DATA_TYPES: ReadonlySet<DataType> = new Set([
 const PREFERRED_MEASURE_RE =
   /amount|total|revenue|value|qty|quantity|price|cost|profit|sales|paid|balance|inventory|demand|output|count|cnt|sum|avg|score|metric|ratio|rate/i;
 
+function formatAxisCategoryLabel(raw: string): string {
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/.exec(
+    raw.trim()
+  );
+  if (!isoMatch) return raw;
+  return `${isoMatch[2]}-${isoMatch[3]} ${isoMatch[4]}:${isoMatch[5]}`;
+}
+
 function isIdentifierLikeColumn(colName: string): boolean {
   const lower = colName.toLowerCase().trim();
   return (
@@ -301,7 +309,8 @@ export function ChartPanel({
     const slicedRows = rows.slice(0, 50);
     const categories = slicedRows.map((r, i) => {
       const raw = xField ? r[xField] : i + 1;
-      return raw === null || raw === undefined ? "NULL" : String(raw);
+      if (raw === null || raw === undefined) return "NULL";
+      return formatAxisCategoryLabel(String(raw));
     });
     const values = slicedRows.map((r) => {
       const raw = yField ? r[yField] : 0;
@@ -311,26 +320,48 @@ export function ChartPanel({
     let baseOption: Record<string, unknown>;
 
     if (activeKind === "PIE_CHART") {
+      const rawItems = categories.map((name, idx) => ({
+        name: name.length > 22 ? `${name.slice(0, 19)}…` : name,
+        value: values[idx] ?? 0,
+      }));
+      const sorted = [...rawItems].sort((a, b) => b.value - a.value);
+      const pieItems =
+        sorted.length > 6
+          ? [
+              ...sorted.slice(0, 5),
+              {
+                name: tx("其他", "Others"),
+                value: sorted.slice(5).reduce((acc, it) => acc + it.value, 0),
+              },
+            ]
+          : sorted;
+
       baseOption = {
         color: palette,
         tooltip: {
           trigger: "item",
         },
         legend: {
-          bottom: 0,
+          type: "scroll",
+          bottom: 2,
+          left: 8,
+          right: 8,
           textStyle: { color: surface.subtext, fontSize: 10 },
         },
         series: [
           {
             name: yField || tx("指标", "Value"),
             type: "pie",
-            radius: ["40%", "68%"],
-            center: ["50%", "44%"],
-            label: { color: surface.text, fontSize: 10 },
-            data: categories.slice(0, 16).map((name, idx) => ({
-              name,
-              value: values[idx] ?? 0,
-            })),
+            radius: ["34%", "56%"],
+            center: ["50%", "42%"],
+            label: {
+              color: surface.text,
+              fontSize: 10,
+              overflow: "truncate",
+              width: 90,
+            },
+            labelLine: { length: 8, length2: 6 },
+            data: pieItems,
           },
         ],
       };
@@ -339,8 +370,9 @@ export function ChartPanel({
         grid: {
           top: 24,
           right: 16,
-          bottom: 36,
-          left: 52,
+          bottom: 28,
+          left: 28,
+          containLabel: true,
         },
         tooltip: {
           trigger: "axis",
@@ -353,6 +385,8 @@ export function ChartPanel({
             color: surface.subtext,
             fontSize: 10,
             interval: "auto",
+            hideOverlap: true,
+            alignMinLabel: "left",
             rotate: categories.length > 10 ? 20 : 0,
           },
         },
@@ -426,56 +460,21 @@ export function ChartPanel({
       data-testid={testId}
     >
       {/* Chart Header & Switcher */}
-      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border bg-muted/25 px-3 py-2 text-xs">
-        <div className="flex items-center gap-2 min-w-0">
-          <Sparkles className="h-3.5 w-3.5 text-xblue shrink-0" />
-          <span className="font-medium truncate">
-            {suggestion?.title || tx("图表分析", "Chart View")}
-          </span>
-          {hasData && (
-            <Badge variant="xblue" data-testid="chart-recommended-badge">
-              {tx("推荐", "Suggested")} {tEnum(recommendedKind)}
-            </Badge>
-          )}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5">
-          {hasData &&
-            columns.length > 1 &&
-            (activeKind === "BAR_CHART" ||
-              activeKind === "LINE_CHART" ||
-              activeKind === "PIE_CHART") && (
-              <div className="flex items-center gap-1 text-[11px] shrink-0">
-                <span className="text-muted-foreground">X:</span>
-                <Select
-                  value={xField}
-                  onChange={(e) => setManualXField(e.target.value)}
-                  className="h-7 max-w-[128px] px-2 font-mono-tech text-[11px]"
-                  data-testid="chart-x-select"
-                >
-                  {columns.map((c) => (
-                    <option key={c.name} value={c.name}>
-                      {c.name}
-                    </option>
-                  ))}
-                </Select>
-                <span className="text-muted-foreground ml-1">Y:</span>
-                <Select
-                  value={yField}
-                  onChange={(e) => setManualYField(e.target.value)}
-                  className="h-7 max-w-[128px] px-2 font-mono-tech text-[11px]"
-                  data-testid="chart-y-select"
-                >
-                  {columns.map((c) => (
-                    <option key={c.name} value={c.name}>
-                      {c.name}
-                    </option>
-                  ))}
-                </Select>
-              </div>
+      <div className="shrink-0 border-b border-border bg-muted/25 px-3 py-2 text-xs space-y-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <Sparkles className="h-3.5 w-3.5 text-xblue shrink-0" />
+            <span className="font-medium truncate">
+              {suggestion?.title || tx("图表分析", "Chart View")}
+            </span>
+            {hasData && (
+              <Badge variant="xblue" data-testid="chart-recommended-badge">
+                {tx("推荐", "Suggested")} {tEnum(recommendedKind)}
+              </Badge>
             )}
+          </div>
 
-          <div className="inline-flex items-center rounded border border-border bg-background p-0.5 overflow-x-auto max-w-full">
+          <div className="inline-flex items-center rounded border border-border bg-background p-0.5 shrink-0">
             {chartKindOptions.map((opt) => {
               const Icon = opt.icon;
               const selected = activeKind === opt.kind;
@@ -498,6 +497,41 @@ export function ChartPanel({
             })}
           </div>
         </div>
+
+        {hasData &&
+          columns.length > 1 &&
+          (activeKind === "BAR_CHART" ||
+            activeKind === "LINE_CHART" ||
+            activeKind === "PIE_CHART") && (
+            <div className="flex items-center gap-1.5 text-[11px]">
+              <span className="text-muted-foreground">X:</span>
+              <Select
+                value={xField}
+                onChange={(e) => setManualXField(e.target.value)}
+                className="h-7 max-w-[140px] px-2 font-mono-tech text-[11px]"
+                data-testid="chart-x-select"
+              >
+                {columns.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </Select>
+              <span className="text-muted-foreground ml-1">Y:</span>
+              <Select
+                value={yField}
+                onChange={(e) => setManualYField(e.target.value)}
+                className="h-7 max-w-[140px] px-2 font-mono-tech text-[11px]"
+                data-testid="chart-y-select"
+              >
+                {columns.map((c) => (
+                  <option key={c.name} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          )}
       </div>
 
       {/* Chart Content */}

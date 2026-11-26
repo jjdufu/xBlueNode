@@ -90,8 +90,8 @@ export function GoalDeadlineBanner({
                   <Clock className="h-3.5 w-3.5" />
                   {deadlineReport.earliest_deadline_step >= 0
                     ? tx(
-                        `最晚干预 0..=${deadlineReport.earliest_deadline_step} 步`,
-                        `Deadline 0..=${deadlineReport.earliest_deadline_step}`
+                        `最晚第 0～${deadlineReport.earliest_deadline_step} 步干预`,
+                        `Intervene steps 0–${deadlineReport.earliest_deadline_step}`
                       )
                     : tx(
                         `传导滞后超期 (${deadlineReport.earliest_deadline_step})`,

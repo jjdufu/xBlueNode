@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Graph from "graphology";
 import forceAtlas2 from "graphology-layout-forceatlas2";
 import FA2Layout from "graphology-layout-forceatlas2/worker";
-import { Maximize2, Minimize2, RotateCcw, ZoomIn, ZoomOut } from "lucide-react";
+import { LocateFixed, Maximize2, Minimize2, ZoomIn, ZoomOut } from "lucide-react";
 import Sigma, { DEFAULT_STYLES } from "sigma";
 import { useI18n } from "@/i18n";
 import { useTheme } from "@/lib/theme";
@@ -105,6 +105,28 @@ const NODE_TYPE_ZH_MAP: Readonly<Record<string, string>> = {
   doc: "知识文档",
   entity: "知识实体",
   para: "正文段落",
+  customsport: "通关口岸",
+  regionalhub: "区域分拨仓",
+  waferfab: "晶圆制造厂",
+  lithotool: "关键光刻机",
+  autooemorder: "车企保供订单",
+  specialtyvendor: "特种材料商",
+  waferlotevent: "晶圆批次事件",
+  hospitalcampus: "医疗院区",
+  clinicaldept: "急诊与重症科室",
+  ambulanceunit: "急救转运车组",
+  lifesupportunit: "生命支持设备",
+  wardcapacitycube: "院区周转汇总块",
+  corpgroup: "集团系主体",
+  legalentity: "关联法人企业",
+  creditfacility: "授信借据明细",
+  beneficialowner: "实际控制人",
+  industryexposure: "行业敞口汇总",
+  substation: "变电站",
+  feederline: "配电馈线",
+  transformer: "主变压器",
+  criticalload: "重点负荷用户",
+  distributedgen: "分布式电源",
 };
 
 const EDGE_TYPE_ZH_MAP: Readonly<Record<string, string>> = {
@@ -475,12 +497,78 @@ export function SigmaCanvas({
         iterations: 100,
         settings: {
           ...inferred,
-          gravity: 0.55,
-          scalingRatio: 18,
+          gravity: 0.25,
+          scalingRatio: 42,
+          barnesHutOptimize: true,
           strongGravityMode: false,
           slowDown: 2,
         },
       });
+
+      // Separate disconnected components into compact non-overlapping grid cells
+      const visited = new Set<string>();
+      const components: string[][] = [];
+      for (const nid of graph.nodes()) {
+        if (visited.has(nid)) continue;
+        const queue = [nid];
+        const comp: string[] = [];
+        visited.add(nid);
+        while (queue.length > 0) {
+          const cur = queue.shift();
+          if (!cur) break;
+          comp.push(cur);
+          for (const nb of graph.neighbors(cur)) {
+            if (!visited.has(nb)) {
+              visited.add(nb);
+              queue.push(nb);
+            }
+          }
+        }
+        components.push(comp);
+      }
+
+      if (components.length > 1) {
+        components.sort((a, b) => b.length - a.length);
+        const cols = Math.max(2, Math.ceil(Math.sqrt(components.length)));
+        let cursorX = 0;
+        let cursorY = 0;
+        let rowMaxH = 0;
+        const cellGap = 140;
+
+        components.forEach((comp, cIdx) => {
+          let minX = Infinity;
+          let maxX = -Infinity;
+          let minY = Infinity;
+          let maxY = -Infinity;
+          for (const nid of comp) {
+            const nx = Number(graph.getNodeAttribute(nid, "x") ?? 0);
+            const ny = Number(graph.getNodeAttribute(nid, "y") ?? 0);
+            minX = Math.min(minX, nx);
+            maxX = Math.max(maxX, nx);
+            minY = Math.min(minY, ny);
+            maxY = Math.max(maxY, ny);
+          }
+          const spanW = Math.max(100, maxX - minX);
+          const spanH = Math.max(100, maxY - minY);
+          const ox = cursorX - minX;
+          const oy = cursorY - minY;
+          for (const nid of comp) {
+            const nx = Number(graph.getNodeAttribute(nid, "x") ?? 0);
+            const ny = Number(graph.getNodeAttribute(nid, "y") ?? 0);
+            graph.setNodeAttribute(nid, "x", nx + ox);
+            graph.setNodeAttribute(nid, "y", ny + oy);
+          }
+          rowMaxH = Math.max(rowMaxH, spanH);
+          if ((cIdx + 1) % cols === 0) {
+            cursorX = 0;
+            cursorY += rowMaxH + cellGap;
+            rowMaxH = 0;
+          } else {
+            cursorX += spanW + cellGap;
+          }
+        });
+      }
+
       graph.forEachNode((id, attrs) => {
         if (typeof attrs.x === "number" && typeof attrs.y === "number") {
           positionsRef.current.set(id, { x: attrs.x, y: attrs.y });
@@ -539,8 +627,8 @@ export function SigmaCanvas({
           autoRescaleContent: "labels",
           renderLabels: true,
           renderEdgeLabels: false,
-          labelDensity: 0.35,
-          labelGridCellSize: 96,
+          labelDensity: 0.22,
+          labelGridCellSize: 80,
           labelRenderedSizeThreshold: 6,
           stagePadding: 48,
           allowInvalidContainer: true,
@@ -667,8 +755,9 @@ export function SigmaCanvas({
         const fa2 = new FA2Layout(graph, {
           settings: {
             ...inferred,
-            gravity: 0.55,
-            scalingRatio: 18,
+            gravity: 0.12,
+            scalingRatio: 90,
+            barnesHutOptimize: true,
             strongGravityMode: false,
           },
         });
@@ -892,7 +981,7 @@ export function SigmaCanvas({
     if (sigmaRef.current) {
       void sigmaRef.current.getCamera().zoomIn({ duration: 180 });
     } else {
-      fallbackZoomRef.current = Math.min(3, fallbackZoomRef.current * 1.25);
+      fallbackZoomRef.current = Math.min(4, fallbackZoomRef.current * 1.25);
       drawFallbackRef.current?.();
     }
   };
@@ -901,7 +990,7 @@ export function SigmaCanvas({
     if (sigmaRef.current) {
       void sigmaRef.current.getCamera().zoomOut({ duration: 180 });
     } else {
-      fallbackZoomRef.current = Math.max(0.5, fallbackZoomRef.current / 1.25);
+      fallbackZoomRef.current = Math.max(0.25, fallbackZoomRef.current / 1.25);
       drawFallbackRef.current?.();
     }
   };
@@ -983,6 +1072,15 @@ export function SigmaCanvas({
         <canvas
           ref={fallbackCanvasRef}
           className={cn("w-full h-full block", cursorClass)}
+          onWheel={(e) => {
+            e.preventDefault();
+            const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+            fallbackZoomRef.current = Math.min(
+              4,
+              Math.max(0.25, fallbackZoomRef.current * factor)
+            );
+            drawFallbackRef.current?.();
+          }}
           onMouseDown={(e) => {
             if (e.button !== 0) return;
             const { hit } = hitTestFallbackCanvas(e.clientX, e.clientY);
@@ -1107,7 +1205,7 @@ export function SigmaCanvas({
           aria-label={tx("适应画布", "Fit view")}
           className="inline-flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted cursor-pointer"
         >
-          <RotateCcw className="h-3.5 w-3.5" />
+          <LocateFixed className="h-3.5 w-3.5" />
         </button>
         <button
           type="button"

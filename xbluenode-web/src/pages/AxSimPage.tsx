@@ -174,7 +174,7 @@ export function AxSimPage() {
         Array.isArray(sb.scope.type_names) &&
         sb.scope.type_names.length > 0
       ) {
-        parts.push(sb.scope.type_names.join(","));
+        parts.push(sb.scope.type_names.join(" · "));
       }
       return parts.length > 0
         ? parts.join(" · ")

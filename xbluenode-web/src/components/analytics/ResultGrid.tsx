@@ -36,14 +36,29 @@ const NUMERIC_TYPES: ReadonlySet<DataType> = new Set([
   "DECIMAL",
 ]);
 
-function formatCellValue(value: unknown): { text: string; isNull: boolean } {
+function formatCellValue(
+  value: unknown,
+  dataType?: string
+): { text: string; isNull: boolean } {
   if (value === null || value === undefined) {
     return { text: "NULL", isNull: true };
   }
+  if (typeof value === "number") {
+    if (dataType === "DECIMAL") {
+      return { text: value.toFixed(2), isNull: false };
+    }
+    return { text: String(value), isNull: false };
+  }
   if (typeof value === "string") {
+    if (dataType === "DECIMAL" && /^-?\d+(\.\d+)?$/.test(value.trim())) {
+      const parsed = Number(value);
+      if (Number.isFinite(parsed)) {
+        return { text: parsed.toFixed(2), isNull: false };
+      }
+    }
     return { text: value, isNull: false };
   }
-  if (typeof value === "number" || typeof value === "boolean") {
+  if (typeof value === "boolean") {
     return { text: String(value), isNull: false };
   }
   try {
@@ -290,13 +305,18 @@ export function ResultGrid({
                           {rowIndex + 1}
                         </td>
                         {columns.map((col) => {
-                          const formatted = formatCellValue(row[col.name]);
+                          const formatted = formatCellValue(
+                            row[col.name],
+                            col.data_type
+                          );
                           const isNumeric = NUMERIC_TYPES.has(col.data_type);
                           return (
                             <td
                               key={col.name}
                               className={`border-r border-border last:border-r-0 px-3 py-1 whitespace-nowrap max-w-[320px] truncate ${
-                                isNumeric || col.masked ? "font-mono-tech" : ""
+                                isNumeric || col.masked
+                                  ? "font-mono-tech tabular-nums"
+                                  : ""
                               } ${isNumeric ? "text-right" : "text-left"} ${
                                 formatted.isNull
                                   ? "italic text-muted-foreground/70"

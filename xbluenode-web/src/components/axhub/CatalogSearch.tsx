@@ -64,11 +64,7 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
     }
   }, []);
 
-  useEffect(() => {
-    void loadGlossary();
-  }, [loadGlossary]);
-
-  const executeSearch = async (q: string) => {
+  const executeSearch = useCallback(async (q: string) => {
     setSearching(true);
     setErrorMsg(null);
     setSearchedOnce(true);
@@ -80,7 +76,12 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
     } finally {
       setSearching(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    void loadGlossary();
+    void executeSearch("");
+  }, [executeSearch, loadGlossary]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -171,7 +172,7 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
             {hits.length === 0 ? (
               <EmptyState title={tx("无匹配资产", "No matching assets")} />
             ) : (
-              <div className="space-y-2">
+              <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1">
                 {hits.map((hit) => (
                   <div
                     key={hit.id}
@@ -267,32 +268,47 @@ export function CatalogSearch({ onSelectDataset }: CatalogSearchProps) {
 
         <form
           onSubmit={(e) => void handleCreateTerm(e)}
-          className="grid grid-cols-1 md:grid-cols-4 gap-2"
+          className="grid grid-cols-1 md:grid-cols-[180px_minmax(220px,1fr)_200px_auto] gap-2.5 items-end"
         >
-          <Input
-            value={termName}
-            disabled={!canEditGlossary}
-            onChange={(e) => setTermName(e.target.value)}
-            placeholder={tx("履约订单", "Fulfilled Order")}
-            data-testid="glossary-term-input"
-          />
-          <Input
-            value={termDef}
-            disabled={!canEditGlossary}
-            onChange={(e) => setTermDef(e.target.value)}
-            placeholder={tx(
-              "已完成支付并分配仓库的订单",
-              "Paid order assigned to a warehouse"
-            )}
-            data-testid="glossary-definition-input"
-          />
-          <Input
-            value={termSynonyms}
-            disabled={!canEditGlossary}
-            onChange={(e) => setTermSynonyms(e.target.value)}
-            placeholder="demo_orders, orders"
-            data-testid="glossary-synonyms-input"
-          />
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground block">
+              {tx("业务术语名称", "Term Name")}
+            </label>
+            <Input
+              value={termName}
+              disabled={!canEditGlossary}
+              onChange={(e) => setTermName(e.target.value)}
+              placeholder={tx("履约订单", "Fulfilled Order")}
+              data-testid="glossary-term-input"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground block">
+              {tx("业务定义释义", "Definition")}
+            </label>
+            <Input
+              value={termDef}
+              disabled={!canEditGlossary}
+              onChange={(e) => setTermDef(e.target.value)}
+              placeholder={tx(
+                "已完成支付并分配仓库的订单",
+                "Paid order assigned to a warehouse"
+              )}
+              data-testid="glossary-definition-input"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[11px] text-muted-foreground block">
+              {tx("同义词 / 表映射", "Synonyms")}
+            </label>
+            <Input
+              value={termSynonyms}
+              disabled={!canEditGlossary}
+              onChange={(e) => setTermSynonyms(e.target.value)}
+              placeholder="demo_orders, orders"
+              data-testid="glossary-synonyms-input"
+            />
+          </div>
           <Button
             type="submit"
             variant="outline"

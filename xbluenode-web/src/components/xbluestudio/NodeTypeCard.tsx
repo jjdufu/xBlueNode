@@ -40,6 +40,8 @@ import { cn } from "@/lib/utils";
 export interface StudioNodeCardData extends Record<string, unknown> {
   spec: NodeTypeSpec;
   selected: boolean;
+  highlighted?: boolean;
+  dimmed?: boolean;
   issueCount: number;
   hasError: boolean;
   inPorts?: readonly string[];
@@ -186,6 +188,8 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
   const {
     spec,
     selected,
+    highlighted = false,
+    dimmed = false,
     issueCount,
     hasError,
     inPorts = ["in-0"],
@@ -223,10 +227,13 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
         }
       }}
       className={cn(
-        "relative w-60 rounded-md border bg-card text-card-foreground shadow-sm transition-shadow select-none overflow-visible",
+        "relative w-60 rounded-md border bg-card text-card-foreground shadow-sm transition-[opacity,box-shadow,filter,border-color] duration-150 select-none overflow-visible",
         selected
           ? "border-xblue ring-2 ring-xblue/30 shadow-md"
-          : "border-border hover:border-foreground/40",
+          : highlighted
+            ? "border-xblue/75 ring-1 ring-xblue/30 shadow-sm"
+            : "border-border hover:border-foreground/40",
+        dimmed && "opacity-25 saturate-50",
         isProposed && "border-dashed border-amber-500/70",
         hasError && "border-red-500"
       )}
@@ -250,46 +257,51 @@ export function StudioCanvasNodeCard({ data }: NodeProps<StudioFlowNode>) {
         />
       ))}
 
-      <div className="p-2.5 space-y-2">
-        <div className="flex items-start justify-between gap-1.5">
-          <div className="flex items-center gap-1.5 min-w-0">
+      <div className="p-2.5 space-y-1.5">
+        <div className="flex items-center justify-between gap-1.5 min-w-0">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
             <span
               className="inline-flex h-6 w-6 items-center justify-center rounded bg-muted text-foreground shrink-0"
               style={{ color: accentColor }}
             >
               {renderNodeIcon(spec.icon)}
             </span>
-            <div className="min-w-0">
-              <div className="truncate text-xs font-semibold leading-tight">
-                {spec.display_name || spec.name}
-              </div>
-              <div className="truncate font-mono-tech text-[11px] text-muted-foreground">
-                {spec.name}
-              </div>
+            <div
+              className="truncate text-xs font-semibold leading-tight"
+              title={spec.display_name || spec.name}
+            >
+              {spec.display_name || spec.name}
             </div>
           </div>
 
-          <div className="flex items-center gap-1 shrink-0">
-            <Badge
-              variant="neutral"
-              data-testid={`canvas-node-badge-${spec.name}`}
-              className="tabular-nums text-[10px] px-1.5 py-0.5"
+          {issueCount > 0 && (
+            <span
+              className={cn(
+                "rounded px-1.5 py-0.5 font-mono-tech text-[10px] font-semibold tabular-nums shrink-0",
+                hasError
+                  ? "bg-red-500/15 text-red-600 dark:text-red-400"
+                  : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
+              )}
             >
-              {formatNodeBadgeSummary(counts, isZh)}
-            </Badge>
-            {issueCount > 0 && (
-              <span
-                className={cn(
-                  "rounded px-1.5 py-0.5 font-mono-tech text-[10px] font-semibold tabular-nums",
-                  hasError
-                    ? "bg-red-500/15 text-red-600 dark:text-red-400"
-                    : "bg-amber-500/15 text-amber-600 dark:text-amber-400"
-                )}
-              >
-                {issueCount}
-              </span>
-            )}
+              {issueCount}
+            </span>
+          )}
+        </div>
+
+        <div className="flex items-center justify-between gap-1.5 min-w-0">
+          <div
+            className="truncate font-mono-tech text-[11px] text-muted-foreground min-w-0"
+            title={spec.name}
+          >
+            {spec.name}
           </div>
+          <Badge
+            variant="neutral"
+            data-testid={`canvas-node-badge-${spec.name}`}
+            className="tabular-nums text-[10px] px-1.5 py-0 shrink-0"
+          >
+            {formatNodeBadgeSummary(counts, isZh)}
+          </Badge>
         </div>
 
         {(spec.semantic_layer_tier ||

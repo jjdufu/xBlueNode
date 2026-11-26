@@ -1,10 +1,12 @@
-import { Suspense, lazy, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import {
   Eye,
   Info,
   Layers,
   Loader2,
+  LocateFixed,
   Maximize2,
+  Minimize2,
   Route,
   ShieldAlert,
   X,
@@ -74,6 +76,16 @@ export function ImpactGraph({
   const [collapsedComboIds, setCollapsedComboIds] = useState<Set<string>>(
     () => new Set()
   );
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setIsFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isFullscreen]);
 
   const activeSelectedId =
     selectedNodeId !== undefined ? selectedNodeId : internalSelectedId;
@@ -512,7 +524,13 @@ export function ImpactGraph({
   };
 
   return (
-    <Card className="p-4 space-y-3" data-testid="impact-graph-card">
+    <Card
+      className={cn(
+        "p-4 space-y-3",
+        isFullscreen && "fixed inset-0 z-40 rounded-none flex flex-col overflow-auto"
+      )}
+      data-testid="impact-graph-card"
+    >
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-sm font-medium">
@@ -581,7 +599,7 @@ export function ImpactGraph({
 
           <div className="inline-flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5">
             <IconButton
-              size="sm"
+              size="md"
               onClick={() => surfaceRef.current?.zoomBy(1.2)}
               title={tx("放大", "Zoom in")}
               aria-label={tx("放大", "Zoom in")}
@@ -590,7 +608,7 @@ export function ImpactGraph({
               <ZoomIn className="h-3.5 w-3.5" />
             </IconButton>
             <IconButton
-              size="sm"
+              size="md"
               onClick={() => surfaceRef.current?.zoomBy(0.8)}
               title={tx("缩小", "Zoom out")}
               aria-label={tx("缩小", "Zoom out")}
@@ -602,13 +620,36 @@ export function ImpactGraph({
               type="button"
               variant="ghost"
               size="sm"
-              className="h-7 px-2 text-[11px]"
+              className="h-8 px-2.5 text-[11px]"
               onClick={() => surfaceRef.current?.fitView()}
               data-testid="impact-graph-fit-btn"
+              title={tx("适应画布居中", "Fit View")}
             >
-              <Maximize2 className="h-3 w-3" />
+              <LocateFixed className="h-3.5 w-3.5" />
               {tx("适应画布", "Fit")}
             </Button>
+            <IconButton
+              size="md"
+              active={isFullscreen}
+              onClick={() => setIsFullscreen((v) => !v)}
+              title={
+                isFullscreen
+                  ? tx("退出全屏 (Esc)", "Exit Fullscreen (Esc)")
+                  : tx("沉浸全屏", "Fullscreen")
+              }
+              aria-label={
+                isFullscreen
+                  ? tx("退出全屏", "Exit Fullscreen")
+                  : tx("沉浸全屏", "Fullscreen")
+              }
+              data-testid="impact-graph-fullscreen-btn"
+            >
+              {isFullscreen ? (
+                <Minimize2 className="h-3.5 w-3.5 text-xblue" />
+              ) : (
+                <Maximize2 className="h-3.5 w-3.5" />
+              )}
+            </IconButton>
           </div>
         </div>
       </div>
@@ -661,11 +702,18 @@ export function ImpactGraph({
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+      <div
+        className={cn(
+          "grid grid-cols-1 lg:grid-cols-12 gap-3",
+          isFullscreen && "flex-1 min-h-0"
+        )}
+      >
         <div
-          className={`${
-            selectedNode ? "lg:col-span-8" : "lg:col-span-12"
-          } overflow-hidden rounded-md border border-border bg-muted/15 relative`}
+          className={cn(
+            selectedNode ? "lg:col-span-8" : "lg:col-span-12",
+            "overflow-hidden rounded-md border border-border bg-muted/15 relative",
+            isFullscreen && "h-full min-h-[480px] flex flex-col"
+          )}
         >
           {cardModels.length === 0 ? (
             <div className="h-64 flex items-center justify-center text-xs text-muted-foreground">
@@ -692,6 +740,7 @@ export function ImpactGraph({
                 activeStepNodes={activeStepNodes}
                 hasHighlightedPath={highlightedPath.length > 0}
                 isDark={isDark}
+                isFullscreen={isFullscreen}
                 riskHullLabel={tx("高冲击簇", "High Shock")}
                 onSelectNode={(id) => setSelected(id)}
                 onComboCollapsedChange={(cid, isCol) => {
