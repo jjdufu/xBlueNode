@@ -289,7 +289,7 @@ where
 | `AXPOINT_BACKUP_KEEP_DAYS` | `14` | `scripts/ops/backup.sh` | 备份保留日数 |
 | `AXPOINT_BACKUP_CMD` | 空 | Core（非容器本地开发） | 本地开发触发备份时调用的脚本路径；生产形态由 `axpoint-ops` 消费 `ax_backups(PENDING)` |
 | `AXPOINT_AUDIT_FORCE_KEEP_DAYS` | 空 | `scripts/ops/retention-audit.sh` | 只用于门禁，覆盖审计保留日数 |
-| `AXPOINT_REGISTRY` / `AXPOINT_VERSION` / `AXPOINT_PARSER_VERSION` / `AXPOINT_PARSER_VARIANT` | `dex2all` / `v0.4.0` / `v0.4.0` / `full` | `docker-compose*.yml` | 镜像仓库、版本与 Sidecar 变体（`full` / `lite`） |
+| `AXPOINT_REGISTRY` / `AXPOINT_VERSION` / `AXPOINT_PARSER_VERSION` / `AXPOINT_PARSER_VARIANT` | `dex2all` / `v0.4.1` / `v0.4.1` / `full` | `docker-compose*.yml` | 镜像仓库、版本与 Sidecar 变体（`full` / `lite`） |
 | `LLM_API_BASE` / `LLM_API_KEY` / `LLM_MODEL` | 见 `deploy/.env.example` | Core | 默认大模型 |
 | `EMBED_API_BASE` / `EMBED_API_KEY` / `EMBED_MODEL` / `EMBED_DIM` | 见 `deploy/.env.example` | Core | 默认向量模型 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | 空（不导出） | Core / Sidecar | OTLP 追踪导出 |
