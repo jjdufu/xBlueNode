@@ -4,8 +4,10 @@ import {
   Activity,
   Bell,
   ChevronDown,
+  ChevronsRight,
   ChevronUp,
   GitBranch,
+  Minimize2,
   Play,
   Plus,
   Rocket,
@@ -20,6 +22,7 @@ import {
 import { useI18n } from "@/i18n";
 import { MODULE_META } from "@/modules/meta";
 import { usePrincipal } from "@/lib/permissions";
+import { cn } from "@/lib/utils";
 import {
   DEFAULT_RETRY_POLICY,
   DEFAULT_TRIGGER_CFG,
@@ -53,6 +56,7 @@ import {
 } from "@/components/axflow/FlowCanvas";
 import { spliceNodeIntoFlowEdge } from "@/components/axflow/edgeSplice";
 import { useCanvasHistory } from "@/components/canvas/useCanvasHistory";
+import { CanvasEdgeToggle } from "@/components/canvas/CanvasEdgeToggle";
 import { NodeConfigForm } from "@/components/axflow/NodeConfigForm";
 import {
   OperatorPalette,
@@ -216,6 +220,20 @@ export function AxFlowPage() {
   const [runActions, setRunActions] = useState<ActionLogRecord[]>([]);
   // Collapsed 34px IDE status bar by default; auto-expands on run trigger
   const [runDockCollapsed, setRunDockCollapsed] = useState<boolean>(true);
+  const [paletteOpen, setPaletteOpen] = useState<boolean>(true);
+  const [inspectorOpen, setInspectorOpen] = useState<boolean>(true);
+  const [isCanvasFullscreen, setIsCanvasFullscreen] = useState<boolean>(false);
+  const [fsInspectorCollapsed, setFsInspectorCollapsed] =
+    useState<boolean>(false);
+
+  useEffect(() => {
+    if (!isCanvasFullscreen) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape") setIsCanvasFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [isCanvasFullscreen]);
 
   // Global Approvals Drawer state
   const [approvalDrawerOpen, setApprovalDrawerOpen] = useState(
@@ -1045,22 +1063,170 @@ export function AxFlowPage() {
     }
   };
 
+  const flowCanvasSurface = (
+    <FlowCanvas
+      flowId={selectedFlowId ?? "draft"}
+      nodes={draftNodes}
+      edges={draftEdges}
+      operators={operators}
+      issues={draftIssues}
+      stepStatusByNodeId={stepStatusByNodeId}
+      selectedNodeId={selectedNodeId}
+      selectedEdgeIndex={selectedEdgeIndex}
+      canUndo={flowHistory.canUndo}
+      canRedo={flowHistory.canRedo}
+      onUndo={() => {
+        flowHistory.undo();
+      }}
+      onRedo={() => {
+        flowHistory.redo();
+      }}
+      onSelectNode={(id) => {
+        setSelectedNodeId(id);
+        if (id) {
+          setTriggerPopoverOpen(false);
+          setInspectorTab("node");
+        }
+      }}
+      onSelectEdge={(idx) => {
+        setSelectedEdgeIndex(idx);
+        if (idx !== null) {
+          setTriggerPopoverOpen(false);
+          setInspectorTab("node");
+        }
+      }}
+      onUpdateNodePos={handleUpdateNodePos}
+      onApplyLayout={handleApplyLayout}
+      onConnectNodes={handleConnectNodes}
+      onUpdateEdge={handleUpdateEdge}
+      onDeleteEdge={handleDeleteEdge}
+      onDropOperator={handleDropOperator}
+      onSpliceOperatorOnEdge={handleSpliceOperatorOnEdge}
+      onCreateAndConnectOperator={handleCreateAndConnectOperator}
+      isFullscreen={isCanvasFullscreen}
+      onToggleFullscreen={() => setIsCanvasFullscreen((v) => !v)}
+    />
+  );
+
+  const flowCanvasElement = (
+    <div className="relative flex-1 min-w-0 min-h-0 flex h-full">
+      {flowCanvasSurface}
+      {!isCanvasFullscreen && (
+        <>
+          <CanvasEdgeToggle
+            side="left"
+            open={paletteOpen}
+            topOffsetClass="top-14"
+            collapsedLabel={tx("算子", "Ops")}
+            label={
+              paletteOpen
+                ? tx("收起算子库", "Collapse operators")
+                : tx("展开算子库", "Expand operators")
+            }
+            testId="axflow-palette-edge-toggle-btn"
+            onToggle={() => setPaletteOpen((v) => !v)}
+          />
+          <CanvasEdgeToggle
+            side="right"
+            open={inspectorOpen}
+            topOffsetClass="top-14"
+            collapsedLabel={tx("配置", "Config")}
+            label={
+              inspectorOpen
+                ? tx("收起节点配置", "Collapse config")
+                : tx("展开节点配置", "Expand config")
+            }
+            testId="axflow-inspector-edge-toggle-btn"
+            onToggle={() => setInspectorOpen((v) => !v)}
+          />
+        </>
+      )}
+    </div>
+  );
+
+  const flowInspectorInner = (
+    <>
+      <Tabs<InspectorTab>
+        className="shrink-0"
+        value={inspectorTab}
+        onChange={(tab) => {
+          setTriggerPopoverOpen(false);
+          setInspectorTab(tab);
+        }}
+        items={[
+          {
+            key: "node",
+            label: tx("节点配置", "Step Config"),
+            icon: <Settings2 className="h-3.5 w-3.5" />,
+            testId: "inspector-tab-node",
+          },
+          {
+            key: "version",
+            label: tx("版本部署", "Release"),
+            icon: <Rocket className="h-3.5 w-3.5" />,
+            testId: "inspector-tab-version",
+          },
+        ]}
+      />
+
+      <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
+        {inspectorTab === "node" && (
+          <NodeConfigForm
+            node={selectedNode}
+            allNodes={draftNodes}
+            allEdges={draftEdges}
+            operators={operators}
+            selectedEdge={selectedEdgeObj}
+            onChangeNode={handleUpdateNode}
+            onDeleteNode={handleDeleteNode}
+            onUpdateEdge={handleUpdateEdge}
+            onDeleteEdge={handleDeleteEdge}
+          />
+        )}
+
+        {inspectorTab === "version" && (
+          <VersionDeployPanel
+            isDirty={isDirty}
+            validating={validating}
+            publishing={publishing}
+            deployingEnv={deployingEnv}
+            issues={draftIssues}
+            versions={versions}
+            deployments={deployments}
+            onValidateDraft={() => void handleValidateDraft()}
+            onPublishVersion={handlePublishVersion}
+            onDeployVersion={handleDeployVersion}
+            onFocusNode={(nid) => {
+              setSelectedEdgeIndex(null);
+              setSelectedNodeId(nid);
+              setInspectorTab("node");
+            }}
+          />
+        )}
+      </div>
+    </>
+  );
+
   return (
-    <div className="flex flex-1 min-h-0 flex-col gap-2 overflow-hidden">
+    <div
+      className={cn(
+        "flex flex-1 min-h-0 flex-col gap-2 overflow-hidden",
+        isCanvasFullscreen && "fixed inset-0 z-40 bg-background p-2.5 gap-0"
+      )}
+    >
       {/* Unified Header — Single Source of Save & Run Actions + Global Approval Drawer Entry */}
-      <PageHeader
+      {!isCanvasFullscreen && (
+        <PageHeader
         className="shrink-0 pb-2"
         title={tx(MODULE_META.axflow.label, MODULE_META.axflow.enLabel)}
         badges={
-          <div className="flex items-center gap-2 pl-1">
-            <StatText
-              label={tx("流水线", "Flows")}
-              value={flows.length}
-            />
-          </div>
-        }
-        actions={
-          <>
+          <div className="flex items-center gap-2.5 pl-1">
+            {flowMode === "workflows" && (
+              <StatText
+                label={tx("流水线", "Flows")}
+                value={flows.length}
+              />
+            )}
             <SegmentedControl<FlowViewMode>
               value={flowMode}
               onChange={handleFlowModeChange}
@@ -1079,7 +1245,10 @@ export function AxFlowPage() {
                 },
               ]}
             />
-
+          </div>
+        }
+        actions={
+          <>
             {flowMode === "workflows" && (
               <>
                 <Select
@@ -1190,8 +1359,9 @@ export function AxFlowPage() {
           </>
         }
       />
+      )}
 
-      {flowMode === "alerts" ? (
+      {!isCanvasFullscreen && flowMode === "alerts" ? (
         <div className="flex-1 min-h-0 overflow-y-auto pr-1">
           <AxAlertsPage
             embedded
@@ -1202,7 +1372,7 @@ export function AxFlowPage() {
         <>
 
       {/* Compact Single-Row Flow Metadata + Trigger Popover Strip */}
-      {selectedFlowId && (
+      {!isCanvasFullscreen && selectedFlowId && (
         <div className="shrink-0 relative rounded-md border border-border bg-card px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs">
           <div className="flex flex-wrap items-center gap-2 flex-1 min-w-60">
             <GitBranch className="h-3.5 w-3.5 text-xblue shrink-0" />
@@ -1270,23 +1440,25 @@ export function AxFlowPage() {
                   </Button>
                 </div>
               ) : (
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  className="h-7 px-2 text-muted-foreground hover:text-red-600"
-                  data-testid="delete-flow-btn"
-                  onClick={() => setConfirmDeleteFlow(true)}
-                  title={tx("删除流水线", "Delete pipeline")}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </Button>
+                <span className="ml-1 pl-1.5 border-l border-border inline-flex">
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2 text-muted-foreground hover:text-red-600 hover:bg-red-500/10"
+                    data-testid="delete-flow-btn"
+                    onClick={() => setConfirmDeleteFlow(true)}
+                    title={tx("删除流水线", "Delete pipeline")}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                </span>
               ))}
           </div>
 
-          {/* Anchored Trigger Configuration Popover (Positioned left of Right Inspector so tabs stay clickable) */}
+          {/* Anchored Trigger Configuration Popover */}
           {triggerPopoverOpen && (
-            <div className="absolute right-2 xl:right-[380px] top-full mt-1.5 z-30 w-96 rounded-md border border-border bg-card p-3.5 shadow-xl space-y-2.5">
+            <div className="absolute right-2 top-full mt-1.5 z-40 w-96 rounded-md border border-border bg-card p-3.5 shadow-xl space-y-2.5">
               <div className="flex items-center justify-between border-b border-border pb-2">
                 <span className="font-semibold text-xs flex items-center gap-1.5">
                   <Webhook className="h-3.5 w-3.5 text-xblue" />
@@ -1358,156 +1530,126 @@ export function AxFlowPage() {
         </Card>
       )}
 
-      {/* Resizable 100vh 3-Column IDE Workbench */}
-      <div className="flex flex-1 min-h-0 overflow-hidden">
+      {/* Resizable 100vh 3-Column IDE Workbench OR Immersive Fullscreen Mode (Stable Single Tree to preserve viewport zoom) */}
+      <div className="flex flex-1 min-h-0 overflow-hidden relative">
         <ResizableWorkspace
           storageKey="axpoint.layout.flow"
           panes={[
-            {
-              id: "palette",
-              defaultSize: 18,
-              minSize: 12,
-              maxSize: 32,
-              collapsible: true,
-              handleTestId: "resizable-handle-left",
-              className: "pr-1",
-              children: (
-                <OperatorPalette
-                  operators={operators}
-                  onAddOperator={(spec) => addOperatorNode(spec)}
-                />
-              ),
-            },
+            ...(!isCanvasFullscreen && paletteOpen
+              ? [
+                  {
+                    id: "palette",
+                    defaultSize: 18,
+                    minSize: 12,
+                    maxSize: 32,
+                    handleTestId: "resizable-handle-left",
+                    className: "pr-1",
+                    children: (
+                      <OperatorPalette
+                        operators={operators}
+                        onAddOperator={(spec) => addOperatorNode(spec)}
+                      />
+                    ),
+                  },
+                ]
+              : []),
             {
               id: "canvas",
-              defaultSize: 54,
+              defaultSize: isCanvasFullscreen
+                ? 100
+                : 100 - (paletteOpen ? 18 : 0) - (inspectorOpen ? 28 : 0),
               minSize: 30,
               handleTestId: "resizable-handle-right",
-              className: "px-0.5",
-              children: (
-                <FlowCanvas
-                  nodes={draftNodes}
-                  edges={draftEdges}
-                  operators={operators}
-                  issues={draftIssues}
-                  stepStatusByNodeId={stepStatusByNodeId}
-                  selectedNodeId={selectedNodeId}
-                  selectedEdgeIndex={selectedEdgeIndex}
-                  canUndo={flowHistory.canUndo}
-                  canRedo={flowHistory.canRedo}
-                  onUndo={() => {
-                    flowHistory.undo();
-                  }}
-                  onRedo={() => {
-                    flowHistory.redo();
-                  }}
-                  onSelectNode={(id) => {
-                    setSelectedNodeId(id);
-                    if (id) {
-                      setTriggerPopoverOpen(false);
-                      setInspectorTab("node");
-                    }
-                  }}
-                  onSelectEdge={(idx) => {
-                    setSelectedEdgeIndex(idx);
-                    if (idx !== null) {
-                      setTriggerPopoverOpen(false);
-                      setInspectorTab("node");
-                    }
-                  }}
-                  onUpdateNodePos={handleUpdateNodePos}
-                  onApplyLayout={handleApplyLayout}
-                  onConnectNodes={handleConnectNodes}
-                  onUpdateEdge={handleUpdateEdge}
-                  onDeleteEdge={handleDeleteEdge}
-                  onDropOperator={handleDropOperator}
-                  onSpliceOperatorOnEdge={handleSpliceOperatorOnEdge}
-                  onCreateAndConnectOperator={handleCreateAndConnectOperator}
-                />
-              ),
+              className: isCanvasFullscreen
+                ? undefined
+                : cn(
+                    paletteOpen && inspectorOpen
+                      ? "px-0.5"
+                      : paletteOpen
+                        ? "pl-1"
+                        : inspectorOpen
+                          ? "pr-1"
+                          : undefined
+                  ),
+              children: flowCanvasElement,
             },
-            {
-              id: "inspector",
-              defaultSize: 28,
-              minSize: 18,
-              maxSize: 45,
-              collapsible: true,
-              className: "pl-1",
-              children: (
-                <Card className="w-full h-full min-h-0 p-3 flex flex-col gap-2.5 overflow-hidden">
-                  <Tabs<InspectorTab>
-                    className="shrink-0"
-                    value={inspectorTab}
-                    onChange={(tab) => {
-                      setTriggerPopoverOpen(false);
-                      setInspectorTab(tab);
-                    }}
-                    items={[
-                      {
-                        key: "node",
-                        label: tx("节点配置", "Step Config"),
-                        icon: <Settings2 className="h-3.5 w-3.5" />,
-                        testId: "inspector-tab-node",
-                      },
-                      {
-                        key: "version",
-                        label: tx("版本部署", "Release"),
-                        icon: <Rocket className="h-3.5 w-3.5" />,
-                        testId: "inspector-tab-version",
-                      },
-                    ]}
-                  />
-
-                  <div className="flex-1 min-h-0 overflow-y-auto pr-0.5">
-                    {inspectorTab === "node" && (
-                      <NodeConfigForm
-                        node={selectedNode}
-                        allNodes={draftNodes}
-                        allEdges={draftEdges}
-                        operators={operators}
-                        selectedEdge={selectedEdgeObj}
-                        onChangeNode={handleUpdateNode}
-                        onDeleteNode={handleDeleteNode}
-                        onUpdateEdge={handleUpdateEdge}
-                        onDeleteEdge={handleDeleteEdge}
-                      />
-                    )}
-
-                    {inspectorTab === "version" && (
-                      <VersionDeployPanel
-                        isDirty={isDirty}
-                        validating={validating}
-                        publishing={publishing}
-                        deployingEnv={deployingEnv}
-                        issues={draftIssues}
-                        versions={versions}
-                        deployments={deployments}
-                        onValidateDraft={() => void handleValidateDraft()}
-                        onPublishVersion={handlePublishVersion}
-                        onDeployVersion={handleDeployVersion}
-                        onFocusNode={(nid) => {
-                          setSelectedEdgeIndex(null);
-                          setSelectedNodeId(nid);
-                          setInspectorTab("node");
-                        }}
-                      />
-                    )}
-                  </div>
-                </Card>
-              ),
-            },
+            ...(!isCanvasFullscreen && inspectorOpen
+              ? [
+                  {
+                    id: "inspector",
+                    defaultSize: 28,
+                    minSize: 18,
+                    maxSize: 45,
+                    className: "pl-1",
+                    children: (
+                      <Card className="w-full h-full min-h-0 p-3 flex flex-col gap-2.5 overflow-hidden">
+                        {flowInspectorInner}
+                      </Card>
+                    ),
+                  },
+                ]
+              : []),
           ]}
         />
+        {isCanvasFullscreen &&
+          (fsInspectorCollapsed ? (
+            <CanvasEdgeToggle
+              side="right"
+              open={false}
+              topOffsetClass="top-14"
+              collapsedLabel={tx("配置", "Config")}
+              label={tx("展开节点配置", "Expand config")}
+              testId="axflow-fs-inspector-expand-btn"
+              onToggle={() => setFsInspectorCollapsed(false)}
+              className="z-45"
+            />
+          ) : (
+            <Card
+              data-testid="axflow-fs-inspector-drawer"
+              className="fixed right-4 top-14 bottom-4 z-45 w-[356px] max-w-[calc(100vw-2rem)] p-3 flex flex-col gap-2.5 overflow-hidden backdrop-blur-md bg-card/92 shadow-2xl rounded-xl border border-border"
+            >
+              <div
+                onClick={() => setFsInspectorCollapsed(true)}
+                title={tx("收起配置浮窗", "Collapse panel")}
+                className="shrink-0 flex items-center justify-between gap-2 pb-1.5 border-b border-border cursor-pointer select-none hover:opacity-80"
+              >
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold">
+                  <ChevronsRight className="h-3.5 w-3.5 text-muted-foreground" />
+                  {tx("节点配置与发布", "Config & Release")}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 px-2 text-[11px]"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsCanvasFullscreen(false);
+                  }}
+                >
+                  <Minimize2 className="h-3 w-3" />
+                  {tx("退出全屏", "Exit")}
+                </Button>
+              </div>
+              {flowInspectorInner}
+            </Card>
+          ))}
       </div>
 
       {/* Persistent Sticky Bottom IDE Run Monitor (2 Wide Columns: RunHistory + RunTimeline) */}
-      <Card className="shrink-0 overflow-hidden" data-testid="axflow-run-dock">
-        <div className="flex items-center justify-between gap-2 bg-muted/25 px-3 py-1">
-          <button
-            type="button"
-            onClick={() => setRunDockCollapsed((v) => !v)}
-            className="flex items-center gap-2 text-xs font-medium cursor-pointer"
-          >
+      {!isCanvasFullscreen && (
+        <Card className="shrink-0 overflow-hidden" data-testid="axflow-run-dock">
+        <div
+          data-testid="axflow-run-dock-header"
+          onClick={() => setRunDockCollapsed((v) => !v)}
+          title={
+            runDockCollapsed
+              ? tx("展开运行监控", "Expand run monitor")
+              : tx("收起运行监控", "Collapse run monitor")
+          }
+          className="flex items-center justify-between gap-2 bg-muted/25 hover:bg-muted/45 transition-colors px-3 py-1 cursor-pointer select-none"
+        >
+          <div className="flex items-center gap-2 text-xs font-medium">
             <Activity className="h-3.5 w-3.5 text-xblue" />
             <span>{tx("运行监控与步骤时间线", "Run Monitor & Timeline")}</span>
             <span className="font-mono-tech text-[11px] text-muted-foreground tabular-nums">
@@ -1521,15 +1663,9 @@ export function AxFlowPage() {
                 </span>
               </span>
             )}
-          </button>
+          </div>
 
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            className="h-6 px-2 text-[11px]"
-            onClick={() => setRunDockCollapsed((v) => !v)}
-          >
+          <span className="inline-flex items-center gap-1 h-6 px-2 text-[11px] font-medium text-muted-foreground">
             {runDockCollapsed ? (
               <>
                 <ChevronUp className="h-3 w-3" />
@@ -1541,11 +1677,11 @@ export function AxFlowPage() {
                 {tx("收起", "Collapse")}
               </>
             )}
-          </Button>
+          </span>
         </div>
 
         {!runDockCollapsed && (
-          <div className="border-t border-border p-2.5 h-64 grid grid-cols-1 xl:grid-cols-12 gap-3 overflow-hidden">
+          <div className="border-t border-border p-2.5 h-auto max-h-80 xl:h-64 grid grid-cols-1 xl:grid-cols-12 gap-3 overflow-y-auto xl:overflow-hidden">
             <div className="xl:col-span-4 h-full min-h-0">
               <RunHistory
                 runs={runs}
@@ -1576,7 +1712,8 @@ export function AxFlowPage() {
             </div>
           </div>
         )}
-      </Card>
+        </Card>
+      )}
 
       {/* Global Pending Approvals Drawer */}
       <Drawer

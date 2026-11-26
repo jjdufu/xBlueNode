@@ -72,13 +72,14 @@ export function AlertListWidget({
       )}
       {data.rows.map((row, idx) => {
         const id = String(getCell(row, colMap, "id", 0) ?? idx);
-        const title = String(
+        const rawTitle = String(
           getCell(row, colMap, "title", -1) ??
             getCell(row, colMap, "message", -1) ??
             row[4] ??
             row[1] ??
             tx("告警事件", "Alert")
         );
+        const title = rawTitle.replace(/^\[(WARN|WARNING|ERROR|CRITICAL|INFO)\]\s*/i, "");
         const severity = String(getCell(row, colMap, "severity", 2) ?? "WARN");
         const rawStatus = String(getCell(row, colMap, "status", 3) ?? "OPEN");
         const status = ackedIds.has(id) ? "ACK" : rawStatus;
@@ -98,7 +99,7 @@ export function AlertListWidget({
         return (
           <div
             key={`${id}-${idx}`}
-            className="rounded border border-border p-2 flex items-center justify-between gap-2 bg-background hover:bg-muted/30"
+            className="rounded border border-border px-2 py-1.5 flex items-center justify-between gap-2 bg-background hover:bg-muted/30 shrink-0"
           >
             <div
               className={`min-w-0 flex-1 ${
@@ -118,15 +119,17 @@ export function AlertListWidget({
                       : "text-amber-500"
                   }`}
                 />
-                <span className="font-medium truncate">{title}</span>
+                <span className="font-medium truncate" title={title}>
+                  {title}
+                </span>
                 <StatusBadge status={severity} />
                 <StatusBadge status={status} />
+                {seenStr && seenStr !== "-" && (
+                  <span className="hidden sm:inline text-[10px] font-mono-tech text-muted-foreground shrink-0 ml-auto">
+                    {seenStr.slice(5, 16)}
+                  </span>
+                )}
               </div>
-              {seenStr && seenStr !== "-" && (
-                <div className="text-[10px] font-mono-tech text-muted-foreground mt-0.5 truncate">
-                  {seenStr}
-                </div>
-              )}
             </div>
 
             {!readOnly && canAck && status === "OPEN" && (

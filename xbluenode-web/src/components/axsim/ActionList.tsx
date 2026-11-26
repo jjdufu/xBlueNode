@@ -386,9 +386,9 @@ export function ActionList({
                 data-testid={`action-row-${idx}`}
                 className="rounded-md border border-border bg-muted/20 p-3 space-y-2"
               >
-                <div className="grid grid-cols-1 md:grid-cols-12 gap-2 items-end">
-                  <div className="md:col-span-4 space-y-1">
-                    <label className="text-[11px] text-muted-foreground">
+                <div className="grid grid-cols-1 @[340px]:grid-cols-2 @[540px]:grid-cols-12 gap-2.5 items-end">
+                  <div className="@[340px]:col-span-2 @[540px]:col-span-7 min-w-0 space-y-1">
+                    <label className="block text-[11px] text-muted-foreground">
                       {tx("目标节点", "Target Node")}
                     </label>
                     <Select
@@ -408,8 +408,8 @@ export function ActionList({
                     </Select>
                   </div>
 
-                  <div className="md:col-span-2 space-y-1">
-                    <label className="text-[11px] text-muted-foreground">
+                  <div className="@[340px]:col-span-2 @[540px]:col-span-5 min-w-0 space-y-1">
+                    <label className="block text-[11px] text-muted-foreground">
                       {tx("指标键", "Metric Key")}
                     </label>
                     <Input
@@ -419,7 +419,7 @@ export function ActionList({
                       onChange={(e) =>
                         updateAction(row.id, { metric_key: e.target.value })
                       }
-                      className="h-8 text-xs font-mono-tech"
+                      className="h-8 w-full text-xs font-mono-tech"
                       data-testid={`action-metric-input-${idx}`}
                     />
                     <datalist id={`metrics-datalist-${row.id}`}>
@@ -429,8 +429,8 @@ export function ActionList({
                     </datalist>
                   </div>
 
-                  <div className="md:col-span-2 space-y-1">
-                    <label className="text-[11px] text-muted-foreground">
+                  <div className="@[340px]:col-span-2 @[540px]:col-span-4 min-w-0 space-y-1">
+                    <label className="block text-[11px] text-muted-foreground">
                       {tx("干预方式", "Mode")}
                     </label>
                     <Select
@@ -452,8 +452,8 @@ export function ActionList({
                     </Select>
                   </div>
 
-                  <div className="md:col-span-2 space-y-1">
-                    <label className="text-[11px] text-muted-foreground flex items-center justify-between">
+                  <div className="min-w-0 @[540px]:col-span-4 space-y-1">
+                    <label className="text-[11px] text-muted-foreground flex items-center justify-between gap-1 whitespace-nowrap">
                       <span>{tx("数值", "Value")}</span>
                       {ratioPctLabel && (
                         <span className="font-mono-tech text-xblue">
@@ -469,33 +469,32 @@ export function ActionList({
                       onChange={(e) =>
                         updateAction(row.id, { value: e.target.value })
                       }
-                      className="h-8 text-xs font-mono-tech"
+                      className="h-8 w-full text-xs font-mono-tech"
                       data-testid={`action-value-input-${idx}`}
                     />
                   </div>
 
-                  <div className="md:col-span-1 space-y-1">
-                    <label className="text-[11px] text-muted-foreground">
-                      {tx("生效步", "At Step")}
-                    </label>
-                    <Input
-                      type="number"
-                      min={0}
-                      disabled={!canSimRun}
-                      value={row.at_step}
-                      onChange={(e) =>
-                        updateAction(row.id, { at_step: e.target.value })
-                      }
-                      className="h-8 text-xs font-mono-tech"
-                      data-testid={`action-step-input-${idx}`}
-                    />
-                  </div>
-
-                  <div className="md:col-span-1 flex justify-end">
+                  <div className="min-w-0 @[540px]:col-span-4 flex items-end gap-2">
+                    <div className="flex-1 min-w-0 space-y-1">
+                      <label className="block text-[11px] text-muted-foreground whitespace-nowrap">
+                        {tx("生效步", "At Step")}
+                      </label>
+                      <Input
+                        type="number"
+                        min={0}
+                        disabled={!canSimRun}
+                        value={row.at_step}
+                        onChange={(e) =>
+                          updateAction(row.id, { at_step: e.target.value })
+                        }
+                        className="h-8 w-full text-xs font-mono-tech"
+                        data-testid={`action-step-input-${idx}`}
+                      />
+                    </div>
                     <Button
                       type="button"
                       variant="ghost"
-                      className="h-8 px-2 text-muted-foreground hover:text-red-600"
+                      className="h-8 px-2 shrink-0 text-muted-foreground hover:text-red-600"
                       onClick={() => removeActionRow(row.id)}
                       disabled={
                         !canSimRun ||
@@ -708,31 +707,31 @@ export function ActionList({
         </div>
 
         {/* Scenario Name & Run Buttons */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-end">
-          <div className="md:col-span-4 space-y-1">
+        <div className="grid grid-cols-1 @[340px]:grid-cols-2 @[580px]:grid-cols-12 gap-2.5 items-end">
+          <div className="min-w-0 @[580px]:col-span-4 space-y-1">
             <label className="text-[11px] text-muted-foreground">
               {tx("场景名称", "Scenario Name")}
             </label>
             <Input
               value={scenarioName}
               onChange={(e) => setScenarioName(e.target.value)}
-              placeholder={tx("产能下调_15pct", "capacity_cut_15pct")}
+              placeholder={tx("推演方案_v1", "scenario_v1")}
               className="h-9 text-xs"
               data-testid="scenario-name-input"
             />
           </div>
-          <div className="md:col-span-4 space-y-1">
+          <div className="min-w-0 @[580px]:col-span-4 space-y-1">
             <label className="text-[11px] text-muted-foreground">
               {tx("场景说明", "Description")}
             </label>
             <Input
               value={scenarioDesc}
               onChange={(e) => setScenarioDesc(e.target.value)}
-              placeholder={tx("华东一厂减产假设", "Factory outage assumption")}
+              placeholder={tx("填写本次干预假设说明", "Describe intervention assumptions")}
               className="h-9 text-xs"
             />
           </div>
-          <div className="md:col-span-4 flex items-center justify-end gap-2">
+          <div className="@[340px]:col-span-2 @[580px]:col-span-4 flex flex-wrap items-center justify-end gap-2">
             <Button
               type="button"
               variant="outline"
@@ -741,6 +740,7 @@ export function ActionList({
                 !canSimRun || quickRunning || running || nodes.length === 0
               }
               data-testid="quick-simulate-btn"
+              className="shrink-0"
             >
               <Zap className="h-3.5 w-3.5" />
               {quickRunning
@@ -753,6 +753,7 @@ export function ActionList({
                 !canSimRun || running || quickRunning || nodes.length === 0
               }
               data-testid="run-scenario-btn"
+              className="shrink-0"
             >
               <Play className="h-3.5 w-3.5" />
               {running

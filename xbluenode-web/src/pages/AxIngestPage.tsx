@@ -112,6 +112,7 @@ export function AxIngestPage({
   const [inspectChunks, setInspectChunks] = useState<FusedHit[]>([]);
   const [inspectEntities, setInspectEntities] = useState<TopologyNode[]>([]);
   const [inspectEdges, setInspectEdges] = useState<TopologyEdge[]>([]);
+  const [inspectNodeLabels, setInspectNodeLabels] = useState<Record<string, string>>({});
 
   // Delete confirmation
   const [pendingDeleteDoc, setPendingDeleteDoc] =
@@ -178,21 +179,44 @@ export function AxIngestPage({
       setInspectChunks([]);
       setInspectEntities([]);
       setInspectEdges([]);
+      setInspectNodeLabels({});
       try {
-        const [queryRes, topoRes] = await Promise.all([
-          api
-            .chatQuery({ query: doc.title, mode: "DOC", top_k: 16 })
-            .catch(() => null),
+        const [chunksRes, topoRes] = await Promise.all([
+          api.listDocumentChunks(doc.id).catch(() => null),
           api.topology().catch(() => null),
         ]);
 
-        const allHits = Array.isArray(queryRes?.hits) ? queryRes.hits : [];
-        const matchedHits = allHits.filter(
-          (h) => h.doc_id === doc.id || h.doc_title === doc.title
-        );
-        setInspectChunks(matchedHits.length > 0 ? matchedHits : allHits.slice(0, 6));
+        const rawChunks = Array.isArray(chunksRes?.items) ? chunksRes.items : [];
+        if (rawChunks.length > 0) {
+          setInspectChunks(
+            rawChunks.map((c) => ({
+              para_id: c.para_id,
+              doc_id: doc.id,
+              doc_title: doc.title,
+              content: c.content,
+              score: 1,
+              rrf_score: 1,
+              channels: ["context"],
+              traces: [],
+            }))
+          );
+        } else {
+          const queryRes = await api
+            .chatQuery({ query: doc.title, mode: "DOC", top_k: 16 })
+            .catch(() => null);
+          const allHits = Array.isArray(queryRes?.hits) ? queryRes.hits : [];
+          const matchedHits = allHits.filter(
+            (h) => h.doc_id === doc.id || h.doc_title === doc.title
+          );
+          setInspectChunks(matchedHits);
+        }
 
         if (topoRes && Array.isArray(topoRes.nodes) && Array.isArray(topoRes.edges)) {
+          const labelsMap: Record<string, string> = {};
+          for (const node of topoRes.nodes) {
+            labelsMap[node.id] = node.label;
+          }
+          setInspectNodeLabels(labelsMap);
           const docNode = topoRes.nodes.find(
             (n) =>
               n.id === doc.id ||
@@ -312,32 +336,7 @@ export function AxIngestPage({
 
   return (
     <div className="space-y-3.5" data-testid="axingest-page">
-      {embedded ? (
-        <div className="flex flex-wrap items-center justify-between gap-2.5">
-          <div className="flex items-center gap-2.5">
-            <StatText
-              label={tx("文档", "Documents")}
-              value={fmtNum(docTotal, 0)}
-            />
-            {!canSync && (
-              <Badge variant="outline">{tx("只读权限", "Read-Only")}</Badge>
-            )}
-          </div>
-          {canSync && (
-            <Button
-              type="button"
-              onClick={() => {
-                setError(null);
-                setIngestModalOpen(true);
-              }}
-              data-testid="open-ingest-modal-btn"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              {tx("新增文档", "Ingest Document")}
-            </Button>
-          )}
-        </div>
-      ) : (
+      {!embedded && (
         <PageHeader
           title={tx(MODULE_META.axingest.label, MODULE_META.axingest.enLabel)}
           badges={
@@ -428,6 +427,11 @@ export function AxIngestPage({
             <h2 className="text-sm font-semibold mr-1">
               {tx("知识文档台账", "Knowledge Document Ledger")}
             </h2>
+            {embedded && (
+              <Badge variant="outline" className="font-mono-tech tabular-nums">
+                {tx("文档", "Docs")} {fmtNum(docTotal, 0)}
+              </Badge>
+            )}
 
             <form
               onSubmit={handleSearchSubmit}
@@ -472,18 +476,34 @@ export function AxIngestPage({
             </form>
           </div>
 
-          <Button
-            type="button"
-            variant="ghost"
-            disabled={docsLoading}
-            onClick={() => void refreshFirstPage()}
-            data-testid="ingest-doc-refresh-btn"
-          >
-            <RefreshCw
-              className={`h-3.5 w-3.5 ${docsLoading ? "animate-spin" : ""}`}
-            />
-            {tx("刷新", "Refresh")}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              disabled={docsLoading}
+              onClick={() => void refreshFirstPage()}
+              data-testid="ingest-doc-refresh-btn"
+            >
+              <RefreshCw
+                className={`h-3.5 w-3.5 ${docsLoading ? "animate-spin" : ""}`}
+              />
+              {tx("刷新", "Refresh")}
+            </Button>
+            {embedded && canSync && (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => {
+                  setError(null);
+                  setIngestModalOpen(true);
+                }}
+                data-testid="open-ingest-modal-btn"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                {tx("新增文档", "Ingest Document")}
+              </Button>
+            )}
+          </div>
         </div>
 
         {docs.length === 0 ? (
@@ -525,7 +545,7 @@ export function AxIngestPage({
                   <th className="px-3 py-2 font-medium text-muted-foreground whitespace-nowrap">
                     {tx("更新时间", "Updated")}
                   </th>
-                  <th className="px-3 py-2 text-right font-medium text-muted-foreground whitespace-nowrap">
+                  <th className="px-3 py-2 text-right font-medium text-muted-foreground whitespace-nowrap w-32">
                     {tx("操作", "Actions")}
                   </th>
                 </tr>
@@ -561,7 +581,11 @@ export function AxIngestPage({
                             className="text-[11px] text-muted-foreground truncate mt-0.5"
                             title={doc.summary}
                           >
-                            {doc.summary}
+                            {doc.summary
+                              .replace(/\|(?:\s*:?-{2,}:?\s*\|)+/g, " ")
+                              .replace(/[#|`*_>]+/g, " ")
+                              .replace(/\s+/g, " ")
+                              .trim()}
                           </div>
                         )}
                       </td>
@@ -569,12 +593,26 @@ export function AxIngestPage({
                       <td className="px-3 py-2 max-w-[220px]">
                         {doc.source_name ? (
                           <div className="inline-flex items-center gap-1 max-w-full group">
-                            <span
-                              className="font-mono-tech text-muted-foreground truncate"
-                              title={doc.source_name}
-                            >
-                              {doc.source_name}
-                            </span>
+                            {doc.source_name.startsWith("xb_node:") ? (
+                              <span
+                                className="inline-flex items-center gap-1 min-w-0"
+                                title={doc.source_name}
+                              >
+                                <Badge variant="xblue" className="shrink-0">
+                                  {tx("对象档案", "Object Sync")}
+                                </Badge>
+                                <span className="font-mono-tech text-[11px] text-muted-foreground truncate">
+                                  {doc.source_name.slice(8, 16)}
+                                </span>
+                              </span>
+                            ) : (
+                              <span
+                                className="font-mono-tech text-muted-foreground truncate"
+                                title={doc.source_name}
+                              >
+                                {doc.source_name}
+                              </span>
+                            )}
                             <button
                               type="button"
                               onClick={(e) => {
@@ -916,16 +954,17 @@ export function AxIngestPage({
                 {canSync && (
                   <Button
                     type="button"
-                    variant="outline"
+                    variant="primary"
                     size="sm"
                     onClick={() => handleOpenEditReingest(inspectDoc)}
                   >
-                    <FilePenLine className="h-3.5 w-3.5 text-xblue" />
+                    <FilePenLine className="h-3.5 w-3.5" />
                     {tx("编辑重入库", "Edit & Re-ingest")}
                   </Button>
                 )}
                 <Button
                   type="button"
+                  variant="outline"
                   size="sm"
                   onClick={() => setInspectDoc(null)}
                 >
@@ -1034,23 +1073,30 @@ export function AxIngestPage({
                 )}
                 {inspectEdges.length > 0 && (
                   <div className="space-y-1.5">
-                    {inspectEdges.slice(0, 20).map((edge) => (
-                      <div
-                        key={edge.id}
-                        className="rounded border border-border bg-background px-3 py-2 text-xs space-y-0.5"
-                      >
-                        <div className="flex items-center justify-between">
-                          <Badge variant="outline">
-                            {translateHyperRel(edge.rel_type, isZh)}
-                          </Badge>
+                    {inspectEdges.slice(0, 20).map((edge) => {
+                      const srcLabel = inspectNodeLabels[edge.source] ?? edge.source.slice(0, 8);
+                      const dstLabel = inspectNodeLabels[edge.target] ?? edge.target.slice(0, 8);
+                      return (
+                        <div
+                          key={edge.id}
+                          className="rounded border border-border bg-background px-3 py-2 text-xs space-y-1"
+                        >
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant="outline">
+                              {translateHyperRel(edge.rel_type, isZh)}
+                            </Badge>
+                            <span className="font-medium text-foreground truncate">
+                              {srcLabel} → {dstLabel}
+                            </span>
+                          </div>
+                          {edge.fact && edge.fact !== inspectDoc.title && (
+                            <p className="text-muted-foreground leading-relaxed pt-0.5">
+                              {edge.fact}
+                            </p>
+                          )}
                         </div>
-                        {edge.fact && (
-                          <p className="text-muted-foreground leading-relaxed pt-0.5">
-                            {edge.fact}
-                          </p>
-                        )}
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

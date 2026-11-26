@@ -2,6 +2,7 @@
 
 @layer base {
   :root {
+    color-scheme: light;
     --background: #ffffff;
     --foreground: #09090b;
     --canvas-bg: #f8fafc;
@@ -22,17 +23,18 @@
   }
 
   .dark {
-    --background: #09090b;
+    color-scheme: dark;
+    --background: #090b10;
     --foreground: #fafafa;
-    --canvas-bg: #09090b;
-    --panel-bg: #111114;
-    --card: #111114;
+    --canvas-bg: #090b10;
+    --panel-bg: #11141d;
+    --card: #11141d;
     --card-foreground: #fafafa;
-    --muted: #18181b;
+    --muted: #171b26;
     --muted-foreground: #a1a1aa;
-    --border: #27272a;
-    --border-subtle: #27272a;
-    --input: #27272a;
+    --border: rgba(148, 163, 184, 0.16);
+    --border-subtle: rgba(148, 163, 184, 0.14);
+    --input: rgba(148, 163, 184, 0.22);
     --primary: #3b82f6;
     --primary-foreground: #ffffff;
     --accent-primary: #3b82f6;
@@ -86,6 +88,117 @@ input[type="number"] {
   appearance: textfield;
 }
 
+/* Unified theme-aware checkbox styling (eliminates blinding white OS boxes in dark mode) */
+input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  min-height: 14px;
+  border-radius: 4px;
+  border: 1px solid var(--input);
+  background-color: var(--background);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+  vertical-align: middle;
+}
+
+input[type="checkbox"]:hover:not(:disabled) {
+  border-color: var(--xblue);
+}
+
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--xblue) 45%, transparent);
+  outline-offset: 1px;
+}
+
+input[type="checkbox"]::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  transform: scale(0);
+  transition: transform 0.1s ease-in-out;
+  background-color: #ffffff;
+  clip-path: polygon(14% 44%, 0 65%, 50% 100%, 100% 16%, 80% 0%, 43% 62%);
+}
+
+input[type="checkbox"]:checked {
+  background-color: var(--xblue);
+  border-color: var(--xblue);
+}
+
+input[type="checkbox"]:checked::before {
+  transform: scale(1);
+}
+
+input[type="checkbox"]:indeterminate {
+  background-color: var(--xblue);
+  border-color: var(--xblue);
+}
+
+input[type="checkbox"]:indeterminate::before {
+  width: 8px;
+  height: 2px;
+  clip-path: none;
+  transform: scale(1);
+}
+
+input[type="checkbox"]:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Theme-aware date/time picker indicators */
+input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+  cursor: pointer;
+  opacity: 0.72;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover,
+input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+
+/* Subtle custom scrollbars aligned to light/dark themes */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+}
+
+.dark * {
+  scrollbar-color: rgba(148, 163, 184, 0.24) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.35);
+  border-radius: 9999px;
+}
+
+.dark *::-webkit-scrollbar-thumb {
+  background-color: rgba(148, 163, 184, 0.24);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(148, 163, 184, 0.55);
+}
+
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* React Grid Layout dashed drop target & resize handle styling */
 .react-grid-item.react-grid-placeholder {
   background: color-mix(in srgb, var(--xblue) 14%, transparent) !important;
@@ -124,6 +237,8 @@ input[type="number"] {
 }
 
 .react-flow__controls-button {
+  width: 28px !important;
+  height: 28px !important;
   background: var(--card) !important;
   color: var(--foreground) !important;
   border-bottom: 1px solid var(--border) !important;

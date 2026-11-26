@@ -29,6 +29,7 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDialog,
   Drawer,
   Input,
   Select,
@@ -369,11 +370,16 @@ export function AgentEditor({
     }
   };
 
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+
   const handleDelete = async () => {
     if (!currentAgent || !canEdit) return;
+    setDeleting(true);
     setErrorMsg(null);
     try {
       await deleteAgent(currentAgent.id);
+      setConfirmDeleteOpen(false);
       onSelectAgentId(null);
       await onRefresh();
     } catch (err) {
@@ -382,6 +388,8 @@ export function AgentEditor({
           ? err.message
           : tx("删除失败", "Failed to delete agent")
       );
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -417,7 +425,7 @@ export function AgentEditor({
   return (
     <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
       {/* Left Agent List */}
-      <Card className="lg:col-span-3 p-3.5 space-y-3">
+      <Card className="lg:col-span-3 lg:sticky lg:top-4 self-start p-3.5 space-y-3">
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold">
             {tx("智能体列表", "Agents")}
@@ -484,7 +492,7 @@ export function AgentEditor({
 
       {/* Main Editor Form */}
       <Card className="lg:col-span-9 p-5 space-y-5">
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border pb-3">
+        <div className="sticky top-0 z-10 -mx-5 -mt-5 px-5 pt-4 pb-3 bg-card/95 backdrop-blur rounded-t-xl flex flex-wrap items-center justify-between gap-3 border-b border-border">
           <div className="flex items-center gap-2">
             <h2 className="text-sm font-semibold">
               {currentAgent
@@ -555,17 +563,6 @@ export function AgentEditor({
                     {publishing
                       ? tx("发布中…", "Publishing…")
                       : tx("发布版本", "Publish")}
-                  </Button>
-                ) : null}
-                {currentAgent ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    data-testid="delete-agent-btn"
-                    onClick={() => void handleDelete()}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 ) : null}
               </>
@@ -822,7 +819,46 @@ export function AgentEditor({
             className="text-xs font-mono-tech"
           />
         </div>
+
+        {canEdit && currentAgent ? (
+          <div className="rounded-lg border border-red-500/35 bg-red-500/5 p-3.5 flex flex-wrap items-center justify-between gap-3">
+            <div className="space-y-0.5 text-xs">
+              <div className="font-semibold text-red-700 dark:text-red-300">
+                {tx("危险操作区", "Danger Zone")}
+              </div>
+              <div className="text-[11px] text-muted-foreground">
+                {tx(
+                  "删除该智能体草稿及其已发布版本后不可恢复。",
+                  "Deleting this agent removes its drafts and published versions."
+                )}
+              </div>
+            </div>
+            <Button
+              type="button"
+              variant="danger"
+              size="sm"
+              data-testid="delete-agent-btn"
+              onClick={() => setConfirmDeleteOpen(true)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {tx("删除智能体", "Delete Agent")}
+            </Button>
+          </div>
+        ) : null}
       </Card>
+
+      <ConfirmDialog
+        open={confirmDeleteOpen && Boolean(currentAgent)}
+        onClose={() => setConfirmDeleteOpen(false)}
+        onConfirm={() => void handleDelete()}
+        loading={deleting}
+        title={tx("确认删除智能体", "Confirm Agent Deletion")}
+        description={tx(
+          `确定永久删除智能体「${currentAgent?.name ?? ""}」吗？该操作不可撤销。`,
+          `Permanently delete agent "${currentAgent?.name ?? ""}"? This action cannot be undone.`
+        )}
+        confirmLabel={tx("确认删除", "Delete")}
+      />
 
       <EmbedDialog
         open={embedOpen}

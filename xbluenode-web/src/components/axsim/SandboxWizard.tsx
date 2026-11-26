@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   DatabaseBackup,
   GitBranch,
   Loader2,
+  MoreHorizontal,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -472,6 +473,27 @@ export function SandboxWizard({
     }
   };
 
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [menuOpen]);
+
   const handleRefreshBase = async () => {
     if (!activeSandbox || !canSimRun) return;
     setActionBusy("refresh");
@@ -541,7 +563,7 @@ export function SandboxWizard({
       )}
 
       {activeSandbox && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs">
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-muted/30 px-3 py-1.5 text-xs">
           <div className="flex flex-wrap items-center gap-2 text-muted-foreground">
             <span className="font-mono-tech">
               {tx("基线捕获: ", "Baseline: ")}
@@ -560,7 +582,7 @@ export function SandboxWizard({
           </div>
 
           {canSimRun && (
-            <div className="flex flex-wrap items-center gap-2">
+            <div ref={menuRef} className="relative flex items-center gap-1.5">
               <Button
                 type="button"
                 variant="outline"
@@ -581,26 +603,45 @@ export function SandboxWizard({
                 type="button"
                 variant="outline"
                 size="sm"
-                className="h-7 px-2.5 text-[11px]"
-                onClick={() => setConfirmResetOpen(true)}
-                disabled={actionBusy !== null}
-                data-testid="sandbox-reset-overlay-btn"
+                className="h-7 px-2 text-[11px]"
+                onClick={() => setMenuOpen((v) => !v)}
+                aria-label={tx("沙盘管理菜单", "Sandbox actions")}
+                title={tx("更多沙盘操作", "More sandbox actions")}
               >
-                <RotateCcw className="h-3 w-3" />
-                {tx("清空覆盖层", "Reset Overlay")}
+                <MoreHorizontal className="h-3.5 w-3.5" />
+                {tx("管理", "Manage")}
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="h-7 px-2.5 text-[11px]"
-                onClick={() => setConfirmDeleteOpen(true)}
-                disabled={actionBusy !== null}
-                data-testid="sandbox-delete-btn"
-              >
-                <Trash2 className="h-3 w-3" />
-                {tx("删除沙盘", "Delete")}
-              </Button>
+              {menuOpen && (
+                <div className="absolute right-0 top-full mt-1.5 z-30 w-44 rounded-lg border border-border bg-card shadow-lg p-1 space-y-0.5">
+                  <button
+                    type="button"
+                    disabled={actionBusy !== null}
+                    data-testid="sandbox-reset-overlay-btn"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setConfirmResetOpen(true);
+                    }}
+                    className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-xs hover:bg-muted cursor-pointer text-left"
+                  >
+                    <RotateCcw className="h-3.5 w-3.5 text-muted-foreground" />
+                    <span>{tx("清空覆盖层", "Reset Overlay")}</span>
+                  </button>
+                  <div className="border-t border-border my-0.5" />
+                  <button
+                    type="button"
+                    disabled={actionBusy !== null}
+                    data-testid="sandbox-delete-btn"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      setConfirmDeleteOpen(true);
+                    }}
+                    className="w-full flex items-center gap-2 rounded px-2.5 py-1.5 text-xs text-red-600 dark:text-red-400 hover:bg-red-500/10 cursor-pointer text-left"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>{tx("删除沙盘", "Delete Sandbox")}</span>
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>

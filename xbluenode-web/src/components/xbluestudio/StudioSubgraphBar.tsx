@@ -211,6 +211,7 @@ export function StudioSubgraphBar({
                 type="button"
                 data-testid={`subgraph-tab-${sg.slug}`}
                 onClick={() => onSelectSubgraph(sg.slug)}
+                title={`${sg.is_main ? tx("企业主图", "Main Graph") : sg.display_name} (${sg.slug} · v${sg.current_version})`}
                 className={cn(
                   "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer",
                   selected
@@ -221,23 +222,12 @@ export function StudioSubgraphBar({
                 <span>
                   {sg.is_main ? tx("企业主图", "Main Graph") : sg.display_name}
                 </span>
-                <span className="font-mono-tech text-[11px] opacity-80">
-                  {sg.slug}
-                </span>
-                <span className="font-mono-tech text-[10px] opacity-75">
-                  v{sg.current_version}
-                </span>
+                {selected && (
+                  <span className="font-mono-tech text-[10px] opacity-75">
+                    v{sg.current_version}
+                  </span>
+                )}
               </button>
-              {!sg.is_main && selected && onDeleteSubgraph && canEdit && (
-                <button
-                  type="button"
-                  title={tx(`删除子图 ${sg.slug}`, `Delete ${sg.slug}`)}
-                  onClick={() => void onDeleteSubgraph(sg.slug)}
-                  className="ml-0.5 p-1 rounded text-muted-foreground hover:text-red-600 hover:bg-muted cursor-pointer"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
-              )}
             </div>
           );
         })}
@@ -355,15 +345,33 @@ export function StudioSubgraphBar({
           </Button>
         )}
         <Button
-          variant={activeSubgraph !== "main" ? "primary" : "outline"}
+          variant="outline"
           size="sm"
           data-testid="open-merge-dialog-btn"
           disabled={activeSubgraph === "main"}
           onClick={onOpenMergeDialog}
+          className={cn(
+            activeSubgraph !== "main" &&
+              "border-xblue/60 text-xblue hover:bg-xblue-soft/60"
+          )}
         >
           <GitMerge className="h-3.5 w-3.5" />
           {tx("合并至主图", "Merge to Main")}
         </Button>
+        {activeSubgraph !== "main" && onDeleteSubgraph && canEdit && (
+          <span className="ml-0.5 pl-1.5 border-l border-border inline-flex">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              title={tx(`删除子图 ${activeSubgraph}`, `Delete ${activeSubgraph}`)}
+              onClick={() => void onDeleteSubgraph(activeSubgraph)}
+              className="text-muted-foreground hover:text-red-500 hover:bg-red-500/10"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </span>
+        )}
       </div>
 
       {/* Confirm Reset Sandbox Runtime Nodes Dialog */}

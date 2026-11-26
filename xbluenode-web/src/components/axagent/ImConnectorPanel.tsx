@@ -555,7 +555,7 @@ export function ImConnectorPanel({
           <Badge variant="neutral">{connectors.length}</Badge>
         </div>
 
-        {canEdit ? (
+        {canEdit && connectors.length > 0 ? (
           <Button
             type="button"
             data-testid="new-im-connector-btn"

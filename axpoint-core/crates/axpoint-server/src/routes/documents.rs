@@ -54,9 +54,48 @@ pub(crate) fn router() -> Router<AppState> {
     Router::new()
         .route("/documents", get(list_documents_handler))
         .route("/documents/{id}", delete(delete_document_handler))
+        .route("/documents/{id}/chunks", get(list_document_chunks_handler))
         .route("/documents/ingest", post(ingest_text_handler))
         .route("/documents/upload", post(upload_document_handler))
         .route("/chat/query", post(chat_query_handler))
+}
+
+#[derive(serde::Serialize)]
+struct DocumentChunkItem {
+    para_id: Uuid,
+    seq_no: i32,
+    content: String,
+    entity_density: i32,
+}
+
+#[derive(serde::Serialize)]
+struct DocumentChunksResponse {
+    doc_id: Uuid,
+    items: Vec<DocumentChunkItem>,
+}
+
+async fn list_document_chunks_handler(
+    State(state): State<AppState>,
+    principal: AuthPrincipal,
+    Path(id): Path<Uuid>,
+) -> Result<Json<DocumentChunksResponse>, HttpError> {
+    principal.require(Permission::DataRead)?;
+    let rows = state
+        .store
+        .list_document_chunks(&principal.tenant_id, id)
+        .await?;
+    let items = rows
+        .into_iter()
+        .map(
+            |(para_id, seq_no, content, entity_density)| DocumentChunkItem {
+                para_id,
+                seq_no,
+                content,
+                entity_density,
+            },
+        )
+        .collect();
+    Ok(Json(DocumentChunksResponse { doc_id: id, items }))
 }
 
 async fn list_documents_handler(

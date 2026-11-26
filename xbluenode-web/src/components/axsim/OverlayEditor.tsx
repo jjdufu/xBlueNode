@@ -268,9 +268,21 @@ export function OverlayEditor({
     const borderColor = isDark ? "#27272a" : "#e4e4e7";
     const accentBlue = isDark ? "#3b82f6" : "#2563eb";
 
+    const typeColors = [
+      accentBlue,
+      isDark ? "#2dd4bf" : "#0d9488",
+      isDark ? "#a78bfa" : "#7c3aed",
+      isDark ? "#fbbf24" : "#d97706",
+      isDark ? "#34d399" : "#059669",
+    ];
+    const distinctTypes = Array.from(
+      new Set(filteredNodes.map((n) => n.type_name).filter(Boolean))
+    );
     const graphSampleNodes = filteredNodes.slice(0, 80);
     const chartNodes = graphSampleNodes.map((n, idx) => {
       const isOverlay = n.is_new || n.is_modified;
+      const typeIdx = Math.max(0, distinctTypes.indexOf(n.type_name));
+      const baseColor = typeColors[typeIdx % typeColors.length] ?? accentBlue;
       const angle = (2 * Math.PI * idx) / Math.max(1, graphSampleNodes.length);
       return {
         id: n.id,
@@ -278,7 +290,7 @@ export function OverlayEditor({
         value: n.type_name,
         x: 240 + Math.cos(angle) * 160,
         y: 160 + Math.sin(angle) * 110,
-        symbolSize: isOverlay ? 34 : 26,
+        symbolSize: isOverlay ? 30 : 22,
         itemStyle: {
           color: n.is_new
             ? accentBlue
@@ -286,18 +298,20 @@ export function OverlayEditor({
               ? isDark
                 ? "#1e3a8a"
                 : "#dbeafe"
-              : cardBg,
-          borderColor: isOverlay ? accentBlue : mutedColor,
+              : baseColor,
+          borderColor: isOverlay ? "#fbbf24" : cardBg,
           borderWidth: isOverlay ? 2.5 : 1.5,
           borderType: isOverlay ? ("dashed" as const) : ("solid" as const),
         },
         label: {
-          show: graphSampleNodes.length <= 45,
+          show: true,
           position: "bottom" as const,
           color: fgColor,
-          fontSize: 11,
+          fontSize: 10,
           formatter: () =>
-            `${n.title}${isOverlay ? tx(" [覆盖]", " [Overlay]") : ""}`,
+            `${n.title.length > 10 ? `${n.title.slice(0, 9)}…` : n.title}${
+              isOverlay ? tx(" [覆盖]", " [Overlay]") : ""
+            }`,
         },
       };
     });
@@ -338,9 +352,10 @@ export function OverlayEditor({
       },
       series: [
         {
+          name: tx("沙盘节点", "Sandbox Node"),
           type: "graph",
           layout: "force",
-          roam: true,
+          roam: "move",
           draggable: true,
           labelLayout: { hideOverlap: true },
           force: {
@@ -669,7 +684,7 @@ export function OverlayEditor({
           </div>
           <form
             onSubmit={(e) => void handleCreateNode(e)}
-            className="grid grid-cols-1 md:grid-cols-6 gap-2.5"
+            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-2.5"
           >
             <Input
               value={newNodeType}
@@ -716,7 +731,7 @@ export function OverlayEditor({
             >
               {tx("创建节点", "Create Node")}
             </Button>
-            <div className="md:col-span-6 flex items-center gap-2">
+            <div className="sm:col-span-2 lg:col-span-3 xl:col-span-6 flex items-center gap-2 min-w-0">
               <span className="text-[11px] text-muted-foreground shrink-0">
                 {tx("属性 JSON:", "Properties JSON:")}
               </span>
@@ -748,7 +763,7 @@ export function OverlayEditor({
           </div>
           <form
             onSubmit={(e) => void handleCreateLink(e)}
-            className="grid grid-cols-1 md:grid-cols-5 gap-2.5"
+            className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-2.5"
           >
             <Select
               value={newLinkSrc}

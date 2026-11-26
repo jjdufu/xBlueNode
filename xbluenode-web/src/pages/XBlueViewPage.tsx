@@ -857,48 +857,47 @@ export function XBlueViewPage() {
             MODULE_META.xblueview.label,
             MODULE_META.xblueview.enLabel
           )}
+          badges={
+            <SegmentedControl<GalleryTab>
+              value={galleryTab}
+              onChange={setGalleryTab}
+              items={[
+                {
+                  key: "dashboards",
+                  label: tx("驾驶舱列表", "Dashboards"),
+                  icon: <FolderKanban className="h-3.5 w-3.5 text-xblue" />,
+                },
+                {
+                  key: "assets",
+                  label: tx("空间资产", "Spatial Assets"),
+                  icon: <Layers className="h-3.5 w-3.5 text-xblue" />,
+                  testId: "tab-asset-manager",
+                },
+              ]}
+            />
+          }
           actions={
-            <>
-              <SegmentedControl<GalleryTab>
-                value={galleryTab}
-                onChange={setGalleryTab}
-                items={[
-                  {
-                    key: "dashboards",
-                    label: tx("驾驶舱列表", "Dashboards"),
-                    icon: <FolderKanban className="h-3.5 w-3.5 text-xblue" />,
-                  },
-                  {
-                    key: "assets",
-                    label: tx("空间资产", "Spatial Assets"),
-                    icon: <Layers className="h-3.5 w-3.5 text-xblue" />,
-                    testId: "tab-asset-manager",
-                  },
-                ]}
-              />
-
-              {galleryTab === "dashboards" && canEdit && (
-                <>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => setAiWizardOpen(true)}
-                    data-testid="open-ai-wizard-btn"
-                  >
-                    <Sparkles className="h-3.5 w-3.5 text-xblue" />
-                    {tx("AI 生成看板", "AI Builder")}
-                  </Button>
-                  <Button
-                    type="button"
-                    onClick={() => setCreateOpen((prev) => !prev)}
-                    data-testid="open-create-dashboard-btn"
-                  >
-                    <Plus className="h-3.5 w-3.5" />
-                    {tx("新建驾驶舱", "New Dashboard")}
-                  </Button>
-                </>
-              )}
-            </>
+            galleryTab === "dashboards" && canEdit ? (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setAiWizardOpen(true)}
+                  data-testid="open-ai-wizard-btn"
+                >
+                  <Sparkles className="h-3.5 w-3.5 text-xblue" />
+                  {tx("AI 生成看板", "AI Builder")}
+                </Button>
+                <Button
+                  type="button"
+                  onClick={() => setCreateOpen((prev) => !prev)}
+                  data-testid="open-create-dashboard-btn"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  {tx("新建驾驶舱", "New Dashboard")}
+                </Button>
+              </>
+            ) : undefined
           }
         />
 
@@ -1068,7 +1067,12 @@ export function XBlueViewPage() {
                         </div>
                       </div>
                       <div className="font-mono-tech text-[11px] text-muted-foreground">
-                        /view/{d.slug} · {d.theme}
+                        /view/{d.slug} ·{" "}
+                        {d.theme === "dark"
+                          ? tx("暗色", "Dark")
+                          : d.theme === "screen"
+                            ? tx("大屏", "Screen")
+                            : tx("亮色", "Light")}
                       </div>
                       {d.description && (
                         <p className="text-xs text-muted-foreground line-clamp-2">
@@ -1087,20 +1091,24 @@ export function XBlueViewPage() {
                         >
                           {tx("打开", "Open")}
                         </Button>
-                        <IconButton
+                        <Button
+                          type="button"
+                          variant="ghost"
                           size="sm"
                           onClick={() =>
                             void navigate(`/view/${d.slug}?screen=1`)
                           }
                           aria-label={tx("大屏模式", "Big Screen")}
                           title={tx("大屏模式", "Big Screen")}
+                          className="text-muted-foreground hover:text-xblue"
                         >
                           <Monitor className="h-3.5 w-3.5 text-xblue" />
-                        </IconButton>
+                          <span>{tx("大屏", "Screen")}</span>
+                        </Button>
                       </div>
 
                       {canEdit && (
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-2">
                           <IconButton
                             size="sm"
                             onClick={() => void handleDuplicateDashboard(d)}
@@ -1114,6 +1122,7 @@ export function XBlueViewPage() {
                             onClick={() => setPendingDeleteDashboard(d)}
                             aria-label={tx("删除驾驶舱", "Delete")}
                             title={tx("删除驾驶舱", "Delete")}
+                            className="hover:text-red-500 hover:bg-red-500/10"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </IconButton>

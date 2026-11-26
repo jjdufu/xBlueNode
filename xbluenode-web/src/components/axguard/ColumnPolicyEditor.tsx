@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { EyeOff, RotateCcw, Save, ShieldCheck } from "lucide-react";
+import { ChevronDown, EyeOff, RotateCcw, Save, ShieldCheck } from "lucide-react";
 import { ApiError } from "@/lib/api";
 import { axhubApi, type ColumnMeta, type Dataset } from "@/lib/api/axhub";
 import type { PiiCategory } from "@/lib/api/enums";
@@ -17,6 +17,7 @@ import {
   Button,
   Card,
   Input,
+  Modal,
   Select,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
@@ -66,6 +67,8 @@ export function ColumnPolicyEditor({
   const [customColName, setCustomColName] = useState("");
   const [customMaskRule, setCustomMaskRule] = useState<MaskRule>("MASK_PHONE");
   const [savingCol, setSavingCol] = useState<string | null>(null);
+  const [savingAll, setSavingAll] = useState(false);
+  const [openExemptCol, setOpenExemptCol] = useState<string | null>(null);
   const [banner, setBanner] = useState<string | null>(null);
 
   useEffect(() => {
@@ -272,6 +275,68 @@ export function ColumnPolicyEditor({
     }
   };
 
+  const dirtyColumns = useMemo(() => {
+    const normalize = (arr: readonly string[]) => [...arr].sort().join(",");
+    return unifiedColumns.filter((col) => {
+      const explicit = policyMap.get(col.name);
+      const resolved = resolveEffectiveMaskRule(
+        col.piiCategory,
+        explicit?.mask_rule
+      );
+      const selectedRule = draftRules[col.name] ?? resolved.effectiveRule;
+      const exemptRoles = draftExemptRoles[col.name] ?? explicit?.exempt?.roles ?? [];
+      const exemptDepts = draftExemptDepts[col.name] ?? explicit?.exempt?.depts ?? [];
+      return (
+        selectedRule !== resolved.effectiveRule ||
+        normalize(exemptRoles) !== normalize(explicit?.exempt?.roles ?? []) ||
+        normalize(exemptDepts) !== normalize(explicit?.exempt?.depts ?? [])
+      );
+    });
+  }, [unifiedColumns, policyMap, draftRules, draftExemptRoles, draftExemptDepts]);
+
+  const handleSaveAllDirty = async () => {
+    if (dirtyColumns.length === 0) return;
+    setSavingAll(true);
+    setBanner(null);
+    try {
+      for (const col of dirtyColumns) {
+        const explicit = policyMap.get(col.name);
+        const resolved = resolveEffectiveMaskRule(
+          col.piiCategory,
+          explicit?.mask_rule
+        );
+        const rule = draftRules[col.name] ?? resolved.effectiveRule;
+        const exemptRoles = draftExemptRoles[col.name] ?? explicit?.exempt?.roles ?? [];
+        const exemptDepts = draftExemptDepts[col.name] ?? explicit?.exempt?.depts ?? [];
+        await axguardApi.putColumnPolicy({
+          target_kind: targetKind,
+          target_ref: targetRef,
+          column_name: col.name,
+          mask_rule: rule,
+          exempt: {
+            ...(exemptRoles.length > 0 ? { roles: exemptRoles } : {}),
+            ...(exemptDepts.length > 0 ? { depts: exemptDepts } : {}),
+          },
+        });
+      }
+      await onReload();
+      setBanner(
+        tx(
+          `已批量保存 ${dirtyColumns.length} 项字段脱敏策略`,
+          `Saved ${dirtyColumns.length} column masking policies`
+        )
+      );
+    } catch (err) {
+      setBanner(
+        err instanceof ApiError
+          ? `[${err.errorCode}] ${err.message}`
+          : String(err)
+      );
+    } finally {
+      setSavingAll(false);
+    }
+  };
+
   return (
     <div className="space-y-4" data-testid="axguard-column-policies-panel">
       {banner && (
@@ -356,14 +421,32 @@ export function ColumnPolicyEditor({
           />
         </div>
 
-        <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-          <ShieldCheck className="h-3.5 w-3.5 text-xblue shrink-0" />
-          <span>
-            {tx(
-              "默认全员脱敏；原文调阅须具备豁免身份并记录审计。",
-              "Masked by default; raw PII reads require exemption and emit audit logs."
-            )}
-          </span>
+        <div className="flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+          <div className="flex items-center gap-1.5">
+            <ShieldCheck className="h-3.5 w-3.5 text-xblue shrink-0" />
+            <span>
+              {tx(
+                "默认全员脱敏；原文调阅须具备豁免身份并记录审计。",
+                "Masked by default; raw PII reads require exemption and emit audit logs."
+              )}
+            </span>
+          </div>
+          {canWrite && (
+            <Button
+              type="button"
+              size="sm"
+              variant={dirtyColumns.length > 0 ? "primary" : "outline"}
+              disabled={savingAll || dirtyColumns.length === 0}
+              onClick={() => void handleSaveAllDirty()}
+            >
+              <Save className="h-3.5 w-3.5" />
+              {savingAll
+                ? tx("保存中…", "Saving…")
+                : dirtyColumns.length > 0
+                  ? tx(`保存全部变更 (${dirtyColumns.length})`, `Save All (${dirtyColumns.length})`)
+                  : tx("保存全部变更", "Save All Changes")}
+            </Button>
+          )}
         </div>
       </Card>
 
@@ -412,12 +495,18 @@ export function ColumnPolicyEditor({
                   const selectedRule =
                     draftRules[col.name] ?? resolved.effectiveRule;
                   const samplePreview =
-                    MASK_RULE_OPTIONS.find((m) => m.value === selectedRule)
-                      ?.sample ?? "";
+                    selectedRule === "NONE"
+                      ? col.piiCategory === "PHONE"
+                        ? "13800138000"
+                        : tx("按列原值返回", "Raw value")
+                      : (MASK_RULE_OPTIONS.find((m) => m.value === selectedRule)
+                          ?.sample ?? "");
                   const exemptRoles =
                     draftExemptRoles[col.name] ?? explicit?.exempt?.roles ?? [];
                   const exemptDepts =
                     draftExemptDepts[col.name] ?? explicit?.exempt?.depts ?? [];
+                  const isRowDirty = dirtyColumns.some((d) => d.name === col.name);
+                  const totalExemptCount = exemptRoles.length + exemptDepts.length;
 
                   return (
                     <tr key={col.name} className="hover:bg-muted/30 align-top">
@@ -489,80 +578,35 @@ export function ColumnPolicyEditor({
                         </div>
                       </td>
 
-                      <td className="px-3 py-2.5 space-y-1.5">
-                        <div className="flex flex-wrap gap-1">
-                          {roleNames.map((r) => {
-                            const checked = exemptRoles.includes(r);
-                            return (
-                              <label
-                                key={r}
-                                title={r}
-                                className={cn(
-                                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] border cursor-pointer",
-                                  checked
-                                    ? "border-xblue bg-xblue-soft text-xblue"
-                                    : "border-border text-muted-foreground"
-                                )}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  disabled={!canWrite}
-                                  onChange={(e) =>
-                                    setDraftExemptRoles((prev) => ({
-                                      ...prev,
-                                      [col.name]: e.target.checked
-                                        ? [...exemptRoles, r]
-                                        : exemptRoles.filter((x) => x !== r),
-                                    }))
-                                  }
-                                  className="accent-[#2563eb]"
-                                />
-                                {tEnum(r)}
-                              </label>
-                            );
-                          })}
-                          {departments.map((d) => {
-                            const checked = exemptDepts.includes(d.dept_id);
-                            return (
-                              <label
-                                key={`dept-${d.dept_id}`}
-                                className={cn(
-                                  "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-mono-tech border cursor-pointer",
-                                  checked
-                                    ? "border-xblue bg-xblue-soft text-xblue"
-                                    : "border-border text-muted-foreground"
-                                )}
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={checked}
-                                  disabled={!canWrite}
-                                  onChange={(e) =>
-                                    setDraftExemptDepts((prev) => ({
-                                      ...prev,
-                                      [col.name]: e.target.checked
-                                        ? [...exemptDepts, d.dept_id]
-                                        : exemptDepts.filter(
-                                            (x) => x !== d.dept_id
-                                          ),
-                                    }))
-                                  }
-                                  className="accent-[#2563eb]"
-                                />
-                                {tx("部门", "Dept")}:{d.dept_id}
-                              </label>
-                            );
-                          })}
-                        </div>
-                        <div className="text-[11px] text-muted-foreground">
-                          {formatSubjectSelector(
-                            { roles: exemptRoles, depts: exemptDepts },
-                            tx(
-                              "仅敏感原文调阅权限持有者",
-                              "PII_RAW_READ holders only"
-                            )
-                          )}
+                      <td className="px-3 py-2.5">
+                        <div className="space-y-1">
+                          <button
+                            type="button"
+                            disabled={!canWrite && totalExemptCount === 0}
+                            onClick={() => setOpenExemptCol(col.name)}
+                            className={cn(
+                              "inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs transition-colors cursor-pointer",
+                              totalExemptCount > 0
+                                ? "border-xblue/50 bg-xblue-soft/60 text-xblue font-medium"
+                                : "border-border bg-muted/30 text-muted-foreground hover:text-foreground"
+                            )}
+                          >
+                            <span>
+                              {totalExemptCount > 0
+                                ? tx(`已豁免 ${totalExemptCount} 项`, `${totalExemptCount} Exempt`)
+                                : tx("仅特权调阅", "Raw Readers Only")}
+                            </span>
+                            <ChevronDown className="h-3 w-3 opacity-75" />
+                          </button>
+                          <div className="text-[11px] text-muted-foreground truncate max-w-[240px]">
+                            {formatSubjectSelector(
+                              { roles: exemptRoles, depts: exemptDepts },
+                              tx(
+                                "未额外豁免角色或部门",
+                                "No role/dept exemptions"
+                              )
+                            )}
+                          </div>
                         </div>
                       </td>
 
@@ -574,7 +618,7 @@ export function ColumnPolicyEditor({
                                 variant="outline"
                                 size="sm"
                                 type="button"
-                                disabled={savingCol === col.name}
+                                disabled={savingCol === col.name || savingAll}
                                 onClick={() =>
                                   void handleResetColumnPolicy(
                                     explicit.id,
@@ -588,8 +632,9 @@ export function ColumnPolicyEditor({
                             )}
                             <Button
                               size="sm"
+                              variant={isRowDirty ? "primary" : "outline"}
                               type="button"
-                              disabled={savingCol === col.name}
+                              disabled={savingCol === col.name || savingAll}
                               onClick={() => void handleSaveColumnPolicy(col)}
                             >
                               <Save className="h-3 w-3" />
@@ -641,6 +686,117 @@ export function ColumnPolicyEditor({
           </div>
         )}
       </Card>
+
+      <Modal
+        open={Boolean(openExemptCol)}
+        onClose={() => setOpenExemptCol(null)}
+        maxWidthClass="max-w-lg"
+        title={tx(
+          `原文调阅豁免主体 · ${openExemptCol ?? ""}`,
+          `Raw Read Exemptions · ${openExemptCol ?? ""}`
+        )}
+        footer={
+          <Button
+            type="button"
+            variant="primary"
+            size="sm"
+            onClick={() => setOpenExemptCol(null)}
+          >
+            {tx("完成", "Done")}
+          </Button>
+        }
+      >
+        {openExemptCol ? (
+          (() => {
+            const explicit = policyMap.get(openExemptCol);
+            const activeRoles =
+              draftExemptRoles[openExemptCol] ?? explicit?.exempt?.roles ?? [];
+            const activeDepts =
+              draftExemptDepts[openExemptCol] ?? explicit?.exempt?.depts ?? [];
+            return (
+              <div className="space-y-4">
+                <div className="space-y-1.5">
+                  <div className="text-xs font-medium text-muted-foreground">
+                    {tx("豁免角色", "Exempt Roles")}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {roleNames.map((r) => {
+                      const checked = activeRoles.includes(r);
+                      return (
+                        <label
+                          key={r}
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs border cursor-pointer",
+                            checked
+                              ? "border-xblue bg-xblue-soft text-xblue"
+                              : "border-border text-muted-foreground"
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={!canWrite}
+                            onChange={(e) =>
+                              setDraftExemptRoles((prev) => ({
+                                ...prev,
+                                [openExemptCol]: e.target.checked
+                                  ? [...activeRoles, r]
+                                  : activeRoles.filter((x) => x !== r),
+                              }))
+                            }
+                            className="accent-[#2563eb]"
+                          />
+                          {tEnum(r)}
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {departments.length > 0 && (
+                  <div className="space-y-1.5 border-t border-border pt-3">
+                    <div className="text-xs font-medium text-muted-foreground">
+                      {tx("豁免部门", "Exempt Departments")}
+                    </div>
+                    <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto">
+                      {departments.map((d) => {
+                        const checked = activeDepts.includes(d.dept_id);
+                        return (
+                          <label
+                            key={d.dept_id}
+                            className={cn(
+                              "inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs border cursor-pointer",
+                              checked
+                                ? "border-xblue bg-xblue-soft text-xblue"
+                                : "border-border text-muted-foreground"
+                            )}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={!canWrite}
+                              onChange={(e) =>
+                                setDraftExemptDepts((prev) => ({
+                                  ...prev,
+                                  [openExemptCol]: e.target.checked
+                                    ? [...activeDepts, d.dept_id]
+                                    : activeDepts.filter((x) => x !== d.dept_id),
+                                }))
+                              }
+                              className="accent-[#2563eb]"
+                            />
+                            {d.name}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()
+        ) : null}
+      </Modal>
     </div>
   );
 }

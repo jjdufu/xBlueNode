@@ -48,9 +48,15 @@ interface PaletteEntry {
   readonly action?: "theme" | "locale";
 }
 
+interface SubgraphNodeEntry {
+  readonly node: NodeTypeSpec;
+  readonly subgraphSlug: string;
+  readonly subgraphName: string;
+}
+
 interface LiveAssetSnapshot {
   readonly fetchedAt: number;
-  readonly nodeTypes: readonly NodeTypeSpec[];
+  readonly nodeEntries: readonly SubgraphNodeEntry[];
   readonly datasets: readonly Dataset[];
   readonly metrics: readonly MetricDef[];
   readonly dashboards: readonly DashboardRecord[];
@@ -358,11 +364,38 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
     }
 
     let cancelled = false;
+    const loadAllSubgraphNodes = async (): Promise<SubgraphNodeEntry[]> => {
+      const sgs = await xblueApi.listSubgraphs().catch(() => []);
+      const targets =
+        sgs.length > 0
+          ? sgs.slice(0, 6)
+          : [{ slug: "main", display_name: "企业主图" }];
+      const results = await Promise.allSettled(
+        targets.map(async (sg) => {
+          const schema = await xblueApi.getPublishedSchema(sg.slug);
+          const list = Array.isArray(schema?.node_types) ? schema.node_types : [];
+          return list.map((node) => ({
+            node,
+            subgraphSlug: sg.slug,
+            subgraphName: sg.display_name || sg.slug,
+          }));
+        })
+      );
+      const out: SubgraphNodeEntry[] = [];
+      for (const r of results) {
+        if (r.status === "fulfilled") out.push(...r.value);
+      }
+      if (out.length === 0) {
+        const main = await xblueApi.getPublishedSchema("main").catch(() => null);
+        for (const node of main?.node_types ?? []) {
+          out.push({ node, subgraphSlug: "main", subgraphName: "main" });
+        }
+      }
+      return out;
+    };
+
     void Promise.all([
-      xblueApi
-        .getPublishedSchema("main")
-        .then((res) => (Array.isArray(res?.node_types) ? res.node_types : []))
-        .catch(() => [] as NodeTypeSpec[]),
+      loadAllSubgraphNodes().catch(() => [] as SubgraphNodeEntry[]),
       axhubApi
         .listDatasets({ limit: 30 })
         .then((res) => (Array.isArray(res?.items) ? res.items : []))
@@ -383,11 +416,11 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
         .then((res) => (Array.isArray(res) ? res : []))
         .catch(() => [] as AgentRecord[]),
     ]).then(
-      ([nodeTypes, datasets, metrics, dashboards, sandboxes, agents]) => {
+      ([nodeEntries, datasets, metrics, dashboards, sandboxes, agents]) => {
         if (cancelled) return;
         const snapshot: LiveAssetSnapshot = {
           fetchedAt: Date.now(),
-          nodeTypes,
+          nodeEntries,
           datasets,
           metrics,
           dashboards,
@@ -407,15 +440,24 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
   const domainModelEntries = useMemo<readonly PaletteEntry[]>(() => {
     if (!liveAssets) return [];
     const items: PaletteEntry[] = [];
-    for (const nt of liveAssets.nodeTypes.slice(0, 20)) {
+    for (const entry of liveAssets.nodeEntries.slice(0, 32)) {
+      const nt = entry.node;
       items.push({
-        id: `model-node-${nt.name}`,
+        id: `model-node-${entry.subgraphSlug}-${nt.name}`,
         zh: `${nt.display_name || nt.name}`,
         en: `${nt.display_name || nt.name}`,
-        hint: nt.name,
-        keywords: [nt.name, nt.display_name || "", "节点", "node", "ontology"],
+        hint: `${nt.name} · ${entry.subgraphSlug}`,
+        keywords: [
+          nt.name,
+          nt.display_name || "",
+          entry.subgraphSlug,
+          entry.subgraphName,
+          "节点",
+          "node",
+          "ontology",
+        ],
         icon: Blocks,
-        path: `/studio?tab=model&node=${encodeURIComponent(nt.name)}`,
+        path: `/studio?tab=model&subgraph=${encodeURIComponent(entry.subgraphSlug)}&node=${encodeURIComponent(nt.name)}`,
       });
     }
     for (const ds of liveAssets.datasets.slice(0, 20)) {
@@ -595,7 +637,7 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
 
           <Command.List
             data-testid="global-cmdk-list"
-            className="max-h-96 overflow-y-auto p-1.5 space-y-1"
+            className="max-h-96 overflow-y-auto p-1.5 pb-3 scroll-pb-4 space-y-1"
           >
             <Command.Empty className="py-8 text-center text-xs text-muted-foreground">
               {tx("无匹配项", "No matching items")}
@@ -622,6 +664,28 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
               runtimeAssetEntries
             )}
           </Command.List>
+          <div className="flex items-center justify-between border-t border-border bg-muted/20 px-3 py-1.5 text-[11px] text-muted-foreground select-none">
+            <div className="flex items-center gap-3">
+              <span>
+                <kbd className="rounded border border-border bg-card px-1 py-0.5 font-mono-tech text-[10px]">
+                  ↑↓
+                </kbd>{" "}
+                {tx("选择", "Navigate")}
+              </span>
+              <span>
+                <kbd className="rounded border border-border bg-card px-1 py-0.5 font-mono-tech text-[10px]">
+                  ↵
+                </kbd>{" "}
+                {tx("打开", "Open")}
+              </span>
+            </div>
+            <span>
+              <kbd className="rounded border border-border bg-card px-1 py-0.5 font-mono-tech text-[10px]">
+                Esc
+              </kbd>{" "}
+              {tx("关闭", "Close")}
+            </span>
+          </div>
         </Command>
       </div>
     </div>

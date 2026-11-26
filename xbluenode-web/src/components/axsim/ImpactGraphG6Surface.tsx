@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
 } from "react";
+import { cn } from "@/lib/utils";
 import type {
   AxSimAction,
   ImpactRow,
@@ -54,6 +55,7 @@ export interface ImpactGraphG6SurfaceProps {
   activeStepNodes: ReadonlySet<string> | null;
   hasHighlightedPath: boolean;
   isDark: boolean;
+  isFullscreen?: boolean;
   riskHullLabel: string;
   onSelectNode: (nodeId: string) => void;
   onComboCollapsedChange: (comboId: string, collapsed: boolean) => void;
@@ -78,6 +80,7 @@ export const ImpactGraphG6Surface = forwardRef<
     activeStepNodes,
     hasHighlightedPath,
     isDark,
+    isFullscreen = false,
     riskHullLabel,
     onSelectNode,
     onComboCollapsedChange,
@@ -163,7 +166,45 @@ export const ImpactGraphG6Surface = forwardRef<
   const hullPluginsRef = useRef(hullPlugins);
   hullPluginsRef.current = hullPlugins;
 
-  const baseG6Data = useMemo(() => {
+  const edgeStyles = useMemo(() => {
+    const baseStroke = isDark ? "#71717a" : "#94a3b8";
+    const accentStroke = isDark ? "#3b82f6" : "#2563eb";
+    return links.map((lk) => {
+      const isHighlighted = highlightedEdgePairs.has(
+        `${lk.src_node_id}->${lk.dst_node_id}`
+      );
+      const isStepWave =
+        activeStepNodes !== null &&
+        activeStepNodes.has(lk.src_node_id) &&
+        activeStepNodes.has(lk.dst_node_id);
+      const isOverlay = lk.is_new || lk.is_modified;
+      const active = isHighlighted || isStepWave;
+
+      return {
+        id: lk.id,
+        style: {
+          stroke: active || isOverlay ? accentStroke : baseStroke,
+          lineWidth: active ? 2.6 : isOverlay ? 2 : 1.5,
+          lineDash: isOverlay ? [4, 4] : isStepWave ? [6, 4] : undefined,
+          strokeOpacity: hasHighlightedPath && !isHighlighted ? 0.3 : 0.9,
+        },
+      };
+    });
+  }, [activeStepNodes, hasHighlightedPath, highlightedEdgePairs, isDark, links]);
+  const edgeStylesRef = useRef(edgeStyles);
+  edgeStylesRef.current = edgeStyles;
+
+  const structuralSig = useMemo(
+    () =>
+      cardModels
+        .map((c) => `${c.nodeId}:${Math.round(c.x)}:${Math.round(c.y)}:${c.comboId}`)
+        .join("|") +
+      "::" +
+      links.map((l) => `${l.id}:${l.src_node_id}->${l.dst_node_id}`).join("|"),
+    [cardModels, links]
+  );
+
+  const structuralG6Data = useMemo(() => {
     const g6Nodes: NodeData[] = cardModels.map((card) => ({
       id: card.nodeId,
       combo: card.comboId,
@@ -201,20 +242,11 @@ export const ImpactGraphG6Surface = forwardRef<
       };
     });
 
+    const edgeStyleMap = new Map(edgeStylesRef.current.map((e) => [e.id, e.style]));
     const baseStroke = isDark ? "#71717a" : "#94a3b8";
-    const accentStroke = isDark ? "#3b82f6" : "#2563eb";
 
     const g6Edges: EdgeData[] = links.map((lk) => {
-      const isHighlighted = highlightedEdgePairs.has(
-        `${lk.src_node_id}->${lk.dst_node_id}`
-      );
-      const isStepWave =
-        activeStepNodes !== null &&
-        activeStepNodes.has(lk.src_node_id) &&
-        activeStepNodes.has(lk.dst_node_id);
-      const isOverlay = lk.is_new || lk.is_modified;
-      const active = isHighlighted || isStepWave;
-
+      const st = edgeStyleMap.get(lk.id);
       return {
         id: lk.id,
         source: lk.src_node_id,
@@ -223,10 +255,10 @@ export const ImpactGraphG6Surface = forwardRef<
           label: `${lk.link_type} (${lk.weight.toFixed(2)})`,
         },
         style: {
-          stroke: active || isOverlay ? accentStroke : baseStroke,
-          lineWidth: active ? 2.6 : isOverlay ? 2 : 1.5,
-          lineDash: isOverlay ? [4, 4] : isStepWave ? [6, 4] : undefined,
-          strokeOpacity: hasHighlightedPath && !isHighlighted ? 0.3 : 0.9,
+          stroke: st?.stroke ?? baseStroke,
+          lineWidth: st?.lineWidth ?? 1.5,
+          lineDash: st?.lineDash,
+          strokeOpacity: st?.strokeOpacity ?? 0.9,
           endArrow: true,
           labelText: lk.link_type,
           labelFontSize: 10,
@@ -239,16 +271,9 @@ export const ImpactGraphG6Surface = forwardRef<
     });
 
     return { g6Nodes, g6Combos, g6Edges };
-  }, [
-    activeStepNodes,
-    cardById,
-    cardModels,
-    comboGroups,
-    hasHighlightedPath,
-    highlightedEdgePairs,
-    isDark,
-    links,
-  ]);
+    // Rebuild graph only on structural / theme change so step playback & highlight preserve user zoom
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [structuralSig, isDark]);
 
   // Mount & render G6 graph on structural / visual model changes (without tearing down on combo collapse)
   useEffect(() => {
@@ -269,9 +294,9 @@ export const ImpactGraphG6Surface = forwardRef<
       autoFit: "view",
       padding: [28, 28, 28, 28],
       data: {
-        nodes: baseG6Data.g6Nodes,
-        edges: baseG6Data.g6Edges,
-        combos: baseG6Data.g6Combos,
+        nodes: structuralG6Data.g6Nodes,
+        edges: structuralG6Data.g6Edges,
+        combos: structuralG6Data.g6Combos,
       },
       node: {
         type: "react-node",
@@ -388,7 +413,27 @@ export const ImpactGraphG6Surface = forwardRef<
         }
       });
     };
-  }, [baseG6Data, isDark]);
+  }, [structuralG6Data, isDark]);
+
+  // Incrementally update highlight & step styles without destroying G6 instance or resetting user zoom
+  useEffect(() => {
+    let cancelled = false;
+    const syncHighlights = async () => {
+      await renderReadyRef.current;
+      const g = graphRef.current;
+      if (cancelled || !g) return;
+      try {
+        g.updateEdgeData(edgeStyles);
+        await g.draw();
+      } catch {
+        // Ignore transient updates during teardown
+      }
+    };
+    void syncHighlights();
+    return () => {
+      cancelled = true;
+    };
+  }, [cardModels, edgeStyles]);
 
   // Synchronize Combo collapse/expand & Hull plugins sequentially AFTER `graph.render()` completes
   useEffect(() => {
@@ -443,7 +488,10 @@ export const ImpactGraphG6Surface = forwardRef<
       data-combo-count={comboGroups.length}
       data-collapsed-combo-count={collapsedComboIds.size}
       data-hull-count={hullClusters.length}
-      className="relative h-[420px] w-full overflow-hidden"
+      className={cn(
+        "relative w-full overflow-hidden",
+        isFullscreen ? "h-full flex-1 min-h-[480px]" : "h-[480px]"
+      )}
     />
   );
 });

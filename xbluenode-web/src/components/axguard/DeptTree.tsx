@@ -280,7 +280,7 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
         </div>
 
         {hasChildren && !isCollapsed && (
-          <div className="space-y-1">
+          <div className="space-y-1.5 ml-3 pl-3 border-l border-border/70">
             {node.children.map((child) => renderNode(child))}
           </div>
         )}
@@ -410,16 +410,7 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
             </div>
 
             {canWrite && (
-              <div className="flex justify-end gap-2 pt-2">
-                {editingMode === "edit" && (
-                  <Button
-                    variant="outline"
-                    type="button"
-                    onClick={() => startCreateChild(null)}
-                  >
-                    {tx("新建模式", "New Mode")}
-                  </Button>
-                )}
+              <div className="flex items-center gap-2 pt-2 border-t border-border">
                 <Button
                   type="submit"
                   disabled={saving || !deptId.trim() || !deptName.trim()}
@@ -428,9 +419,18 @@ export function DeptTree({ departments, onReload }: DeptTreeProps) {
                   {saving
                     ? tx("保存中…", "Saving…")
                     : editingMode === "create"
-                      ? tx("创建", "Create")
-                      : tx("保存", "Save")}
+                      ? tx("创建部门", "Create Department")
+                      : tx("保存变更", "Save Changes")}
                 </Button>
+                {editingMode === "edit" && (
+                  <Button
+                    variant="outline"
+                    type="button"
+                    onClick={() => startCreateChild(null)}
+                  >
+                    {tx("切换新建", "New Mode")}
+                  </Button>
+                )}
               </div>
             )}
           </form>

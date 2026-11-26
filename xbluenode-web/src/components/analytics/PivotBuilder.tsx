@@ -518,7 +518,7 @@ export function PivotBuilder({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <label className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-2.5 py-1.5 cursor-pointer">
+          <label className="inline-flex items-center gap-1.5 px-1.5 py-1 cursor-pointer">
             <input
               type="checkbox"
               checked={subtotals}
@@ -529,7 +529,7 @@ export function PivotBuilder({
             <span>{tx("显示小计", "Subtotals")}</span>
           </label>
 
-          <label className="inline-flex items-center gap-1.5 rounded border border-border bg-background px-2.5 py-1.5 cursor-pointer">
+          <label className="inline-flex items-center gap-1.5 px-1.5 py-1 cursor-pointer">
             <input
               type="checkbox"
               checked={grandTotal}
@@ -992,7 +992,7 @@ export function PivotBuilder({
         </div>
 
         {!pivotResult ? (
-          <div className="flex h-36 items-center justify-center px-4 text-xs text-muted-foreground">
+          <div className="flex min-h-[260px] items-center justify-center px-4 text-xs text-muted-foreground">
             {loading
               ? tx("计算中…", "Computing pivot…")
               : tx(

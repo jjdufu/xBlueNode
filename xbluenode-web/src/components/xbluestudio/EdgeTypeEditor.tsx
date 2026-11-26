@@ -223,11 +223,11 @@ export function EdgeTypeEditor({
           )}
         </div>
         <Textarea
-          rows={3}
+          rows={5}
           value={propagationText}
           disabled={!canEdit}
           onChange={(e) => handlePropagationChange(e.target.value)}
-          className="font-mono-tech text-xs"
+          className="font-mono-tech text-xs min-h-[116px]"
           placeholder='{"lag_hours": 4, "attenuation": "linear"}'
         />
       </div>

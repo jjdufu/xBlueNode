@@ -42,8 +42,9 @@ import {
 import { cn } from "@/lib/utils";
 
 export interface StudioCopilotPanelProps {
-  collapsed: boolean;
-  onToggleCollapsed: () => void;
+  collapsed?: boolean;
+  embedded?: boolean;
+  onToggleCollapsed?: () => void;
   activeDraft: SchemaDraft | null;
   selectedNodeName: string | null;
   selectedEdgeName: string | null;
@@ -129,7 +130,8 @@ const QUICK_ACTIONS: readonly QuickActionDef[] = [
 ];
 
 export function StudioCopilotPanel({
-  collapsed,
+  collapsed = false,
+  embedded = false,
   onToggleCollapsed,
   activeDraft,
   selectedNodeName,
@@ -332,7 +334,7 @@ export function StudioCopilotPanel({
     );
   };
 
-  if (collapsed) {
+  if (collapsed && !embedded) {
     return (
       <Card
         data-testid="studio-copilot-rail"
@@ -347,7 +349,13 @@ export function StudioCopilotPanel({
         >
           <PanelRightOpen className="h-4 w-4 text-xblue" />
         </IconButton>
-        <Sparkles className="h-3.5 w-3.5 text-xblue hidden lg:block" />
+        <div className="hidden lg:flex flex-col items-center gap-2 py-2 text-[11px] font-medium text-muted-foreground select-none [writing-mode:vertical-rl]">
+          <Sparkles className="h-3.5 w-3.5 text-xblue shrink-0" />
+          <span>{tx("AI 助手", "Copilot")}</span>
+        </div>
+        <span className="text-[11px] font-medium text-muted-foreground lg:hidden">
+          {tx("AI 助手", "Copilot")}
+        </span>
       </Card>
     );
   }
@@ -357,27 +365,27 @@ export function StudioCopilotPanel({
     : [];
   const diffCounts = countSchemaDiffChanges(lastResult?.response?.diff);
 
-  return (
-    <Card
-      data-testid="studio-copilot-panel"
-      className="w-full lg:w-[320px] xl:w-[348px] shrink-0 h-full min-h-0 p-3 flex flex-col gap-2.5 overflow-hidden text-xs"
-    >
-      {/* Header */}
-      <div className="shrink-0 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 font-semibold text-sm min-w-0">
-          <Sparkles className="h-4 w-4 text-xblue shrink-0" />
-          <span className="truncate">{tx("AI 助手", "Copilot")}</span>
+  const innerContent = (
+    <>
+      {!embedded && (
+        <div className="shrink-0 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 font-semibold text-sm min-w-0">
+            <Sparkles className="h-4 w-4 text-xblue shrink-0" />
+            <span className="truncate">{tx("AI 助手", "Copilot")}</span>
+          </div>
+          {onToggleCollapsed && (
+            <IconButton
+              size="sm"
+              data-testid="studio-copilot-collapse-btn"
+              onClick={onToggleCollapsed}
+              aria-label={tx("收起", "Collapse")}
+              title={tx("收起", "Collapse")}
+            >
+              <PanelRightClose className="h-4 w-4" />
+            </IconButton>
+          )}
         </div>
-        <IconButton
-          size="sm"
-          data-testid="studio-copilot-collapse-btn"
-          onClick={onToggleCollapsed}
-          aria-label={tx("收起", "Collapse")}
-          title={tx("收起", "Collapse")}
-        >
-          <PanelRightClose className="h-4 w-4" />
-        </IconButton>
-      </div>
+      )}
 
       {/* Focus Context Bar */}
       <div
@@ -734,6 +742,26 @@ export function StudioCopilotPanel({
           )}
         </div>
       </div>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div
+        data-testid="studio-copilot-panel"
+        className="flex-1 min-h-0 p-3 flex flex-col gap-2.5 overflow-hidden text-xs"
+      >
+        {innerContent}
+      </div>
+    );
+  }
+
+  return (
+    <Card
+      data-testid="studio-copilot-panel"
+      className="w-full lg:w-[320px] xl:w-[348px] shrink-0 h-full min-h-0 p-3 flex flex-col gap-2.5 overflow-hidden text-xs"
+    >
+      {innerContent}
     </Card>
   );
 }

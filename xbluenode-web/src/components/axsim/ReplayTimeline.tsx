@@ -304,22 +304,24 @@ export function ReplayTimeline({
               className="w-full accent-[#2563eb] cursor-pointer"
               data-testid="replay-step-slider"
             />
-            <div className="flex justify-between text-[10px] font-mono-tech text-muted-foreground">
-              {checkpoints.map((cp, idx) => (
-                <button
-                  key={cp.seq}
-                  type="button"
-                  onClick={() => {
-                    setPlaying(false);
-                    setStepIdx(idx);
-                  }}
-                  className={`cursor-pointer hover:text-foreground ${
-                    idx === stepIdx ? "text-xblue font-semibold" : ""
-                  }`}
-                >
-                  t={cp.seq}
-                </button>
-              ))}
+            <div className="overflow-x-auto pb-1">
+              <div className="flex items-center justify-between gap-2 min-w-max text-[10px] font-mono-tech text-muted-foreground">
+                {checkpoints.map((cp, idx) => (
+                  <button
+                    key={cp.seq}
+                    type="button"
+                    onClick={() => {
+                      setPlaying(false);
+                      setStepIdx(idx);
+                    }}
+                    className={`px-0.5 shrink-0 cursor-pointer hover:text-foreground ${
+                      idx === stepIdx ? "text-xblue font-semibold" : ""
+                    }`}
+                  >
+                    t={cp.seq}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -364,14 +366,14 @@ export function ReplayTimeline({
                 {tx("该时间步无新增指标变化", "No metric changes at this step")}
               </div>
             ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              <div className="grid grid-cols-1 @[460px]:grid-cols-2 @[720px]:grid-cols-3 gap-2">
                 {changeRows.map((row) => (
                   <div
                     key={`${row.nodeId}-${row.metric}`}
                     data-testid={`replay-diff-${row.nodeId}-${row.metric}`}
-                    className="rounded border border-border bg-background px-2.5 py-1.5 text-xs flex items-center justify-between gap-2"
+                    className="min-w-0 rounded border border-border bg-background px-2.5 py-1.5 text-xs flex items-center justify-between gap-2"
                   >
-                    <div className="truncate">
+                    <div className="min-w-0 truncate">
                       <span className="font-medium">{row.title}</span>
                       <span className="ml-1.5 font-mono-tech text-[11px] text-muted-foreground">
                         .{row.metric}

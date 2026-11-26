@@ -13,7 +13,13 @@ import {
   type RetentionPolicyRecord,
 } from "@/lib/api/axops";
 import type { RetentionTarget } from "@/lib/api/enums";
-import { Badge, Button, Card, Input } from "@/components/ui/primitives";
+import {
+  Badge,
+  Button,
+  Card,
+  ConfirmDialog,
+  Input,
+} from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
 import { cn } from "@/lib/utils";
@@ -32,6 +38,7 @@ export function RetentionPanel() {
     null
   );
   const [runningNow, setRunningNow] = useState(false);
+  const [confirmRunOpen, setConfirmRunOpen] = useState(false);
   const [noticeMsg, setNoticeMsg] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -122,6 +129,7 @@ export function RetentionPanel() {
     setNoticeMsg(null);
     try {
       const res = await axopsApi.runRetentionNow();
+      setConfirmRunOpen(false);
       setNoticeMsg(
         tx(
           `保留清理任务已入队 (${res.job_id.slice(0, 8)})`,
@@ -161,11 +169,11 @@ export function RetentionPanel() {
             {canWrite && (
               <Button
                 type="button"
-                variant="primary"
+                variant="danger"
                 size="sm"
                 data-testid="run-retention-now-btn"
                 disabled={runningNow}
-                onClick={() => void handleRunRetentionNow()}
+                onClick={() => setConfirmRunOpen(true)}
               >
                 <Play className="h-3.5 w-3.5" />
                 {runningNow
@@ -296,7 +304,7 @@ export function RetentionPanel() {
                           type="number"
                           min={1}
                           max={3650}
-                          disabled={!canWrite}
+                          disabled={!canWrite || row.ownerScriptOnly}
                           data-testid={`retention-days-input-${row.target}`}
                           value={draftVal}
                           onChange={(e) =>
@@ -314,7 +322,7 @@ export function RetentionPanel() {
                     </td>
 
                     <td className="py-3 px-3 align-top text-right">
-                      {canWrite && (
+                      {canWrite && !row.ownerScriptOnly ? (
                         <Button
                           type="button"
                           variant="outline"
@@ -326,7 +334,11 @@ export function RetentionPanel() {
                           <Save className="h-3.5 w-3.5 text-xblue" />
                           {isSaving ? tx("保存中…", "Saving…") : tx("保存", "Save")}
                         </Button>
-                      )}
+                      ) : row.ownerScriptOnly ? (
+                        <span className="text-[11px] text-muted-foreground">
+                          {tx("只读受控", "Script locked")}
+                        </span>
+                      ) : null}
                     </td>
                   </tr>
                 );
@@ -335,6 +347,19 @@ export function RetentionPanel() {
           </table>
         </div>
       </Card>
+
+      <ConfirmDialog
+        open={confirmRunOpen}
+        onClose={() => setConfirmRunOpen(false)}
+        onConfirm={() => void handleRunRetentionNow()}
+        loading={runningNow}
+        title={tx("确认执行全量超期数据清理", "Confirm Retention Cleanup")}
+        description={tx(
+          "将按上方保留天数立即异步清理所有超期作业日志、告警记录、授权与会话，物理删除后不可恢复。",
+          "Immediately enqueue permanent purge of expired telemetry, alerts, grants, and sessions across active targets."
+        )}
+        confirmLabel={tx("确认清理", "Run Cleanup")}
+      />
     </div>
   );
 }

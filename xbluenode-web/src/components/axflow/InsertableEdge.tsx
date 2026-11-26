@@ -14,6 +14,8 @@ export interface AxFlowCanvasEdgeData extends Record<string, unknown> {
   edgeDef: FlowEdgeDef;
   edgeIndex: number;
   selected: boolean;
+  highlighted?: boolean;
+  dimmed?: boolean;
   isDark: boolean;
   canEdit: boolean;
   isRunningFlow: boolean;
@@ -59,6 +61,8 @@ export function InsertableEdge({
 
   const edgeDef = data?.edgeDef;
   const selected = Boolean(data?.selected);
+  const highlighted = Boolean(data?.highlighted);
+  const dimmed = Boolean(data?.dimmed) && !selected && !highlighted;
   const isDark = Boolean(data?.isDark);
   const canEdit = Boolean(data?.canEdit);
   const isRunningFlow = Boolean(data?.isRunningFlow);
@@ -67,7 +71,7 @@ export function InsertableEdge({
 
   const strokeColor = isDropTarget
     ? "#2563eb"
-    : isRunningFlow
+    : isRunningFlow || highlighted
       ? "#3b82f6"
       : selected
         ? isDark
@@ -90,7 +94,13 @@ export function InsertableEdge({
         className={isRunningFlow ? "axflow-running-edge" : undefined}
         style={{
           stroke: strokeColor,
-          strokeWidth: isDropTarget ? 3 : selected || isRunningFlow ? 2.4 : 1.6,
+          strokeWidth: isDropTarget
+            ? 3
+            : selected || isRunningFlow || highlighted
+              ? 2.4
+              : 1.6,
+          opacity: dimmed ? 0.16 : 1,
+          transition: "opacity 150ms ease, stroke-width 150ms ease",
           strokeDasharray: isDropTarget
             ? "6 4"
             : isRunningFlow

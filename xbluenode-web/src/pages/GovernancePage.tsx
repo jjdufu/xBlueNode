@@ -16,7 +16,8 @@ import {
 } from "@/lib/api/axagent";
 import { ProviderTable } from "@/components/axagent/ProviderTable";
 import { UserLlmPreferencesBar } from "@/components/axagent/UserLlmPreferencesBar";
-import { PageHeader, SegmentedControl } from "@/components/ui/primitives";
+import { PageHeader } from "@/components/ui/primitives";
+import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 import { MODULE_META } from "@/modules/meta";
 import { AxGuardPage } from "@/pages/AxGuardPage";
@@ -198,58 +199,87 @@ export function GovernancePage() {
     setSearchParams(updated, { replace: true });
   };
 
+  const navItems: ReadonlyArray<{
+    key: SettingsGroup;
+    label: string;
+    icon: typeof Users;
+    testId: string;
+  }> = [
+    {
+      key: "members",
+      label: tx("成员与权限", "Members & Roles"),
+      icon: Users,
+      testId: "governance-tab-members",
+    },
+    {
+      key: "security",
+      label: tx("安全与脱敏", "Security & Masking"),
+      icon: ShieldCheck,
+      testId: "governance-tab-security",
+    },
+    {
+      key: "models",
+      label: tx("模型通道", "Model Channels"),
+      icon: Cpu,
+      testId: "governance-tab-models",
+    },
+    {
+      key: "ops",
+      label: tx("任务与备份", "Jobs & Backups"),
+      icon: ServerCog,
+      testId: "governance-tab-ops",
+    },
+    {
+      key: "audit",
+      label: tx("审计日志", "Audit Logs"),
+      icon: ScrollText,
+      testId: "governance-tab-audit",
+    },
+  ];
+
   return (
     <div className="space-y-4" data-testid="governance-page">
       <PageHeader
         title={tx(MODULE_META.governance.label, MODULE_META.governance.enLabel)}
-        actions={
-          <SegmentedControl<SettingsGroup>
-            value={group}
-            onChange={handleGroupChange}
-            className="overflow-x-auto max-w-full"
-            items={[
-              {
-                key: "members",
-                label: tx("成员与权限", "Members & Roles"),
-                icon: <Users className="h-3.5 w-3.5 text-xblue" />,
-                testId: "governance-tab-members",
-              },
-              {
-                key: "security",
-                label: tx("安全与脱敏", "Security & Masking"),
-                icon: <ShieldCheck className="h-3.5 w-3.5 text-xblue" />,
-                testId: "governance-tab-security",
-              },
-              {
-                key: "models",
-                label: tx("模型通道", "Model Channels"),
-                icon: <Cpu className="h-3.5 w-3.5 text-xblue" />,
-                testId: "governance-tab-models",
-              },
-              {
-                key: "ops",
-                label: tx("任务与备份", "Jobs & Backups"),
-                icon: <ServerCog className="h-3.5 w-3.5 text-xblue" />,
-                testId: "governance-tab-ops",
-              },
-              {
-                key: "audit",
-                label: tx("审计日志", "Audit Logs"),
-                icon: <ScrollText className="h-3.5 w-3.5 text-xblue" />,
-                testId: "governance-tab-audit",
-              },
-            ]}
-          />
+        badges={
+          <nav
+            aria-label={tx("系统设置分区", "Settings sections")}
+            className="inline-flex h-8 items-center gap-0.5 rounded-md border border-border bg-muted/50 p-0.5 overflow-x-auto max-w-full"
+          >
+            {navItems.map((item) => {
+              const Icon = item.icon;
+              const active = group === item.key;
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  data-testid={item.testId}
+                  onClick={() => handleGroupChange(item.key)}
+                  className={cn(
+                    "inline-flex h-full items-center gap-1.5 rounded-[5px] px-2.5 text-xs whitespace-nowrap shrink-0 transition-colors cursor-pointer",
+                    active
+                      ? "bg-xblue-soft text-xblue font-semibold shadow-2xs"
+                      : "font-medium text-muted-foreground hover:text-foreground"
+                  )}
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0" />
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </nav>
         }
       />
 
-      {group === "models" ? (
-        <SettingsModelChannelsPanel />
-      ) : group === "ops" ? (
-        <AxOpsPage embedded />
-      ) : (
-        <AxGuardPage embedded group={group} />
-      )}
+      <div className="min-w-0">
+        {group === "models" ? (
+          <SettingsModelChannelsPanel />
+        ) : group === "ops" ? (
+          <AxOpsPage embedded />
+        ) : (
+          <AxGuardPage embedded group={group} />
+        )}
+      </div>
     </div>
   );
 }

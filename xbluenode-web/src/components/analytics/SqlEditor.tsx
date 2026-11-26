@@ -963,7 +963,7 @@ export function SqlEditor({
 
         {/* Saved Queries / History Side Drawer */}
         {sideDrawer !== "none" && (
-          <Card className="lg:col-span-4 flex h-44 flex-col overflow-hidden">
+          <Card className="lg:col-span-4 flex h-56 flex-col overflow-hidden">
             <div className="flex items-center justify-between border-b border-border bg-muted/30 px-3 py-1.5 text-xs font-medium">
               <span>
                 {sideDrawer === "saved"
@@ -1044,7 +1044,10 @@ export function SqlEditor({
                           : "-"}
                       </span>
                     </div>
-                    <div className="truncate font-mono-tech text-[11px] text-foreground">
+                    <div
+                      className="truncate font-mono-tech text-[11px] text-foreground"
+                      title={entry.sql_text}
+                    >
                       {entry.sql_text}
                     </div>
                   </button>
@@ -1117,7 +1120,7 @@ export function SqlEditor({
           <div className="text-[11px] font-mono-tech text-muted-foreground break-all">
             {explainResult.sql}
           </div>
-          <pre className="max-h-40 overflow-auto rounded border border-border bg-background p-2.5 font-mono-tech text-[11px] leading-relaxed whitespace-pre-wrap">
+          <pre className="max-h-60 overflow-auto rounded border border-border bg-background p-2.5 font-mono-tech text-[11px] leading-relaxed whitespace-pre-wrap">
             {explainResult.plan}
           </pre>
         </Card>

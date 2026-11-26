@@ -6,6 +6,10 @@ import {
   CheckCircle2,
   Cpu,
   MessageSquarePlus,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Send,
   ShieldAlert,
   Square,
@@ -33,6 +37,7 @@ import {
   Input,
   Select,
   StatusBadge,
+  Switch,
   Textarea,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
@@ -86,6 +91,8 @@ export function ChatWorkbench({
   }, [effectiveAgent, onSelectAgentId, selectedAgentId]);
 
   const [useDraft, setUseDraft] = useState(false);
+  const [showLeftRail, setShowLeftRail] = useState(true);
+  const [showRightRail, setShowRightRail] = useState(true);
   const [activeConversationId, setActiveConversationId] = useState<
     string | null
   >(null);
@@ -526,10 +533,18 @@ export function ChatWorkbench({
     [approvalComment, canDecideApproval, pendingApproval, queryClient, tx]
   );
 
+  const centerSpanClass =
+    showLeftRail && showRightRail
+      ? "lg:col-span-6"
+      : showLeftRail || showRightRail
+        ? "lg:col-span-9"
+        : "lg:col-span-12";
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-[600px]">
+    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 lg:h-[calc(100dvh-215px)] lg:min-h-[560px]">
       {/* Left Sidebar: Agent Picker, Draft Toggle & Conversation History */}
-      <Card className="lg:col-span-3 p-3.5 flex flex-col justify-between gap-4">
+      {showLeftRail ? (
+        <Card className="lg:col-span-3 p-3.5 flex flex-col justify-between gap-4 overflow-y-auto">
         <div className="space-y-3">
           <div className="space-y-1.5">
             <label
@@ -560,18 +575,21 @@ export function ChatWorkbench({
             </Select>
           </div>
 
-          <label className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-2 text-xs cursor-pointer">
-            <span className="font-medium text-foreground">
+          <div className="flex items-center justify-between gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-2 text-xs">
+            <label
+              htmlFor="workbench-draft-toggle"
+              className="font-medium text-foreground cursor-pointer"
+            >
               {tx("草稿调试模式", "Draft Mode")}
-            </span>
-            <input
-              type="checkbox"
+            </label>
+            <Switch
+              id="workbench-draft-toggle"
               data-testid="workbench-draft-toggle"
+              aria-label={tx("草稿调试模式", "Draft Mode")}
               checked={useDraft}
-              onChange={(e) => setUseDraft(e.target.checked)}
-              className="accent-[#2563eb]"
+              onCheckedChange={setUseDraft}
             />
-          </label>
+          </div>
 
           <Button
             type="button"
@@ -660,11 +678,32 @@ export function ChatWorkbench({
           </div>
         ) : null}
       </Card>
+      ) : null}
 
       {/* Center Panel: Multi-turn Streaming Chat & Inline Approval Gate */}
-      <Card className="lg:col-span-6 flex flex-col min-h-[600px] overflow-hidden">
+      <Card
+        className={cn(
+          centerSpanClass,
+          "flex flex-col min-h-[540px] lg:min-h-0 lg:h-full overflow-hidden"
+        )}
+      >
         <div className="border-b border-border px-4 py-3 flex items-center justify-between gap-2 flex-wrap bg-muted/20">
           <div className="flex items-center gap-2 min-w-0">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="hidden lg:inline-flex h-7 w-7 px-0"
+              onClick={() => setShowLeftRail((v) => !v)}
+              title={tx("切换左侧边栏", "Toggle left sidebar")}
+              aria-label={tx("切换左侧边栏", "Toggle left sidebar")}
+            >
+              {showLeftRail ? (
+                <PanelLeftClose className="h-3.5 w-3.5" />
+              ) : (
+                <PanelLeftOpen className="h-3.5 w-3.5" />
+              )}
+            </Button>
             <Bot className="h-4 w-4 text-xblue shrink-0" />
             <span className="text-sm font-semibold truncate">
               {effectiveAgent?.name ?? tx("未配置智能体", "No Agent")}
@@ -689,6 +728,21 @@ export function ChatWorkbench({
               </div>
             ) : null}
             <StatusBadge status={conversationStatus} />
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="hidden lg:inline-flex h-7 w-7 px-0"
+              onClick={() => setShowRightRail((v) => !v)}
+              title={tx("切换右侧契约栏", "Toggle right contract sidebar")}
+              aria-label={tx("切换右侧契约栏", "Toggle right contract sidebar")}
+            >
+              {showRightRail ? (
+                <PanelRightClose className="h-3.5 w-3.5" />
+              ) : (
+                <PanelRightOpen className="h-3.5 w-3.5" />
+              )}
+            </Button>
           </div>
         </div>
 
@@ -771,7 +825,7 @@ export function ChatWorkbench({
 
         <div
           data-testid="workbench-messages"
-          className="flex-1 p-4 overflow-y-auto max-h-[500px]"
+          className="flex-1 min-h-0 p-4 overflow-y-auto"
         >
           <MessageView
             messages={messages}
@@ -782,7 +836,7 @@ export function ChatWorkbench({
           />
         </div>
 
-        <div className="border-t border-border p-3 bg-muted/20">
+        <div className="border-t border-border p-3 bg-muted/20 space-y-1.5">
           <div className="flex items-end gap-2">
             <Textarea
               data-testid="workbench-chat-input"
@@ -819,6 +873,7 @@ export function ChatWorkbench({
             ) : (
               <Button
                 type="button"
+                variant="primary"
                 data-testid="workbench-send-btn"
                 disabled={
                   !canRun || !effectiveAgent || inputText.trim().length === 0
@@ -831,11 +886,15 @@ export function ChatWorkbench({
               </Button>
             )}
           </div>
+          <div className="flex items-center justify-between text-[10px] text-muted-foreground px-0.5">
+            <span>{tx("Enter 发送 · Shift+Enter 换行", "Enter to send · Shift+Enter for newline")}</span>
+          </div>
         </div>
       </Card>
 
       {/* Right Rail: Agent Capabilities, Knowledge Scope & Structured Output */}
-      <Card className="lg:col-span-3 p-3.5 space-y-4 text-xs">
+      {showRightRail ? (
+        <Card className="lg:col-span-3 p-3.5 space-y-4 text-xs overflow-y-auto">
         <div>
           <div className="font-semibold text-foreground mb-1">
             {tx("智能体能力契约", "Agent Contract")}
@@ -950,6 +1009,7 @@ export function ChatWorkbench({
           </div>
         ) : null}
       </Card>
+      ) : null}
     </div>
   );
 }

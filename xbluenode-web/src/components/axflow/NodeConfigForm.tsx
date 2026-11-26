@@ -50,11 +50,71 @@ function suggestedOutputPathsForOperator(kind: FlowOperator): string[] {
   }
 }
 
-function primaryJsonSchemaType(prop: JsonSchemaPropertySpec): string {
-  if (Array.isArray(prop.type)) {
-    return prop.type.find((t) => t !== "null") ?? "string";
+const OPERATOR_FIELD_LABELS_ZH: Readonly<Record<string, string>> = {
+  full: "全图重算",
+  full_type: "按节点类型重算",
+  type_name: "目标节点类型",
+  node_ids: "指定节点列表",
+  sql: "SQL 查询语句",
+  dataset_id: "目标数据集",
+  dataset_name: "数据集名称",
+  source_id: "数据源连接",
+  document_id: "目标文档",
+  prompt: "模型提取指令",
+  instruction: "执行指令",
+  model: "推理模型",
+  method: "HTTP 方法",
+  url: "目标地址 URL",
+  headers: "请求头 JSON",
+  body: "请求体",
+  timeout_ms: "请求超时 (ms)",
+  sandbox_id: "推演沙盘",
+  scenario_id: "推演场景",
+  agent_id: "目标智能体",
+  message: "任务消息内容",
+  approver_roles: "审批角色列表",
+  action_name: "执行动作名称",
+  dry_run: "空跑校验",
+  limit: "结果条数上限",
+};
+
+function isNonNullSchemaBranch(v: JsonSchemaPropertySpec): boolean {
+  if (typeof v?.type === "string") return v.type !== "null";
+  if (Array.isArray(v?.type)) return v.type.some((t) => t !== "null");
+  return Boolean(v && (v.enum || v.items || v.properties));
+}
+
+function unwrapNullableSchema(prop: JsonSchemaPropertySpec): JsonSchemaPropertySpec {
+  const variants = prop.anyOf ?? prop.oneOf;
+  if (Array.isArray(variants) && variants.length > 0) {
+    const nonNullVariants = variants.filter(isNonNullSchemaBranch);
+    // Prefer strongly typed branches (boolean, number, array, enum) over template-string fallback patterns
+    const nonTemplate = nonNullVariants.find(
+      (v) => !(typeof v.pattern === "string" && v.pattern.includes("\\{\\{"))
+    );
+    const chosen = nonTemplate ?? nonNullVariants[0];
+    if (chosen) {
+      return {
+        ...prop,
+        ...chosen,
+        title: prop.title ?? chosen.title,
+        description: prop.description ?? chosen.description,
+        default: prop.default ?? chosen.default,
+      };
+    }
   }
-  return prop.type ?? "string";
+  return prop;
+}
+
+function primaryJsonSchemaType(prop: JsonSchemaPropertySpec): string {
+  const resolved = unwrapNullableSchema(prop);
+  if (Array.isArray(resolved.type)) {
+    return resolved.type.find((t) => t !== "null") ?? "string";
+  }
+  if (resolved.type) return resolved.type;
+  if (resolved.items) return "array";
+  if (resolved.properties) return "object";
+  return "string";
 }
 
 export interface NodeConfigFormProps {
@@ -279,166 +339,172 @@ export function NodeConfigForm({
         )}
       </div>
 
-      {/* Execution & Resilience Controls */}
-      <div className="grid grid-cols-2 gap-2.5">
-        <div className="col-span-2">
-          <label className="block font-medium mb-1">
-            {tx("节点名称", "Step Name")}
-          </label>
-          <Input
-            data-testid="node-label-input"
-            value={node.label}
-            disabled={!canEdit}
-            onChange={(e) => onChangeNode({ ...node, label: e.target.value })}
-            className="h-8 text-xs"
-            placeholder={tx("同步订单数据", "Sync orders")}
-          />
-        </div>
-
-        <div>
-          <label className="block font-medium mb-1">
-            {tx("超时上限 (秒)", "Timeout (s)")}
-          </label>
-          <NumberInput
-            min={1}
-            max={86400}
-            step={30}
-            disabled={!canEdit}
-            value={node.timeout_s}
-            onChange={(val) =>
-              onChangeNode({
-                ...node,
-                timeout_s: Math.min(86400, Math.max(1, val || 600)),
-              })
-            }
-          />
-        </div>
-
-        <div>
-          <label className="block font-medium mb-1">
-            {tx("失败策略", "Failure Policy")}
-          </label>
-          <Select
-            value={node.on_failure}
-            disabled={!canEdit}
-            onChange={(e) =>
-              onChangeNode({
-                ...node,
-                on_failure: e.target.value as OnFailure,
-              })
-            }
-            className="h-8 w-full px-2 font-mono-tech"
-          >
-            <option value="FAIL_RUN">
-              {tx("终止流程", "Abort Run")}
-            </option>
-            <option value="CONTINUE">
-              {tx("继续分支", "Continue")}
-            </option>
-          </Select>
-        </div>
-
-        <div className="col-span-2">
-          <label className="block font-medium mb-1">
-            {tx("前驱汇合策略", "Join Policy")}
-          </label>
-          <Select
-            value={node.join}
-            disabled={!canEdit}
-            onChange={(e) =>
-              onChangeNode({
-                ...node,
-                join: e.target.value as JoinMode,
-              })
-            }
-            className="h-8 w-full px-2"
-          >
-            <option value="ALL_SUCCESS">
-              {tx("全部入边满足", "All Active")}
-            </option>
-            <option value="ANY_SUCCESS">
-              {tx("任一入边满足", "Any Active")}
-            </option>
-            <option value="ALL_DONE">
-              {tx("全部前驱终态", "All Settled")}
-            </option>
-          </Select>
-        </div>
+      {/* Execution & Resilience Controls (Collapsible so Operator Params sit above fold) */}
+      <div>
+        <label className="block font-medium mb-1">
+          {tx("节点名称", "Step Name")}
+        </label>
+        <Input
+          data-testid="node-label-input"
+          value={node.label}
+          disabled={!canEdit}
+          onChange={(e) => onChangeNode({ ...node, label: e.target.value })}
+          className="h-8 text-xs"
+          placeholder={tx("同步订单数据", "Sync orders")}
+        />
       </div>
 
-      {/* Retry Policy (2-Column Balanced Grid, Zero Native Steppers) */}
-      <div className="rounded-md border border-border bg-muted/20 p-2.5 space-y-2">
-        <div className="font-medium text-[11px]">
-          {tx("重试策略", "Retry Policy")}
+      <details className="rounded-md border border-border bg-muted/20 px-2.5 py-2 group">
+        <summary className="cursor-pointer text-[11px] font-medium flex items-center justify-between select-none list-none">
+          <span>
+            {tx("执行与容错策略", "Execution & Retry Policy")}
+          </span>
+          <span className="font-mono-tech text-[10px] text-muted-foreground">
+            {node.timeout_s}s · {tx("重试", "Retry")}×{node.retry.max_attempts}
+          </span>
+        </summary>
+        <div className="pt-2.5 mt-2 border-t border-border/60 space-y-2.5">
+          <div className="grid grid-cols-1 @[290px]:grid-cols-2 gap-2.5">
+            <div className="min-w-0">
+              <label className="block font-medium mb-1">
+                {tx("超时上限 (秒)", "Timeout (s)")}
+              </label>
+              <NumberInput
+                min={1}
+                max={86400}
+                step={30}
+                disabled={!canEdit}
+                value={node.timeout_s}
+                onChange={(val) =>
+                  onChangeNode({
+                    ...node,
+                    timeout_s: Math.min(86400, Math.max(1, val || 600)),
+                  })
+                }
+              />
+            </div>
+
+            <div>
+              <label className="block font-medium mb-1">
+                {tx("失败策略", "Failure Policy")}
+              </label>
+              <Select
+                value={node.on_failure}
+                disabled={!canEdit}
+                onChange={(e) =>
+                  onChangeNode({
+                    ...node,
+                    on_failure: e.target.value as OnFailure,
+                  })
+                }
+                className="h-8 w-full px-2 font-mono-tech"
+              >
+                <option value="FAIL_RUN">
+                  {tx("终止流程", "Abort Run")}
+                </option>
+                <option value="CONTINUE">
+                  {tx("继续分支", "Continue")}
+                </option>
+              </Select>
+            </div>
+
+            <div className="col-span-2">
+              <label className="block font-medium mb-1">
+                {tx("前驱汇合策略", "Join Policy")}
+              </label>
+              <Select
+                value={node.join}
+                disabled={!canEdit}
+                onChange={(e) =>
+                  onChangeNode({
+                    ...node,
+                    join: e.target.value as JoinMode,
+                  })
+                }
+                className="h-8 w-full px-2"
+              >
+                <option value="ALL_SUCCESS">
+                  {tx("全部入边满足", "All Active")}
+                </option>
+                <option value="ANY_SUCCESS">
+                  {tx("任一入边满足", "Any Active")}
+                </option>
+                <option value="ALL_DONE">
+                  {tx("全部前驱终态", "All Settled")}
+                </option>
+              </Select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 @[290px]:grid-cols-2 gap-2 pt-2 border-t border-border/50">
+            <div className="min-w-0">
+              <label className="block text-[10px] text-muted-foreground mb-0.5">
+                {tx("最大尝试", "Max Retries")}
+              </label>
+              <NumberInput
+                min={1}
+                max={10}
+                disabled={!canEdit}
+                value={node.retry.max_attempts}
+                onChange={(val) =>
+                  onChangeNode({
+                    ...node,
+                    retry: {
+                      ...node.retry,
+                      max_attempts: Math.min(10, Math.max(1, val || 1)),
+                    },
+                  })
+                }
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] text-muted-foreground mb-0.5">
+                {tx("退避间隔 (s)", "Interval (s)")}
+              </label>
+              <NumberInput
+                min={1}
+                max={3600}
+                step={5}
+                disabled={!canEdit}
+                value={node.retry.backoff_s}
+                onChange={(val) =>
+                  onChangeNode({
+                    ...node,
+                    retry: {
+                      ...node.retry,
+                      backoff_s: Math.min(3600, Math.max(1, val || 10)),
+                    },
+                  })
+                }
+              />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-[10px] text-muted-foreground mb-0.5">
+                {tx("退避方式", "Backoff")}
+              </label>
+              <Select
+                value={node.retry.backoff}
+                disabled={!canEdit}
+                onChange={(e) =>
+                  onChangeNode({
+                    ...node,
+                    retry: {
+                      ...node.retry,
+                      backoff: e.target.value as BackoffStrategy,
+                    },
+                  })
+                }
+                className="h-8 w-full px-2 font-mono-tech text-xs"
+              >
+                <option value="FIXED">{tx("固定间隔 (FIXED)", "FIXED")}</option>
+                <option value="EXPONENTIAL">
+                  {tx("指数退避 (EXPONENTIAL)", "EXPONENTIAL")}
+                </option>
+              </Select>
+            </div>
+          </div>
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="block text-[10px] text-muted-foreground mb-0.5">
-              {tx("最大尝试", "Max Retries")}
-            </label>
-            <NumberInput
-              min={1}
-              max={10}
-              disabled={!canEdit}
-              value={node.retry.max_attempts}
-              onChange={(val) =>
-                onChangeNode({
-                  ...node,
-                  retry: {
-                    ...node.retry,
-                    max_attempts: Math.min(10, Math.max(1, val || 1)),
-                  },
-                })
-              }
-            />
-          </div>
-          <div>
-            <label className="block text-[10px] text-muted-foreground mb-0.5">
-              {tx("退避间隔 (s)", "Interval (s)")}
-            </label>
-            <NumberInput
-              min={1}
-              max={3600}
-              step={5}
-              disabled={!canEdit}
-              value={node.retry.backoff_s}
-              onChange={(val) =>
-                onChangeNode({
-                  ...node,
-                  retry: {
-                    ...node.retry,
-                    backoff_s: Math.min(3600, Math.max(1, val || 10)),
-                  },
-                })
-              }
-            />
-          </div>
-          <div className="col-span-2">
-            <label className="block text-[10px] text-muted-foreground mb-0.5">
-              {tx("退避方式", "Backoff")}
-            </label>
-            <Select
-              value={node.retry.backoff}
-              disabled={!canEdit}
-              onChange={(e) =>
-                onChangeNode({
-                  ...node,
-                  retry: {
-                    ...node.retry,
-                    backoff: e.target.value as BackoffStrategy,
-                  },
-                })
-              }
-              className="h-8 w-full px-2 font-mono-tech text-xs"
-            >
-              <option value="FIXED">{tx("固定间隔 (FIXED)", "FIXED")}</option>
-              <option value="EXPONENTIAL">
-                {tx("指数退避 (EXPONENTIAL)", "EXPONENTIAL")}
-              </option>
-            </Select>
-          </div>
-        </div>
-      </div>
+      </details>
 
       {/* Operator Config Section */}
       <div className="space-y-2 pt-1 border-t border-border">
@@ -519,13 +585,14 @@ export function NodeConfigForm({
           </div>
         ) : (
           <div className="space-y-2.5">
-            {schemaProperties.map(([propKey, propSpec]) => {
+            {schemaProperties.map(([propKey, rawSpec]) => {
+              const propSpec = unwrapNullableSchema(rawSpec);
               const pType = primaryJsonSchemaType(propSpec);
               const isRequired = requiredSet.has(propKey);
               const val = node.config[propKey] ?? propSpec.default;
               const fieldLabel = isZh
-                ? (propSpec.title ?? propKey)
-                : propKey;
+                ? (propSpec.title ?? OPERATOR_FIELD_LABELS_ZH[propKey] ?? propKey)
+                : (propSpec.title ?? propKey);
 
               if (Array.isArray(propSpec.enum) && propSpec.enum.length > 0) {
                 return (
@@ -551,14 +618,18 @@ export function NodeConfigForm({
                 );
               }
 
-              if (pType === "boolean") {
+              const isTemplateStringValue =
+                typeof val === "string" && /^\s*\{\{.+\}\}\s*$/.test(val);
+
+              if (pType === "boolean" && !isTemplateStringValue) {
                 return (
                   <div
                     key={propKey}
                     className="flex items-center justify-between rounded-md bg-muted/30 px-2.5 py-2"
                   >
-                    <span>{fieldLabel}</span>
+                    <label htmlFor={`config-field-${propKey}`}>{fieldLabel}</label>
                     <Switch
+                      id={`config-field-${propKey}`}
                       data-testid={`config-field-${propKey}`}
                       checked={Boolean(val)}
                       disabled={!canEdit}

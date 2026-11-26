@@ -1126,6 +1126,61 @@ impl PgStore {
         })
     }
 
+    /// Lists ordered paragraph chunks (`hg_paras`) belonging to a single ingested document.
+    ///
+    /// Returns tuples of `(para_id, seq_no, content, entity_density)`.
+    ///
+    /// # Errors
+    /// Returns [`AppError::NotFound`] if the document does not exist for the tenant, or [`AppError::Database`] on SQL failure.
+    pub async fn list_document_chunks(
+        &self,
+        tenant_id: &str,
+        doc_id: Uuid,
+    ) -> Result<Vec<(Uuid, i32, String, i32)>, AppError> {
+        let mut tx = begin_tenant_tx(&self.pool, tenant_id).await?;
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM hg_docs WHERE tenant_id = $1 AND id = $2)",
+        )
+        .bind(tenant_id)
+        .bind(doc_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("check hg_docs exists failed: {err}")))?;
+
+        if !exists {
+            return Err(AppError::NotFound("NOT_FOUND"));
+        }
+
+        let rows = sqlx::query(
+            "SELECT id, seq_no, content, entity_density
+             FROM hg_paras
+             WHERE tenant_id = $1 AND doc_id = $2
+             ORDER BY seq_no ASC, id ASC",
+        )
+        .bind(tenant_id)
+        .bind(doc_id)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(|err| AppError::Database(format!("list hg_paras failed: {err}")))?;
+
+        tx.commit()
+            .await
+            .map_err(|err| AppError::Database(format!("commit list hg_paras tx failed: {err}")))?;
+
+        let items = rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get("id"),
+                    r.get("seq_no"),
+                    r.get("content"),
+                    r.get("entity_density"),
+                )
+            })
+            .collect();
+        Ok(items)
+    }
+
     /// Deletes an ingested knowledge document (`hg_docs`) along with its paragraph embeddings and edges.
     ///
     /// # Errors

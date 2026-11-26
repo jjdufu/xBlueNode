@@ -39,6 +39,9 @@ function resolveHubViewFromTab(rawTab: string | null): HubWorkspaceView {
   if (normalized === "catalog") {
     return "catalog";
   }
+  if (normalized === "connectors" || normalized === "datasets") {
+    return "workspace";
+  }
   return "workspace";
 }
 
@@ -47,6 +50,9 @@ export function AxHubPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
   const datasetParam = searchParams.get("dataset");
+  const wantsCreateConnector =
+    (tabParam ?? "").trim().toLowerCase() === "connectors" ||
+    searchParams.get("action") === "create";
 
   const [activeView, setActiveView] = useState<HubWorkspaceView>(() =>
     resolveHubViewFromTab(tabParam)
@@ -217,6 +223,7 @@ export function AxHubPage() {
           <ConnectionForm
             connections={connections}
             connectorSpecs={connectorSpecs}
+            autoOpenCreate={wantsCreateConnector}
             onChanged={loadConnectionsAndSpecs}
             onDatasetCreated={() => loadDatasets()}
           />

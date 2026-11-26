@@ -23,6 +23,7 @@ import {
   type SavedQuery,
 } from "@/lib/api/analytics";
 import { ChartPanel } from "@/components/analytics/ChartPanel";
+import { registerAnalyticsCopilotContext } from "@/lib/copilotBridge";
 import {
   ChartStudioPanel,
   type ChartStudioSeed,
@@ -203,6 +204,26 @@ export function AnalyticsStudioPage() {
     void loadSavedAndHistory();
   }, [loadCatalog, loadMetrics, loadSavedAndHistory]);
 
+  useEffect(() => {
+    registerAnalyticsCopilotContext({
+      datasetNames: catalog.datasets.map((d) => d.name),
+      applySql: (sql) => {
+        userEditedSqlRef.current = true;
+        setSqlText(sql);
+        setActiveTab("sql");
+        setSearchParams(
+          (prev) => {
+            const next = new URLSearchParams(prev);
+            next.set("tab", "sql");
+            return next;
+          },
+          { replace: true }
+        );
+      },
+    });
+    return () => registerAnalyticsCopilotContext(null);
+  }, [catalog.datasets, setSearchParams]);
+
   const handleChangeSql = (nextSql: string) => {
     userEditedSqlRef.current = true;
     setSqlText(nextSql);
@@ -317,13 +338,16 @@ export function AnalyticsStudioPage() {
   };
 
   const handleInsertIdentifier = (identifier: string) => {
-    userEditedSqlRef.current = true;
-    handleSwitchTab("sql");
-    setSqlText((prev) => {
-      const trimmed = prev.trimEnd();
-      if (!trimmed) return identifier;
-      return `${trimmed} ${identifier}`;
-    });
+    if (activeTab === "sql") {
+      userEditedSqlRef.current = true;
+      setSqlText((prev) => {
+        const trimmed = prev.trimEnd();
+        if (!trimmed) return identifier;
+        return `${trimmed} ${identifier}`;
+      });
+    } else if (typeof navigator !== "undefined" && navigator.clipboard) {
+      void navigator.clipboard.writeText(identifier).catch(() => undefined);
+    }
   };
 
   const handleSelectForPivot = (datasetOrViewName: string) => {
@@ -367,16 +391,16 @@ export function AnalyticsStudioPage() {
               onChange={handleSwitchTab}
               items={[
                 {
-                  key: "ask",
-                  label: tx("智能问答", "Ask"),
-                  icon: <Sparkles className="h-3.5 w-3.5 text-xblue" />,
-                  testId: "analytics-tab-ask",
-                },
-                {
                   key: "sql",
                   label: "SQL",
                   icon: <Code2 className="h-3.5 w-3.5" />,
                   testId: "analytics-tab-sql",
+                },
+                {
+                  key: "ask",
+                  label: tx("智能问答", "Ask"),
+                  icon: <Sparkles className="h-3.5 w-3.5 text-xblue" />,
+                  testId: "analytics-tab-ask",
                 },
                 {
                   key: "chart",
@@ -416,14 +440,26 @@ export function AnalyticsStudioPage() {
         />
       ) : (
         <div className="flex flex-1 min-h-0 overflow-hidden">
-          <ResizableWorkspace
-            storageKey="axpoint.layout.analytics"
-            panes={[
-              {
-                id: "catalog",
-                defaultSize: 20,
-                minSize: 12,
-                maxSize: 38,
+          {activeTab === "metrics" ? (
+            <div className="flex-1 min-w-0 min-h-0 overflow-y-auto p-1">
+              <MetricManager
+                catalog={catalog}
+                metrics={metrics}
+                onRefreshMetrics={loadMetrics}
+                onOpenChartStudio={handleOpenChartStudio}
+                onPinToDashboard={setPinDraft}
+              />
+            </div>
+          ) : (
+            <ResizableWorkspace
+              storageKey="axpoint.layout.analytics"
+              panes={[
+                {
+                  id: "catalog",
+                  defaultSize: 20,
+                  minSize: 12,
+                  minPx: 210,
+                  maxSize: 38,
                 collapsible: true,
                 handleTestId: "resizable-handle-left",
                 className: "pr-1",
@@ -498,66 +534,82 @@ export function AnalyticsStudioPage() {
                             minSize: 28,
                             className: "pt-1",
                             children: (
-                              <div className="grid flex-1 min-h-[220px] h-full grid-cols-1 xl:grid-cols-12 gap-3 items-stretch">
-                                <div className="xl:col-span-7 min-w-0 flex flex-col min-h-0">
-                                  <ResultGrid
-                                    columns={resultColumns}
-                                    rows={resultRows}
-                                    rowCount={resultRowCount}
-                                    truncated={resultTruncated}
-                                    durationMs={resultDurationMs}
-                                    sql={resultExecutedSql}
-                                    onOpenChartStudio={() =>
-                                      handleOpenChartStudio({
-                                        title: tx(
-                                          "业务查询图表",
-                                          "SQL Result Chart"
-                                        ),
-                                        dataSource: {
-                                          kind: "SQL",
-                                          sql: (
-                                            resultExecutedSql || sqlText
-                                          ).trim(),
-                                        },
-                                        columns: resultColumns,
-                                        rows: resultRows,
-                                        suggestedKind:
-                                          resultRows.length <= 1 &&
-                                          resultColumns.length <= 2
-                                            ? "KPI_CARD"
-                                            : "BAR_CHART",
-                                      })
-                                    }
-                                    onPinToDashboard={() =>
-                                      setPinDraft({
-                                        name: tx(
-                                          "业务查询图表",
-                                          "SQL Result Chart"
-                                        ),
-                                        widgetKind:
-                                          resultRows.length <= 1 &&
-                                          resultColumns.length <= 2
-                                            ? "KPI_CARD"
-                                            : "BAR_CHART",
-                                        dataSource: {
-                                          kind: "SQL",
-                                          sql: (
-                                            resultExecutedSql || sqlText
-                                          ).trim(),
-                                        },
-                                        encoding: {},
-                                        options: {},
-                                      })
-                                    }
-                                  />
-                                </div>
-                                <div className="xl:col-span-5 min-w-0 flex flex-col min-h-0">
-                                  <ChartPanel
-                                    columns={resultColumns}
-                                    rows={resultRows}
-                                  />
-                                </div>
-                              </div>
+                              <ResizableWorkspace
+                                storageKey="axpoint.layout.analytics-results"
+                                panes={[
+                                  {
+                                    id: "grid",
+                                    defaultSize: 58,
+                                    minSize: 28,
+                                    className: "pr-1",
+                                    children: (
+                                      <ResultGrid
+                                        columns={resultColumns}
+                                        rows={resultRows}
+                                        rowCount={resultRowCount}
+                                        truncated={resultTruncated}
+                                        durationMs={resultDurationMs}
+                                        sql={resultExecutedSql}
+                                        onOpenChartStudio={() =>
+                                          handleOpenChartStudio({
+                                            title: tx(
+                                              "业务查询图表",
+                                              "SQL Result Chart"
+                                            ),
+                                            dataSource: {
+                                              kind: "SQL",
+                                              sql: (
+                                                resultExecutedSql || sqlText
+                                              ).trim(),
+                                            },
+                                            columns: resultColumns,
+                                            rows: resultRows,
+                                            suggestedKind:
+                                              resultRows.length <= 1 &&
+                                              resultColumns.length <= 2
+                                                ? "KPI_CARD"
+                                                : "BAR_CHART",
+                                          })
+                                        }
+                                        onPinToDashboard={() =>
+                                          setPinDraft({
+                                            name: tx(
+                                              "业务查询图表",
+                                              "SQL Result Chart"
+                                            ),
+                                            widgetKind:
+                                              resultRows.length <= 1 &&
+                                              resultColumns.length <= 2
+                                                ? "KPI_CARD"
+                                                : "BAR_CHART",
+                                            dataSource: {
+                                              kind: "SQL",
+                                              sql: (
+                                                resultExecutedSql || sqlText
+                                              ).trim(),
+                                            },
+                                            encoding: {},
+                                            options: {},
+                                          })
+                                        }
+                                      />
+                                    ),
+                                  },
+                                  {
+                                    id: "chart",
+                                    defaultSize: 42,
+                                    minSize: 25,
+                                    collapsible: true,
+                                    className: "pl-1",
+                                    children: (
+                                      <ChartPanel
+                                        columns={resultColumns}
+                                        rows={resultRows}
+                                      />
+                                    ),
+                                  },
+                                ]}
+                              />
                             ),
                           },
                         ]}
@@ -582,16 +634,6 @@ export function AnalyticsStudioPage() {
                       />
                     )}
 
-                    {activeTab === "metrics" && (
-                      <MetricManager
-                        catalog={catalog}
-                        metrics={metrics}
-                        onRefreshMetrics={loadMetrics}
-                        onOpenChartStudio={handleOpenChartStudio}
-                        onPinToDashboard={setPinDraft}
-                      />
-                    )}
-
                     {activeTab === "transform" && (
                       <TransformWizard
                         catalog={catalog}
@@ -603,6 +645,7 @@ export function AnalyticsStudioPage() {
               },
             ]}
           />
+          )}
         </div>
       )}
 

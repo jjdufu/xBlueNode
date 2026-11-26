@@ -53,9 +53,11 @@ const EMPTY_TOTALS: PulseTotals = {
 function SparklineSvg({
   values,
   strokeClassName = "text-xblue",
+  className = "",
 }: {
   values: readonly number[];
   strokeClassName?: string;
+  className?: string;
 }) {
   const width = 96;
   const height = 26;
@@ -96,7 +98,7 @@ function SparklineSvg({
       viewBox={`0 0 ${width} ${height}`}
       aria-hidden="true"
       data-testid="pulse-sparkline-svg"
-      className={`shrink-0 overflow-visible ${strokeClassName}`}
+      className={`h-[26px] shrink-0 overflow-visible ${strokeClassName} ${className}`}
     >
       <path d={areaPath} fill="currentColor" fillOpacity={0.12} />
       <path
@@ -315,88 +317,100 @@ export function DashboardPage() {
 
   return (
     <div className="space-y-4" data-testid="dashboard-page">
-      <PageHeader
-        title={tx(MODULE_META.dashboard.label, MODULE_META.dashboard.enLabel)}
-        badges={
-          <>
-            {serviceStatus && <StatusBadge status={serviceStatus} />}
-            {pulse?.generated_at && (
-              <Badge variant="outline" className="font-mono-tech">
-                {fmtTime(pulse.generated_at, true)}
-              </Badge>
-            )}
-            {shouldAutoCollapseOnboarding && (
-              <button
-                type="button"
-                data-testid="dashboard-onboarding-compact-toggle"
-                onClick={() => setOnboardingExpanded((prev) => !prev)}
-                className="inline-flex items-center gap-1 rounded border border-xblue/30 bg-xblue-soft/60 px-2 py-0.5 text-[11px] font-medium text-xblue hover:bg-xblue-soft transition-colors cursor-pointer tabular-nums"
-              >
-                <CheckCircle2 className="h-3 w-3" />
-                <span>
-                  {tx(
-                    `引导 ${completedSteps}/${totalSteps}`,
-                    `Guide ${completedSteps}/${totalSteps}`
+      <div className="relative">
+        <PageHeader
+          title={tx(MODULE_META.dashboard.label, MODULE_META.dashboard.enLabel)}
+          badges={
+            <>
+              {serviceStatus && <StatusBadge status={serviceStatus} />}
+              {pulse?.generated_at && (
+                <Badge variant="outline" className="font-mono-tech">
+                  {fmtTime(pulse.generated_at, true)}
+                </Badge>
+              )}
+              {shouldAutoCollapseOnboarding && (
+                <button
+                  type="button"
+                  data-testid="dashboard-onboarding-compact-toggle"
+                  onClick={() => setOnboardingExpanded((prev) => !prev)}
+                  className="inline-flex items-center gap-1 rounded border border-xblue/30 bg-xblue-soft/60 px-2 py-0.5 text-[11px] font-medium text-xblue hover:bg-xblue-soft transition-colors cursor-pointer tabular-nums"
+                >
+                  <CheckCircle2 className="h-3 w-3" />
+                  <span>
+                    {tx(
+                      `引导 ${completedSteps}/${totalSteps}`,
+                      `Guide ${completedSteps}/${totalSteps}`
+                    )}
+                  </span>
+                  {onboardingExpanded ? (
+                    <ChevronUp className="h-3 w-3" />
+                  ) : (
+                    <ChevronDown className="h-3 w-3" />
                   )}
-                </span>
-                {onboardingExpanded ? (
-                  <ChevronUp className="h-3 w-3" />
-                ) : (
-                  <ChevronDown className="h-3 w-3" />
-                )}
-              </button>
-            )}
-          </>
-        }
-        actions={
-          <div className="flex items-center gap-2">
-            {isOpsAdmin && (
+                </button>
+              )}
+            </>
+          }
+          actions={
+            <div className="flex items-center gap-2">
+              {isOpsAdmin && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => void handleLoadShowcase()}
+                  disabled={loadingShowcase || loading}
+                  data-testid="dashboard-load-showcase-btn"
+                >
+                  <Sparkles
+                    className={`h-3.5 w-3.5 text-xblue ${
+                      loadingShowcase ? "animate-pulse" : ""
+                    }`}
+                  />
+                  {tx("装载样例", "Load Showcase")}
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => void handleLoadShowcase()}
-                disabled={loadingShowcase || loading}
-                data-testid="dashboard-load-showcase-btn"
+                onClick={() => setTemplateHubOpen(true)}
+                data-testid="dashboard-template-hub-btn"
               >
-                <Sparkles
-                  className={`h-3.5 w-3.5 text-xblue ${
-                    loadingShowcase ? "animate-pulse" : ""
-                  }`}
-                />
-                {tx("装载样例", "Load Showcase")}
+                <Package className="h-3.5 w-3.5 text-xblue" />
+                {tx("模板库", "Templates")}
               </Button>
-            )}
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setTemplateHubOpen(true)}
-              data-testid="dashboard-template-hub-btn"
-            >
-              <Package className="h-3.5 w-3.5 text-xblue" />
-              {tx("模板库", "Templates")}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => void load()}
-              disabled={loading}
-              data-testid="dashboard-refresh-btn"
-            >
-              <RefreshCw
-                className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
-              />
-              {tx("刷新", "Refresh")}
-            </Button>
-          </div>
-        }
-      />
-
-      {showOnboardingStrip && (
-        <OnboardingStrip
-          status={onboarding}
-          onOpenTemplateHub={() => setTemplateHubOpen(true)}
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void load()}
+                disabled={loading}
+                data-testid="dashboard-refresh-btn"
+              >
+                <RefreshCw
+                  className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`}
+                />
+                {tx("刷新", "Refresh")}
+              </Button>
+            </div>
+          }
         />
-      )}
+
+        {showOnboardingStrip && (
+          <div
+            className={
+              shouldAutoCollapseOnboarding
+                ? "absolute left-0 right-0 top-full mt-2 z-30 shadow-xl rounded-lg"
+                : "mt-4"
+            }
+          >
+            <OnboardingStrip
+              status={onboarding}
+              defaultExpanded={shouldAutoCollapseOnboarding}
+              hideTemplateAction={shouldAutoCollapseOnboarding}
+              onOpenTemplateHub={() => setTemplateHubOpen(true)}
+            />
+          </div>
+        )}
+      </div>
 
       <TemplateHubModal
         open={templateHubOpen}
@@ -417,35 +431,39 @@ export function DashboardPage() {
 
       {/* Block 1: 6 Core Operational KPI Cards with Live SVG Sparklines */}
       <div
-        className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-3"
+        className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 2xl:grid-cols-6 gap-3"
         data-testid="dashboard-kpi-grid"
       >
         {kpiCards.map((card) => (
           <Card
             key={card.key}
             data-testid={card.testId}
-            className="p-3.5 flex flex-col justify-between gap-2"
+            className="p-3.5 flex flex-col justify-between gap-2 min-w-0"
           >
             <div className="flex items-center justify-between gap-1.5 text-xs text-muted-foreground">
               <span className="font-medium truncate">{card.label}</span>
               {card.icon}
             </div>
 
-            <div className="flex items-end justify-between gap-2">
-              <div className="min-w-0">
+            <div className="flex items-end justify-between gap-2 min-w-0">
+              <div className="min-w-0 flex-1">
                 <div
                   data-testid={card.valueTestId}
-                  className="text-lg font-mono-tech font-semibold text-foreground tabular-nums truncate leading-tight"
+                  className="text-lg font-mono-tech font-semibold text-foreground tabular-nums whitespace-nowrap leading-tight"
                 >
                   {card.value}
                 </div>
-                <div className="text-[11px] text-muted-foreground truncate mt-0.5">
+                <div
+                  title={card.meta}
+                  className="text-[11px] text-muted-foreground truncate mt-0.5"
+                >
                   {card.meta}
                 </div>
               </div>
               <SparklineSvg
                 values={card.spark}
                 strokeClassName={card.strokeClass}
+                className="w-14 xl:w-16 shrink-0"
               />
             </div>
           </Card>

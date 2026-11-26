@@ -167,7 +167,12 @@ export function formatDisplayValue(
       minimumFractionDigits: 0,
       maximumFractionDigits: Math.max(0, Math.min(6, decimals)),
     });
-    return `${options?.prefix ?? ""}${formatted}${options?.unit ? ` ${options.unit}` : ""}${options?.suffix ?? ""}`;
+    const unitPart = options?.unit
+      ? options.unit.startsWith("%")
+        ? options.unit
+        : ` ${options.unit}`
+      : "";
+    return `${options?.prefix ?? ""}${formatted}${unitPart}${options?.suffix ?? ""}`;
   }
   if (typeof val === "object") {
     return JSON.stringify(val);

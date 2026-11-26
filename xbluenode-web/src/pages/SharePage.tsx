@@ -679,7 +679,7 @@ export function SharePage() {
       )}
 
       {/* Main Content */}
-      <main className="flex-1 w-full max-w-[1600px] mx-auto p-4 md:p-6">
+      <main className="flex-1 w-full max-w-[1920px] mx-auto p-4 md:p-6">
         {loading ? (
           <Card
             className="p-12 text-center text-xs text-muted-foreground"

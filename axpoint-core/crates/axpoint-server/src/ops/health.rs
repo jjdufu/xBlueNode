@@ -158,7 +158,7 @@ async fn probe_parser(http: &reqwest::Client, parser_base_url: &str) -> ParserHe
             .and_then(|b| b.version)
             .map(|v| v.trim().to_owned())
             .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| String::from("0.4.0"));
+            .unwrap_or_else(|| String::from("0.4.1"));
         Ok(version)
     };
 

@@ -124,6 +124,18 @@ export interface DocumentListResponse {
   next_cursor: string | null;
 }
 
+export interface DocumentChunkItem {
+  para_id: string;
+  seq_no: number;
+  content: string;
+  entity_density: number;
+}
+
+export interface DocumentChunksResponse {
+  doc_id: string;
+  items: DocumentChunkItem[];
+}
+
 /** Uploads a document via `POST /api/documents/upload` with Bearer authorization. */
 export async function uploadDocument(file: File): Promise<IngestResponse> {
   const form = new FormData();
@@ -149,6 +161,10 @@ export const api = {
     requestJson<void>(`/api/documents/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
+  listDocumentChunks: (id: string) =>
+    requestJson<DocumentChunksResponse>(
+      `/api/documents/${encodeURIComponent(id)}/chunks`
+    ),
   ingestText: (payload: {
     title: string;
     source_name: string;

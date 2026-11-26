@@ -15,7 +15,6 @@ import {
 import {
   Button,
   Card,
-  Select,
   StatusBadge,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
@@ -156,36 +155,19 @@ export function BackupPanel({ tenantId }: BackupPanelProps) {
 
           <div className="flex flex-wrap items-center gap-2">
             {canWrite && (
-              <>
-                <Select
-                  data-testid="backup-kind-select"
-                  value={selectedKind}
-                  onChange={(e) =>
-                    setSelectedKind(e.target.value as BackupKind)
-                  }
-                  className="h-8 text-xs font-medium"
-                >
-                  {BACKUP_KIND_OPTIONS.map((opt) => (
-                    <option key={opt.kind} value={opt.kind}>
-                      {isZh ? opt.label : opt.enLabel} ({opt.kind})
-                    </option>
-                  ))}
-                </Select>
-
-                <Button
-                  type="button"
-                  variant="primary"
-                  size="sm"
-                  data-testid="create-backup-btn"
-                  disabled={creating}
-                  onClick={() => void handleCreateBackup()}
-                >
-                  <HardDriveDownload className="h-3.5 w-3.5" />
-                  {creating
-                    ? tx("创建中…", "Creating…")
-                    : tx("创建备份", "Create Backup")}
-                </Button>
-              </>
+              <Button
+                type="button"
+                variant="primary"
+                size="sm"
+                data-testid="create-backup-btn"
+                disabled={creating}
+                onClick={() => void handleCreateBackup()}
+              >
+                <HardDriveDownload className="h-3.5 w-3.5" />
+                {creating
+                  ? tx("创建中…", "Creating…")
+                  : tx("创建备份", "Create Backup")}
+              </Button>
             )}
 
             <Button

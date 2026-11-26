@@ -250,7 +250,7 @@ export function PolicyEditor({
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-4">
         {/* Left: Tenant Custom Cedar Policies */}
-        <Card className="xl:col-span-4 p-4 space-y-3">
+        <Card className="xl:col-span-4 xl:sticky xl:top-4 self-start p-4 space-y-3">
           <div className="flex items-center justify-between border-b border-border pb-3">
             <div className="text-xs font-semibold flex items-center gap-1.5">
               <Code2 className="h-3.5 w-3.5 text-xblue" />
@@ -387,7 +387,7 @@ export function PolicyEditor({
                 Cedar Policy
               </label>
               <Textarea
-                rows={7}
+                rows={10}
                 value={policyText}
                 onChange={(e) => {
                   setPolicyText(e.target.value);

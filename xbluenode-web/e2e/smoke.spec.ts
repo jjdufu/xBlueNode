@@ -2,7 +2,7 @@ import { expect, type Page, type Route, test } from "@playwright/test";
 
 interface SmokeRouteAssertion {
   readonly path: string;
-  readonly sidebarLabel: string;
+  readonly sidebarLabel?: string;
   readonly heading: string;
 }
 
@@ -36,14 +36,14 @@ const SHELL_SMOKE_ROUTES: readonly SmokeRouteAssertion[] = [
   { path: "/flow", sidebarLabel: "编排与告警", heading: "编排与告警" },
   { path: "/view", sidebarLabel: "数字看板", heading: "数字看板" },
   { path: "/agents", sidebarLabel: "智能体与接口", heading: "智能体与接口" },
-  { path: "/settings", sidebarLabel: "系统设置", heading: "系统设置" },
-  { path: "/governance", sidebarLabel: "系统设置", heading: "系统设置" },
+  { path: "/settings", heading: "系统设置" },
+  { path: "/governance", heading: "系统设置" },
   { path: "/ingest", sidebarLabel: "数据与知识", heading: "数据与知识" },
   { path: "/query", sidebarLabel: "查询与制图", heading: "查询与制图" },
   { path: "/graph", sidebarLabel: "建模工作室", heading: "建模工作室" },
   { path: "/alerts", sidebarLabel: "编排与告警", heading: "编排与告警" },
-  { path: "/guard", sidebarLabel: "系统设置", heading: "权限与安全" },
-  { path: "/ops", sidebarLabel: "系统设置", heading: "运维与备份" },
+  { path: "/guard", heading: "权限与安全" },
+  { path: "/ops", heading: "运维与备份" },
 ];
 
 async function installDeterministicApiMocks(
@@ -496,9 +496,13 @@ test("all registered routes and /login (password + OIDC + PAT accordion) render 
     await page.goto(routeSpec.path);
     await expect(page.getByTestId("app-top-header")).toContainText("xBlueNode");
     await expect(page.locator("aside")).toBeVisible();
-    await expect(
-      page.getByRole("link", { name: routeSpec.sidebarLabel })
-    ).toBeVisible();
+    if (routeSpec.sidebarLabel) {
+      await expect(
+        page.getByRole("link", { name: routeSpec.sidebarLabel })
+      ).toBeVisible();
+    } else {
+      await expect(page.getByTestId("shell-user-menu-btn")).toBeVisible();
+    }
     await expect(
       page.getByRole("heading", { level: 1, name: routeSpec.heading }).first()
     ).toBeVisible();

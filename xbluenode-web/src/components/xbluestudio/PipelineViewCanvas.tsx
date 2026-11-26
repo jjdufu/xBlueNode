@@ -119,7 +119,7 @@ export function PipelineViewCanvas({
       data-testid="studio-pipeline-canvas"
       className="flex-1 min-h-0 w-full overflow-auto p-3.5 bg-muted/10"
     >
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+      <div className="mb-3 pr-10 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center gap-2 text-xs font-medium text-foreground">
           <GitMerge className="h-3.5 w-3.5 text-xblue" />
           <span>{tx("同源映射流水线", "Mapping Pipeline")}</span>
@@ -228,7 +228,7 @@ export function PipelineViewCanvas({
         </Card>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-3 min-w-[760px]">
+      <div className="grid grid-cols-4 gap-3 min-w-[880px]">
         {/* Stage 1: Source Datasets */}
         <div
           data-testid="pipeline-col-datasets"

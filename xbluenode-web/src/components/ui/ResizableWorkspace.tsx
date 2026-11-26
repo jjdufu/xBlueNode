@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Group,
   Panel,
@@ -15,6 +15,7 @@ export interface WorkspacePaneSpec {
   /** Default percentage share (10..90). */
   readonly defaultSize: number;
   readonly minSize?: number;
+  readonly minPx?: number;
   readonly maxSize?: number;
   readonly collapsible?: boolean;
   readonly className?: string;
@@ -54,7 +55,13 @@ function readPersistedLayout(
     let total = 0;
     for (const pane of panes) {
       const val = rec[pane.id];
-      if (typeof val !== "number" || !Number.isFinite(val) || val < 0 || val > 100) {
+      if (
+        typeof val !== "number" ||
+        !Number.isFinite(val) ||
+        val < 0 ||
+        val > 100 ||
+        (!pane.collapsible && val < 2)
+      ) {
         return undefined;
       }
       out[pane.id] = val;
@@ -115,6 +122,22 @@ export function ResizableWorkspace({
 
   const groupRef = useRef<GroupImperativeHandle | null>(null);
   const panelRefs = useRef<Record<string, PanelImperativeHandle | null>>({});
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [containerExtent, setContainerExtent] = useState(0);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const measure = () => {
+      const next =
+        direction === "horizontal" ? el.clientWidth : el.clientHeight;
+      if (next > 0) setContainerExtent(next);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [direction]);
 
   const initialLayout = useMemo(
     () => readPersistedLayout(effectiveStorageKey, panes),
@@ -180,38 +203,56 @@ export function ResizableWorkspace({
   );
 
   return (
-    <Group
-      id={`workspace-group-${shortId}`}
-      data-testid={testId ?? `resizable-workspace-${shortId}`}
-      orientation={direction}
-      groupRef={groupRef}
-      defaultLayout={initialLayout}
-      onLayoutChange={handlePersist}
-      onLayoutChanged={(layout, meta) => {
-        handlePersist(meta.requestedLayout ?? layout);
-      }}
-      className={cn("h-full w-full min-h-0 min-w-0", className)}
-    >
-      {panes.map((pane, idx) => {
-        const isLast = idx === panes.length - 1;
-        const handleId = resolveDefaultHandleTestId(direction, panes, idx);
-        return (
-          <React.Fragment key={pane.id}>
-            <Panel
-              id={pane.id}
-              data-testid={`resizable-pane-${shortId}-${pane.id}`}
-              defaultSize={`${pane.defaultSize}%`}
-              minSize={`${pane.minSize ?? 12}%`}
-              maxSize={
-                pane.maxSize !== undefined ? `${pane.maxSize}%` : undefined
-              }
-              collapsible={Boolean(pane.collapsible)}
-              collapsedSize="0%"
-              panelRef={(inst) => {
+    <div ref={containerRef} className={cn("h-full w-full min-h-0 min-w-0", className)}>
+      <Group
+        id={`workspace-group-${shortId}`}
+        data-testid={testId ?? `resizable-workspace-${shortId}`}
+        orientation={direction}
+        groupRef={groupRef}
+        defaultLayout={initialLayout}
+        onLayoutChange={handlePersist}
+        onLayoutChanged={(layout, meta) => {
+          handlePersist(meta.requestedLayout ?? layout);
+        }}
+        className="h-full w-full min-h-0 min-w-0"
+      >
+        {panes.map((pane, idx) => {
+          const isLast = idx === panes.length - 1;
+          const handleId = resolveDefaultHandleTestId(direction, panes, idx);
+          const inferredMinPx =
+            pane.minPx ??
+            (direction === "horizontal" && !pane.collapsible && pane.defaultSize <= 38
+              ? 280
+              : direction === "horizontal" && pane.collapsible && pane.defaultSize <= 25
+                ? 210
+                : 0);
+          const pxMinPct =
+            inferredMinPx > 0 && containerExtent > 0
+              ? Math.ceil((inferredMinPx / containerExtent) * 100)
+              : 0;
+          const baseMinPct = pane.minSize ?? 12;
+          const cappedMax = pane.maxSize ?? 90;
+          const effectiveMinPct = Math.min(
+            cappedMax - 5,
+            Math.max(baseMinPct, pxMinPct)
+          );
+          return (
+            <React.Fragment key={pane.id}>
+              <Panel
+                id={pane.id}
+                data-testid={`resizable-pane-${shortId}-${pane.id}`}
+                defaultSize={`${pane.defaultSize}%`}
+                minSize={`${effectiveMinPct}%`}
+                maxSize={
+                  pane.maxSize !== undefined ? `${pane.maxSize}%` : undefined
+                }
+                collapsible={Boolean(pane.collapsible)}
+                collapsedSize="0%"
+                panelRef={(inst) => {
                 panelRefs.current[pane.id] = inst;
               }}
               className={cn(
-                "h-full min-h-0 min-w-0 flex flex-col overflow-hidden",
+                "h-full min-h-0 min-w-0 flex flex-col overflow-hidden @container",
                 pane.className
               )}
             >
@@ -225,7 +266,10 @@ export function ResizableWorkspace({
                 data-handle-id={`${shortId}-${idx}`}
                 disableDoubleClick
                 aria-label={tx("拖拽调整分栏宽度", "Drag to resize pane")}
-                title={tx("拖拽调宽，双击折叠或还原", "Drag to resize, double-click to toggle")}
+                title={tx(
+                  "拖拽调宽，双击重置或切换面板",
+                  "Drag to resize, double-click to reset"
+                )}
                 onDoubleClick={() => handleSeparatorDoubleClick(idx)}
                 className={cn(
                   "group relative z-10 flex shrink-0 items-center justify-center outline-none select-none",
@@ -237,7 +281,7 @@ export function ResizableWorkspace({
                 <span
                   aria-hidden="true"
                   className={cn(
-                    "rounded-full bg-[var(--border-subtle,var(--border))] transition-all duration-150",
+                    "relative flex items-center justify-center rounded-full bg-[var(--border-subtle,var(--border))] transition-all duration-150",
                     direction === "horizontal"
                       ? "h-full w-px group-hover:w-[3px] group-hover:bg-[var(--accent-primary,var(--xblue))] group-focus-visible:w-[3px] group-focus-visible:bg-[var(--accent-primary,var(--xblue))] group-data-[separator=hover]:w-[3px] group-data-[separator=hover]:bg-[var(--accent-primary,var(--xblue))] group-data-[separator=active]:w-[3px] group-data-[separator=active]:bg-[var(--accent-primary,var(--xblue))]"
                       : "w-full h-px group-hover:h-[3px] group-hover:bg-[var(--accent-primary,var(--xblue))] group-focus-visible:h-[3px] group-focus-visible:bg-[var(--accent-primary,var(--xblue))] group-data-[separator=hover]:h-[3px] group-data-[separator=hover]:bg-[var(--accent-primary,var(--xblue))] group-data-[separator=active]:h-[3px] group-data-[separator=active]:bg-[var(--accent-primary,var(--xblue))]"
@@ -247,7 +291,8 @@ export function ResizableWorkspace({
             )}
           </React.Fragment>
         );
-      })}
-    </Group>
+        })}
+      </Group>
+    </div>
   );
 }

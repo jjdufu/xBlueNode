@@ -225,18 +225,29 @@ export function TemplateHubModal({
                         : "border-border bg-background hover:bg-muted/40"
                     )}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold text-foreground truncate">
-                        {pack.name}
-                      </span>
-                      <Badge variant={active ? "xblue" : "outline"}>
-                        {pack.industry}
-                      </Badge>
+                    <div className="space-y-0.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <span
+                          title={pack.name}
+                          className="text-xs font-semibold text-foreground line-clamp-1"
+                        >
+                          {pack.name}
+                        </span>
+                        <Badge
+                          variant={active ? "xblue" : "outline"}
+                          className="shrink-0"
+                        >
+                          {pack.industry}
+                        </Badge>
+                      </div>
+                      <div className="font-mono-tech text-[11px] text-muted-foreground truncate">
+                        {pack.id} · v{pack.version}
+                      </div>
                     </div>
-                    <div className="font-mono-tech text-[11px] text-muted-foreground">
-                      {pack.id} · v{pack.version}
-                    </div>
-                    <p className="text-[11px] text-muted-foreground line-clamp-2 leading-snug">
+                    <p
+                      title={pack.description}
+                      className="text-[11px] text-muted-foreground line-clamp-2 leading-snug"
+                    >
                       {pack.description}
                     </p>
                   </button>
@@ -304,11 +315,12 @@ export function TemplateHubModal({
                     </div>
 
                     {nodeTypes.length > 0 && (
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      <div className="grid grid-cols-2 lg:grid-cols-3 gap-2">
                         {nodeTypes.map((nt) => (
                           <div
                             key={nt.name}
-                            className="rounded border border-border bg-muted/25 p-2 space-y-0.5"
+                            title={`${nt.display_name || nt.name} (${nt.name}) · ${nt.property_count}p · ${nt.metric_count}m`}
+                            className="rounded border border-border bg-muted/25 p-2 space-y-0.5 min-w-0"
                           >
                             <div className="font-medium text-xs truncate">
                               {nt.display_name || nt.name}
@@ -355,12 +367,21 @@ export function TemplateHubModal({
                             —
                           </div>
                         ) : (
-                          <div className="flex flex-wrap gap-1.5">
+                          <div className="space-y-1.5">
                             {sampleMetrics.map((m) => (
-                              <Badge key={m.name} variant="outline">
-                                {m.display_name || m.name} ({m.name}
-                                {m.unit ? ` · ${m.unit}` : ""})
-                              </Badge>
+                              <div
+                                key={m.name}
+                                title={`${m.display_name || m.name} (${m.name}${m.unit ? ` · ${m.unit}` : ""})`}
+                                className="rounded border border-border/80 bg-muted/25 px-2.5 py-1.5 min-w-0"
+                              >
+                                <div className="text-[11px] font-medium text-foreground truncate">
+                                  {m.display_name || m.name}
+                                </div>
+                                <div className="text-[10px] font-mono-tech text-muted-foreground truncate">
+                                  {m.name}
+                                  {m.unit ? ` · ${m.unit}` : ""}
+                                </div>
+                              </div>
                             ))}
                           </div>
                         )}
@@ -412,7 +433,7 @@ export function TemplateHubModal({
                         </Badge>
                       </div>
 
-                      <div className="space-y-2.5 max-h-56 overflow-y-auto pr-0.5">
+                      <div className="space-y-2.5 max-h-72 overflow-y-auto pr-0.5">
                         {sampleRows.map((sr) => (
                           <div
                             key={sr.dataset_name}
@@ -422,7 +443,7 @@ export function TemplateHubModal({
                               <span className="font-mono-tech font-semibold">
                                 {sr.dataset_name}
                               </span>
-                              <span className="text-muted-foreground font-mono-tech">
+                              <span className="text-muted-foreground font-mono-tech tabular-nums">
                                 {fmtNum(sr.total_rows, 0)} {tx("行", "rows")}
                               </span>
                             </div>
@@ -430,27 +451,44 @@ export function TemplateHubModal({
                               <table className="w-full text-left border-collapse text-[11px]">
                                 <thead>
                                   <tr className="border-b border-border bg-muted/15 text-muted-foreground font-mono-tech">
-                                    {(sr.headers ?? []).map((h) => (
-                                      <th
-                                        key={h}
-                                        className="py-1 px-2 whitespace-nowrap font-medium"
-                                      >
-                                        {h}
-                                      </th>
-                                    ))}
+                                    {(sr.headers ?? []).map((h, hIdx) => {
+                                      const sampleVal = sr.rows?.[0]?.[hIdx] ?? "";
+                                      const isNumericCol =
+                                        sampleVal !== "" &&
+                                        /^-?\d[\d,.]*$/.test(String(sampleVal).trim());
+                                      return (
+                                        <th
+                                          key={h}
+                                          className={cn(
+                                            "py-1 px-2 whitespace-nowrap font-medium",
+                                            isNumericCol && "text-right"
+                                          )}
+                                        >
+                                          {h}
+                                        </th>
+                                      );
+                                    })}
                                   </tr>
                                 </thead>
-                                <tbody className="divide-y divide-border/60 font-mono-tech">
+                                <tbody className="divide-y divide-border/60 font-mono-tech tabular-nums">
                                   {(sr.rows ?? []).slice(0, 4).map((row, rIdx) => (
                                     <tr key={rIdx}>
-                                      {row.map((cell, cIdx) => (
-                                        <td
-                                          key={cIdx}
-                                          className="py-1 px-2 whitespace-nowrap text-foreground/90"
-                                        >
-                                          {cell}
-                                        </td>
-                                      ))}
+                                      {row.map((cell, cIdx) => {
+                                        const isNumericCell =
+                                          cell !== "" &&
+                                          /^-?\d[\d,.]*$/.test(String(cell).trim());
+                                        return (
+                                          <td
+                                            key={cIdx}
+                                            className={cn(
+                                              "py-1 px-2 whitespace-nowrap text-foreground/90",
+                                              isNumericCell && "text-right"
+                                            )}
+                                          >
+                                            {cell}
+                                          </td>
+                                        );
+                                      })}
                                     </tr>
                                   ))}
                                 </tbody>

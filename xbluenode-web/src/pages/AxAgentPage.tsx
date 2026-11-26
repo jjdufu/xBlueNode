@@ -49,6 +49,7 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDialog,
   Input,
   Modal,
   PageHeader,
@@ -167,6 +168,8 @@ export function AxAgentPage() {
   );
   const [copiedPat, setCopiedPat] = useState(false);
   const [patError, setPatError] = useState<string | null>(null);
+  const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [revokingPat, setRevokingPat] = useState(false);
 
   // Date range for daily LLM usage table
   const [usageFrom, setUsageFrom] = useState("");
@@ -422,9 +425,11 @@ export function AxAgentPage() {
 
   const handleRevokePat = async (id: string) => {
     if (!canManagePat) return;
+    setRevokingPat(true);
     setPatError(null);
     try {
       await revokeApiToken(id);
+      setConfirmRevokeId(null);
       if (issuedPat?.id === id) {
         setIssuedPat(null);
         setActivePat(null);
@@ -436,6 +441,8 @@ export function AxAgentPage() {
           ? err.message
           : tx("撤销令牌失败", "Failed to revoke token")
       );
+    } finally {
+      setRevokingPat(false);
     }
   };
 
@@ -550,7 +557,20 @@ export function AxAgentPage() {
       />
 
       {/* Tab Navigation Bar */}
-      <Tabs items={tabItems} value={activeTab} onChange={setActiveTab} />
+      <Tabs
+        items={tabItems}
+        value={activeTab}
+        onChange={(next) => {
+          setActiveTab(next);
+          const updated = new URLSearchParams(searchParams);
+          if (next === "workbench") {
+            updated.delete("tab");
+          } else {
+            updated.set("tab", next);
+          }
+          setSearchParams(updated, { replace: true });
+        }}
+      />
 
       {/* Tab Panels */}
       {activeTab === "workbench" ? (
@@ -736,40 +756,65 @@ export function AxAgentPage() {
             />
           </div>
 
-          <div className="space-y-1.5">
+          <div className="space-y-2">
             <div className="text-[11px] text-muted-foreground">
               {tx("权限范围", "Permission Scopes")}
             </div>
-            <div className="flex flex-wrap gap-2">
-              {userPermissions.map((perm) => {
-                const forbiddenForBuilder =
-                  patProfile === "BUILDER" && BUILDER_FORBIDDEN_SET.has(perm);
-                return (
-                  <label
-                    key={perm}
-                    title={perm}
-                    className={cn(
-                      "inline-flex items-center gap-1.5 rounded border border-border bg-background px-2 py-1 text-[11px]",
-                      forbiddenForBuilder
-                        ? "opacity-45 cursor-not-allowed"
-                        : "cursor-pointer"
-                    )}
-                  >
-                    <input
-                      type="checkbox"
-                      data-testid={`pat-scope-checkbox-${perm}`}
-                      disabled={forbiddenForBuilder}
-                      checked={
-                        !forbiddenForBuilder && patScopes.includes(perm)
-                      }
-                      onChange={() => togglePatScope(perm)}
-                      className="accent-xblue"
-                    />
-                    <span>{tEnum(perm)}</span>
-                  </label>
-                );
-              })}
-            </div>
+            {(
+              [
+                {
+                  label: tx("只读权限", "Read Scopes"),
+                  items: userPermissions.filter(
+                    (p) => p.endsWith("_READ") || String(p) === "AUDIT_READ"
+                  ),
+                },
+                {
+                  label: tx("写入与执行权限", "Write & Execution Scopes"),
+                  items: userPermissions.filter(
+                    (p) => !(p.endsWith("_READ") || String(p) === "AUDIT_READ")
+                  ),
+                },
+              ] as const
+            )
+              .filter((group) => group.items.length > 0)
+              .map((group) => (
+                <div key={group.label} className="space-y-1">
+                  <div className="text-[10px] font-medium text-muted-foreground/80">
+                    {group.label}
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {group.items.map((perm) => {
+                      const forbiddenForBuilder =
+                        patProfile === "BUILDER" &&
+                        BUILDER_FORBIDDEN_SET.has(perm);
+                      return (
+                        <label
+                          key={perm}
+                          title={perm}
+                          className={cn(
+                            "inline-flex items-center gap-1.5 rounded border border-border bg-background px-2 py-1 text-[11px]",
+                            forbiddenForBuilder
+                              ? "opacity-45 cursor-not-allowed"
+                              : "cursor-pointer"
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            data-testid={`pat-scope-checkbox-${perm}`}
+                            disabled={forbiddenForBuilder}
+                            checked={
+                              !forbiddenForBuilder && patScopes.includes(perm)
+                            }
+                            onChange={() => togglePatScope(perm)}
+                            className="accent-xblue"
+                          />
+                          <span>{tEnum(perm)}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
           </div>
 
           <div className="flex justify-end">
@@ -870,10 +915,10 @@ export function AxAgentPage() {
                     {!revoked ? (
                       <Button
                         type="button"
-                        variant="outline"
+                        variant="danger"
                         size="sm"
                         data-testid={`revoke-pat-btn-${tok.id}`}
-                        onClick={() => void handleRevokePat(tok.id)}
+                        onClick={() => setConfirmRevokeId(tok.id)}
                       >
                         <Trash2 className="h-3.5 w-3.5" />
                         {tx("撤销", "Revoke")}
@@ -886,6 +931,21 @@ export function AxAgentPage() {
           )}
         </div>
       </Modal>
+
+      <ConfirmDialog
+        open={Boolean(confirmRevokeId)}
+        onClose={() => setConfirmRevokeId(null)}
+        onConfirm={() =>
+          confirmRevokeId ? void handleRevokePat(confirmRevokeId) : undefined
+        }
+        loading={revokingPat}
+        title={tx("确认撤销访问令牌", "Confirm Token Revocation")}
+        description={tx(
+          "撤销后使用该令牌的外部脚本、MCP 客户端与 OpenAPI 调用将立即被拒绝。",
+          "Revoking this token immediately invalidates external scripts, MCP clients, and OpenAPI callers."
+        )}
+        confirmLabel={tx("确认撤销", "Revoke")}
+      />
     </div>
   );
 }

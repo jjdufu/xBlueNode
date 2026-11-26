@@ -27,12 +27,14 @@ import {
   Badge,
   Button,
   Card,
+  ConfirmDialog,
   Drawer,
   Input,
   Modal,
   PasswordInput,
   Select,
   StatusBadge,
+  Switch,
 } from "@/components/ui/primitives";
 import { useI18n } from "@/i18n";
 import { usePrincipal } from "@/lib/permissions";
@@ -107,6 +109,7 @@ export function UsersPanel({
   // Reset password state
   const [resetPasswordVal, setResetPasswordVal] = useState("");
   const [resettingPassword, setResettingPassword] = useState(false);
+  const [confirmResetPwdOpen, setConfirmResetPwdOpen] = useState(false);
 
   // User attributes editor (`sec_user_attributes`)
   const [attrDraft, setAttrDraft] = useState<Record<string, string[]>>({});
@@ -310,6 +313,7 @@ export function UsersPanel({
     setBanner(null);
     try {
       await axguardApi.resetUserPassword(selectedUser.id, resetPasswordVal);
+      setConfirmResetPwdOpen(false);
       setResetPasswordVal("");
       setBanner({
         kind: "ok",
@@ -696,20 +700,22 @@ export function UsersPanel({
                   </Select>
                 </div>
                 <div className="space-y-1">
-                  <label className="text-[11px] text-muted-foreground">
-                    {tx("状态", "Status")}
+                  <label className="block text-[11px] text-muted-foreground">
+                    {tx("账号状态", "Account Status")}
                   </label>
-                  <Select
-                    value={editStatus}
-                    disabled={!canWrite}
-                    onChange={(e) =>
-                      setEditStatus(e.target.value as UserAccountStatus)
-                    }
-                    className="h-8 w-full text-xs"
-                  >
-                    <option value="ACTIVE">{tEnum("ACTIVE")}</option>
-                    <option value="DISABLED">{tEnum("DISABLED")}</option>
-                  </Select>
+                  <div className="h-8 flex items-center justify-between rounded-md border border-border px-2.5 bg-muted/20">
+                    <span className="text-xs font-medium">
+                      {tEnum(editStatus)}
+                    </span>
+                    <Switch
+                      disabled={!canWrite}
+                      aria-label={tx("账号状态", "Account Status")}
+                      checked={editStatus === "ACTIVE"}
+                      onCheckedChange={(checked) =>
+                        setEditStatus(checked ? "ACTIVE" : "DISABLED")
+                      }
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -811,10 +817,10 @@ export function UsersPanel({
 
               <div className="space-y-1.5">
                 {Object.entries(attrDraft).length === 0 ? (
-                  <div className="text-[11px] text-muted-foreground rounded border border-dashed border-border px-2.5 py-2 font-mono-tech">
+                  <div className="text-[11px] text-muted-foreground rounded border border-dashed border-border px-2.5 py-2">
                     {tx(
-                      '暂无扩展属性 · warehouses = ["W-1", "W-2"]',
-                      'No attributes · warehouses = ["W-1", "W-2"]'
+                      "暂无扩展属性（可为账号绑定区域、仓库或条线标签用于策略匹配）",
+                      "No extended attributes configured yet"
                     )}
                   </div>
                 ) : (
@@ -904,11 +910,17 @@ export function UsersPanel({
 
             {/* Section 3: Reset Local Password */}
             {canWrite && selectedUser.auth_source === "LOCAL" && (
-              <div className="border-t border-border pt-3 space-y-2">
-                <div className="text-xs font-semibold flex items-center gap-1.5">
-                  <KeyRound className="h-3.5 w-3.5 text-xblue" />
-                  {tx("重置本地口令", "Reset Local Password")}
+              <div className="rounded-md border border-red-500/35 bg-red-500/5 p-3 space-y-2">
+                <div className="text-xs font-semibold flex items-center gap-1.5 text-red-700 dark:text-red-300">
+                  <KeyRound className="h-3.5 w-3.5 shrink-0" />
+                  {tx("危险操作 · 强制重置本地口令", "Danger Zone · Force Reset Password")}
                 </div>
+                <p className="text-[11px] text-muted-foreground">
+                  {tx(
+                    "重置口令将立即吊销该账号全部已登录会话。",
+                    "Resetting password immediately revokes all active sessions for this user."
+                  )}
+                </p>
                 <div className="flex gap-2">
                   <div className="flex-1">
                     <PasswordInput
@@ -919,13 +931,13 @@ export function UsersPanel({
                     />
                   </div>
                   <Button
-                    variant="outline"
+                    variant="danger"
                     type="button"
                     disabled={resettingPassword || !resetPasswordVal}
-                    onClick={() => void handleResetPassword()}
+                    onClick={() => setConfirmResetPwdOpen(true)}
                     className="shrink-0 h-8"
                   >
-                    {tx("重置", "Reset")}
+                    {tx("强制重置", "Reset")}
                   </Button>
                 </div>
               </div>
@@ -1170,6 +1182,19 @@ export function UsersPanel({
           </div>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        open={confirmResetPwdOpen && Boolean(selectedUser)}
+        onClose={() => setConfirmResetPwdOpen(false)}
+        onConfirm={() => void handleResetPassword()}
+        loading={resettingPassword}
+        title={tx("确认强制重置口令", "Confirm Password Reset")}
+        description={tx(
+          `确定强制重置账号「${selectedUser?.username ?? ""}」的本地登录口令并吊销所有活跃会话吗？`,
+          `Force reset password and revoke all active sessions for "${selectedUser?.username ?? ""}"?`
+        )}
+        confirmLabel={tx("确认重置", "Force Reset")}
+      />
     </div>
   );
 }

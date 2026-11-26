@@ -198,7 +198,7 @@ export function SchemaTree({
                         )}
                         <div className="min-w-0 flex-1">
                           <div
-                            className="font-mono-tech text-[11px] font-medium text-foreground break-all leading-snug"
+                            className="font-mono-tech text-[11px] font-medium text-foreground truncate leading-snug"
                             title={ds.name}
                           >
                             {formatSmartTableName(ds.name)}

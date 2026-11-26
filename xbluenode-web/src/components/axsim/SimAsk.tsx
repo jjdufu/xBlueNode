@@ -41,12 +41,12 @@ export function SimAsk({
 
   const samplePrompts: readonly string[] = [
     tx(
-      "如果 F-1 产能下降 30%，会对哪些订单履约造成影响？",
-      "What happens to order fulfillment if F-1 output drops by 30%?"
+      "如果关键上游节点负荷下降 30%，会对哪些下游节点造成传导影响？",
+      "If key upstream capacity drops by 30%, which downstream nodes are affected?"
     ),
     tx(
-      "当前场景中受影响幅度最大的前 5 个订单节点有哪些？",
-      "Which top 5 order nodes have the largest impact in the current scenario?"
+      "当前推演中受影响幅度最大的前 5 个核心节点有哪些？",
+      "Which top 5 nodes have the largest impact in the current scenario?"
     ),
   ];
 
@@ -137,8 +137,8 @@ export function SimAsk({
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           placeholder={tx(
-            "如果华东一厂产能下降 30%，哪些订单会受影响？",
-            "If East Factory output drops 30%, which orders are affected?"
+            "针对当前沙盘的节点与指标输入自然语言推演或追问…",
+            "Ask a what-if or impact question about the current sandbox…"
           )}
           className="text-xs"
           data-testid="sim-ask-input"

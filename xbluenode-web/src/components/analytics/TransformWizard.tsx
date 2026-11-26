@@ -39,6 +39,7 @@ export function TransformWizard({
 
   const [instruction, setInstruction] = useState("");
   const [sourceDatasetIds, setSourceDatasetIds] = useState<string[]>([]);
+  const [sourceFilter, setSourceFilter] = useState("");
   const [targetName, setTargetName] = useState("");
 
   const [draft, setDraft] = useState<TransformDraft | null>(null);
@@ -53,9 +54,11 @@ export function TransformWizard({
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   useEffect(() => {
-    const first = catalog.datasets?.[0];
-    if (sourceDatasetIds.length === 0 && first) {
-      setSourceDatasetIds([first.id]);
+    const datasets = catalog.datasets ?? [];
+    const preferred =
+      datasets.find((d) => d.name === "demo_orders") ?? datasets[0];
+    if (sourceDatasetIds.length === 0 && preferred) {
+      setSourceDatasetIds([preferred.id]);
     }
   }, [catalog.datasets, sourceDatasetIds.length]);
 
@@ -180,47 +183,67 @@ export function TransformWizard({
           </div>
 
           <div className="md:col-span-5 space-y-2.5">
-            <div className="space-y-1">
-              <label className="font-medium text-muted-foreground">
-                {tx("源数据集", "Source Datasets")}
-              </label>
-              <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <label className="font-medium text-muted-foreground">
+                  {tx("源数据集", "Source Datasets")} (
+                  {(catalog.datasets ?? []).length})
+                </label>
+                {(catalog.datasets ?? []).length > 6 && (
+                  <Input
+                    value={sourceFilter}
+                    onChange={(e) => setSourceFilter(e.target.value)}
+                    placeholder={tx("过滤表名…", "Filter tables…")}
+                    className="h-6 w-36 px-2 text-[11px] font-mono-tech"
+                  />
+                )}
+              </div>
+              <div className="flex flex-wrap gap-1.5 max-h-40 overflow-y-auto rounded border border-border/70 bg-background/40 p-2">
                 {(catalog.datasets ?? []).length === 0 ? (
                   <span className="text-[11px] text-muted-foreground">
                     {tx("暂无源数据集", "No source datasets")}
                   </span>
                 ) : (
-                  (catalog.datasets ?? []).map((ds) => {
-                    const checked = sourceDatasetIds.includes(ds.id);
-                    return (
-                      <label
-                        key={ds.id}
-                        className={`inline-flex items-center gap-1 rounded border px-2 py-1 font-mono-tech text-[11px] cursor-pointer ${
-                          checked
-                            ? "border-xblue bg-xblue-soft text-xblue"
-                            : "border-border bg-background"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={checked}
-                          disabled={!canTransform}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSourceDatasetIds((prev) => [...prev, ds.id]);
-                            } else {
-                              setSourceDatasetIds((prev) =>
-                                prev.filter((id) => id !== ds.id)
-                              );
-                            }
-                          }}
-                          className="accent-xblue"
-                          data-testid={`transform-source-${ds.name}`}
-                        />
-                        {ds.name}
-                      </label>
-                    );
-                  })
+                  (catalog.datasets ?? [])
+                    .filter((ds) => {
+                      const q = sourceFilter.trim().toLowerCase();
+                      if (!q) return true;
+                      return (
+                        ds.name.toLowerCase().includes(q) ||
+                        (ds.display_name ?? "").toLowerCase().includes(q)
+                      );
+                    })
+                    .map((ds) => {
+                      const checked = sourceDatasetIds.includes(ds.id);
+                      return (
+                        <label
+                          key={ds.id}
+                          className={`inline-flex items-center gap-1.5 rounded border px-2 py-1 font-mono-tech text-[11px] cursor-pointer ${
+                            checked
+                              ? "border-xblue bg-xblue-soft text-xblue"
+                              : "border-border bg-background hover:border-foreground/35"
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={!canTransform}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSourceDatasetIds((prev) => [...prev, ds.id]);
+                              } else {
+                                setSourceDatasetIds((prev) =>
+                                  prev.filter((id) => id !== ds.id)
+                                );
+                              }
+                            }}
+                            className="accent-xblue"
+                            data-testid={`transform-source-${ds.name}`}
+                          />
+                          {ds.name}
+                        </label>
+                      );
+                    })
                 )}
               </div>
             </div>

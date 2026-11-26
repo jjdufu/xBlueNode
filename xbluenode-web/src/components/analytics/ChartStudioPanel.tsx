@@ -831,12 +831,12 @@ export function ChartStudioPanel({
         <div className="flex items-center gap-2 shrink-0">
           <Button
             type="button"
-            variant="outline"
+            variant="primary"
             disabled={previewLoading}
             onClick={() => void handleRunPreview()}
             data-testid="chart-studio-preview-btn"
           >
-            <Play className="h-3.5 w-3.5 text-xblue" />
+            <Play className="h-3.5 w-3.5" />
             {previewLoading ? tx("查询中…", "Loading…") : tx("刷新预览", "Preview")}
           </Button>
 
@@ -853,11 +853,12 @@ export function ChartStudioPanel({
 
           <Button
             type="button"
+            variant="outline"
             disabled={!canEditView}
             onClick={handleOpenPinModal}
             data-testid="chart-studio-pin-btn"
           >
-            <Pin className="h-3.5 w-3.5" />
+            <Pin className="h-3.5 w-3.5 text-xblue" />
             {tx("钉入看板", "Pin")}
           </Button>
         </div>
@@ -948,11 +949,11 @@ export function ChartStudioPanel({
 
             {sourceKind === "SQL" && (
               <Textarea
-                rows={3}
+                rows={4}
                 value={sqlText}
                 onChange={(e) => setSqlText(e.target.value)}
                 placeholder="SELECT status, SUM(amount) AS total_amt FROM demo_orders GROUP BY status"
-                className="font-mono-tech text-xs"
+                className="font-mono-tech text-xs resize-y bg-muted/20"
                 data-testid="chart-studio-sql-input"
               />
             )}
@@ -1213,9 +1214,11 @@ export function ChartStudioPanel({
               <span className="font-semibold truncate">
                 {syntheticWidget.title}
               </span>
-              <Badge variant="outline">
-                {isZh ? activeDef.zh : activeDef.en}
-              </Badge>
+              {chartName.trim() && (
+                <Badge variant="outline">
+                  {isZh ? activeDef.zh : activeDef.en}
+                </Badge>
+              )}
             </div>
             <div
               className="flex items-center gap-2 text-[11px] font-mono-tech tabular-nums text-muted-foreground"

@@ -95,12 +95,12 @@ export function PulseThroughputChart({
     const chart = throughputChartRef.current;
     if (!chart || chart.isDisposed()) return;
 
-    const fgColor = isDark ? "#fafafa" : "#09090b";
-    const mutedColor = isDark ? "#a1a1aa" : "#71717a";
-    const gridBorder = isDark ? "#27272a" : "#e4e4e7";
-    const cardBg = isDark ? "#18181b" : "#ffffff";
+    const fgColor = isDark ? "#f8fafc" : "#0f172a";
+    const mutedColor = isDark ? "#94a3b8" : "#475569";
+    const gridBorder = isDark ? "rgba(148, 163, 184, 0.16)" : "#e2e8f0";
+    const cardBg = isDark ? "#11141d" : "#ffffff";
     const accentBlue = isDark ? "#3b82f6" : "#2563eb";
-    const barSlate = isDark ? "#52525b" : "#94a3b8";
+    const barSlate = isDark ? "#475569" : "#cbd5e1";
 
     const xLabels = hourlySeries.map((b) => formatHourLabel(b.hour_utc));
     const metricPts = hourlySeries.map((b) => b.metric_points);
@@ -177,12 +177,12 @@ export function PulseThroughputChart({
     const chart = subgraphChartRef.current;
     if (!chart || chart.isDisposed()) return;
 
-    const fgColor = isDark ? "#fafafa" : "#09090b";
-    const mutedColor = isDark ? "#a1a1aa" : "#71717a";
-    const gridBorder = isDark ? "#27272a" : "#e4e4e7";
-    const cardBg = isDark ? "#18181b" : "#ffffff";
+    const fgColor = isDark ? "#f8fafc" : "#0f172a";
+    const mutedColor = isDark ? "#94a3b8" : "#475569";
+    const gridBorder = isDark ? "rgba(148, 163, 184, 0.16)" : "#e2e8f0";
+    const cardBg = isDark ? "#11141d" : "#ffffff";
     const accentBlue = isDark ? "#3b82f6" : "#2563eb";
-    const linkColor = isDark ? "#71717a" : "#64748b";
+    const linkColor = isDark ? "#64748b" : "#94a3b8";
     const alertColor = isDark ? "#f87171" : "#dc2626";
 
     const topSubgraphs = subgraphs.slice(0, 6);
@@ -194,22 +194,39 @@ export function PulseThroughputChart({
       topSubgraphs.length > 0 ? topSubgraphs.map((s) => s.node_count) : [0];
     const linkVals =
       topSubgraphs.length > 0 ? topSubgraphs.map((s) => s.link_count) : [0];
-    const alertVals =
-      topSubgraphs.length > 0 ? topSubgraphs.map((s) => s.alert_count) : [0];
+    const alertCountByName = new Map<string, number>();
+    for (const sg of topSubgraphs) {
+      alertCountByName.set(sg.display_name, sg.alert_count);
+    }
 
     const nodesLabel = tx("节点", "Nodes");
     const linksLabel = tx("关系边", "Links");
-    const alertsLabel = tx("活跃告警", "Alerts");
+    const alertsSuffix = tx("告警", "alerts");
 
     const option: echarts.EChartsOption = {
       animation: false,
-      grid: { top: 24, right: 18, bottom: 20, left: 96 },
+      grid: { top: 26, right: 24, bottom: 20, left: 8, containLabel: true },
       tooltip: {
         trigger: "axis",
         axisPointer: { type: "shadow" },
         backgroundColor: cardBg,
         borderColor: gridBorder,
         textStyle: { color: fgColor, fontSize: 11 },
+        formatter: (params) => {
+          const list = Array.isArray(params) ? params : [params];
+          const first = list[0];
+          const catName = String(first?.name ?? "");
+          const ac = alertCountByName.get(catName) ?? 0;
+          const lines = list.map(
+            (p) => `${p.marker ?? ""} ${p.seriesName}: <b>${p.value}</b>`
+          );
+          if (ac > 0) {
+            lines.push(
+              `<span style="color:${alertColor}">▲ ${alertsSuffix}: <b>${ac}</b></span>`
+            );
+          }
+          return `<div style="font-size:11px"><b>${catName}</b><br/>${lines.join("<br/>")}</div>`;
+        },
       },
       legend: {
         top: 0,
@@ -217,7 +234,7 @@ export function PulseThroughputChart({
         itemWidth: 10,
         itemHeight: 6,
         textStyle: { color: mutedColor, fontSize: 10 },
-        data: [nodesLabel, linksLabel, alertsLabel],
+        data: [nodesLabel, linksLabel],
       },
       xAxis: {
         type: "value",
@@ -233,8 +250,26 @@ export function PulseThroughputChart({
         axisLabel: {
           color: mutedColor,
           fontSize: 10,
-          width: 84,
+          width: 172,
           overflow: "truncate",
+          formatter: (val: string) => {
+            const ac = alertCountByName.get(val) ?? 0;
+            const shortName = val.length > 11 ? `${val.slice(0, 10)}…` : val;
+            return ac > 0 ? `{n|${shortName}} {a|!${ac}}` : shortName;
+          },
+          rich: {
+            n: { color: mutedColor, fontSize: 10 },
+            a: {
+              color: alertColor,
+              fontSize: 10,
+              fontWeight: 600,
+              backgroundColor: isDark
+                ? "rgba(248,113,113,0.14)"
+                : "rgba(220,38,38,0.1)",
+              borderRadius: 3,
+              padding: [1, 4],
+            },
+          },
         },
       },
       series: [
@@ -251,13 +286,6 @@ export function PulseThroughputChart({
           barMaxWidth: 10,
           data: linkVals,
           itemStyle: { color: linkColor, borderRadius: [0, 2, 2, 0] },
-        },
-        {
-          name: alertsLabel,
-          type: "bar",
-          barMaxWidth: 10,
-          data: alertVals,
-          itemStyle: { color: alertColor, borderRadius: [0, 2, 2, 0] },
         },
       ],
     };

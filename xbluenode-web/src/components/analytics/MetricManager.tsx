@@ -135,15 +135,34 @@ export function MetricManager({
     [catalog.datasets, formDatasetId]
   );
 
+  const deriveDefaultExpr = (
+    ds:
+      | {
+          columns?: ReadonlyArray<{ column_name: string; data_type: string }>;
+        }
+      | null
+      | undefined
+  ): string => {
+    const numCol = (ds?.columns ?? []).find(
+      (c) =>
+        (c.data_type === "INT64" ||
+          c.data_type === "FLOAT64" ||
+          c.data_type === "DECIMAL") &&
+        !c.column_name.endsWith("_id") &&
+        c.column_name !== "id"
+    );
+    return numCol ? `SUM(${numCol.column_name})` : "COUNT(*)";
+  };
+
   const openCreateForm = () => {
     if (!canEditMetrics) return;
-    const firstDs = catalog.datasets?.[0];
+    const firstDs = catalog.datasets?.[0] ?? null;
     setFormMode("create");
     setFormName("");
     setFormDisplayName("");
     setFormDescription("");
     setFormDatasetId(firstDs?.id ?? "");
-    setFormExpression("SUM(amount)");
+    setFormExpression(deriveDefaultExpr(firstDs));
     setFormFilterSql("");
     setFormTimeColumn("");
     setFormDefaultGrain("MONTH");
@@ -392,9 +411,16 @@ export function MetricManager({
                 value={formDatasetId || selectedFormDataset?.id || ""}
                 disabled={formMode === "edit"}
                 onChange={(e) => {
-                  setFormDatasetId(e.target.value);
+                  const nextId = e.target.value;
+                  setFormDatasetId(nextId);
                   setFormDimensions([]);
                   setFormTimeColumn("");
+                  if (formMode === "create") {
+                    const ds =
+                      (catalog.datasets ?? []).find((d) => d.id === nextId) ??
+                      null;
+                    setFormExpression(deriveDefaultExpr(ds));
+                  }
                 }}
                 className="h-8 w-full font-mono-tech"
                 data-testid="metric-form-dataset"
@@ -416,7 +442,7 @@ export function MetricManager({
               <Input
                 value={formExpression}
                 onChange={(e) => setFormExpression(e.target.value)}
-                placeholder="SUM(amount)"
+                placeholder={deriveDefaultExpr(selectedFormDataset)}
                 className="h-8 text-xs font-mono-tech"
                 data-testid="metric-form-expression"
               />
@@ -429,7 +455,7 @@ export function MetricManager({
               <Input
                 value={formFilterSql}
                 onChange={(e) => setFormFilterSql(e.target.value)}
-                placeholder="status = 'PAID'"
+                placeholder={tx("可选 SQL WHERE 条件", "Optional SQL WHERE clause")}
                 className="h-8 text-xs font-mono-tech"
                 data-testid="metric-form-filter"
               />

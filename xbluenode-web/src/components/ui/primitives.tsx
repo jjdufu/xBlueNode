@@ -729,7 +729,7 @@ export function NumberInput({
   return (
     <div
       className={cn(
-        "inline-flex h-8 items-center rounded-md border border-input bg-background overflow-hidden focus-within:ring-1 focus-within:ring-xblue",
+        "flex w-full min-w-0 h-8 items-center rounded-md border border-input bg-background overflow-hidden focus-within:ring-1 focus-within:ring-xblue",
         disabled && "opacity-50 pointer-events-none",
         className
       )}
@@ -739,7 +739,7 @@ export function NumberInput({
         tabIndex={-1}
         disabled={disabled || (min !== undefined && value <= min)}
         onClick={() => onChange(clamp(Number((value - step).toFixed(6))))}
-        className="inline-flex h-full w-6 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35 cursor-pointer shrink-0"
+        className="inline-flex h-full w-5 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35 cursor-pointer shrink-0"
       >
         <Minus className="h-3 w-3" />
       </button>
@@ -758,14 +758,14 @@ export function NumberInput({
             onChange(clamp(parsed));
           }
         }}
-        className="w-full min-w-[2.25rem] bg-transparent px-1 text-center text-xs font-mono-tech tabular-nums text-foreground focus:outline-none"
+        className="w-full min-w-0 flex-1 bg-transparent px-1 text-center text-xs font-mono-tech tabular-nums text-foreground focus:outline-none"
       />
       <button
         type="button"
         tabIndex={-1}
         disabled={disabled || (max !== undefined && value >= max)}
         onClick={() => onChange(clamp(Number((value + step).toFixed(6))))}
-        className="inline-flex h-full w-6 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35 cursor-pointer shrink-0"
+        className="inline-flex h-full w-5 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-35 cursor-pointer shrink-0"
       >
         <Plus className="h-3 w-3" />
       </button>
@@ -957,7 +957,7 @@ export function Tabs<K extends string>({
             data-testid={item.testId}
             onClick={() => onChange(item.key)}
             className={cn(
-              "inline-flex items-center gap-1.5 border-b-2 px-3 py-2 text-xs font-medium whitespace-nowrap shrink-0 transition-colors disabled:opacity-40 disabled:pointer-events-none cursor-pointer -mb-px",
+              "inline-flex items-center gap-1.5 border-b-2 px-2 py-2 text-xs font-medium whitespace-nowrap shrink-0 transition-colors disabled:opacity-40 disabled:pointer-events-none cursor-pointer -mb-px",
               active
                 ? "border-xblue text-xblue font-semibold"
                 : "border-transparent text-muted-foreground hover:text-foreground"
@@ -999,7 +999,7 @@ export function SegmentedControl<K extends string>({
     <div
       role="tablist"
       className={cn(
-        "inline-flex items-center gap-0.5 rounded-md border border-border bg-muted/50 p-0.5",
+        "inline-flex h-8 items-center gap-0.5 rounded-md border border-border bg-muted/50 p-0.5",
         className
       )}
     >
@@ -1015,10 +1015,10 @@ export function SegmentedControl<K extends string>({
             data-testid={item.testId}
             onClick={() => onChange(item.key)}
             className={cn(
-              "inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-xs whitespace-nowrap shrink-0 transition-colors disabled:opacity-40 cursor-pointer",
+              "inline-flex h-full items-center gap-1.5 rounded-[5px] px-2.5 text-xs whitespace-nowrap shrink-0 transition-colors disabled:opacity-40 cursor-pointer",
               active
-                ? "bg-xblue-soft text-xblue font-semibold border border-xblue/30 shadow-2xs"
-                : "font-medium text-muted-foreground hover:text-foreground border border-transparent"
+                ? "bg-xblue-soft text-xblue font-semibold shadow-2xs"
+                : "font-medium text-muted-foreground hover:text-foreground"
             )}
           >
             {item.icon}

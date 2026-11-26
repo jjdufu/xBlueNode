@@ -45,10 +45,11 @@ function shortenLocalPath(rawPath: string | null | undefined): string {
 }
 
 function HealthStatusPill({ ok }: { ok: boolean }) {
+  const { tx } = useI18n();
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-mono-tech font-semibold",
+        "inline-flex items-center gap-1 rounded px-2 py-0.5 text-[11px] font-semibold",
         ok
           ? "border border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
           : "border border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400"
@@ -59,7 +60,7 @@ function HealthStatusPill({ ok }: { ok: boolean }) {
       ) : (
         <AlertTriangle className="h-3 w-3" />
       )}
-      {ok ? "HEALTHY" : "DEGRADED"}
+      {ok ? tx("健康", "Healthy") : tx("降级", "Degraded")}
     </span>
   );
 }
@@ -144,8 +145,12 @@ export function HealthPanel({
               {tx("实例运行信息", "Instance Runtime")}
             </span>
             {systemInfo && (
-              <Badge variant="xblue" className="uppercase">
-                {systemInfo.env}
+              <Badge variant="xblue">
+                {systemInfo.env === "prod"
+                  ? tx("生产环境", "Production")
+                  : systemInfo.env === "test"
+                    ? tx("测试环境", "Test")
+                    : systemInfo.env.toUpperCase()}
               </Badge>
             )}
           </div>
@@ -427,11 +432,18 @@ export function HealthPanel({
               </span>
               <HealthStatusPill ok={report.disk.ok} />
             </div>
-            <div className="flex flex-wrap items-baseline justify-between gap-2 text-xs">
-              <span className="text-muted-foreground">
-                {tx("剩余容量", "Available Capacity")}
-              </span>
-              <span className="text-base font-mono-tech font-semibold text-foreground">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-xs pt-1">
+              <div className="space-y-0.5">
+                <div className="text-muted-foreground">
+                  {tx("剩余容量", "Available Capacity")}
+                </div>
+                {systemInfo?.data_root && (
+                  <div className="font-mono-tech text-[11px] text-muted-foreground/80">
+                    {shortenLocalPath(systemInfo.data_root)}
+                  </div>
+                )}
+              </div>
+              <span className="text-base font-mono-tech font-semibold text-foreground tabular-nums">
                 {formatByteSize(report.disk.data_root_free_bytes)}
               </span>
             </div>

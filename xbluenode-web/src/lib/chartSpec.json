@@ -28,28 +28,28 @@
   },
   "tokens": {
     "light": {
-      "text": "#18181b",
-      "subtext": "#71717a",
-      "axisLine": "#e4e4e7",
-      "splitLine": "#f4f4f5",
+      "text": "#0f172a",
+      "subtext": "#475569",
+      "axisLine": "#cbd5e1",
+      "splitLine": "#e2e8f0",
       "tooltipBg": "#ffffff",
-      "tooltipBorder": "#e4e4e7"
+      "tooltipBorder": "#cbd5e1"
     },
     "dark": {
       "text": "#f4f4f5",
-      "subtext": "#a1a1aa",
+      "subtext": "#94a3b8",
       "axisLine": "#3f3f46",
-      "splitLine": "#27272a",
-      "tooltipBg": "#18181b",
-      "tooltipBorder": "#3f3f46"
+      "splitLine": "rgba(148, 163, 184, 0.14)",
+      "tooltipBg": "#11141d",
+      "tooltipBorder": "rgba(148, 163, 184, 0.22)"
     }
   },
   "fontFamily": "Noto Sans CJK SC, Inter, system-ui, sans-serif",
   "grid": {
     "top": 36,
-    "right": 24,
-    "bottom": 36,
-    "left": 56,
+    "right": 20,
+    "bottom": 28,
+    "left": 16,
     "containLabel": true
   },
   "scatter": {

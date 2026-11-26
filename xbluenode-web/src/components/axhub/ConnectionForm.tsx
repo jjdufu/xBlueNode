@@ -33,6 +33,7 @@ import {
   EmptyState,
   Input,
   Modal,
+  PasswordInput,
   Select,
   StatusBadge,
   Textarea,
@@ -113,6 +114,7 @@ const FALLBACK_SPECS: ConnectorSpec[] = [
 export interface ConnectionFormProps {
   connections: Connection[];
   connectorSpecs: ConnectorSpec[];
+  autoOpenCreate?: boolean;
   onChanged: () => Promise<void>;
   onDatasetCreated?: () => Promise<void>;
 }
@@ -120,6 +122,7 @@ export interface ConnectionFormProps {
 export function ConnectionForm({
   connections,
   connectorSpecs,
+  autoOpenCreate = false,
   onChanged,
   onDatasetCreated,
 }: ConnectionFormProps) {
@@ -278,6 +281,21 @@ export function ConnectionForm({
       resetForType(activeSpec);
     }
   }, [activeSpec, editingConn]);
+
+  useEffect(() => {
+    if (!autoOpenCreate || !canDataAdmin) return;
+    setEditingConn(null);
+    setConnName("");
+    setAllowPrivateNetwork(false);
+    setErrorMsg(null);
+    const initialSpec =
+      specs.find((s) => s.connector_type === "POSTGRES") ?? specs[0];
+    if (initialSpec) {
+      setSelectedType(initialSpec.connector_type);
+      resetForType(initialSpec);
+    }
+    setFormOpen(true);
+  }, [autoOpenCreate, canDataAdmin, specs]);
 
   const openCreateForm = () => {
     if (!canDataAdmin) return;
@@ -622,7 +640,7 @@ export function ConnectionForm({
         />
       ) : (
         <div
-          className="divide-y divide-border rounded-md border border-border/80 bg-background"
+          className="divide-y divide-border/70 border-t border-border/70 -mx-1"
           data-testid="connection-list"
         >
           {connections.map((conn) => {
@@ -733,18 +751,20 @@ export function ConnectionForm({
                     {tx("编辑", "Edit")}
                   </Button>
 
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    disabled={!canDataAdmin}
-                    onClick={() => setPendingDeleteConn(conn)}
-                    aria-label={tx("删除", "Delete")}
-                    className="hover:text-red-600 hover:bg-red-500/10"
-                    data-testid={`delete-connection-btn-${conn.name}`}
-                  >
-                    <Trash2 className="h-3 w-3" />
-                  </Button>
+                  <span className="ml-1 pl-1 border-l border-border inline-flex">
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      disabled={!canDataAdmin}
+                      onClick={() => setPendingDeleteConn(conn)}
+                      aria-label={tx("删除", "Delete")}
+                      className="hover:text-red-600 hover:bg-red-500/10"
+                      data-testid={`delete-connection-btn-${conn.name}`}
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </Button>
+                  </span>
                 </div>
               </div>
             );
@@ -777,7 +797,7 @@ export function ConnectionForm({
               <label className="text-xs font-medium block">
                 {tx("连接器类型", "Connector Type")}
               </label>
-              <div className="space-y-2 max-h-48 overflow-y-auto rounded border border-border bg-background p-2.5">
+              <div className="space-y-2.5 max-h-56 overflow-y-auto rounded border border-border bg-background p-2.5">
                 {groupedSpecs.map(([cat, catSpecs]) => (
                   <div key={cat} className="space-y-1">
                     <div className="text-[11px] font-medium text-muted-foreground">
@@ -822,8 +842,8 @@ export function ConnectionForm({
               />
             </div>
 
-            <div className="space-y-1 flex flex-col justify-end">
-              <label className="inline-flex items-center gap-2 text-xs cursor-pointer py-2">
+            <div className="flex items-end pb-1">
+              <label className="inline-flex h-8 items-center gap-2 text-xs cursor-pointer">
                 <input
                   type="checkbox"
                   checked={allowPrivateNetwork}
@@ -982,6 +1002,9 @@ export function ConnectionForm({
                   const alreadySet =
                     editingConn?.secret_fields_set.includes(sf) ?? false;
                   const isCleared = Boolean(clearedSecrets[sf]);
+                  const isPlainAccountField = /^(user|username|access_key|account|client_id)$/i.test(
+                    sf
+                  );
                   return (
                     <div key={sf} className="space-y-1">
                       <div className="flex items-center justify-between text-xs">
@@ -995,27 +1018,50 @@ export function ConnectionForm({
                           </Badge>
                         )}
                       </div>
-                      <Input
-                        type="password"
-                        autoComplete="new-password"
-                        disabled={isCleared}
-                        value={secretInputs[sf] ?? ""}
-                        onChange={(e) =>
-                          setSecretInputs((prev) => ({
-                            ...prev,
-                            [sf]: e.target.value,
-                          }))
-                        }
-                        placeholder={
-                          alreadySet
-                            ? tx(
-                                "已设置（留空保持不变）",
-                                "Configured (leave blank to keep)"
-                              )
-                            : "••••••••"
-                        }
-                        data-testid={`secret-field-${sf}`}
-                      />
+                      {isPlainAccountField ? (
+                        <Input
+                          type="text"
+                          autoComplete="off"
+                          disabled={isCleared}
+                          value={secretInputs[sf] ?? ""}
+                          onChange={(e) =>
+                            setSecretInputs((prev) => ({
+                              ...prev,
+                              [sf]: e.target.value,
+                            }))
+                          }
+                          placeholder={
+                            alreadySet
+                              ? tx(
+                                  "已设置（留空保持不变）",
+                                  "Configured (leave blank to keep)"
+                                )
+                              : sf
+                          }
+                          data-testid={`secret-field-${sf}`}
+                        />
+                      ) : (
+                        <PasswordInput
+                          autoComplete="new-password"
+                          disabled={isCleared}
+                          value={secretInputs[sf] ?? ""}
+                          onChange={(e) =>
+                            setSecretInputs((prev) => ({
+                              ...prev,
+                              [sf]: e.target.value,
+                            }))
+                          }
+                          placeholder={
+                            alreadySet
+                              ? tx(
+                                  "已设置（留空保持不变）",
+                                  "Configured (leave blank to keep)"
+                                )
+                              : "••••••••"
+                          }
+                          data-testid={`secret-field-${sf}`}
+                        />
+                      )}
                       {editingConn && alreadySet && (
                         <label className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground cursor-pointer">
                           <input
